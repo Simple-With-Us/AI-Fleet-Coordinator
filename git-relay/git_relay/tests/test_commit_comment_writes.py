@@ -2,6 +2,7 @@ import hashlib
 import unittest
 
 from git_relay.github_client import RelayGitHubError
+from git_relay.server import PreReadUnavailable
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
 from .test_workflow_verbs import REPO, SHA, Client, Minter, Policy
@@ -57,7 +58,7 @@ class CommentWrites(unittest.TestCase):
             c = Client(row)
             a = "wf_commit_comment_delete"
             h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO)
-            with self.assertRaises((Refused, RelayGitHubError)):
+            with self.assertRaises((Refused, RelayGitHubError, PreReadUnavailable)):
                 h.run(a, self.args())
             self.assertEqual(len(c.calls), 1)
 
@@ -98,3 +99,33 @@ class CommentWrites(unittest.TestCase):
                 Client(), Policy(), m, "swu-wise", "wf_commit_comment_" + a, REPO
             )
             self.assertEqual(m.calls[0][2], {"contents": "write", "metadata": "read"})
+
+
+class ReviewFixes(unittest.TestCase):
+    def test_pre_read_failure_is_retryable_without_write(self):
+        class C(Client):
+            def _call(self, *a, **k):
+                self.calls.append(a)
+                raise RelayGitHubError(503, "synthetic")
+
+        for action, args in [
+            ("wf_commit_comment_create", {"body": "new"}),
+            (
+                "wf_commit_comment_update",
+                {"comment_id": 7, "body": "new", "expected_body_sha256": "b" * 64},
+            ),
+            ("wf_commit_comment_delete", {"comment_id": 7, "expected_body_sha256": "b" * 64}),
+        ]:
+            c = C()
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+            with self.assertRaises(PreReadUnavailable):
+                h.run(action, {"repo": REPO, "sha": SHA, **args})
+            self.assertEqual(len(c.calls), 1)
+            self.assertEqual(c.calls[0][0], "GET")
+
+    def test_comment_state_setter_is_reapply_eligible(self):
+        from git_relay.server import _REAPPLY_STATE_ACTIONS
+
+        self.assertIn("wf_commit_comment_update", _REAPPLY_STATE_ACTIONS)
+        self.assertNotIn("wf_commit_comment_create", _REAPPLY_STATE_ACTIONS)
+        self.assertNotIn("wf_commit_comment_delete", _REAPPLY_STATE_ACTIONS)

@@ -791,8 +791,15 @@ class WorkflowVerbs:
         expected = args.get("expected_body_sha256")
         if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
             raise Refused("invalid expected comment body digest")
-        raw = self._get(f"/repos/{repo}/comments/{comment_id}")
-        self._commit_comment(raw, sha, comment_id)
+        try:
+            raw = self._get(f"/repos/{repo}/comments/{comment_id}")
+            self._commit_comment(raw, sha, comment_id)
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "comment pre-read unavailable; no write attempted"
+                ) from None
+            raise
         # Compare the original bytes in-host, not a possibly-withheld projection.
         if hashlib.sha256(raw["body"].encode("utf-8")).hexdigest() != expected:
             raise Refused("comment body changed")
@@ -801,7 +808,14 @@ class WorkflowVerbs:
     def wf_commit_comment_create(self, repo, args):
         _only(args, ("repo", "sha", "body"))
         sha, body = _sha(args, "sha"), self._comment_write_body(args)
-        commit = self._get(f"/repos/{repo}/commits/{sha}")
+        try:
+            commit = self._get(f"/repos/{repo}/commits/{sha}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "commit pre-read unavailable; no write attempted"
+                ) from None
+            raise
         if not isinstance(commit, dict) or commit.get("sha") != sha:
             raise Refused("commit not matched")
         raw = self.client._call(
