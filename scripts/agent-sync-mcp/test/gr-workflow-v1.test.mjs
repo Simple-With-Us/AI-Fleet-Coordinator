@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Response,validWfV1Args} from '../src/gr-workflow-v1.js';
+import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Response,validWfV1Args,parseWfV1Args} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
@@ -535,4 +535,33 @@ test('PR response text scan refuses credential-shaped title and body without blo
  const base={id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}};
  assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,title:'plain',body:null}}),true);
  for(const key of ['title','body'])for(const value of ['ghp_'+'x'.repeat(30),'github_pat_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,[key]:value}}),false);
+});
+
+test('persisted status, rename, dismiss and deployment text refuses credential shapes before network',async()=>{
+ const fake='gh'+'p_'+'A'.repeat(36);
+ const cases=[
+  ['wf_commit_status_create',{repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'},['description']],
+  ['wf_file_rename',{repo,source_path:'old.txt',destination_path:'new.txt',branch:'feature/x',message:'Rename file',expected_head_sha:'a'.repeat(40),prior_sha:'b'.repeat(40)},['message']],
+  ['wf_review_dismiss',{repo,number:1,review_id:2,message:'obsolete'},['message']],
+ ];
+ for(const [action,args,fields] of cases){
+  assert.ok(parseWfV1Args(action,args),action);
+  for(const k of fields){
+   const bad={...args,[k]:`see ${fake}`};
+   assert.equal(validWfV1Args(action,bad),false,`${action}.${k}`);
+   assert.equal(parseWfV1Args(action,bad),null,`${action}.${k}`);
+   let calls=0;const t=harness(async()=>{calls++;return new Response('{}');});
+   const out=await t.call(`gr_${action}`,bad);
+   assert.ok(out.isError);assert.equal(calls,0);assert.ok(!out.content[0].text.includes(fake));
+  }
+ }
+});
+
+test('per-action checks read the Zod-parsed copy, not the raw caller object',()=>{
+ const args={repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'};
+ const parsed=parseWfV1Args('wf_commit_status_create',args);
+ assert.deepEqual(parsed,args);assert.notEqual(parsed,args);
+ const trap=Object.defineProperty({...args},'description',{enumerable:true,get(){throw Error('read before validation');}});
+ assert.equal(parseWfV1Args('wf_commit_status_create',trap),null);
+ assert.equal(parseWfV1Args('wf_not_an_action',args),null);
 });
