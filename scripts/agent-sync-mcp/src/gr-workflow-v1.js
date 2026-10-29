@@ -413,7 +413,7 @@ const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).st
 const gitResponses={
     wf_git_blob_binary_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(32000),content_b64:z.string().max(42668).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)}).strict().refine(v=>{const raw=atob(v.content_b64);return raw.length===v.size&&btoa(raw)===v.content_b64&&!gitCredential.test(raw);})}).strict(),
 
-    wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000)}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
+    wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000).refine(v=>!gitCredential.test(v))}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
     wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
     wf_git_commit_get:z.object({commit:commitRead}).strict(),
     wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024).refine(v=>v.length>0)}).strict()).max(100)}).strict()}).strict(),
@@ -484,11 +484,12 @@ export function validWfV1Response(action, body, args) {
  if(action==='wf_labels_add')return additiveLabels.safeParse(body).success && new Set(body.added.map(x=>x.id)).size===body.added.length && new Set(body.added.map(x=>x.name.toLowerCase())).size===body.added.length && (!args || body.number===args.number && body.added.length===args.labels.length && body.added.every(x=>args.labels.some(v=>v.toLowerCase()===x.name.toLowerCase())));
  if(action==='wf_label_update')return labelUpdateReceipt.safeParse(body).success && (!args || body.label.id===args.expected_label_id && body.label.name===args.new_name && body.label.color===args.color.toLowerCase() && body.label.description===args.description);
  if(discussionPages[action]){if(!discussionPages[action].safeParse(body).success||new TextEncoder().encode(JSON.stringify(body)).length>262144)return false;const rows=body.reviews??body.comments;return new Set(rows.map(x=>x.id)).size===rows.length&&rows.reduce((n,x)=>n+new TextEncoder().encode(x.body).length,0)<=262144&&(!args||body.number===args.number&&body.head_sha===args.expected_head_sha&&body.page===(args.page??1)&&rows.length<=(args.per_page??30)&&body.has_more===(rows.length===(args.per_page??30)));}
- if(action==='wf_git_blob_binary_get')return gitResponses[action].safeParse(body).success;
+ if(gitResponses[action]&&!gitResponses[action].safeParse(body).success)return false;
+ if(action==='wf_git_blob_binary_get')return true;
  if(action.startsWith('wf_git_')){
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
    const schemas={
-    wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000)}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
+    wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000).refine(v=>!gitCredential.test(v))}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
     wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
     wf_git_commit_get:z.object({commit:commitRead}).strict(),
     wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024).refine(v=>v.length>0)}).strict()).max(100)}).strict()}).strict(),

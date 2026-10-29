@@ -4215,7 +4215,7 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "binary blob receipt unverifiable")
         try:
-            raw = base64.b64decode(value["content"].replace("\n", ""), validate=True)
+            raw = base64.b64decode("".join(value["content"].split()), validate=True)
         except (ValueError, binascii.Error):
             raise RelayGitHubError(502, "binary blob encoding unverifiable") from None
         if (
@@ -4351,7 +4351,7 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "blob receipt unsupported or unverifiable")
         try:
-            raw = base64.b64decode(value["content"].replace("\n", ""), validate=True)
+            raw = base64.b64decode("".join(value["content"].split()), validate=True)
             text = raw.decode("utf-8")
         except UnicodeError:
             raise Refused("binary blob text is not supported") from None

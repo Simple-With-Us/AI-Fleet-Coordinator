@@ -898,3 +898,13 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
  }
  assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
 });
+
+test('Git blob and commit receipts keep credential rejection through main validators',()=>{
+ // Runtime-only synthetic scanner-shaped data, never credentials.
+ for(const text of ['ghp_'+'X'.repeat(32),'sk-'+'X'.repeat(32)]){
+  assert.equal(validWfV1Response('wf_git_blob_get',{blob:{sha:'a'.repeat(40),size:text.length,text}}),false);
+  assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:text}}),false);
+ }
+ assert.equal(validWfV1Response('wf_git_blob_get',{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}),true);
+ assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'safe'}}),true);
+});

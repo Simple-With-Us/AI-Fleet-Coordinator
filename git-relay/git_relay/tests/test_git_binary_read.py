@@ -70,3 +70,9 @@ class BinaryRead(unittest.TestCase):
             WorkflowVerbs(NetworkClient(), Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
                 a, args
             )
+
+    def test_binary_crlf_wrapping_and_malformed_base64(self):
+        out, _ = self.runblob(b"hello", content="aGVs\r\nbG8=\r\n")
+        self.assertEqual(out["blob"]["content_b64"], "aGVsbG8=")
+        with self.assertRaises(RelayGitHubError):
+            self.runblob(b"hello", content="aGVs% bG8=")
