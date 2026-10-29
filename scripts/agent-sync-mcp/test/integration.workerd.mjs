@@ -62,6 +62,7 @@ const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const bearerBots = Object.entries(ADDITIONAL_BEARER_SEATS).map(([seat, row], i) => ({ seat, ...row, key: zulipShapedKey(60 + i) }));
 let infisicalFixture = null;
 let infisicalUnavailable = false;
+let infisicalFailureStatus = 503;
 const zulip = new FakeZulip({ bots: [
   ...bearerBots.map((b) => ({ email: b.email, key: b.key, full_name: b.seat })),
   { email: "codex-bot@simplewithus.zulipchat.com", key: zulipShapedKey(90), full_name: "Codex" },
@@ -216,7 +217,7 @@ let failChatgptCimd = 0;
 async function outboundFetch(request) {
   outbound.push(request.url);
   if (request.url.startsWith("https://offline-infisical.example/api/v3/secrets/raw")) {
-    if (infisicalUnavailable) return new Response("unavailable", { status: 503 });
+    if (infisicalUnavailable) return new Response("unavailable", { status: infisicalFailureStatus });
     const url = new URL(request.url);
     const secrets = infisicalFixture?.[url.searchParams.get("secretPath")] ?? [];
     if (url.pathname.endsWith("/raw")) return Response.json({ secrets, totalCount: secrets.length });
@@ -2133,7 +2134,27 @@ try {
     const unavailableHtml = await unavailablePage.text();
     assert.ok(unavailableHtml.includes("Credential readiness unknown (diagnostic read failed)"));
     assert.ok(unavailableHtml.includes("Per-Identity Bearers"));
-    assert.equal((await adminAction("mint_gb_bearer", { identity: "CODEX", mcp_accept: "1" })).status, 500, "mint still fails closed, no fallback credential");
+    assert.equal((await adminAction("mint_gb_bearer", { identity: "CODEX", mcp_accept: "1" })).status, 400, "mint refuses without fallback or a 500");
+    for (const mode of ["fallback", "required"]) for (const failureStatus of [403, 503]) {
+      await mf.dispose();
+      infisicalFailureStatus = failureStatus;
+      mf = startWorker(HOST, { INFISICAL_MODE: mode, INFISICAL_SERVICE_TOKEN: "offline-fixture", INFISICAL_WORKSPACE_ID: "offline-workspace", INFISICAL_BASE_URL: "https://offline-infisical.example", INFISICAL_EXPECT: "/unused:UNUSED", ZULIP_KEY_CODEX: zulipShapedKey(99), CODEX_ZULIP_KEY: zulipShapedKey(99), CODEX_ZULIP_EMAIL: "codex-bot@simplewithus.zulipchat.com" });
+      const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+      for (const identity of ["CODEX", "MA", "AG", "BF-FIXER"]) {
+        const token = `sbt_${identity.toLowerCase()}_${"a".repeat(43)}`;
+        const ownGate = ns.get(ns.idFromName(identity));
+        await ownGate.gbBearerMint({ hash:createHash("sha256").update(token).digest("hex"), by:"test", expiresAt:Date.now()+600000, mcpAccept:true });
+        assert.equal((await mcp(token,"tools/list")).status,401,`${identity}/${mode}/${failureStatus} auth must refuse`);
+        // Use an already-open owner form: required-mode admin diagnostics
+        // have independent outage behavior and are not the action under test.
+        const csrf = "c".repeat(64);
+        jar.set("__Host-agent-sync-csrf", csrf);
+        assert.equal((await browser("/admin/action",{method:"POST",form:{action:"mint_gb_bearer",identity,mcp_accept:"1",csrf,mint_id:"d".repeat(32)}})).status,400,`${identity}/${mode}/${failureStatus} mint must refuse`);
+        const stillValid = await ownGate.gbBearerCheck(createHash("sha256").update(token).digest("hex"));
+        assert.equal(stillValid.ok,true,"failed mint must not rotate an existing bearer");
+      }
+    }
+    infisicalFailureStatus = 503;
     infisicalUnavailable = false;
   });
 
