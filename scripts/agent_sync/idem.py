@@ -67,7 +67,7 @@ class IdemStore:
 
         def change(rows: dict[str, Any], now: float) -> tuple[str, dict[str, Any] | None]:
             row = rows.get(key)
-            if row and row.get("state") == "sent":
+            if row and row.get("state") in ("sent", "refused"):
                 return "duplicate", dict(row)
             if (
                 row
