@@ -81,7 +81,8 @@ class Relations(unittest.TestCase):
         self.assertEqual(
             WorkflowVerbs._relation_issue(
                 {**value, "repository_url": "https://api.github.com/repos/Other/Repo"}
-            )["repo"], "Other/Repo"
+            )["repo"],
+            "Other/Repo",
         )
         self.assertIsNone(
             WorkflowVerbs._relation_issue(
@@ -158,10 +159,23 @@ class Relations(unittest.TestCase):
                 ).run("wf_issue_parent", {"repo": REPO, "number": 1})
 
     def test_canonical_repository_casing_does_not_change_scope(self):
-        for action in ("wf_issue_parent", "wf_issue_subissues", "wf_issue_blocked_by", "wf_issue_blocking"):
+        for action in (
+            "wf_issue_parent",
+            "wf_issue_subissues",
+            "wf_issue_blocked_by",
+            "wf_issue_blocking",
+        ):
             for bound, canonical in ((REPO.lower(), REPO), (REPO, REPO.swapcase())):
-                issue = {"id": 1, "number": 2, "title": "x", "state": "open", "repository_url": f"https://api.github.com/repos/{canonical}"}
+                issue = {
+                    "id": 1,
+                    "number": 2,
+                    "title": "x",
+                    "state": "open",
+                    "repository_url": f"https://api.github.com/repos/{canonical}",
+                }
                 payload = issue if action == "wf_issue_parent" else [issue]
-                result = WorkflowVerbs(Client(payload), Policy(), "swu-wise", "own", "swu-wise", action, bound).run(action, {"repo": bound, "number": 1})
+                result = WorkflowVerbs(
+                    Client(payload), Policy(), "swu-wise", "own", "swu-wise", action, bound
+                ).run(action, {"repo": bound, "number": 1})
                 item = result["issue"] if action == "wf_issue_parent" else result["issues"][0]
                 self.assertEqual(item["repo"], canonical)
