@@ -34,7 +34,9 @@ from . import session_ids as SI
 STORE = ("Library", "Application Support", "Claude", "claude-code-sessions")
 # The app's id for a chat.  It builds a file name, so nothing but these characters is ever used.
 HOST_ID = re.compile(r"local_[A-Za-z0-9-]{1,80}")
-RECORD_BYTES = 8 << 20  # a record is about 0.65 MB (it holds the chat's MCP wiring);  nothing near this is a record
+RECORD_BYTES = (
+    8 << 20
+)  # a record is about 0.65 MB (it holds the chat's MCP wiring);  nothing near this is a record
 SCAN_RECORDS = 300  # the newest records looked through when the chat's app id is not known
 SCAN_BYTES = 128 << 20  # the most a scan reads, counting a file too big to read at its limit
 
@@ -140,7 +142,11 @@ def _record_for_cli_id(root: str, cli_session_id: str) -> tuple[dict | None, boo
             with os.scandir(org) as entries:
                 for e in entries:
                     try:
-                        if e.name.startswith("local_") and e.name.endswith(".json") and e.is_file(follow_symlinks=False):
+                        if (
+                            e.name.startswith("local_")
+                            and e.name.endswith(".json")
+                            and e.is_file(follow_symlinks=False)
+                        ):
                             st = e.stat()
                             files.append((st.st_mtime, st.st_size, e.path))
                     except OSError:
@@ -157,7 +163,9 @@ def _record_for_cli_id(root: str, cli_session_id: str) -> tuple[dict | None, boo
             text = _read(path)
             if text is not None:
                 spent += len(text)
-                if cli_session_id in text:  # most records do not hold the id at all, so most are never parsed
+                if (
+                    cli_session_id in text
+                ):  # most records do not hold the id at all, so most are never parsed
                     record = _parse(text)
                     if record is None:
                         record = _load(path)  # caught mid-write:  read it once more

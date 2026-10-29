@@ -548,7 +548,9 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
     out["swept"] = swept
     out["evicted"] = evicted
     if no_parent and out.get("outcome") in ("registered", "reopened"):
-        out["parent_lookup"] = no_parent  # why this chat was placed as a main chat (claude_app_lineage's reasons)
+        out["parent_lookup"] = (
+            no_parent  # why this chat was placed as a main chat (claude_app_lineage's reasons)
+        )
     return out
 
 
@@ -859,7 +861,8 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         _hook_out(
             stdout,
             "SessionStart",
-            context="No Operator letter yet (%s).  A prompt after %d minutes tries again." % (note["error"], RETRY_SECONDS // 60),
+            context="No Operator letter yet (%s).  A prompt after %d minutes tries again."
+            % (note["error"], RETRY_SECONDS // 60),
         )
         return 0
     if note["state"] == "mismatch":
