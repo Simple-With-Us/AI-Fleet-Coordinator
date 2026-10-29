@@ -879,11 +879,11 @@ class WorkflowVerbs:
             or data.get("state") not in ("open", "closed")
         ):
             raise RelayGitHubError(502, "issue relation receipt unverifiable")
-        if find_secret(data["title"]) or re.search(
-            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
-            data["title"],
+        title = data["title"]
+        if find_secret(title) or re.search(
+            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", title
         ):
-            raise Refused("relation title contains credential pattern")
+            title = "<withheld: credential-shaped title>"
         url = data.get("repository_url")
         bound = None
         if isinstance(url, str):
@@ -898,16 +898,10 @@ class WorkflowVerbs:
                 and _REPO.fullmatch(candidate)
             ):
                 bound = candidate
-        return {
-            **{k: data[k] for k in ("id", "number", "title", "state")},
-            "repo": bound,
-        }
+        return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
 
     def _relation_read(self, repo, args, suffix, single=False):
-        _only(
-            args,
-            ("repo", "number") if single else ("repo", "number", "per_page", "page"),
-        )
+        _only(args, ("repo", "number") if single else ("repo", "number", "per_page", "page"))
         number = _int(args, "number")
         page = 1 if single else (_int(args, "page", 1, 1000) if "page" in args else 1)
         limit = 1 if single else _page(args)
@@ -915,10 +909,10 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/issues/{number}/{suffix}{query}")
 
         def scoped(value):
-            item = self._relation_issue(value)
-            if item["repo"] != repo:
+            issue = self._relation_issue(value)
+            if issue["repo"] is None or issue["repo"].casefold() != repo.casefold():
                 raise Refused("relation repository is outside or unverifiable in authorized scope")
-            return item
+            return issue
 
         if single:
             return {"issue": scoped(data)}

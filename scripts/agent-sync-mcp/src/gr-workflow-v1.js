@@ -204,6 +204,7 @@ function gitSchema(schema){
 const argSchemas=Object.fromEntries(Object.entries(SPECS).map(([a,s])=>[a,gitSchema(s[1])]));
 export function parseWfV1Args(action,args){
  if(!validWfV1Args(action,args))return null;
+ if(new TextEncoder().encode(JSON.stringify(args)).length>workflowInputLimit(action))return null;
  const parsed=argSchemas[action].safeParse(args);
  if(!parsed.success)return null;
  if(['wf_review_submit','wf_review_inline'].includes(action)&&!reviewBodyOk(parsed.data))return null;
@@ -220,6 +221,7 @@ export const validWfV1Args = (action, args) => typeof action==='string' && bound
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_issue_parent:['issue'],wf_issue_subissues:['issues','page','has_more'],wf_issue_blocked_by:['issues','page','has_more'],wf_issue_blocking:['issues','page','has_more'],
  wf_merge_queue_entry:['entry'],wf_merge_queue_enqueue:['entry'],wf_merge_queue_dequeue:['entry'],
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
  wf_file_rename:['source_path','destination_path','branch','commit','blob_sha'],
@@ -333,16 +335,16 @@ const binaryAsset=z.object({id:positive,name:z.string().min(1).max(255),state:z.
 const binaryResponses={wf_release_asset_download:chunkSchema('asset_id'),wf_artifact_download:chunkSchema('artifact_id'),wf_run_logs:chunkSchema('run_id'),wf_job_log:chunkSchema('job_id',true),wf_release_asset_upload_binary:z.object({asset:binaryAsset}).strict(),wf_release_asset_update:z.object({asset:binaryAsset}).strict(),wf_release_asset_delete:z.object({deleted:z.literal(true),asset_id:positive}).strict()};
 const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED','APPROVED','CHANGES_REQUESTED','DISMISSED']),commit_id:shaValue.nullable(),html_url:z.string().nullable()}).strict();
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
-const relationCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|\bst\.[A-Za-z0-9]{20,})/;
-const relationIssue=z.object({id:positive,number:positive,title:z.string().refine(v=>new TextEncoder().encode(v).length<=4096).refine(v=>!relationCredential.test(v),{message:'title contains credential-like text'}),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/)}).strict();
-const relationList=z.object({issues:z.array(relationIssue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
-const dependencyResult=(blocking)=>z.object({completed:z.literal(true),number:positive,blocker_number:positive,blocking:z.literal(blocking)}).strict();
-const relationResponses={wf_issue_parent:z.object({issue:relationIssue}).strict(),wf_issue_subissues:relationList,wf_issue_blocked_by:relationList,wf_issue_blocking:relationList,wf_issue_dependency_add:dependencyResult(true),wf_issue_dependency_remove:dependencyResult(false)};
+const relationIssue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>new TextEncoder().encode(v).length<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).nullable()}).strict();
+const relationParent=z.object({issue:relationIssue}).strict();
+const relationPage=z.object({issues:z.array(relationIssue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
 const historyEvent=z.object({id:positive.nullable(),event:z.string().regex(/^[a-z][a-z_-]{0,79}$/),created_at:z.string().max(100).nullable(),commit_id:shaValue.nullable()}).strict();
 const historyResponses={wf_issue_events:z.object({events:z.array(historyEvent.refine(v=>v.id!==null)).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict(),wf_issue_timeline:z.object({events:z.array(historyEvent).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()};
 const renameReceipt=z.object({source_path:z.string().min(1).max(1024),destination_path:z.string().min(1).max(1024),branch:z.string().min(1).max(200),commit:z.string().regex(/^[0-9a-f]{40}$/),blob_sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict();
 export function validWfV1Response(action, body, args) {
+ if(typeof action!=="string")return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success;
  if(action.startsWith('wf_git_')){
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
    const schemas={
@@ -369,7 +371,7 @@ export function validWfV1Response(action, body, args) {
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;
  if(historyResponses[action])return historyResponses[action].safeParse(body).success;
- if(relationResponses[action])return relationResponses[action].safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>v.repo===args.repo));
+ if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
 
  if(environmentResponses[action])return environmentResponses[action].safeParse(body).success;
