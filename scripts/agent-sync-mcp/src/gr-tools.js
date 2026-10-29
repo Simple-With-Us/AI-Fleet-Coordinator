@@ -108,11 +108,21 @@ export class GrRelayClient {
   // Workflow verbs get a bounded stream, longer deadline and conservative write
   // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
+    const limit = workflowInputLimit(action);
+    let rawSerialized;
+    try {
+      rawSerialized = JSON.stringify(args);
+    } catch {
+      return {status:400,body:{error:"invalid_workflow_args"}};
+    }
+    if (new TextEncoder().encode(rawSerialized).length > limit) {
+      return {status:400,body:{error:"workflow_request_too_large"}};
+    }
     const parsedArgs=parseWfV1Args(action,args);
     if(parsedArgs===null)return {status:400,body:{error:"invalid_workflow_args"}};
     args=parsedArgs;
     const serialized = JSON.stringify(args);
-    if (new TextEncoder().encode(serialized).length > workflowInputLimit(action)) return {status:400,body:{error:"workflow_request_too_large"}};
+    if (new TextEncoder().encode(serialized).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const write = !WF_V1_READ_ACTIONS.includes(action);
     const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});
     try {

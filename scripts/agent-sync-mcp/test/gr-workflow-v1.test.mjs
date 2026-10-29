@@ -452,6 +452,9 @@ test('relation receipts preserve page availability without credentials and use b
  let calls=0;const t=harness(async(u,i)=>{calls++;assert.ok(u.endsWith('/v1/wf_issue_parent'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({issue:item}));});
  assert.ok(!(await t.call('gr_wf_issue_parent',{repo,number:1})).isError);assert.equal(calls,1);
  assert.ok((await t.call('gr_wf_issue_parent',{repo,number:1,extra:'x'.repeat(65537)})).isError);assert.equal(calls,1);
+ const gr=new GrRelayClient({baseUrl:'https://broker.invalid',bearer:'own',fetch:async()=>{calls++;return new Response('{}');}});
+ assert.deepEqual(await gr.callWorkflow('wf_issue_parent',{repo,number:1,payload:'x'.repeat(70000)}),{status:400,body:{error:'workflow_request_too_large'}});
+ assert.equal(calls,1);
 });
 
 test('rename strict receipts correlate paths branch and prior blob and use caller bearer',async()=>{
