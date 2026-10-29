@@ -79,7 +79,7 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   const seatDiagnostics = diagnostics.filter((c) => (c.authenticated_seat ?? c.seat) === seat.seat && Number.isFinite(c.ts));
   const error = [...ordered.filter(failure), ...seatDiagnostics].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))[0];
   const unavailableFields = new Set(seat.unavailableFields ?? []);
-  const fieldUnavailable = (name) => unavailableFields.has(name);
+  const fieldUnavailable = (name) => unavailableFields.has(name) || (name === "grants" && seat.grantsDeferred === true);
   // A role the Worker has never checked is not a setup gap:  it is checked on the seat's first call (and
   // every 10 minutes after), so only a check that ran and refused counts as missing (AFC-347).
   const roleUnchecked = !fieldUnavailable("role") && !seat.role;
@@ -95,13 +95,13 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   const diagnosticAfterSuccess = seatDiagnostics.some((row) => !success || row.ts >= success.ts);
   const currentError = hasRecent && (failure(last) || diagnosticAfterSuccess);
   const recentSuccess = configured && hasRecent && !currentError && !diagnosticsUnavailable;
-  const readiness = readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : recentSuccess ? "Recent success" : roleUnchecked ? "Configured; role not checked yet" : "Configured; no recent traffic";
+  const readiness = seat.grantsDeferred && !diagnosticsUnavailable && !fieldUnavailable("state") && !fieldUnavailable("role") ? (seat.paused ? "Paused; grant not checked" : !seat.keyInstalled ? "Needs setup: Zulip key; grant not checked" : seat.role && !seat.role.ok ? "Role refused; grant not checked" : currentError ? "Recent failure; grant not checked" : "Grant not checked") : readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : recentSuccess ? "Recent success" : roleUnchecked ? "Configured; role not checked yet" : "Configured; no recent traffic";
   const tone = recentSuccess ? "state-ready" : "state-attention";
   return `<article class="status-card"><h3>${e.escape(e.seatLabel ? e.seatLabel(seat.seat) : seat.seat)}</h3><p class="status-state ${tone}">${e.escape(readiness)}</p>
 <dl><dt>Seat</dt><dd>${fieldUnavailable("state") ? "Unknown" : seat.paused ? "Paused" : "Unpaused"}</dd>
 <dt>Zulip Key</dt><dd>${seat.keyInstalled ? "Installed" : "Missing"}</dd>
 <dt>Member Role</dt><dd>${fieldUnavailable("role") ? "Unknown" : roleUnchecked ? "Not checked yet (checked on the seat's next call)" : seat.role.ok ? `Verified (${e.escape(seat.role.role ?? "member")})` : `Refused${seat.role.reason ? `: ${e.escape(seat.role.reason)}` : ""}`}</dd>
-<dt>Grant</dt><dd>${fieldUnavailable("grants") ? "Unknown" : (seat.grants ?? []).length ? `${(seat.grants ?? []).length} present` : "Missing"}</dd>
+<dt>Grant</dt><dd>${seat.grantsDeferred ? "Not checked" : fieldUnavailable("grants") ? "Unknown" : (seat.grants ?? []).length ? `${(seat.grants ?? []).length} present` : "Missing"}</dd>
 <dt>Last Call</dt><dd>${last ? `${e.escape(e.time(last.ts))} · ${e.escape(last.tool ?? "unknown tool")}` : "No recent traffic"}</dd>
 <dt>Last Success</dt><dd>${success ? e.escape(e.time(success.ts)) : "None in retained sample"}</dd>
 <dt>Last Error</dt><dd>${error ? `${e.escape(e.time(error.ts))} · ${e.escape(error.error_code ?? error.outcome ?? error.verdict ?? "error")}` : "None in retained sample"}</dd>
