@@ -238,15 +238,17 @@ class ActualRuntime(unittest.TestCase):
         self.assertIn(path, self.receiver.TOOL_REQUIRED)
         self.assertNotIn(path, self.receiver.BASE_REQUIRED)
         command = [
-            sys.executable, "-I", "-B", "-c",
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
             AUDIT + "\nimport sys; sys.path.insert(0, sys.argv[1]); "
             "from agent_sync import notes_client, notes_service_reader; "
             "assert notes_client.SR is notes_service_reader; "
             "assert notes_service_reader.load() is None",
             str(self.release / "scripts"),
         ]
-        result = RUN(command, env=self.env, cwd=self.home,
-                     capture_output=True, timeout=15)
+        result = RUN(command, env=self.env, cwd=self.home, capture_output=True, timeout=15)
         self.assert_exit(result, 0)
         self.assertFalse(result.stdout)
 
