@@ -34,8 +34,31 @@ def _canonical() -> str:
 
 def _rule() -> dict:
     data = json.loads(SHEET_RULES.read_text(encoding="utf-8"))
-    for section in data["sections"]:
-        for rule in section["rules"]:
+    if not isinstance(data, dict):
+        raise ValueError(f"{SHEET_RULES}: top level must be an object")
+    sections = data.get("sections")
+    if not isinstance(sections, list):
+        raise ValueError(f"{SHEET_RULES}: 'sections' must be a list")
+    for section_index, section in enumerate(sections):
+        if not isinstance(section, dict):
+            raise ValueError(f"{SHEET_RULES}: section {section_index} must be an object")
+        rules = section.get("rules")
+        if not isinstance(rules, list):
+            raise ValueError(
+                f"{SHEET_RULES}: section {section_index} 'rules' must be a list"
+            )
+        for rule_index, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                raise ValueError(
+                    f"{SHEET_RULES}: section {section_index} rule {rule_index} "
+                    "must be an object"
+                )
+            for field in ("id", "rule", "detail"):
+                if not isinstance(rule.get(field), str):
+                    raise ValueError(
+                        f"{SHEET_RULES}: section {section_index} rule {rule_index} "
+                        f"field {field!r} must be a string"
+                    )
             if rule["id"] == RULE_ID:
                 return rule
     raise AssertionError(f"{RULE_ID} is not in {SHEET_RULES}")
@@ -86,15 +109,20 @@ class SheetRuleSentenceGapTests(unittest.TestCase):
         detail = _rule()["detail"]
         for pane in ("Claude Code", "MiniMax Code"):
             self.assertIn(pane, canonical, "the canonical skill changed shape")
-            self.assertIn(pane, detail)
-        self.assertIn("&nbsp;", detail)
+        pane_sentences = [s for s in _sentences(detail) if "&nbsp;" in s]
+        self.assertTrue(pane_sentences, "the entity sentence is gone; update this gate")
+        for sentence in pane_sentences:
+            self.assertIn("Claude Code", sentence)
+            self.assertIn("MiniMax Code", sentence)
 
     def test_the_apple_notes_exception_is_named(self) -> None:
         canonical = _canonical()
         detail = _rule()["detail"]
         self.assertIn("&#8239;", canonical, "the canonical skill changed shape")
-        self.assertIn("&#8239;", detail)
-        self.assertIn("Apple Note", detail)
+        note_sentences = [s for s in _sentences(detail) if "&#8239;" in s]
+        self.assertTrue(note_sentences, "the Apple Notes sentence is gone; update this gate")
+        for sentence in note_sentences:
+            self.assertIn("Apple Note", sentence)
 
     def test_the_chat_panes_are_not_listed_as_taking_the_real_character(self) -> None:
         listing = [s for s in _sentences(_rule()["detail"]) if "alike" in s]
