@@ -29,6 +29,14 @@ Three checks run here.
 3.  The published note takes a real U+00A0:  `scripts/fleet_facts/publish.py`
     writes its gap to GitHub, so the GAP constant is the real U+00A0 plus a
     space, never the entity (owner ruling 2026-10-23).
+
+4.  Apple Notes takes the same gap as every other surface, so no live line gives a
+    note body its own character, and no live line counts a second exception.
+    AFC-552 (Oct 26, 2026) gave note bodies the narrow no-break space on the claim
+    that the renderer collapses the ordinary spaces Apple Notes turns a no-break
+    space into.  That was never checked on screen, and the owner's screenshot of
+    the gap sample note (Oct 29, 2026) shows the no-break line as wide as the en
+    and em lines, so the exception was withdrawn.
 """
 
 from __future__ import annotations
@@ -140,9 +148,9 @@ EXCEPTION_FILES = (
 # block reaches every app, so it has to carry the exception with it.
 PASTED_BLOCK_FILES = ("docs/AGENTS-RECALL-SNIPPET.md",)
 
-# Every file that states the rule states both exceptions:  the two chat panes and
-# the Apple Note body.  One list, so a rule-stating file can never be left out of
-# the Apple Notes gate.
+# Every file that states the rule states the one exception, the two chat panes, and
+# none of them gives an Apple Note body a character of its own.  One list, so a
+# rule-stating file can never be left out of the Apple Notes gate.
 APPLE_NOTES_FILES = EXCEPTION_FILES
 
 # The stale prescriptions, as they are written.  Each one is a live instruction a
@@ -191,23 +199,23 @@ HISTORY_MARKERS = (
 )
 
 # The panes have to be called an exception, not listed as one option among many.
-# The wording moved with AFC-552:  there are two exceptions now, so a file may
-# say "two exceptions" where it used to say "the one exception", so the check
-# looks for an explicit exception phrase and not for a bare "exception".
+# The check looks for an explicit exception phrase and not for a bare "exception".
 EXCEPTION_PHRASE_RE = re.compile(
-    r"(only exception|one exception|single exception|two exceptions)",
+    r"(only exception|one exception|single exception)",
     re.IGNORECASE,
 )
 
-# A file that states the rule has to name the Apple Note exception with it, or a
-# reader who reads only that file thinks there is one exception.  The mechanism is
-# the narrow no-break space (U+202F), which is what the note helper writes.
-APPLE_NOTES_MECHANISM = ("narrow no-break space", "&#8239;", "U+202F")
+# AFC-552 gave an Apple Note body the narrow no-break space (U+202F), and the Oct 29,
+# 2026 measurement withdrew it:  Apple Notes turns a no-break space into an ordinary
+# space and still shows the pair as a wide gap.  No live line may name this mechanism
+# for a note body.
+APPLE_NOTES_FORBIDDEN = ("narrow no-break space", "&#8239;", "U+202F")
 
-# A live line that calls one thing the only exception, while the rule has two.  The
-# singular forms only, so a line that says "the only exceptions" passes.
-SINGLE_EXCEPTION_CLAIMS = re.compile(
-    r"\bonly exception\b|\bone exception\b|\bsingle exception\b", re.IGNORECASE
+# A live line that counts a second exception, while the rule has one:  the two chat
+# panes.  The first of two panes is not a second exception, so only the count words
+# are matched.
+SECOND_EXCEPTION_CLAIMS = re.compile(
+    r"\btwo exceptions\b|\bsecond exception\b|\bsecond of two\b", re.IGNORECASE
 )
 
 # The phrase is a common one and it is used about other things entirely:  a pipeline
@@ -264,28 +272,23 @@ def _states_the_exception(text: str) -> bool:
     return False
 
 
-def _states_the_apple_notes_exception(text: str) -> bool:
-    """Whether the text names the Apple Note exception and its mechanism.
+def _gives_notes_its_own_mechanism(line: str) -> bool:
+    """Whether a line gives an Apple Note body the withdrawn narrow no-break space.
 
-    The mechanism is what makes it an exception rather than a passing mention:  a
-    note body takes the narrow no-break space plus a normal space, because Apple
-    Notes normalizes a no-break space away on import.
+    A line names it when it speaks about Apple Notes and carries any form of the
+    character:  the words, the numeric reference or the code point.
     """
-    for match in re.finditer(r"Apple Note", text):
-        window = text[max(0, match.start() - 600) : match.end() + 600]
-        if any(mechanism in window for mechanism in APPLE_NOTES_MECHANISM):
-            return True
-    return False
+    return "Apple Note" in line and any(form in line for form in APPLE_NOTES_FORBIDDEN)
 
 
-def _claims_a_single_exception(line: str) -> bool:
-    """Whether a line calls the gap rule a single exception.
+def _claims_a_second_exception(line: str) -> bool:
+    """Whether a line counts a second exception to the gap rule.
 
     The phrase alone is not enough:  it is used about pipeline steps and other rules,
     and a file that mentions the gap once is not a file about the gap on every line.
     So the line has to name the rule as well.
     """
-    if not SINGLE_EXCEPTION_CLAIMS.search(line):
+    if not SECOND_EXCEPTION_CLAIMS.search(line):
         return False
     folded = line.casefold()
     return any(term.casefold() in folded for term in GAP_RULE_TERMS)
@@ -391,57 +394,101 @@ class PaneExceptionTests(unittest.TestCase):
                 )
 
 
-class AppleNotesExceptionTests(unittest.TestCase):
-    """Every file that states the rule names the Apple Note exception too."""
+class AppleNotesTakesTheHouseGapTests(unittest.TestCase):
+    """Apple Notes takes the same gap as every other surface.
 
-    def test_each_file_names_the_apple_notes_exception(self) -> None:
-        for rel in APPLE_NOTES_FILES:
-            with self.subTest(rel=rel):
-                self.assertTrue(
-                    _states_the_apple_notes_exception(_read(rel)),
-                    "%s does not name the Apple Note exception and its mechanism" % rel,
-                )
+    AFC-552 (Oct 26, 2026) gave note bodies the narrow no-break space, because a read-back
+    showed Apple Notes turning a no-break space into an ordinary space and the renderer was
+    assumed to collapse the pair.  The owner's screenshot of the gap sample note (Oct 29,
+    2026) shows the no-break line as wide as the en and em lines, so the pair is a gap on
+    screen, and the exception was withdrawn.  A read-back that shows two ordinary spaces
+    after a sentence end is the correct stored form.
+    """
 
-    def test_no_live_line_calls_the_rule_a_single_exception(self) -> None:
-        """A live line may not name one exception while the rule has two.
+    def test_no_file_gives_apple_notes_its_own_mechanism(self) -> None:
+        """No live line names the narrow no-break space for an Apple Note body.
 
-        The history blocks are skipped:  they record the 2026-10-23 ruling, when
-        the Apple Note exception had not been measured yet.
+        The history blocks are skipped:  they record the AFC-552 ruling and its withdrawal.
         """
         problems = []
         for rel in APPLE_NOTES_FILES:
             for number, line in _live_lines(_read(rel)):
-                match = SINGLE_EXCEPTION_CLAIMS.search(line)
-                if match and _claims_a_single_exception(line):
+                if _gives_notes_its_own_mechanism(line):
+                    problems.append("%s:%d\n    %s" % (rel, number, line.strip()[:200]))
+        self.assertEqual(
+            problems,
+            [],
+            "live lines that give Apple Notes its own gap character:\n" + "\n".join(problems),
+        )
+
+    def test_no_live_line_counts_a_second_exception(self) -> None:
+        """A live line may not count two exceptions while the rule has one."""
+        problems = []
+        for rel in APPLE_NOTES_FILES:
+            for number, line in _live_lines(_read(rel)):
+                match = SECOND_EXCEPTION_CLAIMS.search(line)
+                if match and _claims_a_second_exception(line):
                     problems.append(
                         "%s:%d  %r\n    %s" % (rel, number, match.group(0), line.strip()[:200])
                     )
         self.assertEqual(
             problems,
             [],
-            "live lines that still call the rule a single exception:\n" + "\n".join(problems),
+            "live lines that still count a second exception:\n" + "\n".join(problems),
         )
 
-    def test_the_scan_catches_a_claim_about_the_rule(self) -> None:
-        """The scope the scan uses has to catch a real claim, not only skip a false one.
+    def test_the_mechanism_table_says_notes_takes_the_house_gap(self) -> None:
+        """The two files that carry the mechanism table give Notes the real U+00A0 row."""
+        for rel in (
+            "docs/fleet-skills/sentence-gap/SKILL.md",
+            "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
+        ):
+            with self.subTest(rel=rel):
+                rows = [
+                    line for line in _read(rel).splitlines() if line.startswith("| **Apple Notes**")
+                ]
+                self.assertEqual(len(rows), 1, "%s has no single Apple Notes row" % rel)
+                self.assertIn("U+00A0", rows[0])
+                self.assertIn("&#160;", rows[0])
+                for form in APPLE_NOTES_FORBIDDEN:
+                    self.assertNotIn(form, rows[0])
 
-        A scan that skips everything passes every file, so the scope is proved both
-        ways here:  a line that calls the gap rule a single exception is caught, and a
-        line that calls something else that is not caught.
+    def test_the_scans_catch_a_real_claim(self) -> None:
+        """The scans have to catch a real claim, not only skip a false one.
+
+        A scan that skips everything passes every file, so each is proved both ways:  a line
+        that gives Notes its own character, or counts a second exception, is caught, and a
+        line about something else is not.
         """
         self.assertTrue(
-            _claims_a_single_exception(
-                "The one exception is the Claude Code Code tab and the MiniMax Code chat pane."
+            _gives_notes_its_own_mechanism(
+                "An Apple Note body takes the narrow no-break space plus a normal space."
+            ),
+            "the scan does not catch a line that gives Notes its own character",
+        )
+        self.assertTrue(
+            _gives_notes_its_own_mechanism("Apple Notes writes the reference &#8239; for a gap."),
+            "the scan misses the numeric reference",
+        )
+        self.assertFalse(
+            _gives_notes_its_own_mechanism(
+                "An Apple Note body takes the same U+00A0 plus a normal space as every other surface."
+            ),
+            "the scan reads the house gap as an exception",
+        )
+        self.assertTrue(
+            _claims_a_second_exception(
+                "There are two exceptions to the sentence gap:  the chat panes and Apple Notes."
             ),
             "the scan does not catch a claim about the rule",
         )
         self.assertTrue(
-            _claims_a_single_exception("Sentence gaps have ONE EXCEPTION:  THE CHAT PANE."),
+            _claims_a_second_exception("Sentence gaps have TWO EXCEPTIONS:  THE CHAT PANES."),
             "the scan misses a claim whose rule name is not lower case",
         )
         self.assertFalse(
-            _claims_a_single_exception(
-                "GB-Plumber is the one exception at step 4: see below the list."
+            _claims_a_second_exception(
+                "GB-Plumber has two exceptions at step 4: see below the list."
             ),
             "the scan reads a pipeline step as a claim about the rule",
         )
