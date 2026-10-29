@@ -408,3 +408,29 @@ The owner selected dedicated read-only service tokens in AFC.  This supersedes t
 Approved bootstrap tokens expire 90 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed `fleet_secrets run` strips bootstrap authentication before executing its exact child-key allowlist.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
 
 No daily wake quota is introduced.  The [bridge runbook](scripts/whatsapp_bridge/README.md) gives exact token names, expiry, protected storage, recipients and action-time approval steps.  The parent relayed owner approval for the bounded 90-day token setup; provisioning and activation still await required CI/review readiness and coordination.  Neither client receives renewal or credential-management permission.
+
+### Existing Linux root-private bootstrap launcher
+
+For a Linux root host that already has its automation identity in
+`/root/.config/fleet-secrets/bootstrap.json`, the reviewed opt-in installer is:
+
+```sh
+bash scripts/install-fleet-secrets.sh --linux-private-bootstrap
+```
+
+This installs code only. It neither creates nor copies that private file, changes
+its contents, nor exports credentials into the shell or service configuration.
+The file must be a root-owned, single-link regular file, mode 0600, in its
+root-owned mode-0700 `fleet-secrets` directory. Ancestor directories must be
+root-owned and not group/world writable. Symlinks are refused. The bounded JSON
+must contain exactly two nonempty string fields:
+`INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET`.
+
+An inherited token still wins. A complete inherited automation pair wins over
+the private file; a partial pair fails rather than mixing sources. Only Linux
+UID 0 can use the fixed private-file fallback. Login is scoped to the child
+process; the automation pair is stripped before delegation and never printed.
+Help reads no credential and performs no login. The normal installer, including
+Mac installs, is unchanged. Re-running without the flag restores the plain
+launcher. Applying this on a host and checking that host's tools is separate
+from source review and tests.

@@ -6,6 +6,8 @@ print; they raise on a hard failure so the orchestrator can record the source as
 
 Sources (payload `source` value):
   board          ~/apps/_retired/mac-collab-20261019/findings.db   (frozen read-only sqlite; findings + comments)
+  linear         the live board: Linear issues through the installed `simple-board` CLI (read-only
+                 GraphQL), so board work filed after the Oct-18 freeze reaches the corpus
   effort-log     ~/apps/*-EFFORT-LOG.md + EFFORT-LOG-PROTOCOL.md
   doc            markdown in fleet app repos (README/AGENTS/STATUS/CLAUDE + docs/**/*.md),
                  AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
@@ -36,8 +38,11 @@ import pathlib
 import re
 import sqlite3
 import subprocess
+import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+
+from .core import FleetRagError, now_ms
 
 HOME = pathlib.Path.home()
 APPS_DIR = HOME / "apps"
@@ -1751,10 +1756,612 @@ def iter_chat_logs(
             yield from emit(_yield_chat(p, "gemini", _gemini_stable_id(p), app))
 
 
+# --------------------------------------------------------------------------- linear (the live board)
+#
+# THE BOARD was retired 2026-10-19 (AFC-363);  the frozen findings.db keeps the old rows
+# searchable, but nothing new can ever arrive from it, so the corpus has missed every board
+# point since the freeze.  Linear is the live board now (docs/protocols/linear-migration.md).
+# This generator reads Linear through the installed `simple-board` CLI - read verbs only,
+# which need no bearer and run as the shared Fleet app - so credential lookup, token caching
+# and rate limiting stay in the one sanctioned place instead of being duplicated here.
+#
+# What is yielded, so the frozen board docs are never duplicated and nothing is skipped:
+#   - every issue the frozen corpus does NOT already cover, however old.  Coverage is decided
+#     against the frozen findings.db, not the migration TSV alone:  the TSV also maps GitHub
+#     and effort-log rows that were imported into Linear without ever becoming board findings
+#     (measured 2026-10-28:  4,269 of 14,209 TSV rows have no frozen finding), so TSV
+#     membership by itself would skip thousands of never-covered issues, and
+#   - every covered issue touched at or after the freeze (LINEAR_FREEZE):  its frozen doc
+#     is stale and this fresh copy is its update.
+# The light scan (id + updatedAt only, one page per 250 issues) keeps the nightly cheap;  full
+# bodies and comments are fetched only for the selected ids.  Point ids stay stable
+# (doc_id linear/<identifier>) so a re-run re-embeds only what actually changed.
+
+LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
+SIMPLE_BOARD_CLI = os.environ.get("FLEET_RAG_SIMPLE_BOARD", "simple-board")
+LINEAR_PAGE = 250
+LINEAR_FULL_PAGE = 50  # full nodes are heavy (descriptions + comments);  keep each call modest
+# simple-board caps --max-chars at 64000 and exits 1 past it, so oversized responses cannot be
+# lifted away:  the fetch below halves its id chunk on overflow instead, and an issue that
+# overflows even alone is SKIPPED (flagged) rather than ingested partial.
+LINEAR_MAX_CHARS = 64_000
+LINEAR_COMMENT_PAGE = 100
+# First page plus up to five follow-ups.  Beyond the bound the issue is SKIPPED (with a run
+# warning) rather than ingested truncated:  comments sort oldest-first, so a truncated doc
+# would never pick up the omitted tail and its content hash would freeze the partial copy in
+# place forever - including over an earlier complete one.
+LINEAR_COMMENT_MAX_PAGES = 6
+LINEAR_QUERY_TIMEOUT_S = 120
+# One absolute deadline shared by every page of one scan or fetch operation (Kody: a fresh
+# per-page timeout lets aggregate runtime grow without bound).
+LINEAR_DEADLINE_S = 900
+
+
+def _linear_deadline() -> float:
+    return time.monotonic() + LINEAR_DEADLINE_S
+
+
+def _linear_remaining(deadline: float | None) -> int:
+    if deadline is None:
+        return LINEAR_QUERY_TIMEOUT_S
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise LinearSourceError("linear: the operation's shared deadline was exceeded")
+    return max(1, min(LINEAR_QUERY_TIMEOUT_S, int(remaining)))
+
+
+_LINEAR_LIGHT_FIELDS = "nodes { id identifier updatedAt } pageInfo { hasNextPage endCursor }"
+_LINEAR_FULL_FIELDS = (
+    "nodes { id identifier title url description priority createdAt updatedAt "
+    "state { name type } team { key } labels { nodes { name } } "
+    "attachments(first: 20) { nodes { url } } "
+    "comments(first: %d, orderBy: createdAt) { nodes { body createdAt user { displayName } "
+    "externalUser { displayName } } pageInfo { hasNextPage endCursor } } } "
+    "pageInfo { hasNextPage endCursor }" % LINEAR_COMMENT_PAGE
+)
+
+# Linear priority number -> the severity the board would have carried (README mapping:
+# Urgent P0, High P1, Medium P2, Low P3/P4, none -).  A Severity/<P> label wins when present.
+_LINEAR_PRIORITY_SEVERITY = {0: "", 1: "P0", 2: "P1", 3: "P2", 4: "P3"}
+
+# Team key -> canonical corpus app slug, grounded in the frozen board's own rows (join of the
+# migration map against findings.db) and docs/protocols/linear-migration.md.  Teams whose key
+# already aliases cleanly in APP_ALIASES (st, ct, um, cts, dd, ps, ar, cl, bf) are not listed;
+# unknown future keys pass through app_slug lowercased.  The migration's app:<slug> label on an
+# issue always wins over this fallback, because merged rows keep their original board app.
+LINEAR_TEAM_APP = {
+    "AFC": "fleet",  # AI-Fleet-Coordinator itself
+    "OPS": "fleet-ops",
+    "C": "clutch",
+    "CK": "clutch",  # the migration map used the CK key before the live C key existed
+    "HH": "hoghunter",
+    "CC": "codecaps",
+}
+
+
+def _linear_app(team_key, label_names) -> str:
+    """The corpus app slug for a Linear issue:  the migration's app:<slug> label first (it
+    preserves the original board app for rows merged across teams), else the team's canonical
+    app."""
+    for name in label_names:
+        if name.startswith("app:"):
+            return app_slug(name[len("app:") :])
+    return app_slug(LINEAR_TEAM_APP.get((team_key or "").upper(), team_key))
+
+
+class LinearSourceError(FleetRagError):
+    """The simple-board read failed;  the run must record the source as errored, not yield zero."""
+
+    def __init__(self, msg: str, *, overflow: bool = False):
+        super().__init__(msg)
+        # True only for the CLI's fixed size-cap refusal;  that one may degrade to a smaller
+        # read or a skip, every other failure raises.
+        self.overflow = overflow
+
+
+def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
+    """One GraphQL read through the simple-board CLI.  Fail-closed:  any transport, exit-code or
+    GraphQL error raises LinearSourceError so a broken read can never look like an empty board."""
+    try:
+        proc = subprocess.run(
+            [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise LinearSourceError(f"linear: simple-board api query failed to run: {e}") from None
+    if proc.returncode != 0:
+        # stderr can carry request data or credentials, so it never reaches the error:  only
+        # the exit code plus a normalized reason from an allow-list of fixed CLI messages.
+        stderr = proc.stderr or ""
+        if "exceeds --max-chars" in stderr:
+            raise LinearSourceError(
+                f"linear: simple-board api query exited {proc.returncode}: response exceeds "
+                f"the CLI size cap",
+                overflow=True,
+            )
+        raise LinearSourceError(f"linear: simple-board api query exited {proc.returncode}")
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError as e:
+        raise LinearSourceError(f"linear: unreadable JSON from simple-board: {e}") from None
+    if isinstance(data, dict) and data.get("errors"):
+        raise LinearSourceError(f"linear: GraphQL errors: {str(data['errors'])[:300]}")
+    if not isinstance(data, dict):
+        raise LinearSourceError("linear: unexpected payload shape from simple-board")
+    return data
+
+
+def _linear_light_scan(deadline: float | None = None) -> dict:
+    """Every issue's id -> {identifier, updatedAt}, one 250-wide page at a time, oldest update
+    first.  Fail closed:  a missing connection or a zero-issue scan is a broken read, never an
+    empty board."""
+    deadline = deadline if deadline is not None else _linear_deadline()
+    out: dict = {}
+    after = None
+    while True:
+        clause = f', after: "{after}"' if after else ""
+        data = _linear_query(
+            "query { issues(first: %d, orderBy: updatedAt%s) { %s } }"
+            % (LINEAR_PAGE, clause, _LINEAR_LIGHT_FIELDS),
+            timeout_s=_linear_remaining(deadline),
+        )
+        conn = data.get("issues")
+        if not isinstance(conn, dict):
+            raise LinearSourceError("linear: the issue scan returned no issues connection")
+        for node in conn.get("nodes") or []:
+            if not isinstance(node, dict):
+                raise LinearSourceError("linear: scan issue node is not an object")
+            node_id = node.get("id")
+            if node_id is None:
+                continue
+            if not isinstance(node_id, str) or not node_id.strip():
+                raise LinearSourceError("linear: scan issue id must be a non-empty string")
+            out[node_id] = {
+                "identifier": node.get("identifier") or "",
+                "updatedAt": node.get("updatedAt") or "",
+            }
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            if not out:
+                raise LinearSourceError(
+                    "linear: the issue scan returned zero issues;  refusing to treat a broken "
+                    "read as an empty board"
+                )
+            return out
+        after = page.get("endCursor")
+        if not after:
+            raise LinearSourceError("linear: pageInfo said hasNextPage but gave no endCursor")
+
+
+def load_linear_covered_ids(
+    map_path: pathlib.Path | str | None = None,
+    db_path: pathlib.Path | str | None = None,
+) -> set:
+    """Linear UUIDs whose content the frozen board corpus already covers:  TSV rows whose
+    board_id exists in the frozen findings.db.  A Linear issue the migration merged several
+    rows into is covered only when EVERY mapped row is covered.  Raises when either file is
+    unreadable - fail closed, because an empty registry would re-ingest the whole workspace
+    and an unreadable one cannot be told from an empty one."""
+    map_path = pathlib.Path(BOARD_MAP if map_path is None else map_path)
+    db_path = pathlib.Path(BOARD_DB if db_path is None else db_path)
+    # Fail closed:  without the coverage sources the selection cannot tell covered from new and
+    # would re-ingest the entire workspace;  a missing file is a host misconfiguration, so the
+    # source errors (and the run reports it) instead of silently proceeding.
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            covered_board_ids = {r[0] for r in con.execute("SELECT id FROM findings")}
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error) as e:
+        raise LinearSourceError(
+            f"linear: cannot read the frozen coverage database {db_path}: {e}"
+        ) from None
+    by_linear: dict[str, list[str]] = {}
+    try:
+        with map_path.open(encoding="utf-8") as fh:
+            next(fh, None)  # header
+            for line in fh:
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) >= 6 and cols[5].strip():
+                    by_linear.setdefault(cols[5].strip(), []).append(cols[0].strip())
+    except OSError as e:
+        raise LinearSourceError(
+            f"linear: cannot read the migration coverage map {map_path}: {e}"
+        ) from None
+    return {
+        linear_id
+        for linear_id, board_ids in by_linear.items()
+        if board_ids and all(b in covered_board_ids for b in board_ids)
+    }
+
+
+def _linear_is_overflow(err: LinearSourceError) -> bool:
+    """The CLI refused the response for size, not for a real read failure:  only this error may
+    degrade to a smaller read or a skip, everything else raises."""
+    return getattr(err, "overflow", False)
+
+
+def _linear_placeholder(issue_id: str) -> dict:
+    """A skipped issue still needs a node so the missing-id check does not misfire on it."""
+    try:
+        data = _linear_query(
+            "query { issues(first: 1, filter: { id: { in: [%s] } }) { nodes { id identifier } } }"
+            % json.dumps(issue_id)
+        )
+        nodes = (data.get("issues") or {}).get("nodes") or []
+        identifier = nodes[0].get("identifier") if nodes else None
+    except LinearSourceError:
+        identifier = None
+    return {"id": issue_id, "identifier": identifier or issue_id, "_linear_truncated": True}
+
+
+_LINEAR_FULL_REQUIRED = (
+    "id",
+    "identifier",
+    "title",
+    "url",
+    "description",
+    "priority",
+    "createdAt",
+    "updatedAt",
+    "state",
+    "team",
+    "labels",
+    "attachments",
+    "comments",
+)
+
+
+def _linear_validate_full(node) -> None:
+    """Shape-check one full issue node before anything consumes it:  a malformed node fails
+    closed instead of silently truncating or dying mid-render."""
+    if not isinstance(node, dict):
+        raise LinearSourceError("linear: full issue node is not an object")
+    missing = [k for k in _LINEAR_FULL_REQUIRED if k not in node]
+    if missing:
+        raise LinearSourceError(f"linear: full issue node is missing fields: {missing}")
+    if not isinstance(node["id"], str) or not node["id"].strip():
+        raise LinearSourceError("linear: full issue id must be a non-empty string")
+    if not isinstance(node["identifier"], str) or not node["identifier"].strip():
+        raise LinearSourceError("linear: full issue identifier must be a non-empty string")
+    for key in ("title", "url", "description", "createdAt", "updatedAt"):
+        if node[key] is not None and not isinstance(node[key], str):
+            raise LinearSourceError(f"linear: full issue {key} must be a string or null")
+    if node["priority"] is not None and (
+        not isinstance(node["priority"], int) or isinstance(node["priority"], bool)
+    ):
+        raise LinearSourceError("linear: full issue priority must be an integer or null")
+    for key in ("state", "team"):
+        if node[key] is not None and not isinstance(node[key], dict):
+            raise LinearSourceError(f"linear: full issue {key} must be an object or null")
+    for key in ("labels", "attachments", "comments"):
+        if not isinstance(node[key], dict) or not isinstance(node[key].get("nodes"), list):
+            raise LinearSourceError(f"linear: full issue {key} connection shape is invalid")
+    if not isinstance(node["comments"].get("pageInfo"), dict):
+        raise LinearSourceError("linear: full issue comments pageInfo shape is invalid")
+
+
+def _linear_fetch_chunk(chunk: list, deadline: float | None = None) -> list:
+    """One id chunk's full nodes.  A response too large for the CLI halves the chunk;  an issue
+    too large even alone degrades to a flagged placeholder (skipped downstream), never a partial
+    doc.  Any other read failure raises - fail closed."""
+    id_list = ", ".join(json.dumps(i) for i in chunk)
+    after = None
+    nodes: list = []
+    try:
+        while True:
+            clause = f', after: "{after}"' if after else ""
+            data = _linear_query(
+                "query { issues(first: %d, filter: { id: { in: [%s] } }%s) { %s } }"
+                % (LINEAR_FULL_PAGE, id_list, clause, _LINEAR_FULL_FIELDS),
+                timeout_s=_linear_remaining(deadline),
+            )
+            conn = data.get("issues")
+            if not isinstance(conn, dict):
+                raise LinearSourceError("linear: full fetch returned no issues connection")
+            batch = conn.get("nodes") or []
+            for node in batch:
+                _linear_validate_full(node)
+            nodes.extend(batch)
+            page = conn.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            after = page.get("endCursor")
+            if not after:
+                raise LinearSourceError("linear: full fetch lost its cursor mid-chunk")
+    except LinearSourceError as e:
+        if not _linear_is_overflow(e):
+            raise
+        if len(chunk) > 1:
+            mid = len(chunk) // 2
+            return _linear_fetch_chunk(chunk[:mid], deadline) + _linear_fetch_chunk(
+                chunk[mid:], deadline
+            )
+        warn(
+            "linear: one issue exceeds the CLI size cap on its own;  skipped instead of "
+            "ingesting a truncated copy (any earlier complete version stays current)"
+        )
+        return [_linear_placeholder(chunk[0])]
+    if not nodes:
+        raise LinearSourceError("linear: a full fetch returned no nodes for a non-empty id chunk")
+    for node in nodes:
+        _linear_complete_comments(node, deadline)
+    return nodes
+
+
+def _linear_fetch_full(ids: list, deadline: float | None = None) -> list:
+    """Full nodes (bodies, labels, attachments, comments) for the selected ids, LINEAR_FULL_PAGE
+    per call, halving on CLI size overflow.  Every page of every chunk shares one absolute
+    deadline."""
+    deadline = deadline if deadline is not None else _linear_deadline()
+    nodes: list = []
+    for start in range(0, len(ids), LINEAR_FULL_PAGE):
+        nodes.extend(_linear_fetch_chunk(ids[start : start + LINEAR_FULL_PAGE], deadline))
+    found = {n.get("id") for n in nodes}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise LinearSourceError(
+            f"linear: {len(missing)} selected id(s) came back without nodes (archived between "
+            f"scan and fetch?): {missing[:3]}"
+        )
+    return nodes
+
+
+def _linear_complete_comments(node: dict, deadline: float | None = None) -> None:
+    """Page the comment connection past the first page when the issue has one.  Any truncation
+    risk - the page bound, or a comment page too large for the CLI - flags the node so the run
+    SKIPS it;  every other failure raises.  A truncated copy must never become the corpus's
+    current version of the doc (comments sort oldest-first, so the omitted tail would never
+    arrive and the partial hash would freeze in place)."""
+    comments = node.get("comments") or {}
+    page = comments.get("pageInfo") or {}
+    seen = 1
+    while page.get("hasNextPage") and seen < LINEAR_COMMENT_MAX_PAGES:
+        after = page.get("endCursor")
+        if not after:
+            raise LinearSourceError(
+                f"linear: comment pageInfo for {node.get('identifier')} lost its cursor"
+            )
+        try:
+            data = _linear_query(
+                'query { issue(id: "%s") { comments(first: %d, after: "%s", orderBy: createdAt) '
+                "{ nodes { body createdAt user { displayName } externalUser { displayName } } "
+                "pageInfo { hasNextPage endCursor } } } }"
+                % (node.get("id"), LINEAR_COMMENT_PAGE, after),
+                timeout_s=_linear_remaining(deadline),
+            )
+        except LinearSourceError as e:
+            if not _linear_is_overflow(e):
+                raise
+            node["_linear_truncated"] = True
+            return
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            raise LinearSourceError(
+                f"linear: comment paging for {node.get('identifier')} returned no issue"
+            )
+        conn = issue.get("comments")
+        if not isinstance(conn, dict):
+            raise LinearSourceError(
+                f"linear: comment paging for {node.get('identifier')} returned no connection"
+            )
+        comments.setdefault("nodes", []).extend(conn.get("nodes") or [])
+        page = conn.get("pageInfo") or {}
+        seen += 1
+    if page.get("hasNextPage"):
+        # See LINEAR_COMMENT_MAX_PAGES:  a truncated issue is skipped, never ingested partial.
+        node["_linear_truncated"] = True
+    comments["pageInfo"] = page
+
+
+def _linear_severity(node: dict, label_names: list) -> str:
+    for name in label_names:
+        if name.startswith("Severity/"):
+            return name.split("/", 1)[1]
+    return _LINEAR_PRIORITY_SEVERITY.get(node.get("priority") or 0, "")
+
+
+def _linear_seat(label_names: list) -> str:
+    for prefix in ("seat:", "claimed:"):
+        for name in label_names:
+            if name.startswith(prefix):
+                return seat_tag(name[len(prefix) :])
+    return "FLEET"
+
+
+def _linear_kind(label_names: list) -> str:
+    for name in label_names:
+        if name.startswith("Kind/"):
+            return name.split("/", 1)[1]
+    return ""
+
+
+def _linear_markdown(node: dict, label_names: list) -> str:
+    def clean(v) -> str:
+        return (
+            _EFFORT_KEY.sub("", v).strip() if isinstance(v, str) else ("" if v is None else str(v))
+        )
+
+    parts = [f"# {clean(node.get('title')) or 'Untitled issue'}", ""]
+    meta = [f"State: {clean((node.get('state') or {}).get('name')) or 'unknown'}"]
+    severity = _linear_severity(node, label_names)
+    if severity:
+        meta.append(f"Severity: {severity}")
+    team = clean((node.get("team") or {}).get("key"))
+    if team:
+        meta.append(f"Team: {team}")
+    kind = _linear_kind(label_names)
+    if kind:
+        meta.append(f"Kind: {kind}")
+    seats = [n for n in label_names if n.startswith(("seat:", "claimed:"))]
+    if seats:
+        meta.append("Seats: " + ", ".join(sorted(seats)))
+    parts.append("- " + " \u00b7 ".join(meta))
+    parts.append(f"- Linear: {clean(node.get('identifier'))}  {clean(node.get('url'))}")
+    description = clean(node.get("description"))
+    if description:
+        parts += ["", "## Description", "", description]
+    attachments = [
+        clean(a.get("url"))
+        for a in (node.get("attachments") or {}).get("nodes") or []
+        if clean(a.get("url"))
+    ]
+    if attachments:
+        parts += ["", "## Attachments"] + [f"- {u}" for u in attachments]
+    comments = (node.get("comments") or {}).get("nodes") or []
+    if comments:
+        ordered = sorted(comments, key=lambda c: c.get("createdAt") or "")
+        parts += ["", "## Comments"]
+        for c in ordered:
+            author = clean((c.get("user") or {}).get("displayName")) or clean(
+                (c.get("externalUser") or {}).get("displayName")
+            )
+            parts += [
+                "",
+                f"### {author or '?'} \u2014 {clean(c.get('createdAt'))}",
+                "",
+                clean(c.get("body")),
+            ]
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _linear_scan_entry(node) -> tuple:
+    """(identifier, updatedAt) from a light-scan value.  Tolerates the bare-stamp shape the
+    older test fixtures inject."""
+    if isinstance(node, dict):
+        return node.get("identifier") or "", node.get("updatedAt") or ""
+    return "", str(node or "")
+
+
+def _linear_ingested_versions() -> dict:
+    """doc_id -> ingest state row for the linear rows of the ingest state file, so a routine
+    run fetches only issues Linear changed since they were ingested.  Any read problem
+    degrades to an empty map - the safe direction:  it refetches, it never skips.  This is why
+    the source must stay OUT of the nightly prune set:  prune deletes whatever a source did
+    not yield, and an incrementally skipped doc is still live.  A deliberate full pass
+    (FLEET_RAG_LINEAR_FULL=1, e.g. before a manual `--source linear --prune`) refetches all."""
+    path = pathlib.Path(
+        os.environ.get("FLEET_RAG_LINEAR_STATE")
+        or (pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json")
+    )
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out: dict = {}
+    for doc_id, rec in state.items():
+        if (
+            isinstance(doc_id, str)
+            and doc_id.startswith("linear/")
+            and isinstance(rec, dict)
+            and isinstance(rec.get("updated_at"), int)
+        ):
+            out[doc_id] = rec
+    return out
+
+
+LINEAR_REFRESH_DAYS = 7  # FLEET_RAG_LINEAR_REFRESH_DAYS overrides
+
+
+def iter_linear(
+    limit: int | None = None,
+    *,
+    map_path: pathlib.Path | str | None = None,
+    freeze: str | None = None,
+    light_scan=None,
+    fetch_full=None,
+    covered_ids=None,
+) -> Iterator[Doc]:
+    """The live board:  Linear issues the frozen board corpus does not cover.  See the section
+    comment above for the selection rule.  `light_scan`/`fetch_full` are test injection points.
+    Selection advances from the ingest state file:  an issue already ingested at its current
+    updatedAt is not refetched (set FLEET_RAG_LINEAR_FULL=1 to force a full pass)."""
+    freeze = freeze or LINEAR_FREEZE
+    light_scan = light_scan or _linear_light_scan
+    fetch_full = fetch_full or _linear_fetch_full
+    imported = covered_ids if covered_ids is not None else load_linear_covered_ids(map_path)
+    scan = light_scan()
+    selected = [
+        uid for uid in scan if uid not in imported or _linear_scan_entry(scan[uid])[1] >= freeze
+    ]
+    if not os.environ.get("FLEET_RAG_LINEAR_FULL"):
+        ingested = _linear_ingested_versions()
+        refresh_ms = (
+            int(os.environ.get("FLEET_RAG_LINEAR_REFRESH_DAYS") or LINEAR_REFRESH_DAYS)
+            * 24
+            * 3600
+            * 1000
+        )
+        now = now_ms()
+        if ingested:
+            kept = []
+            for uid in selected:
+                updated = _linear_scan_entry(scan[uid])[1]
+                row = ingested.get(f"linear/{uid}")
+                stamp = parse_ts_ms(updated) or 0
+                if row is not None and int(row.get("updated_at") or 0) >= stamp:
+                    # Comment EDITS may not advance the issue's updatedAt (adds provably do;
+                    # edit semantics are unverified), so an unchanged stamp only skips the
+                    # fetch inside a bounded window.  The window is grounded on the COMMITTED
+                    # state row:  refreshed_at is written by ingest only when content is
+                    # committed or hash-verified, so a fetched-but-uncommitted doc (failed
+                    # upsert, dry run, crashed run) advances nothing and is always retried.
+                    refreshed_at = int(row.get("refreshed_at") or 0)
+                    if refreshed_at and now - refreshed_at < refresh_ms:
+                        continue  # ingested at this version, verified inside the window
+                kept.append(uid)
+            selected = kept
+    selected.sort(key=lambda uid: _linear_scan_entry(scan[uid])[1], reverse=True)
+    if limit:
+        selected = selected[: int(limit)]
+    if not selected:
+        return
+    for node in fetch_full(selected):
+        if node.get("_linear_truncated"):
+            warn(
+                f"linear: {node.get('identifier')} has more than "
+                f"{LINEAR_COMMENT_PAGE * LINEAR_COMMENT_MAX_PAGES} comments or exceeds the CLI "
+                f"size cap;  skipped instead of ingesting a truncated copy (any earlier "
+                f"complete version stays current)"
+            )
+            continue
+        labels = [l.get("name") or "" for l in (node.get("labels") or {}).get("nodes") or []]
+        team_key = (node.get("team") or {}).get("key")
+        created = parse_ts_ms(node.get("createdAt"))
+        updated = parse_ts_ms(node.get("updatedAt"))
+        done = ((node.get("state") or {}).get("type") or "").lower() == "completed"
+        # doc_id keys on the issue's stable UUID:  moving a team changes the identifier (the
+        # migration map's AFC-1 is CC-133 today), and a renamed identifier must update the same
+        # corpus doc, not orphan one and mint a duplicate.
+        yield Doc(
+            doc_id=f"linear/{node.get('id')}",
+            title=(node.get("title") or "").strip() or f"Issue {node.get('identifier')}",
+            text_markdown=_linear_markdown(node, labels),
+            source="linear",
+            app=_linear_app(team_key, labels),
+            category="lesson" if done else "finding",
+            seat=_linear_seat(labels),
+            url=node.get("url") or "",
+            path="",
+            created_at_ms=created or updated,
+            updated_at_ms=updated or created,
+            extra={
+                "state": (node.get("state") or {}).get("name"),
+                "severity": _linear_severity(node, labels),
+                "source_kind": _linear_kind(labels) or None,
+                "linear_id": node.get("id"),
+            },
+        )
+
+
 # --------------------------------------------------------------------------- registry
 
 GENERATORS: dict[str, Callable[..., Iterator[Doc]]] = {
     "board": iter_board,
+    "linear": iter_linear,
     "effort-log": iter_effort_logs,
     "doc": iter_docs,
     "skill": iter_skills,
