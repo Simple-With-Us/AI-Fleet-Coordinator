@@ -22,8 +22,9 @@ Bodies in the views are Zulip-authored:  the Worker fences them as untrusted bef
 them.  Nothing here logs a key, a signature or a body.
 
 The same server carries the Operator's notes queue (AFC-486, notes_queue.py) under /notes/v1/ when the daemon
-gives it one:  GET and POST there, with its own principals and signature (notes_wire.py).  Everything else stays
-GET only.  Python 3.11+, standard library only.
+gives it one:  GET and POST there, with its own principals and signature (notes_wire.py).  It likewise carries
+the Linear project webhook (AFC-565, linear_projects_hook.py) under /linear/v1/ when given one:  POST only,
+verified by the Linear-Signature.  Everything else stays GET only.  Python 3.11+, standard library only.
 """
 
 from __future__ import annotations
@@ -122,9 +123,11 @@ class ListenerReadApi:
         clock: Callable[[], float] = time.time,
         log: Callable[..., None] | None = None,
         notes: Any = None,
+        linear_projects: Any = None,
     ) -> None:
         self.root = root
         self.notes = notes  # a notes_queue.NotesQueue, or None:  then /notes/v1/ is 404 like any unknown path
+        self.linear_projects = linear_projects  # a linear_projects_hook.LinearProjectsHook, or None
         self.keys = {
             seat.upper(): key
             for seat, key in keys.items()
@@ -232,10 +235,58 @@ class ListenerReadApi:
                     self._respond(status, answer)
                 return True
 
+            def _linear(self, method: str) -> bool:
+                """Serve a /linear/v1/ request when the daemon gave this server a projects hook."""
+                if owner.linear_projects is None or not self.path.startswith("/linear/v1/"):
+                    return False
+                body = b""
+                if method == "POST":
+                    raw_length = self.headers.get("Content-Length")
+                    if raw_length is None or not raw_length.strip().isdigit():
+                        self._respond(
+                            411,
+                            {"error": "length_required", "message": "Content-Length is required"},
+                        )
+                        return True
+                    length = int(raw_length.strip())
+                    if length > 256 * 1024:  # linear_projects_hook.MAX_BODY
+                        self._respond(
+                            413, {"error": "too_large", "message": "the request body is too large"}
+                        )
+                        return True
+                    try:
+                        body = self.rfile.read(length)
+                    except OSError:
+                        return True
+                    if len(body) != length:
+                        self._respond(
+                            400, {"error": "invalid_argument", "message": "the body ended early"}
+                        )
+                        return True
+                try:
+                    status, answer = owner.linear_projects.handle(
+                        method, self.path, self.headers, body
+                    )
+                except Exception as exc:  # noqa: BLE001 - one request must never take the server down
+                    owner.log("linear-projects-api-error", error=type(exc).__name__)
+                    status, answer = 500, {"error": "internal", "message": "the hook failed"}
+                if answer is None:
+                    self.send_response(status)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                else:
+                    self._respond(status, answer)
+                return True
+
             def do_POST(self) -> None:
                 self.close_connection = True
-                if not self._notes("POST"):
-                    self._respond(405, {"error": "method not allowed"})
+                if self._notes("POST"):
+                    return
+                if self._linear("POST"):
+                    return
+                self._respond(405, {"error": "method not allowed"})
 
             def do_GET(self) -> None:
                 self.close_connection = True

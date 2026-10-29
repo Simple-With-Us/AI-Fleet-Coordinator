@@ -427,6 +427,9 @@ class Config:
         self.notes_queue_enabled = False
         self.notes_queue_worker_seats: frozenset[str] = frozenset()
         self.notes_queue_server_seats: frozenset[str] = frozenset()
+        # The Linear project webhook (AFC-565, linear_projects_hook.py), served under
+        # /linear/v1/ by the listener API.  Off by default;  the server instance only.
+        self.linear_projects_enabled = False
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
         # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
@@ -882,6 +885,22 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             "notes_queue.enabled applies to the server instance only:  the Mac writes its own notes directly"
         )
         cfg.notes_queue_enabled = False
+    linear_errors_before = len(errors)
+    linear_section = raw.get("linear_projects") or {}
+    if not isinstance(linear_section, dict):
+        errors.append("[linear_projects] must be a table")
+        linear_section = {}
+    unknown_linear = set(linear_section) - {"enabled"}
+    if unknown_linear:
+        errors.append(
+            "[linear_projects] has unknown setting(s): %s" % ", ".join(sorted(unknown_linear))
+        )
+    if not isinstance(linear_section.get("enabled", False), bool):
+        errors.append("linear_projects.enabled must be true or false")
+    else:
+        cfg.linear_projects_enabled = linear_section.get("enabled", False)
+    if len(errors) > linear_errors_before:
+        cfg.linear_projects_enabled = False  # a section with a problem never turns the hook on
     cfg.presence = L.presence_topics(raw)
     platform = (
         ((raw.get("platform") or {}).get("claude-code") or {})
