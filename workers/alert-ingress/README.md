@@ -221,6 +221,8 @@ The first firing event is **held** for `MIN_OPEN_MS` before it is announced as a
 
 The CI deployment gate for this Worker is `scripts/worker-targets.json` (OPS-W01).  The entry carries the functional probe, `https://alert-ingress.jays-services.workers.dev/health`, which answers `{"ok":true}`, so a deploy that breaks liveness is refused instead of shipped.  The `worker-deploy` workflow runs only when `vars.WORKER_DEPLOY_ENABLED` is `true`, and it deploys the exact main commit and checks the exact-version receipt.
 
+As of Oct 29, 2026 that variable is not set in the repository, the organization or any environment.  Every `worker-deploy` run therefore ends `skipped`, and a merge does not redeploy this Worker.  The running version is the one this work deployed.  Arming the variable is an owner decision, because it would redeploy every mapped Worker on every push to `main`.
+
 ### Vendor cutover
 
 The Worker is live and its credentials are bound, but no vendor points at it yet:  the Datadog monitors and the Better Stack monitors still use the Zulip incoming-webhook bots, which post one new message per event.  The cutover is owner console work, and it is per vendor.
