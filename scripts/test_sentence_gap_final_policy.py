@@ -287,7 +287,8 @@ def _claims_a_single_exception(line: str) -> bool:
     """
     if not SINGLE_EXCEPTION_CLAIMS.search(line):
         return False
-    return any(term in line for term in GAP_RULE_TERMS)
+    folded = line.casefold()
+    return any(term.casefold() in folded for term in GAP_RULE_TERMS)
 
 
 def _live_lines(text: str) -> tuple[tuple[int, str], ...]:
@@ -433,6 +434,10 @@ class AppleNotesExceptionTests(unittest.TestCase):
                 "The one exception is the Claude Code Code tab and the MiniMax Code chat pane."
             ),
             "the scan does not catch a claim about the rule",
+        )
+        self.assertTrue(
+            _claims_a_single_exception("Sentence gaps have ONE EXCEPTION:  THE CHAT PANE."),
+            "the scan misses a claim whose rule name is not lower case",
         )
         self.assertFalse(
             _claims_a_single_exception(
