@@ -1410,12 +1410,36 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
 # The same run at 16 steps exits 0 with the contract's answer.  The wall clock is still bounded by
 # MCODE_TIMEOUT, so the extra steps cost time and nothing else.
 MCODE_MAX_STEPS = 16
-MCODE_TIMEOUT = "4m"
+# The child's OWN deadline, and it must stay strictly under the runner's outer deadline
+# (WAKE_TIMEOUT = 240s).  When the two are equal the daemon's group-kill, not mcode's clean
+# timeout, is what ends a long fallback run:  the ledger then records "timed out after 240
+# seconds" instead of mcode's own timeout, and a failing wake occupies the seat's serialized
+# worker for the whole outer budget.  With the child under the outer deadline mcode's timeout
+# fires first and the daemon's kill stays a backstop.
+#
+# 210s, not 180s:  the measured run takes about 145s, and the fallback is the LAST resort, so a
+# timeout here means no answer at all rather than a slower answer.  The margin over the measured
+# run is therefore worth more than the 30s it adds to a path that already spent the primary's
+# 240s.  It is still 30s under the outer deadline, so the daemon's kill stays a backstop.
+MCODE_TIMEOUT = "3m30s"
 MCODE_PROMPT_MODE = "work"
 MCODE_PERMISSION = "off"
+# The fallback's PROMPT BOUND, and the reason the step budget is provable at all.  mcode has no
+# sandbox and no tool-deny switch, so `--max-steps` is the ONLY bound on how much the fallback may
+# act, and the step cost grows with the prompt:  the daemon can build a wake prompt with up to
+# PROMPT_HISTORY (15) messages plus items_in_wake (20) held-back entries, while the budget is
+# measured on a FOUR-message prompt.  An unbounded prompt would blow a budget that was never
+# measured at that size, and would hand a misled model twice the live rounds before the cap
+# stopped it.  The fallback therefore sees at most this many messages -- the trigger messages
+# first, then the newest of the rest -- and no held-back entries, which makes MCODE_MAX_STEPS the
+# smallest budget the contract provably needs for the prompt it is actually given.
+MCODE_FALLBACK_MAX_MESSAGES = 4
+MCODE_FALLBACK_MAX_HELD = 0
 # Bump when the fallback command's behaviour changes in a way argv does not show, so an existing
-# pin is re-verified by a person rather than trusted under the old policy.
-MCODE_WAKE_POLICY_VERSION = "mcode-fallback-model-v1"
+# pin is re-verified by a person rather than trusted under the old policy.  v2: the prompt is
+# bounded and the child's own timeout sits under the daemon's deadline, and neither of those
+# shows in the argv.
+MCODE_WAKE_POLICY_VERSION = "mcode-fallback-bounded-v2"
 MCODE_PROMPT_SLOT = "<prompt-file>"
 MCODE_SCHEMA_SLOT = "<output-schema>"
 MCODE_CWD_SLOT = "<cwd>"
@@ -1684,6 +1708,12 @@ def mcode_wake_fingerprint(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> str 
             "argv": mcode_argv("<mcode>", "<model>"),
             "model": model,
             "schema": schema,
+            # The prompt bound is NOT in the argv, so it has to be hashed here or a pin made
+            # under an unbounded prompt would still read as verified under a bounded one.
+            "prompt_bound": {
+                "max_messages": MCODE_FALLBACK_MAX_MESSAGES,
+                "max_held": MCODE_FALLBACK_MAX_HELD,
+            },
         },
         sort_keys=True,
         separators=(",", ":"),

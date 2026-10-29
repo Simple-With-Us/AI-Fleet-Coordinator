@@ -2827,6 +2827,78 @@ class Daemon:
             ),
         )
 
+    def _wake_prompt(
+        self,
+        runner: SeatRunner,
+        pending: W.Pending,
+        history: list[dict[str, Any]],
+        held: Mapping[str, Any] | None,
+        chat_context: list[dict[str, Any]] | None,
+        letter: str | None,
+        board_on: bool,
+        *,
+        max_messages: int | None = None,
+        max_held: int | None = None,
+    ) -> str:
+        """The wake prompt, for the primary and for the fallback.
+
+        `max_messages` and `max_held` are the bounds a runtime that cannot state a tool posture
+        needs;  with no bound the prompt carries the whole topic, which is what every runtime but
+        the mcode fallback gets."""
+        users = runner.users
+        return W.build_prompt(
+            seat=runner.seat,
+            pending=pending,
+            history=history,
+            owner_user_id=self.config.owner_user_id,
+            is_bot=lambda uid: bool(users.get(uid, {}).get("is_bot", True)),
+            owner_of=self.owner_of,
+            format_time=format_time,
+            board_enabled=board_on,
+            route=self.route_gate(runner, pending),
+            held_back=held,
+            chats=chat_context,
+            tagged_address=letter or None,
+            max_messages=max_messages,
+            max_held=max_held,
+        )
+
+    def _fallback_prompt(
+        self,
+        runner: SeatRunner,
+        pending: W.Pending,
+        history: list[dict[str, Any]],
+        held: Mapping[str, Any] | None,
+        chat_context: list[dict[str, Any]] | None,
+        letter: str | None,
+        board_on: bool,
+    ) -> str:
+        """The prompt the FALLBACK runtime is given.
+
+        For every runtime but mcode this is the wake prompt unchanged.  mcode is the one runtime
+        with neither a sandbox nor a tool-deny switch, so its step budget is the only bound on
+        what it may do, and that budget is only provable against a prompt of a known size:  the
+        wake prompt carries up to PROMPT_HISTORY (15) messages plus the held-back block, while the
+        budget is measured on a FOUR-message prompt.  The fallback therefore gets the trigger
+        messages and the newest of the rest, up to MCODE_FALLBACK_MAX_MESSAGES, and no held-back
+        detail, so the budget it runs under is the budget it was measured against.
+        """
+        if runner.cfg.fallback != "mcode":
+            return self._wake_prompt(
+                runner, pending, history, held, chat_context, letter, board_on
+            )
+        return self._wake_prompt(
+            runner,
+            pending,
+            history,
+            held,
+            chat_context,
+            letter,
+            board_on,
+            max_messages=A.MCODE_FALLBACK_MAX_MESSAGES,
+            max_held=A.MCODE_FALLBACK_MAX_HELD,
+        )
+
     def run_wake(self, runner: SeatRunner, pending: W.Pending) -> None:
         now = self.clock.time()
         lease_id = self.takeover(runner, pending)
@@ -2869,7 +2941,6 @@ class Daemon:
             )
             return
         board_on = runner.cfg.budget.get("board_per_day", 0) > 0
-        users = runner.users
         # The seat's held-back wakes ride along as a second untrusted block (metadata only), and count
         # as surfaced once the run finished (a refused or failed run surfaces nothing).
         held, listed, lost = HELD.wake_summary(
@@ -2888,19 +2959,11 @@ class Daemon:
             # No platform is passed:  the ambiguity check is cross-platform and the platform named
             # in the body is read off the registry rows the ask actually got.
             self.ask_operator_for_candidates(runner, pending, letter, "", address_sender_id)
-        prompt = W.build_prompt(
-            seat=runner.seat,
-            pending=pending,
-            history=history,
-            owner_user_id=self.config.owner_user_id,
-            is_bot=lambda uid: bool(users.get(uid, {}).get("is_bot", True)),
-            owner_of=self.owner_of,
-            format_time=format_time,
-            board_enabled=board_on,
-            route=self.route_gate(runner, pending),
-            held_back=held,
-            chats=chat_context,
-            tagged_address=letter or None,
+        prompt = self._wake_prompt(
+            runner, pending, history, held, chat_context, letter, board_on
+        )
+        fallback_prompt = self._fallback_prompt(
+            runner, pending, history, held, chat_context, letter, board_on
         )
         held_count = held["count"] if held else 0
         is_muse = runner.cfg.wake == "muse"
@@ -2949,7 +3012,7 @@ class Daemon:
             if result.refused or result.error:
                 fallback = self.run_fallback(
                     runner,
-                    prompt,
+                    fallback_prompt,
                     schema,
                     adapter,
                     result.refused or result.error or "",
