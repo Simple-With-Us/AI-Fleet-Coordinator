@@ -96,7 +96,29 @@ TRANSCRIPT_BYTES = 4 << 20
 LETTER_PREFIX = re.compile(r"^[A-Z]: ")
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’+#.\-]*")
 SMALL_WORDS = frozenset(
-    ["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "nor", "of", "on", "or", "per", "the", "to", "via", "vs", "with"]
+    [
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "but",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "nor",
+        "of",
+        "on",
+        "or",
+        "per",
+        "the",
+        "to",
+        "via",
+        "vs",
+        "with",
+    ]
 )
 
 Runner = Callable[..., Any]
