@@ -21,12 +21,21 @@ def observe(endpoint, collection, storage_path, mount, device):
     unescape = lambda s: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), s)
     matches = []
     for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines():
-        left, right = line.split(" - ", 1)
-        fields = left.split()
-        dest = pathlib.Path(unescape(fields[4]))
+        try:
+            left, right = line.split(" - ", 1)
+            fields = left.split()
+            dest = pathlib.Path(unescape(fields[4]))
+            source = unescape(right.split()[1])
+        except (ValueError, IndexError):
+            raise ValueError("unparseable mountinfo") from None
         if path == dest or dest in path.parents:
-            matches.append((len(dest.parts), dest, unescape(right.split()[1])))
-    _, actual_mount, actual_device = max(matches)
+            matches.append((len(dest.parts), dest, source))
+    if not matches:
+        raise ValueError("destination mount not found")
+    deepest = max(matches, key=lambda entry: entry[0])
+    if sum(entry[0] == deepest[0] for entry in matches) != 1:
+        raise ValueError("destination mount is ambiguous")
+    _, actual_mount, actual_device = deepest
     if actual_mount != root or actual_device != device or path.stat().st_dev != root.stat().st_dev:
         raise ValueError("storage path is not on the configured destination volume")
     stat = os.statvfs(path)

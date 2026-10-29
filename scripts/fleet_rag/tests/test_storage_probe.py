@@ -34,3 +34,19 @@ class ProbeTests(unittest.TestCase):
     def test_stat_device_mismatch_refused(self):
         with patch.object(pathlib.Path,'stat',side_effect=[SimpleNamespace(st_dev=1),SimpleNamespace(st_dev=2)]):
             with self.assertRaises(ValueError):probe.observe('x','fleet','/extra/qdrant','/extra','/dev/sdb')
+
+    def test_malformed_mountinfo_is_fixed_refusal(self):
+        for line in ("bad", "1 0 - ext4 /dev/sda rw", "1 0 8:1 / /extra rw - ext4"):
+            self.table = line
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                probe.observe('x', 'fleet', '/extra/qdrant', '/extra', '/dev/sdb')
+
+    def test_same_depth_mounts_are_ambiguous_not_arbitrarily_selected(self):
+        self.table += '3 1 8:3 / /extra rw - ext4 /dev/sdc rw\n'
+        with self.assertRaisesRegex(ValueError, 'ambiguous'):
+            probe.observe('x', 'fleet', '/extra/qdrant', '/extra', '/dev/sdb')
+
+    def test_missing_destination_mount_is_fixed_refusal(self):
+        self.table = ''
+        with self.assertRaisesRegex(ValueError, 'not found'):
+            probe.observe('x', 'fleet', '/extra/qdrant', '/extra', '/dev/sdb')
