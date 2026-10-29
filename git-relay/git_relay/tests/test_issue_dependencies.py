@@ -221,7 +221,9 @@ class Dependencies(unittest.TestCase):
         alt = REPO.swapcase()
         if alt == REPO:
             self.skipTest("repo name is casing-invariant under swapcase")
-        c = Client({**item(1), "repository_url": "https://api.github.com/repos/" + alt}, item(2), item(2))
+        c = Client(
+            {**item(1), "repository_url": "https://api.github.com/repos/" + alt}, item(2), item(2)
+        )
         out = self.runverb(
             c,
             "wf_issue_dependency_add",

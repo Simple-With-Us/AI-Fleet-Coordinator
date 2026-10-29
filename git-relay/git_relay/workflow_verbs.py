@@ -964,11 +964,7 @@ class WorkflowVerbs:
             item = self._relation_issue(data)
         except RelayGitHubError:
             raise Refused("dependency issue preread receipt unverifiable") from None
-        if (
-            not item["repo"]
-            or item["repo"].lower() != repo.lower()
-            or item["number"] != number
-        ):
+        if not item["repo"] or item["repo"].lower() != repo.lower() or item["number"] != number:
             raise Refused("dependency issue repository or number mismatch")
         return item
 
