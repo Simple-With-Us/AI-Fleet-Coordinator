@@ -1,7 +1,7 @@
 ---
 name: sentence-gap
 description: >-
-  Always put a visibly wider gap between sentences in every human-readable reply and file.  Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs.  Follows the canonical portable protocol.  Mechanism (owner ruling 2026-10-23, the same on every surface): a real U+00A0 plus a normal space between sentences; never two plain ASCII spaces, which collapse on rendered surfaces, and never the &nbsp; entity — except in the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), which normalize a raw U+00A0 away and take the &nbsp; entity plus a normal space, and except in an Apple Note body, which takes the narrow no-break space plus a normal space.  Use whenever writing any prose a human will read.
+  Always put a visibly wider gap between sentences in every human-readable reply and file.  Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs.  Follows the canonical portable protocol.  Mechanism (owner ruling 2026-10-23, the same on every surface): a real U+00A0 plus a normal space between sentences; never two plain ASCII spaces, which collapse on rendered surfaces, and never the &nbsp; entity — except in the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), which normalize a raw U+00A0 away and take the &nbsp; entity plus a normal space.  Use whenever writing any prose a human will read.
 ---
 
 # Sentence gap (portable — always on)
@@ -25,7 +25,7 @@ notes, design docs.
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),
 inside a URL, email, filename, or a brand name containing a period.
 
-### Current rule (owner ruling 2026-10-23) — one mechanism on every surface, and two exceptions
+### Current rule (owner ruling 2026-10-23) — one mechanism on every surface, and one exception
 
 Jay, Fri, Oct 23:  update the rule everywhere, so it is the same on every surface.  Between
 sentences, write a **real U+00A0 (no-break space) followed by a normal space**.  That covers
@@ -33,8 +33,8 @@ chat replies, Zulip, GitHub PR and issue text and review comments, Linear,
 commit messages, repo docs and Markdown, skills, agent instructions, and UI copy, on every
 surface but the two chat panes named below.
 
-- **The chat-pane exceptions: the Claude Code Code tab and the MiniMax Code chat pane.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.`  The entity is never the form anywhere else.
-- **Apple Note bodies** (Coding-folder notes from `scripts/apple-notes-coding.sh`) take the narrow no-break space (U+202F) plus a normal space, because Apple Notes normalizes a no-break space away on import (AFC-552).
+- **The chat-pane exception: the Claude Code Code tab and the MiniMax Code chat pane.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.`  The entity is never the form anywhere else.
+- **Apple Note bodies** (Coding-folder notes from `scripts/apple-notes-coding.sh`) take the same real U+00A0 plus a normal space as every other surface, with no exception.  Notes turns the no-break space into an ordinary space on import and still shows the pair as a wide gap (measured Oct 29, 2026), so a note read back holds two ordinary spaces after a sentence end, and that is correct.  Write two spaces after a sentence in the body you pass the helper and it writes the gap for you, never the `&nbsp;` entity.
 - **Never write the `&nbsp;` entity anywhere else.**  It shows up as literal text in squash-merge commits,
   plain-text email and many APIs.
 - **Two plain ASCII spaces are not enough.**  Rendered surfaces (Zulip, GitHub, Linear, HTML,
@@ -128,11 +128,11 @@ depends on the surface, so pick by destination:
 | Destination | Use | Why |
 |---|---|---|
 | **Every surface** — chat replies in any other pane, Zulip, GitHub PR and issue titles, bodies and comments, review comments, Linear, commit messages, repo docs and Markdown, skills and agent instructions, rendered product copy | a real U+00A0 plus a normal space | Owner ruling 2026-10-23:  one rule everywhere.  Two ASCII spaces collapse on rendered surfaces, and the `&nbsp;` entity shows as literal text in squash commits, plain-text email and many APIs.  This replaces every earlier per-surface row. |
-| **Claude Code Code tab and the MiniMax Code chat pane: chat replies** (owner-verified 2026-10-08 with a screenshot, and 2026-10-18 for the MiniMax Code pane) | the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.` | The first exception.  These panes normalize a raw U+00A0 away (a verified reply held 0 NBSPs) and collapse two ASCII spaces, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
-| **Apple Notes** — the body of a note in the Coding folder, written by `scripts/apple-notes-coding.sh` | the narrow no-break space plus a normal space: the numeric reference `&#8239; ` | AFC-552: the second exception, measured `Oct 26, 2026`.  Apple Notes normalizes a NO-BREAK space away on import, so the reference for one comes back as two ordinary spaces, which the renderer collapses to one, and the gap never reaches the owner.  The narrow no-break space (U+202F) survives the import unchanged, so the note helper writes it. |
+| **Claude Code Code tab and the MiniMax Code chat pane: chat replies** (owner-verified 2026-10-08 with a screenshot, and 2026-10-18 for the MiniMax Code pane) | the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.` | The one exception.  These panes normalize a raw U+00A0 away (a verified reply held 0 NBSPs) and collapse two ASCII spaces, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
+| **Apple Notes** — the body of a note in the Coding folder, written by `scripts/apple-notes-coding.sh` | a real U+00A0 plus a normal space, the same as every other surface:  write two spaces after a sentence and the helper writes the numeric reference `&#160; ` | Not an exception, measured and owner-verified Oct 29, 2026.  Apple Notes turns the no-break space into an ordinary space on import, so a note read back holds two ordinary spaces after a sentence end, and Notes.app still shows that pair as a wide gap.  A one-space gap is the only thing that reads as no gap.  Never give Notes a special character. |
 | **HTML / JSX / Swift source for product copy** | Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant | The rendered result is the same U+00A0 plus a space.  Never `&nbsp; `. |
 | **Code, identifiers and machine-readable config** | no gap character | Never put U+00A0 into code, identifiers or config. |
-| **A surface that strips U+00A0** | leave the text as it is | Do not switch to the `&nbsp;` entity.  Report the surface in #Work-In-Progress.  Apple Notes is the one surface measured to have a better answer: the narrow no-break space, above. |
+| **A surface that strips U+00A0** | leave the text as it is | Do not switch to the `&nbsp;` entity.  Report the surface in #Work-In-Progress. |
 | **Markdown source** | the same U+00A0 plus a space *between* sentences | ⚠️ Two spaces at the **end of a line** is the unrelated hard-line-break syntax — don't confuse the two |
 
 **Producing U+00A0 through a tool.**  You cannot type a raw U+00A0 into your own chat reply.
@@ -608,14 +608,15 @@ Two more traps, both hit 2026-10-18:
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 
 Since 2026-10-23 every surface takes a real U+00A0 plus a normal space, apart from the Claude
-Code Code tab and the MiniMax Code chat pane (the `&nbsp;` entity plus a space) and the body
-of an Apple Note in the Coding folder (the narrow no-break space, U+202F, plus a space, AFC-552),
+Code Code tab and the MiniMax Code chat pane (the `&nbsp;` entity plus a space),
 so there is nothing else to choose.  On a surface nobody has checked yet, post one test line with the gap generated in the
 shell and ask the human whether they see a wider gap.  If the surface strips the U+00A0, leave
 the text as it is, never switch to the `&nbsp;` entity, and report the surface in
 #Work-In-Progress.
 
 ### History — 2026-08-19/20 findings on Claude Code (terminal + desktop), do NOT re-run these tests
+
+**2026-10-29 update — Apple Notes takes the house gap.**  AFC-552 (Oct 26) moved Apple Note bodies to the narrow no-break space (U+202F) because Apple Notes turns a no-break space into an ordinary space on import and, it assumed, the renderer then collapses the two ordinary spaces to one.  The first half is true of the stored form.  The second half was never looked at on screen:  the owner's screenshot of the gap sample note shows the no-break line exactly as wide as the en and em space lines, so two ordinary spaces display as a gap in Notes.app, and the owner confirmed that the no-break space plus a normal space works there.  The exception was withdrawn and the note helper writes the numeric reference `&#160; ` again.  A read-back that shows two ordinary spaces after a sentence end is the correct stored form, not a missing gap.
 
 **2026-10-23 update — one mechanism everywhere.**  The owner replaced every per-surface rule
 with one:  a real U+00A0 plus a normal space on every surface, never the `&nbsp;` entity, and

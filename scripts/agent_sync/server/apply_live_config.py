@@ -10,9 +10,10 @@ Run it inside the container (the Coolify terminal, or docker exec):
 The entrypoint seeds /data/listener.toml from the sample only once, so a seat section changed in the
 sample never reaches a live volume by itself.  This copies exactly the sample's [seat.JET] and every
 [seat.GB-*] section into the live file:  a section that differs is replaced where it stands, with the
-comment lines just above it, and a missing one is appended.  [listener_api] and [notes_queue] (AFC-486) are
-appended the same way when the live file has none, but one that is there is never changed:  its `enabled`
-and its seat lists are the operator's choice on that volume, and the sample ships both off.  [daemon]
+comment lines just above it, and a missing one is appended.  [listener_api], [notes_queue] (AFC-486) and
+[linear_projects] (AFC-565) are appended the same way when the live file has none, but one that is there is
+never changed:  its `enabled` (and the notes queue's seat lists) are the operator's choice on that volume,
+and the sample ships all three off.  [daemon]
 (owner_user_id and eligible_user_ids, pinned by `simple-chat daemon init`) and every other section stay byte
 for byte.
 
@@ -49,7 +50,7 @@ HERE = Path(__file__).resolve().parent
 
 _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(#.*)?$")
 # Settings sections copied from the sample only when the live file has none, and never replaced.
-ADD_ONLY = ("listener_api", "notes_queue")
+ADD_ONLY = ("listener_api", "notes_queue", "linear_projects")
 
 
 def target(seat: str) -> bool:
@@ -163,23 +164,44 @@ def daemon_block(text: str) -> str:
     return "".join("".join(body) for name, body in blocks(text)[1] if name == "daemon")
 
 
+def _fsync_dir(directory: Path) -> None:
+    fd = os.open(str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write(path: Path, text: str, stamp: str) -> Path:
     st = path.stat()
     backup = path.with_name("%s.bak-%s" % (path.name, stamp))
-    shutil.copyfile(path, backup)
-    os.chmod(backup, 0o600)
+    backup_fd, backup_tmp = tempfile.mkstemp(prefix=".%s." % backup.name, dir=str(path.parent))
+    try:
+        with os.fdopen(backup_fd, "wb") as bfh:
+            with path.open("rb") as source:
+                shutil.copyfileobj(source, bfh)
+            os.fchmod(bfh.fileno(), 0o600)
+            bfh.flush()
+            os.fsync(bfh.fileno())
+        os.replace(backup_tmp, backup)
+        _fsync_dir(path.parent)
+    except BaseException:
+        if os.path.exists(backup_tmp):
+            os.unlink(backup_tmp)
+        raise
     fd, tmp = tempfile.mkstemp(prefix=".%s." % path.name, dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
+            os.fchmod(fh.fileno(), st.st_mode & 0o777)
+            try:
+                os.fchown(fh.fileno(), st.st_uid, st.st_gid)
+            except PermissionError:
+                pass
             fh.flush()
             os.fsync(fh.fileno())
-        os.chmod(tmp, st.st_mode & 0o777)
-        try:
-            os.chown(tmp, st.st_uid, st.st_gid)
-        except PermissionError:
-            pass
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
