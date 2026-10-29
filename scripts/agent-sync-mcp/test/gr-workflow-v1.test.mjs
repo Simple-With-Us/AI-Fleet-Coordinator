@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Response,validWfV1Args} from '../src/gr-workflow-v1.js';
+import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Response,validWfV1Args,parseWfV1Args} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,115);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,WF_V1_ACTIONS.length);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,115);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,WF_V1_ACTIONS.length);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -321,6 +321,33 @@ test('comment and release lifecycle envelopes and write UNKNOWN',async()=>{
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+
+test('issue relation pages closed boundary and own bearer',async()=>{
+ const a={repo,number:1,page:2,per_page:2},reply={issues:[{id:7,number:8,title:'Child',state:'open',repo}],page:2,has_more:false};
+ assert.ok(validWfV1Args('wf_issue_subissues',a));assert.ok(!validWfV1Args('wf_issue_subissues',{...a,page:1001}));
+ assert.ok(validWfV1Response('wf_issue_subissues',reply));assert.ok(!validWfV1Response('wf_issue_subissues',{...reply,issues:[{id:true,number:8,title:'x',state:'open'}]}));
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_issue_subissues'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_wf_issue_subissues',a)).isError);
+});
+
+// Synthetic runtime-assembled credential shapes below are never credentials.
+test('relations title credential rejected and closed nongit Zod before dispatch',()=>{
+ assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ghp_'+'x'.repeat(36),state:'open',repo}}),false);
+ assert.equal(validWfV1Args('wf_issue_blocking',{repo,number:1,raw:true}),false);
+ // Synthetic runtime-only shapes, never credentials.
+ for(const title of ['sk-'+'x'.repeat(30),'sk-ant-'+'x'.repeat(30)]) {
+  assert.equal(validWfV1Args('wf_issue_create',{repo,title,body:'ok body'}),false);
+  assert.equal(validWfV1Args('wf_issue_update',{repo,number:1,title}),false);
+ }
+});
+
+test('dependency writes exact own bearer, closed shapes and unknown no replay',async()=>{
+ for(const action of ['wf_issue_dependency_add','wf_issue_dependency_remove']){
+ const args={repo,number:1,blocker_number:2};assert.ok(validWfV1Args(action,args));assert.ok(!validWfV1Args(action,{...args,issue_id:8}));
+ const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(init.body),args);return new Response(JSON.stringify({completed:true,number:1,blocker_number:2,blocking:action.endsWith('_add')}));});assert.ok(!(await t.call('gr_'+action,args)).isError);
+ const bad=harness(async()=>{throw Error('lost');});assert.match((await bad.call('gr_'+action,args)).content[0].text,/unknown/i);
+ assert.equal(validWfV1Response(action,{completed:true,number:1,blocker_number:true,blocking:true}),false);
+ }
+});
 test('management writes use fixed routes, own bearer and UNKNOWN on transport failure',async()=>{
   const cases=[['wf_labels_set',{number:3,labels:['bug']},{labels:[]}],['wf_reviewers_request',{number:3,reviewers:['swu-wise']},{result:{id:1,requested_reviewers:[]}}],['wf_reviewers_remove',{number:3,reviewers:['swu-wise']},{result:{id:1,requested_reviewers:[]}}],['wf_release_create',{tag:'v1',name:'n',body:'b',draft:true,prerelease:false},{result:{id:1}}],['wf_release_update',{release_id:2,name:'n',body:'b',draft:false,prerelease:true},{result:{id:2}}]];
   for(const [action,args,reply] of cases){
@@ -459,6 +486,13 @@ test('review lifecycle projected receipts use cached strict schemas and own bear
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
 });
 
+test('relation provider-shaped title and foreign metadata refuse without content leaks',()=>{
+ // Synthetic runtime-only shapes, never credentials.
+ for(const title of ['sk-'+'x'.repeat(30),'sk-ant-'+'x'.repeat(30),'sk-proj-'+'x'.repeat(30),'sk_live_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title,state:'open',repo}}, {repo}),false);
+ assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'private',state:'open',repo:'Other/Repo'}},{repo}),false);
+ const prior=globalThis.Buffer;try{globalThis.Buffer=undefined;assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ok',state:'open',repo}},{repo}),true);}finally{globalThis.Buffer=prior;}
+});
+
 test('relation receipts preserve page availability without credentials and use browser-safe cached schemas',async()=>{
  const item={id:1,number:2,title:'<withheld: credential-shaped title>',state:'open',repo};
  const orig=globalThis.Buffer;globalThis.Buffer=undefined;
@@ -522,9 +556,44 @@ test('response budgets admit populated threads and discriminate hostile generic 
 });
 
 test('PR response text scan refuses credential-shaped title and body without blocking plain or null text',()=>{
+ // Synthetic-only credential shapes, assembled at runtime; none is a real token.
  const base={id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}};
  assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,title:'plain',body:null}}),true);
  for(const key of ['title','body'])for(const value of ['ghp_'+'x'.repeat(30),'github_pat_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,[key]:value}}),false);
+});
+
+test('persisted status, rename, dismiss and deployment text refuses credential shapes before network',async()=>{
+ // Synthetic-only credential shape, assembled at runtime; not a real token.
+ const fake='gh'+'p_'+'A'.repeat(36);
+ const cases=[
+  ['wf_commit_status_create',{repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'},['description']],
+  ['wf_file_rename',{repo,source_path:'old.txt',destination_path:'new.txt',branch:'feature/x',message:'Rename file',expected_head_sha:'a'.repeat(40),prior_sha:'b'.repeat(40)},['message']],
+  ['wf_review_dismiss',{repo,number:1,review_id:2,message:'obsolete'},['message']],
+ ];
+ for(const [action,args,fields] of cases){
+  assert.ok(parseWfV1Args(action,args),action);
+  for(const k of fields){
+   const bad={...args,[k]:`see ${fake}`};
+   assert.equal(validWfV1Args(action,bad),false,`${action}.${k}`);
+   assert.equal(parseWfV1Args(action,bad),null,`${action}.${k}`);
+   let calls=0;const t=harness(async()=>{calls++;return new Response('{}');});
+   const out=await t.call(`gr_${action}`,bad);
+   assert.ok(out.isError);assert.equal(calls,0);assert.ok(!out.content[0].text.includes(fake));
+  }
+ }
+});
+
+test('per-action checks read the Zod-parsed copy, not the raw caller object',()=>{
+ // validWfV1Args is the parse itself, so a credential check never sees the raw object.
+ const raw={repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'};
+ assert.equal(validWfV1Args('wf_commit_status_create',{...raw,extra:1}),false);
+ assert.equal(validWfV1Args('wf_commit_status_create',{...raw,description:7}),false);
+ const args={repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'};
+ const parsed=parseWfV1Args('wf_commit_status_create',args);
+ assert.deepEqual(parsed,args);assert.notEqual(parsed,args);
+ const trap=Object.defineProperty({...args},'description',{enumerable:true,get(){throw Error('read before validation');}});
+ assert.equal(parseWfV1Args('wf_commit_status_create',trap),null);
+ assert.equal(parseWfV1Args('wf_not_an_action',args),null);
 });
 
 test('full-file request budgets are action-local, encoded and bounded',()=>{
