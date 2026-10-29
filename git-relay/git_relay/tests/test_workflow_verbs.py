@@ -242,6 +242,8 @@ class Tests(unittest.TestCase):
         for action, (perms, _) in SPECS.items():
             if action in (
                 "wf_checks",
+                "wf_check_runs_page",
+                "wf_check_run_get",
                 "wf_check_create",
                 "wf_check_update",
                 "wf_commit_statuses",
