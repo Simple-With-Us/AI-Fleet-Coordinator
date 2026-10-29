@@ -961,3 +961,22 @@ test("a non-canonical spelling of a parked or scoped seat refuses to mint, witho
   assert.equal(L.seatTagForSeat("BF_TRADER"), "BF_TRADER", "no alias or credential mapping was added");
   assert.deepEqual([...L.LINEAR_NO_DELEGATE_SEATS], ["MA"]);
 });
+
+test("MA spellings: every alias that reaches MA is treated as MA (label-only, no delegate); underscore spellings reach nothing", async () => {
+  const L = await import("../src/linear.js");
+  for (const spelling of ["MA", "ma", "Muse-Assist", "ROB", "ROB-MUSE", "rob-muse"]) {
+    assert.equal(L.seatTagForSeat(spelling), "MA", spelling);
+    assert.ok(L.LINEAR_NO_DELEGATE_SEATS.includes(L.seatTagForSeat(spelling)), `${spelling} is no-delegate`);
+  }
+  for (const spelling of ["M_A", "MA_", "MUSE_ASSIST", "ROB_MUSE", "rob_muse"]) {
+    assert.equal(L.seatTagForSeat(spelling), spelling.toUpperCase(), `${spelling} is not mapped to a seat`);
+    assert.ok(!L.LINEAR_SEATS.includes(spelling), `${spelling} is not an enabled seat`);
+    assert.equal(await L.resolveLinearPair({ INFISICAL_MODE: "off" }, spelling), null, `${spelling} resolves no credentials`);
+    assert.equal(L.mintScopeFor(spelling), L.LINEAR_SCOPE, `${spelling} has no pair, so this scope is never used`);
+    const { tools, fake } = harness({ seat: spelling });
+    for (const [name, args] of [["linear_claim", { id: "AFC-1" }], ["linear_status", { id: "AFC-1", status: "open" }], ["linear_list", {}]]) {
+      toolError(await tools.call(name, args), "not_configured");
+    }
+    assert.equal(fake.requests.length, 0, `${spelling}: nothing was sent to Linear`);
+  }
+});
