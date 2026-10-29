@@ -1,7 +1,9 @@
 import unittest
-from git_relay.workflow_verbs import WorkflowVerbs, Refused
+
 from git_relay.github_client import RelayGitHubError
-from .test_workflow_verbs import REPO, SHA, Client, Policy, Minter
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
+
+from .test_workflow_verbs import REPO, SHA, Client, Minter, Policy
 
 ACTIONS = [
     "wf_workflow_get",
@@ -165,10 +167,12 @@ class Inventory(unittest.TestCase):
                 WorkflowVerbs.check_shape(a, dict(repo=REPO, url="bad", **args[a]), REPO)
 
     def test_real_relay_dispatch_and_refusal_before_mint(self):
-        import json, tempfile
+        import json
+        import tempfile
+
+        from git_relay.audit import AuditLog
         from git_relay.policy import SeatPolicy
         from git_relay.server import Relay
-        from git_relay.audit import AuditLog
 
         token = "w" * 32
         for action, args, row in [

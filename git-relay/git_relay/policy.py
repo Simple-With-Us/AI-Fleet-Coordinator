@@ -85,7 +85,6 @@ class SeatPolicy:
         "wf_run_attempt_get",
         "wf_run_attempt_jobs",
         "wf_run_pending_deployments",
-
         "wf_job_get",
         "wf_job_rerun",
         "wf_run_rerun_all",
