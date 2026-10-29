@@ -71,6 +71,36 @@ Apple Notes requests from the server and cloud seats go to the Operator's notes 
 | `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the server's CLIs and stdio MCP (`fleet-secrets get OPERATOR_NOTES_SERVER_KEY --path /operator --project ai-fleet-coordinator`, held in memory) |
 | `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, the same `fleet-secrets get`) |
 
+### Server Notes reader without environment credentials
+
+The server's `simple-notes` and stdio MCP can use the existing read-only
+`operator-notes-read` service token without a personal login or a CLI credential
+argument. The SERVER consumer reads `~/.config/operator-notes/reader.json`.
+Its parent directory must be owned by the current user and mode 0700; the file
+must be a regular single-link current-user file, mode 0600, with no symlinks.
+The schema has exactly `schema` (integer 1), `service_token` (the existing token),
+and `operator_api_url` (the grounded origin `https://operator.jays.services`).
+The fixed-purpose reader accepts only that exact origin, without whitespace or
+control characters; changing the destination requires a reviewed source change. Do not put a token in
+source, shell arguments, environment variables, logs, or this document.
+
+When that file exists, it is authoritative for SERVER Notes. An unsafe file,
+wrong token, expired token, failed request or unverified key fails closed; it does
+not fall back to a personal login, environment credential or cached key. An absent
+file preserves the existing client behavior on hosts not using this reader.
+RUNNER and WORKER are unchanged.
+
+The reader checks the existing token's ID, name, AFC project, exact `prod:/operator`
+scope, read-only permission and expiry, then makes a bounded, no-redirect point
+read of `OPERATOR_NOTES_SERVER_KEY`. It verifies the returned key's project,
+environment, folder, name, shared type and visible value. It never exports the
+folder, writes a secret cache, creates/renews a login, or changes token scope.
+The non-secret URL comes from the same private config; this does not change the
+fleet-knobs local-value or last-known-good freshness rules. The credential and
+key are held only in the calling process's memory after the private file read.
+Host provisioning, private token custody and runtime activation are separate from
+this source change. Generic `fleet-secrets` verified reads and writes are unchanged.
+
 Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
 
 ## Linear project linkifiers (AFC-565)
