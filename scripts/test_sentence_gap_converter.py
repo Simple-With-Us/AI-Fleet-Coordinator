@@ -886,11 +886,16 @@ def entity_body_from_nbsp(body: str) -> str:
     return body.replace("\u00a0 ", "&nbsp; ")
 
 
+RAW_LINK_BODY = "[Sentence.](https://example.com) Next sentence.\n"
+
+
 def write_assertion_fixtures(tmp: str, nbsp_body: str) -> None:
     """The files the documented assertion blocks name."""
     root = Path(tmp)
     for name in ("reply.txt", "body.nbsp.txt"):
         (root / name).write_text(nbsp_body, encoding="utf-8")
+    # The raw body the documented `gap.pl` recipe converts.
+    (root / "body.txt").write_text(RAW_LINK_BODY, encoding="utf-8")
     (root / "body.entity.txt").write_text(entity_body_from_nbsp(nbsp_body), encoding="utf-8")
 
 
@@ -904,8 +909,6 @@ class DocumentationExecutionTests(unittest.TestCase):
             checked = 0
             for indent, block in blocks:
                 if "grep -cE" not in block:
-                    continue
-                if "cat > gap.pl" in block:
                     continue
                 checked += 1
                 script = "\n".join(line.removeprefix(indent) for line in block.splitlines())
@@ -929,6 +932,9 @@ class DocumentationExecutionTests(unittest.TestCase):
                     self.assertTrue(
                         all(line.strip().isdigit() for line in proc.stdout.splitlines()), rel
                     )
+                    if "cat > gap.pl" in block:
+                        # The recipe's cmp lines are silent and its entity leftover is 0.
+                        self.assertEqual(proc.stdout.split(), ["0"], rel + ": gap.pl recipe")
             self.assertGreater(checked, 0, rel + " has no executable assertion block")
 
     def test_each_documented_grep_pair_detects_link_boundaries(self):

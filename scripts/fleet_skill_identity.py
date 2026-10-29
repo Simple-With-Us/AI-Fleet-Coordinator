@@ -213,12 +213,13 @@ def _banner(
         inherit = "another seat's upload pack"
     if not lanes:
         lanes = f"Lanes `~/apps/lanes/<Repo>/{suffix}-<slug>`."
+    zulip_part = "\u00a0 " + zulip if zulip else ""
     return (
         f"> **This install is for `{tag}`.**\u00a0 Chat tag `[{tag}·session8]`.\u00a0 "
         f"Notes `{notes}`.\u00a0 "
         f"Branches `{prefix}/`.\u00a0 {lanes}\u00a0 Do not inherit "
         f"another seat's tag from {inherit}."
-        f"{f'\u00a0 {zulip}' if zulip else ''}\n\n"
+        f"{zulip_part}\n\n"
     )
 
 

@@ -138,7 +138,7 @@ export function parseSeverity(body) {
  * Strip badge images, `<details>` blocks (and their contents), other HTML tags,
  * and HTML comments.  Collapse runs of 3+ blank lines down to two.  Trim.
  *
- * The `&nbsp;` entity is decoded to the character it stands for, a real U+00A0:
+ * The `&nbsp;` entity outside a code fence is decoded to the character it stands for, a real U+00A0:
  * a GitHub body takes the gap as a real U+00A0 plus a normal space and never as
  * the entity (owner ruling 2026-10-23), so leaving the entity would show it as
  * literal text in the body.  The other entities are decoded, because they are
@@ -155,7 +155,19 @@ export function cleanFindingText(body) {
   // The gap entity becomes the character it stands for.  The lookbehind keeps an
   // escaped entity as literal text, so the &amp; decode below cannot turn prose
   // that merely mentions the entity into a gap.
-  s = s.replace(/(?<!&amp;)&nbsp;/gi, '\u00a0');
+  // Only prose takes the decode:  inside a fence the entity is literal source text,
+  // so a quoted code sample still matches the file it came from.
+  let inFence = false;
+  s = s
+    .split('\n')
+    .map((line) => {
+      if (fenceToggle(line.trim().replace(/\r$/, ''))) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : line.replace(/(?<!&amp;)&nbsp;/gi, '\u00a0');
+    })
+    .join('\n');
   s = s.replace(/&amp;/gi, '&');
   s = s.replace(/&lt;/gi, '<');
   s = s.replace(/&gt;/gi, '>');

@@ -135,6 +135,13 @@ test('cleanFindingText gives a GitHub body the real gap, never the entity', () =
   assert.equal(cleaned, 'First sentence here.\u00a0 Second sentence follows.');
 });
 
+test('cleanFindingText keeps the entity literal inside a code fence', () => {
+  const body = 'Prose here.&nbsp; Next.\n\n```js\nconst gap = \'.&nbsp; \';\n```\n';
+  const cleaned = cleanFindingText(body);
+  assert.ok(cleaned.startsWith('Prose here.\u00a0 Next.'));
+  assert.ok(cleaned.includes("const gap = '.&nbsp; ';"));
+});
+
 test('cleanFindingText leaves an escaped entity as literal text', () => {
   const cleaned = cleanFindingText('Prose that mentions &amp;nbsp; by name.');
   assert.equal(cleaned, 'Prose that mentions &nbsp; by name.');

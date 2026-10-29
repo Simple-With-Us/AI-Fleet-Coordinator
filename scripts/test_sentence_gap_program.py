@@ -420,7 +420,8 @@ class ProgramBehaviourTests(unittest.TestCase):
         self.assertNotIn("&nbsp; Bar", out.split("`", 1)[0])
         for region in ("`span one with  two spaces`", "`span two with  two spaces`"):
             self.assertIn(region, out)
-            self.assertNotIn("&nbsp;", region, "the entity landed inside a span")
+        for span in re.findall(r"`[^`\n]*`", out):
+            self.assertNotIn("&nbsp;", span, "the entity landed inside a span")
 
     def test_the_entity_mode_holds_a_fenced_block_byte_for_byte(self) -> None:
         """The entity mode holds the code aside exactly as the default mode does.
