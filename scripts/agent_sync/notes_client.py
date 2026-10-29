@@ -474,13 +474,20 @@ def operator_client(
             reader = SR.load()
             if reader is not None:
 
-                def key():
-                    try:
-                        return reader.key()
-                    except SR.ReaderError as exc:
-                        raise N.NotesError("not_configured", str(exc)) from None
+                class ServiceKeySource(KeySource):
+                    def __init__(self):
+                        self.name = W.KEY_NAMES[principal]
 
-                return OperatorClient(reader.origin, principal, key, **kwargs)
+                    def get(self):
+                        try:
+                            return reader.key()
+                        except SR.ReaderError as exc:
+                            raise N.NotesError("not_configured", str(exc)) from None
+
+                    def forget(self):
+                        reader.forget()
+
+                return OperatorClient(reader.origin, principal, ServiceKeySource(), **kwargs)
         except SR.ReaderError as exc:
             raise N.NotesError("not_configured", str(exc)) from None
     base = base_url(env)

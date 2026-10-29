@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import hashlib
+import http.client
+import re
+import threading
 import os
 import stat
 import time
@@ -12,12 +16,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
-# Public registry identifier, not the service-token credential.
-TOKEN_ID = "-".join(("24f1d77d", "4758", "4779", "b4bf", "894d386d88c3"))
 KEY = "OPERATOR_NOTES_SERVER_KEY"
 API = "https://app.infisical.com/api"
-OPERATOR_ORIGIN = "https://operator.jays.services"
+KEY_CACHE_S = 600.0
+# Reviewed deployment metadata commitment; no private inventory values in source.
+DEPLOYMENT_SHA256 = "c043de10c9d1185093f564e825d1c624e7a22681e4c07ca7362a4078a4b61e6d"
 MAX_BYTES = 256 * 1024
 CONFIG_PARTS = (".config", "operator-notes", "reader.json")
 
@@ -44,7 +47,6 @@ def _origin(value):
     if (
         not isinstance(value, str)
         or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)
-        or value != OPERATOR_ORIGIN
     ):
         raise ReaderError("reader-config-invalid")
     try:
@@ -105,7 +107,7 @@ def load(home: Path | None = None):
         config = json.loads(raw, object_pairs_hook=_pairs)
         if (
             not isinstance(config, dict)
-            or set(config) != {"schema", "service_token", "operator_api_url"}
+            or set(config) != {"schema", "service_token", "operator_api_url", "project_id", "token_id", "token_name"}
             or type(config["schema"]) is not int
             or config["schema"] != 1
         ):
@@ -119,8 +121,28 @@ def load(home: Path | None = None):
             or any(c.isspace() for c in token)
         ):
             raise ReaderError("reader-config-invalid")
+        for name in ("project_id", "token_id"):
+            if not isinstance(config[name], str) or not re.fullmatch(
+                r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", config[name]
+            ):
+                raise ReaderError("reader-config-invalid")
+        if (not isinstance(config["token_name"], str)
+                or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", config["token_name"])):
+            raise ReaderError("reader-config-invalid")
         config["operator_api_url"] = _origin(config["operator_api_url"])
-        return Reader(config)
+        pins = {name: config[name] for name in ("project_id", "token_id", "token_name", "operator_api_url")}
+        commitment = hashlib.sha256(json.dumps(pins, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if commitment != DEPLOYMENT_SHA256:
+            raise ReaderError("reader-deployment-unqualified")
+        reader = Reader(config)
+        fingerprint = hashlib.sha256(raw).digest()
+        def check_custody():
+            current = load(home)
+            if current is None or current._fingerprint != fingerprint:
+                raise ReaderError("reader-config-changed")
+        reader._fingerprint = fingerprint
+        reader._check_custody = check_custody
+        return reader
     except ReaderError:
         raise
     except (OSError, ValueError, UnicodeError):
@@ -131,11 +153,20 @@ def load(home: Path | None = None):
 
 
 class Reader:
-    def __init__(self, config, *, clock=time.time, request=None):
+    def __init__(self, config, *, clock=time.time, monotonic=time.monotonic, request=None):
         self.origin = config["operator_api_url"]
+        self._project = config["project_id"]
+        self._token_id = config["token_id"]
+        self._token_name = config["token_name"]
+        self._check_custody = None
+        self._lock = threading.Lock()
+        self._cached_key = None
         # Match Infisical's service-token bearer contract, not universal auth.
         self._bearer = ".".join(config["service_token"].split(".")[:3])
         self._clock = clock
+        self._monotonic = monotonic
+        self._cache_started = 0.0
+        self._cache_expiry = 0.0
         self._request = request or self._get
 
     def __repr__(self):
@@ -163,10 +194,42 @@ class Reader:
             return json.loads(raw, object_pairs_hook=_pairs)
         except ReaderError:
             raise
-        except (OSError, urllib.error.URLError, ValueError, UnicodeError):
+        except (OSError, http.client.HTTPException, urllib.error.URLError, ValueError, UnicodeError):
             raise ReaderError("reader-api-failed") from None
 
+    def forget(self):
+        with self._lock:
+            self._cached_key = None
+            self._cache_expiry = 0.0
+
     def key(self):
+        with self._lock:
+            if self._check_custody is not None:
+                try:
+                    self._check_custody()
+                except ReaderError:
+                    self._cached_key = None
+                    self._cache_expiry = 0.0
+                    raise
+            now = self._clock()
+            tick = self._monotonic()
+            age = tick - self._cache_started
+            if (self._cached_key is not None and 0 <= age < KEY_CACHE_S
+                    and now < self._cache_expiry - 30):
+                return self._cached_key
+            # Expired cache is discarded before a fresh request, never a fallback.
+            self._cached_key = None
+            self._cache_expiry = 0.0
+            value, expires = self._fetch_key()
+            # Network time consumes the TTL; UTC expiry is checked independently.
+            if self._clock() >= expires - 30:
+                raise ReaderError("reader-metadata-expired")
+            self._cached_key = value
+            self._cache_started = tick
+            self._cache_expiry = expires
+            return value
+
+    def _fetch_key(self):
         meta = self._request("/v2/service-token")
         if not isinstance(meta, dict):
             raise ReaderError("reader-metadata-invalid")
@@ -179,10 +242,10 @@ class Reader:
         except (KeyError, TypeError, ValueError, OverflowError):
             valid_expiry = False
         if (
-            meta.get("_id") != TOKEN_ID
-            or meta.get("id") != TOKEN_ID
-            or meta.get("name") != "operator-notes-read"
-            or meta.get("workspace") != PROJECT
+            meta.get("_id") != self._token_id
+            or meta.get("id") != self._token_id
+            or meta.get("name") != self._token_name
+            or meta.get("workspace") != self._project
             or meta.get("scopes") != [{"environment": "prod", "secretPath": "/operator"}]
             or meta.get("permissions") != ["read"]
             or not valid_expiry
@@ -190,7 +253,7 @@ class Reader:
             raise ReaderError("reader-metadata-invalid")
         query = urllib.parse.urlencode(
             {
-                "workspaceId": PROJECT,
+                "workspaceId": self._project,
                 "environment": "prod",
                 "secretPath": "/operator",
                 "type": "shared",
@@ -201,7 +264,7 @@ class Reader:
         answer = self._request("/v3/secrets/raw/" + KEY + "?" + query)
         row = answer.get("secret") if isinstance(answer, dict) else None
         required = {
-            "workspace": PROJECT,
+            "workspace": self._project,
             "environment": "prod",
             "secretPath": "/operator",
             "secretKey": KEY,
@@ -220,4 +283,4 @@ class Reader:
             or any(c.isspace() for c in value)
         ):
             raise ReaderError("reader-key-unverified")
-        return value
+        return value, expires.timestamp()
