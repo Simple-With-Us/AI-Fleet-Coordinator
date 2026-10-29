@@ -190,6 +190,8 @@ def _raw_json_too_deep(raw: str) -> bool:
     parser ever recursing through it.  It only refuses what _json_within_limits would
     refuse anyway, since a value inside HOOK_JSON_MAX_DEPTH brackets is never deeper.
     """
+    if raw.count("{") + raw.count("[") <= HOOK_JSON_MAX_DEPTH:
+        return False  # too few brackets to nest past the limit:  nothing to walk
     depth = 0
     in_string = False
     escaped = False
@@ -952,7 +954,9 @@ def _fold_registry_ended(out: list[dict], ended: list[dict]) -> None:
     """
     by_session = {e["session_id"]: e for e in out if e.get("session_id")}
     for row in ended:
-        native = str(row.get("native_session_id") or "")
+        native = row.get("native_session_id")
+        if not native:
+            continue  # a row that names no session has nothing to attach to, and no entry of its own to make
         info = {"label": str(row.get("label") or ""), "reason": str(row.get("reason") or "")}
         entry = by_session.get(native)
         if entry is not None:

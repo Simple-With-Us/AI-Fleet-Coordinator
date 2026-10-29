@@ -623,6 +623,17 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertNotIn("title", entries[1]["registry_ended"])
         self.assertIn('"registry_sweep": 2', err)
 
+    def test_the_sweep_skips_ended_rows_that_name_no_session(self):
+        ended = [
+            {"record_id": "r1", "label": "A", "reason": "stale"},
+            {"record_id": "r2", "label": "B", "native_session_id": None, "reason": "stale"},
+            {"record_id": "r3", "label": "C", "native_session_id": "", "reason": "stale"},
+        ]
+        code, out, _err = self._run_sweep("", {"count": 3, "ended": ended}, title="M: Wake check")
+        self.assertEqual(code, 0)
+        self.assertNotIn('"session_id": ""', out)
+        self.assertNotIn("registry_ended", out)
+
     def test_a_registry_sweep_without_an_ended_list_still_succeeds(self):
         code, out, _err = self._run_sweep("", {"count": 0}, title="M: Wake check")
         self.assertEqual(code, 0)
@@ -634,6 +645,25 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(code, 2, bad)
             self.assertIn("bad_shape", err, bad)
             self.assertIn("outcome_unknown", err, bad)
+
+    def test_a_registry_row_with_no_session_id_makes_no_entry(self):
+        ended = [
+            {"label": "A", "reason": "r"},
+            {"native_session_id": None, "label": "B", "reason": "r"},
+            {"native_session_id": "", "label": "C", "reason": "r"},
+            {"native_session_id": "mvs_gone", "label": "D", "reason": "r"},
+        ]
+        code, out, _err = self._run_sweep("", {"count": 4, "ended": ended}, title="M: Wake check")
+        self.assertEqual(code, 0)
+        self.assertEqual([e["session_id"] for e in json.loads(out)], [SESSION_ID, "mvs_gone"])
+
+    def test_few_brackets_skip_the_scan_and_deep_ones_still_refuse(self):
+        plain = '{"a": "' + "x" * 100_000 + '"}'
+        self.assertFalse(M._raw_json_too_deep(plain))
+        levels = M.HOOK_JSON_MAX_DEPTH + 1
+        self.assertTrue(M._raw_json_too_deep("[" * levels + "]" * levels))
+        # More brackets than the limit, none of them nested:  the scan runs and finds the depth is fine.
+        self.assertFalse(M._raw_json_too_deep("[1]" * (M.HOOK_JSON_MAX_DEPTH * 3)))
 
 
 if __name__ == "__main__":
