@@ -92,6 +92,8 @@
     {"identity": "BF-DEPLOYER", "app_slug": "swu-bf-deployer", "profile": "fleet"},
     {"identity": "BF-DESIGNER", "app_slug": "swu-bf-designer", "profile": "fleet"},
     {"identity": "BF-DIRECTOR", "app_slug": "swu-bf-director", "profile": "fleet"},
+    {"identity": "BF-ENGINEER", "app_slug": "swu-bf-engineer", "profile": "fleet"},
+    {"identity": "BF-TRADER", "app_slug": "swu-bf-trader", "profile": "fleet"},
     {"identity": "BF-FIXER", "app_slug": "swu-bf-fixer", "profile": "fleet"},
     {"identity": "BF-HOUSEKEEPER", "app_slug": "swu-bf-housekeeper", "profile": "fleet"},
     {"identity": "BF-MONITOR", "app_slug": "swu-bf-monitor", "profile": "fleet"},
