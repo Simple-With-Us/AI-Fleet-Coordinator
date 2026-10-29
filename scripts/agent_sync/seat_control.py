@@ -464,7 +464,11 @@ class SeatControlMCP:
         for row in rows:
             platform = row.get("platform")
             host = row.get("host")
-            if not isinstance(row, dict) or not isinstance(platform, str) or not isinstance(host, str):
+            if (
+                not isinstance(row, dict)
+                or not isinstance(platform, str)
+                or not isinstance(host, str)
+            ):
                 continue
             try:
                 sid = _catalog_session_id(row)
