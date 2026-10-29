@@ -1,8 +1,9 @@
 """The DM rule and the Side-Chats route (owner decision, Wed, Oct 22 2026, hard cutover).
 
 Jay's decision (d):  bot-to-bot conversation happens in Side-Chats topics, never in DMs, and the
-only new DM Operator may open is one clarifying question on a wake whose addressee it cannot
-resolve.  A seat may never open a DM on its own, on either MCP transport or the CLI.
+only new DMs Operator may open are one clarifying question on a wake whose addressee it cannot
+resolve and, since Oct 29 2026, its one-to-one status message to the sender.  A seat may never
+open a DM on its own, on either MCP transport or the CLI.
 
 The rule, in one place so all three surfaces enforce it the same way:
 
@@ -13,6 +14,12 @@ The rule, in one place so all three surfaces enforce it the same way:
 * **Allowed** — Operator opens a DM, and only to ask the sender one clarifying question when the
   wake's addressee is ambiguous, at most one per message (`clarifying=True` below).  See clarify.py
   for the queue and the 30-minute timeout.
+* **Allowed** — Operator opens a one-to-one DM to the sender to say what became of a wake (woken,
+  alerted, queued, held, dropped or paused), owner ruling Thu, Oct 29 2026, about 3:35 AM (`status=True`
+  below).  The text is deterministic and carries no project, topic or message content, so the
+  owner is not in the conversation (the owner-in-the-conversation guard has one matching
+  exemption, `ZulipClient.operator_status_dm`).  The Operator sends it in process, from the
+  server instance:  no CLI, stdio MCP or hosted surface takes `status`.
 
 Everything else routes to Side-Chats:  a seat-to-seat message becomes a post in stream 646987 under
 one topic per discussion, mentioning only the participants;  a seat's ping to Jay goes to the
@@ -109,6 +116,14 @@ def clarifying_exempt(identity: str, *, clarifying: bool) -> bool:
     return identity == OPERATOR_SEAT and clarifying
 
 
+def status_exempt(identity: str, *, status: bool) -> bool:
+    """True when the rule permits Operator's one-to-one status message to the sender.
+
+    Like the clarifying question it needs no Operator id:  the Operator is the sender.  Nothing else
+    qualifies, and a seat that asks for `status` is still a seat opening a DM."""
+    return identity == OPERATOR_SEAT and status
+
+
 def clarify_timeout_seconds(env: Mapping[str, str] | None = None) -> float:
     """How long Operator waits for an answer to its clarifying question before dropping the wake.
     AGENT_SYNC_DM_CLARIFY_TIMEOUT_MINUTES, default 30."""
@@ -147,6 +162,7 @@ def check_new_dm(
     operator_opened: bool | None = False,
     clarifying: bool = False,
     owner_user_id: int | None = None,
+    status: bool = False,
 ) -> None:
     """Raise DmRefused unless this DM may be opened.  Nothing here writes or sends anything.
 
@@ -165,8 +181,10 @@ def check_new_dm(
     if operator_opened is True:
         return
     if identity == OPERATOR_SEAT:
-        # Operator may open a DM for exactly one reason, and the caller says so.
-        if clarifying_exempt(identity, clarifying=clarifying):
+        # Operator may open a DM for exactly two reasons, and the caller says which.
+        if clarifying_exempt(identity, clarifying=clarifying) or status_exempt(
+            identity, status=status
+        ):
             return
         raise DmRefused(
             "%s may open a direct message only to ask the sender one clarifying question when a wake "
