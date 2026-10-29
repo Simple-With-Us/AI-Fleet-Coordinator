@@ -236,18 +236,27 @@ As of Oct 29, 2026 that variable is not set in the repository, the organization 
 
 ### Vendor cutover
 
-The Worker is live and its credentials are bound, but no vendor points at it yet:  the Datadog monitors and the Better Stack monitors still use the Zulip incoming-webhook bots, which post one new message per event.  The cutover is owner console work, and it is per vendor.
+State on Thu, Oct 29, 2026, 1:05 AM (AFC-566):
 
-| Vendor | Change | Value |
+| Vendor | Route into Zulip | How it was changed |
 |---|---|---|
-| Datadog | the monitor's webhook URL and a custom header | `https://alert-ingress.jays-services.workers.dev/webhook/datadog`, with `X-Datadog-Token` set to the `DATADOG_WEBHOOK_SECRET` value |
-| Better Stack | the monitor's outgoing webhook URL and a custom header | `https://alert-ingress.jays-services.workers.dev/webhook/betterstack`, with `X-BetterStack-Token` set to the `BETTERSTACK_WEBHOOK_SECRET` value |
-| Sentry | an integration-platform webhook | `https://alert-ingress.jays-services.workers.dev/webhook/sentry`, signed with the internal integration's client secret, which is then stored as `SENTRY_WEBHOOK_SECRET` |
-| PagerDuty | a v3 webhook subscription on the `jays.services` service | `https://alert-ingress.jays-services.workers.dev/webhook/pagerduty`, with `X-PagerDuty-Token` set to the `PAGERDUTY_WEBHOOK_SECRET` value;  then the `Zulip #incident-response` subscription is deleted |
+| Datadog | **ingress** | The one webhook every monitor names, `zulip-alerts` (Integrations > Webhooks), now posts to `https://alert-ingress.jays-services.workers.dev/webhook/datadog` with the custom header `X-Datadog-Token` set to `DATADOG_WEBHOOK_SECRET` and the JSON payload below.  Because the name is unchanged, every monitor that says `@webhook-zulip-alerts` follows without an edit. |
+| Better Stack | **ingress** | Outgoing webhook 88178, renamed `alert-ingress`, now posts the default incident body to `https://alert-ingress.jays-services.workers.dev/webhook/betterstack` with `X-BetterStack-Token` set to `BETTERSTACK_WEBHOOK_SECRET`.  The API returns the header in the webhook's `included` custom-template record, not on the webhook itself. |
+| PagerDuty | Zulip incoming webhook, `#incident-response` | Waits on the PagerDuty status bot:  a generic Zulip bot whose pair is stored as `ZULIP_PAGERDUTY_BOT_EMAIL` / `ZULIP_PAGERDUTY_BOT_API_KEY` in AFC prod `/zulip`.  Then a v3 subscription on the `jays.services` service posts to `/webhook/pagerduty` with `X-PagerDuty-Token` set to a generated `PAGERDUTY_WEBHOOK_SECRET`, and the `Zulip #incident-response` subscription is deleted. |
+| Sentry | through PagerDuty | Sentry's alerts reach Zulip only through PagerDuty's `jays.services` service, so they move with PagerDuty.  A direct route needs an internal integration whose client secret is stored as `SENTRY_WEBHOOK_SECRET`. |
 
-Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the monitor posts to the ingress.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.
+Every change was made through the vendor's API from the server, with the vendor key and the header secret read from Infisical into the process's memory, so no secret passed through a transcript or a URL.  The vendor keys are Fleet-OPS `DD_API_KEY` / `DD_APP_KEY` / `DD_SITE` and `BETTERSTACK_API_KEY` in `/global-api-keys`, and `PAGERDUTY_API_KEY` in `/pagerduty-api-key`.  The previous configurations were saved for rollback first.
 
-Better Stack **Uptime** outgoing webhooks are documented for the URL, the event selection, the body template and the metadata variables;  the Errors documentation is what names custom headers, so confirm the header on the Uptime surface before relying on it.  A monitor that cannot send a header needs a change to the ingress, not a change to the secret.
+The Datadog payload template, which is what `fromDatadog()` reads (`$EVENT_MSG`, the long runbook body, is left out on purpose):
+
+```json
+{"monitor_id": "$ALERT_ID", "alert_id": "$ALERT_ID", "alert_type": "$ALERT_TYPE",
+ "alert_transition_type": "$ALERT_TRANSITION", "alert_title": "$ALERT_TITLE",
+ "alert_transition": "$ALERT_TITLE", "priority": "$ALERT_PRIORITY", "host": "$HOSTNAME",
+ "scope": "$ALERT_SCOPE", "event_url": "$LINK"}
+```
+
+Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the vendor posts to the ingress.  The incoming-webhook bots `[Datadog]` and `[BetterStack]` are now unused, and their keys sat in the old vendor URLs, so deactivating them is the clean end of the cutover.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.
 
 Timeline transitions use a separate durable outcome keyed by the exact normalized transition and previous state.  Destination inventory is completed before mutation; a definitive pre-send failure leaves the previous phase unchanged.  Timeline `unknown` is never resent, while a definitive provider refusal can retry the same transition safely.  Sweep failures are isolated per incident, so one refusal cannot abort independent promotions.
 
