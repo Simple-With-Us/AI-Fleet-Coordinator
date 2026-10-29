@@ -458,8 +458,7 @@ def main():
 
     values = {}
     present = {
-        name: from_env.get(name) or fetched.get(name)
-        for _source, name, _binding in BOT_PAIRS
+        name: from_env.get(name) or fetched.get(name) for _source, name, _binding in BOT_PAIRS
     }
     skipped = sorted(
         source
@@ -479,7 +478,9 @@ def main():
         print(f"STOP: {error}.  Nothing was written.")
         return error.code
     for source in skipped:
-        print(f"  skip  the {source} bot pair is not in {AFC_SLUG}{SECRET_PATH} yet;  that source stays closed")
+        print(
+            f"  skip  the {source} bot pair is not in {AFC_SLUG}{SECRET_PATH} yet;  that source stays closed"
+        )
     for name in VENDOR_ISSUED:
         value = from_env[name] or fetched.get(name)
         if value is None:
