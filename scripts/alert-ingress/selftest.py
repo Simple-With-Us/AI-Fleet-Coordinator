@@ -14,7 +14,9 @@ Zulip topic back through the vendor bot's own credentials.  It asserts:
   B. a second vendor sharing the same service name gets its OWN standing
      message, and neither vendor edits the other's;
   C. a second alert in the same topic joins the same standing block, as a
-     second row, rather than a second message.
+     second row, rather than a second message;
+  D. every delivery left its raw copy in #Alerts-Raw under the same topic, and
+     no one-line alert reached #Alerts, which holds only the standing blocks.
 
 The first firing event is HELD for MIN_OPEN_MS before it is announced as an
 alert line, so the alert line that proves the announcement path is posted by the
@@ -28,8 +30,9 @@ second run over a healthy ingress proves the same thing the first one did.
 Secrets are read from the environment first and from `fleet-secrets` second,
 and are never printed:  names and lengths only.  --cleanup first sends each test
 incident its recovery, so none stays firing in /status, then deletes the one-line
-alert messages this test created and leaves the standing status messages alone,
-because the ingress still points at them.
+alert messages this test created in #alerts and #Alerts-Log and the raw copies in
+#Alerts-Raw, and leaves the standing status messages alone, because the ingress
+still points at them.
 """
 
 import argparse
@@ -47,6 +50,9 @@ import urllib.request
 BASE = "https://alert-ingress.jays-services.workers.dev"
 ZULIP_API = "https://simplewithus.zulipchat.com/api/v1"
 CHANNEL = "alerts"
+# The one-line timeline and the raw copies have channels of their own (owner, Oct 29, 2026).
+LOG_CHANNEL = "Alerts-Log"
+RAW_CHANNEL = "Alerts-Raw"
 TEST_SERVICE = "alert-ingress-selftest"
 
 AFC_SLUG = "ai-fleet-coordinator"
@@ -279,11 +285,11 @@ def worker_event(path, payload, header, secret, what):
     return answer
 
 
-def topic_messages(email, api_key, topic):
-    """Every message in the topic, oldest last."""
+def topic_messages(email, api_key, topic, channel=CHANNEL):
+    """Every message in the topic of one channel, oldest last."""
     narrow = json.dumps(
         [
-            {"operator": "stream", "operand": CHANNEL},
+            {"operator": "stream", "operand": channel},
             {"operator": "topic", "operand": topic},
         ]
     )
@@ -300,7 +306,7 @@ def topic_messages(email, api_key, topic):
     )
     status, data = zulip(f"/messages?{query}", email, api_key)
     if status in (401, 403):
-        raise Failed(zulip_refusal(status, data, api_key, f"the read of #{CHANNEL} > {topic}"))
+        raise Failed(zulip_refusal(status, data, api_key, f"the read of #{channel} > {topic}"))
     if status != 200:
         raise Failed(f"the topic could not be read (HTTP {status})")
     if not isinstance(data, dict):
@@ -404,7 +410,11 @@ def cleanup(dd_email, dd_key, bs_email, bs_key):
     would leave the Worker's stored message id pointing at a message that is
     gone, so every later refresh would fail.  It is left alone and reported.
     """
-    messages = topic_messages(dd_email, dd_key, TEST_SERVICE)
+    messages = [
+        message
+        for channel in (CHANNEL, LOG_CHANNEL, RAW_CHANNEL)
+        for message in topic_messages(dd_email, dd_key, TEST_SERVICE, channel)
+    ]
     owners = {dd_email: dd_key, bs_email: bs_key}
     deleted = 0
     kept = []
@@ -429,7 +439,7 @@ def cleanup(dd_email, dd_key, bs_email, bs_key):
             f"the delete of message {message['id']} was refused "
             f"(HTTP {status}, permanent)  credential={masked_preview(key)}"
         )
-    print(f"Cleanup: {deleted} one-line alert message(s) deleted from #{CHANNEL} > {TEST_SERVICE}.")
+    print(f"Cleanup: {deleted} test message(s) deleted from #{CHANNEL}, #{LOG_CHANNEL} and #{RAW_CHANNEL} > {TEST_SERVICE}.")
     if kept:
         print("Left in place (the standing status message the ingress still points at):")
         for sender, message_id in kept:
@@ -478,6 +488,7 @@ def main():
     # and must not count what an earlier run posted.
     baseline = topic_messages(dd_email, dd_key, TEST_SERVICE)
     baseline_ids = {message["id"] for message in baseline}
+    raw_baseline = {m["id"] for m in topic_messages(dd_email, dd_key, TEST_SERVICE, RAW_CHANNEL)}
 
     print("\nA. a flapping monitor produces ONE standing message")
     events = [
@@ -602,10 +613,39 @@ def main():
         for line in content.splitlines():
             print(f"      | {line}")
 
+    print("\nD. every delivery left a raw copy, and #alerts got no alert line")
+    raw_new = [
+        m
+        for m in topic_messages(dd_email, dd_key, TEST_SERVICE, RAW_CHANNEL)
+        if m["id"] not in raw_baseline
+    ]
+    raw_dd = [m for m in raw_new if m.get("sender_email") == dd_email]
+    raw_bs = [m for m in raw_new if m.get("sender_email") == bs_email]
+    # Section A sent four Datadog deliveries and C one more;  B sent one Better Stack delivery.
+    ok &= check("each Datadog delivery left a raw copy", len(raw_dd) == len(events) + 1, f"{len(raw_dd)} copies")
+    ok &= check("the Better Stack delivery left a raw copy", len(raw_bs) == 1, f"{len(raw_bs)} copies")
+    ok &= check(
+        "a raw copy carries the full payload in a spoiler",
+        all("spoiler Original" in m.get("content", "") for m in raw_new),
+        f"ids={[m['id'] for m in raw_new]}",
+    )
+    lines_in_alerts = [
+        m
+        for m in topic_messages(dd_email, dd_key, TEST_SERVICE)
+        if m["id"] not in baseline_ids
+        and m.get("sender_email") in (dd_email, bs_email)
+        and not is_standing(m)
+    ]
+    ok &= check(
+        "#alerts holds only standing blocks from this run",
+        not lines_in_alerts,
+        f"ids={[m['id'] for m in lines_in_alerts]}",
+    )
+
     print("\n" + ("SELFTEST PASSED" if ok else "SELFTEST FAILED"))
     print(
         "Note: the alert LINE for a held incident is posted by the cron sweep once the\n"
-        "incident ages past MIN_OPEN_MS, not by this script.  Check the topic again in\n"
+        "incident ages past MIN_OPEN_MS, not by this script.  Check #Alerts-Log in\n"
         "about ten minutes: one line per announced incident, never one per event."
     )
     return 0 if ok else 1

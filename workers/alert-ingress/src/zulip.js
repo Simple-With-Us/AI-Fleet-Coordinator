@@ -255,8 +255,8 @@ export function renderStatus({ topic, states, updatedAt, source }) {
   // Each source owns one standing message per topic, so the block says which
   // vendor it belongs to.
   const footer = source
-    ? `_Updated ${updatedAt}.  Source: ${source}.  This message is edited in place; new events post below it._`
-    : `_Updated ${updatedAt}.  This message is edited in place; new events post below it._`;
+    ? `_Updated ${updatedAt}.  Source: ${source}.  This message is edited in place;  each change is logged in #**Alerts-Log**, same topic._`
+    : `_Updated ${updatedAt}.  This message is edited in place;  each change is logged in #**Alerts-Log**, same topic._`;
 
   return [
     `${STANDING_BLOCK_HEADER}${topic}**`,
