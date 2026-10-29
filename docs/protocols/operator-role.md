@@ -217,11 +217,14 @@ Three concrete changes carry that:
     it says.**  A message that pairs with a thread gets the Operator's own message, and that
     message travels by direct message to the seat that asked, with a link to the thread, because a
     conversation belongs in a direct message and not in a channel.  A message that pairs with no
-    thread gets the Operator's question, and that direct message is the only direct message the
-    fleet sends.  Jay's Oct 26 ruling is what moved it:  the Operator may speak to anyone and
-    converse with them, and it converses by direct message rather than in a channel post, so that
-    conversations do not get bloated.  The question itself is bounded:  it asks about a tag to
-    wake, and it is not an opening for an open-ended conversation.
+    thread gets the Operator's question, and that goes by direct message too.  The direct message
+    is the fleet's exception, used only by the Operator, and it carries that question, the exchange
+    it opens, and the candidate list that tells the sender of a tagged address which sessions the
+    letter could mean (`scripts/agent_sync/operator_candidates.py`).  Jay's Oct 26 ruling is what
+    moved it:  the Operator may speak to anyone and converse with them, and it converses by direct
+    message rather than in a channel post, so that conversations do not get bloated.  The question
+    itself is bounded:  it asks about a tag to wake, and it is not an opening for an open-ended
+    conversation.
 
 **The audience of that one question, stated so it cannot drift into user conversation.**  The
 question may be addressed to anyone, and it goes by direct message, because Jay's Oct 26 ruling
