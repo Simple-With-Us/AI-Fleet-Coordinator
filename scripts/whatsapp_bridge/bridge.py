@@ -19,18 +19,17 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+if __package__:
+    from .errors import BridgeError, StopBridge
+else:
+    from errors import BridgeError, StopBridge
+
 MAX_RESPONSE = 8 * 1024 * 1024
 MAX_OFFSET = 2**63 - 1
 LEDGER_RETENTION = 35 * 86400
+# The result fields a pending outcome keeps for its re-report.  No body.
+PENDING_FIELDS = ("status", "code", "error", "retry_after_s", "context_missing")
 TARGET_RING = 500
-
-
-class BridgeError(Exception):
-    """Fixed, content-free failure code."""
-
-
-class StopBridge(BridgeError):
-    pass
 
 
 def digest(value, key=None):
@@ -239,6 +238,19 @@ class State:
             row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")
         }:
             self.db.execute("ALTER TABLE send_ledger ADD COLUMN claim_token TEXT")
+        # The outcome the Worker has not acked yet: a restart reports
+        # the same outcome again instead of losing it.
+        if "pending_outcome" not in {
+            row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")
+        }:
+            self.db.execute("ALTER TABLE send_ledger ADD COLUMN pending_outcome TEXT")
+        # The result fields that go with the pending outcome (status, code,
+        # error, retry_after_s, context_missing), as JSON, so a re-report
+        # carries what the first report carried.  Never a body.
+        if "pending_fields" not in {
+            row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")
+        }:
+            self.db.execute("ALTER TABLE send_ledger ADD COLUMN pending_fields TEXT")
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS recipient (id INTEGER PRIMARY KEY CHECK(id=1),"
             " value TEXT NOT NULL, updated_at INTEGER NOT NULL)"
@@ -313,16 +325,64 @@ class State:
     def target_for(self, id_hash):
         return self._targets.get(id_hash)
 
-    def ledger_put(self, intent_id, state, body_hash, message_id, now):
+    def ledger_put(
+        self,
+        intent_id,
+        state,
+        body_hash,
+        message_id,
+        now,
+        pending_outcome=None,
+        pending_fields=None,
+    ):
+        """One row per intent.  The pending outcome is the result the
+        Worker has not acked yet, and it keeps the row claimable.  The
+        pending fields are the result fields reported with it, so a
+        re-report carries the same status, code and backoff."""
+        fields = None
+        if pending_outcome is not None and pending_fields:
+            kept = {
+                name: value
+                for name, value in pending_fields.items()
+                if name in PENDING_FIELDS and value is not None
+            }
+            fields = json.dumps(kept, sort_keys=True, separators=(",", ":")) if kept else None
         with self.db:
             self.db.execute(
                 "INSERT INTO send_ledger (intent_id, state, body_hash, message_id, attempts,"
-                " created_at, updated_at) VALUES(?,?,?,?,0,?,?)"
+                " pending_outcome, pending_fields, created_at, updated_at)"
+                " VALUES(?,?,?,?,0,?,?,?,?)"
                 " ON CONFLICT(intent_id) DO UPDATE SET state=excluded.state,"
                 " body_hash=excluded.body_hash, message_id=excluded.message_id,"
+                " pending_outcome=excluded.pending_outcome,"
+                " pending_fields=excluded.pending_fields,"
                 " updated_at=excluded.updated_at",
-                (intent_id, state, body_hash, message_id, int(now), int(now)),
+                (
+                    intent_id,
+                    state,
+                    body_hash,
+                    message_id,
+                    pending_outcome,
+                    fields,
+                    int(now),
+                    int(now),
+                ),
             )
+
+    def ledger_pending_fields(self, intent_id):
+        """The result fields saved with the pending outcome, or {}."""
+        row = self.db.execute(
+            "SELECT pending_fields FROM send_ledger WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        if not row or not row[0]:
+            return {}
+        try:
+            parsed = json.loads(row[0])
+        except ValueError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {name: value for name, value in parsed.items() if name in PENDING_FIELDS}
 
     def ledger_token(self, intent_id):
         row = self.db.execute(
@@ -338,7 +398,8 @@ class State:
 
     def ledger_pending(self):
         return self.db.execute(
-            "SELECT intent_id, state, body_hash FROM send_ledger WHERE state IN ('claimed','sending')"
+            "SELECT intent_id, state, body_hash, message_id, pending_outcome"
+            " FROM send_ledger WHERE state IN ('claimed','sending')"
         ).fetchall()
 
     def ledger_delete(self, intent_id):
@@ -446,12 +507,6 @@ def send_enabled(state_directory):
 
 
 def main():
-    # runpy executes this module as __main__; alias its canonical import so
-    # outbound shares these exact exception classes instead of loading twice.
-    if __name__ == "__main__":
-        sys.modules.setdefault(
-            (__package__ + ".bridge") if __package__ else "bridge", sys.modules[__name__]
-        )
     if __package__:
         from . import outbound
     else:
