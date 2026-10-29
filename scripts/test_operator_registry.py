@@ -230,9 +230,7 @@ class RegistryTest(unittest.TestCase):
     def test_the_oldest_pick_leaves_a_retired_letter_alone_while_unused_ones_remain(self):
         a = self._pair("n-1", "oldest")
         self.reg.close(a["record_id"])
-        self.assertEqual(
-            [self._pair(n, "oldest")["label"] for n in ("n-2", "n-3")], ["AB", "AC"]
-        )
+        self.assertEqual([self._pair(n, "oldest")["label"] for n in ("n-2", "n-3")], ["AB", "AC"])
 
     def test_the_oldest_pick_takes_the_longest_retired_letter_once_every_letter_was_used(self):
         with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "AC")}):
@@ -241,16 +239,22 @@ class RegistryTest(unittest.TestCase):
             for step, index in enumerate((2, 0, 1)):  # retired in this order:  AC first, AB last
                 self.reg.close(made[index]["record_id"], at="2026-10-01T00:00:0%d.000Z" % step)
             again = [self._pair("n-%d" % i, "oldest") for i in (4, 5, 6)]
-        self.assertEqual([(a["label"], a["generation"]) for a in again], [("AC", 2), ("AA", 2), ("AB", 2)])
+        self.assertEqual(
+            [(a["label"], a["generation"]) for a in again], [("AC", 2), ("AA", 2), ("AB", 2)]
+        )
 
     def test_exhaustion_says_which_space_was_full(self):
         with mock.patch.dict(R.LETTER_SPACES, {"single": ("A",), "double": ("AA",)}):
             self.reg.resolve_or_register(ident(platform="claude", native="n-1"))
-            self.reg.resolve_or_register(ident(platform="claude", native="n-2", letter_space="double"))
+            self.reg.resolve_or_register(
+                ident(platform="claude", native="n-2", letter_space="double")
+            )
             with self.assertRaises(R.LabelExhausted) as one:
                 self.reg.resolve_or_register(ident(platform="claude", native="n-3"))
             with self.assertRaises(R.LabelExhausted) as two:
-                self.reg.resolve_or_register(ident(platform="claude", native="n-4", letter_space="double"))
+                self.reg.resolve_or_register(
+                    ident(platform="claude", native="n-4", letter_space="double")
+                )
         self.assertEqual((one.exception.space, two.exception.space), ("single", "double"))
 
     def test_a_pick_that_is_not_known_is_refused(self):
@@ -272,8 +276,23 @@ class RegistryTest(unittest.TestCase):
     def test_the_register_command_answers_json_when_every_letter_is_live(self):
         # What a platform that asks for its own letter (BotFleet, say) reads:  a code it can act on, not a traceback.
         base = [
-            "register", "--db", self.db, "--platform", "botfleet", "--location", "mac", "--scope", "default",
-            "--seat", "BF-BUILDER", "--source", "test", "--letter-space", "double", "--letter-pick", "oldest",
+            "register",
+            "--db",
+            self.db,
+            "--platform",
+            "botfleet",
+            "--location",
+            "mac",
+            "--scope",
+            "default",
+            "--seat",
+            "BF-BUILDER",
+            "--source",
+            "test",
+            "--letter-space",
+            "double",
+            "--letter-pick",
+            "oldest",
         ]
         out = io.StringIO()
         with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA",)}), contextlib.redirect_stdout(out):

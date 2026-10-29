@@ -235,7 +235,7 @@ def bare(title: object, label: str = "") -> str:
         if line == label + ":":
             return ""  # the name was cleared down to the letter alone
         prefix = "%s: " % label
-        return line[len(prefix) :] if line.startswith(prefix) else line
+        return line.removeprefix(prefix)
     if re.fullmatch(r"[A-Z]{1,2}:", line):
         return ""
     return LETTER_PREFIX.sub("", line, count=1) if LETTER_PREFIX.match(line) else line
@@ -786,7 +786,9 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         text = title_from_transcript(data.get("transcript_path"), home)
     answer = chat.registry("register", title=text)
     note = _apply(
-        chat, answer, dict(note, inherited=inherited, title=clean_title(text) or note.get("title", ""))
+        chat,
+        answer,
+        dict(note, inherited=inherited, title=clean_title(text) or note.get("title", "")),
     )
     note.pop("prior_label", None)  # the words above already have the earlier letter taken off
     if note["state"] == "failed":
