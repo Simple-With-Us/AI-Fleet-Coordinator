@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,114);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,117);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,114);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,117);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -243,6 +243,15 @@ test('branch and tag operations preserve fixed receipts and write UNKNOWN',async
 });
 
 test('actual review regression',()=>{assert.ok(!validWfV1Response('wf_branch_update',{ref:'refs/tags/v1',sha:'a'.repeat(40)})); assert.ok(!validWfV1Response('wf_tag_delete',{deleted:true,ref:'refs/heads/main'}));});
+test('merge queue closed inputs fixed own-bearer calls and unknown writes',async()=>{
+ for(const action of ['wf_merge_queue_entry','wf_merge_queue_enqueue','wf_merge_queue_dequeue']){
+  const args={repo,number:1,...(action==='wf_merge_queue_entry'?{}:{expected_sha:'a'.repeat(40)})};
+  assert.ok(validWfV1Args(action,args));assert.ok(!validWfV1Args(action,{...args,jump:true}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({entry:action==='wf_merge_queue_entry'?null:{id:'MQ1',pull_request_id:'PR1'}}));});
+  assert.ok(!(await t.call('gr_'+action,args)).isError);
+  if(action!=='wf_merge_queue_entry'){const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_'+action,args);assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);}
+ }
+});
 test('fixed PR controls and thread reads preserve scope and UNKNOWN',async()=>{
  for(const action of ['wf_pr_ready','wf_pr_draft','wf_automerge_disable','wf_automerge_enable','wf_review_threads']){
   const args={repo,number:1,...(action==='wf_automerge_enable'?{method:'SQUASH'}:{})};

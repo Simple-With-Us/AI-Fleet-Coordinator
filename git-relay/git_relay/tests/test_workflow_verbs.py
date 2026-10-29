@@ -73,7 +73,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 114)
+        self.assertEqual(len(ACTIONS), len(SPECS))
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
