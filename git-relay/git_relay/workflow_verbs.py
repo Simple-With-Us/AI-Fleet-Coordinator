@@ -76,6 +76,9 @@ SPECS = {
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
     "wf_issue_blocking": ({"issues": "read"}, False),
+    "wf_merge_queue_entry": ({"pull_requests": "read"}, False),
+    "wf_merge_queue_enqueue": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_merge_queue_dequeue": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_git_blob_get": ({"contents": "read"}, False),
     "wf_git_blob_create": ({"contents": "write"}, True),
     "wf_git_commit_get": ({"contents": "read"}, False),
@@ -2379,6 +2382,84 @@ class WorkflowVerbs:
         data = self.client._call("DELETE", path, None, bearer=self.bearer)
         return {"deleted": True, "ref": "refs/tags/" + name}
 
+    def _queue_pr_node(self, repo, number, sha=None):
+        try:
+            prior = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+            node = prior.get("node_id")
+            head = _sub(prior, "head").get("sha")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "queue PR pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
+            raise Refused("queue PR node unavailable")
+        if sha is not None and (head != sha or prior.get("state") != "open"):
+            raise Refused("queue PR head or state changed")
+        return node
+
+    @staticmethod
+    def _queue_receipt(value, node):
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "queue outcome unverifiable")
+        if (
+            not isinstance(value.get("id"), str)
+            or not value["id"]
+            or not isinstance(value.get("pullRequest"), dict)
+            or value["pullRequest"].get("id") != node
+        ):
+            raise RelayGitHubError(502, "queue outcome unverifiable")
+        return {"id": value["id"], "pull_request_id": node}
+
+    def wf_merge_queue_entry(self, repo, args):
+        _only(args, ("repo", "number"))
+        number = _int(args, "number")
+        owner, name = repo.split("/")
+        query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id mergeQueueEntry{id state position jump enqueuedAt}}}}"
+        result = self._fixed_graph(
+            query,
+            {"owner": owner, "name": name, "number": number},
+            "repository",
+            write=False,
+        )
+        pull = _sub(result, "pullRequest")
+        if not isinstance(pull.get("id"), str) or "mergeQueueEntry" not in pull:
+            raise RelayGitHubError(502, "queue read unverifiable")
+        entry = pull["mergeQueueEntry"]
+        if entry is not None:
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("id"), str)
+                or not entry["id"]
+                or entry.get("state")
+                not in ("AWAITING_CHECKS", "LOCKED", "MERGEABLE", "QUEUED", "UNMERGEABLE")
+                or isinstance(entry.get("position"), bool)
+                or not isinstance(entry.get("position"), int)
+                or entry["position"] < 1
+                or type(entry.get("jump")) is not bool
+                or not isinstance(entry.get("enqueuedAt"), str)
+            ):
+                raise RelayGitHubError(502, "queue read unverifiable")
+            entry = {k: entry[k] for k in ("id", "state", "position", "jump", "enqueuedAt")}
+        return {"entry": entry}
+
+    def wf_merge_queue_enqueue(self, repo, args):
+        _only(args, ("repo", "number", "expected_sha"))
+        number, sha = _int(args, "number"), _sha(args, "expected_sha")
+        node = self._queue_pr_node(repo, number, sha)
+        query = "mutation($id:ID!,$sha:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$sha,jump:false}){mergeQueueEntry{id pullRequest{id}}}}"
+        result = self._fixed_graph(query, {"id": node, "sha": sha}, "enqueuePullRequest")
+        return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
+
+    def wf_merge_queue_dequeue(self, repo, args):
+        _only(args, ("repo", "number", "expected_sha"))
+        number, sha = _int(args, "number"), _sha(args, "expected_sha")
+        node = self._queue_pr_node(repo, number, sha)
+        query = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){mergeQueueEntry{id pullRequest{id}}}}"
+        result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
+        return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
+
     def _pr_node(self, repo, number):
         try:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
@@ -2392,9 +2473,17 @@ class WorkflowVerbs:
         return node
 
     def _fixed_graph(self, query, variables, field, write=True):
-        data = self.client._call(
-            "POST", "/graphql", {"query": query, "variables": variables}, bearer=self.bearer
-        )
+        try:
+            data = self.client._call(
+                "POST",
+                "/graphql",
+                {"query": query, "variables": variables},
+                bearer=self.bearer,
+            )
+        except RelayGitHubError as exc:
+            if write and (exc.status in (0, 408) or exc.status >= 500):
+                raise RelayGitHubError(502, "GraphQL outcome unverifiable") from None
+            raise
         # GraphQL HTTP200 errors may follow partial mutation application; never call them definitely unsent.
         if (
             not isinstance(data, dict)
@@ -2504,12 +2593,20 @@ class WorkflowVerbs:
         return self._review_thread_state(repo, args, False)
 
     def wf_review_threads(self, repo, args):
-        _only(args, ("repo", "number"))
+        _only(args, ("repo", "number", "cursor"))
         number = _int(args, "number")
+        cursor = args.get("cursor")
+        if cursor is not None and (
+            not isinstance(cursor, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", cursor)
+        ):
+            raise Refused("invalid cursor")
         owner, name = repo.split("/")
-        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:50) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:20) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
+        query = "query($owner:String!, $name:String!, $number:Int!, $cursor:String) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:5, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:2) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
         result = self._fixed_graph(
-            query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+            query,
+            {"owner": owner, "name": name, "number": number, "cursor": cursor},
+            "repository",
+            write=False,
         )
         threads = _sub(_sub(result, "pullRequest"), "reviewThreads")
         if not isinstance(threads.get("nodes"), list):

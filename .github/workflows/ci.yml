@@ -157,6 +157,14 @@ jobs:
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
+    # The Operator's session registry and the MM seat's letter hook:  the letter
+    # allocation, the two letter spaces, the registry CLI, and the secret scan that
+    # guards every title.  Both files sit at the top of scripts/, outside the
+    # directories discovery walks, so nothing ran them:  before this step their
+    # assertions were decoration and a regression would ship under a green CI.
+    - name: Operator session registry and letter hook tests
+      run: |
+        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
