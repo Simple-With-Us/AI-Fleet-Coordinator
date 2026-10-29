@@ -83,6 +83,19 @@ class FilePolicyInput(unittest.TestCase):
                     seats_json_from_env({"GIT_RELAY_SEATS_FILE": str(path)})
                 self.assertNotIn("synthetic-private-data", str(error.exception))
 
+    def test_validation_diagnostics_remain_specific_without_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.private(tmp, b"{}")
+            path.chmod(0o644)
+            with self.assertRaisesRegex(PolicyError, "must be private, owned and bounded") as error:
+                seats_json_from_env({"GIT_RELAY_SEATS_FILE": str(path)})
+            self.assertNotIn(tmp, str(error.exception))
+            path.chmod(0o600)
+            with patch("git_relay.policy_input.os.open", side_effect=ValueError("private-path")):
+                with self.assertRaisesRegex(PolicyError, "could not be safely read") as error:
+                    seats_json_from_env({"GIT_RELAY_SEATS_FILE": str(path)})
+                self.assertNotIn("private-path", str(error.exception))
+
     def test_foreign_owner_refuses(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.private(tmp, b"{}")

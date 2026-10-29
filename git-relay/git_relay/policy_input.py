@@ -39,6 +39,9 @@ def seats_json_from_env(environ=None):
             if not raw or len(raw) > MAX_POLICY_BYTES:
                 raise PolicyError("seat policy file must be nonempty and bounded")
         return raw.decode("utf-8")
+    except PolicyError:
+        # Our own constant diagnostics contain no paths or policy contents.
+        raise
     except (OSError, UnicodeError, ValueError):
         # No path, OS text or policy bytes in logs or startup diagnostics.
         raise PolicyError("seat policy file could not be safely read") from None
