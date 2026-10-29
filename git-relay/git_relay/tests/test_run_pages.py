@@ -122,3 +122,16 @@ class RunPages(unittest.TestCase):
                     self.handle(Client(self.value([self.row(**{key: value})]))).run(
                         "wf_runs_page", {"repo": REPO}
                     )
+
+    def test_completed_startup_failure_is_observed_and_filterable(self):
+        row = self.row(status="completed", conclusion="startup_failure")
+        for args in ({}, {"status": "completed"}):
+            out = self.handle(Client(self.value([row]))).run("wf_runs_page", {"repo": REPO, **args})
+            self.assertEqual(out["runs"][0]["conclusion"], "startup_failure")
+
+    def test_provider_documents_conclusions_in_status_query_not_conclusion_key(self):
+        c = Client(self.value([self.row(status="completed", conclusion="failure")]))
+        out = self.handle(c).run("wf_runs_page", {"repo": REPO, "status": "failure"})
+        self.assertEqual(out["runs"][0]["conclusion"], "failure")
+        self.assertIn("&status=failure", c.calls[0][1])
+        self.assertNotIn("&conclusion=", c.calls[0][1])

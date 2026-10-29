@@ -703,3 +703,10 @@ test('PR file cached receipt refuses oversized escaped page without truncation',
  const args={repo,number:2,expected_head_sha:'a'.repeat(40)},row={sha:'b'.repeat(40),filename:''.repeat(1000),previous_filename:''.repeat(1000),status:'renamed',additions:1,deletions:1,changes:2};
  assert.equal(validWfV1Response('wf_pr_files_page',{files:Array(30).fill(row),number:2,head_sha:args.expected_head_sha,page:1,has_more:true,history_complete:false},args),false);
 });
+
+test('run page observes startup_failure without treating it as successful review',()=>{
+ const args={repo,status:'completed'},row={id:7,run_attempt:1,workflow_id:8,head_branch:'wise/a',head_sha:'a'.repeat(40),status:'completed',conclusion:'startup_failure',pull_numbers:[]};
+ const receipt={runs:[row],total:1,page:1,has_more:false,search_cap:1000,snapshot:false};
+ assert.equal(validWfV1Response('wf_runs_page',receipt,args),true);
+ assert.equal(validWfV1Response('wf_runs_page',{...receipt,runs:[{...row,status:'queued'}]},args),false);
+});

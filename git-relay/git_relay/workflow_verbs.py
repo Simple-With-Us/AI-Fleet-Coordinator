@@ -3186,6 +3186,8 @@ class WorkflowVerbs:
                 return value
 
             filename = file_path("filename")
+            if row["status"] != "renamed" and "previous_filename" in row:
+                raise RelayGitHubError(502, "unexpected previous PR file path")
             previous = file_path("previous_filename") if row["status"] == "renamed" else None
             counts = {k: row.get(k) for k in ("additions", "deletions", "changes")}
             if any(type(v) is not int or not 0 <= v <= 1000000000 for v in counts.values()):

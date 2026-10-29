@@ -81,3 +81,10 @@ class Files(unittest.TestCase):
         with self.assertRaises(Refused):
             self.handle(c).run("wf_pr_files_page", self.args())
         self.assertEqual(len(c.calls), 3)
+
+    def test_non_renamed_previous_path_is_not_silently_normalized(self):
+        for previous in (None, "src/old.txt"):
+            with self.assertRaises(RelayGitHubError):
+                self.handle(
+                    Client(self.pr(), [self.row(status="modified", previous_filename=previous)])
+                ).run("wf_pr_files_page", self.args())
