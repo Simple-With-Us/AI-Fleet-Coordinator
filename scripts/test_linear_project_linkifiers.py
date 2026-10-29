@@ -198,28 +198,90 @@ class FetchTests(unittest.TestCase):
         L.fetch_projects("lin_oauth_abc", opener=opener)
         self.assertEqual(opener.requests[0].get_header("Authorization"), "Bearer lin_oauth_abc")
 
-    def test_graphql_errors_raise_with_the_message_only(self):
+    def test_graphql_errors_raise_with_allowlisted_code_only(self):
         class BadOpener:
             def __call__(self, req, timeout=None):
                 return FakeResp(
-                    {"errors": [{"message": "boom"}], "sensitive_blob": "S3CR3T-body-dump"}
+                    {
+                        "errors": [
+                            {
+                                "message": "boom",
+                                "extensions": {"code": "AUTHENTICATION_ERROR"},
+                            }
+                        ],
+                        "sensitive_blob": "S3CR3T-body-dump",
+                    }
                 )
 
         with self.assertRaises(L.LinearError) as caught:
             L.fetch_projects("k", opener=BadOpener())
-        self.assertIn("boom", str(caught.exception))
-        self.assertNotIn("S3CR3T", str(caught.exception))
+        text = str(caught.exception)
+        self.assertIn("error=AUTHENTICATION_ERROR", text)
+        self.assertNotIn("boom", text)
+        self.assertNotIn("S3CR3T", text)
 
-    def test_http_errors_raise_with_status_and_message(self):
+    def test_graphql_errors_without_a_valid_code_raise_unknown(self):
+        for errors in (
+            [{"message": "boom-no-code"}],
+            [{"message": "boom-bad-code", "extensions": {"code": "not a code!"}}],
+            [{"message": "boom-long", "extensions": {"code": "x" * 65}}],
+        ):
+            with self.subTest(errors=errors):
+
+                class BadOpener:
+                    def __call__(self, req, timeout=None):
+                        return FakeResp({"errors": errors})
+
+                with self.assertRaises(L.LinearError) as caught:
+                    L.fetch_projects("k", opener=BadOpener())
+                text = str(caught.exception)
+                self.assertIn("error=unknown", text)
+                self.assertNotIn("boom", text)
+
+    def test_http_errors_raise_with_status_and_allowlisted_code(self):
+        body = json.dumps(
+            {
+                "message": "nope",
+                "errors": [{"message": "nope", "extensions": {"code": "FORBIDDEN"}}],
+            }
+        ).encode("utf-8")
+
         def opener(req, timeout=None):
             raise urllib.error.HTTPError(
-                req.full_url, 403, "Forbidden", {}, io.BytesIO(b'{"message": "nope"}')
+                req.full_url,
+                403,
+                "Forbidden",
+                {"X-Request-Id": "req-abc-123"},
+                io.BytesIO(body),
             )
 
         with self.assertRaises(L.LinearError) as caught:
             L.fetch_projects("k", opener=opener)
-        self.assertIn("403", str(caught.exception))
-        self.assertIn("nope", str(caught.exception))
+        text = str(caught.exception)
+        self.assertIn("403", text)
+        self.assertIn("error=FORBIDDEN", text)
+        self.assertIn("request_id=req-abc-123", text)
+        self.assertNotIn("nope", text)
+
+    def test_http_errors_drop_invalid_request_ids_and_codes(self):
+        body = json.dumps({"message": "nope-invalid"}).encode("utf-8")
+
+        def opener(req, timeout=None):
+            raise urllib.error.HTTPError(
+                req.full_url,
+                403,
+                "Forbidden",
+                {"X-Request-Id": "not a request id!"},
+                io.BytesIO(body),
+            )
+
+        with self.assertRaises(L.LinearError) as caught:
+            L.fetch_projects("k", opener=opener)
+        text = str(caught.exception)
+        self.assertIn("403", text)
+        self.assertIn("error=unknown", text)
+        self.assertNotIn("request_id=", text)
+        self.assertNotIn("nope-invalid", text)
 
     def test_malformed_cursors_fail_closed(self):
         for bad in (None, "", 123, ["c1"]):
@@ -257,6 +319,69 @@ class FetchTests(unittest.TestCase):
             self.assertIn("too many pages", str(caught.exception))
         finally:
             L.MAX_PAGES = old_max
+
+    def test_exhausted_budget_fails_closed_before_any_page(self):
+        opener = FakeOpener([linear_page([])])
+        times = iter([1000.0, 2000.0])
+        with self.assertRaises(L.LinearError) as caught:
+            L.fetch_projects("k", opener=opener, clock=lambda: next(times))
+        self.assertIn("deadline", str(caught.exception))
+        self.assertEqual(opener.requests, [])
+
+    def test_per_request_timeout_shrinks_with_remaining_budget(self):
+        pages = [
+            linear_page(
+                [{"identifier": "P-BF-6", "slugId": "5afcbc055535", "name": "R"}],
+                has_next=True,
+                cursor="c1",
+            ),
+            linear_page([{"identifier": "P-AFC-7", "slugId": "9c28cf61dcc8", "name": "M"}]),
+        ]
+        timeouts: list = []
+
+        class TimeoutOpener:
+            def __call__(self, req, timeout=None):
+                timeouts.append(timeout)
+                body = json.loads(req.data.decode("utf-8"))
+                index = 0 if body["variables"]["cursor"] is None else 1
+                return FakeResp(pages[index])
+
+        times = iter([0.0, 10.0, 75.0])
+        projects, _ = L.fetch_projects_with_stats(
+            "k", opener=TimeoutOpener(), clock=lambda: next(times)
+        )
+        self.assertEqual([p.code for p in projects], ["P-AFC-7", "P-BF-6"])
+        self.assertEqual(len(timeouts), 2)
+        self.assertEqual(timeouts[0], float(L.LINEAR_REQUEST_TIMEOUT_S))
+        self.assertAlmostEqual(timeouts[1], 15.0)
+        self.assertLess(timeouts[1], timeouts[0])
+
+    def test_mid_walk_budget_expiry_raises_without_partial_inventory(self):
+        pages = [
+            linear_page(
+                [{"identifier": "P-BF-6", "slugId": "5afcbc055535", "name": "R"}],
+                has_next=True,
+                cursor="c1",
+            ),
+            linear_page([{"identifier": "P-AFC-7", "slugId": "9c28cf61dcc8", "name": "M"}]),
+        ]
+
+        class TimeoutOpener:
+            def __init__(self):
+                self.count = 0
+
+            def __call__(self, req, timeout=None):
+                self.count += 1
+                body = json.loads(req.data.decode("utf-8"))
+                index = 0 if body["variables"]["cursor"] is None else 1
+                return FakeResp(pages[index])
+
+        opener = TimeoutOpener()
+        times = iter([0.0, 10.0, 95.0])
+        with self.assertRaises(L.LinearError) as caught:
+            L.fetch_projects_with_stats("k", opener=opener, clock=lambda: next(times))
+        self.assertIn("deadline", str(caught.exception))
+        self.assertEqual(opener.count, 1)
 
     def test_outbound_calls_carry_a_project_user_agent(self):
         self.assertEqual(L._linear_headers("k")["User-Agent"], "operator-linkifiers")
@@ -791,17 +916,45 @@ class PrTests(unittest.TestCase):
         self.assertEqual(L._branch_name(files), L._branch_name(dict(reversed(list(files.items())))))
         self.assertNotEqual(L._branch_name(files), L._branch_name({L.TARGET_PATH: "other"}))
 
-    def test_errors_carry_status_and_message_but_never_the_token(self):
+    def test_errors_carry_status_and_code_but_never_body_or_token(self):
         def http(method, url, headers=None, body=None):
             if url.endswith("/git/ref/heads/main"):
-                return 500, {"message": "backend oops"}
+                return 500, {
+                    "message": "backend oops",
+                    "errors": [{"code": "backend_error", "message": "backend oops"}],
+                }
             raise AssertionError(url)
 
         with self.assertRaises(L.GitHubError) as caught:
             L.open_sync_pr(GITHUB_TOKEN, {L.TARGET_PATH: "t"}, [], http=http)
-        self.assertIn("500", str(caught.exception))
-        self.assertIn("backend oops", str(caught.exception))
-        self.assertNotIn(GITHUB_TOKEN, str(caught.exception))
+        text = str(caught.exception)
+        self.assertIn("500", text)
+        self.assertIn("error=backend_error", text)
+        self.assertNotIn("backend oops", text)
+        self.assertNotIn(GITHUB_TOKEN, text)
+
+    def test_errors_without_a_valid_code_raise_unknown(self):
+        def http(method, url, headers=None, body=None):
+            return 500, {"message": "backend oops-no-code"}
+
+        headers = L._github_headers(GITHUB_TOKEN)
+        with self.assertRaises(L.GitHubError) as caught:
+            L._github_api(http, headers, "GET", "https://api.github.com/x")
+        text = str(caught.exception)
+        self.assertIn("500", text)
+        self.assertIn("error=unknown", text)
+        self.assertNotIn("backend oops-no-code", text)
+
+    def test_infisical_errors_carry_status_and_code_but_never_body(self):
+        def http(method, url, headers=None, body=None):
+            return 503, {"message": "infisical-boom", "code": "service_unavailable"}
+
+        with self.assertRaises(L.SecretsRefused) as caught:
+            L.load_secrets("service-token-value", http=http)
+        text = str(caught.exception)
+        self.assertIn("503", text)
+        self.assertIn("error=service_unavailable", text)
+        self.assertNotIn("infisical-boom", text)
 
 
 class ReconcileTests(unittest.TestCase):
