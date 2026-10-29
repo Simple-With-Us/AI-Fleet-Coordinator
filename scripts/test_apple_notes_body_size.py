@@ -18,9 +18,9 @@ import subprocess
 import unittest
 
 from test_apple_notes_linkify import (
-    LinkifyTestCase,
     SCRIPT,
     SESSION,
+    LinkifyTestCase,
 )
 
 #  The size of the body the big test uses.  It has to clear the 1048576 byte budget for the whole
@@ -34,7 +34,9 @@ END_MARKER = "END-OF-THE-LARGE-BODY-MARKER"
 
 #  A line of filler with nothing in it the linkifier would touch:  no team key, no issue
 #  identifier, no pull request reference.  The body here is about size, not about linking.
-FILLER_LINE = "The registry lists the helper, the seat that owns it, and every other seat that runs it."
+FILLER_LINE = (
+    "The registry lists the helper, the seat that owns it, and every other seat that runs it."
+)
 
 
 class BodySizeTests(LinkifyTestCase):
