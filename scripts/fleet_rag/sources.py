@@ -1964,7 +1964,7 @@ def _linear_seat(label_names: list) -> str:
     for prefix in ("seat:", "claimed:"):
         for name in label_names:
             if name.startswith(prefix):
-                return seat_tag(name[len(prefix):])
+                return seat_tag(name[len(prefix) :])
     return "FLEET"
 
 
@@ -2043,7 +2043,7 @@ def iter_linear(
     selected = [
         uid for uid, updated in scan.items() if uid not in imported or (updated or "") >= freeze
     ]
-    selected.sort(key=lambda uid: (scan.get(uid) or ""), reverse=True)
+    selected.sort(key=lambda uid: scan.get(uid) or "", reverse=True)
     if limit:
         selected = selected[: int(limit)]
     if not selected:
