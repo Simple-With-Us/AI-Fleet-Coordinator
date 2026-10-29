@@ -227,7 +227,7 @@ python3 scripts/alert-ingress/provision-secrets.py --apply    # write
 
 ### Proving it
 
-`scripts/alert-ingress/selftest.py` is the end-to-end proof against the live Worker.  It posts synthetic Datadog and Better Stack events, reads the topic back through the vendor bots' own credentials, and asserts that a flapping monitor produces exactly one standing message, that two vendors sharing a service name own separate standing messages, and that a second alert joins the same standing block as a second row.
+`scripts/alert-ingress/selftest.py` is the end-to-end proof against the live Worker.  It posts synthetic Datadog and Better Stack events, reads the topic back through the vendor bots' own credentials, and asserts that a flapping monitor produces exactly one standing message, that two vendors sharing a service name own separate standing messages, that a second alert joins the same standing block as a second row, and that every delivery left its raw copy in `#Alerts-Raw` while `#Alerts` got no alert line.  `--cleanup` resolves the test incidents and deletes the test messages in all three channels, keeping the standing blocks the Worker still points at.
 
 ```
 python3 scripts/alert-ingress/selftest.py              # prove
