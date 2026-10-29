@@ -152,6 +152,32 @@ def _scan_title(title: str | None) -> None:
         raise ValueError(SECRET_DETECTED)
 
 
+def _scan_field(field: str, value: object) -> None:
+    """Refuse a field that carries a credential, with a stable code and no value.
+
+    The title has its own code, so every other field names itself:  the refusal says which
+    field was refused, and never repeats the secret or any part of it.
+    """
+    if not isinstance(value, str) or not value:
+        return
+    if secretscan.scan(value):
+        raise ValueError("%s_secret_detected" % field)
+
+
+def _scan_fields(fields: Mapping[str, object]) -> None:
+    """Scan every user-supplied field that is about to be written.
+
+    The registry is the system of record for every session, so a credential in ANY of the
+    fields is refused before it reaches SQLite:  the title keeps its own code and every other
+    field names itself.
+    """
+    for field, value in fields.items():
+        if field == "title":
+            _scan_title(value if isinstance(value, str) else None)
+        else:
+            _scan_field(field, value)
+
+
 def registry_title(label: str, title: str) -> str:
     """The topic stored on the row:  the letter prefix belongs in display_title only."""
     text = (title or "").strip()
@@ -669,7 +695,14 @@ def register_session(
     """
     if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
         raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
-    _scan_title(title)
+    _scan_fields(
+        {
+            "title": title,
+            "project": project,
+            "thread_link": thread_link,
+            "apple_note_link": apple_note_link,
+        }
+    )
     native = SI.check(native_session_id, "the native session id")
     platform = normalize_platform(platform)
     for name, value in (
@@ -774,7 +807,7 @@ def update_session(
     bad = [k for k in wanted if k not in MUTABLE_ATTRS]
     if bad:
         raise ValueError(f"not mutable: {', '.join(bad)}")
-    _scan_title(wanted.get("title"))
+    _scan_fields(wanted)
     registry = SessionRegistry(db_path)
     namespace = normalize_platform(platform)
     try:
