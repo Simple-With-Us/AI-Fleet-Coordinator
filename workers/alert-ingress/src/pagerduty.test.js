@@ -385,3 +385,18 @@ test("a raw copy Zulip refuses never changes how the event is handled", async ()
     globalThis.fetch = original;
   }
 });
+
+test("the raw copy follows the pinned service topic when the vendor label changes", async () => {
+  const kv = fakeKV();
+  const zulip = stubZulip();
+  try {
+    const env = envFor(kv);
+    const headers = { "x-pagerduty-token": "header-fixture" };
+    await handler.fetch(post(incident("triggered"), headers), env, {});
+    await handler.fetch(post(incident("acknowledged", { service: { id: "PA87S7M", summary: "renamed.service" } }), headers), env, {});
+    const raw = zulip.calls.filter((call) => call.form?.get("to") === "Alerts-Raw");
+    assert.deepEqual(raw.map((call) => call.form.get("topic")), ["jays.services", "jays.services"]);
+  } finally {
+    zulip.restore();
+  }
+});

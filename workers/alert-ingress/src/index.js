@@ -847,7 +847,11 @@ async function postRawCopy(env, source, payload) {
   if (!credential) return;
   let topic = source;
   try {
-    topic = boundedTopic(normalize(source, payload).service) || source;
+    // The topic the event path files this alert under:  its pinned service
+    // when it has one, so a renamed vendor label does not split the record.
+    const event = normalize(source, payload);
+    const pinned = await env.ALERT_STATE.get(svcKey(event.key), "json");
+    topic = boundedTopic(typeof pinned === "string" && pinned ? pinned : event.service) || source;
   } catch {
     // An identity the event path refuses still leaves a raw record, by source.
   }
@@ -1452,7 +1456,11 @@ const handler = {
     if (source === "pagerduty" && !pagerDutyIncidentEvent(payload)) {
       return json({ action: "ignored", posted: false });
     }
-    await postRawCopy(env, source, payload);
+    // The raw copy runs beside the event path rather than before it, so a
+    // delivery waits for one Zulip round trip, not two.  It is awaited before
+    // the response either way, because the writer's request is what keeps it
+    // alive, and postRawCopy never throws.
+    const rawCopy = postRawCopy(env, source, payload);
     try {
       return json(await handleEvent(source, payload, env));
     } catch (error) {
@@ -1474,6 +1482,8 @@ const handler = {
         );
       }
       throw error;
+    } finally {
+      await rawCopy;
     }
   },
 

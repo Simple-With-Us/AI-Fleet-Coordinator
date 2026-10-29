@@ -54,3 +54,25 @@ test("a payload cannot close the fences, and the copy fits a Zulip message", () 
   assert.ok(out.length <= 10000, String(out.length));
   assert.match(out, /\.\.\. \(truncated\)/);
 });
+
+test("a token right after a newline inside a payload string is still redacted", () => {
+  const token = "ghp_" + "b".repeat(36);
+  const out = renderRaw("generic", { note: `first line\n${token}\n`, [`key ${token}`]: "v", list: [`\t${token}`] });
+  assert.doesNotMatch(out, /ghp_/);
+});
+
+test("group mentions and a link cannot ping anyone either", () => {
+  const out = renderRaw("datadog", {
+    alert_title: "for @*oncall* and @_*sre*",
+    event_url: "https://example.test/@**all**",
+  });
+  const head = out.split("`spoiler")[0];
+  assert.doesNotMatch(head, /@_?\*/);
+});
+
+test("a flood of backticks cannot make the fences outgrow a Zulip message", () => {
+  const out = renderRaw("generic", { text: "`".repeat(5000), more: "`".repeat(3000) });
+  assert.ok(out.length <= 10000, String(out.length));
+  const fences = out.match(/^`+/gm) || [];
+  assert.ok(Math.max(...fences.map((f) => f.length)) <= 21);
+});
