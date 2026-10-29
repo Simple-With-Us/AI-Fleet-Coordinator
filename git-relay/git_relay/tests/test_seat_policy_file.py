@@ -46,7 +46,7 @@ def worker_identities() -> set[str]:
     names = set(re.findall(r'"([A-Z][A-Z0-9-]*)"', known.group(1)))
     bearer = (WORKER / "bearer-identities.js").read_text(encoding="utf-8")
     row = r'^\s+"?([A-Z][A-Z0-9-]*)"?: Object\.freeze\(\{ prefix:'
-    names |= set(re.findall(row, bearer, re.M))
+    names |= set(re.findall(row, bearer, re.MULTILINE))
     personas = ROOT / "scripts" / "agent_sync" / "mcp" / "gb-identities.json"
     names |= set(json.loads(personas.read_text(encoding="utf-8"))["enabled"])
     return names

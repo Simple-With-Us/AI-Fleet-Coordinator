@@ -346,10 +346,27 @@ def verify_apps(args) -> int:
             json.dump(seats, fh)
         os.chmod(script, 0o644)
         os.chmod(policy, 0o644)
-        cmd = ["systemd-run", "--wait", "--pipe", "--collect", "--quiet",
-               "-p", "DynamicUser=yes", "-p", "User=git-relay-verify", "-p", "PrivateTmp=yes",
-               "-p", "ProtectHome=yes", "-p", "NoNewPrivileges=yes", "-p", "UMask=0077",
-               "-p", f"LoadCredential=git-relay-apps-token:{args.apps_token}"]
+        cmd = [
+            "systemd-run",
+            "--wait",
+            "--pipe",
+            "--collect",
+            "--quiet",
+            "-p",
+            "DynamicUser=yes",
+            "-p",
+            "User=git-relay-verify",
+            "-p",
+            "PrivateTmp=yes",
+            "-p",
+            "ProtectHome=yes",
+            "-p",
+            "NoNewPrivileges=yes",
+            "-p",
+            "UMask=0077",
+            "-p",
+            f"LoadCredential=git-relay-apps-token:{args.apps_token}",
+        ]
         for name, value in env.items():
             cmd += ["-p", f"Environment={name}={value}"]
         cmd += ["/usr/bin/python3", "-I", script, "verify-inner", "--seats", policy,
