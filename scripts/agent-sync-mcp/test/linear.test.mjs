@@ -865,16 +865,28 @@ test("BF-TRADER mints once with its minimal first-grant scope from an empty cach
   assert.equal(new URLSearchParams(fake.mints()[0].raw).get("scope"), "read,write,app:assignable");
 });
 
-test("MA is parked: it is enabled but sends no mint and no data request until its mint effect is qualified", async () => {
+test("MA mints once with its own installed scope (not the standard four), then reuses the token; BF-ENGINEER keeps the standard scope", async () => {
   const L = await import("../src/linear.js");
-  assert.deepEqual([...L.MINT_SCOPE_PENDING], ["MA"]);
-  assert.equal(L.mintScopeFor("MA"), null, "parked beats the stored scope");
-  assert.equal(L.SEAT_MINT_SCOPES.MA, "comments:create,issues:create,read,write", "its own installed scope is held ready, not the standard four");
+  const own = "comments:create,issues:create,read,write";
+  assert.deepEqual([...L.MINT_SCOPE_PENDING], []);
+  assert.equal(L.mintScopeFor("MA"), own);
+  assert.notEqual(L.mintScopeFor("MA"), L.LINEAR_SCOPE);
+  assert.ok(!own.includes("assignable") && !own.includes("mentionable"), "no scope beyond the installed one");
   assert.equal(L.mintScopeFor("BF-ENGINEER"), L.LINEAR_SCOPE);
-  const { tools, fake } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
+  const { tools, fake, gate } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
+  assert.equal(await gate.linearTokenGet(), null);
+  ok(await tools.call("linear_list", {}), "linear_list");
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1);
+  assert.equal(new URLSearchParams(fake.mints()[0].raw).get("scope"), own);
+});
+
+test("MA mints with its own scope but a wrong viewer is refused after the mint, with the token kept", async () => {
+  const { tools, fake, gate } = harness({ seat: "MA", viewer: { id: "u-x", name: "Someone Else", app: true } });
   toolError(await tools.call("linear_list", {}), "not_authorized");
-  assert.equal(fake.mints().length, 0);
-  assert.equal(fake.calls().length, 0);
+  assert.equal(fake.mints().length, 1);
+  assert.equal(fake.calls().filter((c) => !/viewer/i.test(String(c.body?.query ?? ""))).length, 0, "no data call after the refused viewer check");
+  assert.ok((await gate.linearTokenGet())?.access_token);
 });
 
 
@@ -954,7 +966,7 @@ test("a seat that can delegate still clears an app delegate on release (unchange
 
 test("a non-canonical spelling of a parked or scoped seat refuses to mint, without mapping to that seat", async () => {
   const L = await import("../src/linear.js");
-  assert.equal(L.mintScopeFor("MA"), null);
+  assert.equal(L.mintScopeFor("MA"), "comments:create,issues:create,read,write");
   assert.equal(L.mintScopeFor("BF_TRADER"), null);
   assert.equal(L.mintScopeFor("bf_trader"), null);
   assert.equal(L.mintScopeFor("BF-TRADER"), "read,write,app:assignable");

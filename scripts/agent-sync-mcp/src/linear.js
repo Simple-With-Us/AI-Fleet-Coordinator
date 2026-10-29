@@ -45,10 +45,9 @@ export const LINEAR_SCOPE = "read,write,app:assignable,app:mentionable";
 // mint on first use until their exact scope is qualified and given in SEAT_MINT_SCOPES
 // (seat tag -> scope string, the app's own).  The other seats use LINEAR_SCOPE.  MA and BF-TRADER have
 // their own scope strings below, and the rest use LINEAR_SCOPE.
-// MA is parked:  its installed client has a scope of its own and the effect of a new client_credentials
-// mint on its existing installation (prior grant type) is not qualified, so it does not auto-mint.
-// Removing "MA" here is the release step, done only after that effect is qualified.
-export const MINT_SCOPE_PENDING = Object.freeze(["MA"]);
+// Empty.  A seat listed here is enabled but mints nothing until it is removed;  MA was parked here until
+// its token replacement was approved.
+export const MINT_SCOPE_PENDING = Object.freeze([]);
 // MA: the installation's own client.scope as the provider returned it (2026-10-29), not LINEAR_SCOPE.
 // BF-TRADER: no installation exists, so this is a new first grant, set to the least the hosted tools use:
 // read and write, plus app:assignable because linear_claim/linear_status set the app as issue delegate
