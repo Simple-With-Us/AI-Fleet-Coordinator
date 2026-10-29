@@ -458,8 +458,12 @@ export function validWfV1Response(action, body, args) {
  if(typeof action!=="string")return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(action.startsWith('wf_repo_variable')){
-  const name=z.string().regex(/^[A-Z_][A-Z0-9_]{0,99}$/), variable=z.object({name,value:z.string().refine(v=>Buffer.byteLength(v,'utf8')<=8192),created_at:z.string().max(100),updated_at:z.string().max(100)}).strict();
-  return (action==='wf_repo_variables'?z.object({variables:z.array(variable).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000)}).strict():action==='wf_repo_variable_get'?z.object({variable}).strict():z.object({completed:z.literal(true),name}).strict()).safeParse(body).success;
+  const name=z.string().regex(/^[A-Z_][A-Z0-9_]{0,99}$/), variable=z.object({name,value:z.string().refine(v=>new TextEncoder().encode(v).length<=8192),created_at:z.string().max(100),updated_at:z.string().max(100)}).strict();
+  const ok=(action==='wf_repo_variables'?z.object({variables:z.array(variable).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000)}).strict():action==='wf_repo_variable_get'?z.object({variable}).strict():z.object({completed:z.literal(true),name}).strict()).safeParse(body).success;
+  if(!ok||!args)return ok;
+  if(action==='wf_repo_variables')return body.page===(args.page??1)&&body.variables.length<=(args.per_page??30);
+  if(action==='wf_repo_variable_get')return body.variable.name===args.name;
+  return body.name===args.name;
  }
 
  if(action==='wf_repo_tags'||action==='wf_repo_languages'){

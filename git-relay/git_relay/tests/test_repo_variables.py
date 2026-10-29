@@ -11,7 +11,7 @@ class Variables(unittest.TestCase):
         class Strict(Client):
             def _call(self, *a, expected_status=None, **k):
                 self.expected = expected_status
-                return super()._call(*a, **k)
+                return super()._call(*a, expected_status=expected_status, **k)
 
         for action, method, status, path in [
             ("wf_repo_variable_create", "POST", 201, "actions/variables"),
@@ -118,16 +118,28 @@ class Variables(unittest.TestCase):
         from git_relay.github_client import RelayGitHubError
 
         class ErrorClient(Client):
-            def _call(self, *args, **kwargs):
+            def _call(self, method, path, *args, **kwargs):
+                if method == "GET":
+                    return self.repository
                 raise RelayGitHubError(self.status, "synthetic")
 
         action = "wf_repo_variable_delete"
         c = ErrorClient()
         c.status = 404
+        c.repository = {"id": 1, "full_name": REPO}
         h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
         self.assertEqual(
             h.run(action, {"repo": REPO, "name": "MODE"}), {"completed": True, "name": "MODE"}
         )
+        for repository in (
+            {},
+            {"id": True, "full_name": REPO},
+            {"id": 1, "full_name": "wrong/repo"},
+        ):
+            c.repository = repository
+            with self.assertRaises(RelayGitHubError):
+                h.run(action, {"repo": REPO, "name": "MODE"})
+        c.repository = {"id": 1, "full_name": REPO}
         for status in (403, 429, 502):
             c.status = status
             with self.assertRaises(RelayGitHubError):

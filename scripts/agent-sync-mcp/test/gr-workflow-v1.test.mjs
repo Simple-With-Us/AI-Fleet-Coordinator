@@ -888,3 +888,19 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
  }
  assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
 });
+
+test('variable receipts bind page size and exact name without Node Buffer',()=>{
+ const prior=globalThis.Buffer;globalThis.Buffer=undefined;
+ try{
+  const variable={name:'MODE',value:'release',created_at:'x',updated_at:'x'};
+  const args={repo:'o/r',page:2,per_page:1};
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable],total_count:1,page:2},args),true);
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable],total_count:1,page:1},args),false);
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable,variable],total_count:2,page:2},args),false);
+  for(const action of ['wf_repo_variable_get','wf_repo_variable_create','wf_repo_variable_update','wf_repo_variable_delete']){
+   const body=action.endsWith('_get')?{variable}:{completed:true,name:'MODE'};
+   assert.equal(validWfV1Response(action,body,{repo:'o/r',name:'MODE'}),true);
+   assert.equal(validWfV1Response(action,body,{repo:'o/r',name:'OTHER'}),false);
+  }
+ }finally{globalThis.Buffer=prior;}
+});

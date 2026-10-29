@@ -13,6 +13,6 @@ Source: https://raw.githubusercontent.com/github/rest-api-description/main/descr
 
 Credential-pattern scanning is best effort, not proof an arbitrary string is non-secret.  Never use these commands to store passwords or API keys.
 
-Known-success update/delete setters reapply after fresh authorization, including A-B-A.  Create remains append-only cached success. An already-absent delete (upstream 404) is a completed desired state; other failures remain errors.  Pending/UNKNOWN never re-arm.
+Known-success update/delete setters reapply after fresh authorization, including A-B-A.  Create remains append-only cached success.  An already-absent delete (upstream 404) is a completed desired state only after verifying the exact repository still exists; other failures remain errors.  Pending/UNKNOWN never re-arm.
 
 Variables is now a supported minter permission key in source, not a configured grant.  Existing seat permissions remain unchanged and deny by default.

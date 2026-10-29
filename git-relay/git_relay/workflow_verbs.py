@@ -1064,10 +1064,19 @@ class WorkflowVerbs:
                 expected_status=204,
             )
         except RelayGitHubError as exc:
-            # The desired absent state is already satisfied. Keep delete as a
-            # re-applicable setter so a later recreation can be deleted again.
             if exc.status != 404:
                 raise
+            # A hidden or missing repo also returns 404.  Verify this exact repo
+            # before treating a missing variable as the desired absent state.
+            repository = self._get(f"/repos/{repo}")
+            if (
+                not isinstance(repository, dict)
+                or type(repository.get("id")) is not int
+                or repository["id"] <= 0
+                or not isinstance(repository.get("full_name"), str)
+                or repository["full_name"].lower() != repo.lower()
+            ):
+                raise RelayGitHubError(502, "variable repository receipt unverifiable")
         return {"completed": True, "name": name}
 
     @staticmethod
