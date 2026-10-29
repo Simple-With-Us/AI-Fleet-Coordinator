@@ -523,7 +523,7 @@ Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers
 
 ## git-relay rollout (GR-MCP)
 
-State on Wed, Oct 28 (read on the server):  steps 1 to 3 are live.  `git-relay.service` runs from `/opt/git-relay` on 127.0.0.1:8471, `cloudflared-git-relay.service` carries the public hostname, which answers 403 without the Access service token, and Fleet-OPS `/gr-front` holds the Access pair.  The audit log shows ECHO's calls since Oct 26.  Step 4's reviewed file is `git-relay/deploy/seat-policy.json` (git-relay README, "The reviewed seat policy file").  The steps below are kept as the record of how it was built.
+State on Wed, Oct 28 (checked on the server):  steps 1 to 3 are live.  The relay runs as a systemd service behind its own tunnel, and its public hostname refuses a request without the Access service token.  The audit log shows Echo's calls since Oct 26.  Step 4's reviewed file is `git-relay/deploy/seat-policy.json` (git-relay README, "The reviewed seat policy file").  The steps below are kept as the record of how it was built.
 
 ### 1. Host
 

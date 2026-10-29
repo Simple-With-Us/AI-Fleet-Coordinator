@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """Render, install and check the reviewed git-relay seat policy (seat-policy.json).
 
-    seat_policy.py render                  print GIT_RELAY_SEATS_JSON as one compact line
-    seat_policy.py install                 as root on the relay host:  validate the file with
-                                           the deployed relay, show the diff and its digest
-    seat_policy.py install --apply --expect DIGEST
-                                           back the config up, write exactly that policy,
-                                           restart the relay and check its health
-    seat_policy.py verify-apps             as root on the relay host:  every seat's own App
-                                           mints a read-only token and reads one repository
+    seat_policy.py render
+        print GIT_RELAY_SEATS_JSON as one compact line
+    seat_policy.py install --unit UNIT
+        as root on the relay host:  validate the file with the deployed relay, show the
+        diff against the running policy and the digest of the new one
+    seat_policy.py install --unit UNIT --apply --expect DIGEST
+        back the config up, write exactly that policy, restart the relay, check its health
+    seat_policy.py verify-apps --unit UNIT
+        as root on the relay host:  every seat's own App mints a read-only token and reads
+        one repository
 
 The policy file holds no secret.  Every seat is `auth: shared`:  it signs in with its own
 admin-minted ST-MCP bearer, which the relay checks through the Worker's verifier, and the
-relay mints the seat's App token from the keys in Fleet-OPS /github-apps.
+relay mints the seat's App token from the App keys in Fleet-OPS.
+
+Everything about the deployment is read from the relay's own systemd unit (UNIT):  its
+working directory is the deployed relay code, its one EnvironmentFile holds the policy line,
+its LoadCredential binds the apps token, and its environment names the health address and
+the App-key folder.  No host path is written here.
 
 As root it runs only from a root-owned copy that only root can write (README, "The reviewed
 seat policy file"), and it prints each file's git blob id, so the copy can be matched to the
@@ -23,12 +30,12 @@ shown, and it puts the previous file back when the restart fails, the relay does
 back healthy, or the run is interrupted.
 
 `verify-apps` runs the deployed relay's AppTokenMinter in a transient unit with the relay's
-own credential binding (DynamicUser, LoadCredential of the apps token, the unit's Infisical
-project and the App-key folder the service reads), so it reads the App keys exactly as the
-service does.  For each seat it mints a token with metadata and contents read for one
-repository, checks that the key signs for the seat's own App (the minter checks the App id,
-this checks the slug too) and reads that repository with it.  No token is printed, logged
-or kept.
+own credential binding (DynamicUser, the LoadCredential of the apps token, the unit's
+Infisical project and the App-key folder the service reads), so it reads the App keys
+exactly as the service does.  For each seat it mints a token with metadata and contents read
+for one repository, checks that the key signs for the seat's own App (the minter checks the
+App id, this checks the slug too) and reads that repository with it.  No token is printed,
+logged or kept.
 """
 
 from __future__ import annotations
@@ -45,16 +52,14 @@ import sys
 import tempfile
 import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_POLICY = HERE / "seat-policy.json"
-DEFAULT_RELAY = "/opt/git-relay/git-relay"
-DEFAULT_CONFIG = "/etc/git-relay/config.env"
-DEFAULT_APPS_TOKEN = "/etc/git-relay/apps.infisical-token"
-DEFAULT_UNIT = "git-relay.service"
-DEFAULT_HEALTH = "http://127.0.0.1:8471/healthz"
+# The relay's own default for the App-key folder (server.py), used when nothing overrides it.
 DEFAULT_SECRETS_PATH = "/github-apps"
+APPS_CREDENTIAL = "git-relay-apps-token"
 SEATS_VAR = "GIT_RELAY_SEATS_JSON"
 SECRETS_PATH_VAR = "GIT_RELAY_SECRETS_PATH"
 VERIFY_REPO = "Simple-With-Us/AI-Fleet-Coordinator"
@@ -135,7 +140,7 @@ def render(doc: dict) -> dict:
 
 
 def compact(seats: dict) -> str:
-    """The one-line form config.env carries:  unquoted, compact separators, sorted keys."""
+    """The one-line form the EnvironmentFile carries:  unquoted, compact, sorted keys."""
     return json.dumps(seats, separators=(",", ":"), sort_keys=True)
 
 
@@ -150,18 +155,72 @@ def blob_id(path: Path | str) -> str:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
-def require_root_owned(paths) -> None:
-    """As root, refuse any file or folder on the way that is not root-owned or that a
-    non-root account could write:  root must never run what another account can change."""
+def require_root_owned(paths, lstat=os.lstat) -> None:
+    """As root, refuse any file or folder on the way that is not root-owned, that a
+    non-root account could write, or that is a symlink:  root must never run what
+    another account can change."""
     for path in paths:
         current = Path(path).absolute()
         for part in [current, *current.parents]:
-            st = os.lstat(part)
+            st = lstat(part)
             if stat.S_ISLNK(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
                 raise SystemExit(
                     f"{part} is not root-owned and writable by root alone;  as root, run a "
                     "root-owned copy of the merged files (git-relay README, seat policy file)"
                 )
+
+
+@dataclass
+class Unit:
+    """What the relay's systemd unit says about its deployment."""
+
+    name: str
+    relay: str
+    config: str
+    apps_token: str
+    environment: dict
+
+    @property
+    def health(self) -> str:
+        host = self.environment.get("GIT_RELAY_HOST", "127.0.0.1")
+        port = self.environment.get("GIT_RELAY_PORT", "8471")
+        return f"http://{host}:{port}/healthz"
+
+
+def _systemctl(*args) -> str:
+    return subprocess.run(
+        ["systemctl", *args], check=True, capture_output=True, text=True
+    ).stdout
+
+
+def read_unit(name: str, show=None, cat=None) -> Unit:
+    """The unit's working directory, its one EnvironmentFile, the apps credential it loads
+    and its Environment=;  refuses when any of them is missing or ambiguous."""
+    show = show if show is not None else _systemctl(
+        "show", name, "-p", "WorkingDirectory", "-p", "EnvironmentFiles", "-p", "Environment"
+    )
+    cat = cat if cat is not None else _systemctl("cat", name)
+    relay, files, env = "", [], {}
+    for line in show.splitlines():
+        key, _, value = line.partition("=")
+        if key == "WorkingDirectory":
+            relay = value.strip()
+        elif key == "EnvironmentFiles" and value.strip():
+            files.append(value.split(" (")[0].strip())
+        elif key == "Environment":
+            env.update(item.split("=", 1) for item in value.split() if "=" in item)
+    tokens = []
+    for line in cat.splitlines():
+        if line.strip().startswith("LoadCredential="):
+            ident, _, source = line.strip().split("=", 1)[1].partition(":")
+            if ident == APPS_CREDENTIAL and source:
+                tokens.append(source)
+    if not relay or len(files) != 1 or len(tokens) != 1:
+        raise SystemExit(
+            f"{name}:  expected a WorkingDirectory, one EnvironmentFile and one "
+            f"{APPS_CREDENTIAL} LoadCredential;  found {bool(relay)}, {len(files)}, {len(tokens)}"
+        )
+    return Unit(name=name, relay=relay, config=files[0], apps_token=tokens[0], environment=env)
 
 
 def validate_with(relay_dir: str, seats: dict) -> None:
@@ -263,19 +322,19 @@ def _write_atomic(path: str, text: str) -> None:
         raise
 
 
-def _restore(args, before: str, backup: str) -> int:
+def _restore(unit: Unit, wait: int, before: str, backup: str) -> int:
     print(f"restoring {backup}")
-    _write_atomic(args.config, before)
-    subprocess.run(["systemctl", "restart", args.unit], check=False)
-    restored = _healthy(args.health, args.unit, args.wait)
+    _write_atomic(unit.config, before)
+    subprocess.run(["systemctl", "restart", unit.name], check=False)
+    restored = _healthy(unit.health, unit.name, wait)
     print("restored and healthy" if restored else "THE RESTORE IS NOT HEALTHY:  check the unit now")
     return 3
 
 
-def install(args) -> int:
+def install(args, unit: Unit) -> int:
     seats = render(load(args.policy))
-    validate_with(args.relay, seats)
-    lines, index, current = _read_config(args.config)
+    validate_with(unit.relay, seats)
+    lines, index, current = _read_config(unit.config)
     report = diff(current, seats)
     print("\n".join(report))
     print(f"policy digest {digest(seats)}")
@@ -291,50 +350,43 @@ def install(args) -> int:
     if args.expect != digest(seats):
         print("refusing:  --expect does not match this policy's digest;  run the dry run again")
         return 2
-    with open(args.config, encoding="utf-8") as fh:
+    with open(unit.config, encoding="utf-8") as fh:
         before = fh.read()
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = f"{args.config}.backup-seat-policy-{stamp}"
+    backup = f"{unit.config}.backup-seat-policy-{stamp}"
     _write_atomic(backup, before)
     lines[index] = f"{SEATS_VAR}={compact(seats)}"
-    _write_atomic(args.config, "\n".join(lines) + "\n")
+    _write_atomic(unit.config, "\n".join(lines) + "\n")
     try:
-        restart = subprocess.run(["systemctl", "restart", args.unit], check=False)
-        if restart.returncode == 0 and _healthy(args.health, args.unit, args.wait):
-            print(f"installed {len(seats)} seats;  {args.unit} is healthy;  backup {backup}")
+        restart = subprocess.run(["systemctl", "restart", unit.name], check=False)
+        if restart.returncode == 0 and _healthy(unit.health, unit.name, args.wait):
+            print(f"installed {len(seats)} seats;  {unit.name} is healthy;  backup {backup}")
             return 0
-        print(f"{args.unit} did not come back healthy (restart exit {restart.returncode})")
+        print(f"{unit.name} did not come back healthy (restart exit {restart.returncode})")
     except BaseException:
         print("interrupted before the relay was confirmed healthy")
-        _restore(args, before, backup)
+        _restore(unit, args.wait, before, backup)
         raise
-    return _restore(args, before, backup)
+    return _restore(unit, args.wait, before, backup)
 
 
-def _unit_env(unit: str) -> dict:
-    out = subprocess.run(["systemctl", "show", "-p", "Environment", "--value", unit],
-                         check=True, capture_output=True, text=True).stdout.split()
-    return dict(item.split("=", 1) for item in out if "=" in item)
-
-
-def verify_apps(args) -> int:
+def verify_apps(args, unit: Unit) -> int:
     """Copy this script and the rendered policy where a dynamic user can read them, then run
     the inner check in a transient unit that binds the relay's apps credential."""
     seats = render(load(args.policy))
-    unit_env = _unit_env(args.unit)
-    env = {name: unit_env[name] for name in UNIT_ENV if unit_env.get(name)}
+    env = {name: unit.environment[name] for name in UNIT_ENV if unit.environment.get(name)}
     missing = [name for name in UNIT_ENV if name not in env]
     if missing:
-        print(f"{args.unit} sets no {', '.join(missing)};  cannot mirror its environment")
+        print(f"{unit.name} sets no {', '.join(missing)};  cannot mirror its environment")
         return 2
-    # The App-key folder the service reads:  config.env (its EnvironmentFile) wins over the
-    # unit's Environment=, as it does for the service, and a set-but-empty value is an error.
-    with open(args.config, encoding="utf-8") as fh:
+    # The App-key folder the service reads:  its EnvironmentFile wins over the unit's
+    # Environment=, as it does for the service, and a set-but-empty value is an error.
+    with open(unit.config, encoding="utf-8") as fh:
         secrets_path = _config_value(fh.read().splitlines(), SECRETS_PATH_VAR)
     if secrets_path is None:
-        secrets_path = unit_env.get(SECRETS_PATH_VAR, DEFAULT_SECRETS_PATH)
+        secrets_path = unit.environment.get(SECRETS_PATH_VAR, DEFAULT_SECRETS_PATH)
     if not secrets_path.strip():
-        print(f"{SECRETS_PATH_VAR} is set but empty for {args.unit};  the service refuses that too")
+        print(f"{SECRETS_PATH_VAR} is set but empty for {unit.name};  the service refuses that too")
         return 2
     folder = tempfile.mkdtemp(prefix="seat-policy-verify-", dir="/run")
     try:
@@ -346,31 +398,21 @@ def verify_apps(args) -> int:
             json.dump(seats, fh)
         os.chmod(script, 0o644)
         os.chmod(policy, 0o644)
-        cmd = [
-            "systemd-run",
-            "--wait",
-            "--pipe",
-            "--collect",
-            "--quiet",
-            "-p",
+        props = [
             "DynamicUser=yes",
-            "-p",
             "User=git-relay-verify",
-            "-p",
             "PrivateTmp=yes",
-            "-p",
             "ProtectHome=yes",
-            "-p",
             "NoNewPrivileges=yes",
-            "-p",
             "UMask=0077",
-            "-p",
-            f"LoadCredential=git-relay-apps-token:{args.apps_token}",
+            f"LoadCredential={APPS_CREDENTIAL}:{unit.apps_token}",
+            *(f"Environment={name}={value}" for name, value in env.items()),
         ]
-        for name, value in env.items():
-            cmd += ["-p", f"Environment={name}={value}"]
-        cmd += ["/usr/bin/python3", "-I", script, "verify-inner", "--seats", policy,
-                "--relay", args.relay, "--secrets-path", secrets_path.strip()]
+        cmd = ["systemd-run", "--wait", "--pipe", "--collect", "--quiet"]
+        for prop in props:
+            cmd += ["-p", prop]
+        cmd += ["/usr/bin/python3", "-I", script, "verify-inner", "--seats", policy]
+        cmd += ["--relay", unit.relay, "--secrets-path", secrets_path.strip()]
         return subprocess.run(cmd, check=False).returncode
     finally:
         shutil.rmtree(folder, ignore_errors=True)
@@ -397,7 +439,7 @@ def verify_inner(args) -> int:
             seen["slug"] = out.get("slug")
         return out
 
-    apps_token = os.path.join(creds, "git-relay-apps-token")
+    apps_token = os.path.join(creds, APPS_CREDENTIAL)
     source = FleetSecretsSource(path=args.secrets_path, credential_file=apps_token)
     minter = AppTokenMinter(source, api)
     read_only = {"metadata": "read", "contents": "read"}
@@ -425,14 +467,11 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("command", choices=["render", "install", "verify-apps", "verify-inner"])
     parser.add_argument("--policy", default=str(DEFAULT_POLICY))
-    parser.add_argument("--relay", default=DEFAULT_RELAY, help="the deployed relay checkout")
-    parser.add_argument("--config", default=DEFAULT_CONFIG)
-    parser.add_argument("--apps-token", default=DEFAULT_APPS_TOKEN)
-    parser.add_argument("--unit", default=DEFAULT_UNIT)
-    parser.add_argument("--health", default=DEFAULT_HEALTH)
+    parser.add_argument("--unit", help="install, verify-apps:  the relay's systemd unit")
     parser.add_argument("--wait", type=int, default=30, help="seconds to wait for health")
     parser.add_argument("--expect", help="install --apply:  the digest the dry run printed")
     parser.add_argument("--seats", help="verify-inner only:  the rendered policy")
+    parser.add_argument("--relay", help="verify-inner only:  the deployed relay code")
     parser.add_argument("--secrets-path", default=DEFAULT_SECRETS_PATH, help="verify-inner only")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--allow-remove", action="store_true")
@@ -440,16 +479,18 @@ def main(argv=None) -> int:
     if args.command == "render":
         print(compact(render(load(args.policy))))
         return 0
-    if args.command in ("install", "verify-apps"):
-        if os.geteuid() == 0:
-            require_root_owned([__file__, args.policy, args.relay])
-        for path in (__file__, args.policy):
-            print(f"{os.path.basename(path)} blob {blob_id(path)}")
+    if args.command == "verify-inner":
+        return verify_inner(args)
+    if not args.unit:
+        parser.error(f"{args.command} needs --unit, the relay's systemd unit")
+    unit = read_unit(args.unit)
+    if os.geteuid() == 0:
+        require_root_owned([__file__, args.policy, unit.relay])
+    for path in (__file__, args.policy):
+        print(f"{os.path.basename(path)} blob {blob_id(path)}")
     if args.command == "install":
-        return install(args)
-    if args.command == "verify-apps":
-        return verify_apps(args)
-    return verify_inner(args)
+        return install(args, unit)
+    return verify_apps(args, unit)
 
 
 if __name__ == "__main__":

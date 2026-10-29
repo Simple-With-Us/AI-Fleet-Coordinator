@@ -3,16 +3,19 @@
 The file is what `deploy/seat_policy.py install` writes into GIT_RELAY_SEATS_JSON, so
 these checks run it through the real SeatPolicy and the real bearer parser, and hold
 it to the Worker's own identity lists:  a seat the Worker can mint a bearer for has an
-entry here, with its own App, unless the file says why not.
+entry here, with its own App, unless the file says why not.  Fixtures that only need
+some repository use a synthetic one.
 """
 
 import importlib.util
 import json
-import os
 import re
+import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from git_relay.app_tokens import MINT_PERMISSION_CEILING
 from git_relay.policy import SeatPolicy
@@ -27,10 +30,13 @@ WORKER = ROOT / "scripts" / "agent-sync-mcp" / "src"
 
 _spec = importlib.util.spec_from_file_location("seat_policy", RELAY / "deploy" / "seat_policy.py")
 seat_policy = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = seat_policy  # dataclasses resolve annotations through sys.modules
 _spec.loader.exec_module(seat_policy)
 
 DOC = seat_policy.load()
 SEATS = seat_policy.render(DOC)
+ORG = "Simple-With-Us/"
+SYNTHETIC_REPO = "example-org/example-repo"
 
 # The three Apps whose slug is not swu-<identity>, each read from the App's own GitHub
 # description ("Bot identity for the ... agent seat").
@@ -53,19 +59,27 @@ def worker_identities() -> set[str]:
 
 
 class _Verifier:
-    """Resolves a bearer to the identity it names, as the Worker does for a live one."""
+    """The bearer parser for parse_identity;  resolve() stands for the Worker's answer, so
+    it confirms the named identity only while `confirmed` is true."""
+
+    def __init__(self, confirmed: bool = True):
+        self.confirmed = confirmed
 
     def parse_identity(self, token):
         return SharedBearerVerifier.parse_identity(token)
 
     def resolve(self, token):
-        return SharedBearerVerifier.parse_identity(token)
+        return SharedBearerVerifier.parse_identity(token) if self.confirmed else None
 
 
 def bearer_for(identity: str) -> str:
     if identity.startswith("GB-"):
         return "gbb_" + identity[3:].lower() + "_" + "a" * 43
     return "sbt_" + identity.lower() + "_" + "a" * 43
+
+
+def fake_stat(uid: int, mode: int):
+    return SimpleNamespace(st_uid=uid, st_mode=mode)
 
 
 class SeatPolicyFile(unittest.TestCase):
@@ -84,12 +98,18 @@ class SeatPolicyFile(unittest.TestCase):
             self.assertEqual(slug, expected, cfg["identity"])
             self.assertEqual(cfg["app_slug"], slug)
 
-    def test_a_bearer_reaches_only_its_own_seat(self):
+    def test_a_confirmed_bearer_reaches_only_its_own_seat(self):
         policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
         for slug, cfg in SEATS.items():
             self.assertEqual(policy.authenticate(bearer_for(cfg["identity"])), slug)
             self.assertEqual(policy.app_identity(slug)[0], slug)
         self.assertIsNone(policy.authenticate(bearer_for("JET-CHAT")))
+
+    def test_a_bearer_the_worker_does_not_confirm_reaches_no_seat(self):
+        # The token shape alone names a seat;  only the Worker's answer may admit it.
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier(confirmed=False))
+        for cfg in SEATS.values():
+            self.assertIsNone(policy.authenticate(bearer_for(cfg["identity"])), cfg["identity"])
 
     def test_no_entry_holds_a_token(self):
         for cfg in SEATS.values():
@@ -125,26 +145,22 @@ class SeatPolicyFile(unittest.TestCase):
                     self.assertIn(name, ceiling, need)
                     self.assertGreaterEqual(rank[ceiling[name]], rank[level], need)
 
-    def test_repositories_are_exact_and_current(self):
+    def test_repositories_are_exact_and_in_the_org(self):
+        # A repository the org moved in keeps its old owner's name only as a redirect,
+        # which the minter does not follow, so every entry names the org.
         for cfg in SEATS.values():
             for repo in cfg["repos"]:
                 self.assertNotIn("*", repo)
-                self.assertTrue(repo.startswith("Simple-With-Us/"), repo)
-            self.assertIn("Simple-With-Us/Fleet-OPS", cfg["repos"])
+                self.assertTrue(repo.startswith(ORG), repo)
+            self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
 
     def test_echo_keeps_its_narrower_repositories(self):
         echo = SEATS["swu-echo"]
         fleet = SEATS["swu-claude"]
         self.assertEqual(echo["actions"], fleet["actions"])
         self.assertEqual(echo["mint_permissions"], fleet["mint_permissions"])
-        self.assertEqual(
-            echo["repos"],
-            [
-                "Simple-With-Us/AI-Fleet-Coordinator",
-                "Simple-With-Us/CodeCaps",
-                "Simple-With-Us/Fleet-OPS",
-            ],
-        )
+        self.assertEqual(echo["repos"], DOC["profiles"]["echo"]["repos"])
+        self.assertLess(set(echo["repos"]), set(fleet["repos"]))
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -154,7 +170,7 @@ class SeatPolicyFile(unittest.TestCase):
             (lambda d: d["profiles"]["echo"].update(actions="echo"), "concrete profile"),
             (lambda d: d["seats"][0].pop("identity"), "identity, app_slug and profile"),
             # A per-seat narrowing the renderer would drop must be refused, not ignored.
-            (lambda d: d["seats"][0].update(repos=["Simple-With-Us/CodeCaps"]), "unknown keys"),
+            (lambda d: d["seats"][0].update(repos=[SYNTHETIC_REPO]), "unknown keys"),
             (lambda d: d["profiles"]["fleet"].update(ceiling={}), "unknown keys"),
             (lambda d: d.update(extra=1), "unknown keys"),
         ):
@@ -164,13 +180,59 @@ class SeatPolicyFile(unittest.TestCase):
                 seat_policy.render(doc)
 
     def test_root_refuses_a_copy_another_account_can_write(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder, "seat_policy.py")
-            path.write_text("# a copy\n", encoding="utf-8")
-            if os.geteuid() == 0:
-                os.chown(folder, 1, 1)
-            with self.assertRaisesRegex(SystemExit, "root-owned"):
-                seat_policy.require_root_owned([path])
+        target = Path("/deploy/seat_policy.py")
+        root_dir = fake_stat(0, stat.S_IFDIR | 0o755)
+        cases = {
+            "a file another account owns": fake_stat(1000, stat.S_IFREG | 0o644),
+            "a root-owned file the group can write": fake_stat(0, stat.S_IFREG | 0o664),
+            "a root-owned file anyone can write": fake_stat(0, stat.S_IFREG | 0o646),
+            "a symlink": fake_stat(0, stat.S_IFLNK | 0o777),
+        }
+        for label, file_stat in cases.items():
+            with self.subTest(label):
+
+                def lstat(path, file_stat=file_stat):
+                    return file_stat if Path(path) == target else root_dir
+
+                with self.assertRaisesRegex(SystemExit, "root-owned"):
+                    seat_policy.require_root_owned([target], lstat=lstat)
+
+        def writable_folder(path):
+            if Path(path) == target:
+                return fake_stat(0, stat.S_IFREG | 0o644)
+            if Path(path) == target.parent:
+                return fake_stat(0, stat.S_IFDIR | 0o775)
+            return root_dir
+
+        with self.assertRaisesRegex(SystemExit, "root-owned"):
+            seat_policy.require_root_owned([target], lstat=writable_folder)
+
+        def all_root(path):
+            return fake_stat(0, stat.S_IFREG | 0o644) if Path(path) == target else root_dir
+
+        seat_policy.require_root_owned([target], lstat=all_root)
+
+    def test_the_unit_is_the_only_deployment_source(self):
+        show = "\n".join(
+            [
+                "WorkingDirectory=/srv/relay/code",
+                "EnvironmentFiles=/srv/relay/relay.env (ignore_errors=no)",
+                "Environment=PATH=/usr/bin GIT_RELAY_HOST=127.0.0.2 GIT_RELAY_PORT=9000",
+            ]
+        )
+        cat = "[Service]\nLoadCredential=other-token:/srv/other\nLoadCredential=git-relay-apps-token:/srv/apps\n"
+        unit = seat_policy.read_unit("relay.service", show=show, cat=cat)
+        self.assertEqual(unit.relay, "/srv/relay/code")
+        self.assertEqual(unit.config, "/srv/relay/relay.env")
+        self.assertEqual(unit.apps_token, "/srv/apps")
+        self.assertEqual(unit.health, "http://127.0.0.2:9000/healthz")
+        for broken_show, broken_cat in (
+            ("EnvironmentFiles=/srv/relay/relay.env (ignore_errors=no)", cat),
+            (show, "[Service]\n"),
+            (show + "\nEnvironmentFiles=/srv/second.env (ignore_errors=no)", cat),
+        ):
+            with self.assertRaises(SystemExit):
+                seat_policy.read_unit("relay.service", show=broken_show, cat=broken_cat)
 
     def test_blob_id_and_digest(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -184,7 +246,7 @@ class SeatPolicyFile(unittest.TestCase):
 
     def test_diff_names_seats_and_fields_only(self):
         old = {k: dict(v) for k, v in SEATS.items() if k != "swu-ag"}
-        old["swu-echo"] = dict(old["swu-echo"], repos=["Simple-With-Us/CodeCaps"])
+        old["swu-echo"] = dict(old["swu-echo"], repos=[SYNTHETIC_REPO])
         lines = seat_policy.diff(old, SEATS)
         self.assertIn("added    swu-ag (AG)", lines)
         self.assertTrue(any(line.startswith("changed  swu-echo: repos +") for line in lines))

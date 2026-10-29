@@ -25,10 +25,9 @@ is bypassed, or if the broker's real router can reach a mint.
 
 ## Status
 
-Deployed on the fleet server as `git-relay.service`, run from `/opt/git-relay` and bound to
-127.0.0.1:8471, behind its own Cloudflare tunnel (`cloudflared-git-relay.service`) and an Access
-service token on the public hostname.  The App keys live in Fleet-OPS `/github-apps` and the relay
-mints every seat's App token itself.
+Deployed on the fleet server as a systemd service behind its own Cloudflare tunnel, with an
+Access service token in front of the public hostname.  The relay mints every seat's App token
+itself from the App keys in Fleet-OPS.
 
 A seat reaches it through ST-MCP's `gr_*` tools on a bearer connection:  its own `sbt_<seat>_`
 bearer, or `gbb_<role>_` for a Grok Bot persona, minted on the ST-MCP + GR-MCP Admin page.  The
@@ -142,15 +141,16 @@ Worker's identity lists and each action's permission needs.
 
 On the relay host, as root.  Root runs only a root-owned copy that only root can write, never
 the files in a checkout another account can change.  So copy the two files from the merged
-commit first, and check that the blob ids the script prints equal `git rev-parse
-<commit>:git-relay/deploy/seat_policy.py` and the same for `seat-policy.json`:
+commit into a root-owned folder first, and check that the blob ids the script prints equal
+`git rev-parse <commit>:git-relay/deploy/seat_policy.py` and the same for `seat-policy.json`.
+`UNIT` is the relay's systemd unit, and everything else about the deployment is read from it:
+the relay code (its working directory), the policy line (its one EnvironmentFile), the apps
+credential (its LoadCredential) and the health address and App-key folder (its environment).
 
 ```
-install -d -m 0755 /opt/git-relay/deploy
-install -m 0644 git-relay/deploy/seat_policy.py git-relay/deploy/seat-policy.json /opt/git-relay/deploy/
-python3 -I /opt/git-relay/deploy/seat_policy.py install                          # validate with the deployed code, diff, digest
-python3 -I /opt/git-relay/deploy/seat_policy.py install --apply --expect DIGEST  # back up, write, restart, check health
-python3 -I /opt/git-relay/deploy/seat_policy.py verify-apps                      # every seat's own App mints read-only and reads
+python3 -I <copy>/seat_policy.py install --unit UNIT                          # validate with the deployed code, diff, digest
+python3 -I <copy>/seat_policy.py install --unit UNIT --apply --expect DIGEST  # back up, write, restart, check health
+python3 -I <copy>/seat_policy.py verify-apps --unit UNIT                      # every seat's own App mints read-only and reads
 ```
 
 `--apply` installs only the policy whose digest the dry run printed.  It restores the previous
