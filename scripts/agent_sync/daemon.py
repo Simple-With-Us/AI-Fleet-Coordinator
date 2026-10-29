@@ -6229,7 +6229,9 @@ class Daemon:
                 # the message is gone.  The window is spent so this is one log line a window, not
                 # one a tick.
                 self.log.write(
-                    "held-alert-clear-skipped", seat=standing["seat"], message_id=standing["message_id"]
+                    "held-alert-clear-skipped",
+                    seat=standing["seat"],
+                    message_id=standing["message_id"],
                 )
                 HELDALERT.note_post(self.root, now)
                 return
@@ -6300,13 +6302,19 @@ class Daemon:
                 )
                 return "refused"
             self.log.write(
-                "held-alert-edit-failed", seat=runner.seat, message_id=message_id, error=self.scrub(str(exc))
+                "held-alert-edit-failed",
+                seat=runner.seat,
+                message_id=message_id,
+                error=self.scrub(str(exc)),
             )
             HELDALERT.note_post(self.root, now)
             return "failed"
         except Z.AgentSyncError as exc:
             self.log.write(
-                "held-alert-edit-failed", seat=runner.seat, message_id=message_id, error=self.scrub(str(exc))
+                "held-alert-edit-failed",
+                seat=runner.seat,
+                message_id=message_id,
+                error=self.scrub(str(exc)),
             )
             HELDALERT.note_post(self.root, now)
             return "failed"

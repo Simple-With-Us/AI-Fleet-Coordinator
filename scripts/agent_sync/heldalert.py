@@ -52,10 +52,12 @@ the same promise, so server records keep AFC-253's no-TTL behaviour until the ow
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from . import heldback as HELD
 from . import live as L
@@ -90,6 +92,7 @@ def note_post(root: str, now: float) -> None:
     """Record that a digest was ATTEMPTED, sent or not, which starts the next window.  One locked
     write.  A failure counts as an attempt deliberately:  otherwise the held tick retries every 30
     seconds for as long as a key stays broken, which is a flood rather than an alert."""
+
     def mutate(data: dict[str, Any]) -> None:
         data["last_post"] = float(now)
 
@@ -112,6 +115,7 @@ def standing(root: str) -> dict[str, Any] | None:
 
 def note_standing(root: str, seat: str, message_id: int, *, clear: bool) -> None:
     """Record which message is the standing one, whose bot can edit it, and whether it says all-clear."""
+
     def mutate(data: dict[str, Any]) -> None:
         data["standing"] = {"seat": seat, "message_id": int(message_id), "clear": bool(clear)}
 
@@ -120,6 +124,7 @@ def note_standing(root: str, seat: str, message_id: int, *, clear: bool) -> None
 
 def drop_standing(root: str) -> None:
     """Forget a standing message nobody can edit any more, so the next digest posts a fresh one."""
+
     def mutate(data: dict[str, Any]) -> None:
         data.pop("standing", None)
 
@@ -221,22 +226,39 @@ def compose(seats: Sequence[tuple[str, Mapping[str, Any]]], *, updated: str | No
     if not seats:
         return ""
     one = len(seats) == 1
-    head = ("%s  %d seat%s %s;  each one is in that seat's inbox and rides the next wake that can run."
-            % (HEADLINE, len(seats), "" if one else "s", "has a wake the budget would not run" if one
-               else "have wakes the budget would not run"))
-    tail = ("Nothing was dropped.  To clear a hold sooner, raise that seat's budget in `listener.toml`  "
-            "(`[daemon]` `stale_after_minutes` is unrelated;  the limits are the seat's `budget` table),  "
-            "and a catch-up wake goes out by itself once the budget has room.  Evictions are ids that "
-            "left the file unsurfaced:  a seat never read them and never will.")
-    return "\n".join([head, ""] + [seat_line(seat, held) for seat, held in sorted(seats, key=lambda s: s[0])]
-                     + ["", tail] + updated_line(updated, clear=False))
+    head = (
+        "%s  %d seat%s %s;  each one is in that seat's inbox and rides the next wake that can run."
+        % (
+            HEADLINE,
+            len(seats),
+            "" if one else "s",
+            "has a wake the budget would not run" if one else "have wakes the budget would not run",
+        )
+    )
+    tail = (
+        "Nothing was dropped.  To clear a hold sooner, raise that seat's budget in `listener.toml`  "
+        "(`[daemon]` `stale_after_minutes` is unrelated;  the limits are the seat's `budget` table),  "
+        "and a catch-up wake goes out by itself once the budget has room.  Evictions are ids that "
+        "left the file unsurfaced:  a seat never read them and never will."
+    )
+    return "\n".join(
+        [head, ""]
+        + [seat_line(seat, held) for seat, held in sorted(seats, key=lambda s: s[0])]
+        + ["", tail]
+        + updated_line(updated, clear=False)
+    )
 
 
 def compose_clear(*, updated: str | None = None) -> str:
     """The standing message once every hold has cleared:  it says so, so the topic never shows a list
     of holds that no longer exist.  Only ever written as an edit of the standing message."""
-    return "\n".join(["%s  Nothing is held back now:  every seat's holds have cleared, and no id was lost "
-                      "past the caps." % HEADLINE] + updated_line(updated, clear=True))
+    return "\n".join(
+        [
+            "%s  Nothing is held back now:  every seat's holds have cleared, and no id was lost "
+            "past the caps." % HEADLINE
+        ]
+        + updated_line(updated, clear=True)
+    )
 
 
 def collect(root: str, seats: Iterable[str], now: float) -> list[tuple[str, dict[str, Any]]]:
