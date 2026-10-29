@@ -2,8 +2,8 @@
 
 Four default-off own-App commands read a UTF-8 blob, create an unattached UTF-8 blob,
 read a Git commit object, and read a nonrecursive tree.  Blob text maximum40KiB;
-Git SHA-1 content identity verified on blob read/create.  Decoded text is returned
-for normal response secret scanning, never opaque base64.  Commit messages maximum
+Git SHA-1 content identity verified on blob read/create.  Decoded text is scanned for
+credential-shaped content and refused before return; never opaque base64.  Commit messages maximum
 32KiB and20 parents; trees maximum100 entries, report upstream truncated flag.
 Larger or binary blobs and larger tree responses are refused, not silently cropped.
 

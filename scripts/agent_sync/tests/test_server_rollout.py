@@ -228,7 +228,7 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             run = self.entrypoint(self.env(fake))
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertFalse(json.loads(run.stdout)["running"], "agent-sync status --json ran with the given arguments")
+        self.assertFalse(json.loads(run.stdout)["running"], "simple-chat daemon status --json ran with the given arguments")
         self.assertIn("simple-chat: loaded 5 variables from Infisical", run.stderr)
         self.assertEqual([p.split("?")[0] for _, p in fake.requests],
                          ["/api/v1/auth/universal-auth/login", "/api/v3/secrets/raw", "/api/v3/secrets/raw"])
