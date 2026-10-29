@@ -224,13 +224,18 @@ def fetch(
     secrets = got.get("secrets")
     if not isinstance(secrets, list):
         raise LoadError("read: no secrets list in the response")
-    if strict and (len(secrets) > 2000 or
-            ("totalCount" in got and got["totalCount"] != len(secrets))):
+    if strict and (
+        len(secrets) > 2000 or ("totalCount" in got and got["totalCount"] != len(secrets))
+    ):
         raise LoadError("read listener keys: incomplete listing")
     out: dict[str, str] = {}
     for item in secrets:
-        if strict and (not isinstance(item, dict) or not isinstance(item.get("secretKey"), str)
-                or not isinstance(item.get("secretValue"), str) or item["secretKey"] in out):
+        if strict and (
+            not isinstance(item, dict)
+            or not isinstance(item.get("secretKey"), str)
+            or not isinstance(item.get("secretValue"), str)
+            or item["secretKey"] in out
+        ):
             raise LoadError("read listener keys: invalid or duplicate listing")
         if (
             isinstance(item, dict)
@@ -242,12 +247,28 @@ def fetch(
 
 
 LISTENER_READ_PROJECT = "INFISICAL_LISTENER_READ_PROJECT_ID"
-LISTENER_READ_CODES = frozenset({"MA", "GB_DIRECTOR", "GB_FIXER", "GB_DESIGNER", "GB_COMPILER",
-    "GB_HOUSEKEEPER", "GB_PUBLISHER", "GB_DEPLOYER", "GB_MONITOR", "GB_PLUMBER",
-    "GB_ORACLE", "GB_TRADER", "GB_ENGINEER"})
+LISTENER_READ_CODES = frozenset(
+    {
+        "MA",
+        "GB_DIRECTOR",
+        "GB_FIXER",
+        "GB_DESIGNER",
+        "GB_COMPILER",
+        "GB_HOUSEKEEPER",
+        "GB_PUBLISHER",
+        "GB_DEPLOYER",
+        "GB_MONITOR",
+        "GB_PLUMBER",
+        "GB_ORACLE",
+        "GB_TRADER",
+        "GB_ENGINEER",
+    }
+)
 
 
-def listener_read_keys(env: Mapping[str, str], codes: set[str], token: str, **kw) -> tuple[dict[str, str], str]:
+def listener_read_keys(
+    env: Mapping[str, str], codes: set[str], token: str, **kw
+) -> tuple[dict[str, str], str]:
     """An opt-in second native read, same identity, only the 13 server-seat HMAC read keys."""
     project = (env.get(LISTENER_READ_PROJECT) or "").strip()
     if not project:
@@ -257,10 +278,18 @@ def listener_read_keys(env: Mapping[str, str], codes: set[str], token: str, **kw
     names = {code + "_ROUTINE_KEY" for code in LISTENER_READ_CODES & codes}
     source = dict(env, INFISICAL_PROJECT_ID=project, INFISICAL_ENVIRONMENT="prod")
     try:
-        found = fetch(source, path="/zulip", token=token, stage="read listener keys", strict=True, **kw)
-        keys = {name: value for name, value in found.items() if name in names
-                and len(value.strip()) >= 32 and "${" not in value}
-        return keys, "; listener read keys from secondary native source: %d of %d" % (len(keys), len(names))
+        found = fetch(
+            source, path="/zulip", token=token, stage="read listener keys", strict=True, **kw
+        )
+        keys = {
+            name: value
+            for name, value in found.items()
+            if name in names and len(value.strip()) >= 32 and "${" not in value
+        }
+        return keys, "; listener read keys from secondary native source: %d of %d" % (
+            len(keys),
+            len(names),
+        )
     except LoadError as exc:
         return {}, "; listener read keys not loaded (%s)" % exc
 
