@@ -1,8 +1,10 @@
 """Operator's clarifying-question DMs, and what happens when nobody answers (owner decision, Oct 22 2026).
 
 When a wake's addressee cannot be resolved to one seat, Operator opens **one** DM to the message's
-sender asking one clarifying question.  That is the only new DM Operator ever opens, and it is
-tracked here so the answer can route the wake — or so the wake can be dropped when it does not come.
+sender asking one clarifying question.  That is the only new DM Operator opens to ask something (its
+other DM, since Oct 29 2026, is a one-to-one status message that asks nothing:  operator_send.py),
+and it is tracked here so the answer can route the wake — or so the wake can be dropped when it
+does not come.
 
 Q11 (Jay, Oct 22 2026):  if the sender never answers, **the wake is dropped** once the timeout
 passes.  The drop is logged as a `wake_dropped` entry carrying the message id, the sender and the
