@@ -384,7 +384,9 @@ def _send_status_dm(
         or recipient_user_id <= 0
     ):
         return _outcome(
-            "refused", "the recipient must be a Zulip user id, not a name or an address", code="recipient"
+            "refused",
+            "the recipient must be a Zulip user id, not a name or an address",
+            code="recipient",
         )
     recipient_id = recipient_user_id
 
