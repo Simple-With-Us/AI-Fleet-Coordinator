@@ -801,13 +801,13 @@ class WorkflowVerbs:
             raise Refused("invalid expected comment body digest")
         try:
             raw = self._get(f"/repos/{repo}/comments/{comment_id}")
-            self._commit_comment(raw, sha, comment_id)
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable(
                     "comment pre-read unavailable; no write attempted"
                 ) from None
             raise
+        self._commit_comment(raw, sha, comment_id)
         # Compare the original bytes in-host, not a possibly-withheld projection.
         if hashlib.sha256(raw["body"].encode("utf-8")).hexdigest() != expected:
             raise Refused("comment body changed")
@@ -908,6 +908,9 @@ class WorkflowVerbs:
         self._pull_at_commit(repo, number, head)
         row = self._get(f"/repos/{repo}/pulls/{number}/reviews/{review_id}")
         review = self._review_summary(row, review_id)
+        commit = review.get("commit_id")
+        if commit is not None and (not isinstance(commit, str) or not _SHA.fullmatch(commit)):
+            raise RelayGitHubError(502, "review commit unverifiable")
         self._pull_at_commit(repo, number, head)
         # Metadata only. A historical review commit can differ from current head;
         # this receipt is not a conclusion about current approval coverage.

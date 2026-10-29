@@ -129,3 +129,21 @@ class ReviewFixes(unittest.TestCase):
         self.assertIn("wf_commit_comment_update", _REAPPLY_STATE_ACTIONS)
         self.assertNotIn("wf_commit_comment_create", _REAPPLY_STATE_ACTIONS)
         self.assertNotIn("wf_commit_comment_delete", _REAPPLY_STATE_ACTIONS)
+
+    def test_permanent_invalid_preread_is_not_retryable(self):
+        for action in ["wf_commit_comment_update", "wf_commit_comment_delete"]:
+            for row in [{}, {"id": True}, {"id": 7, "commit_id": "b" * 40}]:
+                c = Client(row)
+                h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+                with self.assertRaises(RelayGitHubError):
+                    h.run(
+                        action,
+                        {
+                            "repo": REPO,
+                            "sha": SHA,
+                            "comment_id": 7,
+                            "expected_body_sha256": "b" * 64,
+                            **({"body": "new"} if action.endswith("update") else {}),
+                        },
+                    )
+                self.assertEqual(len(c.calls), 1)

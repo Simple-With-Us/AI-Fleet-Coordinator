@@ -91,3 +91,18 @@ class DetailReads(unittest.TestCase):
                 self.run_read("wf_release_latest", [bad])
         with self.assertRaises(RelayGitHubError):
             self.run_read("wf_release_by_tag", [row], tag="v2")
+
+    def test_review_commit_is_sha_or_null_not_arbitrary_upstream_value(self):
+        pull = {"head": {"sha": SHA}}
+        for commit in [None, "b" * 40]:
+            row = {"id": 7, "state": "APPROVED", "commit_id": commit, "html_url": None, "body": ""}
+            out, _ = self.run_read(
+                "wf_pr_review_get", [pull, row, pull], number=3, review_id=7, expected_head_sha=SHA
+            )
+            self.assertEqual(out["review"]["commit_id"], commit)
+        for commit in [True, 7, {}, [], "x", "b" * 39, "B" * 40]:
+            row = {"id": 7, "state": "APPROVED", "commit_id": commit, "html_url": None, "body": ""}
+            with self.subTest(commit=commit), self.assertRaises(RelayGitHubError):
+                self.run_read(
+                    "wf_pr_review_get", [pull, row], number=3, review_id=7, expected_head_sha=SHA
+                )
