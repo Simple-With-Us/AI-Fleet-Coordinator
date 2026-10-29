@@ -547,6 +547,10 @@ class SessionRegistry:
         with self._write_txn() as conn:
             now = _utcnow()
             row = self._get(record_id)
+            if row["closed_at"]:
+                raise ValueError(
+                    "session %s is closed; open a new registration instead" % record_id
+                )
             if "state" in attrs:
                 # The lifecycle value is not free-form:  it is derived from closed_at, which only
                 # close() sets.  Accepting it here would let a closed row be marked active again,
@@ -772,41 +776,60 @@ def update_session(
         raise ValueError(f"not mutable: {', '.join(bad)}")
     _scan_title(wanted.get("title"))
     registry = SessionRegistry(db_path)
+    namespace = normalize_platform(platform)
     try:
-        row = _session_row_for_update(
-            registry._conn,
-            platform=platform,
-            verified_host=verified_host,
-            profile_scope=profile_scope,
-            native_session_id=native_session_id,
-        )
-        record_id = row["record_id"]
-        if row["closed_at"]:
-            raise ValueError(
-                "session %s is closed on %s; open a new registration instead"
-                % (native_session_id, normalize_platform(platform))
+        with registry._write_txn() as conn:
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
+                " AND profile_scope = ? AND native_session_id = ?"
+                " ORDER BY registered_at DESC LIMIT 1",
+                (namespace, verified_host, profile_scope, SI.check(native_session_id, "the native session id")),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    "session %s is not registered on %s at %s/%s; register it first"
+                    % (native_session_id, namespace, verified_host, profile_scope)
+                )
+            record_id = row["record_id"]
+            if row["closed_at"]:
+                raise ValueError(
+                    "session %s is closed on %s; open a new registration instead"
+                    % (native_session_id, namespace)
+                )
+            letter, generation = registry._active_alias(conn, record_id)
+            if title is not None:
+                wanted["title"] = registry_title(letter, title)
+            changed = {k: v for k, v in wanted.items() if (row[k] or "") != v}
+            if changed:
+                sets = ", ".join(f"{k} = ?" for k in changed)
+                conn.execute(
+                    f"UPDATE sessions SET {sets} WHERE record_id = ?",
+                    (*changed.values(), record_id),
+                )
+                now = _utcnow()
+                registry._enqueue_session_upsert(conn, record_id, now)
+                registry._insert_event(
+                    conn,
+                    record_id,
+                    letter,
+                    "update",
+                    "registry",
+                    "updated",
+                    "registry",
+                    ", ".join(sorted(changed)),
+                    now,
+                )
+                outcome = "updated"
+            else:
+                outcome = "unchanged"
+            at = _utcnow()
+            conn.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?", (at, record_id)
             )
-        letter, generation = registry._active_alias(registry._conn, record_id)
-        if title is not None:
-            wanted["title"] = registry_title(letter, title)
-        changed = {k: v for k, v in wanted.items() if (row[k] or "") != v}
-        if changed:
-            registry.update_attrs(record_id, **changed)
-            registry.record_event(
-                record_id,
-                "update",
-                "registry",
-                "updated",
-                "registry",
-                ", ".join(sorted(changed)),
-            )
-            outcome = "updated"
-        else:
-            outcome = "unchanged"
-        # The session is alive:  say so, or the sweep reads a long-lived session as
-        # stale and ends a letter it is still holding.
-        registry.mark_seen(record_id)
-        current = registry._get(record_id)
+            registry._enqueue_session_upsert(conn, record_id, at)
+            current = conn.execute(
+                "SELECT * FROM sessions WHERE record_id = ?", (record_id,)
+            ).fetchone()
     finally:
         registry.close_db()
     out = {

@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -47,6 +48,30 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
             leftovers = [n for n in os.listdir(M.letter_cache_dir()) if n.endswith(".tmp")]
             self.assertEqual(leftovers, [])
+
+    def test_a_symlinked_letter_cache_dir_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = os.path.join(tmp, "hook-state")
+            os.symlink("/tmp", link)
+            os.environ["MINIMAX_HOOKS_DATA"] = link
+            with self.assertRaises(ValueError):
+                M.letter_cache_dir()
+
+    def test_require_registry_rejects_an_empty_label(self):
+        with self.assertRaises(M.RegistryError):
+            M._require_registry({"label": ""}, needs_label=True)
+
+    def test_read_hook_input_rejects_oversized_bytes(self):
+        payload = b"x" * (M.HOOK_INPUT_MAX + 2)
+        with mock.patch("sys.stdin.buffer") as buf:
+            buf.read.return_value = payload
+            self.assertEqual(M.read_hook_input(), {})
+
+    def test_read_hook_input_rejects_deeply_nested_json(self):
+        deep = b'{"a":' + b'["x",' * 5000 + b'"y"' + b"]" * 5000 + b"}"
+        with mock.patch("sys.stdin.buffer") as buf:
+            buf.read.return_value = deep
+            self.assertEqual(M.read_hook_input(), {})
 
 
 if __name__ == "__main__":
