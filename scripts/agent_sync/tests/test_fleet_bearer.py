@@ -187,6 +187,21 @@ class FleetBearerTests(unittest.TestCase):
                             script.assert_not_called()
 
 
+    def test_notes_reuses_one_verified_client_but_keeps_seat_binding(self):
+        from agent_sync import notes as N
+        host = NC.Host({}, self.home, None, caller="cli", bearer_file=str(self.path))
+        with patch.object(F, "Client") as constructor:
+            constructor.return_value.seat = "CODEX"
+            constructor.return_value.call.return_value = {"structuredContent": {"status": "queued"}}
+            NC._fleet_tool(host, "CODEX", "notes_pin", {}, True)
+            NC._fleet_tool(host, "CODEX", "notes_status", {})
+            self.assertEqual(constructor.call_count, 1)
+            self.assertEqual(constructor.return_value.call.call_count, 2)
+            with self.assertRaises(N.NotesError):
+                NC._fleet_tool(host, "CLUTCH", "notes_status", {})
+            self.assertEqual(constructor.return_value.call.call_count, 2)
+
+
 
 class TransportTests(FleetBearerTests):
     def answer(self, data, content_type="application/json"):

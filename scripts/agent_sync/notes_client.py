@@ -498,6 +498,7 @@ class Host:
         bearer_file: str | None = None,
         script_finder: Callable[[Mapping[str, str], Path], Path | None] | None = None,
     ) -> None:
+        self._fleet_client = None
         self.bearer_file = bearer_file
         self.env = env
         self.home = home
@@ -700,7 +701,11 @@ def _fleet_tool(host, seat, tool, args, write=False):
     from .fleet_bearer import Client, FleetError
 
     try:
-        result = Client(host.bearer_file, seat, identity_env=host.env).call(tool, args, write)
+        if host._fleet_client is None:
+            host._fleet_client = Client(host.bearer_file, seat, identity_env=host.env)
+        if seat is not None and host._fleet_client.seat != seat:
+            raise FleetError("not_authorized", "fleet bearer does not name the requested bot")
+        result = host._fleet_client.call(tool, args, write)
         data = result.get("structuredContent")
         if not isinstance(data, dict):
             raise FleetError(

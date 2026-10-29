@@ -69,7 +69,8 @@ def private_bearer(path):
         finally:
             os.close(directory)
         value = raw.decode("ascii")
-        value = value.removesuffix("\n")
+        if value[-1:] == "\n":
+            value = value[:-1]
         match = TOKEN.fullmatch(value)
         if not match:
             raise ValueError
