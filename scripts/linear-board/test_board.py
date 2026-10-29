@@ -858,17 +858,29 @@ def make_handler(mock: MockLinear):
 FAKE_FLEET_SECRETS = r"""#!@PY@
 import os, sys
 V = "@VAULT@"
+AFC_V = "@AFC_VAULT@"
 a = sys.argv[1:]
 with open("@CALLS@", "a") as log:
-    log.write(" ".join(a[:2]) + "\n")
+    # the verb, the key name and the project selector:  never a value
+    tail = a[2:]
+    project = tail[tail.index("--project") + 1] if "--project" in tail else ""
+    log.write(" ".join(a[:2] + (["--project", project] if project else [])) + "\n")
 if len(a) < 2:
     sys.exit(2)
 verb = a[0]
 if verb == "get":
-    if a[2:] == ["--path", "/linear"]:
-        f = os.path.join(V, a[1])
-    elif len(a[2:]) == 2 and a[2] == "--path" and a[3].startswith("/") and ".." not in a[3]:
-        f = os.path.join(V, a[3].strip("/"), a[1])
+    args = a[2:]
+    base = V
+    if "--project" in args:                       # the second, read-only project:  AI Fleet Coordinator
+        i = args.index("--project")
+        if i + 1 >= len(args):
+            sys.exit(2)
+        base = AFC_V if args[i + 1] == "ai-fleet-coordinator" else V
+        args = args[:i] + args[i + 2:]
+    if args == ["--path", "/linear"]:
+        f = os.path.join(base, a[1])
+    elif len(args) == 2 and args[0] == "--path" and args[1].startswith("/") and ".." not in args[1]:
+        f = os.path.join(base, args[1].strip("/"), a[1])
     else:
         sys.exit(3)
     if not os.path.isfile(f):
@@ -909,6 +921,11 @@ class BoardTest(unittest.TestCase):
         # one file per key from this directory.  Nothing under the test's HOME or the real secrets folder is read.
         self.ops_vault = self.tmp / "fleet-ops-linear"
         self.ops_vault.mkdir()
+        # The second, read-only project:  AI Fleet Coordinator prod /linear.  The same fake loader serves it
+        # under `--project ai-fleet-coordinator`, from a folder of its own, so a test can tell the two
+        # sources apart and see which one the CLI asked for.
+        self.afc_vault = self.tmp / "afc-linear"
+        self.afc_vault.mkdir()
         self.creds = (
             self.ops_vault / "FLEET_LINEAR_CLIENT_ID"
         )  # unlink() it for "no Fleet credentials"
@@ -921,6 +938,7 @@ class BoardTest(unittest.TestCase):
         self.fleet_secrets_stub = self.tmp / "fleet-secrets"
         self.fleet_secrets_stub.write_text(
             FAKE_FLEET_SECRETS.replace("@VAULT@", str(self.ops_vault))
+            .replace("@AFC_VAULT@", str(self.afc_vault))
             .replace("@CALLS@", str(self.fs_calls))
             .replace("@PY@", PY)
         )
@@ -986,6 +1004,11 @@ class BoardTest(unittest.TestCase):
     def ops_put(self, name, value):
         """Put one key in the fake Fleet-OPS /linear folder."""
         (self.ops_vault / name).write_text(value)
+
+    def afc_put(self, name, value):
+        """Put one key in the fake AI Fleet Coordinator /linear folder, which the loader serves under
+        `--project ai-fleet-coordinator`."""
+        (self.afc_vault / name).write_text(value)
 
     def fs_verbs(self):
         """The fake fleet-secrets calls so far, as 'verb NAME' lines (never a value)."""
@@ -1539,6 +1562,7 @@ class BearerTransportSeamTests(unittest.TestCase):
         stub = tmp / "fleet-secrets"
         stub.write_text(
             FAKE_FLEET_SECRETS.replace("@VAULT@", str(tmp))
+            .replace("@AFC_VAULT@", str(tmp / "afc"))
             .replace("@CALLS@", str(tmp / "calls.log"))
             .replace("@PY@", PY)
         )
@@ -3100,7 +3124,8 @@ class SeatAppTests(BoardTest):
         notices = [ln for ln in p.stdout.splitlines() if ln.startswith("notice:")]
         self.assertEqual(len(notices), 1, p.stdout)
         self.assertIn(
-            "CODEX has no Linear app yet (no CODEX_LINEAR_CLIENT_ID in Fleet-OPS /linear)",
+            "CODEX has no Linear app yet (no CODEX_LINEAR_CLIENT_ID in the environment, "
+            "in Fleet-OPS /linear, or in AI Fleet Coordinator /linear)",
             notices[0],
         )
         n = len(self.mock.calls)
@@ -3206,14 +3231,91 @@ class SeatAppTests(BoardTest):
         # another seat's variables are not this seat's
         p = self.as_seat("CLAUDE", "whoami", extra=envs)
         self.assertIn("viewer:      Fleet (app user)", p.stdout)
-        # the Fleet-OPS pair comes before the seat's variables
+        # the seat's own variables come before its stored pair (AFC-473):  an exported
+        # LINEAR_<SEAT>_CLIENT_ID is never silently ignored
         self.seat_app("CODEX", "Codex", cid=codex, secret=sec, register=False)
         p = self.as_seat("CODEX", "whoami", extra=envs)
         self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (CODEX_LINEAR_CLIENT_ID, CODEX_LINEAR_CLIENT_SECRET)",
+            "credentials: environment (LINEAR_CODEX_CLIENT_ID, LINEAR_CODEX_CLIENT_SECRET)",
             p.stdout,
         )
         self.assertEqual(self.mock.mints_by, {codex: 1, CLIENT_ID: 1})
+
+    def test_the_environment_seat_pair_wins_over_the_stored_one(self):
+        """AFC-473:  the process environment is consulted first, so an exported pair beats the stored one."""
+        self.seat_app("CLAUDE", "Claude")
+        envs = {
+            "LINEAR_CLAUDE_CLIENT_ID": "env-claude-id",
+            "LINEAR_CLAUDE_CLIENT_SECRET": "env-claude-secret",
+        }
+        self.mock.add_client("env-claude-id", "env-claude-secret", "Claude")
+        p = self.as_seat("CLAUDE", "whoami", extra=envs)
+        self.assertIn(
+            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
+        )
+        self.assertNotIn(
+            "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout
+        )
+        # the stored pair was never read:  the environment came first
+        self.assertEqual(
+            [v for v in self.fs_verbs() if v.startswith("get CLAUDE_LINEAR_CLIENT_ID")], []
+        )
+        self.assertEqual(self.mock.mints_by, {"env-claude-id": 1})
+
+    def test_the_environment_fleet_pair_wins_over_the_stored_one(self):
+        """AFC-473:  the shared app's environment pair beats the stored Fleet-OPS pair."""
+        envs = {
+            "LINEAR_FLEET_CLIENT_ID": "env-fleet-id",
+            "LINEAR_FLEET_CLIENT_SECRET": "env-fleet-secret",
+        }
+        self.mock.add_client("env-fleet-id", "env-fleet-secret", "Fleet")
+        p = self.as_seat("CLAUDE", "whoami", extra=envs)
+        self.assertIn(
+            "credentials: environment (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)",
+            p.stdout,
+        )
+        self.assertNotIn(
+            "credentials: Infisical Fleet-OPS prod /linear (FLEET_LINEAR_CLIENT_ID", p.stdout
+        )
+        self.assertEqual(
+            [v for v in self.fs_verbs() if v.startswith("get FLEET_LINEAR_CLIENT_ID")], []
+        )
+        self.assertEqual(self.mock.mints_by, {"env-fleet-id": 1})
+
+    def test_the_ai_fleet_folder_is_read_through_fleet_secrets_with_the_project(self):
+        """AFC-473:  the AI Fleet Coordinator folder is read through the approved loader, never a direct call."""
+        cid, sec = self.seat_app("CLAUDE", "Claude", file=False)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_ID", cid)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", sec)
+        p = self.as_seat("CLAUDE", "whoami")
+        self.assertIn(
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID, "
+            "LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
+        )
+        verbs = self.fs_verbs()
+        self.assertIn("get LINEAR_CLAUDE_CLIENT_ID --project ai-fleet-coordinator", verbs)
+        self.assertIn("get LINEAR_CLAUDE_CLIENT_SECRET --project ai-fleet-coordinator", verbs)
+        # the direct Infisical resolver is never asked for its identity, so it never calls out
+        self.assertEqual([v for v in verbs if v.startswith("get INFISICAL_AUTOMATION")], [])
+
+    def test_a_seat_with_its_own_app_never_falls_back_to_the_fleet_pair(self):
+        """AFC-473:  the fleet pair is read in the fleet branch, so a seat with an app keeps its own."""
+        cid, sec = self.seat_app("CLAUDE", "Claude", file=False)
+        self.mock.add_client("env-fleet-id", "env-fleet-secret", "Fleet")
+        envs = {
+            "LINEAR_CLAUDE_CLIENT_ID": cid,
+            "LINEAR_CLAUDE_CLIENT_SECRET": sec,
+            "LINEAR_FLEET_CLIENT_ID": "env-fleet-id",
+            "LINEAR_FLEET_CLIENT_SECRET": "env-fleet-secret",
+        }
+        p = self.as_seat("CLAUDE", "whoami", extra=envs)
+        self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
+        self.assertIn(
+            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
+        )
 
     def test_cloud_pair_wins_and_may_hold_fleet_or_the_seat_app(self):
         claude, csec = self.seat_app("CLAUDE", "Claude")

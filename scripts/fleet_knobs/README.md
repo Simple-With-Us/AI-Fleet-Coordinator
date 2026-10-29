@@ -71,10 +71,23 @@ counts, `a=1,b=2` or a JSON object).
 python3 -m fleet_knobs status [--json]     source and set or unset per knob;  secrets never shown
 python3 -m fleet_knobs get NAME            one non-secret value (stale goes to stderr)
 python3 -m fleet_knobs inventory [--check|--write FILE]
+python3 -m fleet_knobs set NAME VALUE (--plan|--yes) [--json]
 ```
 
 `status` exits 3 when Infisical was unreachable.  It is the check after the first values are
 set in Infisical.
+
+`set` (`setter.py`) is the one write path, and Muster's Controls tab calls it.  It refuses an
+unknown name, any secret and any value the knob's `Spec` rejects, through the same
+`values.parse` the readers use, and writes the canonical text.  `--plan` shows the old and new
+value and the CLI argv and writes nothing; `--yes` runs `infisical secrets set NAME=VALUE
+--env=prod --path=/ --projectId=<id>` with a write-capable service token in the child's
+`INFISICAL_TOKEN` only.  The token comes from `FLEET_KNOBS_WRITE_TOKEN` or the Mac keychain item
+`fleet-knobs-write` (account `INFISICAL_TOKEN`); without one the answer is `no write token`. 
+After a write the last-known-good copy is refreshed (or, when the re-read fails, patched for
+that key with its age kept), and every `--yes` appends a row to
+`~/.agent-sync/listener/knobs.jsonl` (0600): time, seat, key, old and new value, result.  Exit 0
+planned or done, 1 failed, 2 refused.
 
 ## Packaging
 

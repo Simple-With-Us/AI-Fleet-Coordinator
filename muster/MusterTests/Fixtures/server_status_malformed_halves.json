@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "tool": "fleet-server-status",
+  "generatedAt": "2026-10-28T15:00:00Z",
+  "host": "example-server",
+  "coolify": [
+    {"uuid": "example-uuid-1", "name": "example-app", "type": "application", "status": "running"}
+  ],
+  "processes": [],
+  "files": [],
+  "hostMetrics": "not an object",
+  "services": {"unit": "not a list"},
+  "filesSummary": [1, 2, 3]
+}

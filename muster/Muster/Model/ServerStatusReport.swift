@@ -92,6 +92,9 @@ enum CoolifyResourceStatus: String {
 enum ServerStatusDrift: String {
     case unchanged
     case changed
+    /// A change the collector reports for information only, such as a README or a
+    /// package manifest: it is shown, and it is not drift.
+    case info
     case new
     case missing
     case unknown
@@ -120,9 +123,17 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
     let memoryBytes: Int?
     let image: String?
     let updatedAt: String?
+    /// Where the collector says `uuid` came from (`label` for a Coolify uuid label),
+    /// when it says and says it as text.
+    let uuidSource: String?
+    /// True when the row carries a `uuidSource` that is not null,  readable as text or not.
+    ///
+    /// The server believes a row that says where its uuid came from only when it says
+    /// `label`,  so a value of the wrong type must still count as saying something.
+    let declaresUUIDSource: Bool
 
     enum CodingKeys: String, CodingKey {
-        case uuid, name, type, status, cpuPercent, memoryBytes, image, updatedAt
+        case uuid, name, type, status, cpuPercent, memoryBytes, image, updatedAt, uuidSource
     }
 
     /// A resource decodes field by field,  so one field of a type this app did not
@@ -137,6 +148,9 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
         memoryBytes = try? container.decodeIfPresent(Int.self, forKey: .memoryBytes)
         image = try? container.decodeIfPresent(String.self, forKey: .image)
         updatedAt = try? container.decodeIfPresent(String.self, forKey: .updatedAt)
+        uuidSource = try? container.decodeIfPresent(String.self, forKey: .uuidSource)
+        declaresUUIDSource = container.contains(.uuidSource)
+            && (try? container.decodeNil(forKey: .uuidSource)) == false
     }
 
     /// The row's identity.
@@ -163,6 +177,21 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
         case .absent: return .drift
         case .unknown: return .unproven
         }
+    }
+
+    /// True when the server would agree to redeploy this row.
+    ///
+    /// This mirrors `coolify_resource` and `uuid_from_label` in
+    /// `scripts/fleet-ops-control.py`:  only a Coolify application can be redeployed,  and
+    /// only when its `uuid` came from a Coolify uuid label.  A row that says where its uuid
+    /// came from is believed only when it says `label`;  a row that does not say is taken
+    /// to carry a name when its uuid is its own name,  or the start of its name followed by
+    /// `" ("`.  A row with no name is not offered,  which is the cautious side of the rule.
+    var isRedeployable: Bool {
+        guard type == "application", !uuid.isEmpty else { return false }
+        if declaresUUIDSource { return uuidSource == "label" }
+        guard !name.isEmpty else { return false }
+        return name != uuid && !name.hasPrefix(uuid + " (")
     }
 
     /// The cpu,  when the collector could measure it.
@@ -257,7 +286,7 @@ struct WatchedFile: Decodable, Identifiable, Equatable {
     /// an unchanged file.
     var state: CellState {
         switch fileDrift {
-        case .unchanged: return .passed
+        case .unchanged, .info: return .passed
         case .changed, .new: return .drift
         case .missing: return .missing
         case .unknown: return .unproven
@@ -275,6 +304,259 @@ struct WatchedFile: Decodable, Identifiable, Equatable {
     }
 }
 
+// MARK: - The host
+
+/// The host's memory,  as the collector read it from `/proc/meminfo`.
+struct HostMemory: Decodable, Equatable {
+    let totalBytes: Int?
+    let availableBytes: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case totalBytes, availableBytes
+    }
+
+    init(totalBytes: Int?, availableBytes: Int?) {
+        self.totalBytes = totalBytes
+        self.availableBytes = availableBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalBytes = try? container.decodeIfPresent(Int.self, forKey: .totalBytes)
+        availableBytes = try? container.decodeIfPresent(Int.self, forKey: .availableBytes)
+    }
+
+    /// The share of memory in use, from 0 to 1, when both numbers were read.
+    var usedFraction: Double? {
+        guard let total = totalBytes, let available = availableBytes, total > 0 else { return nil }
+        return min(max(Double(total - available) / Double(total), 0), 1)
+    }
+}
+
+/// The host's swap,  as the collector read it from `/proc/meminfo`.
+struct HostSwap: Decodable, Equatable {
+    let totalBytes: Int?
+    let freeBytes: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case totalBytes, freeBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalBytes = try? container.decodeIfPresent(Int.self, forKey: .totalBytes)
+        freeBytes = try? container.decodeIfPresent(Int.self, forKey: .freeBytes)
+    }
+
+    /// The share of swap in use, from 0 to 1.
+    ///
+    /// A host with no swap has no share to show,  so it is nil rather than a zero.
+    var usedFraction: Double? {
+        guard let total = totalBytes, let free = freeBytes, total > 0 else { return nil }
+        return min(max(Double(total - free) / Double(total), 0), 1)
+    }
+}
+
+/// One mounted file system,  as the collector read it with `statvfs`.
+struct HostDisk: Decodable, Identifiable, Equatable {
+    let mount: String
+    let totalBytes: Int?
+    let usedBytes: Int?
+    let freeBytes: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case mount, totalBytes, usedBytes, freeBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mount = (try? container.decodeIfPresent(String.self, forKey: .mount)) ?? ""
+        totalBytes = try? container.decodeIfPresent(Int.self, forKey: .totalBytes)
+        usedBytes = try? container.decodeIfPresent(Int.self, forKey: .usedBytes)
+        freeBytes = try? container.decodeIfPresent(Int.self, forKey: .freeBytes)
+    }
+
+    var id: String { mount }
+
+    /// The share of the disk in use, from 0 to 1.
+    ///
+    /// Used over used plus free,  the way `df` counts it,  so the space kept back for
+    /// root does not read as free space the fleet can use.
+    var usedFraction: Double? {
+        if let used = usedBytes, let free = freeBytes, used + free > 0 {
+            return min(max(Double(used) / Double(used + free), 0), 1)
+        }
+        if let used = usedBytes, let total = totalBytes, total > 0 {
+            return min(max(Double(used) / Double(total), 0), 1)
+        }
+        return nil
+    }
+
+    /// The state the disk reads as:  amber from 85 percent full,  red from 95.
+    var state: CellState {
+        guard let fraction = usedFraction else { return .unproven }
+        if fraction >= 0.95 { return .missing }
+        if fraction >= 0.85 { return .drift }
+        return .passed
+    }
+}
+
+/// The host's own numbers:  load,  memory,  swap,  uptime and disks.
+///
+/// Every field is optional,  because a number the collector could not read is left out
+/// of the report rather than written as a zero.
+struct HostMetrics: Decodable, Equatable {
+    let loadAverage: [Double]
+    let cpuCount: Int?
+    let memory: HostMemory?
+    let swap: HostSwap?
+    let uptimeSeconds: Int?
+    let disks: [HostDisk]
+
+    enum CodingKeys: String, CodingKey {
+        case loadAverage, cpuCount, memory, swap, uptimeSeconds, disks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        loadAverage = (try? container.decodeIfPresent([Double].self, forKey: .loadAverage)) ?? []
+        cpuCount = try? container.decodeIfPresent(Int.self, forKey: .cpuCount)
+        memory = try? container.decodeIfPresent(HostMemory.self, forKey: .memory)
+        swap = try? container.decodeIfPresent(HostSwap.self, forKey: .swap)
+        uptimeSeconds = try? container.decodeIfPresent(Int.self, forKey: .uptimeSeconds)
+        disks = (try? container.decodeIfPresent([HostDisk].self, forKey: .disks)) ?? []
+    }
+
+    /// The one-minute load over the cpu count, from 0 up.
+    ///
+    /// A load of one per cpu is a full machine,  so the bar is drawn against that and
+    /// can run past it.
+    var loadFraction: Double? {
+        guard let load = loadAverage.first, let cpus = cpuCount, cpus > 0 else { return nil }
+        return max(load / Double(cpus), 0)
+    }
+
+    /// The three load numbers,  as `uptime` prints them.
+    var loadText: String? {
+        guard !loadAverage.isEmpty else { return nil }
+        return loadAverage.prefix(3).map { String(format: "%.2f", $0) }.joined(separator: " ")
+    }
+
+    /// How long the host has been up,  in the app's own words.
+    var uptimeText: String? {
+        guard let seconds = uptimeSeconds, seconds >= 0 else { return nil }
+        return FleetTime.age(seconds)
+    }
+
+    /// The state the host reads as:  the worst of its load,  memory and disks.
+    var state: CellState {
+        var states: [CellState] = disks.map(\.state)
+        if let load = loadFraction {
+            states.append(load >= 2 ? .missing : (load >= 1 ? .drift : .passed))
+        }
+        if let used = memory?.usedFraction {
+            states.append(used >= 0.95 ? .missing : (used >= 0.85 ? .drift : .passed))
+        }
+        guard !states.isEmpty else { return .unproven }
+        var worst = CellState.passed
+        for state in states where GridBuilder.severityIndex(of: state) < GridBuilder.severityIndex(of: worst) {
+            worst = state
+        }
+        return worst
+    }
+}
+
+// MARK: - The services
+
+/// One systemd unit the fleet runs on the server,  as `systemctl show` described it.
+///
+/// The collector reads only the units the allowlist names (`server.units` in
+/// `scripts/fleet-ops-control.json`),  and `controllable` says whether the allowlist lets
+/// Muster start,  stop or restart it.
+struct ServerService: Decodable, Identifiable, Equatable {
+    let unit: String
+    let scope: String?
+    let description: String?
+    let activeState: String?
+    let subState: String?
+    let since: String?
+    /// The unit file state (`enabled`,  `disabled`,  `static` and so on).
+    let enabled: String?
+    let controllable: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case unit, scope, description, activeState, subState, since, enabled, controllable
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        unit = (try? container.decodeIfPresent(String.self, forKey: .unit)) ?? ""
+        scope = try? container.decodeIfPresent(String.self, forKey: .scope)
+        description = try? container.decodeIfPresent(String.self, forKey: .description)
+        activeState = try? container.decodeIfPresent(String.self, forKey: .activeState)
+        subState = try? container.decodeIfPresent(String.self, forKey: .subState)
+        since = try? container.decodeIfPresent(String.self, forKey: .since)
+        // The unit file state is a word in systemd's vocabulary,  and a collector that
+        // writes it as a yes or a no is read the same way.
+        if let flag = try? container.decodeIfPresent(Bool.self, forKey: .enabled) {
+            enabled = flag ? "enabled" : "disabled"
+        } else {
+            enabled = try? container.decodeIfPresent(String.self, forKey: .enabled)
+        }
+        // A unit is controllable only when the report says so in as many words:  a field
+        // that is missing or unreadable is not a permission.
+        controllable = (try? container.decodeIfPresent(Bool.self, forKey: .controllable)) == true
+    }
+
+    /// Two scopes can hold units of one name,  so the scope is part of the identity.
+    var id: String { "\(scope ?? "system")/\(unit)" }
+
+    /// The state the unit reads as.
+    ///
+    /// An active unit is a pass,  a failed one is a failure,  one that is stopped is
+    /// drift,  and one that is between states or that nobody could read is unproven.
+    var state: CellState {
+        switch activeState ?? "" {
+        case "active": return .passed
+        case "failed": return .missing
+        case "inactive": return .drift
+        default: return .unproven
+        }
+    }
+
+    /// The state,  as systemd words it.
+    var stateText: String {
+        let active = activeState ?? "unknown"
+        guard let sub = subState, !sub.isEmpty else { return active }
+        return "\(active) (\(sub))"
+    }
+
+    /// How long the unit has been in its state,  when the collector wrote a time this
+    /// app can read.
+    var sinceText: String? {
+        guard let since = since, let date = FleetTime.parse(since) else { return nil }
+        return FleetTime.ageText(since: date)
+    }
+}
+
+/// How many watched files the collector found,  and whether it stopped at its limit.
+struct ServerFilesSummary: Decodable, Equatable {
+    let found: Int?
+    let limit: Int?
+    let truncated: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case found, limit, truncated
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        found = try? container.decodeIfPresent(Int.self, forKey: .found)
+        limit = try? container.decodeIfPresent(Int.self, forKey: .limit)
+        truncated = (try? container.decodeIfPresent(Bool.self, forKey: .truncated)) == true
+    }
+}
+
 // MARK: - The report
 
 /// The report,  as the collector writes it.
@@ -286,9 +568,16 @@ struct ServerStatusReport: Decodable {
     let coolify: [CoolifyResource]
     let processes: [ServerProcess]
     let files: [WatchedFile]
+    /// The host's own numbers,  when the collector wrote them.
+    let hostMetrics: HostMetrics?
+    /// The fleet's systemd units,  when the collector wrote them.
+    let services: [ServerService]
+    /// How many files the collector found,  when it said.
+    let filesSummary: ServerFilesSummary?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, tool, generatedAt, host, coolify, processes, files
+        case hostMetrics, services, filesSummary
     }
 
     init(from decoder: Decoder) throws {
@@ -302,6 +591,11 @@ struct ServerStatusReport: Decodable {
         coolify = (try? container.decodeIfPresent([CoolifyResource].self, forKey: .coolify)) ?? []
         processes = (try? container.decodeIfPresent([ServerProcess].self, forKey: .processes)) ?? []
         files = (try? container.decodeIfPresent([WatchedFile].self, forKey: .files)) ?? []
+        // The three newer halves are optional:  a report from a collector that predates
+        // them still decodes,  and a half that is malformed costs that half alone.
+        hostMetrics = try? container.decodeIfPresent(HostMetrics.self, forKey: .hostMetrics)
+        services = (try? container.decodeIfPresent([ServerService].self, forKey: .services)) ?? []
+        filesSummary = try? container.decodeIfPresent(ServerFilesSummary.self, forKey: .filesSummary)
     }
 }
 
@@ -327,12 +621,47 @@ struct ServerStatusReading {
     var processes: [ServerProcess] = []
     /// The watched files,  in the report's own order.
     var files: [WatchedFile] = []
+    /// The host's own numbers,  when the report carries them.
+    var hostMetrics: HostMetrics?
+    /// The fleet's systemd units,  in the report's own order.
+    var services: [ServerService] = []
+    /// How many files the collector found,  when the report says.
+    var filesSummary: ServerFilesSummary?
     /// The verdict for the whole report.
     var state: CellState = .unknown
 
-    /// The files whose drift is not `unchanged`:  the ones worth looking at.
+    /// True when the panel should offer Redeploy for `resource`.
+    ///
+    /// The server redeploys the first row of its report whose uuid matches,  so the row
+    /// must be redeployable itself and so must the first row that shares its uuid.
+    func offersRedeploy(_ resource: CoolifyResource) -> Bool {
+        guard resource.isRedeployable else { return false }
+        return coolify.first(where: { $0.uuid == resource.uuid })?.isRedeployable == true
+    }
+
+    /// The files whose drift is neither `unchanged` nor `info`:  the ones worth looking at.
     var driftedFiles: [WatchedFile] {
-        files.filter { $0.fileDrift != .unchanged }
+        files.filter { $0.fileDrift != .unchanged && $0.fileDrift != .info }
+    }
+
+    /// The files that changed in a way the collector reports for information only.
+    var noticedFiles: [WatchedFile] {
+        files.filter { $0.fileDrift == .info }
+    }
+
+    /// True when the collector stopped at its limit,  so the file list is a partial one.
+    var filesTruncated: Bool { filesSummary?.truncated == true }
+
+    /// The services half's own state.
+    var servicesState: CellState {
+        guard isCurrent else { return .unproven }
+        return worst(of: services.map(\.state), empty: .unproven)
+    }
+
+    /// The host half's own state.
+    var hostState: CellState {
+        guard isCurrent, let metrics = hostMetrics else { return .unproven }
+        return metrics.state
     }
 
     /// The Coolify half's own state.
@@ -444,6 +773,9 @@ enum ServerStatusReportReader {
         reading.coolify = report.coolify
         reading.processes = report.processes
         reading.files = report.files
+        reading.hostMetrics = report.hostMetrics
+        reading.services = report.services
+        reading.filesSummary = report.filesSummary
         // A report out of its window is not a reading:  the whole report reads unknown,
         // even where every row in it looks fine.
         reading.state = overall(of: reading)
@@ -464,8 +796,14 @@ enum ServerStatusReportReader {
         if reading.coolify.isEmpty && reading.processes.isEmpty && reading.files.isEmpty {
             return .unknown
         }
+        var halves = [reading.coolifyState, reading.processState, reading.configState]
+        // The services half counts only when the report carries one:  a collector that
+        // predates it is not a server whose services are unproven.
+        if !reading.services.isEmpty {
+            halves.append(reading.servicesState)
+        }
         var worst = CellState.passed
-        for state in [reading.coolifyState, reading.processState, reading.configState] {
+        for state in halves {
             if GridBuilder.severityIndex(of: state) < GridBuilder.severityIndex(of: worst) {
                 worst = state
             }

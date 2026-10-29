@@ -18,7 +18,7 @@
 
 import { z } from "zod";
 import { callTypedV1 } from "./gr-typed-v1.js";
-import { WF_V1_READ_ACTIONS, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
+import { WF_V1_READ_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
@@ -110,14 +110,13 @@ export class GrRelayClient {
   async callWorkflow(action, args) {
     // Bound depth/nodes/cycles before serialization, then cap raw JSON bytes
     // before recursive Zod parsing. Keep the normalized payload check below.
-    if(!boundedWorkflowInput(args))return {status:400,body:{error:"invalid_workflow_args"}};
-    const rawSerialized=JSON.stringify(args);
-    if(new TextEncoder().encode(rawSerialized).length>65536)return {status:400,body:{error:"workflow_request_too_large"}};
-    const parsedArgs=parseWfV1Args(action,args);
-    if(parsedArgs===null)return {status:400,body:{error:"invalid_workflow_args"}};
-    args=parsedArgs;
+    const limit = workflowInputLimit(action);
+    if (!boundedWorkflowInput(args, {maxBytes: limit, maxString: limit})) return {status:400,body:{error:"invalid_workflow_args"}};
+    const parsedArgs = parseWfV1Args(action, args);
+    if (parsedArgs === null) return {status:400,body:{error:"invalid_workflow_args"}};
+    args = parsedArgs;
     const serialized = JSON.stringify(args);
-    if (new TextEncoder().encode(serialized).length > 65536) return {status:400,body:{error:"workflow_request_too_large"}};
+    if (new TextEncoder().encode(serialized).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const write = !WF_V1_READ_ACTIONS.includes(action);
     const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});
     try {
