@@ -1503,7 +1503,7 @@ TEAM_TO_REPO = {
 #  not link, and it is never treated as an issue, because the number in it is a project number and
 #  not an issue number.  The entries between the BEGIN and END lines are generated from Linear
 #  (Project.identifier and slugId) by scripts/linear_project_linkifiers.py, which the Operator runs
-#  on Linear's project webhook (AFC-565);  each path is the project's id alone, which Linear opens
+#  on the Linear project webhook (AFC-565);  each path is the project id alone, which Linear opens
 #  even after a rename.  The same run updates scripts/zulip_linkifiers.py TARGET, and the parity
 #  test fails until both sides name the same projects.
 PROJECT_PATHS = {

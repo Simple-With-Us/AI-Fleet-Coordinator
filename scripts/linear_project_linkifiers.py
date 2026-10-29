@@ -241,17 +241,15 @@ def slug_from_url(url: Any) -> str | None:
 
 
 def sanitize_name(name: Any) -> str:
-    """Untrusted Linear text made safe for a generated comment line:  printable chars
-    only, whitespace collapsed, no '#', quotes or backslashes, no '*/', no newline,
-    at most 60 chars."""
+    """Untrusted Linear text made safe for a generated comment line.  An allowlist, so
+    nothing that means something to Python, the shell heredoc or the PROJECT_PATHS brace
+    scan survives (no quotes, '#', backslashes, braces, '$', backticks or '*/'):  letters,
+    digits, spaces and . , : ; ( ) / & + _ - only, whitespace collapsed, at most 60 chars."""
     text = str(name or "")
-    for char in ("#", '"', "'", "\\"):
-        text = text.replace(char, "")
     while "*/" in text:
         text = text.replace("*/", "")
-    text = re.sub(r"\s+", " ", text).strip()
-    text = "".join(c for c in text if c.isprintable())
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[^A-Za-z0-9 .,:;()/&+_-]", " ", re.sub(r"\s+", " ", text))
+    text = re.sub(r" +", " ", text).strip()
     return text[:60].strip()
 
 

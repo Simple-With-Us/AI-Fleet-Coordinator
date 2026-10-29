@@ -405,6 +405,34 @@ class RewritePathsTests(unittest.TestCase):
         codes = list(paths)
         self.assertEqual(codes, sorted(codes, key=L._code_sort_key))
 
+    def test_braces_and_shell_characters_in_a_name_cannot_break_the_block(self):
+        hostile = [L.Project("P-ZZ-2", "bbbbbbbbbbbb", "Ops } { ${HOME} `id` $(x) PY")]
+        once = L.rewrite_project_paths(self.text, self.projects + hostile)
+        line = next(line for line in once.splitlines() if "which the fleet calls P-ZZ-2" in line)
+        for bad in ("{", "}", "$", "`"):
+            self.assertNotIn(bad, line)
+        paths = self.paths_of(once)
+        self.assertEqual(paths["P-ZZ-2"], "bbbbbbbbbbbb")
+        self.assertEqual(paths["P-BF-6"], "5afcbc055535")
+        self.assertEqual(L.rewrite_project_paths(once, self.projects + hostile), once)
+
+    def test_the_rewritten_script_still_parses_as_shell(self):
+        # PROJECT_PATHS sits inside a single-quoted python3 -c string:  one apostrophe in a
+        # generated line would end that string and break the whole Notes script.
+        import shutil
+        import subprocess
+        import tempfile
+
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("no bash")
+        hostile = [L.Project("P-ZZ-3", "cccccccccccc", 'Jay\'s "quoted" } project')]
+        out = L.rewrite_project_paths(self.text, self.projects + hostile)
+        with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as handle:
+            handle.write(out)
+        proc = subprocess.run([bash, "-n", handle.name], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
     def test_hostile_names_are_neutralized(self):
         out = L.rewrite_project_paths(self.text, self.projects)
         line = next(line for line in out.splitlines() if "which the fleet calls P-ZZ-1" in line)

@@ -255,3 +255,46 @@ class ListenerApiSocketTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImageTests(unittest.TestCase):
+    def test_the_listener_image_carries_the_modules_the_hook_runs(self):
+        # The daemon runs linear_project_linkifiers and zulip_linkifiers from /app/scripts.
+        from pathlib import Path
+
+        server = Path(H.__file__).resolve().parent / "server"
+        dockerfile = (server / "Dockerfile").read_text(encoding="utf-8")
+        ignore = (server / "Dockerfile.dockerignore").read_text(encoding="utf-8")
+        for name in ("linear_project_linkifiers.py", "zulip_linkifiers.py"):
+            self.assertIn("scripts/" + name, dockerfile)
+            self.assertIn("!scripts/" + name, ignore)
+
+
+class DaemonWiringTests(unittest.TestCase):
+    def test_a_reload_retries_a_failed_secrets_load_instead_of_keeping_the_dead_hook(self):
+        import types
+        from unittest import mock
+
+        from agent_sync import daemon as D
+
+        events = []
+        fake = types.SimpleNamespace(
+            config=types.SimpleNamespace(linear_projects_enabled=True),
+            env={"OPERATOR_LINKIFIERS_INFISICAL_TOKEN": "st.token-for-test"},
+            log=types.SimpleNamespace(write=lambda event, **fields: events.append(event)),
+            hide_values=lambda values: None,
+            clock=types.SimpleNamespace(time=time.time),
+            linear_projects_hook=None,
+            _linear_projects_spec=None,
+        )
+        refused = LPL.SecretsRefused("infisical_error", "Infisical: HTTP 503")
+        with mock.patch.object(LPL, "load_secrets", side_effect=refused):
+            first = D.Daemon._configure_linear_projects(fake)
+        self.assertIsNone(first.secrets)
+        with mock.patch.object(LPL, "load_secrets", return_value={"LINEAR_WEBHOOK_SECRET": SECRET}):
+            second = D.Daemon._configure_linear_projects(fake)
+        self.assertIsNot(second, first)
+        self.assertEqual(second.secrets, {"LINEAR_WEBHOOK_SECRET": SECRET})
+        with mock.patch.object(LPL, "load_secrets", side_effect=AssertionError("not reloaded")):
+            third = D.Daemon._configure_linear_projects(fake)
+        self.assertIs(third, second)

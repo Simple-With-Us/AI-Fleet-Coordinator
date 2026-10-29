@@ -53,7 +53,6 @@ from . import heldalert as HELDALERT
 from . import heldback as HELD
 from . import host_load as HL
 from . import inbox_delivery as IDEL
-from . import linear_projects_hook as LPH
 from . import listener_api as LAPI
 from . import live as L
 from . import muse_bridge as MB
@@ -1074,11 +1073,14 @@ class Daemon:
             )
             return None
         self.hide_values([token])
-        if old is not None and old_spec == (token,):
+        if old is not None and old_spec == (token,) and getattr(old, "secrets", None) is not None:
+            # Only a hook whose secrets loaded is kept:  a failed load is retried on reload.
             self.linear_projects_hook = old
             self._linear_projects_spec = old_spec
             return old
         try:
+            # Imported here, not at module load, so a missing module never stops the daemon.
+            from . import linear_projects_hook as LPH
             import linear_project_linkifiers as LPL
         except ImportError as exc:
             self.log.write("linear-projects-error", error=type(exc).__name__)
@@ -1185,7 +1187,7 @@ class Daemon:
                 )
             self.log.write("notes-queue-started", **fields)
         if hook is not None:
-            self.log.write("linear-projects-started", path=LPH.PATH)
+            self.log.write("linear-projects-started", path="/linear/v1/projects")
 
     def _accept_outgoing_webhook(self, seat: str, bot_email: str, message_id: int) -> str:
         """Persist an authenticated webhook ID.  Message content comes only from a later REST read."""
