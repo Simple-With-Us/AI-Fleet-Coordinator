@@ -1652,6 +1652,18 @@ class LinearSourceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        # keep the source's state files inside the test tmpdir, never the real install paths
+        env = mock.patch.dict(
+            os.environ,
+            {
+                "FLEET_RAG_LINEAR_STATE": str(pathlib.Path(self.tmp) / "ingest-state.json"),
+                "FLEET_RAG_LINEAR_REFRESH_STATE": str(
+                    pathlib.Path(self.tmp) / "linear-source-refresh.json"
+                ),
+            },
+        )
+        env.start()
+        self.addCleanup(env.stop)
         self.map_path = pathlib.Path(self.tmp) / "board-to-linear.tsv"
         self.map_path.write_text(
             "board_id\tsource_key\tteam\tlinear_identifier\tlinear_url\tlinear_id\n"
@@ -1684,7 +1696,10 @@ class LinearSourceTests(unittest.TestCase):
             )
         )
         self.assertEqual(sorted(seen_fetch["ids"]), ["uuid-imported-active", "uuid-new"])
-        self.assertEqual([d.doc_id for d in docs], ["linear/AFC-2", "linear/AFC-3"])
+        # doc_id is the stable issue UUID, not the identifier (team moves rename identifiers)
+        self.assertEqual(
+            [d.doc_id for d in docs], ["linear/uuid-imported-active", "linear/uuid-new"]
+        )
         self.assertTrue(all(d.source == "linear" for d in docs))
 
     def test_mapping_category_seat_url_markdown_and_comment_order(self) -> None:
@@ -1703,10 +1718,10 @@ class LinearSourceTests(unittest.TestCase):
             )
         )
         (doc,) = docs
-        self.assertEqual(doc.doc_id, "linear/AFC-999")
+        self.assertEqual(doc.doc_id, "linear/uuid-1")
         self.assertEqual(doc.category, "lesson")  # state type completed
         self.assertEqual(doc.seat, "CLAUDE")
-        self.assertEqual(doc.app, "afc")
+        self.assertEqual(doc.app, "fleet")  # AFC team maps to the fleet app, not "afc"
         self.assertTrue(doc.url.startswith("https://linear.app/"))
         self.assertEqual(doc.extra["severity"], "P2")  # Severity label beats priority number
         self.assertIn("## Description", doc.text_markdown)
@@ -1804,8 +1819,8 @@ class LinearSourceTests(unittest.TestCase):
         def fake_query(query, timeout_s=0):
             if "filter: { id: { in: [" in query and query.count("uuid-") > 1:
                 raise sources.LinearSourceError(
-                    "linear: simple-board api query exited 1: simple-board: the Linear "
-                    "response exceeds --max-chars 64000.  Use pagination or select fewer fields."
+                    "linear: simple-board api query exited 1: response exceeds the CLI size cap",
+                    overflow=True,
                 )
             for uid in ("uuid-a", "uuid-b"):
                 if uid in query:
@@ -1822,8 +1837,8 @@ class LinearSourceTests(unittest.TestCase):
         def fake_query(query, timeout_s=0):
             if "title url description" in query:
                 raise sources.LinearSourceError(
-                    "linear: simple-board api query exited 1: simple-board: the Linear "
-                    "response exceeds --max-chars 64000.  Use pagination or select fewer fields."
+                    "linear: simple-board api query exited 1: response exceeds the CLI size cap",
+                    overflow=True,
                 )
             return {"issues": {"nodes": [{"id": "uuid-huge", "identifier": "AFC-777"}]}}
 
@@ -1848,8 +1863,8 @@ class LinearSourceTests(unittest.TestCase):
         def fake_query(query, timeout_s=0):
             if "issue(id:" in query:
                 raise sources.LinearSourceError(
-                    "linear: simple-board api query exited 1: simple-board: the Linear "
-                    "response exceeds --max-chars 64000.  Use pagination or select fewer fields."
+                    "linear: simple-board api query exited 1: response exceeds the CLI size cap",
+                    overflow=True,
                 )
             raise AssertionError("unexpected query")
 
@@ -1865,7 +1880,7 @@ class LinearSourceTests(unittest.TestCase):
         state_path.write_text(
             json.dumps(
                 {
-                    "linear/AFC-999": {
+                    "linear/uuid-1": {
                         "source": "linear",
                         "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
                     },
@@ -1874,6 +1889,8 @@ class LinearSourceTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        refresh_path = pathlib.Path(self.tmp) / "linear-source-refresh.json"
+        refresh_path.write_text(json.dumps({"linear/uuid-1": sources.now_ms()}), encoding="utf-8")
         scan = {
             "uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"},
             "uuid-2": {"identifier": "AFC-1000", "updatedAt": "2026-10-22T00:00:00.000Z"},
@@ -1884,19 +1901,23 @@ class LinearSourceTests(unittest.TestCase):
             seen["ids"] = list(ids)
             return [_linear_node(uid="uuid-2", identifier="AFC-1000")]
 
-        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": str(state_path)}):
+        env = {
+            "FLEET_RAG_LINEAR_STATE": str(state_path),
+            "FLEET_RAG_LINEAR_REFRESH_STATE": str(refresh_path),
+        }
+        with mock.patch.dict(os.environ, env):
             docs = list(
                 sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
             )
         self.assertEqual(["uuid-2"], seen["ids"])
-        self.assertEqual(["linear/AFC-1000"], [d.doc_id for d in docs])
+        self.assertEqual(["linear/uuid-2"], [d.doc_id for d in docs])
 
     def test_full_env_refetches_despite_state(self) -> None:
         state_path = pathlib.Path(self.tmp) / "ingest-state.json"
         state_path.write_text(
             json.dumps(
                 {
-                    "linear/AFC-999": {
+                    "linear/uuid-1": {
                         "source": "linear",
                         "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
                     }
@@ -1917,7 +1938,7 @@ class LinearSourceTests(unittest.TestCase):
                 sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
             )
         self.assertEqual(["uuid-1"], seen["ids"])
-        self.assertEqual(["linear/AFC-999"], [d.doc_id for d in docs])
+        self.assertEqual(["linear/uuid-1"], [d.doc_id for d in docs])
 
     def test_missing_or_corrupt_state_fetches_all(self) -> None:
         scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
@@ -1934,6 +1955,127 @@ class LinearSourceTests(unittest.TestCase):
             )
         self.assertEqual(["uuid-1"], seen["ids"])
         self.assertEqual(1, len(docs))
+
+    def test_app_label_wins_and_team_fallbacks_match_the_frozen_board(self) -> None:
+        """The migration's app:<slug> label preserves the original board app for merged rows;
+        team fallbacks follow the frozen board's own evidence."""
+        node = _linear_node(team="AFC", labels=("app:codecaps", "seat:CLAUDE"))
+        (doc,) = sources.iter_linear(
+            covered_ids=set(),
+            light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+            fetch_full=lambda ids: [node],
+        )
+        self.assertEqual(doc.app, "codecaps")
+        for team, expected in (
+            ("AFC", "fleet"),
+            ("OPS", "fleet-ops"),
+            ("C", "clutch"),
+            ("CK", "clutch"),
+            ("HH", "hoghunter"),
+            ("CC", "codecaps"),
+            ("ST", "socratic-trade"),  # lowercase alias path
+        ):
+            plain = _linear_node(team=team, labels=())
+            (doc,) = sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+                fetch_full=lambda ids, n=plain: [n],
+            )
+            self.assertEqual(doc.app, expected, team)
+
+    def test_stale_refresh_mark_forces_refetch_despite_covering_state(self) -> None:
+        """An unchanged updatedAt only skips the fetch inside the refresh window:  past it the
+        doc is refetched, so a comment edit that never bumped updatedAt cannot hide forever."""
+        state_path = pathlib.Path(self.tmp) / "ingest-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "linear/uuid-1": {
+                        "source": "linear",
+                        "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        refresh_path = pathlib.Path(self.tmp) / "linear-source-refresh.json"
+        stale = sources.now_ms() - 8 * 24 * 3600 * 1000  # beyond the 7-day default window
+        refresh_path.write_text(json.dumps({"linear/uuid-1": stale}), encoding="utf-8")
+        scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node()]
+
+        env = {
+            "FLEET_RAG_LINEAR_STATE": str(state_path),
+            "FLEET_RAG_LINEAR_REFRESH_STATE": str(refresh_path),
+        }
+        with mock.patch.dict(os.environ, env):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-1"], seen["ids"])
+        self.assertEqual(1, len(docs))
+        # the fetch refreshed the mark
+        marks = json.loads(refresh_path.read_text(encoding="utf-8"))
+        self.assertGreater(marks["linear/uuid-1"], stale)
+
+    def test_coverage_files_missing_fails_closed(self) -> None:
+        missing = pathlib.Path(self.tmp) / "nope"
+        with self.assertRaises(sources.LinearSourceError) as ctx:
+            sources.load_linear_covered_ids(missing / "map.tsv", missing / "db.sqlite")
+        self.assertIn("db.sqlite", str(ctx.exception))
+        db = pathlib.Path(self.tmp) / "findings.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE findings (id TEXT PRIMARY KEY)")
+        con.commit()
+        con.close()
+        with self.assertRaises(sources.LinearSourceError) as ctx:
+            sources.load_linear_covered_ids(missing / "map.tsv", db)
+        self.assertIn("map.tsv", str(ctx.exception))
+
+    def test_empty_scan_is_a_broken_read_not_an_empty_board(self) -> None:
+        def empty_page(*a, **k):
+            return subprocess.CompletedProcess(
+                a, 0, stdout='{"issues": {"nodes": [], "pageInfo": {"hasNextPage": false}}}', stderr=""
+            )
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=empty_page):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan()
+
+        def no_connection(*a, **k):
+            return subprocess.CompletedProcess(a, 0, stdout="{}", stderr="")
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=no_connection):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan()
+
+    def test_full_node_shape_is_validated_before_use(self) -> None:
+        node = _linear_node()
+        del node["comments"]
+        with self.assertRaises(sources.LinearSourceError):
+            sources._linear_validate_full(node)
+        node2 = _linear_node()
+        node2["id"] = 42
+        with self.assertRaises(sources.LinearSourceError):
+            sources._linear_validate_full(node2)
+
+    def test_shared_deadline_stops_pagination(self) -> None:
+        past = sources.time.monotonic() - 1
+        with self.assertRaises(sources.LinearSourceError) as ctx:
+            sources._linear_remaining(past)
+        self.assertIn("deadline", str(ctx.exception))
+        with mock.patch.object(
+            sources, "_linear_query", return_value={"issues": {"nodes": [], "pageInfo": {}}}
+        ) as q:
+            try:
+                sources._linear_light_scan(deadline=past)
+            except sources.LinearSourceError:
+                pass
+        q.assert_not_called()
 
     def test_missing_ids_after_fetch_raise(self) -> None:
         with mock.patch.object(
@@ -1959,7 +2101,7 @@ class LinearSourceTests(unittest.TestCase):
             )
         )
         self.assertEqual(seen["ids"], ["b"])
-        self.assertEqual([d.doc_id for d in docs], ["linear/AFC-7"])
+        self.assertEqual([d.doc_id for d in docs], ["linear/b"])
 
     def test_covered_ids_come_from_actual_frozen_coverage_not_tsv_membership(self) -> None:
         db = pathlib.Path(self.tmp) / "findings.db"
