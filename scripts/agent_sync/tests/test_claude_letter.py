@@ -139,6 +139,22 @@ class RegistrySideTests(Base):
         finally:
             reg.close_db()
 
+    def test_chats_the_operator_registered_another_way_are_never_swept_or_evicted(self) -> None:
+        for sid, source in (("op-0001", "operator-registration"), ("op-0002", "chat-topic-answer")):
+            OR.register_session(
+                self.db, platform="claude", verified_host="mac", profile_scope="default",
+                native_session_id=sid, seat="CLAUDE", source=source, issuer=OR.ISSUER_OPERATOR,
+            )
+            self.set_seen(sid, "2026-01-01T00:00:00.000Z")
+        self.assertEqual(self.register("s-0001")["swept"], 0)
+        for i in range(2, 25):  # D to Z:  with A, B and C held, these fill the alphabet
+            self.register("s-%04d" % i)
+        self.set_seen("s-0001", "2026-10-28T09:00:00.000Z")
+        out = self.register("s-0099", now=OR.datetime(2026, 10, 28, 12, tzinfo=OR.UTC).timestamp())
+        self.assertEqual((out["evicted"], out["label"]), (1, "C"))  # s-0001 held C;  A and B stay with the Operator's
+        for sid in ("op-0001", "op-0002"):
+            self.assertEqual(self.lookup(sid, "mac")["state"], "active")
+
     def test_full_letters_evict_the_least_recently_seen(self) -> None:
         for i in range(26):
             self.register("s-%04d" % i)

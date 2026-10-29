@@ -61,6 +61,9 @@ PLATFORM = "claude"
 SCOPE = "default"
 SEAT_DEFAULT = "CLAUDE"
 SOURCE = "claude-letter-hook"
+# The registration sources whose rows this hook keeps fresh, and so may sweep or evict:  its own, and the one-off
+# manual registration of the first Claude chat (Oct 28, 2026) that predates it.
+MANAGED_SOURCES = (SOURCE, "claude-chat-start")
 ENTRYPOINTS = ("cli", "claude-desktop")
 LOCATIONS = ("mac", "server")
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
@@ -270,17 +273,22 @@ def _iso(value: object) -> float | None:
 
 
 def _open_claude_rows(db: str) -> list[sqlite3.Row]:
-    """Every open Claude registration, read with the registry's own read-only rule:  mode=rw, so a hot journal can
-    be recovered, and never a create."""
+    """Every open Claude registration this hook manages, read with the registry's own read-only rule:  mode=rw, so a
+    hot journal can be recovered, and never a create.
+
+    Only MANAGED_SOURCES:  the hook keeps those rows' last_seen_at fresh, so their age means idleness.  A Claude chat
+    the Operator registered another way (`operator-registration`, `chat-topic-answer`) is never marked seen by this
+    hook, so its age says nothing, and it is never swept or evicted here."""
     from pathlib import Path
 
     conn = sqlite3.connect("%s?mode=rw" % Path(os.path.abspath(db)).as_uri(), uri=True)
     conn.row_factory = sqlite3.Row
+    marks = ", ".join("?" for _ in MANAGED_SOURCES)
     try:
         return conn.execute(
             "SELECT record_id, verified_host, native_session_id, last_seen_at FROM sessions"
-            " WHERE platform = ? AND closed_at IS NULL",
-            (PLATFORM,),
+            " WHERE platform = ? AND closed_at IS NULL AND source IN (%s)" % marks,
+            (PLATFORM, *MANAGED_SOURCES),
         ).fetchall()
     finally:
         conn.close()
