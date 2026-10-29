@@ -214,7 +214,11 @@ export const STANDING_BLOCK_HEADER = "**Status: ";
 
 /** Render the standing status block for a topic's current states. */
 export function renderStatus({ topic, states, updatedAt, source }) {
+  // A recovered signal is counted in the header but not drawn:  its row would
+  // carry no text (a resolve clears it), and the block is read for what is
+  // open, so a quiet monitor needs no line of its own.
   const rows = states
+    .filter((s) => s.phase !== "ok")
     .map((s) => {
       const mark =
         s.phase === "alerting"
@@ -230,7 +234,9 @@ export function renderStatus({ topic, states, updatedAt, source }) {
   const firing = states.filter((s) => s.phase === "alerting").length;
   const header = firing
     ? `**${firing} firing** of ${states.length}`
-    : `**All clear** (${states.length} monitored)`;
+    : states.length
+      ? `**All clear** (${states.length} monitored)`
+      : "**All clear**";
 
   // Each source owns one standing message per topic, so the block says which
   // vendor it belongs to.
@@ -243,7 +249,7 @@ export function renderStatus({ topic, states, updatedAt, source }) {
     "",
     header,
     "",
-    ...(rows.length ? rows : ["_no signals yet_"]),
+    ...rows,
     "",
     footer,
   ].join("\n");

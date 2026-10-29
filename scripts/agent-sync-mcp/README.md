@@ -104,6 +104,23 @@ Or update a project with `linear_mutation`:
 
 These tools use the same grant-bound identity, authentication, budgets and secret scanning as the existing Linear tools.  A mutation is available only when Linear writes are enabled and the seat has its own app identity.  App permissions still limit which schema fields and operations are available.  Fleet claim and seat-label changes remain protected and must use the existing `linear_claim` convenience tool.
 
+## Linear Wakes
+
+`POST /webhooks/linear` is the door that lets a Linear post or comment wake a fleet seat:  a mention or
+an assignment of a Grok Bot persona or a BotFleet role seat wakes that seat.  A post that carries a
+Zulip topic thread is skipped, so a Zulip wake is not duplicated.
+
+The door is Infisical only (`INFISICAL_MODE=required`, no env fallback), signed with the
+`linear-signature` HMAC over the raw body bytes, and it reads its secret from Fleet-OPS prod
+`/linear:LINEAR_WAKE_WEBHOOK_SECRET`.  A GB persona is woken through the endpoint the server listener
+already uses (`/zulip:ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `_KEY`);  a BF role seat through
+`/linear:BF_LINEAR_WAKE_<ROLE>_URL` and `_SECRET`.  The delivery body is the contract
+`fleet-linear-wake/1`, and it never carries the whole comment body:  at most a 280-character excerpt,
+scrubbed by the Worker's own secret scanner.
+
+Design, filters, the Infisical names and the Jay-only config steps:  `docs/protocols/linear-wake.md`.
+Code:  `src/linear-wake.js`.  Tests:  `test/linear-wake.test.mjs`.
+
 ## Versions and the two-week rule
 
 The fleet pins packages released at least two weeks before use.  On Fri, Oct 9 that means on or before Thu, Sep 24.  `package-lock.json` was resolved with `npm install --before=2026-09-25`, so transitive packages follow the same rule, with the exceptions marked below.

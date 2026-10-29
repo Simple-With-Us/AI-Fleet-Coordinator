@@ -35,7 +35,6 @@ import {
   GATE_LOG_NAME,
   PROPS_PHASE,
   SEAT_SECRETS,
-  SHARED_IDENTITY_SEATS,
   SEAT_LABELS,
   WAKE_SECRETS,
   KNOWN_SEATS,
@@ -67,12 +66,12 @@ import { serveGrBearerVerify } from "./gr-verify.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
-import { IdentityRouter, resolveDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
+import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
-import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
+import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
@@ -83,6 +82,7 @@ import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_
 import { serveWa } from "./wa/index.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
+import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
 
 export { SeatGate };
 
@@ -169,7 +169,7 @@ function providerFor(env) {
       authorization_servers: [ISSUER],
       scopes_supported: [...SCOPES],
       bearer_methods_supported: ["header"],
-      resource_name: "Agent-Sync",
+      resource_name: "ST-MCP",
     },
     tokenExchangeCallback: (options) => checkTokenExchange(env, options),
     onError: ({ code, status, internal }) => {
@@ -256,16 +256,13 @@ async function serveMcp(request, env, ctx) {
   const key = await seatKeyRead(secretNames);
   const email = config.botEmails[seat];
   const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
-  // Linear app pairs resolve through Infisical too (src/linear.js); prefetched
-  // with the seat keys so the router's synchronous identityStatus keeps its
-  // contract.  A pair absent from Infisical reads as Linear-off, never a throw.
-  const linearPairs = new Map(await Promise.all(Object.keys(LINEAR_SECRETS).map(async (canonical) =>
-    [canonical, await resolveLinearPair(env, canonical)])));
+  // Resolve only this verified principal's Linear pair, never unused peers.
+  const linearPair = await resolveLinearPair(env, seatTagForSeat(seat));
   // FleetLink's agent secret resolves through /fleetlink (read-tools scope);
   // the folder awaits the population approval, so fallback mode covers the
   // gap observably and required mode throws visibly until it is populated.
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
-  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [seat]);
   const recallSecrets = await resolveRecallSecrets(env);
 
   // The listener key resolves through Infisical too (optional:  no wake key
@@ -291,7 +288,7 @@ async function serveMcp(request, env, ctx) {
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
-    linear: linearClientFromPair(linearPairs.get(seatTagForSeat(seat)) ?? null, seat, { gate: seatGate }),
+    linear: linearClientFromPair(linearPair, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
     // not_configured and every other tool works as before (AFC-328).
@@ -303,84 +300,9 @@ async function serveMcp(request, env, ctx) {
     // and every other tool works as before (AFC-486).  The seat a request names is always this HostedTools' seat.
     notes: operatorNotesClientFromEnv(env),
   });
-  // AFC-331:  every grant is routed by identity.  A CURSOR or GROK-WEB grant may act as either seat and as
-  // every enabled Grok Bot persona;  any other grant only as its own seat (src/delegated-identities.js).
-  const sharedGroup = SHARED_IDENTITY_SEATS.includes(seat);
-  const delegatedCredentials = sharedGroup ? await resolveDelegatedCredentials(env) : null;
-  // Seat keys resolve through Infisical when INFISICAL_MODE allows (src/infisical.js);
-  // prefetched so the router's synchronous identityStatus keeps its contract.
-  // Optional reads, so one seat's absent key degrades only that seat, never every seat's request.
-  const seatKeys = new Map(await Promise.all(Object.entries(SEAT_SECRETS).map(async ([identity, names]) =>
-    [identity, await seatKeyRead(names)])));
-  const seatKeyOf = (identity) => seatKeys.get(identity) ?? "";
-  const routedTools = new IdentityRouter({
-    callerTools: tools,
-    credentials: delegatedCredentials,
-    identityStatus: (identity) => ({
-      zulip: seatKeyOf(identity) && config.botEmails[identity] ? "configured" : "missing",
-      linear: ((pair) => (pair && pair.clientId && pair.clientSecret ? "configured" : "missing"))(linearPairs.get(seatTagForSeat(identity))),
-    }),
-    createIdentity: !sharedGroup ? null : async (identity) => {
-      // Each identity has its own SeatGate:  its spacing, idempotency rows, role cache and budget.  The
-      // grant's gate is charged too (HostedTools.reserve), so another identity never multiplies it.
-      const identityGate = gate(env, identity);
-      const identityState = await identityGate.getState();
-      if (identityState.paused) throw new ToolError("paused", `The ${identity} identity is paused.`);
-      const common = {
-        callerSeat: seat,
-        callerGate: seatGate,
-        scopes,
-        clientId: typeof auth.clientId === "string" ? auth.clientId : "",
-        grantRef: tools.grantRef,
-        paused: tools.paused,
-        gate: identityGate,
-        cf: tools.cf,
-        recall: tools.recall,
-        fleetlink: tools.fleetlink,
-        notes: tools.notes,
-        linearWrites: tools.linearWrites,
-      };
-      const roleCredentials = delegatedCredentials.roles.get(identity);
-      if (roleCredentials) {
-        // A Grok Bot persona:  its row of the encrypted GB_IDENTITY_CREDENTIALS bundle.
-        const roleKey = roleCredentials.zulipKey;
-        const roleEmail = roleCredentials.email;
-        return new HostedTools({
-          ...common,
-          seat: identity,
-          delegatedLinear: true,
-          config: { ...config, botEmails: { ...config.botEmails, [identity]: roleEmail } },
-          zulip: new ZulipClient({ email: roleEmail, key: roleKey, ownerUserId: config.ownerUserId }),
-          key: roleKey,
-          linear: new LinearClient({
-            seat: identity,
-            clientId: roleCredentials.linearClientId,
-            clientSecret: roleCredentials.linearClientSecret,
-            gate: identityGate,
-            fetch: globalThis.fetch.bind(globalThis),
-          }),
-        });
-      }
-      if (!SHARED_IDENTITY_SEATS.includes(identity)) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
-      // A peer seat of the shared group:  its own SEAT_SECRETS key and its own Linear app, never the grant's.
-      const peerKey = seatKeyOf(identity);
-      const peerEmail = config.botEmails[identity];
-      if (!peerKey || !peerEmail) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
-      return new HostedTools({
-        ...common,
-        seat: identity,
-        config,
-        zulip: new ZulipClient({ email: peerEmail, key: peerKey, ownerUserId: config.ownerUserId }),
-        key: peerKey,
-        linear: linearClientFromPair(linearPairs.get(seatTagForSeat(identity)) ?? null, identity, { gate: identityGate }),
-        listener: listenerClientFromEnv(env, identity, {
-          wakeKey: Object.hasOwn(WAKE_SECRETS, identity)
-            ? await resolveSecret(env, { name: WAKE_SECRETS[identity], path: "/wake", envName: WAKE_SECRETS[identity], optional: true })
-            : "",
-        }),
-      });
-    },
-  });
+  // The authenticated grant assigns the acting principal. No per-call peer or
+  // persona credential loader is installed, even for legacy shared OAuth seats.
+  const routedTools = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = {
     token: auth.token,
     clientId: auth.clientId,
@@ -438,11 +360,6 @@ async function serveGbBearerMcp(request, env, token) {
   const parsed = parseGbBearer(token);
   if (!parsed) return refuse();
   const { identity } = parsed;
-  // One listing per folder instead of a cold per-name burst (kody 4365622780):
-  // the persona rows read /zulip and /linear;  /fleetlink and /tools are
-  // listed only once the bearer has matched.
-  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
-  const roles = (await resolveDelegatedCredentials(env)).roles;
   const identityGate = gate(env, identity);
   const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
   if (!checked.ok) {
@@ -459,6 +376,11 @@ async function serveGbBearerMcp(request, env, token) {
     }
     return refuse();
   }
+  // A valid hash is not consent for hosted tool access.  Legacy missing rows
+  // and explicit GR-only rows both refuse before loading any persona bundle.
+  if (checked.mcp_accept !== true) return refuse();
+  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  const roles = (await resolveDelegatedCredentials(env)).roles;
   const credentials = roles.get(identity);
   if (!credentials) return refuse();
   const state = await identityGate.getState();
@@ -467,7 +389,7 @@ async function serveGbBearerMcp(request, env, token) {
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
-  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [identity]);
   const recallSecrets = await resolveRecallSecrets(env);
   const grSecrets = await resolveGrSecrets(env);
   const tools = new HostedTools({
@@ -547,7 +469,7 @@ async function serveSbtBearerMcp(request, env, token) {
   const grantRef = await sha256Ref(`sbt-bearer:${seat}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
-  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...BEARER_SEATS, ...GB_IDENTITIES]);
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [seat]);
   const recallSecrets = await resolveRecallSecrets(env);
   // The listener key resolves through Infisical too (optional:  no wake key
   // means no listener tools, never a 500 - src/eavesdropper.js).
@@ -1122,7 +1044,8 @@ async function serveAdmin(request, env, config, oauth, email) {
     const globalValue = (i) => globalReads[i].status === "fulfilled" ? globalReads[i].value : [];
     const [refusals, tokenRefusals, runtimeErrors] = [0, 1, 2].map(globalValue);
     const diagnosticsUnavailable = globalReads.some((r) => r.status === "rejected");
-    const delegatedRoles = (await resolveDelegatedCredentials(env)).roles;
+    const delegatedReadiness = await adminDelegatedReadiness(env);
+    const delegatedRoles = delegatedReadiness.roles;
     const gbBearers = await Promise.all([
       ...GB_IDENTITIES.map(async (identity) => {
         let status = null;
@@ -1131,7 +1054,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         const g = gate(env, identity);
         try { status = await g.gbBearerStatus(); } catch { /* Shown as unknown. */ }
         try { mismatches = (await g.gbBearerMismatches())[identity] ?? null; } catch { mismatchesUnavailable = true; }
-        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), status, mismatches, mismatchesUnavailable };
+        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), credentialsUnavailable: delegatedReadiness.credentialsUnavailable, status, mismatches, mismatchesUnavailable };
       }),
       // Every seat may hold a bearer too (owner direction 2026-10-23:  all apps in
       // this panel, one credential per identity, honored by ST-MCP and GR-MCP).
@@ -1401,6 +1324,10 @@ export default {
     // check exactly like any unknown Host, so a request there gets a clean 404
     // rather than a working fallback.  The route is gone from wrangler.jsonc too.
     if (!hostAllowed(request, config.host)) return notFound();
+    // The Linear webhook (src/linear-wake.js):  a Linear post or comment that
+    // mentions or assigns a fleet seat wakes that seat.  Its own HMAC is the
+    // gate, so it is answered before the path allowlist and the OAuth library.
+    if (new URL(request.url).pathname === LINEAR_WAKE_PATH) return serveLinearWake(request, env, ctx);
     const route = classifyPath(new URL(request.url).pathname);
     if (!route) return notFound();
     if (route === "health") {

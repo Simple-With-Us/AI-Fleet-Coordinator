@@ -43,6 +43,7 @@ from typing import Any
 
 from . import __version__, secretscan
 from . import adapters as A
+from . import broadcast_audit as BAUD
 from . import chat_fanout as FAN
 from . import chat_nudges as CN
 from . import chat_transport as CT
@@ -690,6 +691,13 @@ class Daemon:
         self._broadcast_wakes: queue.SimpleQueue[tuple[Mapping[str, Any], frozenset[str]]] = (
             queue.SimpleQueue()
         )
+        # The peer-broadcast audits (owner, Oct 27 2026, broadcast_audit.py):  one pending audit
+        # per fleet bot's `@all`, keyed by message id, with the time it comes due.  They live in
+        # memory only, so a restart drops them:  the cost is one unexplained broadcast, never a
+        # wrong wake.  The cap on reminders per seat and per hour lives in the limiter.
+        self._broadcast_audits: dict[int, tuple[BAUD.Broadcast, float, int]] = {}
+        self._broadcast_rate = BAUD.RateLimiter()
+        self.log.write("peer-broadcast-audit-start", pending=0)
         self.coalescer = W.Coalescer(
             window=self.config.coalesce_seconds,
             max_window=self.config.coalesce_max_seconds,
@@ -863,9 +871,9 @@ class Daemon:
                 self.config_notified = True
                 self.notifier.notify(
                     cfg.claude_seat or "LISTENER",
-                    "agent-sync listener",
+                    "simple-chat listener",
                     "config problem: %d issue%s; "
-                    "see agent-sync status"
+                    "see simple-chat daemon status"
                     % (len(cfg.errors), "" if len(cfg.errors) == 1 else "s"),
                     kind="config",
                 )
@@ -901,12 +909,12 @@ class Daemon:
                 continue
             self.notifier.notify(
                 seat,
-                "agent-sync %s" % seat,
+                "simple-chat %s" % seat,
                 "%s wake config problem, so %s wakes are inbox-only (messages still queue): %s"
                 % (seat, seat, self.scrub(seat_cfg.config_problems[0])),
                 kind="config-wake",
                 key="config-wake:%s" % seat,
-                note="%d problem%s in listener.toml for this seat; agent-sync status lists them"
+                note="%d problem%s in listener.toml for this seat; simple-chat daemon status lists them"
                 % (
                     len(seat_cfg.config_problems),
                     "" if len(seat_cfg.config_problems) == 1 else "s",
@@ -915,12 +923,12 @@ class Daemon:
         for seat, problems in sorted(cfg.skipped_seats.items()):
             self.notifier.notify(
                 seat,
-                "agent-sync %s" % seat,
+                "simple-chat %s" % seat,
                 "%s is NOT loaded, so nothing is captured for it: %s"
                 % (seat, self.scrub(problems[0] if problems else "config problem")),
                 kind="config-seat",
                 key="config-seat:%s" % seat,
-                note="fix listener.toml, then agent-sync daemon reload",
+                note="fix listener.toml, then simple-chat daemon reload",
             )
 
     def _configure_outgoing_webhook(self) -> None:
@@ -1202,9 +1210,9 @@ class Daemon:
             self.log.write("reload-refused", errors=refused)
             self.notifier.notify(
                 self.config.claude_seat or "LISTENER",
-                "agent-sync listener",
-                "reload refused: the config holds a seat this instance may not hold; see agent-sync "
-                "status",
+                "simple-chat listener",
+                "reload refused: the config holds a seat this instance may not hold; see simple-chat "
+                "daemon status",
                 kind="partition",
                 key="partition-reload",
             )
@@ -1232,7 +1240,7 @@ class Daemon:
                 if view.get("owner"):
                     self.notifier.notify(
                         runner.seat,
-                        "agent-sync %s" % runner.seat,
+                        "simple-chat %s" % runner.seat,
                         "a wake for your message stopped mid-run and was not re-run",
                         kind="wake-crashed",
                         key="crash:%s" % view.get("wake_id"),
@@ -1585,7 +1593,7 @@ class Daemon:
                                 "id": gap["oldest"],
                                 "ts": self.clock.time(),
                                 "sender": "agent-sync",
-                                "content": "Older messages were not fetched; use agent-sync read --since with an older id.",
+                                "content": "Older messages were not fetched; use simple-chat read --since with an older id.",
                             }
                         ],
                     )
@@ -1741,22 +1749,27 @@ class Daemon:
         )
         # A marker message wakes nobody, and the owner typing `@**all**` is exactly the case
         # where the fanout would wake every seat, so the fanout checks the marker too (AFC-468).
-        if self._owner_broadcast(c):
+        # A fleet bot's `@all` takes the same road (owner, Oct 27 2026):  it wakes like the
+        # owner's, under the peer budgets.
+        if self._broadcast_all(c):
             self.start_fanout(message, c)
         # The owner's channel-wide note also belongs UNREAD in every fleet bot's own Zulip
         # inbox (AFC-938).  This is a second copy, not a replacement:  the `@**all**` wake path
         # above is untouched, and `@**everyone**` keeps waking nobody.
-        if self._owner_inbox_broadcast(c):
+        if self._inbox_broadcast(c):
             self.start_inbox_delivery(message, c)
-        if (
-            first_seen
-            and c.owner
-            and c.broadcast_all
-            and not c.no_wake
-            and not c.dm
-            and not c.stale
-            and not c.owner_topic
-        ):
+        # A fleet bot's `@all` has to be explained to the owner (owner, Oct 27 2026):  the audit
+        # asks, ten minutes later, whether Jay asked for it or the bot told him why.  The gate is
+        # the message itself, not the routing verdict, and the audit keeps one entry per message
+        # id, so every seat that sees the broadcast agrees on one reminder.
+        if self._peer_broadcast_audit(message, c, runner):
+            self.schedule_broadcast_audit(message, c)
+        # The seats this listener holds that cannot take a routine/headless wake for a
+        # channel-wide `@all`.  This is not owner-only bookkeeping:  a fleet bot's `@all` wakes
+        # exactly like the owner's now (owner, Oct 27 2026), so the same seats are blocked, and
+        # the same line says so.  The owner's own `@all` in an OWNER topic keeps its old
+        # behaviour (the fanout runs, no seat wakes there), which is why the topic stays excluded.
+        if first_seen and self._broadcast_all(c) and not c.owner_topic:
             threading.Thread(
                 target=self._log_broadcast_wake_unsupported,
                 args=(int(message["id"]),),
@@ -1788,7 +1801,7 @@ class Daemon:
                 continue  # routine spacing:  the item is a passive headline, no banner and no throttle line
             if self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "live budget reached (%s); the topic is passive in that session" % reason,
                 kind="live-budget",
                 key="live:%s:%s" % (lease_id, c.key),
@@ -1825,7 +1838,7 @@ class Daemon:
                 # adapter configured, but never start it in parallel with a bridge decision.
                 done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
-                if self._owner_broadcast(c):
+                if self._broadcast_all(c):
                     # Handed off, not delivered:  start_fanout (above, same gate) owns this wake.  The
                     # fanout always hands every seat it did not nudge back to the event thread, even
                     # when catalog discovery fails, and tick() offers it there through offer_wake like
@@ -1965,7 +1978,7 @@ class Daemon:
             if owner:
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a message from you is waiting in the %s seat inbox (no headless wake)"
                     % runner.seat,
                     kind="inbox-owner",
@@ -2063,7 +2076,7 @@ class Daemon:
             self._held_rows(runner, lost, "evicted", now)
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "%d held-back message%s lost past the held_back caps (max %d plus overflow_max %d)"
                 % (
                     len(lost),
@@ -2199,7 +2212,7 @@ class Daemon:
         current = pin.get("muse") or "<unresolved>"
         recorded = pin.get("pinned_muse") or "<none>"
         note = (
-            "pinned %s, on disk %s; run `agent-sync daemon test-wake --seat %s --run` "
+            "pinned %s, on disk %s; run `simple-chat daemon test-wake --seat %s --run` "
             "then `--pin`.  It is never re-pinned automatically:  the pin records "
             "that a person checked this build's wake contract." % (recorded, current, runner.seat)
         )
@@ -2210,7 +2223,7 @@ class Daemon:
             )
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "the muse binary changed (%s), so %s wakes are inbox-only until it is "
             "re-pinned" % (current, runner.seat),
             kind="wake-pin_stale",
@@ -2244,12 +2257,12 @@ class Daemon:
             recorded = pin.get("pinned_claude") or "<none>"
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "the claude binary changed (%s), so %s wakes are inbox-only until it is "
                 "re-pinned" % (current, runner.seat),
                 kind="wake-" + reason,
                 key="wake:%s:%s" % (runner.seat, reason),
-                note="pinned %s, on disk %s; run `agent-sync daemon test-wake --seat %s --run` "
+                note="pinned %s, on disk %s; run `simple-chat daemon test-wake --seat %s --run` "
                 "then `--pin`.  It is never re-pinned automatically:  the pin records "
                 "that a person checked this build's wake contract."
                 % (recorded, current, runner.seat),
@@ -2262,19 +2275,19 @@ class Daemon:
             tool = "claude" if reason == "no_claude" else "muse"
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "no %s binary found, so %s wakes are inbox-only until it is installed or "
                 "seat.%s.%s names it" % (tool, runner.seat, runner.seat, tool),
                 kind="wake-" + reason,
                 key="wake:%s:%s" % (runner.seat, reason),
                 note="messages still queue in the seat inbox; fix listener.toml or the install, then "
-                "agent-sync daemon reload",
+                "simple-chat daemon reload",
                 trigger_ids=pending.trigger_ids,
             )
             return
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "a wake was not run (%s); the message is in the seat inbox" % reason,
             kind="wake-" + reason,
             key="wake:%s:%s" % (runner.seat, reason),
@@ -2339,7 +2352,7 @@ class Daemon:
         try:
             if not self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 text,
                 kind="wake-quota-hold",
                 key=key,
@@ -2404,7 +2417,7 @@ class Daemon:
         )
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "wakes in %s are not running (%s)" % (where, reason),
             kind="wake-" + reason,
             key="wake:%s:%s:%s" % (runner.seat, reason, key),
@@ -2814,6 +2827,76 @@ class Daemon:
             ),
         )
 
+    def _wake_prompt(
+        self,
+        runner: SeatRunner,
+        pending: W.Pending,
+        history: list[dict[str, Any]],
+        held: Mapping[str, Any] | None,
+        chat_context: list[dict[str, Any]] | None,
+        letter: str | None,
+        board_on: bool,
+        *,
+        max_messages: int | None = None,
+        max_held: int | None = None,
+    ) -> str:
+        """The wake prompt, for the primary and for the fallback.
+
+        `max_messages` and `max_held` are the bounds a runtime that cannot state a tool posture
+        needs;  with no bound the prompt carries the whole topic, which is what every runtime but
+        the mcode fallback gets."""
+        users = runner.users
+        return W.build_prompt(
+            seat=runner.seat,
+            pending=pending,
+            history=history,
+            owner_user_id=self.config.owner_user_id,
+            is_bot=lambda uid: bool(users.get(uid, {}).get("is_bot", True)),
+            owner_of=self.owner_of,
+            format_time=format_time,
+            board_enabled=board_on,
+            route=self.route_gate(runner, pending),
+            held_back=held,
+            chats=chat_context,
+            tagged_address=letter or None,
+            max_messages=max_messages,
+            max_held=max_held,
+        )
+
+    def _fallback_prompt(
+        self,
+        runner: SeatRunner,
+        pending: W.Pending,
+        history: list[dict[str, Any]],
+        held: Mapping[str, Any] | None,
+        chat_context: list[dict[str, Any]] | None,
+        letter: str | None,
+        board_on: bool,
+    ) -> str:
+        """The prompt the FALLBACK runtime is given.
+
+        For every runtime but mcode this is the wake prompt unchanged.  mcode is the one runtime
+        with neither a sandbox nor a tool-deny switch, so its step budget is the only bound on
+        what it may do, and that budget is only provable against a prompt of a known size:  the
+        wake prompt carries up to PROMPT_HISTORY (15) messages plus the held-back block, while the
+        budget is measured on a FOUR-message prompt.  The fallback therefore gets the trigger
+        messages and the newest of the rest, up to MCODE_FALLBACK_MAX_MESSAGES, and no held-back
+        detail, so the budget it runs under is the budget it was measured against.
+        """
+        if runner.cfg.fallback != "mcode":
+            return self._wake_prompt(runner, pending, history, held, chat_context, letter, board_on)
+        return self._wake_prompt(
+            runner,
+            pending,
+            history,
+            held,
+            chat_context,
+            letter,
+            board_on,
+            max_messages=A.MCODE_FALLBACK_MAX_MESSAGES,
+            max_held=A.MCODE_FALLBACK_MAX_HELD,
+        )
+
     def run_wake(self, runner: SeatRunner, pending: W.Pending) -> None:
         now = self.clock.time()
         lease_id = self.takeover(runner, pending)
@@ -2856,7 +2939,6 @@ class Daemon:
             )
             return
         board_on = runner.cfg.budget.get("board_per_day", 0) > 0
-        users = runner.users
         # The seat's held-back wakes ride along as a second untrusted block (metadata only), and count
         # as surfaced once the run finished (a refused or failed run surfaces nothing).
         held, listed, lost = HELD.wake_summary(
@@ -2875,19 +2957,9 @@ class Daemon:
             # No platform is passed:  the ambiguity check is cross-platform and the platform named
             # in the body is read off the registry rows the ask actually got.
             self.ask_operator_for_candidates(runner, pending, letter, "", address_sender_id)
-        prompt = W.build_prompt(
-            seat=runner.seat,
-            pending=pending,
-            history=history,
-            owner_user_id=self.config.owner_user_id,
-            is_bot=lambda uid: bool(users.get(uid, {}).get("is_bot", True)),
-            owner_of=self.owner_of,
-            format_time=format_time,
-            board_enabled=board_on,
-            route=self.route_gate(runner, pending),
-            held_back=held,
-            chats=chat_context,
-            tagged_address=letter or None,
+        prompt = self._wake_prompt(runner, pending, history, held, chat_context, letter, board_on)
+        fallback_prompt = self._fallback_prompt(
+            runner, pending, history, held, chat_context, letter, board_on
         )
         held_count = held["count"] if held else 0
         is_muse = runner.cfg.wake == "muse"
@@ -2936,7 +3008,7 @@ class Daemon:
             if result.refused or result.error:
                 fallback = self.run_fallback(
                     runner,
-                    prompt,
+                    fallback_prompt,
                     schema,
                     adapter,
                     result.refused or result.error or "",
@@ -3043,7 +3115,7 @@ class Daemon:
                 # the owner is not left debugging an adapter that is working exactly as built.
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "%s wakes are not running: %s"
                     % (
                         runner.cfg.provider or "the provider",
@@ -3059,7 +3131,7 @@ class Daemon:
             if result.refused or pending.owner:
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a wake %s: %s"
                     % (
                         "was refused" if result.refused else "failed",
@@ -3093,7 +3165,7 @@ class Daemon:
             if pending.owner:
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a wake could not be read (%s); nothing was posted" % A.clean_banner(why, 60),
                     kind="wake-invalid",
                     key="wake-invalid:%s" % pending.wake_id,
@@ -3150,7 +3222,7 @@ class Daemon:
             if pending.owner:
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a wake was not delivered: %s"
                     % A.clean_banner(refused or "the reply was not posted", 60),
                     kind="wake-undelivered",
@@ -3161,10 +3233,60 @@ class Daemon:
         self._surface(runner, pending, listed, lost, finished)
 
     @staticmethod
-    def _owner_broadcast(c: R.Classes) -> bool:
-        """The owner's `@all` that start_fanout handles:  one gate for the fanout and for the
-        route's hand-off, so the two can never disagree about who owns the wake."""
-        return bool(c.owner and c.broadcast_all and not c.dm and not c.stale and not c.no_wake)
+    def _broadcast_all(c: R.Classes) -> bool:
+        """The channel-wide `@all` that start_fanout handles:  one gate for the fanout and for the
+        route's hand-off, so the two can never disagree about who owns the wake.
+
+        The owner's `@all` behaves exactly as it always has (owner, Oct 27 2026:  the owner's own
+        broadcast in an OWNER topic still fans out, it only never wakes a seat there).  A fleet
+        bot's `@all` now takes the same road:  it wakes like the owner's, under the peer budgets,
+        the loop guard and the stale rule, so the fanout carries it to the fleet.  A peer's
+        broadcast in an OWNER topic is excluded, like every other peer post there."""
+        if c.owner:
+            return bool(c.broadcast_all and not c.dm and not c.stale and not c.no_wake)
+        return bool(
+            c.peer_broadcast and not c.owner_topic and not c.dm and not c.stale and not c.no_wake
+        )
+
+    def _peer_broadcast_audit(
+        self, message: Mapping[str, Any], c: R.Classes, runner: SeatRunner
+    ) -> bool:
+        """Is this message a fleet bot's `@all` that the owner must be asked about?
+
+        The audit is about the MESSAGE, not about the seat that routed it, so the gate is not
+        `c.peer_broadcast`:  that class is the routing verdict, and the sender's own seat runner
+        sees its own post as `own`, never as a peer broadcast.  With the verdict as the gate the
+        sender's own runner took the message first and no seat scheduled the audit at all.
+
+        The message itself is enough:  a fleet bot's `@all`, outside a DM and outside an OWNER
+        topic, that is not stale and carries no marker.  `schedule_broadcast_audit` keeps one
+        audit per message id, so the seats that see the broadcast agree on one reminder.
+
+        The sender has to be KNOWN to be a bot:  the router's `sender_is_bot` says True for a
+        sender id that is missing or is not in the user map, so it cannot tell a fleet bot from
+        a sender nobody knows.  The gate asks the seat runner's user map instead, and an
+        unmapped sender id is not a bot this fleet can report on.
+
+        The sender's email is enough too, and the seat it maps to is not required:  a bot whose
+        email maps to no seat of the fleet still used `@all`, and the audit has a "could not
+        check" reminder for exactly that case, so the audit is scheduled rather than dropped."""
+        if c.no_wake or c.dm or c.stale or c.owner or c.owner_topic:
+            return False
+        if not c.broadcast_all or not self._sender_is_known_bot(message, runner):
+            return False
+        return bool(str(message.get("sender_email") or ""))
+
+    def _sender_is_known_bot(self, message: Mapping[str, Any], runner: SeatRunner) -> bool:
+        """Is the sender known to be a bot?
+
+        The sender id has to be in the seat runner's user map and it has to be a bot there.  A
+        sender id that the map does not know is not a bot this fleet can report on:  the router
+        calls such a sender a bot, and the audit would then ask the owner about a human."""
+        sender_id = message.get("sender_id")
+        if not isinstance(sender_id, int):
+            return False
+        person = runner.users.get(sender_id)
+        return bool(person) and bool(person.get("is_bot"))
 
     def _log_broadcast_wake_unsupported(self, message_id: int) -> None:
         """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`).
@@ -3194,6 +3316,7 @@ class Daemon:
         thread = threading.Thread(
             target=self.fanout,
             args=(message_id, c.channel, c.topic, where, FAN.ChatPlaces(), message),
+            kwargs={"owner": bool(c.owner)},
             name="chat-fanout",
             daemon=True,
         )
@@ -3209,19 +3332,25 @@ class Daemon:
             self.log.write("fanout-start-failed", id=message_id, error=type(exc).__name__)
 
     @staticmethod
-    def _owner_inbox_broadcast(c: R.Classes) -> bool:
-        """The owner's channel-wide note that belongs UNREAD in every bot's Zulip inbox.
+    def _inbox_broadcast(c: R.Classes) -> bool:
+        """The channel-wide note that belongs UNREAD in every bot's Zulip inbox.
 
-        `@**all**` (the `_owner_broadcast` gate) gets it too, and keeps its existing wake path:
-        the delivery adds an inbox copy, it never replaces a wake.  `@**everyone**` gets the
-        inbox copy and wakes nobody, which is what it already does.  The `:eyes:` marker keeps
-        the message out of the fleet's inboxes as well as out of every wake."""
+        The owner's `@all` (the `_broadcast_all` gate) gets it too, and keeps its existing wake
+        path:  the delivery adds an inbox copy, it never replaces a wake.  The owner's
+        `@everyone` gets the inbox copy and wakes nobody, which is what it already does.  The
+        `:eyes:` marker keeps the message out of the fleet's inboxes as well as out of every
+        wake.
+
+        A fleet bot's `@all` gets the same inbox copy (owner, Oct 27 2026):  a serious broadcast
+        lands unread in every bot's inbox, so no seat misses it while it is doing something else.
+        A bot's `@everyone` stays as it is today:  it is not a broadcast (it wakes nobody), so
+        there is no inbox delivery for it either."""
+        if c.owner:
+            return bool(
+                (c.broadcast_all or c.everyone_inert) and not c.dm and not c.stale and not c.no_wake
+            )
         return bool(
-            c.owner
-            and (c.broadcast_all or c.everyone_inert)
-            and not c.dm
-            and not c.stale
-            and not c.no_wake
+            c.peer_broadcast and not c.owner_topic and not c.dm and not c.stale and not c.no_wake
         )
 
     def start_inbox_delivery(self, message: Mapping[str, Any], c: R.Classes) -> None:
@@ -3276,6 +3405,222 @@ class Daemon:
             except ValueError:
                 pass
             self._inbox_pending.pop(message_id, None)
+
+    def schedule_broadcast_audit(self, message: Mapping[str, Any], c: R.Classes) -> None:
+        """Remember a fleet bot's `@all` so the listener can ask the owner for a reason.
+
+        One audit per message id:  the first seat that routes the message owns it, and a second
+        seat's route of the same message finds the id already there.  The audit comes due in
+        `peer_broadcast_reminder_minutes`;  0 turns the reminder off, and the wake is untouched
+        either way.
+
+        The pending audits live in memory (owner, Oct 27 2026):  a restart drops them, which
+        costs one unexplained broadcast and never a wrong wake.  The daemon logs that at start."""
+        minutes = float(self.config.peer_broadcast_reminder_minutes)
+        message_id = message.get("id")
+        if not isinstance(message_id, int) or minutes <= 0:
+            return
+        seat = BAUD.sender_seat_for(
+            str(message.get("sender_email") or ""), seats=self._fleet_seat_tags()
+        )
+        broadcast = BAUD.Broadcast(
+            message_id=message_id,
+            sender_seat=seat,
+            sender_email=str(message.get("sender_email") or ""),
+            channel=c.channel,
+            topic=c.topic,
+            timestamp=float(message.get("timestamp") or self.clock.time()),
+        )
+        with self._fanout_lock:
+            if message_id in self._broadcast_audits:
+                return
+            due = self.clock.time() + minutes * 60.0
+            self._broadcast_audits[message_id] = (broadcast, due, 0)
+        self.log.write("peer-broadcast-audit-scheduled", id=message_id, seat=seat or "unknown")
+
+    def _fleet_seat_tags(self) -> frozenset[str]:
+        """The seat tags this instance knows:  the partition's seats and the fleet's own list.
+
+        A sender whose email maps to no seat of the fleet is not a seat, so its `@all` cannot be
+        checked against a seat's own Zulip account."""
+        return frozenset(set(self.partition) | set(C.FLEET_SEATS))
+
+    def _start_due_broadcast_audits(self, now: float) -> None:
+        """Hand the audits that are due to their own threads.
+
+        The event thread only picks them up:  the check reads Zulip (the sender bot's own
+        account) and posts one DM, so it must not run where the coalescer lives.  A thread that
+        never started owns nothing, so the audit is put back on the queue (a spawn failure is
+        transient, and the owner reminder must not be lost to it) and logged as failed."""
+        due: list[tuple[BAUD.Broadcast, int]] = []
+        with self._fanout_lock:
+            for message_id, (broadcast, due_at, attempt) in list(self._broadcast_audits.items()):
+                if due_at <= now:
+                    due.append((broadcast, attempt))
+                    self._broadcast_audits.pop(message_id, None)
+        for broadcast, attempt in due:
+            try:
+                threading.Thread(
+                    target=self._run_broadcast_audit,
+                    args=(broadcast, attempt),
+                    name="broadcast-audit",
+                    daemon=True,
+                ).start()
+            except Exception as exc:  # noqa: BLE001 - an audit that never started owns nothing
+                # The thread never ran, so nothing was sent:  the audit goes back on the queue
+                # like a retryable DM failure does, bounded by the same attempt cap.
+                if attempt < BAUD.REMINDER_MAX_ATTEMPTS:
+                    with self._fanout_lock:
+                        self._broadcast_audits[broadcast.message_id] = (
+                            broadcast,
+                            now + BAUD.REMINDER_RETRY_SECONDS,
+                            attempt + 1,
+                        )
+                self.log.write(
+                    "peer-broadcast-all",
+                    id=broadcast.message_id,
+                    seat=broadcast.sender_seat or "unknown",
+                    outcome=BAUD.REMINDER_FAILED,
+                    error=type(exc).__name__,
+                )
+
+    def _run_broadcast_audit(self, broadcast: BAUD.Broadcast, attempt: int = 0) -> None:
+        """Check one fleet bot's `@all` and, when nobody explained it, DM the owner.
+
+        Runs off the event thread.  The check reads the SENDER bot's own Zulip account, with
+        that bot's own credentials from Infisical only (`zulip.infisical_credentials`, the same
+        path the inbox delivery uses):  no environment fallback, no zuliprc fallback.  When
+        those credentials cannot be read, the check did not run, and the reminder says so in its
+        second line instead of pretending the bot explained itself.
+
+        Every log line carries the seat, the message id and the outcome:  never a key, an email
+        or the message content."""
+        message_id = broadcast.message_id
+        seat = broadcast.sender_seat or "unknown"
+        owner_id = int(self.config.owner_user_id)
+        if owner_id <= 0:
+            self.log.write(
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_FAILED,
+                error="no_owner_id",
+            )
+            return
+        runner = self._alert_runner()
+        alert_seat = runner.seat if runner is not None else ""
+        permalink = broadcast.permalink(self.realm)
+        minutes = int(self.config.peer_broadcast_reminder_minutes)
+        http = None
+        reason = ""
+        if not broadcast.sender_seat:
+            reason = "its seat is not known"
+        else:
+            try:
+                creds = Z.infisical_credentials(
+                    broadcast.sender_seat, env=self.env, home=Path(self.home)
+                )
+                http = IDEL.zulip_http(creds, self.realm)
+            except Exception as exc:  # noqa: BLE001 - an unreadable vault is a reason, not a pass
+                reason = "its credentials could not be read (%s)" % type(exc).__name__
+        if http is None and not self._broadcast_rate.allow(
+            broadcast.sender_seat or "unknown", self.clock.time()
+        ):
+            # The could-not-check reminder obeys the same per-seat cap as a checked one.
+            verdict = BAUD.Verdict(BAUD.RATE_LIMITED)
+        elif http is None:
+            verdict = BAUD.Verdict(
+                BAUD.REMIND,
+                reason=reason,
+                text=BAUD.reminder_text(
+                    alert_seat,
+                    broadcast.sender_seat or "an unknown seat",
+                    broadcast.channel,
+                    broadcast.topic,
+                    permalink,
+                    minutes=minutes,
+                    reason=reason,
+                ),
+            )
+        else:
+            verdict = BAUD.evaluate(
+                broadcast,
+                owner_user_id=owner_id,
+                http=http,
+                permalink=permalink,
+                rate=self._broadcast_rate,
+                now=self.clock.time(),
+                alert_seat=alert_seat,
+                minutes=minutes,
+            )
+        if verdict.outcome in (BAUD.OWNER_CONTEXT, BAUD.EXPLAINED, BAUD.RATE_LIMITED):
+            self.log.write("peer-broadcast-all", id=message_id, seat=seat, outcome=verdict.outcome)
+            return
+        text = W.neutralize_mentions(verdict.text)
+        found = secretscan.scan(text, self.hidden)
+        if found:
+            # The scanner refuses and the message is not sent:  a reminder is not worth a leak.
+            self.log.write(
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_FAILED,
+                error="secret scanner",
+            )
+            return
+        if runner is None or runner.client is None or runner.fatal:
+            self.log.write(
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_FAILED,
+                error="no_alert_seat",
+            )
+            return
+        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
+        if wait > 0:
+            self.clock.sleep(wait)
+        try:
+            result = runner.client.post(
+                "messages", {"type": "direct", "to": [owner_id], "content": text}
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed DM is logged and kept, never swallowed
+            # The failure is classified:  a retryable one keeps the audit pending so the
+            # reminder is not lost, a permanent one drops it, and a write that may have
+            # reached the server is never sent twice.
+            failure = BAUD.dm_failure_outcome(exc)
+            self.log.write(
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_UNKNOWN if failure == BAUD.UNKNOWN else BAUD.REMINDER_FAILED,
+                error=type(exc).__name__,
+            )
+            if failure == BAUD.RETRY and attempt < BAUD.REMINDER_MAX_ATTEMPTS:
+                with self._fanout_lock:
+                    self._broadcast_audits[broadcast.message_id] = (
+                        broadcast,
+                        self.clock.time() + BAUD.REMINDER_RETRY_SECONDS,
+                        attempt + 1,
+                    )
+                self.log.write(
+                    "peer-broadcast-all-retry",
+                    id=message_id,
+                    seat=seat,
+                    attempt=attempt + 1,
+                    error=type(exc).__name__,
+                )
+            return
+        finally:
+            runner.last_post = self.clock.monotonic()
+        reminder_id = result.get("id")
+        self.log.write(
+            "peer-broadcast-all",
+            id=message_id,
+            seat=seat,
+            outcome=BAUD.REMINDED,
+            reminder_id=int(reminder_id) if isinstance(reminder_id, int) else None,
+        )
 
     def _owner_email(self) -> str:
         """The owner's own account email, when a seat's realm user list knows it.
@@ -3500,16 +3845,24 @@ class Daemon:
         where: FAN.Scope,
         places: Any = None,
         message: Mapping[str, Any] | None = None,
+        *,
+        owner: bool = True,
     ) -> dict[str, Any]:
         """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform.
 
         When `message` is set (owner `@all`), every seat that got no chat nudge is handed back to the
         event thread for one headless/routine wake (tick drains `_broadcast_wakes`).  The hand-off
         runs whatever happens here, a catalog failure included, so the route's deferred wake is
-        never lost;  and this thread never touches the coalescer, which only the event thread owns."""
+        never lost;  and this thread never touches the coalescer, which only the event thread owns.
+
+        `owner` says whose broadcast this is:  the owner's `@all` keeps the owner path, and a fleet
+        bot's `@all` (owner, Oct 27 2026) takes the peer path, so its nudges answer to the peer
+        budgets and never borrow the owner's."""
         nudged_seats: set[str] = set()
         try:
-            return self._fanout_chats(message_id, channel, topic, where, places, nudged_seats)
+            return self._fanout_chats(
+                message_id, channel, topic, where, places, nudged_seats, owner
+            )
         finally:
             if message is not None:
                 self._broadcast_wakes.put((message, frozenset(nudged_seats)))
@@ -3522,6 +3875,7 @@ class Daemon:
         where: FAN.Scope,
         places: Any,
         nudged_seats: set[str],
+        owner: bool = True,
     ) -> dict[str, Any]:
         result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
         try:
@@ -3553,7 +3907,7 @@ class Daemon:
             binding.update(channel=channel, topic=topic)
             try:
                 added = self.chat_queue(runner.seat).enqueue_target(
-                    binding, message_id, self.clock.time(), owner=True
+                    binding, message_id, self.clock.time(), owner=owner
                 )
             except ValueError:
                 # The transport was vetted above, so a refusal here is a bad binding or an unreadable state
@@ -5049,7 +5403,7 @@ class Daemon:
             # A 4xx is a contract or key problem:  say so once a day, whoever triggered it.
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "the %s routine refused a wake (HTTP %d); check the routine URL, key and format"
                 % (runner.seat, status),
                 kind="routine-refused",
@@ -5058,7 +5412,7 @@ class Daemon:
         if pending.owner:
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "a wake for your message did not reach the %s routine (%s); it is in the seat inbox"
                 % (runner.seat, A.clean_banner(reason, 60)),
                 kind="wake-failed",
@@ -5117,7 +5471,7 @@ class Daemon:
                 outcome["refused"] = "secret scanner: %s" % found
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a wake reply was refused by the secret scanner",
                     kind="wake-secret",
                     key="secret:%s" % pending.wake_id,
@@ -5140,7 +5494,7 @@ class Daemon:
             risk = obj.get("risk") if obj.get("risk") in W.RISKS else None
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "a note for you about %s" % where,
                 kind="owner_note",
                 key="note:%s" % pending.wake_id,
@@ -5406,7 +5760,7 @@ class Daemon:
         target = A.clean_banner(seat or "an invalid route", 40)
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "a route to %s was dropped (%s) in %s" % (target, A.clean_banner(why, 40), where),
             kind="route_dropped",
             key="route:%s" % pending.wake_id,
@@ -5456,7 +5810,7 @@ class Daemon:
         )
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "paged %s for you in %s" % (seat, where),
             kind="route",
             key="route:%s" % pending.wake_id,
@@ -5727,8 +6081,6 @@ class Daemon:
         # The board CLI proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT.
         # The locator comes only from this seat's own trusted daemon config;  with none configured the seat files
         # no board item (fail closed), and no AGENT_SEAT is ever offered as an identity.
-        # LINEAR_BOARD_WRITES=1: the old ~/.local/bin/board wrapper exported it; simple-board is a
-        # symlink to scripts/simple-board and sets nothing, so without this every `file` exits 7.
         locator = getattr(runner.cfg, "bearer_locator", None)
         if not locator:
             return {"board_skipped": "no bearer_locator configured for this seat"}
@@ -5737,7 +6089,6 @@ class Daemon:
             for k, v in A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat).items()
             if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT")
         }
-        board_env["LINEAR_BOARD_WRITES"] = "1"
         board_env["SIMPLE_BOARD_BEARER_LOCATOR"] = locator
         ok, detail = A.run_board(
             argv,
@@ -5802,7 +6153,7 @@ class Daemon:
             note += "\nnew message ids: %s" % ", ".join(str(r["message_id"]) for r in named)
         sent = self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             text,
             kind="held-back",
             key="held-back:%s" % runner.seat,
@@ -6060,6 +6411,7 @@ class Daemon:
             self.reload()
         self._drain_broadcast_wakes()
         self._start_due_inbox_retries(now)
+        self._start_due_broadcast_audits(now)
         for pending in self.coalescer.take_due(now):
             self.finalize(pending)
         if now - self.last_tick["reap"] >= 10:
@@ -6225,7 +6577,7 @@ class Daemon:
         self.log.write("paused", seat=seat or "*", wakes_only=wakes_only, by=by)
         self.notifier.notify(
             self.config.claude_seat or (seat or "LISTENER"),
-            "agent-sync listener",
+            "simple-chat listener",
             "paused by %s; resume with simple-chat daemon resume" % by,
             kind="paused",
             key="paused:%s" % (message_id or by),
@@ -6316,7 +6668,7 @@ class Daemon:
             if pin and pin["why"] == "pin_stale":
                 red.append(
                     "wake pin is stale: claude moved to %s (pinned %s); run "
-                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
+                    "`simple-chat daemon test-wake --seat %s --run`, then `--pin`"
                     % (pin["claude"], pin["pinned_claude"], seat)
                 )
             # A muse seat reports the same pin state on its own file;  any wake that names a
@@ -6482,7 +6834,7 @@ class Daemon:
         self.log.write("seat-refused", seat=runner.seat, error=runner.error)
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             A.clean_banner(runner.error),
             kind="seat-refused",
         )
@@ -6499,7 +6851,7 @@ class Daemon:
         if self.clock.time() - runner.down_since > DOWN_NOTIFY_SECONDS:
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "the %s queue has been down for 30 minutes" % runner.seat,
                 kind="seat-down",
             )
@@ -6760,7 +7112,7 @@ class Daemon:
         exit before the flock, any thread or any register.  Nothing writes status.json, so a
         container health check fails too."""
         for problem in self.refusal:
-            self.stderr.write("agent-sync daemon: refusing to start: %s\n" % self.scrub(problem))
+            self.stderr.write("simple-chat daemon: refusing to start: %s\n" % self.scrub(problem))
         try:
             self.stderr.flush()
         except (OSError, ValueError):
@@ -6768,7 +7120,7 @@ class Daemon:
         self.log.write("refused-start", errors=self.refusal)
         self.notifier.notify(
             self.config.claude_seat or "LISTENER",
-            "agent-sync listener",
+            "simple-chat listener",
             "refused to start: the seat partition check failed; see the listener log",
             kind="partition",
             key="partition-start",
@@ -6803,13 +7155,13 @@ class Daemon:
                     )  # stopped while waiting for the other listener:  nothing to clean up
                     return 0
                 if not wait_lock:
-                    self.stderr.write("agent-sync daemon: another listener is already running\n")
+                    self.stderr.write("simple-chat daemon: another listener is already running\n")
                     os.close(lock_fd)
                     return 1
                 if not waiting:
                     waiting = True
                     self.stderr.write(
-                        "agent-sync daemon: another listener holds the state directory; waiting for it "
+                        "simple-chat daemon: another listener holds the state directory; waiting for it "
                         "to stop\n"
                     )
                     self.log.write("waiting-for-lock", pid=os.getpid())

@@ -828,14 +828,14 @@ DESCRIPTION:50 PRs merged · 8 issues opened · 5 issues closed\n\nMerged P
  Fleet-Coordinator#248] Fix launchd gdrive File Provider mirror and BotFlee
  t crash loop\n- [AI-Fleet-Coordinator#249] fix(fleet): squash-safe landed 
  check\, mac-collab reclaim tests\, token staleness\n- [AI-Fleet-Coordinato
- r#250] docs: name needs-mac label in AGENT-SYNC.md mirror\n- [AI-Fleet-Coo
+ r#250] docs: name needs-mac label in FLEET-PROTOCOL.md mirror\n- [AI-Fleet-Coo
  rdinator#251] (claude) feat(fleet): Instinct onboarding prompt\, board /lo
  gin form\, GitHub outbox Slack bridge\n- [AI-Fleet-Coordinator#252] fix(ra
  g): wire per_doc/rerank/prefer_lessons through the public recall path\n- [
  AI-Fleet-Coordinator#253] docs(rag): record Sep 17 reranker bake-off resul
  ts\n- [AI-Fleet-Coordinator#254] fix(rag): close recall-tunnel supervisor 
  pid-file race\, bound HTTP retry/backoff env vars\n- [AI-Fleet-Coordinator
- #255] docs: sync AGENT-SYNC.md mirror to live (Mac app builds\, Fleet mode
+ #255] docs: sync FLEET-PROTOCOL.md mirror to live (Mac app builds\, Fleet mode
  /delegation)\n- [Autorotate#211] chore(web): remove unvetted plugin-inspec
  t-react-code plugin\n- [BotFleet#462] (sentry) fix: Propagate malformed In
  fisical — DSNs and fix local packaging\n- [BotFleet#463] (sentry) fix(ob

@@ -21,6 +21,15 @@ backup next to every file it touches, and returns nonzero when a knob is still
 off afterwards, so automation can tell that the policy did not take.  `--verify`
 reports each knob and exits nonzero when one of them is off.
 
+A knob the running account cannot write is skipped, not fatal:  the apply
+reports it, carries on with the knobs after it, and still ends with the verify
+that says which knobs are off.  A knob that could not be written is off, so the
+verify reports it as off and the apply still returns what the verify returns.
+
+An apply never rewrites the identity of a unit the operator set up:  the account
+the unit runs as, the command it runs and the environment that account reads are
+the operator's own, and the template only fills in what they left out.
+
 Usage:
 
     python3 scripts/fleet_lanes/server_working_dirs.py --apply
@@ -139,9 +148,53 @@ def stamp() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
 
+def sync_directory(path: Path) -> None:
+    """Flush a directory's entries, so a rename into it survives a crash.
+
+    The rename itself is atomic, but the directory entry that names the new
+    file is not durable until the directory is flushed.  A filesystem that
+    refuses the flush is not a reason to fail a write that already happened.
+    """
+    try:
+        handle = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
+
+
 def backup(path: Path) -> None:
-    if path.exists():
-        shutil.copy2(path, f"{path}.bak-{stamp()}")
+    """Copy the file beside itself, so a rewrite can be undone.
+
+    The copy is staged, flushed and moved into place, so a copy that fails
+    partway leaves no half-written backup behind for an operator to restore
+    from, and a crash cannot leave the backup without its contents.
+    """
+    if not path.exists():
+        return
+    target = Path(f"{path}.bak-{stamp()}")
+    temporary = Path(f"{target}.tmp")
+    try:
+        shutil.copy2(path, temporary)
+        with temporary.open("rb") as staged:
+            os.fsync(staged.fileno())
+        os.replace(temporary, target)
+        sync_directory(target.parent)
+    except BaseException:
+        discard(temporary)
+        raise
+
+
+def discard(path: Path) -> None:
+    """Remove a staged file, and never let the cleanup mask the real failure."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def read(path: Path) -> str:
@@ -152,8 +205,56 @@ def read(path: Path) -> str:
 
 
 def write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    """Write a file, replacing it in one step.
+
+    Every knob write goes through the atomic replace, so a write that fails
+    partway leaves the file it had exactly as it was:  a knob is never left
+    half written.  A knob whose staged file cannot be created is refused with
+    a `PermissionError` instead of being written in place, so the file it had
+    survives that refusal too.
+    """
+    write_atomic(path, text)
+
+
+def staged_directory(path: Path) -> Path:
+    """The directory the staged replacement of a knob file is created in.
+
+    A symlinked knob is written through, so the staged file lives in the
+    target's own directory rather than beside the link.
+    """
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+    return target.parent
+
+
+def prepare_staged_directory(path: Path) -> Path:
+    """Make sure the staged replacement of a knob file can be created.
+
+    A missing directory is created, the way the non-symlink path creates it, so
+    a knob whose target directory does not exist yet is not refused with a
+    permission message that hides the real reason.  The directory is created
+    private, because it holds a staged copy of the operator's own file.  A
+    path that is a symlink and not a directory is refused:  it would send the
+    staged file somewhere the operator did not name.  A directory that is there
+    but is neither writable nor searchable is refused with a `PermissionError`
+    that names it, before anything is written, so the file the link points at
+    cannot be truncated.
+
+    Every apply calls this before it takes a backup, so a knob that can never
+    be applied does not drop another copy beside the link on every run.
+    """
+    directory = staged_directory(path)
+    if not directory.is_dir():
+        if directory.is_symlink():
+            raise PermissionError(
+                f"the staged directory {directory} is a symlink and not a directory"
+            )
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() and not os.access(directory, os.W_OK | os.X_OK):
+        raise PermissionError(
+            f"the staged replacement of {path} needs write and search access to"
+            f" {directory}"
+        )
+    return directory
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -161,12 +262,25 @@ def write_atomic(path: Path, text: str) -> None:
 
     The content goes to a temporary file in the same directory, is flushed and
     synced, and only then is moved over the target, so a reader sees either the
-    old file or the new one and never a truncated one.
+    old file or the new one and never a truncated one.  The directory entry is
+    flushed after the rename, so a crash cannot lose the new file.
+
+    A symlinked knob is written through:  the link stays a link and the file it
+    points at is the one that changes.  The staged file then lives in the
+    target's own directory, so that directory has to be writable and
+    searchable.  When it is not, the write fails closed with a
+    `PermissionError` instead of falling back to an in-place write, because an
+    in-place write is not atomic:  it truncates the target before writing, so
+    an interrupted write could leave the file corrupt.  The knob is then
+    skipped and reported like any other knob the account cannot write, and the
+    file it had is untouched.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+    prepare_staged_directory(path)
+    owner = target.stat() if target.exists() else None
+    mode = owner.st_mode & 0o777 if owner is not None else 0o644
     handle = tempfile.NamedTemporaryFile(
-        "w", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+        "w", dir=target.parent, prefix=f".{target.name}.", suffix=".tmp",
         delete=False, encoding="utf-8",
     )
     temporary = Path(handle.name)
@@ -175,10 +289,25 @@ def write_atomic(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        if owner is not None:
+            # The replacement carries the file's own owner and group, so a unit
+            # the operator owns keeps its owner after the rewrite.
+            try:
+                os.chown(temporary, owner.st_uid, owner.st_gid)
+            except OSError:
+                # A refused owner change leaves the group to try on its own.
+                try:
+                    os.chown(temporary, -1, owner.st_gid)
+                except OSError as exc:
+                    print(
+                        f"  warning  {path}: could not keep the group of the file"
+                        f" ({exc.strerror or exc})"
+                    )
         os.chmod(temporary, mode)
-        os.replace(temporary, path)
+        os.replace(temporary, target)
+        sync_directory(target.parent)
     except BaseException:
-        temporary.unlink(missing_ok=True)
+        discard(temporary)
         raise
 
 
@@ -359,15 +488,31 @@ def opencode_server_flags() -> str:
 
 
 def unit_execstart(text: str) -> str:
-    """The ExecStart line of a unit, or "" when it has none."""
-    match = re.search(r"^ExecStart=(.*)$", text or "", flags=re.MULTILINE)
-    return match.group(1).strip() if match else ""
+    """The ExecStart command of a unit, or "" when it has none.
+
+    A line the unit continues is one line here, so a flag on a continuation line
+    is read as part of the command.
+    """
+    for line in unit_logical_lines(text or ""):
+        stripped = line.strip()
+        if stripped.startswith("ExecStart="):
+            return stripped[len("ExecStart="):].strip()
+    return ""
+
+
+# The host and port pair the fleet's clients use, as it appears in a command.
+FLAG_PAIR = re.compile(r"\s--hostname\s+\S+\s+--port\s+\S+")
+
+
+def command_flags(command: str) -> str:
+    """The `--hostname`/`--port` pair a command carries, or "" when it carries none."""
+    match = FLAG_PAIR.search(command or "")
+    return match.group(0) if match else ""
 
 
 def unit_execstart_flags(text: str) -> str:
     """The `--hostname`/`--port` pair a unit already carries, or ""."""
-    match = re.search(r"\s--hostname\s+\S+\s+--port\s+\S+", unit_execstart(text))
-    return match.group(0) if match else ""
+    return command_flags(unit_execstart(text))
 
 
 # The tmux session's own `-c`, anchored to the new-session command so a Codex
@@ -676,9 +821,18 @@ def knobs(root: Path) -> list[tuple[str, Path, str]]:
     ]
 
 
-def check(root: Path) -> list[tuple[str, bool, str]]:
+def check(root: Path, skipped: dict[str, str] | None = None) -> list[tuple[str, bool, str]]:
+    """(label, ok, note) for every knob, with the skipped ones reported as off.
+
+    A knob the apply could not write is off:  it is reported as such here, so
+    the verify says the policy did not take for it.
+    """
+    skipped = skipped or {}
     out: list[tuple[str, bool, str]] = []
     for label, path, kind in knobs(root):
+        if label in skipped:
+            out.append((label, False, f"not applied: {skipped[label]}"))
+            continue
         if kind == "codex-tmux-boot":
             ok, note = knob_codex_tmux_boot(root)
         elif kind == "codex-tmux-autostart":
@@ -726,6 +880,7 @@ def apply_codex(path: Path, root: Path) -> bool:
         updated = text[: anchor.end()] + f" -c {root}" + text[anchor.end() :]
     if updated == text:
         return False
+    prepare_staged_directory(path)
     backup(path)
     write(path, updated)
     return True
@@ -767,6 +922,7 @@ def apply_acp(path: Path, root: Path) -> bool:
             return False
     if updated == text:
         return False
+    prepare_staged_directory(path)
     backup(path)
     write(path, updated)
     return True
@@ -777,6 +933,7 @@ def apply_bashrc(root: Path) -> bool:
     text = read(path)
     if bashrc_block(text) and knob_bashrc(root)[0]:
         return False
+    prepare_staged_directory(path)
     backup(path)
     new_block = BASHRC_BLOCK.format(
         begin=BASHRC_BEGIN, end=BASHRC_END, lanes=root, lanes_root=root,
@@ -817,6 +974,7 @@ def apply_claude_settings(path: Path, root: Path) -> bool:
         return False
     section["location"] = str(root.resolve())
     data["worktree"] = section
+    prepare_staged_directory(path)
     backup(path)
     write(path, json.dumps(data, indent=2) + "\n")
     return True
@@ -870,28 +1028,134 @@ def environment_assignments(line: str) -> list[tuple[str, str]]:
     return assignments
 
 
-def carried_directives(text: str, body: str) -> list[str]:
+# The variables the script owns in a unit:  the canonical roots.  An operator's own
+# value for one of them is dropped, because the rewrite exists to point the unit at
+# the fleet's roots and not at a tree that is no longer there.
+OWNED_ENVIRONMENT = (
+    "FLEET_CODE_ROOT", "FLEET_APPS_ROOT", "FLEET_LANES_ROOT", "FLEET_SERVER_VOLUME"
+)
+
+# The directives that carry the identity of a unit:  the account it runs as and the
+# command it runs.  The template carries a default for each of them, and an operator
+# who set one keeps their own value:  a unit that runs as another user, or runs
+# another binary, is not the unit the operator set up.
+IDENTITY_DIRECTIVES = ("User", "Group", "ExecStart")
+
+# The environment the account reads.  Like the identity directives, the operator's own
+# value wins over the template's default.
+IDENTITY_ENVIRONMENT = ("HOME", "PATH")
+
+# The placeholder the template carries where the binary goes.  It is resolved only
+# when the template's own ExecStart survives the merge, so a unit that names its own
+# command never needs the template's binary to exist on the host.
+BINARY_MARKER = "@@fleet-binary@@"
+
+
+def unit_logical_lines(text: str) -> list[str]:
+    """The lines of a unit, with a continued line joined to the line it continues.
+
+    systemd continues a line that ends with a backslash, so the command of a
+    directive is the line and the lines it continues.  A directive that is spliced
+    back into a unit must not keep a trailing backslash, or systemd reads the line
+    after it as part of the command.
+    """
+    joined: list[str] = []
+    for raw in (text or "").splitlines():
+        stripped = raw.strip()
+        if joined and joined[-1].rstrip().endswith("\\"):
+            joined[-1] = joined[-1].rstrip()[:-1].rstrip() + " " + stripped
+            continue
+        joined.append(raw)
+    return joined
+
+
+def unit_directives(text: str, name: str) -> list[str]:
+    """The lines of a unit that set `name`, in the order they appear.
+
+    A line the unit continues is one line here, so the command keeps its whole
+    value when it is spliced back into a unit.
+    """
+    prefix = name + "="
+    return [line.strip() for line in unit_logical_lines(text) if line.strip().startswith(prefix)]
+
+
+def unit_environment(text: str) -> dict[str, list[str]]:
+    """The environment variables a unit sets, each with the assignments it wrote."""
+    found: dict[str, list[str]] = {}
+    for line in unit_logical_lines(text):
+        stripped = line.strip()
+        if not stripped.startswith("Environment="):
+            continue
+        for name, raw in environment_assignments(stripped):
+            found.setdefault(name, []).append(raw)
+    return found
+
+
+def service_end(lines: list[str]) -> int:
+    """The index of the first line after the [Service] section of a unit."""
+    start = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if start is None:
+            if stripped == "[Service]":
+                start = index
+            continue
+        if stripped.startswith("["):
+            return index
+    return len(lines)
+
+
+def replace_identity_environment(lines: list[str], existing: str) -> tuple[list[str], set[str]]:
+    """The body lines with the operator's own HOME and PATH in place of the template's.
+
+    The template's line for a variable the operator set is replaced and not kept next
+    to it, so the unit carries one value for it and the template's default is gone.
+    The variables placed this way are returned, so they are not carried over twice.
+    """
+    operator = unit_environment(existing)
+    placed: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("Environment="):
+            out.append(line)
+            continue
+        assignments = environment_assignments(stripped)
+        replaced = {
+            name for name, _ in assignments
+            if name in IDENTITY_ENVIRONMENT and operator.get(name)
+        }
+        if not replaced:
+            out.append(line)
+            continue
+        placed.update(replaced)
+        payload = [
+            operator[name][-1] if name in replaced else raw
+            for name, raw in assignments
+        ]
+        out.append("Environment=" + " ".join(payload))
+    return out, placed
+
+
+def carried_directives(text: str, body: str, placed: set[str] | None = None) -> list[str]:
     """The unit directives this script does not own, taken from the unit it replaces.
 
-    The template owns WorkingDirectory, ExecStart, the HOME/PATH environment and
-    the restart policy.  An `EnvironmentFile=` the operator added, and an
-    `Environment=` the template does not set, belong to the operator, so they are
-    carried over instead of silently dropped by the rewrite.
+    An `EnvironmentFile=` the operator added, and an `Environment=` the template does
+    not set, belong to the operator, so they are carried over instead of silently
+    dropped by the rewrite.
 
-    A variable the template sets is the template's:  systemd takes the last
-    assignment for a variable, and the carried line lands after the template's,
-    so a line that still sets it would run the unit with the older value.  That
-    assignment is dropped, and the rest of the line is carried over.
+    A root the script owns is the script's:  systemd takes the last assignment for a
+    variable, and the carried line lands after the template's, so a line that still
+    sets it would run the unit with the older value.  That assignment is dropped, and
+    the rest of the line is carried over.  A variable that was placed in place of the
+    template's own line is not carried over a second time.
     """
     if not text:
         return []
-    owned: set[str] = set()
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("Environment="):
-            owned.update(name for name, _ in environment_assignments(stripped))
+    owned = set(OWNED_ENVIRONMENT)
+    done = set(placed or ())
     carried: list[str] = []
-    for line in text.splitlines():
+    for line in unit_logical_lines(text):
         stripped = line.strip()
         if not stripped:
             continue
@@ -904,7 +1168,7 @@ def carried_directives(text: str, body: str) -> list[str]:
         if not assignments:
             carried.append(stripped)
             continue
-        keep = [(name, raw) for name, raw in assignments if name not in owned]
+        keep = [(name, raw) for name, raw in assignments if name not in owned and name not in done]
         if not keep:
             continue
         if len(keep) == len(assignments):
@@ -914,54 +1178,171 @@ def carried_directives(text: str, body: str) -> list[str]:
     return carried
 
 
-def apply_unit(path: Path, body: str) -> bool:
-    text = read(path)
-    carried = carried_directives(text, body)
+def reconcile_execstart(line: str, flags: str) -> str:
+    """The operator's ExecStart line with the knob's flags in its command.
+
+    The operator's binary, its argv and its account are the operator's, but the host
+    and the port the fleet's clients use are the knob's policy, so the pair in the
+    command is the configured one:  a stale pair is replaced and a command that
+    carries no pair gains one.  A command with no configured pair is left exactly as
+    it is.
+    """
+    prefix = "ExecStart="
+    if not flags or not line.startswith(prefix):
+        return line
+    command = line[len(prefix):]
+    stale = command_flags(command)
+    command = command.replace(stale, flags, 1) if stale else command + flags
+    return prefix + command
+
+
+def merge_unit(body: str, existing: str, flags: str = "") -> str:
+    """The template body with the operator's own settings kept.
+
+    The operator's identity directives win over the template's defaults:  the account
+    the unit runs as, the command it runs and the environment that account reads.  A
+    directive the operator did not set keeps the template's value.
+
+    The operator's ExecStart lines replace the template's line and never sit next to
+    it:  systemd runs every ExecStart line of a unit, so a second one would run the
+    command twice.
+
+    The canonical roots are the script's own:  an operator's stale value for one of
+    them is dropped, because the rewrite exists to point the unit at the fleet's roots.
+    """
+    lines = body.splitlines()
+    for name in IDENTITY_DIRECTIVES:
+        theirs = unit_directives(existing, name)
+        if not theirs:
+            continue
+        if name == "ExecStart" and flags:
+            # The knob reads the first ExecStart line, so only that one carries the
+            # host and the port the fleet's clients use.
+            theirs = [reconcile_execstart(theirs[0], flags)] + theirs[1:]
+        indexes = [i for i, line in enumerate(lines) if line.strip().startswith(name + "=")]
+        if indexes:
+            first = indexes[0]
+            for index in reversed(indexes):
+                del lines[index]
+            lines[first:first] = theirs
+        else:
+            at = service_end(lines)
+            lines[at:at] = theirs
+    lines, placed = replace_identity_environment(lines, existing)
+    carried = carried_directives(existing, body, placed)
     if carried:
-        lines = body.splitlines()
-        after = [i for i, line in enumerate(lines) if line.startswith(("Environment=", "EnvironmentFile="))]
-        lines[max(after) + 1 : max(after) + 1] = carried
-        body = "\n".join(lines) + "\n"
-    if text == body:
+        after = [
+            i for i, line in enumerate(lines)
+            if line.startswith(("Environment=", "EnvironmentFile="))
+        ]
+        at = max(after) + 1 if after else len(lines)
+        lines[at:at] = carried
+    return "\n".join(lines) + "\n"
+
+
+def apply_unit(path: Path, body: str, tool: str = "", flags: str = "") -> bool:
+    """Replace a unit with the template, keeping the operator's own settings.
+
+    The operator's identity directives win over the template's defaults, so an apply
+    never rewrites the account a unit runs as, the command it runs or the environment
+    that account reads.
+
+    `tool` names the binary the template's own ExecStart runs.  It is resolved only
+    when that line survives the merge:  a unit that already names its command keeps
+    it, and the host need not carry the template's binary at all.
+    """
+    text = read(path)
+    merged = merge_unit(body, text, flags)
+    if tool and BINARY_MARKER in merged:
+        merged = merged.replace(BINARY_MARKER, which(tool))
+    if text == merged:
         return False
+    prepare_staged_directory(path)
     backup(path)
-    write(path, body)
+    write(path, merged)
     return True
+
+
+def apply_knob(label: str, path: Path, kind: str, root: Path) -> tuple[bool, str]:
+    """Apply one knob and name the service a change to it needs restarted.
+
+    The second value is the service to restart, or "" when the knob needs none.
+    An OSError raised here means the running account cannot write the knob:  the
+    caller skips it and carries on with the knobs after it.
+    """
+    if kind in ("codex-tmux-boot", "codex-tmux-autostart"):
+        return (path.exists() and apply_codex(path, root)), ""
+    if kind == "acp":
+        return (path.exists() and apply_acp(path, root)), ""
+    if kind == "bashrc":
+        return apply_bashrc(root), ""
+    if kind == "claude-settings":
+        return (path.exists() and apply_claude_settings(path, root)), ""
+    if label.startswith("opencode"):
+        flags = opencode_server_flags() or unit_execstart_flags(read(path))
+        body = OPENCODE_UNIT.format(
+            lanes=root, home=HOME, opencode=BINARY_MARKER, flags=flags,
+            **unit_environments(root),
+        )
+        touched = apply_unit(path, body, "opencode", flags)
+        return touched, "opencode-server.service" if touched else ""
+    body = CLAUDE_UNIT.format(
+        lanes=root, home=HOME, claude=BINARY_MARKER,
+        **unit_environments(root),
+    )
+    touched = apply_unit(path, body, "claude")
+    return touched, "claude-remote-control.service" if touched else ""
+
+
+def skip_reason(exc: OSError) -> str:
+    """Why a knob was skipped, in the words the skip line carries."""
+    if isinstance(exc, PermissionError):
+        # A refusal the tool raises itself names the object that needs the
+        # permission, because the file itself can be writable while the
+        # directory the staged file has to be created in is not, and only the
+        # directory can be fixed.  A permission the operating system raises
+        # says nothing more than the account cannot write the file, so the
+        # skip line stays the short one it has always been.
+        if exc.errno is None:
+            detail = str(exc).strip()
+            if detail:
+                return f"not writable by this account: {detail}"
+        return "not writable by this account"
+    return f"not written: {exc.strerror or exc}"
 
 
 def apply(root: Path) -> int:
     changed = 0
     restart: list[str] = []
+    skipped: dict[str, str] = {}
+    refused: SystemExit | None = None
     for label, path, kind in knobs(root):
-        if kind in ("codex-tmux-boot", "codex-tmux-autostart"):
-            touched = path.exists() and apply_codex(path, root)
-        elif kind == "acp":
-            touched = path.exists() and apply_acp(path, root)
-        elif kind == "bashrc":
-            touched = apply_bashrc(root)
-        elif kind == "claude-settings":
-            touched = path.exists() and apply_claude_settings(path, root)
-        elif not path.parent.is_dir():
+        if kind == "unit" and not path.parent.is_dir():
             print(f"  skipped  {label:26} ({path.parent} does not exist on this host)")
             continue
-        elif label.startswith("opencode"):
-            flags = opencode_server_flags() or unit_execstart_flags(read(path))
-            body = OPENCODE_UNIT.format(
-                lanes=root, home=HOME, opencode=which("opencode"), flags=flags,
-                **unit_environments(root),
-            )
-            touched = apply_unit(path, body)
-            if touched:
-                restart.append("opencode-server.service")
-        else:
-            body = CLAUDE_UNIT.format(
-                lanes=root, home=HOME, claude=which("claude"),
-                **unit_environments(root),
-            )
-            touched = apply_unit(path, body)
-            if touched:
-                restart.append("claude-remote-control.service")
+        try:
+            touched, service = apply_knob(label, path, kind, root)
+        except OSError as exc:
+            # A knob the running account cannot write is skipped, not fatal:  the
+            # knobs after it still apply, and the verify at the end still runs.
+            reason = skip_reason(exc)
+            print(f"  skipped  {label:26} ({reason})")
+            skipped[label] = reason
+            continue
+        except SystemExit as exc:
+            # A knob the tool refuses to write (a host or port it will not
+            # interpolate, a binary it will not invent a path for) is reported
+            # and the knobs after it still apply.  The refusal is raised once
+            # the verify has run, so the run still ends on it.
+            reason = f"refused: {exc}"
+            print(f"  skipped  {label:26} ({reason})")
+            skipped[label] = reason
+            if refused is None:
+                refused = exc
+            continue
         changed += 1 if touched else 0
+        if touched and service:
+            restart.append(service)
         print(f"  {'changed' if touched else 'ok     '}  {label}")
     if changed:
         print("\n  Restart what the change affects:")
@@ -972,12 +1353,15 @@ def apply(root: Path) -> int:
         print("    (the Claude desktop app reads worktree.location when it makes its next worktree)")
     # A knob that could not be applied is still off, so the apply reports it the
     # way --verify does instead of printing `ok` and exiting zero.
-    return verify(root)
+    failed = verify(root, skipped)
+    if refused is not None:
+        raise refused
+    return failed
 
 
-def verify(root: Path) -> int:
+def verify(root: Path, skipped: dict[str, str] | None = None) -> int:
     failed = 0
-    for label, ok, note in check(root):
+    for label, ok, note in check(root, skipped):
         print(f"  {'PASS' if ok else 'FAIL'}  {label:26} {note}")
         failed += 0 if ok else 1
     if failed:

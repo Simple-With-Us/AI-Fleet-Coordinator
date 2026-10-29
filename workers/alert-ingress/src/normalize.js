@@ -5,7 +5,7 @@
 //
 // Normalized event:
 //   {
-//     source:    "datadog" | "betterstack" | "sentry" | "generic",
+//     source:    "datadog" | "betterstack" | "sentry" | "pagerduty" | "generic",
 //     key:       stable identity of the alertable thing (dedupe key),
 //     service:   what to name it in the topic / status line,
 //     firing:    true | false,
@@ -355,6 +355,75 @@ export function fromSentry(payload) {
 }
 
 /**
+ * PagerDuty v3 webhook.
+ *
+ * Every delivery is an envelope, `{ event: { event_type, resource_type, data } }`,
+ * and for an incident event `data` is the incident itself.  The incident is
+ * the alertable thing, so its id is the key:  one PagerDuty incident is one row
+ * in the standing block of its PagerDuty service, from trigger to resolve, and
+ * an acknowledgement or a reassignment edits that row instead of posting.
+ *
+ * The incident's own status decides firing, not the event type:  a
+ * `incident.reassigned` on a resolved incident must not reopen it, and an
+ * unknown status stays firing, which is the safe direction.
+ */
+export function fromPagerDuty(payload) {
+  const envelope =
+    payload && typeof payload.event === "object" && payload.event ? payload.event : {};
+  const data =
+    envelope.data && typeof envelope.data === "object" ? envelope.data : {};
+  const id = sentryFirst(data.id);
+  if (!id) throw new Error("pagerduty incident has no identity");
+  if (credentialShape(id)) {
+    const error = new Error("pagerduty incident identity looks like a credential");
+    error.code = "invalid_identity";
+    error.field = "pagerduty incident identity";
+    throw error;
+  }
+  const eventType = sentryFirst(envelope.event_type).toLowerCase();
+  const status = sentryFirst(data.status).toLowerCase();
+  const firing = status
+    ? status !== "resolved"
+    : eventType !== "incident.resolved";
+
+  const service =
+    data.service && typeof data.service === "object" ? data.service : {};
+  const priority =
+    data.priority && typeof data.priority === "object" ? data.priority : {};
+  // P1 and P2 outrank the urgency, which every incident carries.  Any other
+  // priority name is the account's own vocabulary, so the urgency decides:
+  // high urgency pages, so it reads SEVERE, and a missing one is SEVERE too.
+  const urgency = sentryFirst(data.urgency).toLowerCase();
+  const level = sentryFirst(priority.summary).toUpperCase();
+  const severity =
+    level === "P1"
+      ? "SEVERE"
+      : level === "P2"
+        ? "MODERATE"
+        : urgency === "low"
+          ? "MODERATE"
+          : "SEVERE";
+
+  const number = sentryFirst(data.number);
+  const title = oneLine(sentryFirst(data.title, "PagerDuty incident"));
+  const acked = status === "acknowledged" ? " (acknowledged)" : "";
+
+  return {
+    source: "pagerduty",
+    key: `pagerduty:${id.toLowerCase()}`,
+    service: oneLine(sentryFirst(service.summary, service.name, "pagerduty")),
+    firing,
+    severity: firing ? severity : "INFO",
+    text: `${number ? `#${number} ` : ""}${title}${acked}`,
+    link: sentryFirst(data.html_url),
+    prodDown: /production|prod down|site down/i.test(title),
+    // Only a reopen may revive an incident that already closed:  a late
+    // retry of the original trigger must not.
+    reopened: eventType === "incident.reopened",
+  };
+}
+
+/**
  * Generic fallback for a webhook we have no bespoke parser for.
  * Reads the conventional keys rather than guessing at vendor internals.
  */
@@ -396,6 +465,7 @@ const PARSERS = {
   datadog: fromDatadog,
   betterstack: fromBetterStack,
   sentry: fromSentry,
+  pagerduty: fromPagerDuty,
 };
 
 /**

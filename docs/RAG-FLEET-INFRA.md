@@ -45,7 +45,7 @@ Every point carries:
 ```jsonc
 {
   "text":         "[Title › Section]\nthe chunk",
-  "source":       "board | effort-log | apple-note | doc | skill | memory | chat-log | agent-contribution | meta",
+  "source":       "board | linear | effort-log | apple-note | doc | skill | memory | chat-log | agent-contribution | meta",
   "app":          "fleet | socratic-trade | congress-trade | usage-monitor | dealdex | botfleet | ...",
   "category":     "lesson | preference | infrastructure | decision | runbook | finding | note | doc",
   "seat":         "CLAUDE | MONET | GROK | CODEX | AG | CURSOR | OWNER | FLEET",
@@ -66,7 +66,8 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 
 | Source | Where it comes from | Notes |
 |---|---|---|
-| `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`;  a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
+| `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`, frozen at the retirement) | category `lesson` when resolved, else `finding`; url is the Linear issue from the migration map |
+| `linear` | The live board:  Linear issues read through the installed `simple-board` CLI (read-only GraphQL as the shared Fleet app;  no bearer, no new credentials).  Yields every issue the frozen board corpus does not already cover (coverage decided against the frozen findings.db - fail-closed when it or the migration map is unreadable - because the migration TSV also maps GitHub/effort-log rows that never became board findings), however old, plus every covered issue touched at or after the 2026-10-19 freeze (`FLEET_RAG_LINEAR_FREEZE` overrides).  Selection advances from the ingest state file:  an issue already ingested at its current updatedAt is not refetched (`FLEET_RAG_LINEAR_FULL=1` forces a full pass, `FLEET_RAG_LINEAR_STATE` overrides the state path), except that every doc is refetched within a bounded window (default 7 days, `FLEET_RAG_LINEAR_REFRESH_DAYS`) because comment edits may not advance issue updatedAt - adds provably do.  The window is grounded on the committed ingest-state row's `refreshed_at`, written only when ingest commits an upsert or hash-verifies content against the corpus:  a fetched-but-uncommitted doc (failed upsert, dry run, crashed run) advances nothing and is always retried.  Because the nightly `--all --prune` deletes whatever a source did not yield, `linear` stays OUT of NIGHTLY_SOURCES and runs as its own additive job (`ingest --source linear`, no prune);  a rare deliberate prune needs FLEET_RAG_LINEAR_FULL=1 so every live doc is yielded.  Issues past the comment-page bound or the CLI size cap are skipped with a run warning (visible in the run report), never ingested truncated;  an empty scan, a missing connection or a malformed node raises instead.  `doc_id` `linear/<issue-uuid>` (stable across team moves, which rename identifiers;  the migration map's AFC-1 is CC-133 today), url is the Linear issue, app from the migration's `app:<slug>` label else the team's canonical slug | category `lesson` when the state type is completed, else `finding`;  seat from the `seat:`/`claimed:` labels |
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[TEAM_KEY, Agent] Topic` title convention |
 | `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
@@ -76,7 +77,7 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 | `agent-contribution` | `recall contribute` / `recall_contribute` | **Highest-yield write path.**  Scrubbed, gitleaks-gated, 40–4,000 chars.  Search first, then contribute the lesson at the moment it was learned. |
 
 Mirror rules keep one copy of each document: the live `~/apps/*.md` copy wins over its
-repo mirror (AGENT-SYNC, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS), the by-seat and
+repo mirror (FLEET-PROTOCOL, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS), the by-seat and
 repo copies of skills are skipped in favour of the `skill` source, effort-log mirrors are skipped
 in favour of the live boards, and checkouts reachable under two spellings are walked once.
 `recall ingest --prune` deletes the chunks of documents a source no longer yields.

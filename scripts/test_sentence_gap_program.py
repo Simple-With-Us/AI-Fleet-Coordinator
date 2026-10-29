@@ -12,10 +12,11 @@ program does what it says:  the code comes out untouched (every inline span, eve
 block, and an indented block that really is one), the gaps are made, the prose runs
 collapse, a hard break survives, a numbered marker stays a numbered marker, and the
 whole thing is idempotent, which is the check that sees a prose double space that no
-grep over the body can see.  Third, that the two gap forms are the two the owner ruling
-of 2026-10-22 names:  a real U+00A0 plus a space with no flag, and the `&nbsp;` entity
-plus a normal space with `--entity`, which is the form a GitHub body, comment or review
-comment takes.
+grep over the body can see.  Third, that the two gap forms the program produces are the
+two the owner ruling of 2026-10-23 names:  a real U+00A0 plus a space with no flag, on
+every surface, and the `&nbsp;` entity plus a normal space with `--entity`, which is the
+form the two chat panes take.  (The body of an Apple Note takes the narrow no-break space
+plus a normal space, AFC-552; the note helper writes that one, not this program.)
 """
 
 from __future__ import annotations
@@ -55,11 +56,11 @@ _CANONICAL = (
 )
 
 #  The canonical pattern with the entity in place of the byte pair:  the same
-#  substitution, for the text a GitHub body takes (owner ruling 2026-10-22).  The `&` is
+#  substitution, for the text the two chat panes take (owner ruling 2026-10-23).  The `&` is
 #  escaped, because in a perl replacement it would otherwise stand for the matched text.
 _ENTITY_CANONICAL = _CANONICAL.replace(r"\x{a0} ", r"\&nbsp; ")
 
-#  The entity a GitHub body takes, and the space that follows it.
+#  The entity the two chat panes take, and the space that follows it.
 ENTITY = "&nbsp; "
 
 NBSP = "\u00a0"
@@ -203,7 +204,7 @@ class SurfaceTests(unittest.TestCase):
 
         The surfaces are the pack's own copies of the program.  The copy in the
         checkout is one release ahead of them:  it carries the `--entity` mode (owner
-        ruling 2026-10-22), which the pack's copy does not have yet, because the pack is
+        ruling 2026-10-23), which the pack's copy does not have yet, because the pack is
         rewritten by its own pull request.  So the pin that still holds between the
         checkout and the pack's copy is the behaviour, and it is pinned in
         `test_the_checkout_program_agrees_with_the_pack_copy`.
@@ -460,8 +461,8 @@ class ProgramBehaviourTests(unittest.TestCase):
         )
 
     def test_the_no_flag_mode_still_writes_the_real_nbsp(self) -> None:
-        """The no-flag behaviour must not move:  a GitHub title and a Zulip post take a
-        real U+00A0 plus a space."""
+        """The no-flag behaviour must not move:  a GitHub title, body and comment and a
+        Zulip post take a real U+00A0 plus a space."""
         out = run_program(self.program, "Plain sentence.  Next sentence.\n")
         self.assertIn("Plain sentence." + NBSP + " Next sentence.", out)
         self.assertNotIn("&nbsp;", out)

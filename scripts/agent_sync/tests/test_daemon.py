@@ -1011,8 +1011,8 @@ class WakeTests(DaemonHarness):
         self.assertNotIn("AGENT_SEAT", board_envs[0])
         self.assertNotIn("AGENT_LAUNCH_SEAT", board_envs[0])
         # simple-board is a plain symlink to scripts/simple-board and exports nothing itself, so the
-        # daemon must pass the write switch the old ~/.local/bin/board wrapper used to export.
-        self.assertEqual(board_envs[0].get("LINEAR_BOARD_WRITES"), "1")
+        # daemon passes no write switch:  the bearer-verified seat is the write gate.
+        self.assertNotIn("LINEAR_BOARD_WRITES", board_envs[0])
 
     def test_board_filing_without_a_bearer_locator_files_nothing_and_offers_no_seat(self) -> None:
         board_calls = []
@@ -1556,7 +1556,7 @@ class MuseSeatTests(DaemonHarness):
 
 
 class PeerScreenTests(DaemonHarness):
-    """The tool-less responder screens a peer's request (AGENT-SYNC Precedence rule 3):  low risk is
+    """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  low risk is
     answered, uncertain and high risk reach the owner by Zulip DM from the seat's own bot."""
 
     OWNER_ID = 12
@@ -3350,3 +3350,59 @@ class OperatorRegistrationRouteFollowTests(DaemonHarness):
         entry = D.OREG.pending_entries(db)[0]
         self.assertTrue(entry.get("route_lost"))
         self.assertEqual(entry["route"], {"channel": "agent-sync", "topic": "AFC Work"})
+
+
+class FallbackPromptBoundTests(DaemonHarness):
+    """The prompt the mcode fallback is given is the BOUNDED one (AFC-291).
+
+    mcode has neither a sandbox nor a tool-deny switch, so its step budget is the only bound on
+    what it may do, and that budget is measured on a four-message prompt.  The daemon therefore
+    hands the mcode fallback a bounded prompt, and every other runtime the whole one.
+    """
+
+    @staticmethod
+    def _runner(fallback: str):
+        return SimpleNamespace(
+            seat="CLAUDE",
+            users={},
+            cfg=SimpleNamespace(fallback=fallback, route_enabled=False),
+        )
+
+    @staticmethod
+    def _pending(trigger: int = 3) -> W.Pending:
+        pending = W.Pending(
+            "w1", "CLAUDE", {"channel": "agent-sync", "topic": "t"}, owner=False, now=1.0, due=2.0
+        )
+        pending.add({"id": trigger}, False)
+        return pending
+
+    @staticmethod
+    def _history(count: int) -> list[dict[str, object]]:
+        return [
+            {
+                "id": i,
+                "sender_id": 11,
+                "sender_full_name": "Codex",
+                "timestamp": 1000.0 + i,
+                "content": "msg%03d" % i,
+            }
+            for i in range(1, count + 1)
+        ]
+
+    def test_the_mcode_fallback_is_given_the_bounded_prompt(self) -> None:
+        daemon = self.daemon()
+        prompt = daemon._fallback_prompt(
+            self._runner("mcode"), self._pending(), self._history(15), None, None, None, False
+        )
+        self.assertIn("The last %d messages follow" % A.MCODE_FALLBACK_MAX_MESSAGES, prompt)
+        self.assertNotIn("The last 15 messages follow", prompt)
+        # The trigger message survives the cut:  the wake is about it.
+        self.assertIn("msg003", prompt)
+
+    def test_another_runtime_keeps_the_whole_prompt(self) -> None:
+        daemon = self.daemon()
+        prompt = daemon._fallback_prompt(
+            self._runner("claude"), self._pending(), self._history(15), None, None, None, False
+        )
+        self.assertIn("The last 15 messages follow", prompt)
+        self.assertIn("msg001", prompt)

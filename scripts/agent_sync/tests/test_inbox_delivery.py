@@ -713,22 +713,41 @@ class OwnerInboxDeliveryTests(DaemonHarness):
         for seat, transport in self.transports.items():
             self.assertEqual(len(transport.payloads("messages/flags")), 1, seat)
 
-    def test_a_peer_broadcast_reaches_no_inbox(self) -> None:
-        """A peer bot's `@**everyone**` and `@**all**` are not the owner's:  no bot is addressed."""
+    def test_a_peer_everyone_reaches_no_inbox(self) -> None:
+        """A peer bot's `@**everyone**` is not a broadcast:  it wakes nobody, so no bot is
+        addressed."""
         daemon = self.started()
-        for content in ("@**everyone** FYI", "@**all** deploy"):
-            with self.subTest(content=content):
-                self.transports.clear()
-                message_id = self.fake.add_message("Codex", CHANNEL, "fleet", content)
-                with (
-                    mock.patch.object(IDEL, "infisical_targets", return_value=self.targets),
-                    mock.patch.object(IDEL, "zulip_http", side_effect=self.transport_for),
-                ):
-                    self.pump_until(daemon, lambda: self.routed(daemon, message_id))
-                    time.sleep(0.1)
-                self.assertEqual(self.transports, {}, "a peer broadcast addresses no bot")
-                for transport in self.transports.values():
-                    self.assertNotIn("messages/flags", transport.paths())
+        self.transports.clear()
+        message_id = self.fake.add_message("Codex", CHANNEL, "fleet", "@**everyone** FYI")
+        with (
+            mock.patch.object(IDEL, "infisical_targets", return_value=self.targets),
+            mock.patch.object(IDEL, "zulip_http", side_effect=self.transport_for),
+        ):
+            self.pump_until(daemon, lambda: self.routed(daemon, message_id))
+            time.sleep(0.1)
+        self.assertEqual(self.transports, {}, "a peer `@everyone` addresses no bot")
+
+    def test_a_peer_all_lands_unread_in_every_bot_inbox(self) -> None:
+        """Jay's Oct 27 2026:  a fleet bot's `@all` lands unread in every bot's inbox, like the
+        owner's."""
+        daemon = self.started()
+        self.transports.clear()
+        message_id = self.fake.add_message("Codex", CHANNEL, "fleet", "@**all** deploy")
+        with (
+            mock.patch.object(IDEL, "infisical_targets", return_value=self.targets),
+            mock.patch.object(IDEL, "zulip_http", side_effect=self.transport_for),
+        ):
+            self.pump_until(daemon, lambda: self.routed(daemon, message_id))
+            self.assertTrue(
+                self.wait_for(lambda: bool(self.transports)),
+                "the inbox delivery never ran",
+            )
+            time.sleep(0.05)
+        self.assertTrue(self.transports, "a peer `@all` addresses every bot")
+        for seat, transport in self.transports.items():
+            self.assertIn("messages/flags", transport.paths(), seat)
+
+
 
     def routed(self, daemon, message_id: int) -> bool:
         return any(

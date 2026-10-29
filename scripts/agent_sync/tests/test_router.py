@@ -272,9 +272,10 @@ class PrefilterTests(unittest.TestCase):
         self.assertFalse(c.owner or c.owner_api, "Jet is never the owner")
         self.assertEqual(self.wake(direct, **pinned), (True, "peer", None))
         self.assertEqual(self.wake(direct), (True, None, "not_eligible"), "no pin, no wake")
-        # Only a direct mention wakes:  every other Jet post behaves like any other peer's.
+        # A direct mention wakes, and so does a channel-wide `@all` (owner, Oct 27 2026):  every
+        # other Jet post behaves like any other peer's.
         self.assertEqual(self.wake(msg(sender=JET, content="@**all** standup", **FLEET_KW), **pinned),
-                         (True, None, "group_or_wildcard"))
+                         (True, "peer", None))
         # Owner 2026-10-09:  an eligible bot's DM wakes like a direct mention.
         self.assertEqual(self.wake(msg(sender=JET, dm=True), **pinned), (True, "peer", None))
         self.assertEqual(self.wake(msg(sender=JET, content="[JET·wake] re=1 @**Claude** hi", flags=["mentioned"]), **pinned),
@@ -301,11 +302,12 @@ class PrefilterTests(unittest.TestCase):
         self.assertEqual(d.throttled, [("A", "per_hour")])
         self.assertEqual(asked, [False], "the room check runs as a non-owner turn, never the owner's")
 
-    def test_peer_fleet_wildcard_and_followed_chatter_do_not_wake(self) -> None:
-        # A peer's fleet wake lands in the inbox and never starts a turn:  it would wake about 12 seats.
-        self.assertEqual(self.wake(msg(content="@**all** standup", **FLEET_KW)), (True, None, "group_or_wildcard"))
+    def test_peer_fleet_wildcard_wakes_and_followed_chatter_does_not(self) -> None:
+        # Jay's Oct 27 2026 rule:  a fleet bot's `@all` wakes like the owner's, under the peer
+        # budgets.  Ordinary chatter on a followed topic still wakes nobody.
+        self.assertEqual(self.wake(msg(content="@**all** standup", **FLEET_KW)), (True, "peer", None))
         self.assertEqual(self.wake(msg(content="@**all** heads up", flags=["stream_wildcard_mentioned"])),
-                         (True, None, "group_or_wildcard"))
+                         (True, "peer", None))
         self.assertEqual(self.wake(msg(content="chatter"), followed=[topic_key("agent-sync", "t")]),
                          (True, None, "not_a_mention"))
 
@@ -403,10 +405,18 @@ class LeaseRoutingTests(unittest.TestCase):
         c, d = R.route(msg(sender=OWNER, content="@**all** HALT", **FLEET_KW), ME, ctx(), [lease("nc", capable=False)])
         self.assertEqual((d.lease_items, d.seat_inbox, d.wake), ([], True, "owner"))
 
-    def test_a_peer_fleet_wake_reaches_the_inbox_and_never_a_lease_or_a_wake(self) -> None:
+    def test_a_peer_fleet_wake_wakes_as_a_peer(self) -> None:
+        """Jay's Oct 27 2026 rule:  a fleet bot's `@all` wakes like the owner's, under the peer
+        budgets, the loop guard and the stale rule."""
         c, d = R.route(msg(content="@**all** HALT", **FLEET_KW), ME, ctx(), [lease("L")])
         self.assertTrue(c.fleet and c.eligible and not c.owner)
-        self.assertEqual((d.lease_items, d.seat_inbox, d.wake, d.wake_block), ([], True, None, "group_or_wildcard"))
+        self.assertTrue(c.peer_broadcast)
+        # The lease takes it, like the owner's:  the message is delivered to the lease and no
+        # headless wake follows.
+        self.assertEqual(
+            (d.lease_items, d.seat_inbox, d.wake, d.wake_block),
+            ([("L", "interrupt", "message")], True, None, "delivered_to_lease"),
+        )
 
     def test_an_owner_at_all_outside_the_fleet_topic_wakes_every_seat(self) -> None:
         for topic in ("t", "roll call", "AFC 1a2b3c4d work", "general"):

@@ -28,7 +28,7 @@ from agent_sync.mcp import linear_tools as LT
 from agent_sync.mcp import recall_tools as RT
 from agent_sync.mcp import tools as T
 from agent_sync.tests.harness import SESSION
-from agent_sync.tests.mcp_harness import McpHarness
+from agent_sync.tests.mcp_harness import McpHarness, seat_bearer_locator
 from agent_sync.tests.test_mcp_identity import IdentityHarness
 from agent_sync.tests.test_notes import (
     STORED_CONTENT_HTML,
@@ -45,6 +45,7 @@ FAKE_PROGRAM = textwrap.dedent("""\
     import json, os, sys
     out = os.environ["{out_var}"]
     data = {{"argv": sys.argv[1:], "seat": os.environ.get("AGENT_SEAT"), "writes": os.environ.get("LINEAR_BOARD_WRITES"),
+            "bearer": os.environ.get("SIMPLE_BOARD_BEARER_LOCATOR"),
             "stdin": sys.stdin.read(), "env": sorted(os.environ),
             "files": {{a: {{"text": open(a[1:]).read(), "mode": oct(os.stat(a[1:]).st_mode & 0o777)}}
                       for a in sys.argv[1:] if a.startswith("@") and os.path.isfile(a[1:])}}}}
@@ -859,12 +860,15 @@ class LinearToolTests(FakePrograms):
         )
         self.assertNotIn("isError", result, result)
         call = self.calls(self.board_out)[0]
+        # board proves the seat from the bearer and never reads AGENT_SEAT, so the seat reaches it as the
+        # identity's own bearer locator and the seat variables are stripped from the child.
         self.assertEqual(
-            call["seat"],
-            "CURSOR",
-            "AGENT_SEAT is the claimed identity, not the connection's default",
+            call["bearer"],
+            seat_bearer_locator("CURSOR"),
+            "the call's own bearer locator is the seat board proves",
         )
-        self.assertEqual(call["writes"], "1")
+        self.assertIsNone(call["seat"], "AGENT_SEAT must not reach board")
+        self.assertIsNone(call["writes"])
         self.assertEqual(
             call["argv"][:5], ["claim", "AFC-331", "--by", "CURSOR", "--comment=on it"]
         )
@@ -879,9 +883,20 @@ class LinearToolTests(FakePrograms):
         session.call("linear_whoami", identity="CLAUDE")
         session.call("linear_whoami")  # no identity:  the default
         session.call("linear_list", {"status": "open", "limit": 5}, identity="BF-PLUMBER")
+        calls = self.calls(self.board_out)
         self.assertEqual(
-            [c["seat"] for c in self.calls(self.board_out)], ["CLAUDE", "CLAUDE", "BF-PLUMBER"]
+            [c["bearer"] for c in calls],
+            [
+                seat_bearer_locator("CLAUDE"),
+                seat_bearer_locator("CLAUDE"),
+                seat_bearer_locator("BF-PLUMBER"),
+            ],
+            "each call runs under the bearer of the identity it names",
         )
+        for call in calls:
+            self.assertIsNone(call["seat"], "AGENT_SEAT must not reach board")
+            self.assertNotIn("AGENT_SEAT", call["env"])
+            self.assertNotIn("AGENT_LAUNCH_SEAT", call["env"])
         self.assertEqual(
             self.calls(self.board_out)[2]["argv"],
             ["list", "--json", "--status", "open", "--limit", "5"],

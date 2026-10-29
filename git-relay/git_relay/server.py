@@ -36,9 +36,12 @@ from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import PolicyError, SeatPolicy
-from .secret_scan import find_secret, reject_secrets, scan_args
+from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
+# Only the binary release-asset upload may exceed MAX_REQUEST_BYTES (base64 of 180 KiB).
+MAX_BINARY_REQUEST_BYTES = 256 * 1024
+BINARY_REQUEST_ACTIONS = frozenset({"wf_release_asset_upload_binary"})
 
 
 def _positive_int(raw: str, default: int) -> int:
@@ -197,6 +200,10 @@ class PolicyDenied(Exception):
     """The seat authenticated but its policy refused the call."""
 
 
+class PreReadUnavailable(Exception):
+    """A failed pre-read proves that no write was attempted."""
+
+
 class ServerUnavailable(Exception):
     """A configured-on-paper backend (app-token minting) is not wired."""
 
@@ -281,7 +288,12 @@ class Relay:
             try:
                 # Credential-shaped input is refused before any durable state
                 # or side effect (SecretInputError is a ValueError).
-                scan_args(args)
+                if action in BINARY_REQUEST_ACTIONS:
+                    # The base64 payload gets a larger text budget; the byte scan of the decoded
+                    # content happens in the verb.
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_BINARY_REQUEST_BYTES])
+                else:
+                    scan_args(args)
                 if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
                     # The verb layer owns per-field shape validation and rejects any field it
                     # does not accept; here only the envelope (a repo string) is checked.
@@ -313,7 +325,7 @@ class Relay:
                 # the hour and the minter's per-key lock dedups concurrent calls.
                 key = key_for(seat, action, canonical)
                 try:
-                    prior = self.outcomes.begin(key)
+                    prior = self.outcomes.begin(key, reapply_ok=action in _REAPPLY_STATE_ACTIONS)
                 except OutcomeStoreError as exc:
                     outcome = "unavailable"
                     detail = {"reason": type(exc).__name__}
@@ -339,6 +351,14 @@ class Relay:
                 outcome = "denied"
                 detail = {"reason": str(exc)}
                 return 403, {"error": str(exc)}
+            except PreReadUnavailable:
+                self._release(key, "refused")
+                outcome = "unavailable"
+                detail = {"reason": "pre_read_unavailable"}
+                return 503, {
+                    "error": "upstream pre-read unavailable; no write attempted",
+                    "retryable": True,
+                }
             except ServerUnavailable as exc:
                 self._release(key, "refused")
                 outcome = "unavailable"
@@ -496,19 +516,73 @@ class Relay:
         raise ValueError(f"unknown owner-token action {action!r}")
 
 
+# Idempotent state setters must reach GitHub again after a verified success: A->B->A
+# is a new desired state, not a replay of A.  Keep the same key and all pending/unknown
+# holds; only OutcomeStore.begin atomically replaces a known-success row.
+_REAPPLY_STATE_ACTIONS = frozenset(
+    {
+        "wf_issue_update",
+        "wf_review_update",
+        "wf_check_update",
+        "wf_milestone_update",
+        "wf_labels_set",
+        "wf_reviewers_request",
+        "wf_reviewers_remove",
+        "wf_release_update",
+        "wf_issue_comment_update",
+        "wf_review_comment_update",
+        "wf_assignees_add",
+        "wf_assignees_remove",
+        "wf_issue_lock",
+        "wf_issue_unlock",
+        "wf_workflow_enable",
+        "wf_workflow_disable",
+        "wf_pr_draft",
+        "wf_pr_ready",
+        "wf_review_thread_resolve",
+        "wf_review_thread_unresolve",
+        "wf_automerge_enable",
+        "wf_automerge_disable",
+        "wf_release_asset_update",
+    }
+)
+
 _WORKFLOW_AUDIT_SCALARS = (
     "job_id",
     "run_id",
     "number",
+    "commit_id",
+    "event",
+    "side",
+    "line",
     "ref",
     "branch",
     "base",
     "head",
     "expected_head_sha",
     "prior_sha",
+    "tag",
+    "sha",
+    "expected_sha",
+    "comment_id",
+    "thread_id",
+    "review_id",
+    "check_id",
+    "deployment_id",
+    "milestone",
+    "release_id",
+    "asset_id",
+    "workflow_id",
+    "artifact_id",
     "per_page",
+    "page",
     "state",
     "tail_bytes",
+    "asset_id",
+    "artifact_id",
+    "release_id",
+    "offset",
+    "length",
     "method",
     "path",
 )
@@ -531,6 +605,14 @@ def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
         value = result.get(key)
         if isinstance(value, (int, bool)) or (isinstance(value, str) and len(value) <= 64):
             detail[f"result_{key}"] = value
+    # Review and inline writes nest their new ids one level down; keep the ids
+    # (bounded ints) so the audit row says which review or comment was created.
+    for key, result_key in (("review", "result_review_id"), ("comment", "result_comment_id")):
+        nested = result.get(key)
+        if isinstance(nested, dict):
+            value = nested.get("id")
+            if isinstance(value, int) and not isinstance(value, bool):
+                detail[result_key] = value
     return detail
 
 
@@ -722,7 +804,10 @@ def make_handler(relay: Relay):
             except ValueError:
                 self._send(400, {"error": "bad Content-Length"})
                 return
-            if length < 1 or length > MAX_REQUEST_BYTES:
+            cap = (
+                MAX_BINARY_REQUEST_BYTES if action in BINARY_REQUEST_ACTIONS else MAX_REQUEST_BYTES
+            )
+            if length < 1 or length > cap:
                 self._send(400, {"error": "request body missing or over the 64 KiB bound"})
                 return
             raw = self.rfile.read(length)

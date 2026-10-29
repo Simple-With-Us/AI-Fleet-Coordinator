@@ -888,6 +888,17 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
     bots = {11: True, 12: False, 13: True}
     # The canned set has no owner trigger, so the daemon's gate refuses any route (owner 2026-10-10).
     route_gate = "no_owner_trigger"
+    if is_mcode and len(history) > A.MCODE_FALLBACK_MAX_MESSAGES:
+        # The mcode fallback is given a BOUNDED prompt, and its step budget is measured against
+        # that bound.  A canned set larger than the bound would make the proof cover a prompt
+        # the fallback is never given, so this is a stop, not a warning:  re-measure
+        # MCODE_MAX_STEPS at the new size, or lower the bound.
+        raise Z.UsageError(
+            "the canned set has %d messages, over the mcode fallback's bound of %d, so this "
+            "proof would not cover the prompt the fallback is given; re-measure "
+            "MCODE_MAX_STEPS at that size or lower MCODE_FALLBACK_MAX_MESSAGES"
+            % (len(history), A.MCODE_FALLBACK_MAX_MESSAGES)
+        )
     prompt = W.build_prompt(
         seat=seat,
         pending=pending,
@@ -898,6 +909,10 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         format_time=format_time,
         board_enabled=False,
         route=route_gate,
+        # The same bound the daemon applies to the real fallback, so the proof covers the prompt
+        # shape the fallback is actually given.
+        max_messages=A.MCODE_FALLBACK_MAX_MESSAGES if is_mcode else None,
+        max_held=A.MCODE_FALLBACK_MAX_HELD if is_mcode else None,
     )
     partition, _ = C.load_partition(C.partition_path(rt.env))
     argv = (
@@ -1231,8 +1246,8 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             return 0
         _fenced(
             rt,
-            "[agent-sync listener inbox] %d item%s for %s (cursor %d, next_seq %s;  ack with "
-            "agent-sync listener ack --seq %s)"
+            "[simple-chat listener inbox] %d item%s for %s (cursor %d, next_seq %s;  ack with "
+            "simple-chat listener ack --seq %s)"
             % (
                 len(view["items"]),
                 "" if len(view["items"]) == 1 else "s",
@@ -1347,7 +1362,7 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             return 0
         _fenced(
             rt,
-            "[agent-sync listener %s] %d item%s from lease %s"
+            "[simple-chat listener %s] %d item%s from lease %s"
             % (
                 action,
                 len(view["items"]),

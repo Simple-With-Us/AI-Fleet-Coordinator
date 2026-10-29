@@ -19,16 +19,17 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+if __package__:
+    from .errors import BridgeError, StopBridge
+else:
+    from errors import BridgeError, StopBridge
+
 MAX_RESPONSE = 8 * 1024 * 1024
 MAX_OFFSET = 2**63 - 1
-
-
-class BridgeError(Exception):
-    """Fixed, content-free failure code."""
-
-
-class StopBridge(BridgeError):
-    pass
+LEDGER_RETENTION = 35 * 86400
+# The result fields a pending outcome keeps for its re-report.  No body.
+PENDING_FIELDS = ("status", "code", "error", "retry_after_s", "context_missing")
+TARGET_RING = 500
 
 
 def digest(value, key=None):
@@ -119,6 +120,11 @@ def normalize(payload, offset, hash_key):
                     "timestamp": int(m["timestamp"]),
                     "type": m["type"],
                     "text": text,
+                    # The raw values never leave the bridge: they are dropped
+                    # before the batch is posted, and they are what the
+                    # outbound leg needs (the address and the quoted id).
+                    "_raw_id": m["id"],
+                    "_raw_from": m["from"],
                 }
             )
         for s in statuses:
@@ -220,7 +226,39 @@ class State:
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), offset TEXT NOT NULL)"
         )
+        # AFC-545: the local send ledger, the bound address and the reply
+        # targets.  No bodies: only the intent id, the state, the body hash
+        # and the sent message id.
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS send_ledger (intent_id TEXT PRIMARY KEY, state TEXT NOT NULL,"
+            " body_hash TEXT NOT NULL, message_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,"
+            " created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        if "claim_token" not in {
+            row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")
+        }:
+            self.db.execute("ALTER TABLE send_ledger ADD COLUMN claim_token TEXT")
+        # The outcome the Worker has not acked yet: a restart reports
+        # the same outcome again instead of losing it.
+        if "pending_outcome" not in {
+            row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")
+        }:
+            self.db.execute("ALTER TABLE send_ledger ADD COLUMN pending_outcome TEXT")
+        # The result fields that go with the pending outcome (status, code,
+        # error, retry_after_s, context_missing), as JSON, so a re-report
+        # carries what the first report carried.  Never a body.
+        if "pending_fields" not in {
+            row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")
+        }:
+            self.db.execute("ALTER TABLE send_ledger ADD COLUMN pending_fields TEXT")
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS recipient (id INTEGER PRIMARY KEY CHECK(id=1),"
+            " value TEXT NOT NULL, updated_at INTEGER NOT NULL)"
+        )
         self.db.commit()
+        # The quoted message ids live in memory only: the bridge uses them
+        # to answer a reply in context, and they never reach the disk.
+        self._targets = {}
 
     def begin_binding(self, signing_key, now, code=None):
         import secrets
@@ -268,6 +306,112 @@ class State:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO cursor VALUES(1, ?)", (str(offset),))
 
+    def record_recipient(self, value, now):
+        """The bound sender's own id: the only address a reply may use."""
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO recipient VALUES(1,?,?)", (value, int(now)))
+
+    def recipient(self):
+        row = self.db.execute("SELECT value FROM recipient WHERE id=1").fetchone()
+        return row[0] if row else None
+
+    def remember_target(self, id_hash, message_id):
+        """The raw id of a message the bridge still holds, in memory only."""
+        self._targets[id_hash] = message_id
+        if len(self._targets) > TARGET_RING:
+            for stale in list(self._targets)[: len(self._targets) - TARGET_RING]:
+                del self._targets[stale]
+
+    def target_for(self, id_hash):
+        return self._targets.get(id_hash)
+
+    def ledger_put(
+        self,
+        intent_id,
+        state,
+        body_hash,
+        message_id,
+        now,
+        pending_outcome=None,
+        pending_fields=None,
+    ):
+        """One row per intent.  The pending outcome is the result the
+        Worker has not acked yet, and it keeps the row claimable.  The
+        pending fields are the result fields reported with it, so a
+        re-report carries the same status, code and backoff."""
+        fields = None
+        if pending_outcome is not None and pending_fields:
+            kept = {
+                name: value
+                for name, value in pending_fields.items()
+                if name in PENDING_FIELDS and value is not None
+            }
+            fields = json.dumps(kept, sort_keys=True, separators=(",", ":")) if kept else None
+        with self.db:
+            self.db.execute(
+                "INSERT INTO send_ledger (intent_id, state, body_hash, message_id, attempts,"
+                " pending_outcome, pending_fields, created_at, updated_at)"
+                " VALUES(?,?,?,?,0,?,?,?,?)"
+                " ON CONFLICT(intent_id) DO UPDATE SET state=excluded.state,"
+                " body_hash=excluded.body_hash, message_id=excluded.message_id,"
+                " pending_outcome=excluded.pending_outcome,"
+                " pending_fields=excluded.pending_fields,"
+                " updated_at=excluded.updated_at",
+                (
+                    intent_id,
+                    state,
+                    body_hash,
+                    message_id,
+                    pending_outcome,
+                    fields,
+                    int(now),
+                    int(now),
+                ),
+            )
+
+    def ledger_pending_fields(self, intent_id):
+        """The result fields saved with the pending outcome, or {}."""
+        row = self.db.execute(
+            "SELECT pending_fields FROM send_ledger WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        if not row or not row[0]:
+            return {}
+        try:
+            parsed = json.loads(row[0])
+        except ValueError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {name: value for name, value in parsed.items() if name in PENDING_FIELDS}
+
+    def ledger_token(self, intent_id):
+        row = self.db.execute(
+            "SELECT claim_token FROM send_ledger WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def ledger_set_token(self, intent_id, token):
+        with self.db:
+            self.db.execute(
+                "UPDATE send_ledger SET claim_token=? WHERE intent_id=?", (token, intent_id)
+            )
+
+    def ledger_pending(self):
+        return self.db.execute(
+            "SELECT intent_id, state, body_hash, message_id, pending_outcome"
+            " FROM send_ledger WHERE state IN ('claimed','sending')"
+        ).fetchall()
+
+    def ledger_delete(self, intent_id):
+        with self.db:
+            self.db.execute("DELETE FROM send_ledger WHERE intent_id=?", (intent_id,))
+
+    def ledger_sweep(self, now, retention=LEDGER_RETENTION):
+        with self.db:
+            self.db.execute(
+                "DELETE FROM send_ledger WHERE updated_at < ?", (int(now) - int(retention),)
+            )
+
     def close(self):
         self.db.close()
         self.lock.close()
@@ -313,12 +457,20 @@ class Bridge:
             raise StopBridge("missing_owner_binding")
         batch["messages"] = [m for m in batch["messages"] if m["sender_hash"] == sender_hash]
         for message in batch["messages"]:
+            # The bound sender's own id is the address a reply may use, and
+            # its message ids are what a reply in context quotes.
+            self.state.record_recipient(message["_raw_from"], self.clock())
+            self.state.remember_target(message["id_hash"], message["_raw_id"])
             if message["text"] is not None:
                 for value in (self.api_key, self.signing_key):
                     if len(value) >= 8:
                         message["text"] = message["text"].replace(
                             value, "[redacted:loaded credential]"
                         )
+        # The raw ids and senders never leave the bridge.
+        for message in batch["messages"]:
+            message.pop("_raw_id", None)
+            message.pop("_raw_from", None)
         body = json.dumps(
             {
                 "contract": "wa-ingest/1",
@@ -347,7 +499,18 @@ class Bridge:
         return ack
 
 
+def send_enabled(state_directory):
+    """The SEND switch, failing closed: a missing or stale value is off."""
+    if (Path(state_directory) / "disabled").exists():
+        return False
+    return os.environ.get("WHATSAPP_BRIDGE_SEND_ENABLED", "").strip() == "on"
+
+
 def main():
+    if __package__:
+        from . import outbound
+    else:
+        import outbound
     names = (
         "WHATSAPP_API_KEY",
         "WA_BRIDGE_HMAC_KEY_JET",
@@ -368,12 +531,28 @@ def main():
         os.environ["WA_BRIDGE_HMAC_KEY_JET"],
         os.environ["WA_WORKER_URL"],
     )
+    sender = outbound.Outbox(
+        state,
+        os.environ["WHATSAPP_API_KEY"],
+        os.environ["WA_BRIDGE_HMAC_KEY_JET"],
+        os.environ["WA_WORKER_URL"],
+        enabled=lambda: send_enabled(os.environ["WA_STATE_DIRECTORY"]),
+    )
     errors = 0
     schema_errors = 0
     try:
         while not (Path(os.environ["WA_STATE_DIRECTORY"]) / "disabled").exists():
             try:
+                # The outbound leg runs first: a queued reply does not wait
+                # for the next poll of Meta.
+                try:
+                    sender.step()
+                except StopBridge:
+                    raise
+                except BridgeError as error:
+                    print(json.dumps({"state": "send_" + str(error).split(":")[0]}), flush=True)
                 bridge.step()
+                state.ledger_sweep(bridge.clock())
                 errors = 0
                 schema_errors = 0
                 print('{"state":"running"}', flush=True)
