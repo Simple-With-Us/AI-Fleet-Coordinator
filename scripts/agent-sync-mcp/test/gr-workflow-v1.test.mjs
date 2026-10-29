@@ -710,3 +710,21 @@ test('run page observes startup_failure without treating it as successful review
  assert.equal(validWfV1Response('wf_runs_page',receipt,args),true);
  assert.equal(validWfV1Response('wf_runs_page',{...receipt,runs:[{...row,status:'queued'}]},args),false);
 });
+
+test('issue create/update provider shapes refuse before transport with parsed-copy validation',async()=>{
+ let count=0;
+ for(const prefix of ['sk-','sk-ant-','sk-proj-','sk_live_','sk_test_']) for(const field of ['title','body']) for(const action of ['wf_issue_create','wf_issue_update']){
+  const args={repo:'o/r',title:'safe issue',body:'safe body',...(action==='wf_issue_update'?{number:1}:{}),[field]:prefix+'X'.repeat(32)};
+  assert.equal(validWfV1Args(action,args),false);
+  assert.equal(parseWfV1Args(action,args),null);
+  let calls=0;const t=harness(async()=>{calls++;throw Error('must not call');});
+  assert.equal((await t.call('gr_'+action,args)).isError,true);assert.equal(calls,0);count++;
+ }
+ assert.equal(count,20);
+});
+test('safe issue arguments and existing github credential refusal remain unchanged',()=>{
+ for(const [action,args] of [['wf_issue_create',{repo:'o/r',title:'safe issue',body:'safe body'}],['wf_issue_update',{repo:'o/r',number:1,state:'closed'}]]){
+  assert.equal(validWfV1Args(action,args),true);assert.notEqual(parseWfV1Args(action,args),null);
+ }
+ assert.equal(validWfV1Args('wf_issue_create',{repo:'o/r',title:'ghp_'+'X'.repeat(32),body:'safe body'}),false);
+});
