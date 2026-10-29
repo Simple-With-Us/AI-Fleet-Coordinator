@@ -922,11 +922,7 @@ class SeatControlMCP:
                 )
             ):
                 receipt = previous.get("result")
-                status = (
-                    receipt.get("status")
-                    if isinstance(receipt, dict)
-                    else "held"
-                )
+                status = receipt.get("status") if isinstance(receipt, dict) else "held"
                 return self._result(
                     status,
                     _receipt_message(receipt, "previous request was not dispatched"),
@@ -1077,9 +1073,7 @@ class SeatControlMCP:
                                 "held", held_result, held_message, transient=True
                             )
                         else:
-                            failed_message = (
-                                "native adapter rejected the prompt before acceptance"
-                            )
+                            failed_message = "native adapter rejected the prompt before acceptance"
                             dispatch_result = persist_and_build(
                                 "failed",
                                 {"status": "failed", "message": failed_message},
@@ -1113,9 +1107,7 @@ class SeatControlMCP:
                             "unknown",
                             "audit outcome is uncertain; automatic replay is blocked",
                         )
-        return dispatch_result or self._result(
-            "unavailable", "seat-control adapter unavailable"
-        )
+        return dispatch_result or self._result("unavailable", "seat-control adapter unavailable")
 
     def _held(
         self, operation: str, target: SessionTarget, request_id: str, prompt: str, reason: str
@@ -1189,11 +1181,7 @@ class SeatControlMCP:
                     )
                 ):
                     receipt = raced.get("result")
-                    status = (
-                        receipt.get("status")
-                        if isinstance(receipt, dict)
-                        else "held"
-                    )
+                    status = receipt.get("status") if isinstance(receipt, dict) else "held"
                     return self._result(
                         status,
                         _receipt_message(receipt, "previous request was not dispatched"),
