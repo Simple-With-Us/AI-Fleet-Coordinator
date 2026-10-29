@@ -10,6 +10,17 @@
     "ok": true,
     "access": true
   },
+  "alert-ingress": {
+    "command": [
+      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+      "deploy",
+      "--config",
+      "workers/alert-ingress/wrangler.toml"
+    ],
+    "health": "https://alert-ingress.jays-services.workers.dev/health",
+    "ok": true,
+    "access": false
+  },
   "pr-conflict-watch": {
     "command": [
       "scripts/agent-sync-mcp/node_modules/.bin/wrangler",

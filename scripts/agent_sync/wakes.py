@@ -690,6 +690,39 @@ def held_back_line(item: Mapping[str, Any]) -> str:
     return re.sub("[\u2028\u2029\x85]", lambda m: "\\u%04x" % ord(m.group()), line)
 
 
+def select_prompt_messages(
+    history: list[Mapping[str, Any]],
+    trigger_ids: Iterable[Any],
+    max_messages: int | None = None,
+) -> list[Mapping[str, Any]]:
+    """The messages a prompt carries, bounded when the caller names a bound.
+
+    The wake prompt is the size the DAEMON builds it:  up to PROMPT_HISTORY messages plus the
+    held-back block, and the step cost of a runtime grows with that.  A runtime whose only bound
+    on its own behaviour is a step budget needs a prompt it can afford:  this keeps the trigger
+    messages (the wake is ABOUT those) and then the newest of the rest, up to the bound, and
+    returns them oldest first as the prompt expects.  With no bound the history is returned
+    unchanged, so every other caller keeps the whole topic.
+    """
+    rows = list(history)
+    if max_messages is None or max_messages <= 0 or len(rows) <= max_messages:
+        return rows
+    newest_first = sorted(range(len(rows)), key=lambda i: rows[i].get("id") or 0, reverse=True)
+    triggers = set(trigger_ids or ())
+    chosen: list[int] = []
+    for i in newest_first:
+        if rows[i].get("id") in triggers:
+            chosen.append(i)
+            if len(chosen) >= max_messages:
+                break
+    for i in newest_first:
+        if len(chosen) >= max_messages:
+            break
+        if i not in chosen:
+            chosen.append(i)
+    return [rows[i] for i in sorted(chosen)]
+
+
 def build_prompt(
     *,
     seat: str,
@@ -705,6 +738,8 @@ def build_prompt(
     held_back: Mapping[str, Any] | None = None,
     chats: list[dict[str, Any]] | None = None,
     tagged_address: str | None = None,
+    max_messages: int | None = None,
+    max_held: int | None = None,
 ) -> str:
     """The daemon-authored header outside the untrusted block, then the last messages of the
     topic (or DM thread) inside it, each as exactly one JSON line (metadata and body together).
@@ -720,6 +755,11 @@ def build_prompt(
     nonce = nonce or L.new_nonce()
     held_count = int(held_back.get("count") or 0) if held_back else 0
     held_items = list(held_back.get("items") or []) if held_back and held_count > 0 else []
+    # The bounds, when the caller names them, make the prompt the size the runtime was measured
+    # on.  The trigger messages survive the cut:  they are what the wake is about.
+    history = list(select_prompt_messages(history, pending.trigger_ids, max_messages))
+    if max_held is not None:
+        held_items = held_items[: max(0, int(max_held))]
     where = (
         "a direct message thread with user ids %s"
         % ", ".join(str(int(i)) for i in pending.recipients if isinstance(i, int))
@@ -757,7 +797,13 @@ def build_prompt(
             "message.  Nothing here blocks: proceed on your default letter, name the letter you "
             "used, and answer in your own thread."
         )
-    if held_count > 0:
+    if held_count > 0 and max_held is not None and not held_items:
+        lines.append(
+            "Held back: %d earlier wake%s of this seat did not run because of its budget or a full queue.  "
+            "This runtime is given no held-back detail."
+            % (held_count, "" if held_count == 1 else "s")
+        )
+    elif held_count > 0:
         lines.append(
             "Held back: %d earlier wake%s of this seat did not run because of its budget or a full queue.  "
             "The newest %d follow the messages, in a second block between the markers, newest first:  "
