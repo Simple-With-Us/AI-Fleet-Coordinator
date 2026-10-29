@@ -27,5 +27,5 @@ export async function boundedMcpRequest(request) {
     if(argsBytes > FILE_ARGS_BYTES || bytes.byteLength-argsBytes>65536)
       return new Response('Payload Too Large',{status:413});
   }
-  return new Request(request.url,{method:'POST',headers:request.headers,body:bytes});
+  return new Request(request.url,{method:'POST',headers:request.headers,body:bytes,cf:request.cf});
 }
