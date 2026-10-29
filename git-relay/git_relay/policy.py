@@ -80,6 +80,8 @@ class SeatPolicy:
         "wf_merge_queue_entry",
         "wf_merge_queue_enqueue",
         "wf_merge_queue_dequeue",
+        "wf_commit_statuses",
+        "wf_commit_status_create",
         "wf_review_thread_resolve",
         "wf_review_thread_unresolve",
         "wf_review_update",

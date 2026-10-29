@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,105);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,107);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,105);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,107);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -430,6 +430,14 @@ test('milestone delete receipt and writes use strict envelopes and own-bearer ro
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_milestone_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({deleted:true,number:2}));});assert.ok(!(await t.call('gr_wf_milestone_delete',a)).isError);
 });
 
+test('commit status own report namespace strict receipts and own bearer',async()=>{
+ const args={repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'};
+ const status={id:2,state:'pending',context:'swu-wise/report',description:'queued',created_at:null};
+ assert.equal(validWfV1Args('wf_commit_status_create',args),true);
+ for(const context of ['test','gitleaks'])assert.equal(validWfV1Args('wf_commit_status_create',{...args,context}),false);
+ for(const bad of [{...status,id:true},{...status,context:' '},{...status,description:3},{...status,created_at:false},{...status,secret:1}])assert.equal(validWfV1Response('wf_commit_status_create',{status:bad}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_commit_status_create'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({status}));});assert.ok(!(await t.call('gr_wf_commit_status_create',args)).isError);
+});
 test('thread resolve receipts are strict and fixed routes preserve own bearer',async()=>{
  const args={repo,number:1,thread_id:'PRRT_fixture'},thread={id:'PRRT_fixture',isResolved:true};
  assert.equal(validWfV1Response('wf_review_thread_resolve',{thread}),true);

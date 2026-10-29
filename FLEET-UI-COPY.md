@@ -261,7 +261,7 @@ while GitHub, Zulip, docs and UI text take a real U+00A0 plus a space.  Also no
 worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
-code signing and is wiped by auto-update; do not attempt).  (Two literal ASCII spaces in chat
+code signing and is wiped by auto-update; do not attempt).  (History only — two literal ASCII spaces in chat
 were logged here as not working on 2026-08-19, and they still do not work in the Code tab
 (re-confirmed 2026-10-08); the Code tab and the MiniMax Code pane use the entity instead — see
 "HOW to emit it" above.)

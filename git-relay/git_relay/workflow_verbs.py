@@ -72,6 +72,8 @@ SPECS = {
     "wf_merge_queue_entry": ({"pull_requests": "read"}, False),
     "wf_merge_queue_enqueue": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_merge_queue_dequeue": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_commit_statuses": ({"statuses": "read"}, False),
+    "wf_commit_status_create": ({"statuses": "write"}, True),
     "wf_file_rename": ({"contents": "write"}, True),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
@@ -1247,6 +1249,65 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "inline write outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
+
+    @staticmethod
+    def _status_summary(value):
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "status receipt unverifiable")
+        if (
+            isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] <= 0
+            or value.get("state") not in ("error", "failure", "pending", "success")
+            or not isinstance(value.get("context"), str)
+            or not value["context"].strip()
+            or not 1 <= len(value["context"].encode("utf-8")) <= 255
+            or value.get("description") is not None
+            and (
+                not isinstance(value["description"], str)
+                or len(value["description"].encode("utf-8")) > 140
+            )
+            or value.get("created_at") is not None
+            and (not isinstance(value["created_at"], str) or len(value["created_at"]) > 100)
+        ):
+            raise RelayGitHubError(502, "commit status receipt unverifiable")
+        return {k: value.get(k) for k in ("id", "state", "context", "description", "created_at")}
+
+    def wf_commit_statuses(self, repo, args):
+        _only(args, ("repo", "sha", "per_page"))
+        sha, count = _sha(args, "sha"), _page(args)
+        rows = _arr(self._get(f"/repos/{repo}/commits/{sha}/statuses?per_page={count}"))
+        if len(rows) > count:
+            raise RelayGitHubError(502, "commit status list unverifiable")
+        return {"statuses": [self._status_summary(x) for x in rows], "complete": len(rows) < count}
+
+    def wf_commit_status_create(self, repo, args):
+        _only(args, ("repo", "sha", "state", "context", "description"))
+        sha = _sha(args, "sha")
+        state = _enum(args, "state", ("error", "failure", "pending", "success"))
+        context, description = (
+            self._text(args, "context", 255),
+            self._text(args, "description", 140),
+        )
+        if not re.fullmatch(r"swu-[a-z0-9-]+/report", context) or (
+            self.seat != "probe" and context != self.seat + "/report"
+        ):
+            raise Refused("status context must be own App report namespace")
+        result = self._status_summary(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/statuses/{sha}",
+                {"state": state, "context": context, "description": description},
+                bearer=self.bearer,
+            )
+        )
+        if (
+            result["state"] != state
+            or result["context"] != context
+            or result["description"] != description
+        ):
+            raise RelayGitHubError(502, "commit status write unverifiable")
+        return {"status": result}
 
     @staticmethod
     def _review_summary(value, review_id=None):
