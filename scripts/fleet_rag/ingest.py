@@ -462,6 +462,7 @@ def process_group(
                 "doc_hash": doc_hash,
                 "chunk_ids": new_ids,
                 "updated_at": int(doc.updated_at_ms or 0),
+                "refreshed_at": now_ms(),
                 "source": doc.source,
             }
     if not writer.dry_run:
@@ -800,14 +801,17 @@ def _run_locked(
                 doc_hash = content_hash(doc.text_markdown)
                 prev = state.get(doc.doc_id)
                 if prev and prev.get("doc_hash") == doc_hash:
-                    # Content verified unchanged against the committed corpus: carry the
-                    # provider timestamp forward so state-selecting sources do not refetch
-                    # this doc on every run.  This is not a corpus commit marker on its
-                    # own - it only advances a row whose hash already matches.
+                    # Content verified unchanged against the committed corpus:  the hash
+                    # match is proof the corpus holds this exact content, so record the
+                    # verification and carry the provider timestamp forward.  A state row
+                    # advances only through this hash check or a committed upsert - a
+                    # fetched-but-uncommitted doc (failed upsert, dry run, crashed run)
+                    # advances nothing and is retried.
+                    prev["refreshed_at"] = now_ms()
                     doc_updated = int(doc.updated_at_ms or 0)
                     if doc_updated > int(prev.get("updated_at") or 0):
                         prev["updated_at"] = doc_updated
-                        state_touched = True
+                    state_touched = True
                     continue
                 stats["docs_changed"] += 1
                 group.append((doc, doc_hash))

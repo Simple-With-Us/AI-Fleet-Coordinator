@@ -1657,9 +1657,6 @@ class LinearSourceTests(unittest.TestCase):
             os.environ,
             {
                 "FLEET_RAG_LINEAR_STATE": str(pathlib.Path(self.tmp) / "ingest-state.json"),
-                "FLEET_RAG_LINEAR_REFRESH_STATE": str(
-                    pathlib.Path(self.tmp) / "linear-source-refresh.json"
-                ),
             },
         )
         env.start()
@@ -1883,14 +1880,13 @@ class LinearSourceTests(unittest.TestCase):
                     "linear/uuid-1": {
                         "source": "linear",
                         "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                        "refreshed_at": sources.now_ms(),
                     },
                     "board/aaaa1111": {"source": "board", "updated_at": 1},
                 }
             ),
             encoding="utf-8",
         )
-        refresh_path = pathlib.Path(self.tmp) / "linear-source-refresh.json"
-        refresh_path.write_text(json.dumps({"linear/uuid-1": sources.now_ms()}), encoding="utf-8")
         scan = {
             "uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"},
             "uuid-2": {"identifier": "AFC-1000", "updatedAt": "2026-10-22T00:00:00.000Z"},
@@ -1901,11 +1897,7 @@ class LinearSourceTests(unittest.TestCase):
             seen["ids"] = list(ids)
             return [_linear_node(uid="uuid-2", identifier="AFC-1000")]
 
-        env = {
-            "FLEET_RAG_LINEAR_STATE": str(state_path),
-            "FLEET_RAG_LINEAR_REFRESH_STATE": str(refresh_path),
-        }
-        with mock.patch.dict(os.environ, env):
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": str(state_path)}):
             docs = list(
                 sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
             )
@@ -1983,9 +1975,42 @@ class LinearSourceTests(unittest.TestCase):
             )
             self.assertEqual(doc.app, expected, team)
 
-    def test_stale_refresh_mark_forces_refetch_despite_covering_state(self) -> None:
+    def test_stale_refresh_window_forces_refetch_despite_covering_state(self) -> None:
         """An unchanged updatedAt only skips the fetch inside the refresh window:  past it the
-        doc is refetched, so a comment edit that never bumped updatedAt cannot hide forever."""
+        doc is refetched, so a comment edit that never bumped updatedAt cannot hide forever.
+        The window reads refreshed_at from the COMMITTED state row;  a fetch alone writes
+        nothing, so a refresh that never commits (failed upsert, dry run, crash) cannot
+        suppress the next refetch."""
+        state_path = pathlib.Path(self.tmp) / "ingest-state.json"
+        stale = sources.now_ms() - 8 * 24 * 3600 * 1000  # beyond the 7-day default window
+        state_body = {
+            "linear/uuid-1": {
+                "source": "linear",
+                "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                "refreshed_at": stale,
+            }
+        }
+        state_path.write_text(json.dumps(state_body), encoding="utf-8")
+        scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node()]
+
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": str(state_path)}):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-1"], seen["ids"])
+        self.assertEqual(1, len(docs))
+        # the generator records nothing:  only a committed or hash-verified ingest may
+        # advance refreshed_at, so the uncommitted fetch above leaves the row stale
+        self.assertEqual(state_body, json.loads(state_path.read_text(encoding="utf-8")))
+
+    def test_missing_refreshed_at_counts_as_stale(self) -> None:
+        """Rows written before refreshed_at existed (and any hand-built row) refetch once,
+        then the next commit stamps the field - fail-safe toward refetching, never skipping."""
         state_path = pathlib.Path(self.tmp) / "ingest-state.json"
         state_path.write_text(
             json.dumps(
@@ -1998,9 +2023,6 @@ class LinearSourceTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        refresh_path = pathlib.Path(self.tmp) / "linear-source-refresh.json"
-        stale = sources.now_ms() - 8 * 24 * 3600 * 1000  # beyond the 7-day default window
-        refresh_path.write_text(json.dumps({"linear/uuid-1": stale}), encoding="utf-8")
         scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
         seen = {}
 
@@ -2008,19 +2030,12 @@ class LinearSourceTests(unittest.TestCase):
             seen["ids"] = list(ids)
             return [_linear_node()]
 
-        env = {
-            "FLEET_RAG_LINEAR_STATE": str(state_path),
-            "FLEET_RAG_LINEAR_REFRESH_STATE": str(refresh_path),
-        }
-        with mock.patch.dict(os.environ, env):
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": str(state_path)}):
             docs = list(
                 sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
             )
         self.assertEqual(["uuid-1"], seen["ids"])
         self.assertEqual(1, len(docs))
-        # the fetch refreshed the mark
-        marks = json.loads(refresh_path.read_text(encoding="utf-8"))
-        self.assertGreater(marks["linear/uuid-1"], stale)
 
     def test_coverage_files_missing_fails_closed(self) -> None:
         missing = pathlib.Path(self.tmp) / "nope"

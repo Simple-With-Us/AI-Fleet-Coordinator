@@ -205,9 +205,11 @@ class IngestTests(unittest.TestCase):
         self._run()
         st = json.loads(self.state.read_text())
         self.assertEqual(st["doc/a"]["updated_at"], 1700000000000)
+        first_refresh = st["doc/a"]["refreshed_at"]
+        self.assertIsInstance(first_refresh, int)
         # Provider bumps updatedAt while the text stays identical: nothing re-ingests,
-        # but the state row tracks the newer provider timestamp so state-selecting
-        # sources stop refetching the doc.
+        # but the state row tracks the newer provider timestamp and the hash-verified
+        # refresh time, so state-selecting sources stop refetching the doc.
         self.docs["doc"] = [
             make_doc("doc/a", LONG_A, updated_at_ms=1700000000000 + 60000),
             make_doc("doc/b", LONG_B, updated_at_ms=1700000000000 + 60000),
@@ -221,6 +223,19 @@ class IngestTests(unittest.TestCase):
         st = json.loads(self.state.read_text())
         self.assertEqual(st["doc/a"]["updated_at"], 1700000000000 + 60000)
         self.assertEqual(st["doc/b"]["updated_at"], 1700000000000 + 60000)
+        self.assertGreaterEqual(st["doc/a"]["refreshed_at"], first_refresh)
+
+    def test_dry_run_advances_no_state(self) -> None:
+        """A dry run may hash-verify in memory, but nothing persists:  an uncommitted
+        run can never suppress a later refetch through state."""
+        self._run()
+        before = self.state.read_text()
+        self.docs["doc"] = [
+            make_doc("doc/a", LONG_A, updated_at_ms=1700000000000 + 60000),
+            make_doc("doc/b", LONG_B, updated_at_ms=1700000000000 + 60000),
+        ]
+        self._run(dry_run=True)
+        self.assertEqual(before, self.state.read_text())
 
     def test_existing_points_not_reembedded_without_state(self) -> None:
         self._run()

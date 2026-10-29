@@ -2237,8 +2237,8 @@ def _linear_scan_entry(node) -> tuple:
 
 
 def _linear_ingested_versions() -> dict:
-    """doc_id -> ingested updated_at (ms) for the linear rows of the ingest state file, so a
-    routine run fetches only issues Linear changed since they were ingested.  Any read problem
+    """doc_id -> ingest state row for the linear rows of the ingest state file, so a routine
+    run fetches only issues Linear changed since they were ingested.  Any read problem
     degrades to an empty map - the safe direction:  it refetches, it never skips.  This is why
     the source must stay OUT of the nightly prune set:  prune deletes whatever a source did
     not yield, and an incrementally skipped doc is still live.  A deliberate full pass
@@ -2259,48 +2259,11 @@ def _linear_ingested_versions() -> dict:
             and isinstance(rec, dict)
             and isinstance(rec.get("updated_at"), int)
         ):
-            out[doc_id] = rec["updated_at"]
+            out[doc_id] = rec
     return out
 
 
 LINEAR_REFRESH_DAYS = 7  # FLEET_RAG_LINEAR_REFRESH_DAYS overrides
-
-
-def _linear_refresh_path() -> pathlib.Path:
-    return pathlib.Path(
-        os.environ.get("FLEET_RAG_LINEAR_REFRESH_STATE")
-        or (pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "linear-source-refresh.json")
-    )
-
-
-def _linear_refresh_marks() -> dict:
-    """doc_id -> last fetch time (ms).  Any read problem degrades to empty:  everything counts
-    as due for a refresh, the safe direction.  Set FLEET_RAG_LINEAR_REFRESH_DAYS to retune the
-    window."""
-    try:
-        data = json.loads(_linear_refresh_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, int)}
-
-
-def _linear_record_fetches(doc_ids: list) -> None:
-    """Merge freshly fetched doc_ids into the refresh-mark file (atomic replace).  A write
-    failure only means the next run refetches sooner - warn and continue."""
-    if not doc_ids:
-        return
-    marks = _linear_refresh_marks()
-    now = now_ms()
-    for doc_id in doc_ids:
-        marks[doc_id] = now
-    path = _linear_refresh_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(marks, indent=0, sort_keys=True), encoding="utf-8")
-        tmp.replace(path)
-    except OSError as e:
-        warn(f"linear: could not record refresh marks ({e});  the next run refetches sooner")
 
 
 def iter_linear(
@@ -2326,7 +2289,6 @@ def iter_linear(
     ]
     if not os.environ.get("FLEET_RAG_LINEAR_FULL"):
         ingested = _linear_ingested_versions()
-        refreshed = _linear_refresh_marks()
         refresh_ms = (
             int(os.environ.get("FLEET_RAG_LINEAR_REFRESH_DAYS") or LINEAR_REFRESH_DAYS)
             * 24
@@ -2339,14 +2301,17 @@ def iter_linear(
             for uid in selected:
                 updated = _linear_scan_entry(scan[uid])[1]
                 row = ingested.get(f"linear/{uid}")
-                if row is not None and row >= (parse_ts_ms(updated) or 0):
+                stamp = parse_ts_ms(updated) or 0
+                if row is not None and int(row.get("updated_at") or 0) >= stamp:
                     # Comment EDITS may not advance the issue's updatedAt (adds provably do;
                     # edit semantics are unverified), so an unchanged stamp only skips the
-                    # fetch inside a bounded window - every doc is refetched within
-                    # LINEAR_REFRESH_DAYS no matter what Linear does.
-                    last_fetch = refreshed.get(f"linear/{uid}") or 0
-                    if now - last_fetch < refresh_ms:
-                        continue  # ingested at this version, refreshed recently
+                    # fetch inside a bounded window.  The window is grounded on the COMMITTED
+                    # state row:  refreshed_at is written by ingest only when content is
+                    # committed or hash-verified, so a fetched-but-uncommitted doc (failed
+                    # upsert, dry run, crashed run) advances nothing and is always retried.
+                    refreshed_at = int(row.get("refreshed_at") or 0)
+                    if refreshed_at and now - refreshed_at < refresh_ms:
+                        continue  # ingested at this version, verified inside the window
                 kept.append(uid)
             selected = kept
     selected.sort(key=lambda uid: _linear_scan_entry(scan[uid])[1], reverse=True)
@@ -2354,7 +2319,6 @@ def iter_linear(
         selected = selected[: int(limit)]
     if not selected:
         return
-    fetched: list = []
     for node in fetch_full(selected):
         if node.get("_linear_truncated"):
             warn(
@@ -2364,7 +2328,6 @@ def iter_linear(
                 f"complete version stays current)"
             )
             continue
-        fetched.append(f"linear/{node.get('id')}")
         labels = [l.get("name") or "" for l in (node.get("labels") or {}).get("nodes") or []]
         team_key = (node.get("team") or {}).get("key")
         created = parse_ts_ms(node.get("createdAt"))
@@ -2392,7 +2355,6 @@ def iter_linear(
                 "linear_id": node.get("id"),
             },
         )
-    _linear_record_fetches(fetched)
 
 
 # --------------------------------------------------------------------------- registry
