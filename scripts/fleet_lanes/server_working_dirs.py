@@ -21,6 +21,11 @@ backup next to every file it touches, and returns nonzero when a knob is still
 off afterwards, so automation can tell that the policy did not take.  `--verify`
 reports each knob and exits nonzero when one of them is off.
 
+A knob the running account cannot write is skipped, not fatal:  the apply
+reports it, carries on with the knobs after it, and still ends with the verify
+that says which knobs are off.  A knob that could not be written is off, so the
+verify reports it as off and the apply still returns what the verify returns.
+
 An apply never rewrites the identity of a unit the operator set up:  the account
 the unit runs as, the command it runs and the environment that account reads are
 the operator's own, and the template only fills in what they left out.
@@ -143,9 +148,53 @@ def stamp() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
 
+def sync_directory(path: Path) -> None:
+    """Flush a directory's entries, so a rename into it survives a crash.
+
+    The rename itself is atomic, but the directory entry that names the new
+    file is not durable until the directory is flushed.  A filesystem that
+    refuses the flush is not a reason to fail a write that already happened.
+    """
+    try:
+        handle = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
+
+
 def backup(path: Path) -> None:
-    if path.exists():
-        shutil.copy2(path, f"{path}.bak-{stamp()}")
+    """Copy the file beside itself, so a rewrite can be undone.
+
+    The copy is staged, flushed and moved into place, so a copy that fails
+    partway leaves no half-written backup behind for an operator to restore
+    from, and a crash cannot leave the backup without its contents.
+    """
+    if not path.exists():
+        return
+    target = Path(f"{path}.bak-{stamp()}")
+    temporary = Path(f"{target}.tmp")
+    try:
+        shutil.copy2(path, temporary)
+        with temporary.open("rb") as staged:
+            os.fsync(staged.fileno())
+        os.replace(temporary, target)
+        sync_directory(target.parent)
+    except BaseException:
+        discard(temporary)
+        raise
+
+
+def discard(path: Path) -> None:
+    """Remove a staged file, and never let the cleanup mask the real failure."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def read(path: Path) -> str:
@@ -156,8 +205,56 @@ def read(path: Path) -> str:
 
 
 def write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    """Write a file, replacing it in one step.
+
+    Every knob write goes through the atomic replace, so a write that fails
+    partway leaves the file it had exactly as it was:  a knob is never left
+    half written.  A knob whose staged file cannot be created is refused with
+    a `PermissionError` instead of being written in place, so the file it had
+    survives that refusal too.
+    """
+    write_atomic(path, text)
+
+
+def staged_directory(path: Path) -> Path:
+    """The directory the staged replacement of a knob file is created in.
+
+    A symlinked knob is written through, so the staged file lives in the
+    target's own directory rather than beside the link.
+    """
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+    return target.parent
+
+
+def prepare_staged_directory(path: Path) -> Path:
+    """Make sure the staged replacement of a knob file can be created.
+
+    A missing directory is created, the way the non-symlink path creates it, so
+    a knob whose target directory does not exist yet is not refused with a
+    permission message that hides the real reason.  The directory is created
+    private, because it holds a staged copy of the operator's own file.  A
+    path that is a symlink and not a directory is refused:  it would send the
+    staged file somewhere the operator did not name.  A directory that is there
+    but is neither writable nor searchable is refused with a `PermissionError`
+    that names it, before anything is written, so the file the link points at
+    cannot be truncated.
+
+    Every apply calls this before it takes a backup, so a knob that can never
+    be applied does not drop another copy beside the link on every run.
+    """
+    directory = staged_directory(path)
+    if not directory.is_dir():
+        if directory.is_symlink():
+            raise PermissionError(
+                f"the staged directory {directory} is a symlink and not a directory"
+            )
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() and not os.access(directory, os.W_OK | os.X_OK):
+        raise PermissionError(
+            f"the staged replacement of {path} needs write and search access to"
+            f" {directory}"
+        )
+    return directory
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -165,12 +262,25 @@ def write_atomic(path: Path, text: str) -> None:
 
     The content goes to a temporary file in the same directory, is flushed and
     synced, and only then is moved over the target, so a reader sees either the
-    old file or the new one and never a truncated one.
+    old file or the new one and never a truncated one.  The directory entry is
+    flushed after the rename, so a crash cannot lose the new file.
+
+    A symlinked knob is written through:  the link stays a link and the file it
+    points at is the one that changes.  The staged file then lives in the
+    target's own directory, so that directory has to be writable and
+    searchable.  When it is not, the write fails closed with a
+    `PermissionError` instead of falling back to an in-place write, because an
+    in-place write is not atomic:  it truncates the target before writing, so
+    an interrupted write could leave the file corrupt.  The knob is then
+    skipped and reported like any other knob the account cannot write, and the
+    file it had is untouched.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+    prepare_staged_directory(path)
+    owner = target.stat() if target.exists() else None
+    mode = owner.st_mode & 0o777 if owner is not None else 0o644
     handle = tempfile.NamedTemporaryFile(
-        "w", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+        "w", dir=target.parent, prefix=f".{target.name}.", suffix=".tmp",
         delete=False, encoding="utf-8",
     )
     temporary = Path(handle.name)
@@ -179,10 +289,25 @@ def write_atomic(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        if owner is not None:
+            # The replacement carries the file's own owner and group, so a unit
+            # the operator owns keeps its owner after the rewrite.
+            try:
+                os.chown(temporary, owner.st_uid, owner.st_gid)
+            except OSError:
+                # A refused owner change leaves the group to try on its own.
+                try:
+                    os.chown(temporary, -1, owner.st_gid)
+                except OSError as exc:
+                    print(
+                        f"  warning  {path}: could not keep the group of the file"
+                        f" ({exc.strerror or exc})"
+                    )
         os.chmod(temporary, mode)
-        os.replace(temporary, path)
+        os.replace(temporary, target)
+        sync_directory(target.parent)
     except BaseException:
-        temporary.unlink(missing_ok=True)
+        discard(temporary)
         raise
 
 
@@ -696,9 +821,18 @@ def knobs(root: Path) -> list[tuple[str, Path, str]]:
     ]
 
 
-def check(root: Path) -> list[tuple[str, bool, str]]:
+def check(root: Path, skipped: dict[str, str] | None = None) -> list[tuple[str, bool, str]]:
+    """(label, ok, note) for every knob, with the skipped ones reported as off.
+
+    A knob the apply could not write is off:  it is reported as such here, so
+    the verify says the policy did not take for it.
+    """
+    skipped = skipped or {}
     out: list[tuple[str, bool, str]] = []
     for label, path, kind in knobs(root):
+        if label in skipped:
+            out.append((label, False, f"not applied: {skipped[label]}"))
+            continue
         if kind == "codex-tmux-boot":
             ok, note = knob_codex_tmux_boot(root)
         elif kind == "codex-tmux-autostart":
@@ -746,6 +880,7 @@ def apply_codex(path: Path, root: Path) -> bool:
         updated = text[: anchor.end()] + f" -c {root}" + text[anchor.end() :]
     if updated == text:
         return False
+    prepare_staged_directory(path)
     backup(path)
     write(path, updated)
     return True
@@ -787,6 +922,7 @@ def apply_acp(path: Path, root: Path) -> bool:
             return False
     if updated == text:
         return False
+    prepare_staged_directory(path)
     backup(path)
     write(path, updated)
     return True
@@ -797,6 +933,7 @@ def apply_bashrc(root: Path) -> bool:
     text = read(path)
     if bashrc_block(text) and knob_bashrc(root)[0]:
         return False
+    prepare_staged_directory(path)
     backup(path)
     new_block = BASHRC_BLOCK.format(
         begin=BASHRC_BEGIN, end=BASHRC_END, lanes=root, lanes_root=root,
@@ -837,6 +974,7 @@ def apply_claude_settings(path: Path, root: Path) -> bool:
         return False
     section["location"] = str(root.resolve())
     data["worktree"] = section
+    prepare_staged_directory(path)
     backup(path)
     write(path, json.dumps(data, indent=2) + "\n")
     return True
@@ -1119,44 +1257,92 @@ def apply_unit(path: Path, body: str, tool: str = "", flags: str = "") -> bool:
         merged = merged.replace(BINARY_MARKER, which(tool))
     if text == merged:
         return False
+    prepare_staged_directory(path)
     backup(path)
     write(path, merged)
     return True
 
 
+def apply_knob(label: str, path: Path, kind: str, root: Path) -> tuple[bool, str]:
+    """Apply one knob and name the service a change to it needs restarted.
+
+    The second value is the service to restart, or "" when the knob needs none.
+    An OSError raised here means the running account cannot write the knob:  the
+    caller skips it and carries on with the knobs after it.
+    """
+    if kind in ("codex-tmux-boot", "codex-tmux-autostart"):
+        return (path.exists() and apply_codex(path, root)), ""
+    if kind == "acp":
+        return (path.exists() and apply_acp(path, root)), ""
+    if kind == "bashrc":
+        return apply_bashrc(root), ""
+    if kind == "claude-settings":
+        return (path.exists() and apply_claude_settings(path, root)), ""
+    if label.startswith("opencode"):
+        flags = opencode_server_flags() or unit_execstart_flags(read(path))
+        body = OPENCODE_UNIT.format(
+            lanes=root, home=HOME, opencode=BINARY_MARKER, flags=flags,
+            **unit_environments(root),
+        )
+        touched = apply_unit(path, body, "opencode", flags)
+        return touched, "opencode-server.service" if touched else ""
+    body = CLAUDE_UNIT.format(
+        lanes=root, home=HOME, claude=BINARY_MARKER,
+        **unit_environments(root),
+    )
+    touched = apply_unit(path, body, "claude")
+    return touched, "claude-remote-control.service" if touched else ""
+
+
+def skip_reason(exc: OSError) -> str:
+    """Why a knob was skipped, in the words the skip line carries."""
+    if isinstance(exc, PermissionError):
+        # A refusal the tool raises itself names the object that needs the
+        # permission, because the file itself can be writable while the
+        # directory the staged file has to be created in is not, and only the
+        # directory can be fixed.  A permission the operating system raises
+        # says nothing more than the account cannot write the file, so the
+        # skip line stays the short one it has always been.
+        if exc.errno is None:
+            detail = str(exc).strip()
+            if detail:
+                return f"not writable by this account: {detail}"
+        return "not writable by this account"
+    return f"not written: {exc.strerror or exc}"
+
+
 def apply(root: Path) -> int:
     changed = 0
     restart: list[str] = []
+    skipped: dict[str, str] = {}
+    refused: SystemExit | None = None
     for label, path, kind in knobs(root):
-        if kind in ("codex-tmux-boot", "codex-tmux-autostart"):
-            touched = path.exists() and apply_codex(path, root)
-        elif kind == "acp":
-            touched = path.exists() and apply_acp(path, root)
-        elif kind == "bashrc":
-            touched = apply_bashrc(root)
-        elif kind == "claude-settings":
-            touched = path.exists() and apply_claude_settings(path, root)
-        elif not path.parent.is_dir():
+        if kind == "unit" and not path.parent.is_dir():
             print(f"  skipped  {label:26} ({path.parent} does not exist on this host)")
             continue
-        elif label.startswith("opencode"):
-            flags = opencode_server_flags() or unit_execstart_flags(read(path))
-            body = OPENCODE_UNIT.format(
-                lanes=root, home=HOME, opencode=BINARY_MARKER, flags=flags,
-                **unit_environments(root),
-            )
-            touched = apply_unit(path, body, "opencode", flags)
-            if touched:
-                restart.append("opencode-server.service")
-        else:
-            body = CLAUDE_UNIT.format(
-                lanes=root, home=HOME, claude=BINARY_MARKER,
-                **unit_environments(root),
-            )
-            touched = apply_unit(path, body, "claude")
-            if touched:
-                restart.append("claude-remote-control.service")
+        try:
+            touched, service = apply_knob(label, path, kind, root)
+        except OSError as exc:
+            # A knob the running account cannot write is skipped, not fatal:  the
+            # knobs after it still apply, and the verify at the end still runs.
+            reason = skip_reason(exc)
+            print(f"  skipped  {label:26} ({reason})")
+            skipped[label] = reason
+            continue
+        except SystemExit as exc:
+            # A knob the tool refuses to write (a host or port it will not
+            # interpolate, a binary it will not invent a path for) is reported
+            # and the knobs after it still apply.  The refusal is raised once
+            # the verify has run, so the run still ends on it.
+            reason = f"refused: {exc}"
+            print(f"  skipped  {label:26} ({reason})")
+            skipped[label] = reason
+            if refused is None:
+                refused = exc
+            continue
         changed += 1 if touched else 0
+        if touched and service:
+            restart.append(service)
         print(f"  {'changed' if touched else 'ok     '}  {label}")
     if changed:
         print("\n  Restart what the change affects:")
@@ -1167,12 +1353,15 @@ def apply(root: Path) -> int:
         print("    (the Claude desktop app reads worktree.location when it makes its next worktree)")
     # A knob that could not be applied is still off, so the apply reports it the
     # way --verify does instead of printing `ok` and exiting zero.
-    return verify(root)
+    failed = verify(root, skipped)
+    if refused is not None:
+        raise refused
+    return failed
 
 
-def verify(root: Path) -> int:
+def verify(root: Path, skipped: dict[str, str] | None = None) -> int:
     failed = 0
-    for label, ok, note in check(root):
+    for label, ok, note in check(root, skipped):
         print(f"  {'PASS' if ok else 'FAIL'}  {label:26} {note}")
         failed += 0 if ok else 1
     if failed:

@@ -36,9 +36,12 @@ from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import PolicyError, SeatPolicy
-from .secret_scan import find_secret, reject_secrets, scan_args
+from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
+# Only the binary release-asset upload may exceed MAX_REQUEST_BYTES (base64 of 180 KiB).
+MAX_BINARY_REQUEST_BYTES = 256 * 1024
+BINARY_REQUEST_ACTIONS = frozenset({"wf_release_asset_upload_binary"})
 
 
 def _positive_int(raw: str, default: int) -> int:
@@ -285,7 +288,12 @@ class Relay:
             try:
                 # Credential-shaped input is refused before any durable state
                 # or side effect (SecretInputError is a ValueError).
-                scan_args(args)
+                if action in BINARY_REQUEST_ACTIONS:
+                    # The base64 payload gets a larger text budget; the byte scan of the decoded
+                    # content happens in the verb.
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_BINARY_REQUEST_BYTES])
+                else:
+                    scan_args(args)
                 if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
                     # The verb layer owns per-field shape validation and rejects any field it
                     # does not accept; here only the envelope (a repo string) is checked.
@@ -514,6 +522,7 @@ class Relay:
 _REAPPLY_STATE_ACTIONS = frozenset(
     {
         "wf_issue_update",
+        "wf_review_update",
         "wf_check_update",
         "wf_milestone_update",
         "wf_labels_set",
@@ -530,6 +539,8 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_workflow_disable",
         "wf_pr_draft",
         "wf_pr_ready",
+        "wf_review_thread_resolve",
+        "wf_review_thread_unresolve",
         "wf_automerge_enable",
         "wf_automerge_disable",
         "wf_release_asset_update",
@@ -554,6 +565,8 @@ _WORKFLOW_AUDIT_SCALARS = (
     "sha",
     "expected_sha",
     "comment_id",
+    "thread_id",
+    "review_id",
     "check_id",
     "deployment_id",
     "milestone",
@@ -565,6 +578,11 @@ _WORKFLOW_AUDIT_SCALARS = (
     "page",
     "state",
     "tail_bytes",
+    "asset_id",
+    "artifact_id",
+    "release_id",
+    "offset",
+    "length",
     "method",
     "path",
 )
@@ -786,7 +804,10 @@ def make_handler(relay: Relay):
             except ValueError:
                 self._send(400, {"error": "bad Content-Length"})
                 return
-            if length < 1 or length > MAX_REQUEST_BYTES:
+            cap = (
+                MAX_BINARY_REQUEST_BYTES if action in BINARY_REQUEST_ACTIONS else MAX_REQUEST_BYTES
+            )
+            if length < 1 or length > cap:
                 self._send(400, {"error": "request body missing or over the 64 KiB bound"})
                 return
             raw = self.rfile.read(length)

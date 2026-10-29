@@ -461,8 +461,8 @@ class ProgramBehaviourTests(unittest.TestCase):
         )
 
     def test_the_no_flag_mode_still_writes_the_real_nbsp(self) -> None:
-        """The no-flag behaviour must not move:  a GitHub title and a Zulip post take a
-        real U+00A0 plus a space."""
+        """The no-flag behaviour must not move:  a GitHub title, body and comment and a
+        Zulip post take a real U+00A0 plus a space."""
         out = run_program(self.program, "Plain sentence.  Next sentence.\n")
         self.assertIn("Plain sentence." + NBSP + " Next sentence.", out)
         self.assertNotIn("&nbsp;", out)

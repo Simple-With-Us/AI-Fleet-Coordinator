@@ -65,6 +65,13 @@ STALE_RULE_FILES = (
     # The compliance inventory's AFC-P05 row states the mechanism for every
     # surface, so it states the exception with it.
     "docs/compliance/inventory.md",
+    # The converter and its own test describe the entity mode, and each one names the
+    # two chat panes as the surfaces that take it.  They are scanned here so the
+    # withdrawn 2026-10-22 GitHub-entity split can never come back into them.  The
+    # mode itself is still the right form for the two chat panes, which is why these
+    # two files are scanned rather than forbidden.
+    "scripts/sentence_gap_convert.pl",
+    "scripts/test_sentence_gap_program.py",
 )
 
 # Dated rollout records whose body is intentionally preserved; the stale-prescription

@@ -9,8 +9,8 @@ const onlyOf=name=>{
   const m=body&&body.match(/_only\(\s*args,\s*\(([^)]*)\),?\s*\)/);
   return m?[...m[1].matchAll(/"([a-z0-9_]+)"/g)].map(x=>x[1]).sort():null;
 };
-test('names equal the relay SPECS, plus wf_job_log when it lands',()=>{
-  const rel=specs.filter(a=>a!=='wf_job_log').sort();
+test('names equal the relay SPECS',()=>{
+  const rel=specs.slice().sort();
   assert.deepEqual([...WF_V1_ACTIONS].sort(),rel);
   assert.equal(WF_V1_TOOLS.length,rel.length);
 });
@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,88);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,102);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,88);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,102);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -195,7 +195,44 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
  assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'é'.repeat(20000)}));
  assert.ok(validWfV1Args('wf_review_submit',{...requests[0][1],body:'héllo'}));
 });
+import {workflowInputLimit,boundedWorkflowInput} from '../src/gr-workflow-v1.js';
+test('binary and content tools: schemas, per-action input limit, response envelopes',()=>{
+  const r='example/repo';
+  assert.equal(workflowInputLimit('wf_release_asset_upload'),65536);
+  assert.ok(workflowInputLimit('wf_release_asset_upload_binary')>245760);
+  const big='A'.repeat(245760);
+  assert.ok(validWfV1Args('wf_release_asset_upload_binary',{repo:r,release_id:3,name:'a.bin',content_b64:big}));
+  assert.ok(!validWfV1Args('wf_release_asset_upload_binary',{repo:r,release_id:3,name:'a.bin',content_b64:big+'AAAA'}));
+  assert.ok(!validWfV1Args('wf_release_asset_upload',{repo:r,release_id:3,name:'a.bin',content_b64:big}));
+  assert.ok(!boundedWorkflowInput({a:big}));
+  assert.ok(validWfV1Args('wf_release_asset_delete',{repo:r,asset_id:7,expected_name:'a.bin'}));
+  assert.ok(!validWfV1Args('wf_release_asset_delete',{repo:r,asset_id:7}));
+  assert.ok(!validWfV1Args('wf_release_asset_delete',{repo:r,asset_id:7,expected_name:'a/b'}));
+  assert.ok(!validWfV1Args('wf_release_asset_update',{repo:r,asset_id:7,expected_name:'a',url:'https://x'}));
+  for (const [a,k] of [['wf_release_asset_download',{asset_id:7}],['wf_artifact_download',{artifact_id:5}],['wf_run_logs',{run_id:9}],['wf_job_log',{job_id:4}]]) {
+    assert.ok(validWfV1Args(a,{repo:r,...k,offset:0,length:262144}));
+    assert.ok(!validWfV1Args(a,{repo:r,...k,length:262145}));
+    assert.ok(!validWfV1Args(a,{repo:r,...k,offset:-1}));
+    assert.ok(!validWfV1Args(a,{repo:r,...k,url:'https://x'}));
+  }
+  const meta={offset:0,next_offset:3,total:3,complete:true};
+  assert.ok(validWfV1Response('wf_release_asset_download',{...meta,asset_id:7,content_b64:'YWJj'}));
+  assert.ok(!validWfV1Response('wf_release_asset_download',{...meta,asset_id:7,content_b64:'not base64!'}));
+  assert.ok(!validWfV1Response('wf_release_asset_download',{...meta,asset_id:7,content_b64:'YWJj',extra:1}));
+  assert.ok(validWfV1Response('wf_job_log',{...meta,job_id:4,content:'hi'}));
+  assert.ok(!validWfV1Response('wf_job_log',{...meta,total:'3',job_id:4,content:'hi'}));
+  assert.ok(validWfV1Response('wf_release_asset_delete',{deleted:true,asset_id:7}));
+  assert.ok(!validWfV1Response('wf_release_asset_delete',{deleted:false,asset_id:7}));
+  assert.ok(validWfV1Response('wf_release_asset_update',{asset:{id:7,name:'a',state:'uploaded',size:1}}));
+});
 
+test('review lifecycle closed args and receipt validation',()=>{
+ for (const [action,args] of [['wf_review_update',{number:1,review_id:2,body:'edit'}],['wf_review_dismiss',{number:1,review_id:2,message:'obsolete'}],['wf_review_pending_delete',{number:1,review_id:2}],['wf_review_comment_reply',{number:1,comment_id:2,body:'reply'}]]) {
+  assert.ok(validWfV1Args(action,{repo,...args}),action);
+  assert.ok(!validWfV1Args(action,{repo,...args,force:true}),action);
+  assert.ok(!validWfV1Response(action,{}),action);
+ }
+});
 test('branch and tag operations preserve fixed receipts and write UNKNOWN',async()=>{
  const cases=[['wf_branch_update',{branch:'feature/x',sha:'b'.repeat(40),expected_sha:'a'.repeat(40)},{ref:'refs/heads/feature/x',sha:'b'.repeat(40)}],['wf_branch_delete',{branch:'feature/x',expected_sha:'a'.repeat(40)},{deleted:true,ref:'refs/heads/feature/x'}],['wf_tag_create',{tag:'v1',sha:'a'.repeat(40)},{ref:'refs/tags/v1',sha:'a'.repeat(40)}],['wf_tag_get',{tag:'v1'},{ref:'refs/tags/v1',sha:'a'.repeat(40)}],['wf_tag_delete',{tag:'v1',expected_sha:'a'.repeat(40)},{deleted:true,ref:'refs/tags/v1'}]];
  for(const [action,args,reply] of cases){
@@ -382,4 +419,36 @@ test('milestone delete receipt and writes use strict envelopes and own-bearer ro
  assert.equal(validWfV1Response('wf_milestone_delete',{deleted:true,number:2}),true);
  for(const bad of [{deleted:true},{deleted:true,number:true},{deleted:true,number:2,extra:1}])assert.equal(validWfV1Response('wf_milestone_delete',bad),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_milestone_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({deleted:true,number:2}));});assert.ok(!(await t.call('gr_wf_milestone_delete',a)).isError);
+});
+
+test('thread resolve receipts are strict and fixed routes preserve own bearer',async()=>{
+ const args={repo,number:1,thread_id:'PRRT_fixture'},thread={id:'PRRT_fixture',isResolved:true};
+ assert.equal(validWfV1Response('wf_review_thread_resolve',{thread}),true);
+ for(const bad of [{...thread,isResolved:false},{...thread,id:3},{...thread,private:'x'}])assert.equal(validWfV1Response('wf_review_thread_resolve',{thread:bad}),false);
+ assert.equal(validWfV1Response('wf_review_thread_unresolve',{thread}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_thread_resolve'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({thread}));});assert.ok(!(await t.call('gr_wf_review_thread_resolve',args)).isError);
+});
+test('binary chunk strict receipt and own bearer upload path',async()=>{
+ const good={offset:0,next_offset:3,total:3,complete:true,asset_id:7,content_b64:'YWJj'};
+ for(const bad of [{...good,asset_id:true},{...good,next_offset:-1},{...good,complete:false,next_offset:0},{...good,total:'3'}])assert.equal(validWfV1Response('wf_release_asset_download',bad),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_release_asset_upload_binary'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({asset:{id:7,name:'a.bin',state:'uploaded',size:184320}}));});
+ assert.ok(!(await t.call('gr_wf_release_asset_upload_binary',{repo,release_id:3,name:'a.bin',content_b64:'YWFh'.repeat(61440)})).isError);
+});
+test('review lifecycle projected receipts use cached strict schemas and own bearer',async()=>{
+ const review={id:2,state:'PENDING',commit_id:'a'.repeat(40),html_url:null};
+ assert.equal(validWfV1Response('wf_review_pending_delete',{review}),true);
+ assert.equal(validWfV1Response('wf_review_dismiss',{review}),false);
+ assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
+});
+test('rename strict receipts correlate paths branch and prior blob and use caller bearer',async()=>{
+ const args={repo,source_path:'old.txt',destination_path:'new.txt',branch:'feature/x',message:'Rename file',expected_head_sha:'a'.repeat(40),prior_sha:'b'.repeat(40)};
+ const receipt={source_path:'old.txt',destination_path:'new.txt',branch:'feature/x',commit:'c'.repeat(40),blob_sha:'b'.repeat(40)};
+ assert.equal(validWfV1Args('wf_file_rename',args),true);
+ assert.equal(validWfV1Response('wf_file_rename',receipt,args),true);
+ for(const bad of [{...receipt,source_path:'wrong'},{...receipt,blob_sha:'d'.repeat(40)},{...receipt,commit:7},{...receipt,extra:true}])assert.equal(validWfV1Response('wf_file_rename',bad,args),false);
+ let calls=0;const t=harness(async(u,i)=>{calls++;assert.ok(u.endsWith('/v1/wf_file_rename'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(i.body),args);return new Response(JSON.stringify(receipt));});
+ assert.ok(!(await t.call('gr_wf_file_rename',args)).isError);assert.equal(calls,1);
+ for(const bad of [{...args,force:true},{...args,message:' '},{...args,message:'é'.repeat(251)},{...args,source_path:'../x'}])assert.ok((await t.call('gr_wf_file_rename',bad)).isError);
+ assert.equal(calls,1);
 });

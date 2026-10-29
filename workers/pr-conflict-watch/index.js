@@ -1,11 +1,32 @@
-// pr-conflict-watch: GitHub webhook receiver that alerts #agent-sync Slack
-// the moment a PR's mergeable_state turns dirty (merge conflict).
-// Env bindings (Worker secrets): GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN, SLACK_BOT_TOKEN
-// KV binding: PR_STATE
+// pr-conflict-watch: GitHub webhook receiver that alerts the fleet's Zulip
+// #Alerts stream the moment a PR's mergeable_state turns dirty (merge
+// conflict), and again when that conflict clears.  The alert mentions the seat
+// that owns the PR branch, so the seat hears about its own conflict.
+//
+// Bindings:
+//   INFISICAL_SERVICE_TOKEN  Worker secret: a read-only Infisical service
+//                            token.  It is the Worker's only secret binding.
+//                            Its own scope and permissions are verified at
+//                            runtime, and a token that does not report them
+//                            is refused.
+//   PR_STATE                KV namespace: the dedupe records.
+//
+// Every other secret (GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN, ZULIP_SITE,
+// ZULIP_BOT_EMAIL, ZULIP_BOT_API_KEY) is read at runtime from Infisical,
+// folder /pr-conflict-watch in the Fleet-OPS project, prod environment.  See
+// infisical.js and README.md ("Secrets: Infisical at runtime").
 
 import { decideStateTransition } from "./state.js";
+import { seatMentionFor } from "./seats.js";
+import { InfisicalError, resolveInfisicalConfig } from "./infisical.js";
 
-const SLACK_CHANNEL = "C0BEZDJDNKV"; // #agent-sync
+// The stream every conflict alert goes to.  Alerts are never posted to a
+// private DM and never mention @all or @everyone.
+const ZULIP_STREAM = "Alerts";
+
+// The fleet's sentence gap: a no-break space followed by a normal space, so
+// the gap survives Markdown rendering.
+const SENTENCE_GAP = "\u00A0 ";
 
 async function verifySignature(request, secret) {
   const sigHeader = request.headers.get("x-hub-signature-256") || "";
@@ -52,20 +73,240 @@ async function getMergeState(owner, repo, number, token) {
   return null;
 }
 
-async function postSlack(token, text) {
-  await fetch("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify({ channel: SLACK_CHANNEL, text }),
-  });
+/**
+ * The names of the required secrets this Worker was not given.
+ *
+ * The only secret binding left is the Infisical service token: every other
+ * secret comes from Infisical itself, so a missing one is a missing secret
+ * in the folder, not a missing binding.
+ */
+export function missingSecretNames(env) {
+  const token = env?.INFISICAL_SERVICE_TOKEN;
+  return typeof token === "string" && token.trim() !== "" ? [] : ["INFISICAL_SERVICE_TOKEN"];
 }
 
-async function handlePr(owner, repo, number, env) {
+/** The Zulip messages endpoint for this deployment. */
+export function zulipMessagesUrl(config) {
+  const site = String(config?.ZULIP_SITE ?? "").trim().replace(/\/+$/, "");
+  return `${site}/api/v1/messages`;
+}
+
+/** The message used when the response body is not a Zulip result we can read. */
+const UNPARSEABLE_RESPONSE = "unparseable Zulip response";
+
+/** True for a plain object, false for arrays, null and everything else. */
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/** The outcome labels a Zulip response can have. */
+const ZULIP_OUTCOME_SUCCESS = "success";
+const ZULIP_OUTCOME_ERROR = "error";
+const ZULIP_OUTCOME_UNPARSEABLE = "unparseable";
+
+/**
+ * Validate a Zulip response body at the boundary.
+ *
+ * This Worker has no npm dependencies, so there is no zod here: the shape
+ * check is by hand.  Only a plain object with a string `result` and a string
+ * `msg` (when present) is trusted.  Anything else is a failure with a fixed
+ * message, so an unexpected body is never mistaken for a success.
+ *
+ * @param {unknown} json the parsed response body.
+ * @returns {{ok: boolean, msg?: string, outcome: string}} ok is true only for
+ *   result "success".  The outcome is the allow-listed label a failure log
+ *   carries; the message is returned to the caller but never logged.
+ */
+function parseZulipBody(json) {
+  if (!isPlainObject(json)) {
+    return { ok: false, msg: UNPARSEABLE_RESPONSE, outcome: ZULIP_OUTCOME_UNPARSEABLE };
+  }
+
+  const result = json.result;
+  if (typeof result !== "string") {
+    return { ok: false, msg: UNPARSEABLE_RESPONSE, outcome: ZULIP_OUTCOME_UNPARSEABLE };
+  }
+
+  const msg = json.msg;
+  if (msg !== undefined && typeof msg !== "string") {
+    return { ok: false, msg: UNPARSEABLE_RESPONSE, outcome: ZULIP_OUTCOME_UNPARSEABLE };
+  }
+
+  const ok = result === "success";
+  const parsed = { ok, outcome: ok ? ZULIP_OUTCOME_SUCCESS : ZULIP_OUTCOME_ERROR };
+  if (typeof msg === "string") parsed.msg = msg;
+  return parsed;
+}
+
+/**
+ * Validate a Zulip response body at the boundary.
+ *
+ * The exported contract is the shape a caller can rely on: ok is true only
+ * for result "success", and msg carries Zulip's own message when the body had
+ * one.  The message is never logged: the failure log carries the HTTP status
+ * and an outcome label only.
+ *
+ * @param {unknown} json the parsed response body.
+ * @returns {{ok: boolean, msg?: string}} ok is true only for result "success".
+ */
+export function parseZulipResult(json) {
+  const { ok, msg } = parseZulipBody(json);
+  const parsed = { ok };
+  if (msg !== undefined) parsed.msg = msg;
+  return parsed;
+}
+
+/**
+ * Post one message to Zulip #Alerts.
+ *
+ * The API key never leaves this function: the request carries it in a Basic
+ * auth header.  A failure logs allow-listed fields only -- the HTTP status
+ * and a fixed outcome label -- and never Zulip's own message, so nothing the
+ * server said reaches the logs.
+ *
+ * @param {object} config the config resolved from Infisical.
+ * @returns {Promise<boolean>} true when Zulip accepted the message.
+ */
+export async function postZulip(config, topic, content) {
+  const body = new URLSearchParams({
+    type: "stream",
+    to: ZULIP_STREAM,
+    topic,
+    content,
+  }).toString();
+
+  const auth = btoa(`${config.ZULIP_BOT_EMAIL}:${config.ZULIP_BOT_API_KEY}`);
+  const res = await fetch(zulipMessagesUrl(config), {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
+  const parsed = parseZulipBody(json);
+
+  // The failure log carries allow-listed fields only: the HTTP status and a
+  // fixed outcome label.  Zulip's own message is never logged.
+  const logFailure = () =>
+    console.error(
+      JSON.stringify({
+        event: "zulip_post_failed",
+        status: res.status,
+        result: parsed.outcome,
+      })
+    );
+
+  if (!res.ok) {
+    logFailure();
+    return false;
+  }
+  if (!parsed.ok) {
+    logFailure();
+    return false;
+  }
+  return true;
+}
+
+/** Escape the Markdown characters that would break the link text of a title. */
+function escapeTitle(title) {
+  return String(title ?? "").replace(/([`[\]])/g, "\\$1");
+}
+
+// A zero-width space (U+200B) after the "@" breaks Zulip's mention syntax
+// while leaving the text a human reads exactly as it was.
+const ZERO_WIDTH_SPACE = "\u200B";
+
+// The mention starters Zulip renders: "@**name**", "@_name_" and "@*name*".
+const MENTION_STARTER = /@(?=[*_])/g;
+
+// The bare group mentions Zulip renders.
+const GROUP_MENTION = /@(all|everyone|channel|stream|topic)\b/gi;
+
+/**
+ * Neutralize Zulip mention syntax in a string.
+ *
+ * A PR title, head ref, base ref or author login is chosen by whoever opened
+ * the PR, so any mention it carries is a ping the author asked for.  The "@"
+ * gets a zero-width space after it, which Zulip does not render as a mention
+ * and a human does not see.
+ *
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function neutralizeMentions(text) {
+  return String(text ?? "")
+    .replace(MENTION_STARTER, `@${ZERO_WIDTH_SPACE}`)
+    .replace(GROUP_MENTION, `@${ZERO_WIDTH_SPACE}$1`);
+}
+
+/**
+ * Build the alert text for one PR.
+ *
+ * A new conflict names the seat that owns the branch, so the seat can rebase.
+ * A recovery names nobody: the conflict is already gone.
+ *
+ * @param {"conflict"|"recovered"} kind
+ * @param {string} repo repository name, e.g. "BotFleet".
+ * @param {object} pr GitHub pull request payload.
+ * @param {string} [state] mergeable_state, for a recovery.
+ * @returns {string}
+ */
+export function buildMessage({ kind, repo, pr, state }) {
+  const number = pr?.number;
+  const url = pr?.html_url ?? "";
+  const repoText = `\`${repo}\``;
+
+  if (kind === "recovered") {
+    return `PR [#${number}](${url}) on ${repoText} no longer conflicts (now \`${state}\`).`;
+  }
+
+  // Every field the PR author controls is neutralized before it reaches the
+  // message, so a PR title of "@**all**" cannot ping the stream.  The seat
+  // mention is ours and stays intact.
+  const title = escapeTitle(neutralizeMentions(pr?.title));
+  const base = neutralizeMentions(pr?.base?.ref ?? "main");
+  const mention =
+    seatMentionFor(pr) ??
+    `the author (\`${neutralizeMentions(pr?.user?.login ?? "unknown")}\`, branch \`${neutralizeMentions(
+      pr?.head?.ref ?? "unknown"
+    )}\`)`;
+
+  return `PR [#${number} ${title}](${url}) on ${repoText} has a merge conflict with \`${base}\`.${SENTENCE_GAP}${mention} please rebase it.`;
+}
+
+/** The Zulip topic for one repository's conflicts. */
+export function topicForRepo(repo) {
+  return `pr-conflicts ${repo}`;
+}
+
+/**
+ * Watch one PR and post its alert.
+ *
+ * The KV key is the dedupe record, so it is only written once Zulip has
+ * confirmed the message: a key written before a failed post would suppress
+ * that alert forever, and a key deleted before a failed post would lose the
+ * recovery.  Both orders below keep a failed post retryable on the next
+ * delivery.
+ *
+ * @param {string} owner repository owner.
+ * @param {string} repo repository name.
+ * @param {number} number pull request number.
+ * @param {object} config the config resolved from Infisical.
+ * @param {object} env Worker bindings (PR_STATE).
+ */
+export async function handlePr(owner, repo, number, config, env) {
   const kvKey = `state:${owner}/${repo}#${number}`;
-  const result = await getMergeState(owner, repo, number, env.GITHUB_TOKEN);
+  const result = await getMergeState(owner, repo, number, config.GITHUB_TOKEN);
   if (!result) return;
   const prev = await env.PR_STATE.get(kvKey);
 
@@ -78,25 +319,61 @@ async function handlePr(owner, repo, number, env) {
   }
 
   if (action === "alert") {
-    await env.PR_STATE.put(kvKey, result.state, { expirationTtl: 60 * 60 * 24 * 14 });
-    const pr = result.pr;
-    await postSlack(
-      env.SLACK_BOT_TOKEN,
-      `[PR-WATCH] repo: ${repo} -- PR #${number} "${pr.title}" -- ${result.state} (${pr.html_url})`
+    const posted = await postZulip(
+      config,
+      topicForRepo(repo),
+      buildMessage({ kind: "conflict", repo, pr: result.pr })
     );
+    // Only a delivered alert may claim the dedupe key.
+    if (posted) {
+      await env.PR_STATE.put(kvKey, result.state, { expirationTtl: 60 * 60 * 24 * 14 });
+    }
     return;
   }
 
   // recover: left dirty (only state we store)
-  await env.PR_STATE.delete(kvKey);
-  await postSlack(env.SLACK_BOT_TOKEN, `[PR-WATCH] repo: ${repo} -- PR #${number} recovered -> ${result.state}`);
+  const posted = await postZulip(
+    config,
+    topicForRepo(repo),
+    buildMessage({ kind: "recovered", repo, pr: result.pr, state: result.state })
+  );
+  // Only a delivered recovery may clear the dedupe key.
+  if (posted) {
+    await env.PR_STATE.delete(kvKey);
+  }
 }
 
 export default {
   async fetch(request, env, ctx) {
+    // A health probe answers before anything else, so a probe never reports
+    // the Worker as broken just because it has no Infisical token.
     if (request.method !== "POST") return new Response("ok", { status: 200 });
 
-    const valid = await verifySignature(request, env.GITHUB_WEBHOOK_SECRET);
+    // A misconfigured Worker says so by name, before it touches anything.
+    const missing = missingSecretNames(env);
+    if (missing.length > 0) {
+      return new Response(`pr-conflict-watch misconfigured: missing ${missing.join(", ")}`, {
+        status: 500,
+      });
+    }
+
+    // Every secret comes from Infisical at runtime.  When Infisical cannot
+    // answer, the Worker says so plainly and posts nothing.
+    let config;
+    try {
+      config = await resolveInfisicalConfig({ token: env.INFISICAL_SERVICE_TOKEN });
+    } catch (error) {
+      const code = error instanceof InfisicalError ? error.code : "infisical_unreachable";
+      const detail =
+        code === "missing_secret" && Array.isArray(error.missing) && error.missing.length > 0
+          ? `${code}: ${error.missing.join(", ")}`
+          : code;
+      return new Response(`pr-conflict-watch: Infisical unavailable (${detail})`, {
+        status: 503,
+      });
+    }
+
+    const valid = await verifySignature(request, config.GITHUB_WEBHOOK_SECRET);
     if (!valid) return new Response("bad signature", { status: 401 });
 
     const event = request.headers.get("x-github-event") || "";
@@ -115,7 +392,9 @@ export default {
     }
 
     ctx.waitUntil(
-      Promise.all(candidates.map(([owner, repo, number]) => handlePr(owner, repo, number, env)))
+      Promise.all(
+        candidates.map(([owner, repo, number]) => handlePr(owner, repo, number, config, env))
+      )
     );
     return new Response("ok", { status: 200 });
   },
