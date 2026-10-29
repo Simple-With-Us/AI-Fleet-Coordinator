@@ -574,18 +574,36 @@ class RegistryTest(unittest.TestCase):
     def test_concurrent_same_identity_resumes_instead_of_integrity_error(self):
         """Two writers registering one identity:  the second must resume the committed record,
         not race past the unlocked SELECT into an unhandled IntegrityError (review 18197523/1)."""
-        # Synchronize before BEGIN IMMEDIATE, not inside the locked identity
-        # read. A barrier inside that transaction waits for a peer that cannot
-        # enter until commit, burning the same five seconds as SQLite's busy
-        # timeout and intermittently causing SQLITE_BUSY in a correct writer.
-        start = threading.Barrier(2, timeout=5)
+        # Hold the first writer only until the second connection reaches its
+        # BEGIN IMMEDIATE trace callback (called before lock acquisition). The
+        # second writer need not enter a locked read, avoiding the old deadlock.
+        first_locked = threading.Event()
+        second_begin = threading.Event()
+        second_ready = threading.Event()
         errs = []
+        real_get = R.SessionRegistry._get_by_identity
 
-        def worker():
+        def hooked(reg, *args):
+            if threading.current_thread().name == "registry-first":
+                self.assertTrue(reg._conn.in_transaction)
+                first_locked.set()
+                self.assertTrue(second_begin.wait(timeout=2), "second writer never attempted BEGIN")
+            return real_get(reg, *args)
+
+        def worker(second=False):
             reg = None
             try:
                 reg = R.SessionRegistry(self.db)
-                start.wait()
+                if not second:
+                    self.assertTrue(second_ready.wait(timeout=2), "second connection not ready")
+                if second:
+                    second_ready.set()
+                    self.assertTrue(
+                        first_locked.wait(timeout=2), "first writer never acquired lock"
+                    )
+                    reg._conn.set_trace_callback(
+                        lambda sql: second_begin.set() if sql == "BEGIN IMMEDIATE" else None
+                    )
                 reg.resolve_or_register(ident())
             except Exception as exc:  # noqa: BLE001 - surfaced by assertion
                 errs.append(exc)
@@ -593,12 +611,25 @@ class RegistryTest(unittest.TestCase):
                 if reg is not None:
                     reg.close_db()
 
-        threads = [threading.Thread(target=worker) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=10)
+        threads = [
+            threading.Thread(target=worker, name="registry-first", daemon=True),
+            threading.Thread(target=worker, args=(True,), name="registry-second", daemon=True),
+        ]
+        R.SessionRegistry._get_by_identity = hooked
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=4)
+        finally:
+            first_locked.set()
+            second_begin.set()
+            for thread in threads:
+                thread.join(timeout=1)
+            R.SessionRegistry._get_by_identity = real_get
         self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertTrue(first_locked.is_set())
+        self.assertTrue(second_begin.is_set())
 
         self.assertEqual(errs, [])
         with sqlite3.connect(self.db) as connection:
