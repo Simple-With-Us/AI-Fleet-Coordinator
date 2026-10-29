@@ -322,7 +322,7 @@ test("the sweep promotes an aged incident with that vendor's credential", async 
     const datadogPost = events.find(
       (call) => call.email === "datadog-bot@example.invalid",
     );
-    assert.equal(datadogPost.form.get("to"), "alerts");
+    assert.equal(datadogPost.form.get("to"), "Alerts-Log");
     assert.equal(datadogPost.form.get("topic"), "Datadog.Service");
     // Both incidents are announced now.
     assert.equal(

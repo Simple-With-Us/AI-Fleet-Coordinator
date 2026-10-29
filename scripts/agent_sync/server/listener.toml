@@ -41,7 +41,8 @@ coalesce_seconds = 20
 coalesce_max_seconds = 90
 owner_coalesce_seconds = 5
 notify_banners = false            # no display here:  notify-owner writes only <seat>/owner-queue.jsonl
-held_alert_minutes = 60           # the `#alerts` held-back digest (AFC-257):  ONE post for every seat per hour.
+held_alert_minutes = 60           # the `#alerts` held-back digest (AFC-257):  ONE standing message for every
+                                  # seat, edited in place at most once an hour (AFC-569).
                                   # Anything held back is posted, not only an eviction (owner, Oct 11 2026);
                                   # the window is what keeps that loud trigger from flooding the channel.  0 is off.
 held_alert_seat = "MA"            # whose bot carries it:  MA posts for the whole instance, so a seat that is

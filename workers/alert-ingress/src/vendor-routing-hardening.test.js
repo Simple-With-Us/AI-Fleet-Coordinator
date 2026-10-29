@@ -1153,9 +1153,12 @@ test("an unknown webhook field never reaches persistence or the channel", async 
     for (const [key, value] of kv.store) {
       assert.equal(String(value).includes(marker), false, `leaked into ${key}`);
     }
-    // And nowhere in what was sent to the channel.
+    // And nowhere in what was sent to the standing block or the timeline.  The
+    // raw copy in #Alerts-Raw keeps the whole delivery on purpose (owner, Oct
+    // 29, 2026), so it is the one place the field may appear.
     for (const call of zulip.calls) {
       const body = call.form ? call.form.toString() : "";
+      if (call.form?.get("to") === "Alerts-Raw") continue;
       assert.equal(body.includes(marker), false);
     }
   } finally {
@@ -1663,7 +1666,7 @@ test("S1 a null sibling variant counts as absent, not as a second variant", asyn
       {},
     );
     assert.equal(response.status, 200);
-    assert.equal(zulip.calls.length, 1);
+    assert.equal(zulip.calls.filter((call) => call.form?.get("to") !== "Alerts-Raw").length, 1);
   } finally {
     zulip.restore();
   }
@@ -2067,8 +2070,21 @@ test("F13 an identity carrying a credential is a 400 at the webhook route", asyn
     assert.match(text, /sentry issue identity/);
     assert.doesNotMatch(text, /ghp_/);
     assert.equal(kv.store.size, 0);
-    assert.equal(zulip.calls.length, 0);
+    // Only the raw record is posted, and the credential shape is redacted in it.
+    for (const call of zulip.calls) {
+      assert.equal(call.form?.get("to"), "Alerts-Raw");
+      assert.doesNotMatch(call.form.toString(), /ghp_/);
+    }
   } finally {
     zulip.restore();
   }
+});
+
+test("Datadog's full event_msg may run past 4 KiB, and no other field may", () => {
+  const { validatePayload } = __testing;
+  const runbook = "## What's happening\n" + "Check the host.\n".repeat(600);
+  assert.ok(runbook.length > 4096);
+  validatePayload({ ...datadogEvent, event_msg: runbook });
+  assert.throws(() => validatePayload({ ...datadogEvent, alert_title: runbook }));
+  assert.throws(() => validatePayload({ ...datadogEvent, event_msg: "x".repeat(32769) }));
 });
