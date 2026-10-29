@@ -1,6 +1,6 @@
 # Open-Loops Routine Texts
 
-The fleet's open-loops routines (a daily digest, a daily backup-health line and a weekly landing-sweep report) run as a pair on BotFleet and on Grok Bot.  Both platforms run the same text.  This folder is the public pointer.  The texts themselves are private, and they never enter this repository.  Only their checker (`scripts/check-routine-prompts.py`) and its synthetic fixtures (`scripts/tests/fixtures/routines/`) live here.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23), with one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.
+The fleet's open-loops routines (a daily digest, a daily backup-health line and a weekly landing-sweep report) run as a pair on BotFleet and on Grok Bot.  Both platforms run the same text.  This folder is the public pointer.  The texts themselves are private, and they never enter this repository.  Only their checker (`scripts/check-routine-prompts.py`) and its synthetic fixtures (`scripts/tests/fixtures/routines/`) live here.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23), with two exceptions: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a normal space (AFC-552).
 
 ## Where the Texts Live
 
@@ -66,7 +66,7 @@ It exits 0 when clean, 1 on any finding and 2 on a usage error.  CI runs the te
 | `typed-mention` | A hand-typed Zulip mention.  Mentions are built at run time from the live user list |
 | `code-path` | A path under `~/Code`, the human's integration tree |
 | `slack-helper` | The retired Slack helper or a Slack endpoint |
-| `single-space-gap` | A sentence boundary with one ASCII space, including one after "no" or after a one-letter word such as "option A.".  Fences, inline code, URLs, `e.g.`, `i.e.`, `vs.` and list markers ("1." and "A." at the start of a line) are skipped.  A person named by initial (`J. Smith`) is flagged too, so reword it |
+| `single-space-gap` | A sentence boundary with one ASCII space, including one after "no" or after a one-letter word such as "option A.".  Fences, inline code, URLs, `e.g.`, `i.e.`, `vs.` and list markers ("1." and "A." at the start of a line) are skipped.  A person named by initial (`J.  Smith`) is flagged too, so reword it |
 | `reminder-missing` | The owner's standing reminder is not quoted verbatim |
 | `secret-shaped` | A secret-shaped string, by the simple-chat secret scanner plus a local copy of the Linear, Sentry, xAI, Infisical, Cloudflare and Coolify patterns |
 | `gb-label` | A `gb-<role>.md` text without its own `[GB-<ROLE>]` label and `<role>-grok-bot@` email, or with another role's;  or any GB label in a core |

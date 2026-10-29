@@ -156,7 +156,21 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn("Platform Defaults", out_sess)
         self.assertIn("`[<YOUR_TAG>·session8]` tag", out_sess)
         self.assertIn("<seat>/<slug>", out_sess)
+        self.assertNotRegex(
+            out_sess,
+            r"e\.g\.\u00a0",
+            "non-terminal abbreviation e.g. must not take a sentence gap",
+        )
+        self.assertNotIn("agents.jays.services", out_sess)
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
+
+        out_pickup = specialize_universal(
+            Path(ROOT, "docs", "fleet-skills", "pickup-seat", "SKILL.md").read_text(
+                encoding="utf-8"
+            ),
+            skill_name="pickup-seat",
+        )
+        self.assertIn("You are **<YOUR_AGENT_TAG>**.\u00a0 Keep", out_pickup)
 
         out_not = specialize_universal(_notes(), skill_name="apple-notes")
         self.assertIn("[TEAM_KEY, Agent]", out_not)
@@ -626,7 +640,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
         coord = _coord()
         self.assertIn("MiniMax (MM): `MM` (display `MiniMax`, prefix `minimax/`", coord)
-        self.assertIn("Retired:  MONET, RENOIR, HARNESS, DSH, KIMI have no bot", coord)
+        self.assertIn("Retired: MONET, RENOIR, HARNESS, DSH, KIMI have no bot", coord)
         self.assertNotIn("MiniMax: `[MINIMAX]`", coord)
         self.assertNotIn("DeepSeek: `[DEEPSEEK]`", coord)
 
@@ -904,7 +918,8 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertNotIn("no skill home", out)
         self.assertNotIn("Catalog copy", out)
         self.assertIn("clutch/<slug>", out)
-        self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
+        self.assertIn("Zulip bot for seat `CLUTCH`", out)
+        self.assertNotIn("clutch-bot@simplewithus.zulipchat.com", out)
         self.assertIn("`CLUTCH_ZULIP_KEY`", out)
         self.assertIn("[CLUTCH·session8]", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
@@ -1031,7 +1046,7 @@ class AgentSeatPinTests(unittest.TestCase):
             self.assertIn(_arm(seat.tag), self._block(out).splitlines(), key)
             self.assertIn(_ordinary(seat.notes, seat.tag), out, key)
             self.assertIn(
-                f"`<branch-prefix>` below is your seat's branch prefix:  `{seat.prefix}`", out, key
+                f"`<branch-prefix>` below is your seat's branch prefix: `{seat.prefix}`", out, key
             )
 
     def test_t15_every_render_carries_the_launcher_clause(self) -> None:
@@ -1040,7 +1055,7 @@ class AgentSeatPinTests(unittest.TestCase):
                 self.assertNotIn(LAUNCHER_CLAUSE, out)
                 continue
             self.assertIn(LAUNCHER_CLAUSE, out, key)
-            self.assertIn("you have no seat:  do no fleet action", out, key)
+            self.assertIn("you have no seat: do no fleet action", out, key)
             if not SEATS.get(key) or not SEATS[key].retired:
                 self.assertNotIn("[MONET·", out, key)
 
@@ -1319,10 +1334,15 @@ class RepoPlatformCopiesTests(unittest.TestCase):
         for wanted in (
             "`[MM·session8]`",
             "minimax/",
-            "mm-bot@simplewithus.zulipchat.com",
+            "Zulip bot for seat `MM`",
             "MM_ZULIP_KEY",
         ):
             self.assertIn(wanted, text, wanted)
+        self.assertNotIn(
+            "mm-bot@simplewithus.zulipchat.com",
+            text,
+            "the bot address is the MM_ZULIP_EMAIL value in Infisical",
+        )
         for foreign in ("CLAUDE", "CURSOR", "CLAUDE_ZULIP_KEY", "`[CLAUDE·session8]`"):
             self.assertNotIn(foreign, text, foreign)
         self.assertIn("minimax/afc-123-zulip-cutover", text)
@@ -2183,6 +2203,28 @@ class PrivateInventoryTests(unittest.TestCase):
             hits,
             [],
             "a published skill copy must name the private inventory, not carry it:\n"
+            + "\n".join(hits),
+        )
+
+    FORBIDDEN_SKILL_ENDPOINT_LITERALS = (
+        re.compile(r"agents\.jays\.services"),
+        re.compile(r"recall\.jays\.services"),
+        re.compile(r"\bcongress-ci\b|\bsocratic-ci\b|\bhetzner-ci\b"),
+    )
+
+    def test_published_skill_copies_carry_no_internal_host_or_runner_labels(self) -> None:
+        files = self._published_skill_files()
+        hits: list[str] = []
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for pattern in self.FORBIDDEN_SKILL_ENDPOINT_LITERALS:
+                for match in pattern.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    hits.append(f"{path.relative_to(ROOT)}:{line}: {match.group(0)}")
+        self.assertEqual(
+            hits,
+            [],
+            "a published skill copy must not carry internal gateway hostnames or CI runner labels:\n"
             + "\n".join(hits),
         )
 
