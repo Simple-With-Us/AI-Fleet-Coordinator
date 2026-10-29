@@ -1,8 +1,10 @@
 import unittest, importlib.util
+from uuid import UUID
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('loader',Path(__file__).resolve().parents[1] / 'server' / 'infisical_env.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-PROJECT='8dae6d03-8f12-48b2-adf3-e5c1b881c8c5'
+# Deterministic synthetic fixture, never a live project identifier.
+PROJECT = str(UUID(int=1))
 class Tests(unittest.TestCase):
  def env(self,**kw):return dict(INFISICAL_CLIENT_ID='offline',INFISICAL_CLIENT_SECRET='offline',INFISICAL_PROJECT_ID='primary',INFISICAL_LISTENER_READ_PROJECT_ID=PROJECT,MA_ROUTINE_KEY='stale'*12,**kw)
  def run_case(self,secondary):
