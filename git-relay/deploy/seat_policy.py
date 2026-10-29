@@ -188,16 +188,18 @@ class Unit:
 
 
 def _systemctl(*args) -> str:
-    return subprocess.run(
-        ["systemctl", *args], check=True, capture_output=True, text=True
-    ).stdout
+    return subprocess.run(["systemctl", *args], check=True, capture_output=True, text=True).stdout
 
 
 def read_unit(name: str, show=None, cat=None) -> Unit:
     """The unit's working directory, its one EnvironmentFile, the apps credential it loads
     and its Environment=;  refuses when any of them is missing or ambiguous."""
-    show = show if show is not None else _systemctl(
-        "show", name, "-p", "WorkingDirectory", "-p", "EnvironmentFiles", "-p", "Environment"
+    show = (
+        show
+        if show is not None
+        else _systemctl(
+            "show", name, "-p", "WorkingDirectory", "-p", "EnvironmentFiles", "-p", "Environment"
+        )
     )
     cat = cat if cat is not None else _systemctl("cat", name)
     relay, files, env = "", [], {}
@@ -352,7 +354,7 @@ def install(args, unit: Unit) -> int:
         return 2
     with open(unit.config, encoding="utf-8") as fh:
         before = fh.read()
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = f"{unit.config}.backup-seat-policy-{stamp}"
     _write_atomic(backup, before)
     lines[index] = f"{SEATS_VAR}={compact(seats)}"
