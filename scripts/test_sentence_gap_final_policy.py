@@ -439,12 +439,13 @@ class AppleNotesTakesTheHouseGapTests(unittest.TestCase):
 
     def test_the_mechanism_table_says_notes_takes_the_house_gap(self) -> None:
         """The two files that carry the mechanism table give Notes the real U+00A0 row."""
-        for rel in ("docs/fleet-skills/sentence-gap/SKILL.md", "docs/SENTENCE-GAP-PORTABLE-SKILL.md"):
+        for rel in (
+            "docs/fleet-skills/sentence-gap/SKILL.md",
+            "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
+        ):
             with self.subTest(rel=rel):
                 rows = [
-                    line
-                    for line in _read(rel).splitlines()
-                    if line.startswith("| **Apple Notes**")
+                    line for line in _read(rel).splitlines() if line.startswith("| **Apple Notes**")
                 ]
                 self.assertEqual(len(rows), 1, "%s has no single Apple Notes row" % rel)
                 self.assertIn("U+00A0", rows[0])
