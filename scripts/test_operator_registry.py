@@ -15,6 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agent_sync import operator_registry as R
 
 
+# A synthetic credential for the positive scan cases:  32 mixed-case characters with no
+# provider prefix, so the scanner still trips on it while the file carries no real token's
+# shape.  A prefixed value would be caught by a secret scanner on the repository itself.
+SYNTHETIC_SECRET = "A1b2C3d4" * 4
+
+
 def ident(seat="MM", platform="zulip", host="mac-1", scope="simplewithus", native="native-1", **kw):
     base = dict(
         seat=seat,
@@ -235,7 +241,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(again["label"], first["label"])
 
     def test_register_refuses_a_title_that_carries_a_credential(self):
-        secret = "ghp_" + "a1B2c3D4" * 5
+        secret = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.register_session(
                 self.db,
@@ -254,7 +260,7 @@ class RegistryTest(unittest.TestCase):
 
     def test_update_refuses_a_title_that_carries_a_credential(self):
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        secret = "ghp_" + "a1B2c3D4" * 5
+        secret = SYNTHETIC_SECRET
         with self.assertRaises(ValueError) as caught:
             R.update_session(
                 self.db,
@@ -266,6 +272,69 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(str(caught.exception), "secret_detected")
         self.assertNotIn(secret, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["title"], "Placeholder")
+
+
+    def test_update_refuses_a_project_that_carries_a_credential(self):
+        # Every field that is written is scanned, not only the title.
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        secret = SYNTHETIC_SECRET
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                project="Deploy with " + secret,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "project_secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(self.reg._get(a["record_id"])["project"], "")
+
+    def test_update_refuses_a_thread_link_that_carries_a_credential(self):
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        secret = SYNTHETIC_SECRET
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                thread_link="https://example.invalid/" + secret,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "thread_link_secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(self.reg._get(a["record_id"])["thread_link"], "")
+
+    def test_register_refuses_a_field_that_carries_a_credential(self):
+        secret = SYNTHETIC_SECRET
+        with self.assertRaises(ValueError) as caught:
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                seat="MM",
+                source="test",
+                apple_note_link="https://example.invalid/" + secret,
+                issuer=R.ISSUER_OPERATOR,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "apple_note_link_secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+        stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        self.assertEqual(stored, 0)
+
+    def test_a_benign_field_is_still_written(self):
+        # The scan refuses a credential, not a field.
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            project="AFC-564",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(out["outcome"], "updated")
+        self.assertEqual(self.reg._get(a["record_id"])["project"], "AFC-564")
 
     def test_update_session_on_an_unregistered_session_raises(self):
         with self.assertRaises(ValueError):
