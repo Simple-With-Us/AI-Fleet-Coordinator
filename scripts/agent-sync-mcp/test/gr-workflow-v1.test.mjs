@@ -641,3 +641,65 @@ test('decoded per-file and aggregate boundaries match relay budgets',()=>{
  assert.ok(validWfV1Args('wf_files_put',multi));
  multi.files.push({...file(1),path:'c'});assert.ok(!validWfV1Args('wf_files_put',multi));
 });
+
+test('exact-name check pages and run get correlate head ID and provenance without output',async()=>{
+ const row={id:7,head_sha:'a'.repeat(40),name:'Kody Code Review',status:'completed',conclusion:'success',app_id:8},args={repo,head_sha:row.head_sha,check_name:row.name,page:2,per_page:1},receipt={checks:[row],head_sha:row.head_sha,check_name:row.name,page:2,has_more:true};
+ assert.equal(validWfV1Response('wf_check_runs_page',receipt,args),true);assert.equal(validWfV1Response('wf_check_runs_page',{...receipt,has_more:false},args),false);assert.equal(validWfV1Response('wf_check_run_get',{check:row},{repo,check_run_id:8,head_sha:row.head_sha}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_check_runs_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_check_runs_page',args)).isError);
+});
+
+test('check names fail closed before network and get binds head',async()=>{
+ for(const check_name of [' ', 'é'.repeat(128), 'x\0y', '\ud800', 'sk-proj-'+'x'.repeat(24)]){
+  assert.equal(validWfV1Args('wf_check_runs_page',{repo,head_sha:'a'.repeat(40),check_name}),false);
+  let calls=0;const t=harness(async()=>{calls++;return new Response('{}');});
+  assert.ok((await t.call('gr_wf_check_runs_page',{repo,head_sha:'a'.repeat(40),check_name})).isError);assert.equal(calls,0);
+ }
+ const row={id:7,head_sha:'a'.repeat(40),name:'test',status:'completed',conclusion:'success',app_id:8};
+ const args={repo,check_run_id:7,head_sha:row.head_sha};
+ assert.equal(validWfV1Response('wf_check_run_get',{check:row},args),true);
+ assert.equal(validWfV1Response('wf_check_run_get',{check:{...row,head_sha:'b'.repeat(40)}},args),false);
+ let calls=0;const t=harness(async(url)=>{calls++;assert.ok(url.endsWith('/v1/wf_check_run_get'));return new Response(JSON.stringify({check:row}));});
+ assert.ok(!(await t.call('gr_wf_check_run_get',args)).isError);assert.equal(calls,1);
+});
+
+test('file history immutable range and path correlated strict metadata receipt',async()=>{
+ const args={repo,path:'docs/a.txt',head_sha:'a'.repeat(40),page:2,per_page:1},receipt={commits:[{sha:'b'.repeat(40),parents:[]}],path:'docs/a.txt',head_sha:'a'.repeat(40),page:2,has_more:true};
+ assert.equal(validWfV1Response('wf_file_history',receipt,args),true);assert.ok(WF_V1_READ_ACTIONS.includes('wf_file_history'));
+ for(const bad of [{...receipt,path:'other'},{...receipt,has_more:false},{...receipt,commits:[{sha:'b'.repeat(40),parents:[],message:'private'}]}])assert.equal(validWfV1Response('wf_file_history',bad,args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_file_history'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_file_history',args)).isError);
+});
+
+test('file history closed arguments enforce bounded path head page and no credential-shaped input',()=>{
+ const args={repo,path:'docs/a.txt',head_sha:'a'.repeat(40)};
+ assert.equal(validWfV1Args('wf_file_history',args),true);
+ for(const bad of [{...args,follow:true},{...args,page:0},{...args,page:1001},{...args,per_page:51},{...args,path:'../x'},{...args,path:'a/'.repeat(17)+'x'},{...args,head_sha:true},{...args,path:'ghp_'+'x'.repeat(36)}]) assert.equal(validWfV1Args('wf_file_history',bad),false);
+ const receipt={commits:[],path:args.path,head_sha:args.head_sha,page:1,has_more:false};
+ for(const bad of [{...receipt,head_sha:'b'.repeat(40)},{...receipt,page:2},{...receipt,commits:[{sha:'b'.repeat(40),parents:Array(17).fill('c'.repeat(40))}]},{...receipt,extra:true}])assert.equal(validWfV1Response('wf_file_history',bad,args),false);
+});
+
+test('run pages expose search cap, mutable state and bounded PR-number observations',async()=>{
+ const args={repo,status:'waiting',per_page:1},row={id:7,run_attempt:1,workflow_id:8,head_branch:'wise/a',head_sha:'a'.repeat(40),status:'waiting',conclusion:null,pull_numbers:[2]},receipt={runs:[row],total:1,page:1,has_more:true,search_cap:1000,snapshot:false};
+ assert.equal(validWfV1Response('wf_runs_page',receipt,args),true);assert.equal(validWfV1Response('wf_runs_page',{...receipt,search_cap:null},args),false);assert.equal(validWfV1Response('wf_runs_page',{...receipt,runs:[{...row,logs_url:'no'}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_runs_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_runs_page',args)).isError);
+});
+test('workflow pages map numeric IDs to bounded paths not display-name authority',async()=>{
+ const args={repo,per_page:1},row={id:7,path:'.github/workflows/ci.yml',state:'active'},receipt={workflows:[row],total:1,page:1,has_more:true,snapshot:false};
+ assert.equal(validWfV1Response('wf_workflows_page',receipt,args),true);assert.equal(validWfV1Response('wf_workflows_page',{...receipt,workflows:[{...row,name:'claimed authority'}]},args),false);assert.equal(validWfV1Response('wf_workflows_page',{...receipt,workflows:[{...row,path:'.github/workflows/../ci.yml'}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_workflows_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_workflows_page',args)).isError);
+});
+
+test('actions pages refuse closed args and filtered search windows before transport',()=>{
+ for(const a of ['wf_runs_page','wf_workflows_page'])for(const bad of [{repo,page:0},{repo,page:1001},{repo,per_page:51},{repo,raw_query:'x'}])assert.equal(validWfV1Args(a,bad),false);
+ assert.equal(validWfV1Args('wf_runs_page',{repo,status:'queued',page:21,per_page:50}),false);
+ assert.equal(validWfV1Args('wf_runs_page',{repo,page:1000,per_page:50}),true);
+});
+
+test('PR file pages are strict metadata only and correlate expected head',async()=>{
+ const args={repo,number:2,expected_head_sha:'a'.repeat(40),per_page:1},file={sha:'b'.repeat(40),filename:'a.txt',previous_filename:null,status:'modified',additions:1,deletions:0,changes:1},receipt={files:[file],number:2,head_sha:args.expected_head_sha,page:1,has_more:true,history_complete:false};
+ assert.equal(validWfV1Response('wf_pr_files_page',receipt,args),true);assert.equal(validWfV1Response('wf_pr_files_page',{...receipt,history_complete:true},args),false);assert.equal(validWfV1Response('wf_pr_files_page',{...receipt,files:[{...file,patch:'private'}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_pr_files_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_pr_files_page',args)).isError);
+});
+test('PR file cached receipt refuses oversized escaped page without truncation',()=>{
+ const args={repo,number:2,expected_head_sha:'a'.repeat(40)},row={sha:'b'.repeat(40),filename:''.repeat(1000),previous_filename:''.repeat(1000),status:'renamed',additions:1,deletions:1,changes:2};
+ assert.equal(validWfV1Response('wf_pr_files_page',{files:Array(30).fill(row),number:2,head_sha:args.expected_head_sha,page:1,has_more:true,history_complete:false},args),false);
+});

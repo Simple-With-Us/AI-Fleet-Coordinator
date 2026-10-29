@@ -26,6 +26,7 @@ import bz2
 import gzip
 import hashlib
 import io
+import json
 import lzma
 import re
 import zipfile
@@ -74,6 +75,12 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 SPECS = {
     "wf_issue_dependency_add": ({"issues": "write"}, True),
     "wf_issue_dependency_remove": ({"issues": "write"}, True),
+    "wf_check_runs_page": ({"checks": "read"}, False),
+    "wf_check_run_get": ({"checks": "read"}, False),
+    "wf_file_history": ({"contents": "read"}, False),
+    "wf_runs_page": ({"actions": "read"}, False),
+    "wf_workflows_page": ({"actions": "read"}, False),
+    "wf_pr_files_page": ({"pull_requests": "read"}, False),
     "wf_issue_parent": ({"issues": "read"}, False),
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
@@ -3126,6 +3133,85 @@ class WorkflowVerbs:
             "complete": False,
         }
 
+    def wf_pr_files_page(self, repo, args):
+        """One metadata-only PR file page, fenced by before/after head observations."""
+        _only(args, ("repo", "number", "expected_head_sha", "page", "per_page"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+        page = _int(args, "page", 1, 100) if "page" in args else 1
+        limit = _page(args)
+
+        def verify_head():
+            pr = self._get(f"/repos/{repo}/pulls/{number}")
+            if (
+                not isinstance(pr, dict)
+                or type(pr.get("number")) is not int
+                or pr["number"] != number
+                or not isinstance(pr.get("head"), dict)
+                or pr["head"].get("sha") != head
+            ):
+                raise Refused("PR head not matched")
+
+        verify_head()
+        data = self._get(f"/repos/{repo}/pulls/{number}/files?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "PR files page unverifiable")
+        files = []
+        for row in data:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("sha"), str)
+                or not _SHA.fullmatch(row["sha"])
+                or row.get("status")
+                not in ("added", "removed", "modified", "renamed", "copied", "changed", "unchanged")
+            ):
+                raise RelayGitHubError(502, "PR file metadata unverifiable")
+
+            def file_path(key, row=row):
+                value = row.get(key)
+                if not isinstance(value, str) or not value or len(value) > 1024 or "\x00" in value:
+                    raise RelayGitHubError(502, "PR file path unverifiable")
+                try:
+                    size = len(value.encode("utf-8"))
+                except UnicodeEncodeError:
+                    raise RelayGitHubError(502, "PR file path unverifiable") from None
+                if (
+                    size > 4096
+                    or find_secret(value)
+                    or re.search(
+                        r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+                        value,
+                    )
+                ):
+                    raise Refused("PR file path withheld")
+                return value
+
+            filename = file_path("filename")
+            previous = file_path("previous_filename") if row["status"] == "renamed" else None
+            counts = {k: row.get(k) for k in ("additions", "deletions", "changes")}
+            if any(type(v) is not int or not 0 <= v <= 1000000000 for v in counts.values()):
+                raise RelayGitHubError(502, "PR file counts unverifiable")
+            files.append(
+                {
+                    "sha": row["sha"],
+                    "filename": filename,
+                    "previous_filename": previous,
+                    "status": row["status"],
+                    **counts,
+                }
+            )
+        verify_head()
+        receipt = {
+            "files": files,
+            "number": number,
+            "head_sha": head,
+            "page": page,
+            "has_more": len(files) == limit,
+            "history_complete": False,
+        }
+        if len(json.dumps(receipt).encode("utf-8")) > 262144:
+            raise Refused("PR file serialized page exceeds supported size")
+        return receipt
+
     def wf_pr_files(self, repo, args):
         _only(args, ("repo", "number", "per_page"))
         number = _int(args, "number")
@@ -3180,6 +3266,47 @@ class WorkflowVerbs:
             "complete": False,
         }
 
+    def wf_file_history(self, repo, args):
+        """Path-filtered metadata at an immutable starting SHA, not rename-follow history."""
+        _only(args, ("repo", "path", "head_sha", "page", "per_page"))
+        path, head = _path(args), _sha(args, "head_sha")
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        if len(path) > 1024 or len(path.split("/")) > 16 or find_secret(path):
+            raise Refused("invalid history path")
+        data = self._get(
+            f"/repos/{repo}/commits?sha={head}&path={quote(path, safe='')}&per_page={limit}&page={page}"
+        )
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "file history page unverifiable")
+        commits = []
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("sha"), str)
+                or not _SHA.fullmatch(item["sha"])
+                or not isinstance(item.get("parents"), list)
+                or len(item["parents"]) > 16
+            ):
+                raise RelayGitHubError(502, "file history commit unverifiable")
+            parents = []
+            for parent in item["parents"]:
+                if (
+                    not isinstance(parent, dict)
+                    or not isinstance(parent.get("sha"), str)
+                    or not _SHA.fullmatch(parent["sha"])
+                ):
+                    raise RelayGitHubError(502, "file history parent unverifiable")
+                parents.append(parent["sha"])
+            commits.append({"sha": item["sha"], "parents": parents})
+        return {
+            "commits": commits,
+            "path": path,
+            "head_sha": head,
+            "page": page,
+            "has_more": len(data) == limit,
+        }
+
     def wf_commits(self, repo, args):
         _only(args, ("repo", "ref", "path", "per_page"))
         q = f"sha={quote(_ref(args, 'ref'), safe='')}&per_page={_page(args)}"
@@ -3217,6 +3344,173 @@ class WorkflowVerbs:
                 for i in ((data or {}).get("items") or [])[:MAX_PROJECT]
             ],
             "complete": False,
+        }
+
+    def wf_runs_page(self, repo, args):
+        """Bounded mutable Actions list with provider search cap made explicit."""
+        _only(args, ("repo", "branch", "head_sha", "status", "per_page", "page"))
+        statuses = ("queued", "in_progress", "completed", "requested", "waiting", "pending")
+        conclusions = (
+            "action_required",
+            "cancelled",
+            "failure",
+            "neutral",
+            "skipped",
+            "stale",
+            "success",
+            "timed_out",
+        )
+        branch = _ref(args, "branch") if "branch" in args else None
+        sha = _sha(args, "head_sha") if "head_sha" in args else None
+        status = _enum(args, "status", statuses + conclusions) if "status" in args else None
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        filtered = any(v is not None for v in (branch, sha, status))
+        if filtered and (page - 1) * limit >= 1000:
+            raise Refused("filtered run search exceeds provider 1000-result window")
+        q = f"per_page={limit}&page={page}"
+        if branch is not None:
+            q += "&branch=" + quote(branch, safe="")
+        if sha is not None:
+            q += "&head_sha=" + sha
+        if status is not None:
+            q += "&status=" + status
+        value = self._get(f"/repos/{repo}/actions/runs?{q}")
+        if (
+            not isinstance(value, dict)
+            or type(value.get("total_count")) is not int
+            or not 0 <= value["total_count"] <= 1000000000
+            or not isinstance(value.get("workflow_runs"), list)
+            or len(value["workflow_runs"]) > limit
+            or value["total_count"] < len(value["workflow_runs"])
+        ):
+            raise RelayGitHubError(502, "run page unverifiable")
+        runs = []
+        seen = set()
+        for row in value["workflow_runs"]:
+            if (
+                not isinstance(row, dict)
+                or "conclusion" not in row
+                or any(
+                    type(row.get(k)) is not int or row[k] < 1
+                    for k in ("id", "run_attempt", "workflow_id")
+                )
+                or row["id"] in seen
+                or row.get("status") not in statuses
+                or row.get("conclusion") not in (None, *conclusions)
+                or (row["status"] == "completed") != (row["conclusion"] is not None)
+            ):
+                raise RelayGitHubError(502, "run metadata unverifiable")
+            if (
+                "head_branch" not in row
+                or not isinstance(row.get("head_sha"), str)
+                or not _SHA.fullmatch(row["head_sha"])
+                or row.get("head_branch") is not None
+                and (
+                    not isinstance(row["head_branch"], str)
+                    or not _REF.fullmatch(row["head_branch"])
+                )
+            ):
+                raise RelayGitHubError(502, "run head unverifiable")
+            if (
+                branch is not None
+                and row["head_branch"] != branch
+                or sha is not None
+                and row["head_sha"] != sha
+                or status is not None
+                and status not in (row["status"], row["conclusion"])
+            ):
+                raise RelayGitHubError(502, "run filter unverifiable")
+            prs = row.get("pull_requests")
+            if (
+                not isinstance(prs, list)
+                or len(prs) > 100
+                or any(
+                    not isinstance(p, dict) or type(p.get("number")) is not int or p["number"] < 1
+                    for p in prs
+                )
+            ):
+                raise RelayGitHubError(502, "run PR metadata unverifiable")
+            numbers = [p["number"] for p in prs]
+            if len(set(numbers)) != len(numbers):
+                raise RelayGitHubError(502, "duplicate run PR metadata")
+            item = {
+                k: row[k]
+                for k in (
+                    "id",
+                    "run_attempt",
+                    "workflow_id",
+                    "head_branch",
+                    "head_sha",
+                    "status",
+                    "conclusion",
+                )
+            }
+            item["pull_numbers"] = numbers
+            seen.add(row["id"])
+            runs.append(item)
+        return {
+            "runs": runs,
+            "total": value["total_count"],
+            "page": page,
+            "has_more": len(runs) == limit,
+            "search_cap": 1000 if filtered else None,
+            "snapshot": False,
+        }
+
+    def wf_workflows_page(self, repo, args):
+        """Numeric workflow identity/path observations; no trust in display names."""
+        _only(args, ("repo", "page", "per_page"))
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        value = self._get(f"/repos/{repo}/actions/workflows?per_page={limit}&page={page}")
+        if (
+            not isinstance(value, dict)
+            or type(value.get("total_count")) is not int
+            or not 0 <= value["total_count"] <= 1000000000
+            or not isinstance(value.get("workflows"), list)
+            or len(value["workflows"]) > limit
+            or value["total_count"] < len(value["workflows"])
+        ):
+            raise RelayGitHubError(502, "workflow page unverifiable")
+        workflows = []
+        seen = set()
+        for row in value["workflows"]:
+            if (
+                not isinstance(row, dict)
+                or type(row.get("id")) is not int
+                or row["id"] < 1
+                or row["id"] in seen
+                or row.get("state")
+                not in (
+                    "active",
+                    "deleted",
+                    "disabled_fork",
+                    "disabled_inactivity",
+                    "disabled_manually",
+                )
+            ):
+                raise RelayGitHubError(502, "workflow identity/state unverifiable")
+            path = row.get("path")
+            if (
+                not isinstance(path, str)
+                or not 1 <= len(path) <= 1024
+                or not re.fullmatch(r"[A-Za-z0-9._/+@~-]+", path)
+                or not path.startswith(".github/workflows/")
+                or not path.endswith((".yml", ".yaml"))
+                or any(v in ("", ".", "..") for v in path.split("/"))
+            ):
+                raise RelayGitHubError(502, "workflow path unverifiable")
+            if find_secret(path):
+                raise Refused("workflow path withheld")
+            seen.add(row["id"])
+            workflows.append({"id": row["id"], "path": path, "state": row["state"]})
+        return {
+            "workflows": workflows,
+            "total": value["total_count"],
+            "page": page,
+            "has_more": len(workflows) == limit,
+            "snapshot": False,
         }
 
     def wf_runs(self, repo, args):
@@ -3274,6 +3568,118 @@ class WorkflowVerbs:
             ],
             "complete": False,
         }
+
+    @staticmethod
+    def _check_run_metadata(value):
+        if (
+            not isinstance(value, dict)
+            or type(value.get("id")) is not int
+            or value["id"] <= 0
+            or not isinstance(value.get("head_sha"), str)
+            or not _SHA.fullmatch(value["head_sha"])
+            or not isinstance(value.get("name"), str)
+            or not isinstance(value.get("app"), dict)
+            or type(value["app"].get("id")) is not int
+            or value["app"]["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "check-run metadata unverifiable")
+        name = value["name"]
+        try:
+            raw = name.encode("utf-8")
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "check-run name unverifiable") from None
+        if (
+            not name
+            or len(raw) > 255
+            or "\x00" in name
+            or find_secret(name)
+            or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", name
+            )
+        ):
+            raise Refused("check-run name withheld")
+        status = value.get("status")
+        conclusion = value.get("conclusion")
+        if (
+            status not in ("queued", "in_progress", "completed", "waiting", "requested", "pending")
+            or conclusion
+            not in (
+                None,
+                "action_required",
+                "cancelled",
+                "failure",
+                "neutral",
+                "success",
+                "skipped",
+                "stale",
+                "timed_out",
+                "startup_failure",
+            )
+            or (status == "completed") != (conclusion is not None)
+        ):
+            raise RelayGitHubError(502, "check-run state unverifiable")
+        return {
+            "id": value["id"],
+            "head_sha": value["head_sha"],
+            "name": name,
+            "status": status,
+            "conclusion": conclusion,
+            "app_id": value["app"]["id"],
+        }
+
+    def wf_check_runs_page(self, repo, args):
+        _only(args, ("repo", "head_sha", "check_name", "page", "per_page"))
+        head = _sha(args, "head_sha")
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        name = args.get("check_name")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 255
+            or "\x00" in name
+            or find_secret(name)
+            or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", name
+            )
+        ):
+            raise Refused("invalid check name")
+        try:
+            size = len(name.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise Refused("invalid check name") from None
+        if size > 255:
+            raise Refused("invalid check name")
+        value = self._get(
+            f"/repos/{repo}/commits/{head}/check-runs?check_name={quote(name, safe='')}&filter=all&per_page={limit}&page={page}"
+        )
+        if (
+            not isinstance(value, dict)
+            or type(value.get("total_count")) is not int
+            or value["total_count"] < 0
+            or not isinstance(value.get("check_runs"), list)
+            or len(value["check_runs"]) > limit
+            or value["total_count"] < len(value["check_runs"])
+        ):
+            raise RelayGitHubError(502, "check-run page unverifiable")
+        rows = [self._check_run_metadata(x) for x in value["check_runs"]]
+        if any(x["head_sha"] != head or x["name"] != name for x in rows):
+            raise RelayGitHubError(502, "check-run page scope mismatch")
+        return {
+            "checks": rows,
+            "head_sha": head,
+            "check_name": name,
+            "page": page,
+            "has_more": len(rows) == limit,
+        }
+
+    def wf_check_run_get(self, repo, args):
+        _only(args, ("repo", "check_run_id", "head_sha"))
+        ident, head = _int(args, "check_run_id"), _sha(args, "head_sha")
+        row = self._check_run_metadata(self._get(f"/repos/{repo}/check-runs/{ident}"))
+        if row["id"] != ident or row["head_sha"] != head:
+            raise RelayGitHubError(502, "check-run identity mismatch")
+        return {"check": row}
 
     def wf_checks(self, repo, args):
         """Check runs for one commit (Kody, Seer, merge-gate and Actions jobs alike)."""
