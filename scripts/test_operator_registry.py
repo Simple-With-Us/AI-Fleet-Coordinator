@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -9,10 +11,13 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent_sync import operator_registry as R
+import mm_session_letter as M
+import mm_session_letter as M
 
 # A synthetic credential for the positive scan cases:  32 mixed-case characters with no
 # provider prefix, so the scanner still trips on it while the file carries no real token's
@@ -379,17 +384,26 @@ class RegistryTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["n"], 1)
 
-    def test_update_session_on_a_closed_session_raises(self):
+    def test_update_session_on_a_closed_session_answers_the_closed_state(self):
+        # The letter is over, so the row can never change again.  The call answers the
+        # closed state instead of raising:  the seat's stop hook carries only the
+        # title, and a refusal would block that hook forever on a swept session.
         a = self.reg.resolve_or_register(ident(platform="minimax"))
         self.reg.close(a["record_id"], actor="MM", source="test")
-        with self.assertRaises(ValueError):
-            R.update_session(
-                self.db,
-                platform="minimax",
-                native_session_id="native-1",
-                title="T",
-                **self._loc(platform="minimax"),
-            )
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="T",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(out["outcome"], "closed")
+        self.assertEqual(out["changed"], [])
+        self.assertEqual(out["record_id"], a["record_id"])
+        row = self.reg._conn.execute(
+            "SELECT title FROM sessions WHERE record_id = ?", (a["record_id"],)
+        ).fetchone()
+        self.assertNotEqual(row["title"], "T")
 
     def test_update_session_refreshes_last_seen(self):
         """A long-lived session is alive:  it must not look stale to the sweep."""
