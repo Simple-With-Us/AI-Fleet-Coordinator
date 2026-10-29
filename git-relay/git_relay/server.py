@@ -529,6 +529,10 @@ _REAPPLY_STATE_ACTIONS = frozenset(
     {
         "wf_repo_variable_update",
         "wf_repo_variable_delete",
+        "wf_labels_add",
+        "wf_label_update",
+        "wf_issue_dependency_add",
+        "wf_issue_dependency_remove",
         "wf_issue_update",
         "wf_review_update",
         "wf_check_update",
@@ -556,6 +560,7 @@ _REAPPLY_STATE_ACTIONS = frozenset(
 )
 
 _WORKFLOW_AUDIT_SCALARS = (
+    "blocker_number",
     "job_id",
     "run_id",
     "number",

@@ -433,7 +433,9 @@ async function serveSbtBearerMcp(request, env, token) {
   const parsed = parseSbtBearer(token);
   if (!parsed) return refuse();
   const { identity: seat } = parsed;
-  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  try {
+    await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  } catch { return refuse(); }
   const seatGate = gate(env, seat);
   const checked = await seatGate.gbBearerCheck(await sha256Hex(parsed.token));
   if (!checked.ok) {
@@ -448,7 +450,9 @@ async function serveSbtBearerMcp(request, env, token) {
     }
     return refuse();
   }
-  const credentials = await resolveBearerSeatCredentials(env, config, seat);
+  let credentials;
+  try { credentials = await resolveBearerSeatCredentials(env, config, seat); }
+  catch { return refuse(); }
   if (!credentials) return refuse();
   const { key, email } = credentials;
   if (checked.mcp_accept !== true) return refuse();
@@ -1180,8 +1184,12 @@ async function serveAdmin(request, env, config, oauth, email) {
           // A persona's bearer is its only credential:  accepted on /mcp by design.
           mcpAccept = true; kind = "persona";
         } else {
-          await prefetchFolder(env, "/zulip");
-          if (!await resolveBearerSeatCredentials(env, config, identity)) {
+          let credentials;
+          try {
+            await prefetchFolder(env, "/zulip");
+            credentials = await resolveBearerSeatCredentials(env, config, identity);
+          } catch { /* An unavailable own credential is never an env fallback. */ }
+          if (!credentials) {
             return errorPage("Request Refused", "That identity's own credentials are not loaded.", 400);
           }
           ({ token } = await newSeatBearer(identity));
