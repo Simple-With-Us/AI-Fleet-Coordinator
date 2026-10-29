@@ -35,6 +35,8 @@ import uuid
 from collections.abc import Iterable
 from typing import Any
 
+from .storage_guard import StorageGuard, StorageGuardError
+
 # Infisical defaults.  Every one of these is a *default*, overridable from the
 # environment so a third party can point the same code at their own Infisical (or self-hosted
 # Infisical) and their own credentials file without editing this module.  See infisical_api(),
@@ -130,6 +132,7 @@ def http_json(
     method: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     retries: int | None = None,
+    before_attempt=None,
 ) -> Any:
     """JSON request with bounded retries on 408 / 429 / 5xx / connection errors.  Never logs
     bodies.
@@ -153,6 +156,8 @@ def http_json(
     method = method or ("POST" if body is not None else "GET")
     last: Exception | None = None
     for attempt in range(retries + 1):
+        if before_attempt is not None:
+            before_attempt()
         req = urllib.request.Request(
             url,
             data=data,
@@ -571,6 +576,10 @@ class Qdrant:
         self.collection = collection or cfg["QDRANT_FLEET_COLLECTION"]
         self._read_key = cfg.get("QDRANT_READONLY_API_KEY") or cfg.get("QDRANT_API_KEY")
         self._write_key = cfg.get("QDRANT_API_KEY")
+        try:
+            self.storage_guard = StorageGuard.from_env(self.base, self.collection)
+        except StorageGuardError as exc:
+            raise FleetRagError(str(exc)) from None
         if not self._read_key:
             raise FleetRagError("no Qdrant key available for reads")
 
@@ -586,8 +595,16 @@ class Qdrant:
         key = self._write_key if write else self._read_key
         if write and not key:
             raise FleetRagError("QDRANT_API_KEY (write key) not available on this machine")
+        def check_storage():
+            if self.storage_guard is not None:
+                try:
+                    size = len(json.dumps(body).encode()) if body is not None else 0
+                    self.storage_guard.check(size)
+                except StorageGuardError as exc:
+                    raise FleetRagError(str(exc)) from None
         try:
-            return http_json(f"{self.base}{path}", body, {"api-key": key}, method, timeout=timeout)
+            options = {"before_attempt": check_storage} if write else {}
+            return http_json(f"{self.base}{path}", body, {"api-key": key}, method, timeout=timeout, **options)
         except FleetRagError as e:
             # A staged read-only key that the server has not loaded yet answers 401/403.
             # Fall back to the write key for the rest of this process instead of failing reads.
