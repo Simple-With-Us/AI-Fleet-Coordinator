@@ -714,7 +714,17 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 loaded = json.load(fh)
             if not isinstance(loaded, dict):
                 raise ValueError("the topic file must be a JSON object")
-            topics = {str(k): str(v) for k, v in loaded.items()}
+            if not all(
+                isinstance(key, str)
+                and SESSION_ID_RE.fullmatch(key) is not None
+                and isinstance(value, str)
+                and len(value) <= TITLE_MAX
+                for key, value in loaded.items()
+            ):
+                raise ValueError(
+                    "the topic file must map valid session IDs to bounded string titles"
+                )
+            topics = dict(loaded)
         except (OSError, ValueError, TypeError) as exc:
             print("cannot read the topic file: %s" % exc, file=sys.stderr)
             return 2
@@ -723,10 +733,12 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         kind = str(row.get("session_kind") or "")
         if kind not in ("conversation", "task"):
             continue
-        title = str(row.get("title") or "")
-        if looks_like_prompt(title):
-            continue
         session_id = row["session_id"]
+        title = str(row.get("title") or "")
+        # A title that reads like a wake prompt is not a thread name, but the topic
+        # file names one of them on purpose, so the operator's own list rescues it.
+        if looks_like_prompt(title) and session_id not in topics:
+            continue
         space = "single" if kind == "conversation" else "double"
         try:
             letter = letter_for(session_id, title, space)
@@ -739,9 +751,14 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         topic = topics.get(session_id) or (title if is_english(title) else "")
         if session_id in topics:
             try:
-                _scan_title(str(topics[session_id]))
-            except ValueError as exc:
-                out.append({"session_id": session_id, "error": str(exc)})
+                _scan_title(topics[session_id])
+            except ValueError:
+                out.append(
+                    {
+                        "session_id": session_id,
+                        "error": "topic_secret_detected",
+                    }
+                )
                 continue
         if not topic:
             out.append(
@@ -793,10 +810,32 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             ]
         )
         if answer.get("error"):
-            print(json.dumps({"sweep_error": answer["error"]}), file=sys.stderr)
-            exit_code = 2
-        else:
-            print(json.dumps({"registry_sweep": answer.get("count", 0)}), file=sys.stderr)
+            error_code = answer.get("code")
+            unknown_codes = {"timeout", "nonzero", "empty", "bad_json"}
+            outcome = (
+                "outcome_unknown"
+                if error_code in unknown_codes
+                else "failed"
+            )
+            if error_code == "timeout":
+                exit_code = 124
+            elif error_code == "missing_tool":
+                exit_code = 127
+            else:
+                exit_code = 2
+            print(json.dumps(out, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "sweep_error": "operator registry unavailable",
+                        "sweep_outcome": outcome,
+                        "code": error_code,
+                    }
+                ),
+                file=sys.stderr,
+            )
+            return exit_code
+        print(json.dumps({"registry_sweep": answer.get("count", 0)}), file=sys.stderr)
     print(json.dumps(out, indent=2))
     return exit_code
 
