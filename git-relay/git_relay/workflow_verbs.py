@@ -30,7 +30,7 @@ import lzma
 import re
 import zipfile
 import zlib
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .secret_scan import find_secret
@@ -57,11 +57,13 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 _REF = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 _PATH = re.compile(r"[A-Za-z0-9._/+@~-]{1,1024}")
 _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
-MAX_FILE_B64 = 256 * 1024
+MAX_FILE_RAW = 2 * 1024 * 1024
+MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
 MAX_PAGE = 50
 MAX_PROJECT = 100
 MAX_FILES = 20
-MAX_FILES_B64 = 512 * 1024
+MAX_FILES_RAW = 4 * 1024 * 1024
+MAX_FILES_B64 = 4 * ((MAX_FILES_RAW + 2) // 3) + 4 * MAX_FILES
 MAX_BINARY_ASSET = 180 * 1024  # base64 must fit the Worker 256 KiB MCP body
 MAX_BINARY_ASSET_B64 = 4 * ((MAX_BINARY_ASSET + 2) // 3)
 MAX_ARCHIVE_EXPANDED = 8 * 1024 * 1024
@@ -71,6 +73,10 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 # action -> (permissions needed, writes)
 SPECS = {
     "wf_git_blob_binary_get": ({"contents": "read"}, False),
+    "wf_issue_parent": ({"issues": "read"}, False),
+    "wf_issue_subissues": ({"issues": "read"}, False),
+    "wf_issue_blocked_by": ({"issues": "read"}, False),
+    "wf_issue_blocking": ({"issues": "read"}, False),
     "wf_merge_queue_entry": ({"pull_requests": "read"}, False),
     "wf_merge_queue_enqueue": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_merge_queue_dequeue": ({"pull_requests": "write", "contents": "write"}, True),
@@ -859,6 +865,81 @@ class WorkflowVerbs:
                 self._get(f"/repos/{repo}/environments/{quote(name, safe='')}"), name
             )
         }
+
+    @staticmethod
+    def _relation_issue(data):
+        if (
+            not isinstance(data, dict)
+            or "pull_request" in data
+            or type(data.get("id")) is not int
+            or data["id"] < 1
+            or type(data.get("number")) is not int
+            or data["number"] < 1
+            or not isinstance(data.get("title"), str)
+            or len(data["title"].encode("utf-8")) > 4096
+            or data.get("state") not in ("open", "closed")
+        ):
+            raise RelayGitHubError(502, "issue relation receipt unverifiable")
+        title = data["title"]
+        if find_secret(title) or re.search(
+            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", title
+        ):
+            title = "<withheld: credential-shaped title>"
+        url = data.get("repository_url")
+        bound = None
+        if isinstance(url, str):
+            parsed = urlsplit(url)
+            candidate = parsed.path.removeprefix("/repos/")
+            if (
+                parsed.scheme == "https"
+                and parsed.netloc == "api.github.com"
+                and parsed.path.startswith("/repos/")
+                and not parsed.query
+                and not parsed.fragment
+                and _REPO.fullmatch(candidate)
+            ):
+                bound = candidate
+        return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
+
+    def _relation_read(self, repo, args, suffix, single=False):
+        _only(args, ("repo", "number") if single else ("repo", "number", "per_page", "page"))
+        number = _int(args, "number")
+        page = 1 if single else (_int(args, "page", 1, 1000) if "page" in args else 1)
+        limit = 1 if single else _page(args)
+        query = "" if single else f"?per_page={limit}&page={page}"
+        data = self._get(f"/repos/{repo}/issues/{number}/{suffix}{query}")
+
+        def scoped(value):
+            issue = self._relation_issue(value)
+            if issue["repo"] is None or issue["repo"].casefold() != repo.casefold():
+                raise Refused("relation repository is outside or unverifiable in authorized scope")
+            return issue
+
+        if single:
+            return {"issue": scoped(data)}
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "issue relations page unverifiable")
+        return {
+            "issues": [scoped(x) for x in data[:limit]],
+            "page": page,
+            "has_more": len(data) >= limit,
+        }
+
+    def wf_issue_parent(self, repo, args):
+        _only(args, ("repo", "number"))
+        return self._relation_read(repo, args, "parent", True)
+
+    def wf_issue_subissues(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "sub_issues")
+
+    def wf_issue_blocked_by(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "dependencies/blocked_by")
+
+    def wf_issue_blocking(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "dependencies/blocking")
 
     def _asset_summary(self, data):
         if (
@@ -3568,6 +3649,8 @@ class WorkflowVerbs:
             raw = base64.b64decode(content, validate=True)
         except (binascii.Error, ValueError):
             raise Refused("invalid content") from None
+        if len(raw) > MAX_FILE_RAW:
+            raise Refused("file too large")
         if find_secret(message) or find_secret(raw.decode("utf-8", "replace")):
             raise Refused("credential-shaped content refused")
         payload = {"message": message, "content": content, "branch": branch}
@@ -3621,6 +3704,7 @@ class WorkflowVerbs:
         if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
             raise Refused("invalid files")
         seen, plan, total = set(), [], 0
+        total_raw = 0
         for f in files:
             if not isinstance(f, dict) or set(f) - {"path", "content_b64", "delete"}:
                 raise Refused("invalid files")
@@ -3634,7 +3718,12 @@ class WorkflowVerbs:
                 plan.append((path, None))
                 continue
             content = f.get("content_b64")
-            if not isinstance(content, str) or not content or "delete" in f:
+            if (
+                not isinstance(content, str)
+                or not content
+                or len(content) > MAX_FILE_B64
+                or "delete" in f
+            ):
                 raise Refused("invalid files")
             total += len(content)
             if total > MAX_FILES_B64:
@@ -3643,6 +3732,9 @@ class WorkflowVerbs:
                 raw = base64.b64decode(content, validate=True)
             except (binascii.Error, ValueError):
                 raise Refused("invalid content") from None
+            total_raw += len(raw)
+            if len(raw) > MAX_FILE_RAW or total_raw > MAX_FILES_RAW:
+                raise Refused("files too large")
             if find_secret(raw.decode("utf-8", "replace")):
                 raise Refused("credential-shaped content refused")
             plan.append((path, content))
