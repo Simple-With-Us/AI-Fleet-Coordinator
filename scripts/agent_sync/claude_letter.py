@@ -16,8 +16,10 @@ What the hook does.
 - SessionStart registers the chat, or resumes its registration, and titles it:  "<letter>: <Title>" when the chat
   already has a title (or, when resumed, a first prompt in its transcript), else "<letter>: New Chat" until its first
   prompt.  A `compact` start only reminds the model of the letter.
-- UserPromptSubmit titles a chat that is still on the placeholder from its first prompt, retries a registration that
-  failed (at most every ten minutes), and marks the chat seen at most every half hour.
+- UserPromptSubmit titles a chat that is still on the placeholder from its first prompt (a key or token in the prompt never
+  reaches the title), retries a registration or a title the registry did not take (at most every ten minutes), and marks
+  the chat seen at most every half hour, whatever the title did.  When the Operator reissues a different pair, the model is
+  told the new one as well as the title.
 - SessionEnd closes the registration when the chat is archived (reason `other`), replaced by `/clear`, or logged out,
   which frees its letter (CLOSE_REASONS).  An exit at the prompt or a `/resume` keeps the letter.
 
@@ -39,8 +41,10 @@ Which chat started this one.  Claude Code gives a hook no field that names a par
 Claude desktop app's own record of the chat (`claude_app_lineage`):  on the Mac, `claude-code-sessions/<account>/<org>/
 local_<id>.json` under ~/Library/Application Support/Claude, found by the chat's CLAUDE_CODE_HOST_SESSION_ID (the hook
 sends it with a registration as --host-session-id) or else by its session UUID.  `spawnedFrom.sessionId` names the
-parent's app id, and the parent's record holds its session UUID, which is what the registry keys on.  A server chat's
-lookup rides the ssh call that already goes to the Mac, so it adds no round trip.  A terminal `claude` chat has no
+parent's app id, and the parent's record holds its session UUID, which is what the registry keys on.  The record must hold this chat's own
+session UUID:  a `claude` started inside a chat inherits the chat's app id, so a record that names another chat is not
+used (the start after a `/clear`, when the app may not have written the new UUID yet, is the one case that trusts the
+id alone).  A server chat's lookup rides the ssh call that already goes to the Mac, so it adds no round trip.  A terminal `claude` chat has no
 record, a user fork is not a sub-thread, and anything unreadable (no record, a deleted parent, a changed file layout)
 means no parent is known:  the chat is picked like a main chat.  Only a chat that is being placed is looked up.
 
@@ -141,6 +145,8 @@ TITLE_CHARS = 60
 # costs a bounded amount of work inside the hook's 15-second budget.
 PROMPT_SCAN_CHARS = 4096
 PROMPT_SCAN_WORDS = 64
+# A token of this many letters and digits mixed is taken for a key or a hash and kept out of a title.
+SECRET_RUN = 28
 STDIN_LIMIT = 1 << 20
 TRANSCRIPT_LINES = 400
 TRANSCRIPT_BYTES = 4 << 20
@@ -288,16 +294,40 @@ def title_case(words: list[str]) -> str:
     return " ".join(out)
 
 
+def _secret_like(token: str) -> bool:
+    """A whitespace-delimited token the scanner flags, or a long run of letters and digits mixed (a key or a hash the
+    scanner has no pattern for, such as an npm_ token).  The scanner keys on prefixes (ghp_, sk_live_), and the word
+    split cuts at an underscore, so a token has to be judged whole, before it is split."""
+    if secretscan.scan(token):
+        return True
+    run = token.strip(".,;:()[]{}\"'`")
+    return len(run) >= SECRET_RUN and any(c.isdigit() for c in run) and any(c.isalpha() for c in run)
+
+
+def _without_secrets(line: str) -> str:
+    """The line with every whitespace-delimited token that looks like a secret removed."""
+    return " ".join(token for token in line.split() if not _secret_like(token))
+
+
 def title_from_prompt(prompt: object) -> str:
     """A short title from a prompt's first line that has words, or "" when it has none.  Markup, code blocks, links
     and a leading slash command are dropped first, so a pasted block or "/review" does not become the title (the
-    words after a slash command still can)."""
+    words after a slash command still can).
+
+    A token that looks like a secret is dropped whole before its line is split into words, so a pasted key (or the
+    ghp_ in front of it) never reaches a title, the registry, the note or the sheet.  A line that still reads as a
+    secret once those are gone, alone or joined with a neighbouring line ("Authorization:" then "Bearer <key>"), gives
+    no title."""
     text = str(prompt or "")[:PROMPT_SCAN_CHARS]
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
-    for line in text.splitlines():
-        line = re.sub(r"^\s*/\S*", " ", line)
+    lines = [_without_secrets(re.sub(r"^\s*/\S*", " ", raw)) for raw in text.splitlines()]
+    for number, line in enumerate(lines):
+        before = lines[number - 1] if number else ""
+        after = lines[number + 1] if number + 1 < len(lines) else ""
+        if any(secretscan.scan(joined) for joined in (line, before + " " + line, line + " " + after)):
+            continue  # what is left still reads as a secret, alone or across a line break
         words = []
         for scanned, match in enumerate(WORD.finditer(line)):
             if len(words) >= TITLE_WORDS or scanned >= PROMPT_SCAN_WORDS:
@@ -476,7 +506,12 @@ def _parent(OR: Any, db: str, args: Any, sid: str) -> tuple[str, str]:
     if rec is not None and rec.get("state") != "closed" and rec.get("label"):
         return "", ""
     try:
-        return AL.lookup(args.home, host_session_id=args.host_session_id, cli_session_id=sid)
+        return AL.lookup(
+            args.home,
+            host_session_id=args.host_session_id,
+            cli_session_id=sid,
+            allow_lag=args.after_clear,
+        )
     except Exception:  # noqa: BLE001 - a hint, never a reason to leave a chat without a letter
         return "", AL.UNREADABLE
 
@@ -595,6 +630,7 @@ def registry_main(
     parser.add_argument("--source", default=SOURCE)
     parser.add_argument("--parent-session-id", default="")
     parser.add_argument("--host-session-id", default="")
+    parser.add_argument("--after-clear", action="store_true")  # the app's record may not hold this session UUID yet
     try:
         with io.StringIO() as sink:
             from contextlib import redirect_stderr, redirect_stdout
@@ -711,7 +747,7 @@ class Chat:
 
     # ---- the registry ----------------------------------------------------------------------
 
-    def registry(self, op: str, title: str = "") -> dict[str, Any]:
+    def registry(self, op: str, title: str = "", after_clear: bool = False) -> dict[str, Any]:
         argv = [
             op,
             "--location",
@@ -729,7 +765,8 @@ class Chat:
         if op == "register" and AL.HOST_ID.fullmatch(host):
             # The desktop app's id for this chat, so the registry side (which runs on the Mac, where the app's record
             # of the chat is) can tell whether another chat started it.
-            answer = self._call(argv + ["--host-session-id=" + host])
+            extra = ["--host-session-id=" + host] + (["--after-clear"] if after_clear else [])
+            answer = self._call(argv + extra)
             if not str(answer.get("error") or "").startswith("bad arguments"):
                 return answer
             # A Mac still on a runtime from before the flag refuses the whole call:  ask again without it, so the chat
@@ -849,7 +886,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         text = ""  # "<letter>: New Chat" holds the place of a title;  it is not one
     if not text and source in ("resume", "fork"):
         text = title_from_transcript(data.get("transcript_path"), home)
-    answer = chat.registry("register", title=text)
+    answer = chat.registry("register", title=text, after_clear=source == "clear")
     note = _apply(
         chat,
         answer,
@@ -940,17 +977,25 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             chat.write(note)
             return 0
     title = None
+    answer: dict[str, Any] = {}
+    sent = False  # a registry call this prompt (a title or a touch) also marks the chat seen
     text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
     if text:
         title = "%s: %s" % (note["label"], text)
+        cleaned = clean_title(text)
         note.update(
             titled=True,
-            title=clean_title(text),  # the note keeps the scanned, cut copy the registry holds
+            title=cleaned,  # the note keeps the scanned, cut copy the registry holds
             placeholder=note.get("placeholder") or "%s: %s" % (note["label"], PLACEHOLDER),
         )
         note.pop("prior_label", None)  # the title on screen has the new letter now
         answer = chat.registry("title", title=text)
-        note["touched_at"] = chat.now
+        sent = True
+        if "error" in answer:
+            # The chat shows its title, but the Operator has none:  ask again after the wait, as a rename does.
+            note.update(title_unsent=cleaned, title_failed_at=chat.now)
+        else:
+            note["touched_at"] = chat.now
     elif renamed := _renamed(note, current):
         # Someone renamed the chat.  The letter goes back in front of their words, kept whole, if the new name dropped
         # it.  Words that differ from the registry's go to the Operator, so its title follows the thread;  the note
@@ -959,30 +1004,46 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         # putting it back needs no registry call.
         title = "%s: %s" % (note["label"], renamed)
         cleaned = clean_title(renamed)
-        answer = {}
         if cleaned != note.get("title"):
             waiting = note.get("rename_failed_for") == cleaned and (
                 chat.now - float(note.get("rename_failed_at") or 0) < RETRY_SECONDS
             )
             if not waiting:
                 answer = chat.registry("title", title=renamed)
+                sent = True
                 if "error" in answer:
                     note.update(rename_failed_at=chat.now, rename_failed_for=cleaned)
                 else:
                     note["title"] = cleaned
                     note.pop("rename_failed_at", None)
                     note.pop("rename_failed_for", None)
+                    note.pop("title_unsent", None)  # this title replaces the one that never reached the Operator
+                    note.pop("title_failed_at", None)
                     note["touched_at"] = chat.now
-    elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
+    # A title the Operator never took (the first one, when the registry did not answer) is sent again after the wait.
+    unsent = str(note.get("title_unsent") or "")
+    if not sent and unsent and chat.now - float(note.get("title_failed_at") or 0) >= RETRY_SECONDS:
+        answer = chat.registry("title", title=unsent)
+        sent = True
+        if "error" in answer:
+            note["title_failed_at"] = chat.now
+        else:
+            note.pop("title_unsent", None)
+            note.pop("title_failed_at", None)
+            note["touched_at"] = chat.now
+    # Whatever the title did, a chat is marked seen on schedule when nothing was sent:  a name of more than TITLE_CHARS,
+    # or one the scanner shortened, is a rename on every prompt and would otherwise never touch, so the 36-hour sweep
+    # would close a live chat.  The touch is also where a retired letter is found.
+    if not sent and chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
         answer = chat.registry("touch")
         note["touched_at"] = chat.now
-    else:
-        answer = {}
+    context = ""
     if answer.get("retired"):
         # The letter was retired while this chat was open:  check with the Operator again, in case it needs a new one.
         held = str(note.get("label") or "")
         text = str(note.get("title") or "") or own_words(current, note) or PLACEHOLDER
-        note = _apply(chat, chat.registry("register", title=text), note)
+        registered = chat.registry("register", title=text)
+        note = _apply(chat, registered, note)
         if note["state"] == "open":
             # The note keeps the scanned, cut copy the registry holds;  the title on screen keeps the owner's words.
             note.update(
@@ -991,11 +1052,14 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
                 placeholder="%s: %s" % (note["label"], PLACEHOLDER),
             )
             title = "%s: %s" % (note["label"], text)
+            if note["label"] != held:
+                # A different pair:  the model was told the old one at the start, so it is told the new one now.
+                context = _reissued(registered) + reminder(note)
         else:
             title = bare(current, held) if held and current.startswith("%s: " % held) else None
     chat.write(note)
-    if title and title != current:
-        _hook_out(stdout, "UserPromptSubmit", title=title)
+    if (title and title != current) or context:
+        _hook_out(stdout, "UserPromptSubmit", context=context, title=title if title and title != current else None)
     return 0
 
 

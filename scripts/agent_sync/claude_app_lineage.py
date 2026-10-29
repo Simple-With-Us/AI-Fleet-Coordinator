@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 
 from . import session_ids as SI
 
@@ -39,6 +40,8 @@ RECORD_BYTES = (
 )  # a record is about 0.65 MB (it holds the chat's MCP wiring);  nothing near this is a record
 SCAN_RECORDS = 300  # the newest records looked through when the chat's app id is not known
 SCAN_BYTES = 128 << 20  # the most a scan reads, counting a file too big to read at its limit
+LOAD_ATTEMPTS = 3  # reads of a record the app may be rewriting
+RETRY_PAUSE = 0.05  # seconds between them:  longer than a truncate-then-write leaves a file empty, short for a hook
 
 # Why no parent was found, for the registry's answer.  "" means one was.
 NO_STORE = "no_store"
@@ -111,9 +114,12 @@ def _parse(text: str) -> dict | None:
 
 
 def _load(path: str) -> dict | None:
-    """The record's three fields, or None when it cannot be read.  A file the app is rewriting can be caught half
-    written, so one more read is made before giving up."""
-    for _ in range(2):
+    """The record's three fields, or None when it cannot be read.  A file the app is rewriting (a truncate, then the
+    write) can be caught empty or half written, and a read right after lands in the same window, so it is read up to
+    LOAD_ATTEMPTS times with a short pause between."""
+    for attempt in range(LOAD_ATTEMPTS):
+        if attempt:
+            time.sleep(RETRY_PAUSE)
         text = _read(path)
         if text is None:
             return None
@@ -178,26 +184,39 @@ def _record_for_cli_id(root: str, cli_session_id: str) -> tuple[dict | None, boo
     return None, unreadable
 
 
-def lookup(home: str, *, host_session_id: str = "", cli_session_id: str = "") -> tuple[str, str]:
+def lookup(
+    home: str, *, host_session_id: str = "", cli_session_id: str = "", allow_lag: bool = False
+) -> tuple[str, str]:
     """(the Claude Code session UUID of the chat that started this one, why none): ("<uuid>", "") when one is known,
     ("", reason) otherwise, the reason one of the constants above.
 
     The chat is found by its app id (`host_session_id`, from CLAUDE_CODE_HOST_SESSION_ID), else by its Claude Code
-    session UUID.  Only a chat the app started from another chat (`spawnedFrom`) has a parent."""
+    session UUID.  Only a chat the app started from another chat (`spawnedFrom`) has a parent.
+
+    A `claude` started inside a chat (a Bash tool, tmux) inherits that chat's app id, so the record the id names can
+    be the outer chat's, not this one's.  When that record's own session UUID is valid and is not this chat's, it is
+    not used:  this chat is looked for by its session UUID instead, and a nested run, which has no record, has no
+    parent.  `allow_lag` lets the app id decide anyway, for the start after a `/clear`, when the app may not have
+    written the new session UUID into the record yet."""
     root = store_root(home)
     if not os.path.isdir(root):
         return "", NO_STORE
     path = _find(root, host_session_id) if host_session_id else ""
+    record = None
     if path:
         record = _load(path)
         if record is None:
             return "", UNREADABLE
-    elif cli_session_id:
+        mine = _cli_id(record)
+        if mine and cli_session_id and mine != cli_session_id and not allow_lag:
+            record = None  # another chat's record:  this chat is judged by its own session UUID
+    if record is None:
+        if not cli_session_id:
+            return "", NO_RECORD
         record, unreadable = _record_for_cli_id(root, cli_session_id)
         if record is None:
             return "", UNREADABLE if unreadable else NO_RECORD
-    else:
-        return "", NO_RECORD
+        host_session_id = ""  # the app id named another chat's record, so it says nothing about this one
     spawned = record.get("spawnedFrom")
     if not spawned or not spawned["sessionId"]:
         return "", NOT_STARTED

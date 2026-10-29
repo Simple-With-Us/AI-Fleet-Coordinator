@@ -61,6 +61,11 @@ PRIMARY_ORDER = tuple(a + a for a in LETTERS) + tuple(
 # How a free letter is chosen:  the lowest in the alphabet, the one unused the longest, or (pairs only) the next of a
 # main chat's PRIMARY_ORDER.
 LETTER_PICKS = ("lowest", "oldest", "primary")
+# The space and pick a platform gets when its caller names none (register_session, the register CLI).  A Claude chat
+# takes a pair in the main-chat order whoever registers it, the hook or the Operator's own ask-and-answer path, so a
+# chat the hook never lettered does not get a single letter that no sweep frees;  every other platform keeps a single
+# letter, the lowest free.
+PLATFORM_LETTER_DEFAULTS = {"claude": ("double", "primary")}
 
 
 def _clean_parent(value: object) -> str:
@@ -914,8 +919,8 @@ def register_session(
     apple_note_link: str = "",
     wake_capability: str = "unknown",
     issuer: str = "",
-    letter_space: str = "single",
-    letter_pick: str = "lowest",
+    letter_space: str | None = None,
+    letter_pick: str | None = None,
     parent_session_id: str = "",
     parent_letter: str = "",
 ) -> dict[str, Any]:
@@ -928,7 +933,9 @@ def register_session(
     A seat never chooses its own letter.  The lowest free letter on the platform (letter_pick "lowest", the
     default;  "oldest" is the one unused the longest, and "primary" the next main-chat pair, the doubled pairs AA,
     BB ... ZZ first, in the double letter_space) goes to the session, a recycled letter takes the
-    next generation, and the title comes back in the display form the platform expects:  "H: Title".
+    next generation, and the title comes back in the display form the platform expects:  "H: Title".  A caller
+    that names no letter_space or letter_pick gets the platform's (PLATFORM_LETTER_DEFAULTS:  a Claude chat takes a
+    pair in the main-chat order;  every other platform a single letter, the lowest free).
 
     A session another session started names its parent with parent_session_id (the parent's native session id on
     this platform, on any host) or, for a platform that knows only the letter, parent_letter (the parent's pair,
@@ -949,7 +956,7 @@ def register_session(
     """
     if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
         raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
-    if letter_pick not in LETTER_PICKS:
+    if letter_pick is not None and letter_pick not in LETTER_PICKS:
         raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
     _scan_fields(
         {
@@ -962,6 +969,9 @@ def register_session(
     native = SI.check(native_session_id, "the native session id")
     parent = _clean_parent(parent_session_id)
     platform = normalize_platform(platform)
+    default_space, default_pick = PLATFORM_LETTER_DEFAULTS.get(platform, ("single", "lowest"))
+    space = letter_space or default_space
+    pick = letter_pick or default_pick
     for name, value in (
         ("platform", platform),
         ("verified_host", verified_host),
@@ -986,8 +996,8 @@ def register_session(
                 "thread_link": thread_link,
                 "apple_note_link": apple_note_link,
                 "wake_capability": wake_capability,
-                "letter_space": letter_space,
-                "letter_pick": letter_pick,
+                "letter_space": space,
+                "letter_pick": pick,
                 "parent_session_id": parent,
                 "parent_letter": parent_letter if isinstance(parent_letter, str) else "",
             }
@@ -1880,13 +1890,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--wake-capability", default="unknown")
     r.add_argument(
         "--letter-space",
-        default="single",
+        default=None,
         choices=sorted(LETTER_SPACES),
-        help="single for a main conversation, double for a subthread",
+        help="single for a main conversation, double for a subthread (default: the platform's, single except claude)",
     )
     r.add_argument(
         "--letter-pick",
-        default="lowest",
+        default=None,
         choices=LETTER_PICKS,
         help="lowest free letter (default), the letter unused the longest, or the next main-chat pair"
         " (AA, BB ... ZZ, then the pairs a row's subthreads reach last)",

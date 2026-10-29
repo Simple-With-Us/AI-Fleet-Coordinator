@@ -311,12 +311,60 @@ class ParentOfTests(Base):
         with mock.patch.object(AL, "RECORD_BYTES", 200):
             self.assertEqual(AL.lookup(self.home, cli_session_id=CHILD_CLI), (PARENT_CLI, ""))  # no budget in the way
 
-    def test_the_app_id_decides_before_the_session_uuid_does(self) -> None:
-        self.family()  # the record for CHILD_CLI says it was started by the parent
-        write(self.home, "local_dddddddd-0004", {"cliSessionId": "z-0001"})  # the host id names a record nobody started
+    def test_a_host_id_whose_record_is_another_chats_is_not_used(self) -> None:
+        # A claude started inside the child inherits CHILD_HOST, so the record it names is the child's, not the nested
+        # run's:  the nested run (its own session uuid) is not the child's sibling.
+        self.family()
         self.assertEqual(
-            AL.lookup(self.home, host_session_id="local_dddddddd-0004", cli_session_id=CHILD_CLI), ("", AL.NOT_STARTED)
+            AL.lookup(self.home, host_session_id=CHILD_HOST, cli_session_id="nested-0001"), ("", AL.NO_RECORD)
         )
+        self.assertEqual(AL.parent_of(self.home, host_session_id=CHILD_HOST, cli_session_id="nested-0001"), "")
+
+    def test_a_nested_run_with_a_record_of_its_own_is_judged_by_that_record(self) -> None:
+        self.family()
+        write(self.home, "local_eeeeeeee-0005", {"cliSessionId": "mine-0001", "spawnedFrom": {"sessionId": PARENT_HOST}})
+        self.assertEqual(
+            AL.lookup(self.home, host_session_id=CHILD_HOST, cli_session_id="mine-0001"), (PARENT_CLI, "")
+        )
+        write(self.home, "local_eeeeeeee-0005", {"cliSessionId": "mine-0001"})  # a record of a chat nobody started
+        self.assertEqual(
+            AL.lookup(self.home, host_session_id=CHILD_HOST, cli_session_id="mine-0001"), ("", AL.NOT_STARTED)
+        )
+
+    def test_a_host_id_with_a_matching_or_missing_session_uuid_is_used(self) -> None:
+        self.family()
+        self.assertEqual(AL.lookup(self.home, host_session_id=CHILD_HOST, cli_session_id=CHILD_CLI), (PARENT_CLI, ""))
+        # a record that holds no session uuid (yet) cannot be told to be another chat's
+        write(self.home, CHILD_HOST, {"spawnedFrom": {"sessionId": PARENT_HOST}})
+        self.assertEqual(AL.lookup(self.home, host_session_id=CHILD_HOST, cli_session_id="anything-0001"), (PARENT_CLI, ""))
+
+    def test_a_record_that_lags_after_a_clear_is_used_when_the_caller_allows_it(self) -> None:
+        self.family()  # the record still holds CHILD_CLI, but the chat now has a new session uuid
+        self.assertEqual(AL.lookup(self.home, host_session_id=CHILD_HOST, cli_session_id="cleared-0001")[0], "")
+        self.assertEqual(
+            AL.lookup(self.home, host_session_id=CHILD_HOST, cli_session_id="cleared-0001", allow_lag=True),
+            (PARENT_CLI, ""),
+        )
+
+    def test_a_record_read_half_written_is_read_again_after_a_pause(self) -> None:
+        self.family()
+        real = AL._read
+        calls = {"n": 0}
+
+        def flaky(path):
+            calls["n"] += 1
+            return "" if calls["n"] <= 2 else real(path)  # empty twice, as a truncate-then-write leaves it
+
+        with mock.patch.object(AL, "_read", flaky), mock.patch.object(AL.time, "sleep") as pause:
+            self.assertEqual(self.parent(host_session_id=CHILD_HOST), PARENT_CLI)
+        self.assertEqual(pause.call_count, 2)  # one pause before each re-read
+        pause.assert_called_with(AL.RETRY_PAUSE)
+
+    def test_a_record_that_stays_empty_through_every_attempt_is_unreadable(self) -> None:
+        self.family()
+        with mock.patch.object(AL, "_read", lambda path: ""), mock.patch.object(AL.time, "sleep") as pause:
+            self.assertEqual(AL.lookup(self.home, host_session_id=CHILD_HOST), ("", AL.UNREADABLE))
+        self.assertEqual(pause.call_count, AL.LOAD_ATTEMPTS - 1)
 
     def test_the_scan_does_not_trust_a_record_that_only_mentions_the_uuid(self) -> None:
         self.family()
