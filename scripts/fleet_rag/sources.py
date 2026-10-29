@@ -1907,7 +1907,7 @@ def _linear_light_scan(deadline: float | None = None) -> dict:
     while True:
         clause = f', after: "{after}"' if after else ""
         data = _linear_query(
-            "query { issues(first: %d, orderBy: updatedAt%s) { %s } }"
+            "query { issues(first: %d, includeArchived: true, orderBy: updatedAt%s) { %s } }"
             % (LINEAR_PAGE, clause, _LINEAR_LIGHT_FIELDS),
             timeout_s=_linear_remaining(deadline),
         )
@@ -1992,7 +1992,7 @@ def _linear_placeholder(issue_id: str) -> dict:
     """A skipped issue still needs a node so the missing-id check does not misfire on it."""
     try:
         data = _linear_query(
-            "query { issues(first: 1, filter: { id: { in: [%s] } }) { nodes { id identifier } } }"
+            "query { issues(first: 1, includeArchived: true, filter: { id: { in: [%s] } }) { nodes { id identifier } } }"
             % json.dumps(issue_id)
         )
         nodes = (data.get("issues") or {}).get("nodes") or []
@@ -2059,7 +2059,7 @@ def _linear_fetch_chunk(chunk: list, deadline: float | None = None) -> list:
         while True:
             clause = f', after: "{after}"' if after else ""
             data = _linear_query(
-                "query { issues(first: %d, filter: { id: { in: [%s] } }%s) { %s } }"
+                "query { issues(first: %d, includeArchived: true, filter: { id: { in: [%s] } }%s) { %s } }"
                 % (LINEAR_FULL_PAGE, id_list, clause, _LINEAR_FULL_FIELDS),
                 timeout_s=_linear_remaining(deadline),
             )
