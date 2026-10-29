@@ -401,6 +401,13 @@ jobs:
         node-version: '24'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # The alert-ingress secret provisioner (AFC-351):  the batched read against a
+    # fake `fleet-secrets` that keeps the CLI's own contract -- one name answers
+    # with the raw value, several answer with a JSON object -- so a one-name
+    # batch cannot decode as the other.  No network, no secret in any assertion.
+    - name: alert_ingress provisioner tests
+      run: |
+        cd scripts && python3 -m unittest test_alert_ingress_provision -v
     # Shared alert ingress: state transitions, vendor normalization, and the
     # Zulip status rendering.  Pure functions, so no Workers runtime needed.
     # The test files are named explicitly: on Node 24 the directory form
