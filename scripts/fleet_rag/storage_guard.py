@@ -125,8 +125,10 @@ class StorageGuard:
             ) from None
 
     def check(self, request_bytes: int = 0):
-        if type(request_bytes) is not int or request_bytes < 0 or request_bytes > min(
-            self.max_request_bytes, self.write_allowance_bytes
+        if (
+            type(request_bytes) is not int
+            or request_bytes < 0
+            or request_bytes > min(self.max_request_bytes, self.write_allowance_bytes)
         ):
             raise StorageGuardError("write request exceeds configured storage allowance")
         try:
