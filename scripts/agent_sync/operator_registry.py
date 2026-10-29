@@ -559,7 +559,9 @@ class SessionRegistry:
                 (now, record_id),
             )
             details = f"previous letter {previous}" if previous else ""
-            self._insert_event(conn, record_id, letter, "reopen", actor, "reopened", source, details, now)
+            self._insert_event(
+                conn, record_id, letter, "reopen", actor, "reopened", source, details, now
+            )
             self._enqueue_session_upsert(conn, record_id, now)
             return letter, generation, previous
 

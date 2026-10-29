@@ -64,7 +64,11 @@ SOURCE = "claude-letter-hook"
 ENTRYPOINTS = ("cli", "claude-desktop")
 LOCATIONS = ("mac", "server")
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
-TITLE_SOURCES = ("startup", "resume", "fork")  # the SessionStart sources whose sessionTitle Claude Code applies
+TITLE_SOURCES = (
+    "startup",
+    "resume",
+    "fork",
+)  # the SessionStart sources whose sessionTitle Claude Code applies
 # SessionEnd reasons that close a chat's registration and free its letter.  Archiving a chat in the desktop app ends
 # its process, and `other` is the reason that end is expected to carry (the docs name no archive reason);  `/clear`
 # replaces the chat;  `logout` ends every chat.  An exit at the prompt and `/resume` keep the letter.  A host can name
@@ -92,7 +96,7 @@ TRANSCRIPT_BYTES = 4 << 20
 LETTER_PREFIX = re.compile(r"^[A-Z]: ")
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’+#.\-]*")
 SMALL_WORDS = frozenset(
-    "a an and as at but by for from in into nor of on or per the to via vs with".split()
+    ["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "nor", "of", "on", "or", "per", "the", "to", "via", "vs", "with"]
 )
 
 Runner = Callable[..., Any]
@@ -170,7 +174,7 @@ def title_from_prompt(prompt: object) -> str:
     """A short title from a prompt's first line that has words, or "" when it has none.  Markup, code blocks and
     links are dropped first, so a pasted block or a slash command does not become the title."""
     text = str(prompt or "")
-    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
     for line in text.splitlines():
@@ -190,7 +194,11 @@ def _user_texts(entry: Mapping[str, Any]) -> list[str]:
     if isinstance(content, str):
         return [content]
     if isinstance(content, list):
-        return [str(p.get("text") or "") for p in content if isinstance(p, Mapping) and p.get("type") == "text"]
+        return [
+            str(p.get("text") or "")
+            for p in content
+            if isinstance(p, Mapping) and p.get("type") == "text"
+        ]
     return []
 
 
@@ -280,14 +288,18 @@ def sweep_stale(OR: Any, db: str, keep: tuple[str, str], now: float) -> int:
 
 def evict_oldest(OR: Any, db: str, keep: tuple[str, str]) -> int:
     """Close the least recently seen open Claude registration, except the chat being registered."""
-    rows = [r for r in _open_claude_rows(db) if (r["verified_host"], r["native_session_id"]) != keep]
+    rows = [
+        r for r in _open_claude_rows(db) if (r["verified_host"], r["native_session_id"]) != keep
+    ]
     if not rows:
         return 0
     oldest = min(rows, key=lambda r: _iso(r["last_seen_at"]) or 0.0)
     return _close_records(OR, db, [oldest["record_id"]], "claude-letter-evict")
 
 
-def _with_room(OR: Any, db: str, keep: tuple[str, str], allocate: Callable[[], Any]) -> tuple[Any, int]:
+def _with_room(
+    OR: Any, db: str, keep: tuple[str, str], allocate: Callable[[], Any]
+) -> tuple[Any, int]:
     """Run one allocation;  when every letter is live, close the least recently seen Claude chat and try once more.
     A second LabelExhausted is the caller's to report."""
     try:
@@ -325,7 +337,10 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
             try:
                 if out["outcome"] == "resumed_closed":
                     (letter, generation, previous), more = _with_room(
-                        OR, db, keep, lambda: reg.reopen(out["record_id"], actor=args.seat, source=args.source)
+                        OR,
+                        db,
+                        keep,
+                        lambda: reg.reopen(out["record_id"], actor=args.seat, source=args.source),
                     )
                     evicted += more
                     out.update(
@@ -338,7 +353,9 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                 else:
                     reg.mark_seen(out["record_id"])
                 if title:
-                    reg.update_attrs(out["record_id"], title=title)  # register keeps an existing record's old title
+                    reg.update_attrs(
+                        out["record_id"], title=title
+                    )  # register keeps an existing record's old title
             finally:
                 reg.close_db()
     except OR.LabelExhausted:
@@ -363,13 +380,18 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
         elif args.op == "touch":
             reg.mark_seen(rid)
         elif args.op == "close":
-            return {"closed": reg.close(rid, actor=args.seat, source=args.source), "label": rec["label"]}
+            return {
+                "closed": reg.close(rid, actor=args.seat, source=args.source),
+                "label": rec["label"],
+            }
         return {"ok": True, "label": rec["label"], "generation": rec["generation"]}
     finally:
         reg.close_db()
 
 
-def registry_main(argv: list[str], *, env: Mapping[str, str], stdout: TextIO, now: float | None = None) -> int:
+def registry_main(
+    argv: list[str], *, env: Mapping[str, str], stdout: TextIO, now: float | None = None
+) -> int:
     """`letter registry OP --location L --session-id S [--seat SEAT] [--title T] [--source SRC]`, one JSON line out."""
     import argparse
 
@@ -460,13 +482,23 @@ class Chat:
         os.makedirs(folder, mode=0o700, exist_ok=True)
         tmp = "%s.%d.tmp" % (self.path, os.getpid())
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(dict(note, session_id=self.session_id, updated_at=self.now), fh, sort_keys=True)
+            json.dump(
+                dict(note, session_id=self.session_id, updated_at=self.now), fh, sort_keys=True
+            )
         os.replace(tmp, self.path)
 
     # ---- the registry ----------------------------------------------------------------------
 
     def registry(self, op: str, title: str = "") -> dict[str, Any]:
-        argv = [op, "--location", self.location, "--session-id", self.session_id, "--seat", self.seat]
+        argv = [
+            op,
+            "--location",
+            self.location,
+            "--session-id",
+            self.session_id,
+            "--seat",
+            self.seat,
+        ]
         if title:
             argv += ["--title", clean_title(title)]
         if self.location == "mac":
@@ -478,7 +510,11 @@ class Chat:
         cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", dest, remote]
         try:
             proc = self.runner(
-                cmd, capture_output=True, text=True, timeout=REMOTE_TIMEOUT, stdin=subprocess.DEVNULL
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=REMOTE_TIMEOUT,
+                stdin=subprocess.DEVNULL,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return {"error": "the registry host did not answer (%s)" % type(exc).__name__}
@@ -493,8 +529,9 @@ def reminder(note: Mapping[str, Any]) -> str:
     gen = note.get("generation") or 1
     ref = "Claude %s%s" % (label, " (gen %d)" % gen if gen > 1 else "")
     return (
-        "Operator session letter:  %s, on the %s.  This chat is addressed as \"@**Claude** %s\", and its title "
-        "starts with \"%s: \";  keep that prefix if the chat is renamed." % (ref, note.get("location"), label, label)
+        'Operator session letter:  %s, on the %s.  This chat is addressed as "@**Claude** %s", and its title '
+        'starts with "%s: ";  keep that prefix if the chat is renamed.'
+        % (ref, note.get("location"), label, label)
     )
 
 
@@ -511,7 +548,12 @@ def _hook_out(stdout: TextIO, event: str, *, context: str = "", title: str | Non
 def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[str, Any]:
     """Fold one register answer into the note:  open, failed, or held by another seat."""
     if "error" in answer or not answer.get("outcome"):
-        return dict(note, state="failed", failed_at=chat.now, error=str(answer.get("error") or "no answer")[:200])
+        return dict(
+            note,
+            state="failed",
+            failed_at=chat.now,
+            error=str(answer.get("error") or "no answer")[:200],
+        )
     if answer["outcome"] == "seat_mismatch":
         return dict(note, state="mismatch", label="")
     if not answer.get("label"):
@@ -537,9 +579,12 @@ def _reissued(answer: Mapping[str, Any]) -> str:
     """The context line for a reopened chat whose letter changed, or ""."""
     previous, label = str(answer.get("previous") or ""), str(answer.get("label") or "")
     if answer.get("outcome") == "reopened" and previous and previous != label:
-        return "This chat's earlier letter %s was retired while it was idle, so the Operator issued %s.  " % (
-            previous,
-            label,
+        return (
+            "This chat's earlier letter %s was retired while it was idle, so the Operator issued %s.  "
+            % (
+                previous,
+                label,
+            )
         )
     return ""
 
@@ -558,7 +603,9 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
     if not text and source in ("resume", "fork"):
         text = title_from_transcript(data.get("transcript_path"), home)
     answer = chat.registry("register", title=text)
-    note = _apply(chat, answer, dict(note, inherited=inherited, title=text or note.get("title", "")))
+    note = _apply(
+        chat, answer, dict(note, inherited=inherited, title=text or note.get("title", ""))
+    )
     if note["state"] == "failed":
         chat.write(note)
         _hook_out(
@@ -569,7 +616,11 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         return 0
     if note["state"] == "mismatch":
         chat.write(note)
-        _hook_out(stdout, "SessionStart", context="This chat is registered under another seat, so it takes no letter.")
+        _hook_out(
+            stdout,
+            "SessionStart",
+            context="This chat is registered under another seat, so it takes no letter.",
+        )
         return 0
     label = note["label"]
     placeholder = "%s: %s" % (label, PLACEHOLDER)
@@ -582,7 +633,12 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
     note["placeholder"] = placeholder
     chat.write(note)
     settable = source in TITLE_SOURCES and title != current
-    _hook_out(stdout, "SessionStart", context=_reissued(answer) + reminder(note), title=title if settable else None)
+    _hook_out(
+        stdout,
+        "SessionStart",
+        context=_reissued(answer) + reminder(note),
+        title=title if settable else None,
+    )
     return 0
 
 
@@ -590,7 +646,11 @@ def _first_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
     """The words for a chat's first real title:  a name someone gave it, else the title its start found, else its
     first prompt."""
     placeholder = note.get("placeholder") or ""
-    if current and current not in (placeholder, note.get("inherited") or "") and bare(current) != PLACEHOLDER:
+    if (
+        current
+        and current not in (placeholder, note.get("inherited") or "")
+        and bare(current) != PLACEHOLDER
+    ):
         return bare(current)  # someone named the chat:  keep their words under the letter
     return str(note.get("title") or "") or title_from_prompt(prompt) or PLACEHOLDER
 
@@ -612,7 +672,11 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     if not note.get("titled"):
         text = _first_title(note, current, data.get("prompt"))
         title = "%s: %s" % (note["label"], text)
-        note.update(titled=True, title=text, placeholder=note.get("placeholder") or "%s: %s" % (note["label"], PLACEHOLDER))
+        note.update(
+            titled=True,
+            title=text,
+            placeholder=note.get("placeholder") or "%s: %s" % (note["label"], PLACEHOLDER),
+        )
         answer = chat.registry("title", title=text)
         note["touched_at"] = chat.now
     elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
@@ -625,7 +689,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         text = str(note.get("title") or "") or bare(current) or PLACEHOLDER
         note = _apply(chat, chat.registry("register", title=text), note)
         if note["state"] == "open":
-            note.update(titled=True, title=text, placeholder="%s: %s" % (note["label"], PLACEHOLDER))
+            note.update(
+                titled=True, title=text, placeholder="%s: %s" % (note["label"], PLACEHOLDER)
+            )
             title = "%s: %s" % (note["label"], text)
         else:
             title = bare(current) if LETTER_PREFIX.match(current) else None
@@ -705,7 +771,11 @@ def hook(
 
 
 def show(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    sid = argv[1] if len(argv) > 1 and argv[0] == "--session-id" else str(env.get("CLAUDE_CODE_SESSION_ID") or "")
+    sid = (
+        argv[1]
+        if len(argv) > 1 and argv[0] == "--session-id"
+        else str(env.get("CLAUDE_CODE_SESSION_ID") or "")
+    )
     who = seat(env) or SEAT_DEFAULT
     try:
         sid = SI.check(sid, "the session id")
@@ -762,7 +832,9 @@ def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
     have = {ev: any(_ours(e) for e in hooks.get(ev) or []) for ev in HOOK_TIMEOUTS}
     if args.check:
         located = (settings.get("env") or {}).get(ENV_LOCATION)
-        return _emit(stdout, {"installed": have, "location_env": located}, 0 if all(have.values()) else 1)
+        return _emit(
+            stdout, {"installed": have, "location_env": located}, 0 if all(have.values()) else 1
+        )
     command = shlex.quote(os.path.join(home, ".local", "bin", "simple-chat")) + HOOK_MARK
     changed = []
     for event, timeout in HOOK_TIMEOUTS.items():
@@ -799,7 +871,9 @@ def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
     return _emit(stdout, {"changed": changed, "settings": path, "backup": backup}, 0)
 
 
-USAGE = "usage: simple-chat letter {hook | show [--session-id S] | install [...] | registry OP ...}\n"
+USAGE = (
+    "usage: simple-chat letter {hook | show [--session-id S] | install [...] | registry OP ...}\n"
+)
 
 
 def main(
