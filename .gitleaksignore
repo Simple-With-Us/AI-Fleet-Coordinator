@@ -63,3 +63,8 @@ ef42f132ad746c13dbe89c058d9e895ef64790a8:scripts/agent-sync-mcp/wrangler.jsonc:g
 # PR #1109 historical private-key HEADER ONLY in synthetic refusal tests, never a key.
 # Runtime marker is split in current source; exempt this exact old fixture finding only.
 1719f8b78a2ec9e235371cca7c3a76dbddf393fb:git-relay/git_relay/tests/test_file_request_limits.py:private-key:46
+
+# Made-up npm-shaped token in the AFC-564 title tests (PR #1127):  it proves a prefixed key never reaches a session
+# title, and is not a credential.  Split in source from the next commit on, so this fingerprint silences the
+# historical commit only (same convention as above).
+7cb8beb1a2e42498623a489dcdc2164516f7d51d:scripts/agent_sync/tests/test_claude_letter.py:npm-access-token:115

@@ -101,6 +101,7 @@ class TitleTests(unittest.TestCase):
 
     BODY = "Q7xT2mVb9LkR4nWc8ZdY1uHf6JpS3aGeNo5E"  # fake:  36 mixed-case letters and digits
     STRIPE = "51HxYz0123456789abcdefGH"
+    NPM = "np" + "m"  # the prefix is joined here and the token below at run time, so no token-shaped literal rests in the source
 
     def test_a_prefixed_secret_never_reaches_a_title(self) -> None:
         # The word split cuts at an underscore, a colon and an equals sign, which used to take the prefix the scanner
@@ -112,7 +113,7 @@ class TitleTests(unittest.TestCase):
             "Authorization:\nBearer %s" % self.BODY: "Authorization",
             "export TOKEN=ghp_%s and go" % self.BODY: "Export and Go",
             # a prefix the scanner has no pattern for:  the long mixed run is dropped on its own
-            "rotate npm_AbCdEf0123456789AbCdEf0123456789AbCd now": "Rotate Now",
+            "rotate %s now" % (self.NPM + "_" + "AbCdEf0123456789" * 2 + "AbCd"): "Rotate Now",
         }
         for prompt, expected in cases.items():
             title = CL.title_from_prompt(prompt)
