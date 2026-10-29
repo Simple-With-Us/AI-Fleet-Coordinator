@@ -79,6 +79,9 @@ class SeatPolicy:
     WORKFLOW_ACTIONS = (
         "wf_issue_events",
         "wf_issue_timeline",
+        "wf_commit_comments_page",
+        "wf_commit_comment_get",
+        "wf_pr_requested_reviewers",
         "wf_repo_tags",
         "wf_repo_languages",
         "wf_git_tree_create",
