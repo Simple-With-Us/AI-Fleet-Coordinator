@@ -209,9 +209,52 @@ def write(path: Path, text: str) -> None:
 
     Every knob write goes through the atomic replace, so a write that fails
     partway leaves the file it had exactly as it was:  a knob is never left
-    half written.
+    half written.  A knob whose staged file cannot be created is refused with
+    a `PermissionError` instead of being written in place, so the file it had
+    survives that refusal too.
     """
     write_atomic(path, text)
+
+
+def staged_directory(path: Path) -> Path:
+    """The directory the staged replacement of a knob file is created in.
+
+    A symlinked knob is written through, so the staged file lives in the
+    target's own directory rather than beside the link.
+    """
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+    return target.parent
+
+
+def prepare_staged_directory(path: Path) -> Path:
+    """Make sure the staged replacement of a knob file can be created.
+
+    A missing directory is created, the way the non-symlink path creates it, so
+    a knob whose target directory does not exist yet is not refused with a
+    permission message that hides the real reason.  The directory is created
+    private, because it holds a staged copy of the operator's own file.  A
+    path that is a symlink and not a directory is refused:  it would send the
+    staged file somewhere the operator did not name.  A directory that is there
+    but is neither writable nor searchable is refused with a `PermissionError`
+    that names it, before anything is written, so the file the link points at
+    cannot be truncated.
+
+    Every apply calls this before it takes a backup, so a knob that can never
+    be applied does not drop another copy beside the link on every run.
+    """
+    directory = staged_directory(path)
+    if not directory.is_dir():
+        if directory.is_symlink():
+            raise PermissionError(
+                f"the staged directory {directory} is a symlink and not a directory"
+            )
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() and not os.access(directory, os.W_OK | os.X_OK):
+        raise PermissionError(
+            f"the staged replacement of {path} needs write and search access to"
+            f" {directory}"
+        )
+    return directory
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -223,17 +266,17 @@ def write_atomic(path: Path, text: str) -> None:
     flushed after the rename, so a crash cannot lose the new file.
 
     A symlinked knob is written through:  the link stays a link and the file it
-    points at is the one that changes.  When that file lives in a directory the
-    account cannot write, the staged replace cannot happen there, so the write
-    goes through the link in place instead:  that needs write access to the
-    file itself, which is what the file the account already edits.
+    points at is the one that changes.  The staged file then lives in the
+    target's own directory, so that directory has to be writable and
+    searchable.  When it is not, the write fails closed with a
+    `PermissionError` instead of falling back to an in-place write, because an
+    in-place write is not atomic:  it truncates the target before writing, so
+    an interrupted write could leave the file corrupt.  The knob is then
+    skipped and reported like any other knob the account cannot write, and the
+    file it had is untouched.
     """
     target = Path(os.path.realpath(path)) if path.is_symlink() else path
-    if path.is_symlink() and not os.access(target.parent, os.W_OK):
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
+    prepare_staged_directory(path)
     owner = target.stat() if target.exists() else None
     mode = owner.st_mode & 0o777 if owner is not None else 0o644
     handle = tempfile.NamedTemporaryFile(
@@ -837,6 +880,7 @@ def apply_codex(path: Path, root: Path) -> bool:
         updated = text[: anchor.end()] + f" -c {root}" + text[anchor.end() :]
     if updated == text:
         return False
+    prepare_staged_directory(path)
     backup(path)
     write(path, updated)
     return True
@@ -878,6 +922,7 @@ def apply_acp(path: Path, root: Path) -> bool:
             return False
     if updated == text:
         return False
+    prepare_staged_directory(path)
     backup(path)
     write(path, updated)
     return True
@@ -888,6 +933,7 @@ def apply_bashrc(root: Path) -> bool:
     text = read(path)
     if bashrc_block(text) and knob_bashrc(root)[0]:
         return False
+    prepare_staged_directory(path)
     backup(path)
     new_block = BASHRC_BLOCK.format(
         begin=BASHRC_BEGIN, end=BASHRC_END, lanes=root, lanes_root=root,
@@ -928,6 +974,7 @@ def apply_claude_settings(path: Path, root: Path) -> bool:
         return False
     section["location"] = str(root.resolve())
     data["worktree"] = section
+    prepare_staged_directory(path)
     backup(path)
     write(path, json.dumps(data, indent=2) + "\n")
     return True
@@ -1210,6 +1257,7 @@ def apply_unit(path: Path, body: str, tool: str = "", flags: str = "") -> bool:
         merged = merged.replace(BINARY_MARKER, which(tool))
     if text == merged:
         return False
+    prepare_staged_directory(path)
     backup(path)
     write(path, merged)
     return True
@@ -1249,6 +1297,16 @@ def apply_knob(label: str, path: Path, kind: str, root: Path) -> tuple[bool, str
 def skip_reason(exc: OSError) -> str:
     """Why a knob was skipped, in the words the skip line carries."""
     if isinstance(exc, PermissionError):
+        # A refusal the tool raises itself names the object that needs the
+        # permission, because the file itself can be writable while the
+        # directory the staged file has to be created in is not, and only the
+        # directory can be fixed.  A permission the operating system raises
+        # says nothing more than the account cannot write the file, so the
+        # skip line stays the short one it has always been.
+        if exc.errno is None:
+            detail = str(exc).strip()
+            if detail:
+                return f"not writable by this account: {detail}"
         return "not writable by this account"
     return f"not written: {exc.strerror or exc}"
 

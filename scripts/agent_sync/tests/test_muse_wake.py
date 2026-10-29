@@ -10,6 +10,8 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import pathlib
+import re
 import stat
 import sys
 import tempfile
@@ -714,6 +716,22 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertNotIn("--disable-web-tools", argv)
         self.assertNotIn("--disable-sandbox", argv)
         self.assertNotIn("--no-foreign-personal-context", argv)
+
+    def test_the_step_budget_is_big_enough_for_the_wake_contract(self) -> None:
+        # Measured, not guessed.  At 8 steps mcode answers a four-message pending set in more steps
+        # than that and exits 7 with "limit_exceeded", which the daemon reads as a failed fallback.
+        # A failed fallback can never be pinned, so the seat keeps its old runtime forever.  The same
+        # run at 16 exits 0 with the contract's answer.
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertEqual(argv[argv.index("--max-steps") + 1], str(A.MCODE_MAX_STEPS))
+        self.assertGreaterEqual(A.MCODE_MAX_STEPS, 16)
+
+    def test_the_documented_argv_carries_the_step_budget_the_code_uses(self) -> None:
+        # The protocol doc quotes the fallback argv.  A number that drifts from the code is a doc
+        # that lies about the command, so the two are pinned together here.
+        doc = pathlib.Path(__file__).resolve().parents[3] / "docs" / "protocols" / "agent-sync-listener.md"
+        text = doc.read_text(encoding="utf-8")
+        self.assertIn("--max-steps %d --timeout 3m30s" % A.MCODE_MAX_STEPS, text)
 
     def test_the_backup_names_its_model_on_the_command_line(self) -> None:
         # Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, and on this Mac that
@@ -1463,3 +1481,152 @@ def _config_with_wake(wake: str, extra: dict | None = None) -> C.Config:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class McodeFallbackBoundTest(unittest.TestCase):
+    """The fallback's prompt bound, its own deadline, and the pin invalidation that follows.
+
+    mcode has neither a sandbox nor a tool-deny switch, so `--max-steps` is the ONLY bound on
+    how much the fallback may act, and the step cost grows with the prompt.  That makes the
+    budget, the prompt it is measured against, and the pin that vouches for it ONE contract:  a
+    change to any of the three has to invalidate the other two.
+    """
+
+    @staticmethod
+    def _seconds(text: str) -> float:
+        """A Go-style duration the way the argv carries it:  "3m30s", "90s", "1h"."""
+        total = 0.0
+        for value, unit in re.findall(r"(\d+(?:\.\d+)?)([smh])", text):
+            total += float(value) * {"s": 1.0, "m": 60.0, "h": 3600.0}[unit]
+        return total
+
+    @staticmethod
+    def _pending(trigger: int = 3) -> "W.Pending":
+        pending = W.Pending(
+            "w1", "MM", {"channel": "agent-sync", "topic": "t"}, owner=False, now=1.0, due=2.0
+        )
+        pending.add({"id": trigger}, False)
+        return pending
+
+    @staticmethod
+    def _history(count: int) -> list[dict[str, object]]:
+        return [
+            {
+                "id": i,
+                "sender_id": 11,
+                "sender_full_name": "Codex",
+                "timestamp": 1000.0 + i,
+                "content": "msg%03d" % i,
+            }
+            for i in range(1, count + 1)
+        ]
+
+    def _prompt(self, history, **kwargs) -> str:
+        return W.build_prompt(
+            seat="MM",
+            pending=self._pending(),
+            history=history,
+            owner_user_id=12,
+            is_bot=lambda uid: True,
+            owner_of=lambda m: False,
+            format_time=str,
+            board_enabled=False,
+            nonce="n",
+            **kwargs,
+        )
+
+    # -- the deadline ---------------------------------------------------------------------
+
+    def test_the_child_deadline_is_under_the_runner_deadline(self) -> None:
+        # The two used to be equal (the child's "4m" and WAKE_TIMEOUT = 240s), so the daemon's
+        # group-kill, not mcode's own clean timeout, ended a long fallback run:  the ledger then
+        # recorded a hard timeout instead of mcode's, and one failing wake took the seat's
+        # serialized worker for the whole outer budget.
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertEqual(argv[argv.index("--timeout") + 1], A.MCODE_TIMEOUT)
+        self.assertLess(self._seconds(A.MCODE_TIMEOUT), A.WAKE_TIMEOUT)
+
+    def test_the_child_deadline_still_fits_the_measured_run(self) -> None:
+        # The measured run finished in 137.8s, so the child's own deadline has to clear it with
+        # room to spare or the run that proved the budget would not finish under it.
+        self.assertGreater(self._seconds(A.MCODE_TIMEOUT), 145.0)
+
+    # -- the prompt bound -----------------------------------------------------------------
+
+    def test_the_bound_is_under_the_daemons_worst_case(self) -> None:
+        # The daemon builds a prompt with up to PROMPT_HISTORY messages plus the held-back
+        # block;  the budget was measured on four messages, so the fallback is given four.
+        self.assertLess(A.MCODE_FALLBACK_MAX_MESSAGES, W.PROMPT_HISTORY)
+        self.assertEqual(A.MCODE_FALLBACK_MAX_HELD, 0)
+
+    def test_a_bounded_prompt_keeps_the_trigger_and_the_newest_of_the_rest(self) -> None:
+        rows = self._history(15)
+        kept = W.select_prompt_messages(rows, [3], 4)
+        self.assertEqual([row["id"] for row in kept], [3, 13, 14, 15])
+
+    def test_a_bounded_prompt_keeps_the_newest_triggers_when_there_are_more_than_the_bound(self) -> None:
+        rows = self._history(15)
+        kept = W.select_prompt_messages(rows, [1, 2, 3, 4, 5], 4)
+        self.assertEqual([row["id"] for row in kept], [2, 3, 4, 5])
+
+    def test_an_unbounded_prompt_keeps_the_whole_history(self) -> None:
+        rows = self._history(15)
+        self.assertEqual(len(W.select_prompt_messages(rows, [3], None)), 15)
+
+    def test_the_prompt_the_fallback_is_given_carries_only_the_bounded_messages(self) -> None:
+        prompt = self._prompt(
+            self._history(15),
+            max_messages=A.MCODE_FALLBACK_MAX_MESSAGES,
+            max_held=A.MCODE_FALLBACK_MAX_HELD,
+        )
+        self.assertIn("The last %d messages follow" % A.MCODE_FALLBACK_MAX_MESSAGES, prompt)
+        self.assertNotIn("The last 15 messages follow", prompt)
+        # The trigger message survives the cut:  the wake is about it.
+        self.assertIn("msg003", prompt)
+        # And a message outside the bound does not.
+        self.assertNotIn("msg001", prompt)
+
+    def test_the_fallback_is_told_it_has_no_held_back_detail(self) -> None:
+        held = {
+            "count": 3,
+            "items": [
+                {
+                    "message_id": 900,
+                    "channel": "agent-sync",
+                    "topic": "earlier",
+                    "sender_full_name": "Codex",
+                    "reason": "wakes_per_hour",
+                    "zulip_link": "",
+                }
+            ],
+        }
+        prompt = self._prompt(
+            self._history(4),
+            held_back=held,
+            max_messages=A.MCODE_FALLBACK_MAX_MESSAGES,
+            max_held=A.MCODE_FALLBACK_MAX_HELD,
+        )
+        self.assertIn("This runtime is given no held-back detail.", prompt)
+        self.assertNotIn("900", prompt)
+
+    # -- the pin --------------------------------------------------------------------------
+
+    def test_the_pin_fingerprint_covers_the_prompt_bound(self) -> None:
+        # The bound is not in the argv, so it has to be hashed here or a pin made under an
+        # unbounded prompt would still read as verified under a bounded one.
+        before = A.mcode_wake_fingerprint("/usr/local/bin/mcode")
+        self.assertIsNotNone(before)
+        with mock.patch.object(A, "MCODE_FALLBACK_MAX_MESSAGES", A.MCODE_FALLBACK_MAX_MESSAGES + 1):
+            after = A.mcode_wake_fingerprint("/usr/local/bin/mcode")
+        self.assertNotEqual(before, after)
+
+    def test_the_pin_fingerprint_covers_the_policy_version(self) -> None:
+        before = A.mcode_wake_fingerprint("/usr/local/bin/mcode")
+        with mock.patch.object(A, "MCODE_WAKE_POLICY_VERSION", "something-else"):
+            after = A.mcode_wake_fingerprint("/usr/local/bin/mcode")
+        self.assertNotEqual(before, after)
+
+    def test_the_policy_version_names_the_bound(self) -> None:
+        # v2 is the bounded fallback:  the prompt bound and the child's own deadline are both
+        # invisible in the argv, so the version is what tells an old pin that it is stale.
+        self.assertIn("bounded", A.MCODE_WAKE_POLICY_VERSION)

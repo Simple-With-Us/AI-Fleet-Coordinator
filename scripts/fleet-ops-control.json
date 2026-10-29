@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "mac": {
+    "agents": [
+      {"label": "com.jay.agent-sync-runtime-sync", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.botfleet-server", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-gdrive-backup", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-mac-services", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-work-backup", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.fleet-worker-health", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.github-outbox-bridge", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.grok-idle-unload", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.ios-testflight-freshness", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.mac-cleanup", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.mac-facts-publish", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.mac-process-watch", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.mac-resource-watch", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.mac-seat-watch", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.needs-owner-notify", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.operator-notes-runner", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.operator-wake-alerter", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jay.sim-idle-reaper", "actions": ["start", "stop", "restart"]},
+      {"label": "com.jays.weekly-fleet-mode-digest", "actions": ["start", "stop", "restart"]}
+    ]
+  },
+  "server": {
+    "units": [
+      {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"]},
+      {"unit": "fleet-cli-git-update.timer", "scope": "system", "actions": ["start", "stop", "restart"]}
+    ],
+    "updates": [
+      {"name": "fleet-cli", "unit": "fleet-cli-git-update.service", "scope": "system"}
+    ],
+    "coolify": {"redeploy": true}
+  }
+}

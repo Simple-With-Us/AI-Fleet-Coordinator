@@ -79,6 +79,8 @@ class SeatPolicy:
     WORKFLOW_ACTIONS = (
         "wf_commit_statuses",
         "wf_commit_status_create",
+        "wf_review_thread_resolve",
+        "wf_review_thread_unresolve",
         "wf_review_update",
         "wf_review_dismiss",
         "wf_review_pending_delete",
@@ -103,6 +105,7 @@ class SeatPolicy:
         "wf_release_update",
         "wf_environments",
         "wf_environment_get",
+        "wf_file_rename",
         "wf_file_delete",
         "wf_issue_list",
         "wf_issue_get",
