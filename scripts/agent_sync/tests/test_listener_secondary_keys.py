@@ -41,4 +41,11 @@ class Tests(unittest.TestCase):
   with patch.object(m,'server_codes',return_value={'MA'}),patch.object(m,'login',side_effect=m.LoadError('login: HTTP 403')):
    out,line=m.build_env(dict(self.env(),JET_ROUTINE_KEY='keep'))
   self.assertNotIn('MA_ROUTINE_KEY',out);self.assertEqual(out['JET_ROUTINE_KEY'],'keep');self.assertNotIn('INFISICAL_CLIENT_SECRET',out)
+ def test_no_eligible_server_seats_never_fetches_secondary(self):
+  for codes in [set(), {'JET', 'ECHO', 'BF-ENGINEER'}]:
+   with patch.object(m, 'fetch') as fetch:
+    keys, line = m.listener_read_keys(self.env(), codes, 'same-token')
+    self.assertEqual(keys, {})
+    self.assertIn('no eligible server seats', line)
+    fetch.assert_not_called()
 if __name__=='__main__':unittest.main()

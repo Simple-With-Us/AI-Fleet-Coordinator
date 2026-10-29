@@ -276,6 +276,8 @@ def listener_read_keys(
     if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", project):
         return {}, "; listener read keys not loaded (invalid project id)"
     names = {code + "_ROUTINE_KEY" for code in LISTENER_READ_CODES & codes}
+    if not names:
+        return {}, "; listener read keys: no eligible server seats"
     source = dict(env, INFISICAL_PROJECT_ID=project, INFISICAL_ENVIRONMENT="prod")
     try:
         found = fetch(
