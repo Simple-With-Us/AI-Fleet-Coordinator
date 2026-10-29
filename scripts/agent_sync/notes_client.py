@@ -698,12 +698,12 @@ def log(host: Host, args: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _fleet_tool(host, seat, tool, args, write=False):
-    from .fleet_bearer import Client, FleetError
+    from .fleet_bearer import Client, FleetError, canonical_hint
 
     try:
         if host._fleet_client is None:
             host._fleet_client = Client(host.bearer_file, seat, identity_env=host.env)
-        if seat is not None and host._fleet_client.seat != seat:
+        if seat is not None and host._fleet_client.seat != canonical_hint(seat):
             raise FleetError("not_authorized", "fleet bearer does not name the requested bot")
         result = host._fleet_client.call(tool, args, write)
         data = result.get("structuredContent")

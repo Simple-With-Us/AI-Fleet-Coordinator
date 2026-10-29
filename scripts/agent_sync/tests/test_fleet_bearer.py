@@ -223,6 +223,20 @@ class FleetBearerTests(unittest.TestCase):
                 tool.assert_not_called()
 
 
+    def test_cached_notes_client_accepts_only_equivalent_seat_hints(self):
+        from agent_sync import notes as N
+        host = NC.Host({}, self.home, None, caller="cli", bearer_file=str(self.path))
+        with patch.object(F, "Client") as constructor:
+            constructor.return_value.seat = "GROK"
+            constructor.return_value.call.return_value = {"structuredContent": {"status": "queued"}}
+            NC._fleet_tool(host, "GROK", "notes_status", {})
+            NC._fleet_tool(host, "Grok (Build)", "notes_status", {})
+            self.assertEqual(constructor.call_count, 1)
+            self.assertEqual(constructor.return_value.call.call_count, 2)
+            with self.assertRaises(N.NotesError):
+                NC._fleet_tool(host, "GROK-BUILDER", "notes_status", {})
+
+
 
 class TransportTests(FleetBearerTests):
     def answer(self, data, content_type="application/json"):
