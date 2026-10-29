@@ -44,14 +44,11 @@ def _rule() -> dict:
             raise ValueError(f"{SHEET_RULES}: section {section_index} must be an object")
         rules = section.get("rules")
         if not isinstance(rules, list):
-            raise ValueError(
-                f"{SHEET_RULES}: section {section_index} 'rules' must be a list"
-            )
+            raise ValueError(f"{SHEET_RULES}: section {section_index} 'rules' must be a list")
         for rule_index, rule in enumerate(rules):
             if not isinstance(rule, dict):
                 raise ValueError(
-                    f"{SHEET_RULES}: section {section_index} rule {rule_index} "
-                    "must be an object"
+                    f"{SHEET_RULES}: section {section_index} rule {rule_index} must be an object"
                 )
             for field in ("id", "rule", "detail"):
                 if not isinstance(rule.get(field), str):

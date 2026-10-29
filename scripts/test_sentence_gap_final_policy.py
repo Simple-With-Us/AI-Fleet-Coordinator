@@ -76,9 +76,7 @@ STALE_RULE_FILES = (
 
 # Dated rollout records whose body is intentionally preserved; the stale-prescription
 # scan skips them wholesale because their tables are history, not live guidance.
-HISTORY_FILES = (
-    "docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",
-)
+HISTORY_FILES = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 
 # The packs whose own text states the rule.
 # one into skills/ and a per-seat copy into docs/fleet-skills/by-seat/, so the
