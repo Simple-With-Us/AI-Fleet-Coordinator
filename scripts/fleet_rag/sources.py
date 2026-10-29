@@ -1809,6 +1809,7 @@ def _linear_remaining(deadline: float | None) -> int:
         raise LinearSourceError("linear: the operation's shared deadline was exceeded")
     return max(1, min(LINEAR_QUERY_TIMEOUT_S, int(remaining)))
 
+
 _LINEAR_LIGHT_FIELDS = "nodes { id identifier updatedAt } pageInfo { hasNextPage endCursor }"
 _LINEAR_FULL_FIELDS = (
     "nodes { id identifier title url description priority createdAt updatedAt "
@@ -1844,7 +1845,7 @@ def _linear_app(team_key, label_names) -> str:
     app."""
     for name in label_names:
         if name.startswith("app:"):
-            return app_slug(name[len("app:"):])
+            return app_slug(name[len("app:") :])
     return app_slug(LINEAR_TEAM_APP.get((team_key or "").upper(), team_key))
 
 
@@ -1998,8 +1999,19 @@ def _linear_placeholder(issue_id: str) -> dict:
 
 
 _LINEAR_FULL_REQUIRED = (
-    "id", "identifier", "title", "url", "description", "priority",
-    "createdAt", "updatedAt", "state", "team", "labels", "attachments", "comments",
+    "id",
+    "identifier",
+    "title",
+    "url",
+    "description",
+    "priority",
+    "createdAt",
+    "updatedAt",
+    "state",
+    "team",
+    "labels",
+    "attachments",
+    "comments",
 )
 
 
@@ -2317,7 +2329,9 @@ def iter_linear(
         refreshed = _linear_refresh_marks()
         refresh_ms = (
             int(os.environ.get("FLEET_RAG_LINEAR_REFRESH_DAYS") or LINEAR_REFRESH_DAYS)
-            * 24 * 3600 * 1000
+            * 24
+            * 3600
+            * 1000
         )
         now = now_ms()
         if ingested:
