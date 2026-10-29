@@ -182,6 +182,36 @@ def _json_within_limits(value: object) -> bool:
     return True
 
 
+def _raw_json_too_deep(raw: str) -> bool:
+    """True when the raw JSON text nests brackets deeper than the hook limit.
+
+    A cheap scan of the text before json.loads:  it counts the brackets that sit
+    outside a string, so a payload nested far past the limit is refused without the
+    parser ever recursing through it.  It only refuses what _json_within_limits would
+    refuse anyway, since a value inside HOOK_JSON_MAX_DEPTH brackets is never deeper.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for ch in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            depth += 1
+            if depth > HOOK_JSON_MAX_DEPTH:
+                return True
+        elif ch in "}]" and depth:
+            depth -= 1
+    return False
+
+
 def _interrupt_on_signal(signum, frame):
     """Turn an interruption into an exception, so the child is stopped on the way out."""
     raise KeyboardInterrupt("interrupted by signal %s" % signum)
@@ -345,6 +375,24 @@ def _require_registry(answer: dict, *, needs_label: bool = False) -> dict:
 def _registry_exit_code(exc: RegistryError) -> int:
     """The status this registry failure gets on the command line."""
     return REGISTRY_EXIT_CODES.get(getattr(exc, "code", "") or "", 2)
+
+
+def _report_registry_fault(exc: Exception) -> None:
+    """Say on stderr why a hook went on without a letter.
+
+    A hook that exits non-zero blocks the tool call or the session, and a registry
+    that is missing must not stop the seat working, so the hooks keep exit 0.  The
+    distinct code goes to stderr instead:  an operator reading it can tell a missing
+    executable (127) and a hang (124) from an outage.  A registry that is not on this
+    host at all is a configuration state, not a fault of this call, so it stays quiet.
+    """
+    code = str(getattr(exc, "code", "") or "")
+    if code == "no_registry":
+        return
+    shown = code or "refused"
+    if code in REGISTRY_EXIT_CODES:
+        shown += ", status %d" % REGISTRY_EXIT_CODES[code]
+    sys.stderr.write("Operator registry fault (%s): %s\n" % (shown, exc))
 
 
 def register(session_id: str, title: str = "", space: str = "single") -> dict:
@@ -636,11 +684,15 @@ def read_hook_input() -> dict:
         raw = raw_bytes.decode("utf-8")
     except UnicodeDecodeError:
         return {}
+    if _raw_json_too_deep(raw):
+        # Refused on the text itself, so the parser never recurses through it.
+        return {}
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError):
-        # The size is bounded before parsing;  nesting deep enough to exhaust the
-        # parser's recursion is refused here, the rest by _json_within_limits.
+        # The size and the bracket depth are bounded before parsing;  whatever still
+        # exhausts the parser's recursion is refused here, the rest by
+        # _json_within_limits.
         return {}
     if not isinstance(data, dict) or not _json_within_limits(data):
         return {}
@@ -665,7 +717,8 @@ def hook_session_start() -> int:
     space = space_for_row(row)
     try:
         letter = letter_for(session_id, str(row.get("title") or ""), space)
-    except (RegistryError, ValueError):
+    except (RegistryError, ValueError) as exc:
+        _report_registry_fault(exc)
         print(
             "Session letter: none yet (the Operator could not be reached).  Name this thread "
             "in English; if a letter arrives later, prefix the title with it."
@@ -710,7 +763,8 @@ def hook_pre_tool_use() -> int:
         return 0
     try:
         letter = cached_letter(session_id) or letter_for(session_id, "", space_for_row(row))
-    except (RegistryError, ValueError):
+    except (RegistryError, ValueError) as exc:
+        _report_registry_fault(exc)
         return 0
     if not letter:
         return 0
@@ -759,7 +813,8 @@ def hook_stop() -> int:
         return 0
     try:
         letter = cached_letter(session_id) or letter_for(session_id, "", space_for_row(row))
-    except (RegistryError, ValueError):
+    except (RegistryError, ValueError) as exc:
+        _report_registry_fault(exc)
         return 0
     if not letter:
         return 0
@@ -862,6 +917,48 @@ def _sweep_exit_code(failed: list[dict]) -> int:
         if code in codes:
             return REGISTRY_EXIT_CODES[code]
     return 2
+
+
+def _registry_ended_rows(answer: dict) -> list[dict]:
+    """The rows the registry sweep ended, checked for their shape before anything reads them.
+
+    Each row carries native_session_id, label and reason.  A row of the wrong type, or a
+    field that is not a bounded string, is a malformed answer, never coerced into one.
+    """
+    ended = answer.get("ended", [])
+    malformed = RegistryError(
+        "the registry sweep answer has a malformed ended field", "bad_shape", "outcome_unknown"
+    )
+    if not isinstance(ended, list):
+        raise malformed
+    for row in ended:
+        if not isinstance(row, dict):
+            raise malformed
+        for name in ("native_session_id", "label", "reason"):
+            value = row.get(name)
+            if value is None:
+                continue
+            if not isinstance(value, str) or len(value) > REGISTRY_FIELD_MAX:
+                raise malformed
+    return ended
+
+
+def _fold_registry_ended(out: list[dict], ended: list[dict]) -> None:
+    """Put the registry's own sweep result into the entries.
+
+    A session this host listed gets the registry's word on its entry;  a letter the
+    registry ended for a session this host no longer lists gets an entry of its own, so
+    the output says everything the sweep ended and not only a count.
+    """
+    by_session = {e["session_id"]: e for e in out if e.get("session_id")}
+    for row in ended:
+        native = str(row.get("native_session_id") or "")
+        info = {"label": str(row.get("label") or ""), "reason": str(row.get("reason") or "")}
+        entry = by_session.get(native)
+        if entry is not None:
+            entry["registry_ended"] = info
+        else:
+            out.append({"session_id": native, "registry_ended": info})
 
 
 def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
@@ -1012,6 +1109,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                     "bad_shape",
                     "outcome_unknown",
                 )
+            ended = _registry_ended_rows(answer)
         except RegistryError as exc:
             error_code = exc.code
             # The registry classifies the failure itself;  the list of codes is the
@@ -1032,6 +1130,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 file=sys.stderr,
             )
             return exit_code
+        _fold_registry_ended(out, ended)
         print(json.dumps({"registry_sweep": count}), file=sys.stderr)
     print(json.dumps(out, indent=2))
     return exit_code

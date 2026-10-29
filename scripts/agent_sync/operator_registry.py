@@ -136,6 +136,7 @@ def display_title(label: str, title: str) -> str:
 
 
 SECRET_DETECTED = "secret_detected"
+TITLE_NOT_STRING = "title_not_string"
 
 
 def _scan_title(title: str | None) -> None:
@@ -148,7 +149,11 @@ def _scan_title(title: str | None) -> None:
     """
     if title is None:
         return
-    if secretscan.scan(str(title)):
+    if not isinstance(title, str):
+        # A value of another type is never coerced into a string that might scan clean:
+        # it is not a title, so it is refused with its own stable code.
+        raise ValueError(TITLE_NOT_STRING)
+    if secretscan.scan(title):
         raise ValueError(SECRET_DETECTED)
 
 
@@ -173,7 +178,7 @@ def _scan_fields(fields: Mapping[str, object]) -> None:
     """
     for field, value in fields.items():
         if field == "title":
-            _scan_title(value if isinstance(value, str) else None)
+            _scan_title(value)
         else:
             _scan_field(field, value)
 

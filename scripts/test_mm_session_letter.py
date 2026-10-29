@@ -528,6 +528,113 @@ class MmSessionLetterTest(unittest.TestCase):
         ):
             self.assertEqual(M.letter_for(SESSION_ID), "M")
 
+    # ---- the PR 1088 handoff fixes the first merge left out ----
+
+    def test_the_raw_text_is_refused_on_bracket_depth_before_it_is_parsed(self):
+        levels = M.HOOK_JSON_MAX_DEPTH + 5
+        deep = b'{"a":' + b"[" * levels + b"]" * levels + b"}"
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(deep)),
+            mock.patch.object(M.json, "loads", side_effect=AssertionError("parsed")) as parse,
+        ):
+            self.assertEqual(M.read_hook_input(), {})
+        parse.assert_not_called()
+
+    def test_brackets_inside_a_string_do_not_count_toward_depth(self):
+        quoted = json.dumps({"session_id": SESSION_ID, "note": "[" * 500 + '\\"{{' + "]" * 500})
+        self.assertFalse(M._raw_json_too_deep(quoted))
+        with mock.patch.object(sys, "stdin", _StdinBytes(quoted.encode())):
+            self.assertEqual(M.read_hook_input()["session_id"], SESSION_ID)
+
+    def test_an_unbalanced_close_does_not_hide_a_deep_payload(self):
+        self.assertTrue(M._raw_json_too_deep("]]]]" + "[" * (M.HOOK_JSON_MAX_DEPTH + 1)))
+        self.assertFalse(M._raw_json_too_deep("[" * M.HOOK_JSON_MAX_DEPTH))
+
+    def _hook_fault(self, hook, payload: dict, error: "M.RegistryError"):
+        err = io.StringIO()
+        row = {"session_id": SESSION_ID, "session_kind": "conversation", "title": "M: T"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(json.dumps(payload).encode())),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", side_effect=error),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(err),
+        ):
+            code = hook()
+        return code, err.getvalue()
+
+    def test_every_hook_exits_zero_and_names_the_code_of_a_missing_registry(self):
+        payload = {
+            "session_id": SESSION_ID,
+            "tool_name": "zulip_post",
+            "tool_input": {"body": "hi"},
+        }
+        for hook in (M.hook_session_start, M.hook_pre_tool_use, M.hook_stop):
+            code, err = self._hook_fault(hook, payload, M.RegistryError("gone", "missing_tool"))
+            self.assertEqual(code, 0, hook.__name__)
+            self.assertIn("missing_tool", err, hook.__name__)
+            self.assertIn("status 127", err, hook.__name__)
+
+    def test_a_hung_registry_reads_differently_from_a_missing_one(self):
+        payload = {"session_id": SESSION_ID}
+        code, err = self._hook_fault(
+            M.hook_stop, payload, M.RegistryError("slow", "timeout", "outcome_unknown")
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("timeout", err)
+        self.assertIn("status 124", err)
+        self.assertNotIn("missing_tool", err)
+
+    def test_a_registry_that_is_not_on_this_host_stays_quiet(self):
+        payload = {"session_id": SESSION_ID}
+        code, err = self._hook_fault(
+            M.hook_stop, payload, M.RegistryError("not here", "no_registry")
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+
+    def test_the_sweep_folds_the_registry_ended_rows_into_the_entries(self):
+        ended = [
+            {
+                "record_id": "r1",
+                "label": "A",
+                "native_session_id": SESSION_ID,
+                "reason": "stale and replaced by a newer session",
+                "title": "Old",
+            },
+            {
+                "record_id": "r2",
+                "label": "B",
+                "native_session_id": "mvs_gone",
+                "reason": "stale and replaced by a newer session",
+            },
+        ]
+        code, out, err = self._run_sweep("", {"count": 2, "ended": ended}, title="M: Wake check")
+        self.assertEqual(code, 0)
+        entries = json.loads(out)
+        self.assertEqual(entries[0]["session_id"], SESSION_ID)
+        self.assertEqual(entries[0]["registry_ended"]["label"], "A")
+        self.assertEqual(
+            entries[0]["registry_ended"]["reason"], "stale and replaced by a newer session"
+        )
+        self.assertEqual(entries[1]["session_id"], "mvs_gone")
+        self.assertEqual(entries[1]["registry_ended"]["label"], "B")
+        self.assertNotIn("title", entries[1]["registry_ended"])
+        self.assertIn('"registry_sweep": 2', err)
+
+    def test_a_registry_sweep_without_an_ended_list_still_succeeds(self):
+        code, out, _err = self._run_sweep("", {"count": 0}, title="M: Wake check")
+        self.assertEqual(code, 0)
+        self.assertNotIn("registry_ended", out)
+
+    def test_a_malformed_ended_field_is_a_bad_shape(self):
+        for bad in ("A", {"label": "A"}, ["A"], [{"label": 7}], [{"reason": ["x"]}]):
+            code, out, err = self._run_sweep("", {"count": 1, "ended": bad})
+            self.assertEqual(code, 2, bad)
+            self.assertIn("bad_shape", err, bad)
+            self.assertIn("outcome_unknown", err, bad)
+
 
 if __name__ == "__main__":
     unittest.main()
