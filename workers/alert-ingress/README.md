@@ -66,7 +66,7 @@ The legacy un-suffixed pair **is** the generic source's own identity.  It is not
 
 A message id that **no** source owns is neither adopted nor posted over.  It may be this source's own standing message from a write whose acknowledgement was lost, and posting a second one would leave two standing messages in the topic, so the refresh is held with `409` until an operator reconciles it.  A message id that **another** source owns is left alone, and the asking source posts its own standing message instead.
 
-**Deployment precondition.**  This change is code only.  Deploying it requires the per-vendor credentials to exist in Infisical first, because a vendor source with no pair of its own now fails closed instead of borrowing the shared bot.
+**Deployment precondition.**  The per-vendor credentials must exist in Infisical before a vendor source can deliver, because a vendor source with no pair of its own fails closed instead of borrowing the shared bot.  `scripts/alert-ingress/provision-secrets.py` copies them into the Worker's bindings;  Infisical stays the source of truth and the Worker holds a copy.
 
 ## One writer, many readers
 
@@ -181,13 +181,13 @@ It also covers the Sentry source, which arrives as a native webhook body rather 
 - Not a host-metrics collector.  It routes and coalesces what vendors already send.
 - No vendor credential ever enters a request; all signing material is a Worker secret.
 
-## Durable Writer Deployment Gate
+## Deployment
 
-Source review does not activate this ingress.  The shipped configuration intentionally has no live KV namespace and no `ALERT_WRITER` binding; every nonhealth route fails closed with HTTP 503 until an approved deployment supplies both.  No resource, credential, webhook or cron was activated by this change.
+The ingress is deployed and live at `https://alert-ingress.jays-services.workers.dev`.  The committed `wrangler.toml` is the deployment manifest:  it binds the `ALERT_STATE` KV namespace the Worker has used since its first deployment, the `ALERT_WRITER` Durable Object, the `alert-writer-v1` SQLite class migration that creates only `AlertWriter`, and the `*/5 * * * *` sweep cron that promotes incidents which stayed open past the wait window.  A deploy keeps the bound secrets (`--keep-vars`), so the credential set below survives it.
 
 `AlertWriter` is a single named Durable Object (`alerts-v1`) that serializes complete state reads, transitions, inventory rendering and Zulip writes.  Its durable storage overlays the existing KV records; historical KV records remain readable and are never deleted or migrated destructively.  All status readers route through the same object, avoiding stale KV reads after mutation.  A KV get/put lock is not used.
 
-An approved deployment must bind `ALERT_WRITER` to exported class `AlertWriter` and declare its SQLite class migration in its private Wrangler deployment configuration, in addition to the existing `ALERT_STATE` binding.  This repository does not provision those resources.  The existing deployment-boundary decision remains explicit in the PR; a merge does not establish a production runtime.
+Rollback keeps the previous Worker version and the same KV namespace available, and it preserves the durable outcome records, so an unknown send cannot replay.  No existing listener or model session needs restarting.
 
 Before any standing-message write the object persists an `unknown` delivery outcome, on the revision-scoped outcome key and on the topic-scoped uncertainty barrier alike.  Only a validated successful response records `ok` with a positive integer message ID.  Timeout, malformed success, crash and ambiguous network failure retain `unknown`, and subsequent refreshes do not replay it.  Explicit provider refusal records `refused` and releases the barrier, because a refusal is definitive and nothing landed, so a later attempt may try again.  A write that returns no message ID is not a success either: the acknowledgement was lost, so it is recorded as `unknown` and the topic is held until an operator reconciles it.  A barrier that carries a message ID is retryable, because the retry edits the message this source already owns; a barrier without one is not, because a create may have landed that nobody knows about.  An operator must inspect the actual Zulip message before repairing a held outcome, and `?reconcile=<message id>` is the lever that adopts it.
 
@@ -197,7 +197,47 @@ Webhook JSON must be an object with bounded scalar fields, bounded string tags a
 
 A Sentry body carries the vendor's native shape, so it has a rule of its own:  the body is bounded in depth, breadth and text length, control characters are refused, and the variant is checked against the fields the parser actually reads.  An issue must carry an identity (`shortId` or `id`), a title, a level and a project; a metric alert must carry an identity (`id` or its rule's `id`), a title (its own or the rule's `name`) and its `alert_rule`.  Every consumed field is type-checked against the type the parser reads it as, a null sibling variant counts as absent rather than as a contradiction, and a body with no identity is refused with a 400 instead of normalizing onto a constant key — two malformed bodies on one constant key would share an incident, and one alert's resolution would close the other's incident and standing message.  An identity shaped like a credential is refused with a 400 as well, because the identity becomes a storage key and is relayed into the standing block; the response names the field and never the value.
 
-The concrete manifest is `wrangler.durable-writer.example.toml`.  Before deployment, copy it to an owner-controlled configuration beside the template, set its KV ID to the verified existing historical namespace, confirm the Cloudflare account and Worker name, and review the `alert-writer-v1` migration that creates only `AlertWriter`.  Inject the existing named secrets through the approved secret workflow; never put values in this manifest.  Deploy using `wrangler deploy --config <private-config-path>` only after those scope checks.  Verify health, authenticated status, existing historical records and a synthetic no-send fixture before moving webhook routes; no existing listener or model session needs restarting.  Keep the old Worker version and KV namespace available for rollback, and preserve the new durable outcome records when rolling back so unknown sends cannot replay.
+### Credentials
+
+Infisical is the source of truth;  the Worker holds a copy.  `scripts/alert-ingress/provision-secrets.py` reads the six per-vendor Zulip bot pairs from AFC prod `/zulip`, creates the four generated secrets there when they are absent, and PUTs all ten to the Worker under the names the table above asks for.  It is a dry run unless `--apply` is passed, it prints names and lengths only, and it is idempotent:  an existing value is reused, so a rotation in Infisical propagates on the next run.
+
+```
+python3 scripts/alert-ingress/provision-secrets.py            # dry run
+python3 scripts/alert-ingress/provision-secrets.py --apply    # write
+```
+
+### Proving it
+
+`scripts/alert-ingress/selftest.py` is the end-to-end proof against the live Worker.  It posts synthetic Datadog and Better Stack events, reads the topic back through the vendor bots' own credentials, and asserts that a flapping monitor produces exactly one standing message, that two vendors sharing a service name own separate standing messages, and that a second alert joins the same standing block as a second row.
+
+```
+python3 scripts/alert-ingress/selftest.py              # prove
+python3 scripts/alert-ingress/selftest.py --cleanup    # remove the test messages
+```
+
+The first firing event is **held** for `MIN_OPEN_MS` before it is announced as an alert line, so the alert line that proves the announcement path is posted by the cron sweep minutes later, not by the script.  Check the topic again once the sweep has run:  one line per announced incident, never one per event.
+
+The cleanup removes only the one-line alert rows.  The standing status message the ingress still points at is left in place and its id is printed, because deleting it would leave the Worker pinned to a message that no longer exists.  When the cleanup prints "No standing status message was left behind", the topic has no standing block at all:  either the ingress has not fired for it yet, or the block was deleted -- by an earlier version of this script, or by hand -- while the Worker still holds its id.  A stale id is refused by Zulip, so no fresh standing block is created and the topic stays without one.  Repair it by removing the pinned keys from the `ALERT_STATE` KV namespace -- `status:<source>:<channel>:<topic>` and `statusowner:<message id>` -- with the Cloudflare KV API (`DELETE /accounts/<account>/storage/kv/namespaces/<namespace>/values/<key>`), so the next standing block whose content differs from the stale one is created fresh;  a refresh that renders the same content still finds the stale id in the writer's record of the last delivery, and is refused again.  The reconcile route is the lever for the other case, where a standing block exists but the Worker does not know its id:  `GET /status/:source/:channel/:topic?reconcile=<message id>`.
+
+### Deployment gate
+
+The CI deployment gate for this Worker is `scripts/worker-targets.json` (OPS-W01).  The entry carries the functional probe, `https://alert-ingress.jays-services.workers.dev/health`, which answers `{"ok":true}`, so a deploy that breaks liveness is refused instead of shipped.  The `worker-deploy` workflow runs only when `vars.WORKER_DEPLOY_ENABLED` is `true`, and it deploys the exact main commit and checks the exact-version receipt.
+
+As of Oct 29, 2026 that variable is not set in the repository, the organization or any environment.  Every `worker-deploy` run therefore ends `skipped`, and a merge does not redeploy this Worker.  The running version is the one this work deployed.  Arming the variable is an owner decision, because it would redeploy every mapped Worker on every push to `main`.
+
+### Vendor cutover
+
+The Worker is live and its credentials are bound, but no vendor points at it yet:  the Datadog monitors and the Better Stack monitors still use the Zulip incoming-webhook bots, which post one new message per event.  The cutover is owner console work, and it is per vendor.
+
+| Vendor | Change | Value |
+|---|---|---|
+| Datadog | the monitor's webhook URL and a custom header | `https://alert-ingress.jays-services.workers.dev/webhook/datadog`, with `X-Datadog-Token` set to the `DATADOG_WEBHOOK_SECRET` value |
+| Better Stack | the monitor's outgoing webhook URL and a custom header | `https://alert-ingress.jays-services.workers.dev/webhook/betterstack`, with `X-BetterStack-Token` set to the `BETTERSTACK_WEBHOOK_SECRET` value |
+| Sentry | an integration-platform webhook | `https://alert-ingress.jays-services.workers.dev/webhook/sentry`, signed with `SENTRY_WEBHOOK_SECRET` |
+
+Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the monitor posts to the ingress.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.
+
+Better Stack **Uptime** outgoing webhooks are documented for the URL, the event selection, the body template and the metadata variables;  the Errors documentation is what names custom headers, so confirm the header on the Uptime surface before relying on it.  A monitor that cannot send a header needs a change to the ingress, not a change to the secret.
 
 Timeline transitions use a separate durable outcome keyed by the exact normalized transition and previous state.  Destination inventory is completed before mutation; a definitive pre-send failure leaves the previous phase unchanged.  Timeline `unknown` is never resent, while a definitive provider refusal can retry the same transition safely.  Sweep failures are isolated per incident, so one refusal cannot abort independent promotions.
 
