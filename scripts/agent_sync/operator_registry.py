@@ -7,7 +7,10 @@ its live label;  a fork or a new native session id is a new registration.
 Labels are per-platform letters A-Z with one namespace across all hosts.  RECYCLE is on (owner
 2026-10-20, option B):  allocation takes the lowest letter with no active assignment, wrapping
 after Z back to A, and a reused letter gets the next generation.  A platform may ask for pairs
-(AA to ZZ, `letter_space`) and for the free letter unused the longest (`letter_pick`, default the lowest).  Cross-seat references to a
+(AA to ZZ, `letter_space`) and for how a free one is picked (`letter_pick`):  the lowest (the default), the one
+unused the longest, or "primary", the order a main chat takes (the doubled pairs AA, BB ... ZZ first).  A session
+another session started names its parent (`parent_session_id`) and takes the first free pair after the parent's in
+the same row, wrapping past Z (parent CC, child CD;  parent XX, children XY, XZ, XA, XB).  Cross-seat references to a
 generation > 1 letter must carry the generation:  "MM A (gen 2)".
 
 Seat is checked separately from identity:  a resolve under an unexpected seat returns the
@@ -47,8 +50,45 @@ LETTER_SPACES = {
     "double": tuple(a + b for a in LETTERS for b in LETTERS),
 }
 ALL_LETTERS = tuple(sorted(set(LETTERS) | set(LETTER_SPACES["double"])))
-# How a free letter is chosen:  the lowest in the alphabet, or the one unused the longest.
-LETTER_PICKS = ("lowest", "oldest")
+# The pairs a main (primary) chat takes, in order (owner, Oct 29, 2026):  the doubled pairs AA, BB ... ZZ first.  Each
+# one heads a row of 25 pairs for its subthreads (AA: AB, AC ... AZ;  XX: XY, XZ, XA, XB ...).  Once all 26 doubled
+# pairs are live the owner allows any other pair, so the rest go to the pair a row's subthreads would reach last:  the
+# one just before the doubled letter (AZ, BA, CB ... ZY), then the one before that, and so on back to the first (AB,
+# BC ... ZA).  A main chat there costs its row's subthreads their last slot, and the first ones are kept the longest.
+PRIMARY_ORDER = tuple(a + a for a in LETTERS) + tuple(
+    LETTERS[i] + LETTERS[(i + k) % 26] for k in range(25, 0, -1) for i in range(26)
+)
+# How a free letter is chosen:  the lowest in the alphabet, the one unused the longest, or (pairs only) the next of a
+# main chat's PRIMARY_ORDER.
+LETTER_PICKS = ("lowest", "oldest", "primary")
+
+
+def _clean_parent(value: object) -> str:
+    """A parent's session id as register_session checks it, or "":  a parent that is not a session id is no parent, and
+    the chat is picked like any other and still gets a letter, rather than none because of a hint it was never owed."""
+    if not value:
+        return ""
+    try:
+        return SI.check(value, "the parent session id")
+    except ValueError:
+        return ""
+
+
+def pairs_after(pair: str) -> tuple[str, ...]:
+    """The pairs a subthread of the chat that holds `pair` may take, in order:  the parent's first letter with each
+    second letter after the parent's, wrapping past Z to A (owner, Oct 29, 2026:  parent AA: AB, AC, AD ...;  parent
+    XX: XY, XZ, XA, XB ...;  parent CD: CE, CF ...), never the doubled pair, which belongs to a main chat.  Anything
+    that is not a pair has none."""
+    if len(pair) != 2 or pair not in LETTER_SPACES["double"]:
+        return ()
+    first, second = pair
+    start = LETTERS.index(second)
+    return tuple(
+        first + LETTERS[(start + step) % 26]
+        for step in range(1, 26)
+        if LETTERS[(start + step) % 26] != first
+    )
+
 MUTABLE_ATTRS = ("title", "project", "thread_link", "apple_note_link", "state", "wake_capability")
 IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session_id")
 
@@ -393,6 +433,47 @@ class SessionRegistry:
 
     # ---- writes (each one transaction:  state + events + outbox) ----------------
 
+    def _pair_of(
+        self, conn: sqlite3.Connection, platform: str, native_session_id: str, own: str = ""
+    ) -> str:
+        """The pair a live session holds on the platform, found by its native session id on any host, or "" when
+        it is unknown, closed, holds a single letter, or is the chat asking (a chat is not its own parent)."""
+        if not native_session_id or native_session_id == own:
+            return ""
+        row = conn.execute(
+            "SELECT a.letter FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE s.platform = ? AND s.native_session_id = ? AND s.closed_at IS NULL"
+            " AND a.retired_at IS NULL ORDER BY a.assigned_at DESC LIMIT 1",
+            (platform, native_session_id),
+        ).fetchone()
+        letter = str(row["letter"]) if row else ""
+        return letter if len(letter) == 2 else ""
+
+    def _parent_pair(
+        self,
+        conn: sqlite3.Connection,
+        platform: str,
+        native_session_id: object,
+        own: str = "",
+        letter: object = "",
+    ) -> str:
+        """The pair a new chat's parent holds:  the live session named by its session id, else (for a platform that
+        knows only the parent's letter) that pair itself when a live session on the platform holds it.  "" when
+        neither names a live pair, so the chat is picked like any other."""
+        # Whitespace is trimmed here as register_session's check trims it, so a padded id finds the same parent on
+        # every path;  an id that is not valid simply matches no session.
+        named = native_session_id.strip() if isinstance(native_session_id, str) else ""
+        pair = self._pair_of(conn, platform, named, own)
+        text = letter if isinstance(letter, str) else ""
+        if pair or not re.fullmatch(r"[A-Z]{2}", text):
+            return pair
+        live = conn.execute(
+            "SELECT 1 FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL AND s.closed_at IS NULL",
+            (platform, text),
+        ).fetchone()
+        return text if live else ""
+
     def _allocate(
         self,
         conn: sqlite3.Connection,
@@ -401,16 +482,26 @@ class SessionRegistry:
         now: str,
         space: str = "single",
         pick: str = "lowest",
+        after: str = "",
     ) -> tuple[str, int]:
         """Lowest letter with no active assignment, wrapping after Z to A (RECYCLE on).  A reused
         letter gets the next generation.  Raises LabelExhausted when the space is full.
 
         The space is chosen by the caller:  "single" for a main conversation, "double"
-        for a subthread.  The pick is "lowest" (the default, first in the alphabet) or
-        "oldest" (the letter that has gone unused the longest, never-issued letters first),
-        which keeps a retired letter from being reused for as long as the space allows."""
+        for a subthread.  The pick is "lowest" (the default, first in the alphabet),
+        "oldest" (the letter that has gone unused the longest, never-issued letters first,
+        which keeps a retired letter from being reused for as long as the space allows) or,
+        in the double space, "primary" (the next free pair of PRIMARY_ORDER:  the doubled pairs
+        AA, BB ... ZZ, then, once those are all live, the pairs a row's subthreads reach last).
+
+        `after` is the pair its parent chat holds, for a chat that another chat started:  the first free pair
+        after the parent's (pairs_after) comes first, and when none is free the pick decides as it does for any
+        chat.  It applies only in the double space."""
         candidates = LETTER_SPACES.get(space, LETTERS)
-        if pick == "oldest":
+        members = frozenset(candidates)
+        if pick == "primary" and space == "double":
+            candidates = tuple(p for p in PRIMARY_ORDER if p in members)
+        elif pick == "oldest":
             last_use = {
                 r["letter"]: r["last_use"]
                 for r in conn.execute(
@@ -420,6 +511,9 @@ class SessionRegistry:
                 )
             }
             candidates = sorted(candidates, key=lambda letter: (last_use.get(letter, ""), letter))
+        if after and space == "double":
+            follow = tuple(p for p in pairs_after(after) if p in members)
+            candidates = follow + tuple(c for c in candidates if c not in follow)
         for letter in candidates:
             live = conn.execute(
                 "SELECT 1 FROM alias_assignments"
@@ -575,6 +669,13 @@ class SessionRegistry:
                     identity["source"],
                 ),
             )
+            parent_pair = self._parent_pair(
+                conn,
+                identity["platform"],
+                identity.get("parent_session_id"),
+                identity["native_session_id"],
+                identity.get("parent_letter") or "",
+            )
             letter, generation = self._allocate(
                 conn,
                 identity["platform"],
@@ -582,7 +683,10 @@ class SessionRegistry:
                 now,
                 str(identity.get("letter_space") or "single"),
                 str(identity.get("letter_pick") or "lowest"),
+                parent_pair,
             )
+            # The parent's pair when this chat really took a pair after it, else "" (no parent, or its row was full).
+            placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
             self._insert_event(
                 conn,
                 record_id,
@@ -591,7 +695,7 @@ class SessionRegistry:
                 identity["seat"],
                 "registered",
                 identity["source"],
-                "",
+                f"after {placed_after}" if placed_after else "",
                 now,
             )
             self._enqueue_session_upsert(conn, record_id, now)
@@ -601,6 +705,7 @@ class SessionRegistry:
                 "generation": generation,
                 "created": True,
                 "outcome": "registered",
+                "placed_after": placed_after,
             }
 
     def mark_seen(self, record_id: str, at: str | None = None) -> None:
@@ -682,16 +787,19 @@ class SessionRegistry:
         actor: str = "registry",
         source: str = "registry",
         pick: str = "lowest",
+        parent_session_id: str = "",
+        parent_letter: str = "",
     ) -> tuple[str, int, str]:
         """Give a closed session a letter again (AFC-564, owner Oct 28 2026:  a reopened chat checks with the
         Operator in case it needs a new letter).
 
         The record keeps its record_id and identity, and closed_at is cleared.  It gets back the letter it held
         while no other session holds that letter (a new generation of it, as any reuse is);  otherwise the letter
-        is allocated by the same rule as a first registration (the lowest free one, or with pick="oldest" the one
-        unused the longest), in the space of the letter it held.  Returns (letter, generation,
-        previous letter).  An open session comes back as it is, with nothing written.  Raises LabelExhausted, with
-        nothing written, when every letter is live.
+        is allocated by the same rule as a first registration (the lowest free one, with pick="oldest" the one
+        unused the longest, or with pick="primary" the next main-chat pair;  after its parent's pair when
+        parent_session_id names a live chat that holds one), in the space of the letter it held.  Returns
+        (letter, generation, previous letter).  An open session comes back as it is, with nothing written.  Raises
+        LabelExhausted, with nothing written, when every letter is live.
         """
         with self._write_txn() as conn:
             now = at or _utcnow()
@@ -730,8 +838,11 @@ class SessionRegistry:
             else:
                 # A session stays in the space it was first given:  a pair letter comes back as a pair.
                 space = "double" if len(previous) == 2 else "single"
+                parent_pair = self._parent_pair(
+                    conn, row["platform"], parent_session_id, row["native_session_id"], parent_letter
+                )
                 letter, generation = self._allocate(
-                    conn, row["platform"], record_id, now, space, pick
+                    conn, row["platform"], record_id, now, space, pick, parent_pair
                 )
             conn.execute(
                 "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
@@ -795,6 +906,8 @@ def register_session(
     issuer: str = "",
     letter_space: str = "single",
     letter_pick: str = "lowest",
+    parent_session_id: str = "",
+    parent_letter: str = "",
 ) -> dict[str, Any]:
     """Register one session and hand back its letter.
 
@@ -803,9 +916,20 @@ def register_session(
     survive the join's own check is refused here rather than stored and never matched.
 
     A seat never chooses its own letter.  The lowest free letter on the platform (letter_pick "lowest", the
-    default;  "oldest" is the one unused the longest, in the letter_space asked for) goes to
-    the session, a recycled letter takes the next generation, and the title comes back in
-    the display form the platform expects:  "H: Title".
+    default;  "oldest" is the one unused the longest, and "primary" the next main-chat pair, the doubled pairs AA,
+    BB ... ZZ first, in the double letter_space) goes to the session, a recycled letter takes the
+    next generation, and the title comes back in the display form the platform expects:  "H: Title".
+
+    A session another session started names its parent with parent_session_id (the parent's native session id on
+    this platform, on any host) or, for a platform that knows only the letter, parent_letter (the parent's pair,
+    which a live session on the platform must hold;  the session id wins when both are given):  when the parent is
+    live and holds a pair, the child takes the first free pair after it in the same row, wrapping past Z (parent
+    CC, child CD, the next CE;  parent XX: XY, XZ, XA, XB), and when none is free, or the parent is unknown,
+    closed or holds a single letter, it is picked as any other session is.  The answer's `placed_after` is the
+    parent's pair when the session really took a pair after it, else "".
+
+    The Operator dispenses the pair in exchange for the session id, plus the app's id for the chat or a parent
+    when the chat was started by another, and nothing else:  no title, seat claim or request chooses a letter.
 
     Only the Operator issues a letter (owner ruling, Oct 21 2026):  a seat that could
     call this would be choosing its own handle, and the handle is what decides who a
@@ -826,6 +950,7 @@ def register_session(
         }
     )
     native = SI.check(native_session_id, "the native session id")
+    parent = _clean_parent(parent_session_id)
     platform = normalize_platform(platform)
     for name, value in (
         ("platform", platform),
@@ -853,6 +978,8 @@ def register_session(
                 "wake_capability": wake_capability,
                 "letter_space": letter_space,
                 "letter_pick": letter_pick,
+                "parent_session_id": parent,
+                "parent_letter": parent_letter if isinstance(parent_letter, str) else "",
             }
         )
     finally:
@@ -1751,7 +1878,19 @@ def main(argv: list[str] | None = None) -> int:
         "--letter-pick",
         default="lowest",
         choices=LETTER_PICKS,
-        help="lowest free letter (default) or the letter unused the longest",
+        help="lowest free letter (default), the letter unused the longest, or the next main-chat pair"
+        " (AA, BB ... ZZ, then the pairs a row's subthreads reach last)",
+    )
+    r.add_argument(
+        "--parent-session-id",
+        default="",
+        help="the session that started this one: take the first free pair after its pair",
+    )
+    r.add_argument(
+        "--parent-letter",
+        default="",
+        help="the pair the session that started this one holds (for a platform that knows only the letter);"
+        " --parent-session-id wins when both are given",
     )
     rs = sub.add_parser("resolve", help="name the session a letter points at")
     rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
@@ -1847,6 +1986,8 @@ def main(argv: list[str] | None = None) -> int:
                 issuer=ISSUER_OPERATOR,
                 letter_space=args.letter_space,
                 letter_pick=args.letter_pick,
+                parent_session_id=args.parent_session_id,
+                parent_letter=args.parent_letter,
             )
         except LabelExhausted as exc:
             # A platform that asks for a letter gets an answer it can read, never a traceback and an empty line.

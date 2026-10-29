@@ -24,10 +24,25 @@ What the hook does.
 Pair letters (owner, Oct 29, 2026).  A Claude chat takes a pair of letters (AA to ZZ, 676 of them), not one.  Measured
 over 30 days on the Mac and the server together:  121 interactive chats, 40 of them started inside one 72 hours, and
 as many as 52 holding a letter at once when a chat keeps its letter until it has been idle for 36 hours.  Twenty-six
-single letters cannot hold that.  Each new chat takes the pair that has gone unused the longest (pairs nobody has used
-first), so a pair is not handed to a second chat for as long as the space allows, and a chat called back a week or two
-later still answers to its own pair.  A chat that is reopened gets its own pair back while it is free.  A chat that
-already holds a single letter (the first Claude chat was registered by hand, before pairs) keeps it.
+single letters cannot hold that.  A main chat takes the doubled pairs in order, AA, BB, CC ... ZZ, and once those 26 are
+live the pair a row's sub-thread would reach last (AZ, BA, CB ...).  A sub-thread (a chat another chat started) takes
+the first free pair after its parent's in the same row, wrapping past Z (parent CC, child CD, the next child CE;  parent
+XX: XY, XZ, XA, XB ...), never the row's own doubled pair, and takes the next main-chat pair (a doubled one, while any
+is free) when that row has no free pair or its parent has none.  Taking any other pair for a main chat is the owner's
+allowance for when every doubled pair is taken.  A chat that is reopened gets its own pair back while it is free.  A
+chat that already holds a single letter (the first Claude chat was registered by hand, before pairs) keeps it.
+
+What the Operator needs to give a pair:  the chat's session id, plus the app's id for the chat or its parent when
+another chat started it, and nothing else.  No title, seat claim or request chooses a letter.
+
+Which chat started this one.  Claude Code gives a hook no field that names a parent, so the registry side reads the
+Claude desktop app's own record of the chat (`claude_app_lineage`):  on the Mac, `claude-code-sessions/<account>/<org>/
+local_<id>.json` under ~/Library/Application Support/Claude, found by the chat's CLAUDE_CODE_HOST_SESSION_ID (the hook
+sends it with a registration as --host-session-id) or else by its session UUID.  `spawnedFrom.sessionId` names the
+parent's app id, and the parent's record holds its session UUID, which is what the registry keys on.  A server chat's
+lookup rides the ssh call that already goes to the Mac, so it adds no round trip.  A terminal `claude` chat has no
+record, a user fork is not a sub-thread, and anything unreadable (no record, a deleted parent, a changed file layout)
+means no parent is known:  the chat is picked like a main chat.  Only a chat that is being placed is looked up.
 
 Renames.  A chat that is renamed keeps its pair in front of its title, and the Operator's title follows the thread.  On
 its next prompt the hook puts the pair back if the new name dropped it (the owner's words are kept whole), and sends
@@ -43,8 +58,8 @@ space is still live it closes the least recently seen Claude chat that holds a l
 A reopened chat always checks with the Operator again (owner, Oct 28, 2026), in case it needs a new letter:  a
 resumed chat registers again at its start, and a chat that finds its letter retired while it was open registers again
 on its next prompt.  A live letter comes back unchanged;  a retired one is reissued by `SessionRegistry.reopen`:  the
-chat's own letter when it is free, else the free letter of the same space that has gone unused the longest, and the
-title moves to the new letter.
+chat's own letter when it is free, else the next free pair by the rule above (after its parent's, for a sub-thread),
+and the title moves to the new letter.
 
 The hook never blocks a chat:  every failure is a line of context, or nothing, and exit 0.  Only interactive chats
 take part (the `attach` rule:  CLAUDE_CODE_ENTRYPOINT cli or claude-desktop, and no launcher), and CLAUDE_LETTER=0
@@ -73,6 +88,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, TextIO
 
+from . import claude_app_lineage as AL
 from . import identity as I
 from . import live as L
 from . import secretscan
@@ -107,6 +123,8 @@ ENV_LOCATION = "CLAUDE_LETTER_LOCATION"
 # The ssh destination (a name from the host's own ssh config) that holds the registry, for a chat that is not on the
 # registry's host.  It is configuration, not source:  `letter install --remote` writes it into settings.json.
 ENV_REMOTE = "CLAUDE_LETTER_REMOTE"
+# The desktop app's own id for the chat, set on the chat's process (it is never the parent's).
+ENV_HOST_SESSION = "CLAUDE_CODE_HOST_SESSION_ID"
 REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat letter registry'
 CONNECT_TIMEOUT = (
     4  # seconds for ssh to connect;  an asleep or unreachable Mac costs this much, not more
@@ -130,7 +148,7 @@ TRANSCRIPT_BYTES = 4 << 20
 LETTER_PREFIX = re.compile(r"^[A-Z]{1,2}: ")
 # The letter space a new Claude chat takes, and how its pair is picked (see "Pair letters" above).
 LETTER_SPACE = "double"
-LETTER_PICK = "oldest"
+LETTER_PICK = "primary"
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’+#.\-]*")
 SMALL_WORDS = frozenset(
     [
@@ -441,12 +459,35 @@ def _with_room(
         return allocate(), 1
 
 
+def _parent(OR: Any, db: str, args: Any, sid: str) -> tuple[str, str]:
+    """(the Claude Code session id of the chat that started this one, why none), as ("<id>", "") or ("", reason);  with
+    no parent the chat is picked like any other.
+
+    Named by the caller (--parent-session-id), else read from the desktop app's record of the chat (claude_app_lineage).
+    Only a chat that is being placed asks:  one with a live letter keeps it, so nothing is looked up for it and no
+    reason is given.  The lookup is a hint the chat was never owed, so nothing it can raise stops a registration."""
+    if args.parent_session_id:
+        return str(args.parent_session_id), ""
+    reg = OR.SessionRegistry(db)
+    try:
+        rec = reg.lookup(PLATFORM, args.location, SCOPE, sid)
+    finally:
+        reg.close_db()
+    if rec is not None and rec.get("state") != "closed" and rec.get("label"):
+        return "", ""
+    try:
+        return AL.lookup(args.home, host_session_id=args.host_session_id, cli_session_id=sid)
+    except Exception:  # noqa: BLE001 - a hint, never a reason to leave a chat without a letter
+        return "", AL.UNREADABLE
+
+
 def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, Any]:
     """Register the chat, resume it, or reopen it.  A resume of a closed registration is the Operator's cue to issue a
     letter again, so it never comes back empty-handed while a letter can be freed."""
     keep = (args.location, sid)
     swept = sweep_stale(OR, db, keep, now)
     title = clean_title(args.title)
+    parent, no_parent = _parent(OR, db, args, sid)
 
     def register() -> dict[str, Any]:
         return OR.register_session(
@@ -461,6 +502,7 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
             issuer=OR.ISSUER_OPERATOR,
             letter_space=LETTER_SPACE,
             letter_pick=LETTER_PICK,
+            parent_session_id=parent,
         )
 
     try:
@@ -474,7 +516,11 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                         db,
                         keep,
                         lambda: reg.reopen(
-                            out["record_id"], actor=args.seat, source=args.source, pick=LETTER_PICK
+                            out["record_id"],
+                            actor=args.seat,
+                            source=args.source,
+                            pick=LETTER_PICK,
+                            parent_session_id=parent,
                         ),
                     )
                     evicted += more
@@ -501,6 +547,8 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
         }
     out["swept"] = swept
     out["evicted"] = evicted
+    if no_parent and out.get("outcome") in ("registered", "reopened"):
+        out["parent_lookup"] = no_parent  # why this chat was placed as a main chat (claude_app_lineage's reasons)
     return out
 
 
@@ -543,6 +591,8 @@ def registry_main(
     parser.add_argument("--seat", default=SEAT_DEFAULT)
     parser.add_argument("--title", default="")
     parser.add_argument("--source", default=SOURCE)
+    parser.add_argument("--parent-session-id", default="")
+    parser.add_argument("--host-session-id", default="")
     try:
         with io.StringIO() as sink:
             from contextlib import redirect_stderr, redirect_stdout
@@ -551,6 +601,7 @@ def registry_main(
                 args = parser.parse_args(argv)
     except SystemExit:
         return _emit(stdout, {"error": "bad arguments:  %s" % " ".join(argv)[:200]}, 2)
+    args.home = str(env.get("HOME") or os.path.expanduser("~"))
     db = OR.registry_db_path(L.state_root(env), env)
     if not os.path.isfile(db):
         # Never create one:  a second registry would hand out letters that collide with the one the Operator keeps.
@@ -672,6 +723,18 @@ class Chat:
             # One argument in the --flag=VALUE form:  a chat renamed "-v" or "--db x" must reach the registry as a
             # title, not be read by its parser as an option.
             argv += ["--title=" + clean_title(title)]
+        host = str(self.env.get(ENV_HOST_SESSION) or "").strip()
+        if op == "register" and AL.HOST_ID.fullmatch(host):
+            # The desktop app's id for this chat, so the registry side (which runs on the Mac, where the app's record
+            # of the chat is) can tell whether another chat started it.
+            answer = self._call(argv + ["--host-session-id=" + host])
+            if not str(answer.get("error") or "").startswith("bad arguments"):
+                return answer
+            # A Mac still on a runtime from before the flag refuses the whole call:  ask again without it, so the chat
+            # still gets a pair (as a main chat) rather than none until the Mac catches up.
+        return self._call(argv)
+
+    def _call(self, argv: list[str]) -> dict[str, Any]:
         if self.location == "mac":
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
@@ -794,7 +857,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         _hook_out(
             stdout,
             "SessionStart",
-            context="No Operator letter yet (%s).  The next prompt tries again." % note["error"],
+            context="No Operator letter yet (%s).  A prompt after %d minutes tries again." % (note["error"], RETRY_SECONDS // 60),
         )
         return 0
     if note["state"] == "mismatch":
@@ -916,8 +979,11 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         text = str(note.get("title") or "") or own_words(current, note) or PLACEHOLDER
         note = _apply(chat, chat.registry("register", title=text), note)
         if note["state"] == "open":
+            # The note keeps the scanned, cut copy the registry holds;  the title on screen keeps the owner's words.
             note.update(
-                titled=True, title=text, placeholder="%s: %s" % (note["label"], PLACEHOLDER)
+                titled=True,
+                title=clean_title(text),
+                placeholder="%s: %s" % (note["label"], PLACEHOLDER),
             )
             title = "%s: %s" % (note["label"], text)
         else:
