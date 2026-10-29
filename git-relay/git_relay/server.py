@@ -811,8 +811,10 @@ def make_handler(relay: Relay):
                 self._send(400, {"error": "bad Content-Length"})
                 return
             cap = (
-                MAX_BINARY_REQUEST_BYTES if action in BINARY_REQUEST_ACTIONS
-                else MAX_FILE_REQUEST_BYTES if action in FILE_REQUEST_ACTIONS
+                MAX_BINARY_REQUEST_BYTES
+                if action in BINARY_REQUEST_ACTIONS
+                else MAX_FILE_REQUEST_BYTES
+                if action in FILE_REQUEST_ACTIONS
                 else MAX_REQUEST_BYTES
             )
             if length < 1 or length > cap:

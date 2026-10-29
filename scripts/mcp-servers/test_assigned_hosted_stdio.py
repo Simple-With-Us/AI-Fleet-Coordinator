@@ -291,14 +291,23 @@ class AdapterTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
 class FileFrameTests(unittest.TestCase):
     def test_larger_frames_are_file_only_and_bounded(self):
-        message={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'gr_wf_files_put','arguments':{'content_b64':'A'*(5*1024*1024)}}}
-        size=len(json.dumps(message).encode())
-        self.assertTrue(mod.file_frame_allowed(message,size))
-        message['params']['name']='gr_wf_runs'
-        self.assertFalse(mod.file_frame_allowed(message,size))
-        message['params']['name']='gr_wf_files_put'
-        self.assertFalse(mod.file_frame_allowed(message,mod.MAX_FILE_FRAME_BYTES+1))
-        self.assertFalse(mod.file_frame_allowed([message],size))
-        self.assertEqual(mod.MAX_BYTES,4*1024*1024)
+        message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "gr_wf_files_put",
+                "arguments": {"content_b64": "A" * (5 * 1024 * 1024)},
+            },
+        }
+        size = len(json.dumps(message).encode())
+        self.assertTrue(mod.file_frame_allowed(message, size))
+        message["params"]["name"] = "gr_wf_runs"
+        self.assertFalse(mod.file_frame_allowed(message, size))
+        message["params"]["name"] = "gr_wf_files_put"
+        self.assertFalse(mod.file_frame_allowed(message, mod.MAX_FILE_FRAME_BYTES + 1))
+        self.assertFalse(mod.file_frame_allowed([message], size))
+        self.assertEqual(mod.MAX_BYTES, 4 * 1024 * 1024)

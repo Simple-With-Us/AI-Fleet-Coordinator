@@ -3573,7 +3573,12 @@ class WorkflowVerbs:
                 plan.append((path, None))
                 continue
             content = f.get("content_b64")
-            if not isinstance(content, str) or not content or len(content) > MAX_FILE_B64 or "delete" in f:
+            if (
+                not isinstance(content, str)
+                or not content
+                or len(content) > MAX_FILE_B64
+                or "delete" in f
+            ):
                 raise Refused("invalid files")
             total += len(content)
             if total > MAX_FILES_B64:

@@ -107,9 +107,7 @@ class Adapter:
         encoded = json.dumps(message).encode()
         if not file_frame_allowed(message, len(encoded)):
             raise TransportFailure("Input frame too large.")
-        request = urllib.request.Request(
-            ENDPOINT, data=encoded, headers=headers, method="POST"
-        )
+        request = urllib.request.Request(ENDPOINT, data=encoded, headers=headers, method="POST")
         try:
             with self.opener(request, timeout=120) as response:
                 status = response.status
@@ -178,12 +176,15 @@ def file_frame_allowed(message, frame_bytes):
     if frame_bytes > MAX_FILE_FRAME_BYTES or not isinstance(message, dict):
         return False
     params = message.get("params")
-    if (message.get("jsonrpc") != "2.0" or message.get("method") != "tools/call"
+    if (
+        message.get("jsonrpc") != "2.0"
+        or message.get("method") != "tools/call"
         or not isinstance(params, dict)
         or params.get("name") not in {"gr_wf_file_put", "gr_wf_files_put"}
         or set(message) - {"jsonrpc", "id", "method", "params"}
         or set(params) - {"name", "arguments", "_meta"}
-        or not isinstance(params.get("arguments"), dict)):
+        or not isinstance(params.get("arguments"), dict)
+    ):
         return False
     size = len(json.dumps(params["arguments"], separators=(",", ":"), ensure_ascii=False).encode())
     return size <= MAX_FILE_ARGS_BYTES and frame_bytes - size <= 65536
