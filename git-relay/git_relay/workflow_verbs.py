@@ -708,7 +708,7 @@ class WorkflowVerbs:
         if (
             isinstance(data.get("number"), bool)
             or not isinstance(data.get("number"), int)
-            or not 1 <= data["number"] <= 9007199254740991
+            or data["number"] < 1
             or data.get("state") not in ("open", "closed")
         ):
             raise Refused("unexpected issue response")
@@ -836,7 +836,7 @@ class WorkflowVerbs:
         if (
             not isinstance(data, dict)
             or type(data.get("id")) is not int
-            or not 1 <= data["id"] <= 9007199254740991
+            or data["id"] < 1
             or not isinstance(data.get("name"), str)
             or len(data["name"].encode("utf-8")) > 255
             or not data["name"]
@@ -991,7 +991,7 @@ class WorkflowVerbs:
             not isinstance(data, dict)
             or isinstance(data.get("id"), bool)
             or not isinstance(data.get("id"), int)
-            or not 1 <= data["id"] <= 9007199254740991
+            or data["id"] < 1
         ):
             raise RelayGitHubError(502, "invalid release asset summary")
         if (
