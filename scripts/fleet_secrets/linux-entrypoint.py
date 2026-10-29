@@ -1,5 +1,5 @@
 #!/usr/bin/env -S python3 -I
-"""On-demand Linux environment auth for fleet-secrets.  No credential file is read."""
+"""Scoped Linux auth for fleet-secrets, with an existing root-private bootstrap fallback."""
 
 import importlib.util
 import os
@@ -34,8 +34,17 @@ class Interrupted(Exception):
         self.signum = signum
 
 
+def private_bootstrap():
+    try:
+        return core.load_linux_root_private_bootstrap()
+    except core.SecretsError as exc:
+        raise EntryError(exc.message) from None
+
+
 def load_machine_credentials(env):
     names = (core.ENV_AUTOMATION_ID, core.ENV_AUTOMATION_SECRET)
+    if not any((env.get(name) or "").strip() for name in names):
+        env = private_bootstrap()
     missing = [name for name in names if not (env.get(name) or "").strip()]
     if missing:
         raise EntryError("missing required environment variables: " + ", ".join(missing))
@@ -114,6 +123,9 @@ def cli_path(env):
     explicit = (env.get("FLEET_SECRETS_CLI") or "").strip()
     if explicit:
         return Path(os.path.expanduser(explicit))
+    installed = Path(__file__).resolve().parent / "fleet-secrets-cli"
+    if installed.is_file():
+        return installed
     return (
         Path(env.get("FLEET_SECRETS_HOME") or Path.home() / ".local/share/fleet-secrets")
         / "fleet-secrets"

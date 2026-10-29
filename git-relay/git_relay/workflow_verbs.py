@@ -75,6 +75,7 @@ SPECS = {
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
     "wf_issue_blocking": ({"issues": "read"}, False),
+    "wf_file_rename": ({"contents": "write"}, True),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -3168,6 +3169,205 @@ class WorkflowVerbs:
 
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
+
+    def wf_file_rename(self, repo, args):
+        """Rename one regular blob without fetching its contents or overwriting a destination."""
+        _only(
+            args,
+            (
+                "repo",
+                "source_path",
+                "destination_path",
+                "branch",
+                "message",
+                "expected_head_sha",
+                "prior_sha",
+            ),
+        )
+        source, dest = _path(args, "source_path"), _path(args, "destination_path")
+        branch, head, prior = (
+            _ref(args, "branch"),
+            _sha(args, "expected_head_sha"),
+            _sha(args, "prior_sha"),
+        )
+        message = args.get("message")
+        if source == dest or source.startswith(dest + "/") or dest.startswith(source + "/"):
+            raise Refused("rename paths overlap")
+        if branch.startswith("refs/") or any(_workflow_path(x) for x in (source, dest)):
+            raise Refused("qualified refs and workflow paths refused")
+        if any(len(x) > 1024 or len(x.split("/")) > 8 for x in (source, dest)):
+            raise Refused("rename path exceeds bounds")
+        if not isinstance(message, str) or not message.strip() or "\x00" in message:
+            raise Refused("invalid rename message")
+        try:
+            encoded = message.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Refused("invalid rename message") from None
+        if (
+            len(encoded) > 500
+            or find_secret(message)
+            or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+                message,
+            )
+        ):
+            raise Refused("invalid rename message")
+        try:
+            info = self._get(f"/repos/{repo}")
+            if (
+                not isinstance(info, dict)
+                or not isinstance(info.get("default_branch"), str)
+                or not info["default_branch"]
+            ):
+                raise RelayGitHubError(502, "rename repository pre-read unverifiable")
+            if branch == info["default_branch"]:
+                raise Refused("default branch is not writable")
+            ref = self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}")
+            if (
+                not isinstance(ref, dict)
+                or ref.get("ref") != "refs/heads/" + branch
+                or not isinstance(ref.get("object"), dict)
+                or ref["object"].get("type") != "commit"
+                or ref["object"].get("sha") != head
+            ):
+                raise Refused("exact branch head not matched")
+            commit = self._get(f"/repos/{repo}/git/commits/{head}")
+            if (
+                not isinstance(commit, dict)
+                or commit.get("sha") != head
+                or not isinstance(commit.get("tree"), dict)
+                or not isinstance(commit["tree"].get("sha"), str)
+                or not _SHA.fullmatch(commit["tree"]["sha"])
+            ):
+                raise RelayGitHubError(502, "rename base commit unverifiable")
+            base = commit["tree"]["sha"]
+            cache = {}
+
+            def entry(path):
+                tree = base
+                parts = path.split("/")
+                for pos, part in enumerate(parts):
+                    if tree not in cache:
+                        value = self._get(f"/repos/{repo}/git/trees/{tree}")
+                        if (
+                            not isinstance(value, dict)
+                            or value.get("sha") != tree
+                            or value.get("truncated") is not False
+                            or not isinstance(value.get("tree"), list)
+                            or len(value["tree"]) > 1000
+                        ):
+                            raise RelayGitHubError(502, "rename tree pre-read incomplete")
+                        entries = {}
+                        for item in value["tree"]:
+                            if (
+                                not isinstance(item, dict)
+                                or not isinstance(item.get("path"), str)
+                                or "/" in item["path"]
+                                or not item["path"]
+                                or item["path"] in entries
+                                or not isinstance(item.get("sha"), str)
+                                or not _SHA.fullmatch(item["sha"])
+                                or (item.get("type"), item.get("mode"))
+                                not in (
+                                    ("blob", "100644"),
+                                    ("blob", "100755"),
+                                    ("blob", "120000"),
+                                    ("tree", "040000"),
+                                    ("commit", "160000"),
+                                )
+                            ):
+                                raise RelayGitHubError(502, "rename tree entry unverifiable")
+                            entries[item["path"]] = item
+                        cache[tree] = entries
+                    item = cache[tree].get(part)
+                    if item is None:
+                        return None
+                    if pos == len(parts) - 1:
+                        return item
+                    if item["type"] != "tree":
+                        raise Refused("rename parent is not a directory")
+                    tree = item["sha"]
+                return None
+
+            original = entry(source)
+            if (
+                original is None
+                or original["type"] != "blob"
+                or original["mode"] not in ("100644", "100755")
+                or original["sha"] != prior
+            ):
+                raise Refused("source is not the exact regular blob")
+            if entry(dest) is not None:
+                raise Refused("rename destination already exists")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "rename pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        # After the first POST, any error keeps the durable outcome UNKNOWN, including
+        # a later definite ref refusal: objects may have been created. Never replay.
+        try:
+            tree = self.client._call(
+                "POST",
+                f"/repos/{repo}/git/trees",
+                {
+                    "base_tree": base,
+                    "tree": [
+                        {"path": source, "mode": original["mode"], "type": "blob", "sha": None},
+                        {"path": dest, "mode": original["mode"], "type": "blob", "sha": prior},
+                    ],
+                },
+                bearer=self.bearer,
+            )
+            if (
+                not isinstance(tree, dict)
+                or not isinstance(tree.get("sha"), str)
+                or not _SHA.fullmatch(tree["sha"])
+            ):
+                raise RelayGitHubError(502, "rename tree receipt unverifiable")
+            result = self.client._call(
+                "POST",
+                f"/repos/{repo}/git/commits",
+                {"message": message, "tree": tree["sha"], "parents": [head]},
+                bearer=self.bearer,
+            )
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get("sha"), str)
+                or not _SHA.fullmatch(result["sha"])
+                or not isinstance(result.get("tree"), dict)
+                or result["tree"].get("sha") != tree["sha"]
+                or not isinstance(result.get("parents"), list)
+                or len(result["parents"]) != 1
+                or not isinstance(result["parents"][0], dict)
+                or result["parents"][0].get("sha") != head
+            ):
+                raise RelayGitHubError(502, "rename commit receipt unverifiable")
+            new = result["sha"]
+            receipt = self.client._call(
+                "PATCH",
+                f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}",
+                {"sha": new, "force": False},
+                bearer=self.bearer,
+            )
+            if (
+                not isinstance(receipt, dict)
+                or receipt.get("ref") != "refs/heads/" + branch
+                or not isinstance(receipt.get("object"), dict)
+                or receipt["object"].get("type") != "commit"
+                or receipt["object"].get("sha") != new
+            ):
+                raise RelayGitHubError(502, "rename ref receipt unverifiable")
+        except (RelayGitHubError, ValueError):
+            raise RelayGitHubError(502, "rename write outcome unverifiable") from None
+        return {
+            "source_path": source,
+            "destination_path": dest,
+            "branch": branch,
+            "commit": new,
+            "blob_sha": prior,
+        }
 
     def wf_file_delete(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "prior_sha"))
