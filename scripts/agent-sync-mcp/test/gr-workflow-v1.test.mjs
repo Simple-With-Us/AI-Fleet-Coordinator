@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,108);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,110);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,108);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,110);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -452,6 +452,14 @@ test('milestone delete receipt and writes use strict envelopes and own-bearer ro
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_milestone_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({deleted:true,number:2}));});assert.ok(!(await t.call('gr_wf_milestone_delete',a)).isError);
 });
 
+test('commit status own report namespace strict receipts and own bearer',async()=>{
+ const args={repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'};
+ const status={id:2,state:'pending',context:'swu-wise/report',description:'queued',created_at:null};
+ assert.equal(validWfV1Args('wf_commit_status_create',args),true);
+ for(const context of ['test','gitleaks'])assert.equal(validWfV1Args('wf_commit_status_create',{...args,context}),false);
+ for(const bad of [{...status,id:true},{...status,context:' '},{...status,description:3},{...status,created_at:false},{...status,secret:1}])assert.equal(validWfV1Response('wf_commit_status_create',{status:bad}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_commit_status_create'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({status}));});assert.ok(!(await t.call('gr_wf_commit_status_create',args)).isError);
+});
 test('thread resolve receipts are strict and fixed routes preserve own bearer',async()=>{
  const args={repo,number:1,thread_id:'PRRT_fixture'},thread={id:'PRRT_fixture',isResolved:true};
  assert.equal(validWfV1Response('wf_review_thread_resolve',{thread}),true);
@@ -482,4 +490,45 @@ test('rename strict receipts correlate paths branch and prior blob and use calle
  assert.ok(!(await t.call('gr_wf_file_rename',args)).isError);assert.equal(calls,1);
  for(const bad of [{...args,force:true},{...args,message:' '},{...args,message:'é'.repeat(251)},{...args,source_path:'../x'}])assert.ok((await t.call('gr_wf_file_rename',bad)).isError);
  assert.equal(calls,1);
+});
+
+test('bounded git object fixed own-bearer calls and unknown blob creates',async()=>{
+ for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message'}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
+  assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,url:'https://evil.invalid'}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
+ }
+ const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_wf_git_blob_create',{repo,text:'hi'});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+});
+
+test('git read contracts accept actual whitespace filenames and refuse absent write actions',()=>{
+ const tree={tree:{sha:'a'.repeat(40),truncated:false,entries:[{sha:'b'.repeat(40),type:'blob',mode:'100644',path:' '}]}};
+ assert.ok(validWfV1Response('wf_git_tree_get',tree));tree.tree.entries[0].path='';assert.equal(validWfV1Response('wf_git_tree_get',tree),false);
+ assert.equal(validWfV1Args('wf_git_commit_create',{}),false);assert.equal(validWfV1Response('wf_git_commit_create',{}),false);
+});
+test('untrusted nested read response Zod boundary rejects malformed fields',()=>{
+ for(const [a,b] of [['wf_pr_get',{pull:{}}],['wf_commit_get',{commit:{sha:true}}],['wf_branch_get',{branch:{name:'x',commit:{sha:7}}}],['wf_repo_get',{repository:{id:true}}],['wf_workflows',{workflows:{total_count:1,workflows:[{id:true}]}}],['wf_run_get',{run:{id:1,head_sha:'a'.repeat(40),status:'done',conclusion:7}}],['wf_run_artifacts',{artifacts:{total_count:1,artifacts:[{id:1,name:'x',size_in_bytes:-1,expired:false}]}}]])assert.equal(validWfV1Response(a,b),false,a);
+ assert.equal(validWfV1Response('wf_file_put',{branch:'x',path:'a',commit:'a'.repeat(40),unexpected:true}),false);
+});
+
+test('comparison malformed and hostile response resource bounds',()=>{
+ assert.equal(validWfV1Response('wf_compare',{comparison:{}}),false);
+ const cycle={};cycle.x=cycle;assert.equal(validWfV1Response('wf_pr_get',cycle),false);
+ const bomb={};Object.defineProperty(bomb,'pull',{enumerable:true,get(){throw Error('must not read');}});assert.equal(validWfV1Response('wf_pr_get',bomb),false);
+ assert.equal(validWfV1Response('wf_pr_get',{pull:{x:'x'.repeat(65537)}}),false);
+});
+
+test('response budgets admit populated threads and discriminate hostile generic responses',()=>{
+ const threads={threads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[{id:'T1',isResolved:false,isOutdated:false,path:'a.ts',line:1,comments:{nodes:[{id:1,databaseId:2,body:'x',author:{login:'fixture'}}],pageInfo:{hasNextPage:false,endCursor:null}}}]}};
+ assert.equal(validWfV1Response('wf_review_threads',threads),true);
+ assert.equal(validWfV1Response('wf_file_get',{path:'x',sha:'a'.repeat(40),size:60000,encoding:'base64',content:'eA=='.repeat(20000)}),true);
+ const valid={total:1,items:[{path:'a',sha:'b'}],complete:false};assert.equal(validWfV1Response('wf_code_search',valid),true);
+ const cycle={total:1,items:[],complete:false};cycle.items.push(cycle);assert.equal(validWfV1Response('wf_code_search',cycle),false);
+ const oversized={...valid,items:[{path:'x'.repeat(1048577),sha:'b'}]};assert.equal(validWfV1Response('wf_code_search',oversized),false);
+ let nested={};for(let i=0;i<13;i++)nested={x:nested};assert.equal(validWfV1Response('wf_code_search',{...valid,items:[nested]}),false);
+});
+
+test('PR response text scan refuses credential-shaped title and body without blocking plain or null text',()=>{
+ const base={id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}};
+ assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,title:'plain',body:null}}),true);
+ for(const key of ['title','body'])for(const value of ['ghp_'+'x'.repeat(30),'github_pat_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,[key]:value}}),false);
 });
