@@ -27,6 +27,8 @@ BOT_IDENTITIES = (
     "BF-DEPLOYER",
     "BF-DESIGNER",
     "BF-DIRECTOR",
+    "BF-ENGINEER",
+    "BF-TRADER",
     "BF-FIXER",
     "BF-HOUSEKEEPER",
     "BF-MONITOR",
