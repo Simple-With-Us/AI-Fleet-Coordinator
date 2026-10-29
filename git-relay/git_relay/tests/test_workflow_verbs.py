@@ -73,7 +73,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 102)
+        self.assertEqual(len(ACTIONS), 104)
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
@@ -240,9 +240,13 @@ class Tests(unittest.TestCase):
 
     def test_spec_permissions_stay_inside_shared_ceiling(self):
         for action, (perms, _) in SPECS.items():
-            if action in ("wf_checks", "wf_check_create", "wf_check_update") or action.startswith(
-                "wf_deployment"
-            ):
+            if action in (
+                "wf_checks",
+                "wf_check_create",
+                "wf_check_update",
+                "wf_commit_statuses",
+                "wf_commit_status_create",
+            ) or action.startswith("wf_deployment"):
                 continue  # deliberately outside the ceiling; see the next test
             self.assertEqual(set(perms) - set(CEILING), set(), action)
 
