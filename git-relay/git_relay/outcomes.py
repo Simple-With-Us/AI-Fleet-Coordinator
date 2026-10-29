@@ -49,6 +49,13 @@ class OutcomeStoreError(RuntimeError):
 def key_for(seat: str, action: str, args: dict) -> str:
     if action == "wf_file_delete":
         args = {k: args[k] for k in ("repo", "path", "branch", "prior_sha")}
+    if action == "wf_labels_add":
+        args = {**args, "labels": sorted(x.casefold() for x in args["labels"])}
+    if action == "wf_label_update":
+        args = {
+            k: args[k] for k in ("repo", "expected_label_id", "new_name", "color", "description")
+        }
+        args = {**args, "color": args["color"].lower()}
     if action == "wf_file_rename":
         args = {
             k: args[k]
