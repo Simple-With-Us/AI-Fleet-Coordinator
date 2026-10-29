@@ -45,6 +45,8 @@ from pathlib import Path
 from typing import Any
 
 from .identity import canonical_seat
+from .operator_status_text import TAG as _OPERATOR_STATUS_TAG
+from .operator_status_text import is_status_text
 from .textfmt import fix_outbound
 
 __all__ = [
@@ -67,6 +69,7 @@ __all__ = [
     "UsageError",
     "ZulipClient",
     "check_dm_guard",
+    "check_owner_pinned",
     "credential_file_name",
     "default_rc_path",
     "direct_recipient_sets",
@@ -1119,6 +1122,23 @@ DM_GUARD_PATHS = frozenset({"messages", "scheduled_messages", "drafts"})
 #: The message types that make a send a direct message.  Zulip has used both names for it.
 DM_GUARD_TYPES = frozenset({"direct", "private"})
 
+#: The tag an Operator status direct message opens with (owner ruling, Thu, Oct 29 2026, about
+#: 3:35 AM:  "DM one to one since from bot to another bot but since deterministic bot not something
+#: about like the project or details I want to be able to see").  It tells the sender what became
+#: of a wake.  The kind is never `wake` or `route`:  the router reads those as seat replies and
+#: would count them on the loop guard.  A clarifying question is not here yet, because its reply
+#: leg is not built:  the answer would be a direct message from the sender to the Operator, which
+#: the owner guard refuses for a bot, and nothing reads that answer.
+#:
+#: The tag alone is not what lets a message through:  `check_operator_status_send` accepts only a
+#: content that is exactly a text the fixed vocabulary builds (operator_status_text.is_status_text).
+OPERATOR_STATUS_TAGS = (_OPERATOR_STATUS_TAG,)
+
+#: The longest Operator status message.  The text is built from a fixed vocabulary, so this is a
+#: ceiling on a bug, not a limit anyone should reach.  It is checked first, so the strict match
+#: below never reads an enormous string.
+OPERATOR_STATUS_MAX_CHARS = 1000
+
 
 def _guard_endpoint(path: Any) -> str:
     """The endpoint a path names, for the guard:  its first segment.
@@ -1203,6 +1223,26 @@ def direct_recipient_sets(params: Mapping[str, Any] | None) -> list[list[int]] |
     return sets or None
 
 
+def check_owner_pinned(owner_user_id: Any) -> int:
+    """The pinned owner id, or DmGuardRefused when there is none.
+
+    It **fails closed**:  with no owner id pinned (0, unset, or unreadable) a direct send is
+    refused, because a send nobody can check is a send nobody may make.  Both the normal guard and
+    the Operator status exemption go through here, so neither can run on an unpinned client."""
+    try:
+        owner = int(owner_user_id)
+    except (TypeError, ValueError):
+        owner = 0
+    if owner <= 0:
+        raise DmGuardRefused(
+            "the owner's Zulip user id is not pinned, so this direct message cannot be checked "
+            "against it:  pin daemon.owner_user_id in listener.toml (or set OWNER_USER_ID) and try "
+            "again",
+            code="dm_owner_not_pinned",
+        )
+    return owner
+
+
 def check_dm_guard(
     path: str,
     params: Mapping[str, Any] | None,
@@ -1223,17 +1263,7 @@ def check_dm_guard(
     sets = direct_recipient_sets(params)
     if sets is None:
         return  # not a direct send:  a channel message is none of this guard's business
-    try:
-        owner = int(owner_user_id)
-    except (TypeError, ValueError):
-        owner = 0
-    if owner <= 0:
-        raise DmGuardRefused(
-            "the owner's Zulip user id is not pinned, so this direct message cannot be checked "
-            "against it:  pin daemon.owner_user_id in listener.toml (or set OWNER_USER_ID) and try "
-            "again",
-            code="dm_owner_not_pinned",
-        )
+    owner = check_owner_pinned(owner_user_id)
     #  Every direct conversation the request carries has to have the owner in it.  Checking the
     #  union instead would let one owner-addressed conversation authorise another beside it.
     for recipients in sets:
@@ -1244,6 +1274,54 @@ def check_dm_guard(
             "to the recipients (the `dm --owner` flag, or the owner's user id), or post in a channel "
             "instead",
             code="dm_owner_not_participant",
+        )
+
+
+def check_operator_status_send(method: Any, path: Any, params: Mapping[str, Any] | None) -> None:
+    """Raise DmGuardRefused unless this send has exactly the shape of an Operator status message.
+
+    The one shape:  a POST to `messages`, with only `type`, `to` and `content`, `type` being
+    `direct`, `to` being one positive user id, and `content` being exactly a text the fixed status
+    vocabulary builds (`operator_status_text.is_status_text`), at most OPERATOR_STATUS_MAX_CHARS
+    long.  A tag with anything else after it is not enough:  the sentences are the vocabulary's
+    own, so no project detail can ride under the tag.  Everything else, a group conversation, a
+    draft, a scheduled message, a PATCH or a message with free text, is refused here, so the
+    exemption cannot carry anything but the status message even if a caller holds a verified client
+    and passes the flag on some other call."""
+    body = params if isinstance(params, Mapping) else {}
+    if (
+        str(method).upper() != "POST"
+        or _guard_endpoint(path) != "messages"
+        or set(body) != {"type", "to", "content"}
+        or body.get("type") != "direct"
+    ):
+        raise DmGuardRefused(
+            "an Operator status message is one direct POST to messages with a type, a recipient "
+            "and a content, and nothing else",
+            code="dm_status_content",
+        )
+    to = body.get("to")
+    if (
+        not isinstance(to, list)
+        or len(to) != 1
+        or isinstance(to[0], bool)
+        or not isinstance(to[0], int)
+        or to[0] <= 0
+    ):
+        raise DmGuardRefused(
+            "an Operator status message goes to exactly one recipient, named by user id",
+            code="dm_status_recipient",
+        )
+    content = body.get("content")
+    if (
+        not isinstance(content, str)
+        or len(content) > OPERATOR_STATUS_MAX_CHARS
+        or not is_status_text(content)
+    ):
+        raise DmGuardRefused(
+            "an Operator status message must be exactly a text the fixed status vocabulary "
+            "builds, at most %d characters, with nothing else in it" % OPERATOR_STATUS_MAX_CHARS,
+            code="dm_status_content",
         )
 
 
@@ -1277,6 +1355,15 @@ class ZulipClient:
         )
         self._auth = "Basic " + token
         self._hidden = [value for value in (creds.key, token) if value]
+        # Set only by mark_operator_verified, after `users/me` was checked against the pinned
+        # Operator bot.  Nothing else turns the one-to-one status exemption on, and the marker
+        # carries the Operator's id and address and the owner pin it was checked against, so a
+        # client whose credential is swapped for another bot's afterwards, or whose owner pin is
+        # removed or rotated, stops qualifying.
+        self._operator_verified = False
+        self._operator_user_id = 0
+        self._operator_email = ""
+        self._operator_owner_id = 0
         host = _host_key(self.realm)[0]
         handlers: list[Any] = [_NoRedirect()]
         if _is_loopback(host):
@@ -1291,6 +1378,70 @@ class ZulipClient:
             text = text.replace(hidden, "[redacted]")
         return text
 
+    # ---- the Operator's one-to-one status message ---------------------------------------
+    def mark_operator_verified(self, user_id: int, email: str, owner_user_id: int) -> None:
+        """Record that this client's `users/me` was checked against the pinned Operator bot.
+
+        Only `operator_send.connect_operator` calls this, after `service_identity.operator_bot`
+        accepted the answer for `owner_user_id`, the owner pin the Operator was checked against.
+        The marker carries the Operator's user id and address and that owner pin, and the
+        exemption below is honoured only while this client still authenticates as that address and
+        still holds that same pin.  A client built against another pin, or against none, cannot be
+        marked, and a client that was not verified cannot send a status message."""
+        if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
+            raise ValueError("the Operator's user id must be a positive integer")
+        owner = check_owner_pinned(owner_user_id)
+        if owner != check_owner_pinned(self.owner_user_id):
+            raise DmGuardRefused(
+                "this client holds a different owner pin than the one the Operator was checked "
+                "against, so it cannot be marked as the Operator",
+                code="dm_operator_not_verified",
+            )
+        self._operator_user_id = user_id
+        self._operator_email = str(email or "").strip().casefold()
+        self._operator_owner_id = owner
+        self._operator_verified = bool(self._operator_email)
+
+    def _require_operator(self) -> None:
+        """Refuse unless this client is still the Operator it was verified as.
+
+        Three things have to hold on every exempt call, not only when the marker was set:  the
+        owner pin is still there (the same fail-closed rule as the normal guard), it is still the
+        pin the Operator was checked against, and the client still authenticates as the verified
+        address.  The Operator's user id is recorded with the marker and fixed by it:  Zulip binds
+        an address and key to one user, so a client that still authenticates as the verified address
+        is that user.  `operator_send.send_status_dm` also re-reads `users/me` before every send."""
+        check_owner_pinned(self.owner_user_id)
+        if (
+            not self._operator_verified
+            or self._operator_user_id <= 0
+            or self._operator_owner_id != self.owner_user_id
+            or str(self.creds.email or "").strip().casefold() != self._operator_email
+        ):
+            raise DmGuardRefused(
+                "the owner-in-the-conversation guard can be skipped only by a client verified as "
+                "the pinned Operator bot, still holding the owner pin it was checked against and "
+                "still authenticating as it",
+                code="dm_operator_not_verified",
+            )
+
+    def operator_status_dm(self, recipient_id: int, content: str) -> dict[str, Any]:
+        """Send one Operator status message to one recipient, without the owner in it.
+
+        The rule (owner, Thu, Oct 29 2026, about 3:35 AM):  the Operator's reports of what became
+        of a wake go one to one to the sender.  They are deterministic text with no project name,
+        no topic and no quoted message, so there is nothing in them the owner needs to see.  This
+        is the one send that skips the owner-in-the-conversation guard (AFC-469), and the skip is
+        enforced in `request`, on the exact shape of the call:  a client verified as the
+        Operator that still holds its owner pin, one recipient, and a content that is exactly a
+        text the fixed status vocabulary builds."""
+        return self.request(
+            "POST",
+            "messages",
+            {"type": "direct", "to": [recipient_id], "content": content},
+            owner_guard_exempt=True,
+        )
+
     # ---- core ---------------------------------------------------------------------------
     def request(
         self,
@@ -1302,6 +1453,7 @@ class ZulipClient:
         long_poll: bool = False,
         deadline: float | None = None,
         upload: tuple[str, bytes, str] | None = None,
+        owner_guard_exempt: bool = False,
     ) -> dict[str, Any]:
         """One API call.  429 is retried (Retry-After, at most 3 times).  GET also retries
         network failures and a 502, 503 or 504 twice (1s, then 3s); a long poll does not retry a
@@ -1311,9 +1463,20 @@ class ZulipClient:
         A POST or a PATCH that would deliver a direct message is checked before anything is sent:
         the owner has to be in the recipient list (AFC-469).  A PATCH matters because editing a
         draft rewrites its recipient set, and a draft is a message nobody has sent yet.  The check
-        raises DmGuardRefused and sends nothing."""
+        raises DmGuardRefused and sends nothing.
+
+        `owner_guard_exempt` is for `operator_status_dm` alone.  Only exactly True is read, and then
+        the call must come from a client verified as the Operator and must have the exact shape of
+        a status message (`check_operator_status_send`);  any other call that passes it is refused."""
         method = method.upper()
-        if method in ("POST", "PATCH"):
+        if owner_guard_exempt is not False:
+            if owner_guard_exempt is not True:
+                raise DmGuardRefused(
+                    "owner_guard_exempt must be exactly True or False", code="dm_status_content"
+                )
+            self._require_operator()
+            check_operator_status_send(method, path, params)
+        elif method in ("POST", "PATCH"):
             check_dm_guard(path, params, self.owner_user_id)
         query = encode_params(outbound_params(method, path, params))
         url = self.base + path.lstrip("/")
