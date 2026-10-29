@@ -115,7 +115,17 @@ private struct FleetAdminCall {
 /// protocol ends there.
 private final class FleetAdminCommands: CommandRunning {
     /// Every command that was run.
-    private(set) var calls: [FleetAdminCall] = []
+    ///
+    /// The admin reads off the main thread,  so the recording is guarded:  an
+    /// array that two threads write at once is not an array any more.
+    private let lock = NSLock()
+    private var recorded: [FleetAdminCall] = []
+
+    var calls: [FleetAdminCall] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
 
     /// The launchctl reads,  which are the ones that block.
     var launchctlReads: [FleetAdminCall] {
@@ -123,9 +133,11 @@ private final class FleetAdminCommands: CommandRunning {
     }
 
     func run(_ executable: String, _ arguments: [String]) throws -> String {
-        calls.append(FleetAdminCall(executable: executable,
-                                     arguments: arguments,
-                                     onMainThread: Thread.isMainThread))
+        lock.lock()
+        recorded.append(FleetAdminCall(executable: executable,
+                                       arguments: arguments,
+                                       onMainThread: Thread.isMainThread))
+        lock.unlock()
         if executable == "/bin/launchctl", arguments == ["list"] {
             // Neither the server's agent nor the companion's has a process
             // behind it,  so launchd reports both as stopped.
