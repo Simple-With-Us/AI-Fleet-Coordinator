@@ -574,44 +574,35 @@ class RegistryTest(unittest.TestCase):
     def test_concurrent_same_identity_resumes_instead_of_integrity_error(self):
         """Two writers registering one identity:  the second must resume the committed record,
         not race past the unlocked SELECT into an unhandled IntegrityError (review 18197523/1)."""
-        peer = R.SessionRegistry(self.db)  # second connection, same database file
-
-        real_get = R.SessionRegistry._get_by_identity
-        barrier = threading.Barrier(2, timeout=5)
-
-        def hooked(self, *args):
-            row = real_get(self, *args)
-            try:  # both peers have read; only BEGIN IMMEDIATE can keep this from interleaving
-                barrier.wait()
-            except threading.BrokenBarrierError:
-                pass
-            return row
-
+        # Synchronize before BEGIN IMMEDIATE, not inside the locked identity
+        # read. A barrier inside that transaction waits for a peer that cannot
+        # enter until commit, burning the same five seconds as SQLite's busy
+        # timeout and intermittently causing SQLITE_BUSY in a correct writer.
+        start = threading.Barrier(2, timeout=5)
         errs = []
 
         def worker():
-            # Each connection is opened in the thread that uses it:  a registry is the one writer
-            # of the database, and the contended case is two of them, as separate processes.
-            reg = R.SessionRegistry(self.db)
+            reg = None
             try:
+                reg = R.SessionRegistry(self.db)
+                start.wait()
                 reg.resolve_or_register(ident())
-            except Exception as exc:  # noqa: BLE001 - surfaced through the assertion below
+            except Exception as exc:  # noqa: BLE001 - surfaced by assertion
                 errs.append(exc)
             finally:
-                reg.close_db()
+                if reg is not None:
+                    reg.close_db()
 
-        R.SessionRegistry._get_by_identity = hooked
-        try:
-            threads = [threading.Thread(target=worker) for _ in range(2)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-        finally:
-            R.SessionRegistry._get_by_identity = real_get
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
 
         self.assertEqual(errs, [])
-        rows = sqlite3.connect(self.db).execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        with sqlite3.connect(self.db) as connection:
+            rows = connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(rows, 1)  # one record, not a duplicate
 
     def test_write_lock_is_held_before_the_first_read(self):
