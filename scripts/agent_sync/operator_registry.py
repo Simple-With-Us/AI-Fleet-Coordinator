@@ -525,6 +525,44 @@ class SessionRegistry:
             self._enqueue_session_upsert(conn, record_id, now)
             return True
 
+    def reopen(
+        self,
+        record_id: str,
+        at: str | None = None,
+        actor: str = "registry",
+        source: str = "registry",
+    ) -> tuple[str, int, str]:
+        """Give a closed session a letter again (AFC-564, owner Oct 28 2026:  a reopened chat checks with the
+        Operator in case it needs a new letter).
+
+        The record keeps its record_id and identity.  closed_at is cleared and the letter is allocated by the same
+        rule as a first registration, the lowest free one, so a reopened session may come back under a different
+        letter than it held.  Returns (letter, generation, previous letter).  An open session comes back as it is,
+        with nothing written.  Raises LabelExhausted, with nothing written, when every letter is live.
+        """
+        with self._write_txn() as conn:
+            now = at or _utcnow()
+            row = self._get(record_id)
+            if not row["closed_at"]:
+                letter, generation = self._active_alias(conn, record_id)
+                return letter, generation, letter
+            last = conn.execute(
+                "SELECT letter FROM alias_assignments WHERE record_id = ?"
+                " ORDER BY assigned_at DESC LIMIT 1",
+                (record_id,),
+            ).fetchone()
+            previous = last["letter"] if last else ""
+            letter, generation = self._allocate(conn, row["platform"], record_id, now)
+            conn.execute(
+                "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
+                " WHERE record_id = ?",
+                (now, record_id),
+            )
+            details = f"previous letter {previous}" if previous else ""
+            self._insert_event(conn, record_id, letter, "reopen", actor, "reopened", source, details, now)
+            self._enqueue_session_upsert(conn, record_id, now)
+            return letter, generation, previous
+
     def record_event(
         self, record_id: str, event: str, actor: str, outcome: str, source: str, details: str = ""
     ) -> str:
