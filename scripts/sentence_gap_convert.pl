@@ -185,7 +185,7 @@ s/^([ \t]*repo:.*)$/$hold->($1)/gme;
 #      in this mode, which is the price of keeping the six characters out of the
 #      code.
 if ($ENTITY_MODE) {
-    s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/ge;
+    s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/geg;
 }
 
 #  6.  The gap.  This is the canonical pattern, unchanged:  the lookbehind keeps a

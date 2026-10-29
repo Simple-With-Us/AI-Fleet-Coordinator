@@ -92,7 +92,7 @@ Every agent session must start with systematic orientation before touching code:
 
 Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
 
-On the server, the integration trees and the lanes live on the volume the host names in `FLEET_SERVER_VOLUME` (the host's own login profile exports it), and the lane tools read the roots from the environment (`FLEET_CODE_ROOT`, `FLEET_APPS_ROOT`, `FLEET_LANES_ROOT`), which the managed lane wrapper carries.  The root account has no `~/Code` or `~/apps` alias and the `jay` account keeps the `~/` spellings as symlinks; both spellings are the same directory.  The paths themselves are private deployment inventory: they live in `fleet-ops:ATTACK-MAP.md` and in the host's own configuration.  A fleet checkout anywhere else on the server (a scratchpad, `~/.local/state`, `<repo>/.claude/worktrees`) is out of place.
+On the server, the integration trees and the lanes live on the volume the host names in `FLEET_SERVER_VOLUME` (the host's own login profile exports it), and the lane tools read the roots from the environment (`FLEET_CODE_ROOT`, `FLEET_APPS_ROOT`, `FLEET_LANES_ROOT`), which the managed lane wrapper carries.  The root account has no `~/Code` or `~/apps` alias and the `jay` account keeps the `~/` spellings as symlinks; both spellings are the same directory.  The paths themselves are private deployment inventory: they live in the operator's private ATTACK-MAP (`Simple-With-Us/fleet-ops`, private repo) and in the host's own configuration.  A fleet checkout anywhere else on the server (a scratchpad, `~/.local/state`, `<repo>/.claude/worktrees`) is out of place.
 
 Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
 ```bash
@@ -138,7 +138,7 @@ NEVER print, `cat`, `grep`, `rg`, or `view_file` lines matching `KEY=value` from
   ```bash
   fleet-secrets names
   ```
-  *(Cloud seats have no names endpoint now: the old `mac.jays.services/files/key-names` was retired 2026-10-19, so ask a Mac seat or the owner).*
+  *(Cloud seats have no names endpoint now: the retired Mac key-names HTTP endpoint was retired 2026-10-19, so ask a Mac seat or the owner).*
 - **Extraction into single variable (Never echo):**
   ```bash
   SECRET_VAL="$(fleet-secrets get TARGET_KEY)" || exit $?

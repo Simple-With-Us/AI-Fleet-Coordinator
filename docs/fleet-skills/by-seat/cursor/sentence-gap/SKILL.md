@@ -79,7 +79,7 @@ verify that same file, so the check reads the bytes you just produced and never 
 copy of the same name:
 
 ```sh
-grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' reply.txt | wc -l
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' reply.txt | wc -l
 grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' reply.txt
 ```
 
@@ -206,8 +206,9 @@ partly-converted body can have real U+00A0 and still carry a leftover ASCII gap 
 spaces.
 
 ```sh
-grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l  # must be > 0
-grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.nbsp.txt  # must be 0
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*&nbsp; ' body.entity.txt | wc -l      # entity mode: must be > 0
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l        # real-byte mode: must be > 0
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.nbsp.txt   # real-byte leftover: must be 0
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -243,20 +244,17 @@ missed gap before a digit, a `*`, a backtick, `#` or `@` reads as converted, and
 that exists to catch exactly that returns 0.
 
 
-### One count check, two modes
+### Two count checks, two modes
 
-The first check above counts a real U+00A0, and in the entity mode that count is
-structurally 0 on a body that converted perfectly, because the entity is six literal
-characters where the byte pair is one.  The count check therefore takes either
-form of the gap, so one command serves both modes: the pattern holds the entity and
-the byte pair side by side, `(&nbsp; |\xc2\xa0)`.
+Real-byte surfaces (GitHub, Zulip, commits, repo docs, and every surface except the two chat panes) must pass a count that sees only the UTF-8 byte pair `\xc2\xa0`, on `body.nbsp.txt`.  Entity-mode surfaces (the Claude Code Code tab and the MiniMax Code pane) must pass a count that sees only the literal `&nbsp; ` sequence, on `body.entity.txt`.  Never use one pattern that accepts both forms: a body copied out of a chat pane can hold `&nbsp;` entities and would satisfy a combined check while breaking the rule everywhere else.
 
-Point the command at the file that holds the body you produced: `body.nbsp.txt` for
-the real-byte bodies above, and the file that holds the entity bodies when the body
-targets the two chat panes.  The leftover check is the same in both modes,
-and it is worth saying why: a converted boundary is followed by the gap itself, the
-byte pair in the real mode and the entity in the entity mode, and neither of them
-begins with a space, so only an unconverted boundary matches the leftover check.
+The real-byte leftover check above runs on `body.nbsp.txt`.  In entity mode the inline code spans are held before the gap is made, so a sentence end inside a span keeps its plain ASCII space and the leftover check would false-fire on a correct body.  After the entity idempotency check below, strip the inline code spans and run the same leftover pattern on the prose-only copy:
+
+```sh
+perl -CSDA -0777 -pe 's/(`+)([^\n]*?)\1/ /ge' body.entity.txt > body.entity.prose.txt
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.entity.prose.txt   # entity leftover: must be 0
+rm -f body.entity.prose.txt
+```
 
 
 ### The program that runs it — one pass, code-aware
@@ -463,7 +461,7 @@ s/^([ \t]*repo:.*)$/$hold->($1)/gme;
 #      in this mode, which is the price of keeping the six characters out of the
 #      code.
 if ($ENTITY_MODE) {
-    s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/ge;
+    s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/geg;
 }
 
 #  6.  The gap.  This is the canonical pattern, unchanged:  the lookbehind keeps a
@@ -501,8 +499,10 @@ cmp body.nbsp.txt body.check.txt     # must be silent:  the program is idempoten
 perl -CSDA -0777 -p gap.pl --entity body.txt > body.entity.txt
 perl -CSDA -0777 -p gap.pl --entity body.entity.txt > body.check.txt
 cmp body.entity.txt body.check.txt   # must be silent:  entity mode is idempotent too
+perl -CSDA -0777 -pe 's/(`+)([^\n]*?)\1/ /ge' body.entity.txt > body.entity.prose.txt
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.entity.prose.txt   # entity leftover: must be 0
 
-rm -f gap.pl body.check.txt body.entity.txt
+rm -f gap.pl body.check.txt body.entity.txt body.entity.prose.txt
 ```
 
 The program also lives in the checkout at `scripts/sentence_gap_convert.pl`, and the copy above is
@@ -531,11 +531,13 @@ What it does, in order:
 
 Two more costs it carries, and both are deliberate:
 
-- A sentence end *inside* an inline code span, with a space after the period, is still gapped,
+- In the default mode, a sentence end *inside* an inline code span, with a space after the period, is still gapped,
     because the canonical pattern is what the two greps are written against.  The span
     `` `foo.  Bar` `` comes out as `` `foo.`  `` plus the gap plus ` Bar`.  The common shape, where
     the span closes before the space, puts the gap outside the span and leaves the span itself
-    untouched.
+    untouched.  In the entity mode the spans are held before the gap, so that interior boundary is
+    left alone on purpose; run the entity leftover check on `body.entity.prose.txt`, not on the full
+    entity body.
 - A fenced block that is never closed holds the rest of the body, and the rest of the body is not
     converted.  Close the fence.
 

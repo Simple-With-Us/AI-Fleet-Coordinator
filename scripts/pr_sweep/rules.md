@@ -36,7 +36,7 @@ RULES (binding, read all of them):
 11. MERGING: normal path = arm auto-merge with gh pr merge <N> --squash --auto.  Labels do-not-automerge / needs-human-merge and the CODEOWNERS gate only stop AUTO-merge: if the PR passes rule 10, CI is green, threads are resolved and it is up to date, merge it directly with gh pr merge <N> --squash (no --auto, never --admin).  Do not remove labels and do not edit the gate.  If branch protection refuses, report blocked with the exact message.  A stacked PR whose base is not the default branch is never merged into its parent branch.  If you hold a PR under rule 10, disarm nothing that a human armed and merge nothing.
 12. WAIT: after your last push on a merge-mode PR you may do ONE bounded wait: timeout 1500 gh pr checks <N> --watch.  If it has not merged by then, report armed-waiting-ci or the real blocker.  Do not poll again.
 13. WRITING: a real U+00A0 plus a space between sentences in commit messages and in GitHub replies and comments (owner ruling 2026-10-23: one mechanism everywhere, with two exceptions:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a normal space (AFC-552), and the entity is never the form anywhere else); write two spaces, then convert them with: ``umask 077
-perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g'``.  Quote that expression with SINGLE quotes: the character class holds a backtick, and inside double quotes bash opens a command substitution and then fails with "unexpected EOF while looking for matching backticks".  The one-or-more space class matters: a double space written into a tool call sometimes arrives collapsed to one, and that collapse is intermittent, so both a two-space and a single-space pattern can silently match nothing, exit 0, and post with no gap.  The (?<![0-9]) lookbehind keeps a numbered list marker as "1. Item" instead of "1.<NBSP>Item", which would stop CommonMark parsing it as a list; its cost is that a sentence ending in a digit ("The answer is 42. Next") is not gapped, so fix that one by hand.  Before posting run both greps — grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' <file> | wc -l must not print 0, and grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' <file> must print 0 — and do not post if either fails.  Both greps carry the converter's markup group, because a gap that sits after a markup span or after a link is emitted as <punctuation><markup><U+00A0><space>: a check that looks for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a space straight after the punctuation cannot see the one that was missed.  Prose Markdown files follow the U+00A0 plus a space rule above.  Code, identifiers and machine-readable config (Swift, TypeScript, shell, config) are unaffected and never take a U+00A0; never put a U+00A0 into committed code, identifiers or config.
+perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g'``.  Quote that expression with SINGLE quotes: the character class holds a backtick, and inside double quotes bash opens a command substitution and then fails with "unexpected EOF while looking for matching backticks".  The one-or-more space class matters: a double space written into a tool call sometimes arrives collapsed to one, and that collapse is intermittent, so both a two-space and a single-space pattern can silently match nothing, exit 0, and post with no gap.  The (?<![0-9]) lookbehind keeps a numbered list marker as "1. Item" instead of "1.<NBSP>Item", which would stop CommonMark parsing it as a list; its cost is that a sentence ending in a digit ("The answer is 42. Next") is not gapped, so fix that one by hand.  Before posting run both greps — grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' <file> | wc -l must not print 0, and grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' <file> must print 0 — and do not post if either fails.  Both greps carry the converter's markup group, because a gap that sits after a markup span or after a link is emitted as <punctuation><markup><U+00A0><space>: a check that looks for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a space straight after the punctuation cannot see the one that was missed.  Prose Markdown files follow the U+00A0 plus a space rule above.  Code, identifiers and machine-readable config (Swift, TypeScript, shell, config) are unaffected and never take a U+00A0; never put a U+00A0 into committed code, identifiers or config.
   A body that carries code is converted by the code-aware program in `skills/sentence-gap/SKILL.md`, not by the bare one-liner:  it holds the code aside, makes the gap, and puts the code back byte for byte.  {{TRAILER_RULE}}
 14. DONE: before answering re-query the PR with gh and report what is true NOW (state, mergeStateStatus, unresolved thread count, CI rollup, autoMergeRequest), not what you intended.  If the PR is merged, retire your lane from outside it: cd ~ && AGENT_SEAT={{SEAT}} ~/apps/lane retire pr<N>-sweep --repo <Repo> (it refuses, and you leave the lane, if anything in it is not safe on GitHub).  The parent checks production after merges; you do not deploy.
 
@@ -58,20 +58,17 @@ FORBIDDEN: TestFlight or App Store upload, ios-ship or any iOS release; enabling
 Never print a credential.  Use AGENT_SEAT={{SEAT}} and --as {{SEAT}} for any fleet command.
 Answer with: repo, mechanism, deployed (yes | no | n/a | unhealthy | unknown), evidence, owner_action.
 
-### One count check, two modes
+### Two count checks, two modes
 
-The first check above counts a real U+00A0, and in the entity mode that count is
-structurally 0 on a body that converted perfectly, because the entity is six literal
-characters where the byte pair is one.  The count check therefore takes either form
-of the gap, so one command serves both modes: the pattern holds the entity and the
-byte pair side by side, `(&nbsp; |\xc2\xa0)`.
+Real-byte surfaces (GitHub, Zulip, commits, repo docs, and every surface except the two chat panes) must pass a count that sees only the UTF-8 byte pair `\xc2\xa0`, on `body.nbsp.txt`.  Entity-mode surfaces (the Claude Code Code tab and the MiniMax Code pane) must pass a count that sees only the literal `&nbsp; ` sequence, on `body.entity.txt`.  Never use one pattern that accepts both forms: a body copied out of a chat pane can hold `&nbsp;` entities and would satisfy a combined check while breaking the rule everywhere else.
 
-Point the command at the file that holds the body you produced: `body.nbsp.txt` for
-the real-byte bodies above, and the file that holds the entity bodies when the body
-targets the two chat panes.  The leftover check is the same in both modes, and it is
-worth saying why: a converted boundary is followed by the gap itself, the byte pair
-in the real mode and the entity in the entity mode, and neither of them begins with
-a space, so only an unconverted boundary matches the leftover check.
+The real-byte leftover check in rule 13 runs on the converted file.  In entity mode the inline code spans are held before the gap is made, so a sentence end inside a span keeps its plain ASCII space and the leftover check would false-fire on a correct body.  After the entity idempotency check below, strip the inline code spans and run the same leftover pattern on the prose-only copy:
+
+```sh
+perl -CSDA -0777 -pe 's/(`+)([^\n]*?)\1/ /ge' body.entity.txt > body.entity.prose.txt
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.entity.prose.txt   # entity leftover: must be 0
+rm -f body.entity.prose.txt
+```
 
 
 ### The program that runs it — one pass, code-aware
@@ -278,7 +275,7 @@ s/^([ \t]*repo:.*)$/$hold->($1)/gme;
 #      in this mode, which is the price of keeping the six characters out of the
 #      code.
 if ($ENTITY_MODE) {
-    s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/ge;
+    s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/geg;
 }
 
 #  6.  The gap.  This is the canonical pattern, unchanged:  the lookbehind keeps a
@@ -316,8 +313,10 @@ cmp body.nbsp.txt body.check.txt     # must be silent:  the program is idempoten
 perl -CSDA -0777 -p gap.pl --entity body.txt > body.entity.txt
 perl -CSDA -0777 -p gap.pl --entity body.entity.txt > body.check.txt
 cmp body.entity.txt body.check.txt   # must be silent:  entity mode is idempotent too
+perl -CSDA -0777 -pe 's/(`+)([^\n]*?)\1/ /ge' body.entity.txt > body.entity.prose.txt
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.entity.prose.txt   # entity leftover: must be 0
 
-rm -f gap.pl body.check.txt body.entity.txt
+rm -f gap.pl body.check.txt body.entity.txt body.entity.prose.txt
 ```
 
 The program also lives in the checkout at `scripts/sentence_gap_convert.pl`, and the copy above is

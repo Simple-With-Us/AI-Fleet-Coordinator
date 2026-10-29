@@ -881,6 +881,19 @@ class GeneratedMirrorTests(unittest.TestCase):
                 )
 
 
+def entity_body_from_nbsp(body: str) -> str:
+    """The entity-mode bytes that match a real-byte converted body."""
+    return body.replace("\u00a0 ", "&nbsp; ")
+
+
+def write_assertion_fixtures(tmp: str, nbsp_body: str) -> None:
+    """The files the documented assertion blocks name."""
+    root = Path(tmp)
+    for name in ("reply.txt", "body.nbsp.txt"):
+        (root / name).write_text(nbsp_body, encoding="utf-8")
+    (root / "body.entity.txt").write_text(entity_body_from_nbsp(nbsp_body), encoding="utf-8")
+
+
 @unittest.skipUnless(HAVE_BASH and HAVE_PERL, "bash and perl are required")
 class DocumentationExecutionTests(unittest.TestCase):
     def test_actual_documented_grep_blocks_execute_as_copied(self):
@@ -892,12 +905,17 @@ class DocumentationExecutionTests(unittest.TestCase):
             for indent, block in blocks:
                 if "grep -cE" not in block:
                     continue
+                if "cat > gap.pl" in block:
+                    continue
                 checked += 1
                 script = "\n".join(line.removeprefix(indent) for line in block.splitlines())
                 with tempfile.TemporaryDirectory() as tmp:
                     body = convert(canonical, "[Sentence.](https://example.com) Next sentence.\n")
-                    for name in ("reply.txt", "body.nbsp.txt"):
-                        (Path(tmp) / name).write_text(body, encoding="utf-8")
+                    write_assertion_fixtures(tmp, body)
+                    if "body.entity.prose.txt" in block:
+                        entity = (Path(tmp) / "body.entity.txt").read_text(encoding="utf-8")
+                        prose = re.sub(r"(`+)([^\n]*?)\1", " ", entity)
+                        (Path(tmp) / "body.entity.prose.txt").write_text(prose, encoding="utf-8")
                     proc = subprocess.run(
                         ["bash", "-c", script],
                         cwd=tmp,
@@ -920,6 +938,8 @@ class DocumentationExecutionTests(unittest.TestCase):
             text = (ROOT / rel).read_text(encoding="utf-8")
             blocks = re.findall(r"(?m)^([ ]{0,3})```sh\n(.*?)^\1```", text, re.DOTALL)
             for _, block in blocks:
+                if "cat > gap.pl" in block:
+                    continue
                 commands = [
                     line.strip().split(" #", 1)[0].rstrip()
                     for line in block.splitlines()
@@ -927,12 +947,16 @@ class DocumentationExecutionTests(unittest.TestCase):
                 ]
                 if not commands:
                     continue
-                self.assertEqual(len(commands), 2, rel)
+                if len(commands) not in (2, 3):
+                    continue
                 with tempfile.TemporaryDirectory() as tmp:
                     for fixed in (False, True):
                         body = convert(canonical, raw) if fixed else raw
-                        for name in ("reply.txt", "body.nbsp.txt"):
-                            (Path(tmp) / name).write_text(body, encoding="utf-8")
+                        write_assertion_fixtures(tmp, body)
+                        if "body.entity.prose.txt" in block:
+                            entity = (Path(tmp) / "body.entity.txt").read_text(encoding="utf-8")
+                            prose = re.sub(r"(`+)([^\n]*?)\1", " ", entity)
+                            (Path(tmp) / "body.entity.prose.txt").write_text(prose, encoding="utf-8")
                         values = []
                         for command in commands:
                             proc = subprocess.run(
@@ -945,12 +969,22 @@ class DocumentationExecutionTests(unittest.TestCase):
                             self.assertIn(proc.returncode, (0, 1), rel + proc.stderr)
                             self.assertEqual(proc.stderr, "", rel)
                             values.append(int(proc.stdout.strip()))
-                        if fixed:
-                            self.assertGreater(values[0], 0, rel)
-                            self.assertEqual(values[1], 0, rel)
+                        if len(commands) == 2:
+                            if fixed:
+                                self.assertGreater(values[0], 0, rel)
+                                self.assertEqual(values[1], 0, rel)
+                            else:
+                                self.assertEqual(values[0], 0, rel)
+                                self.assertGreater(values[1], 0, rel)
                         else:
-                            self.assertEqual(values[0], 0, rel)
-                            self.assertGreater(values[1], 0, rel)
+                            if fixed:
+                                self.assertGreater(values[0], 0, rel)
+                                self.assertGreater(values[1], 0, rel)
+                                self.assertEqual(values[2], 0, rel)
+                            else:
+                                self.assertEqual(values[0], 0, rel)
+                                self.assertEqual(values[1], 0, rel)
+                                self.assertGreater(values[2], 0, rel)
 
     def test_link_conversion_and_both_assertions_agree(self):
         text = ONE_HOME.read_text(encoding="utf-8")

@@ -412,6 +412,15 @@ class ProgramBehaviourTests(unittest.TestCase):
             "the program and the canonical one-liner disagree on a body with no code",
         )
 
+    def test_the_entity_mode_holds_every_inline_span(self) -> None:
+        """Every inline span is held before the gap, not only the first one."""
+        out = run_program(self.program, INLINE_SPANS_BODY, "--entity")
+        self.assertIn("&nbsp; Next.", out)
+        self.assertNotIn("&nbsp; Bar", out.split("`", 1)[0])
+        for region in ("`span one with  two spaces`", "`span two with  two spaces`"):
+            self.assertIn(region, out)
+            self.assertNotIn("&nbsp;", region, "the entity landed inside a span")
+
     def test_the_entity_mode_holds_a_fenced_block_byte_for_byte(self) -> None:
         """The entity mode holds the code aside exactly as the default mode does.
 

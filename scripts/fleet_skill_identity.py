@@ -218,7 +218,7 @@ def _banner(
         f"Notes `{notes}`.\u00a0 "
         f"Branches `{prefix}/`.\u00a0 {lanes}\u00a0 Do not inherit "
         f"another seat's tag from {inherit}."
-        f"{zulip}\n\n"
+        f"{f'\u00a0 {zulip}' if zulip else ''}\n\n"
     )
 
 
@@ -1483,7 +1483,7 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
             seat.notes,
             seat.prefix,
             seat.suffix,
-            f"\u00a0 {zulip}" if zulip else "",
+            zulip,
             seat.lane_clause,
         )
     banners += seat.extra_banner
