@@ -100,6 +100,23 @@ class WebhookTests(unittest.TestCase):
             (caught.exception.status, caught.exception.reason), (503, "not_configured")
         )
 
+    def test_non_ascii_and_malformed_signatures_are_401_not_500(self):
+        body, _ = webhook_body(project_payload())
+        now = int(time.time() * 1000)
+        for bad in ("é" * 64, "ÿ" + "0" * 63, "z" * 64, "0" * 63, "", "  "):
+            with self.subTest(signature=bad):
+                with self.assertRaises(L.WebhookRefused) as caught:
+                    L.verify_linear_webhook(body, bad, SECRET, now)
+                self.assertEqual(
+                    (caught.exception.status, caught.exception.reason), (401, "bad_signature")
+                )
+
+    def test_deeply_nested_json_is_400_not_500(self):
+        raw = ("[" * 5000 + "]" * 5000).encode("utf-8")
+        with self.assertRaises(L.WebhookRefused) as caught:
+            L.verify_linear_webhook(raw, sign(raw), SECRET, int(time.time() * 1000))
+        self.assertEqual((caught.exception.status, caught.exception.reason), (400, "bad_json"))
+
 
 class SlugTests(unittest.TestCase):
     def test_trailing_slug_is_found(self):
@@ -203,6 +220,54 @@ class FetchTests(unittest.TestCase):
             L.fetch_projects("k", opener=opener)
         self.assertIn("403", str(caught.exception))
         self.assertIn("nope", str(caught.exception))
+
+    def test_malformed_cursors_fail_closed(self):
+        for bad in (None, "", 123, ["c1"]):
+            with self.subTest(cursor=bad):
+                page = linear_page([], has_next=True, cursor=bad)
+                opener = FakeOpener([page, page])
+                with self.assertRaises(L.LinearError) as caught:
+                    L.fetch_projects("k", opener=opener)
+                self.assertIn("invalid endCursor", str(caught.exception))
+
+    def test_page_cap_fails_closed(self):
+        pages = [
+            linear_page(
+                [{"identifier": "P-BF-6", "slugId": "5afcbc055535", "name": "R"}],
+                has_next=True,
+                cursor="c%d" % i,
+            )
+            for i in range(3)
+        ]
+
+        class CappedOpener:
+            def __init__(self):
+                self.count = 0
+
+            def __call__(self, req, timeout=None):
+                page = pages[min(self.count, len(pages) - 1)]
+                self.count += 1
+                return FakeResp(page)
+
+        old_max = L.MAX_PAGES
+        L.MAX_PAGES = 2
+        try:
+            with self.assertRaises(L.LinearError) as caught:
+                L.fetch_projects("k", opener=CappedOpener())
+            self.assertIn("too many pages", str(caught.exception))
+        finally:
+            L.MAX_PAGES = old_max
+
+    def test_outbound_calls_carry_a_project_user_agent(self):
+        self.assertEqual(L._linear_headers("k")["User-Agent"], "operator-linkifiers")
+        opener = FakeOpener([linear_page([])])
+        L.fetch_projects("k", opener=opener)
+        for req in opener.requests:
+            self.assertEqual(req.get_header("User-agent"), "operator-linkifiers")
+        http = infisical_http(good_record(), {"secrets": []})
+        L.load_secrets("service-token-value", http=http)
+        for _, _, headers in http.seen["calls"]:
+            self.assertEqual(headers.get("User-Agent"), "operator-linkifiers")
 
 
 class FakeZulip:
@@ -430,7 +495,7 @@ class RewritePathsTests(unittest.TestCase):
         out = L.rewrite_project_paths(self.text, self.projects + hostile)
         with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as handle:
             handle.write(out)
-        proc = subprocess.run([bash, "-n", handle.name], capture_output=True, text=True)
+        proc = subprocess.run([bash, "-n", handle.name], capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_hostile_names_are_neutralized(self):
@@ -445,6 +510,14 @@ class RewritePathsTests(unittest.TestCase):
     def test_idempotent(self):
         once = L.rewrite_project_paths(self.text, self.projects)
         self.assertEqual(L.rewrite_project_paths(once, self.projects), once)
+
+    def test_credential_like_names_are_refused_without_the_value(self):
+        bad = [L.Project("P-ZZ-4", "dddddddddddd", "leak sk-abc1234567890 here")]
+        with self.assertRaises(ValueError) as caught:
+            L.rewrite_project_paths(self.text, self.projects + bad)
+        self.assertIn("P-ZZ-4", str(caught.exception))
+        self.assertNotIn("sk-abc1234567890", str(caught.exception))
+        self.assertNotIn("sk-", str(caught.exception))
 
 
 class ParityAfterRewriteTests(unittest.TestCase):
@@ -657,6 +730,38 @@ class PrTests(unittest.TestCase):
         posts = [r for r in fake.requests if r[0] == "POST"]
         self.assertEqual(posts, [])
 
+    def test_existing_branch_without_an_open_pr_reopens_one(self):
+        fake = GitHubFake(
+            {L.TARGET_PATH: "old-t", L.PROJECT_PATHS_PATH: "old-p"},
+            branch_exists=True,
+            open_prs=[],
+        )
+        files = {L.TARGET_PATH: "new-t", L.PROJECT_PATHS_PATH: "old-p"}
+        out = L.open_sync_pr(
+            GITHUB_TOKEN, files, [L.Project("P-BF-6", "5afcbc055535", "R")], http=fake
+        )
+        self.assertIsNotNone(out)
+        self.assertTrue(out["html_url"].startswith("https://github.com/"))
+        pulls = [r for r in fake.requests if r[0] == "POST" and r[1].endswith("/pulls")]
+        self.assertEqual(len(pulls), 1)
+        blobs = [r for r in fake.requests if r[1].endswith("/git/blobs")]
+        self.assertEqual(blobs, [])
+
+    def test_write_network_failures_are_unknown_and_reads_retryable(self):
+        def http(method, url, headers=None, body=None):
+            raise TimeoutError("dropped")
+
+        headers = L._github_headers(GITHUB_TOKEN)
+        with self.assertRaises(L.GitHubError) as caught:
+            L._github_api(http, headers, "POST", "https://api.github.com/x")
+        self.assertEqual(caught.exception.outcome, "unknown")
+        with self.assertRaises(L.GitHubError) as caught:
+            L._github_api(http, headers, "GET", "https://api.github.com/x")
+        self.assertEqual(caught.exception.outcome, "retryable")
+        with self.assertRaises(L.GitHubError) as caught:
+            L._github_get(http, headers, "https://api.github.com/x")
+        self.assertEqual(caught.exception.outcome, "retryable")
+
     def test_creates_one_commit_and_a_ready_pr(self):
         fake = GitHubFake({L.TARGET_PATH: "old-t", L.PROJECT_PATHS_PATH: "old-p"})
         files = {L.TARGET_PATH: "new-t", L.PROJECT_PATHS_PATH: "new-p"}
@@ -737,6 +842,53 @@ class ReconcileTests(unittest.TestCase):
         blobs = [r for r in fake.requests if r[1].endswith("/git/blobs")]
         self.assertEqual(len(blobs), 2)
         self.assertIn("BEGIN linear-projects", blobs[0][2]["content"])
+
+
+class CmdPlanTests(unittest.TestCase):
+    def test_missing_linear_key_fails_closed_without_a_provider_call(self):
+        import contextlib
+
+        old_load = L.load_secrets
+        old_token = L.read_token_file
+        old_fetch = L.fetch_projects_with_stats
+        L.load_secrets = lambda token: {}
+        L.read_token_file = lambda path: "tok"
+
+        def no_fetch(key):
+            raise AssertionError("provider must not be called without LINEAR_API_KEY")
+
+        L.fetch_projects_with_stats = no_fetch
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                status = L.cmd_plan("dummy", out=io.StringIO())
+            self.assertEqual(status, 1)
+            self.assertIn("LINEAR_API_KEY", err.getvalue())
+        finally:
+            L.load_secrets = old_load
+            L.read_token_file = old_token
+            L.fetch_projects_with_stats = old_fetch
+
+    def test_missing_zulip_credentials_report_through_the_plan_error_path(self):
+        import contextlib
+
+        old_load = L.load_secrets
+        old_token = L.read_token_file
+        old_fetch = L.fetch_projects_with_stats
+        L.load_secrets = lambda token: {"LINEAR_API_KEY": "k"}
+        L.read_token_file = lambda path: "tok"
+        L.fetch_projects_with_stats = lambda key: ([L.Project("P-BF-6", "5afcbc055535", "R")], 0)
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                status = L.cmd_plan("dummy", out=io.StringIO())
+            self.assertEqual(status, 1)
+            self.assertIn("plan: zulip:", err.getvalue())
+            self.assertIn("ZULIP_OPERATOR", err.getvalue())
+        finally:
+            L.load_secrets = old_load
+            L.read_token_file = old_token
+            L.fetch_projects_with_stats = old_fetch
 
 
 if __name__ == "__main__":

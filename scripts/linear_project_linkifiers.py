@@ -54,6 +54,7 @@ BASE_BRANCH = "main"
 
 CODE_RE = re.compile(r"^P-[A-Z]{1,10}-[0-9]{1,6}$")
 SLUG_RE = re.compile(r"^[0-9a-f]{12}$")
+_CREDENTIAL_RE = re.compile(r"(?i)(?:sk-|ghp_|xox[baprs]-)[A-Za-z0-9_-]{8,}")
 _CODE_SORT_RE = re.compile(r"^P-([A-Z]+)-([0-9]+)$")
 
 TARGET_BEGIN = (
@@ -90,7 +91,7 @@ class LinearError(Exception):
 
 
 class GitHubError(Exception):
-    pass
+    outcome: str | None = None
 
 
 class SecretsRefused(Exception):
@@ -130,7 +131,11 @@ def _projects_sorted(projects: list[Project]) -> list[Project]:
 
 def _linear_headers(linear_key: str) -> dict[str, str]:
     auth = "Bearer " + linear_key if linear_key.startswith("lin_oauth_") else linear_key
-    return {"Authorization": auth, "Content-Type": "application/json"}
+    return {
+        "Authorization": auth,
+        "Content-Type": "application/json",
+        "User-Agent": "operator-linkifiers",
+    }
 
 
 def fetch_projects_with_stats(
@@ -209,8 +214,10 @@ def fetch_projects_with_stats(
         if not page.get("hasNextPage"):
             break
         cursor = page.get("endCursor")
-        if not cursor:
-            break
+        if not isinstance(cursor, str) or not cursor:
+            raise LinearError("Linear GraphQL: invalid endCursor")
+    else:
+        raise LinearError("Linear GraphQL: too many pages")
     return _projects_sorted(projects), skipped
 
 
@@ -416,7 +423,10 @@ def _parse_project_paths(text: str) -> dict[str, tuple[str, str | None]]:
 
 
 def _paths_comment(code: str, name: str) -> str:
-    return "    #  %s, which the fleet calls %s." % (sanitize_name(name) or code, code)
+    raw = str(name or "")
+    if _CREDENTIAL_RE.search(raw):
+        raise ValueError("project %s name looks like a credential" % code)
+    return "    #  %s, which the fleet calls %s." % (sanitize_name(raw) or code, code)
 
 
 def rewrite_project_paths(text: str, projects: list[Project]) -> str:
@@ -502,7 +512,12 @@ def _github_api(
     try:
         status, payload = http(method, url, headers, data)
     except OSError as exc:
-        raise GitHubError("GitHub %s: %s" % (url, type(exc).__name__)) from None
+        error = GitHubError("GitHub %s: %s" % (url, type(exc).__name__))
+        if method.upper() in {"POST", "PATCH", "PUT", "DELETE"}:
+            error.outcome = "unknown"
+        else:
+            error.outcome = "retryable"
+        raise error from None
     if status is None:
         raise GitHubError("GitHub %s: no response" % url)
     if 200 <= int(status) < 300:
@@ -518,7 +533,9 @@ def _github_get(http: HttpFn, headers: dict[str, str], url: str) -> tuple[int, A
     try:
         return http("GET", url, headers, None)
     except OSError as exc:
-        raise GitHubError("GitHub %s: %s" % (url, type(exc).__name__)) from None
+        error = GitHubError("GitHub %s: %s" % (url, type(exc).__name__))
+        error.outcome = "retryable"
+        raise error from None
 
 
 def _branch_name(files: dict[str, str]) -> str:
@@ -564,7 +581,8 @@ def open_sync_pr(
     http: HttpFn | None = None,
 ) -> dict[str, Any] | None:
     """A ready PR syncing the generated files, or None when main already matches.
-    Idempotent:  an existing branch reuses its open PR instead of opening another."""
+    Idempotent by reads:  an existing branch reuses its open PR, or reopens one
+    when none is open, instead of opening another."""
     request = http or _default_http
     headers = _github_headers(github_token)
     base = "https://api.github.com/repos/" + REPO
@@ -595,6 +613,7 @@ def open_sync_pr(
     if unchanged:
         return None
     branch = _branch_name(files)
+    names = ", ".join(_code_of(c) for c in sorted(codes, key=lambda c: _code_sort_key(_code_of(c))))
     status, _ = _github_get(request, headers, base + "/git/ref/heads/" + branch)
     if status is not None and 200 <= int(status) < 300:
         query = urllib.parse.urlencode({"head": REPO.split("/")[0] + ":" + branch, "state": "open"})
@@ -602,11 +621,26 @@ def open_sync_pr(
         if isinstance(found, list) and found:
             first = found[0]
             return dict(first) if isinstance(first, dict) else {"html_url": str(first)}
-        return None
+        # The branch exists but has no open PR (a closed PR, or a run that died
+        # between POST /git/refs and POST /pulls):  reopen a PR on it.  Returning
+        # None here would report "no changes" and leave the files unsynced forever.
+        pr = _github_api(
+            request,
+            headers,
+            "POST",
+            base + "/pulls",
+            {
+                "title": "chore(linkifiers): sync Linear project links (%s)" % names,
+                "head": branch,
+                "base": BASE_BRANCH,
+                "body": _pr_body(list(codes)),
+                "draft": False,
+            },
+        )
+        return dict(pr) if isinstance(pr, dict) else {"html_url": str(pr)}
     if status != 404:
         message = ""
         raise GitHubError("GitHub branch check: HTTP %s%s" % (status, message))
-    names = ", ".join(_code_of(c) for c in sorted(codes, key=lambda c: _code_sort_key(_code_of(c))))
     commit_message = "chore(linkifiers): sync Linear project links (%s) [AFC-565]" % names
     blobs = []
     for path in sorted(files):
@@ -677,7 +711,11 @@ def open_sync_pr(
 
 
 def _infisical_get(http: HttpFn, url: str, service_token: str) -> Any:
-    headers = {"Authorization": "Bearer " + service_token, "Accept": "application/json"}
+    headers = {
+        "Authorization": "Bearer " + service_token,
+        "Accept": "application/json",
+        "User-Agent": "operator-linkifiers",
+    }
     try:
         status, payload = http("GET", url, headers, None)
     except OSError as exc:
@@ -777,11 +815,12 @@ def verify_linear_webhook(
     if not isinstance(raw_body, (bytes, bytearray)):
         raise WebhookRefused(400, "bad_json")
     expected = hmac.new(secret.encode("utf-8"), bytes(raw_body), hashlib.sha256).hexdigest()
-    if not signature or not hmac.compare_digest(expected, str(signature).strip().lower()):
+    given = str(signature or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", given) or not hmac.compare_digest(expected, given):
         raise WebhookRefused(401, "bad_signature")
     try:
         payload = json.loads(bytes(raw_body).decode("utf-8"))
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise WebhookRefused(400, "bad_json") from None
     if not isinstance(payload, dict):
         raise WebhookRefused(400, "bad_json")
@@ -968,13 +1007,16 @@ def _zulip_factory_from(secrets: dict[str, str]) -> Callable[[], Any]:
 def cmd_plan(token_file: str, out: Any = sys.stdout) -> int:
     try:
         secrets = load_secrets(read_token_file(token_file))
-        projects, skipped = fetch_projects_with_stats(secrets.get("LINEAR_API_KEY", ""))
+        linear_key = secrets.get("LINEAR_API_KEY", "")
+        if not linear_key:
+            raise LinearError("LINEAR_API_KEY is not configured")
+        projects, skipped = fetch_projects_with_stats(linear_key)
     except (SecretsRefused, LinearError) as exc:
         print("plan: %s" % exc, file=sys.stderr)
         return 1
     try:
         live = _zulip_factory_from(secrets)().linkifiers()
-    except SystemExit as exc:
+    except (LinearError, SystemExit) as exc:
         print("plan: zulip: %s" % exc, file=sys.stderr)
         return 1
     except OSError as exc:
