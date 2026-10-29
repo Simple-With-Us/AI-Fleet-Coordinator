@@ -77,14 +77,34 @@ class HookTests(unittest.TestCase):
         self.assertEqual(len(self.runs), 1)
         self.assertEqual(self.runs[0]["LINEAR_WEBHOOK_SECRET"], SECRET)
 
-    def test_a_run_that_raises_system_exit_does_not_stop_later_runs(self):
-        # zulip_linkifiers.Zulip.call raises SystemExit on an HTTP error.
+    def test_a_run_that_raises_zulip_error_does_not_stop_later_runs(self):
+        import zulip_linkifiers as ZL
+
         calls = []
 
         def runner(secrets):
             calls.append(1)
             if len(calls) == 1:
-                raise SystemExit("PATCH realm/filters/1:  HTTP 400")
+                raise ZL.ZulipError("PATCH realm/filters/1:  HTTP 400")
+
+        hook = H.LinearProjectsHook(
+            lambda: {"LINEAR_WEBHOOK_SECRET": SECRET}, runner, clock=time.time, log=lambda *a, **k: None
+        )
+        for _ in range(2):
+            body, heads = signed(project_event())
+            self.assertEqual(hook.handle("POST", H.PATH, heads, body)[0], 200)
+            deadline = time.time() + 5
+            while hook.queued and time.time() < deadline:
+                time.sleep(0.01)
+        self.assertEqual(len(calls), 2)
+
+    def test_a_run_that_raises_system_exit_does_not_stop_later_runs(self):
+        calls = []
+
+        def runner(secrets):
+            calls.append(1)
+            if len(calls) == 1:
+                raise SystemExit("interrupted")
 
         hook = H.LinearProjectsHook(
             lambda: {"LINEAR_WEBHOOK_SECRET": SECRET}, runner, clock=time.time, log=lambda *a, **k: None
@@ -189,6 +209,8 @@ class HookTests(unittest.TestCase):
 
 class FailureSurfacingTests(unittest.TestCase):
     def test_classify(self):
+        import zulip_linkifiers as ZL
+
         self.assertEqual(H._classify(LPL.SecretsRefused("x")), "permanent")
         self.assertEqual(
             H._classify(RuntimeError("GITHUB_TOKEN is not configured")), "permanent"
@@ -197,7 +219,7 @@ class FailureSurfacingTests(unittest.TestCase):
             H._classify(RuntimeError("GitHub GET: HTTP 401 oops")), "permanent"
         )
         self.assertEqual(
-            H._classify(SystemExit("PATCH realm/filters/1:  HTTP 403 no")), "permanent"
+            H._classify(ZL.ZulipError("PATCH realm/filters/1:  HTTP 403 no")), "permanent"
         )
         self.assertEqual(H._classify(TimeoutError("timed out")), "retryable")
         self.assertEqual(H._classify(ConnectionError("refused")), "retryable")
@@ -207,7 +229,7 @@ class FailureSurfacingTests(unittest.TestCase):
         )
         self.assertEqual(H._classify(RuntimeError("boom")), "outcome_unknown")
         self.assertEqual(
-            H._classify(SystemExit("PATCH realm/filters/1:  HTTP 400 bad")),
+            H._classify(ZL.ZulipError("PATCH realm/filters/1:  HTTP 400 bad")),
             "outcome_unknown",
         )
 
@@ -475,6 +497,72 @@ class DaemonWiringTests(unittest.TestCase):
             second = D.Daemon._configure_linear_projects(fake)
         self.assertIsNot(second, first)
         self.assertEqual(second.secrets, {"LINEAR_WEBHOOK_SECRET": SECRET})
-        with mock.patch.object(LPL, "load_secrets", side_effect=AssertionError("not reloaded")):
+        with mock.patch.object(
+            LPL, "load_secrets", return_value={"LINEAR_WEBHOOK_SECRET": SECRET}
+        ) as mocked:
             third = D.Daemon._configure_linear_projects(fake)
         self.assertIs(third, second)
+        self.assertEqual(mocked.call_count, 1)
+        self.assertEqual(third.secrets, {"LINEAR_WEBHOOK_SECRET": SECRET})
+
+    def test_a_reload_with_an_unchanged_token_picks_up_rotated_secrets(self):
+        import types
+        from unittest import mock
+
+        from agent_sync import daemon as D
+
+        fake = types.SimpleNamespace(
+            config=types.SimpleNamespace(linear_projects_enabled=True),
+            env={"OPERATOR_LINKIFIERS_INFISICAL_TOKEN": "st.token-for-test"},
+            log=types.SimpleNamespace(write=lambda event, **fields: None),
+            hide_values=lambda values: None,
+            clock=types.SimpleNamespace(time=time.time),
+            linear_projects_hook=None,
+            _linear_projects_spec=None,
+        )
+        with mock.patch.object(
+            LPL, "load_secrets", return_value={"LINEAR_WEBHOOK_SECRET": "v1"}
+        ):
+            first = D.Daemon._configure_linear_projects(fake)
+        self.assertEqual(first.secrets, {"LINEAR_WEBHOOK_SECRET": "v1"})
+        with mock.patch.object(
+            LPL, "load_secrets", return_value={"LINEAR_WEBHOOK_SECRET": "v2-rotated"}
+        ):
+            second = D.Daemon._configure_linear_projects(fake)
+        self.assertIs(second, first)
+        self.assertEqual(second.secrets, {"LINEAR_WEBHOOK_SECRET": "v2-rotated"})
+
+    def test_a_failed_reload_fails_closed_without_logging_values(self):
+        import json
+        import types
+        from unittest import mock
+
+        from agent_sync import daemon as D
+
+        logged = []
+        fake = types.SimpleNamespace(
+            config=types.SimpleNamespace(linear_projects_enabled=True),
+            env={"OPERATOR_LINKIFIERS_INFISICAL_TOKEN": "st.token-for-test"},
+            log=types.SimpleNamespace(
+                write=lambda event, **fields: logged.append((event, fields))
+            ),
+            hide_values=lambda values: None,
+            clock=types.SimpleNamespace(time=time.time),
+            linear_projects_hook=None,
+            _linear_projects_spec=None,
+        )
+        with mock.patch.object(
+            LPL, "load_secrets", return_value={"LINEAR_WEBHOOK_SECRET": SECRET}
+        ):
+            first = D.Daemon._configure_linear_projects(fake)
+        self.assertEqual(first.secrets, {"LINEAR_WEBHOOK_SECRET": SECRET})
+        refused = LPL.SecretsRefused("infisical_error", "Infisical: HTTP 503")
+        with mock.patch.object(LPL, "load_secrets", side_effect=refused):
+            second = D.Daemon._configure_linear_projects(fake)
+        self.assertIs(second, first)
+        self.assertIsNone(second.secrets)
+        body, _ = signed(project_event())
+        self.assertEqual(second.handle("POST", H.PATH, {"Linear-Signature": sign(body)}, body)[0], 503)
+        for _, fields in logged:
+            self.assertNotIn(SECRET, json.dumps(fields))
+            self.assertNotIn("st.token-for-test", json.dumps(fields))

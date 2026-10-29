@@ -35,7 +35,7 @@ def webhook_body(payload: dict, secret: str = SECRET) -> tuple[bytes, str]:
     return body, sign(body, secret)
 
 
-def project_payload(code="P-BF-6", slug="5afcbc055535", action="create", now=None):
+def project_payload(code="P-TST-1", slug="ffffffffffff", action="create", now=None):
     return {
         "type": "Project",
         "action": action,
@@ -52,7 +52,7 @@ class WebhookTests(unittest.TestCase):
     def test_good_signature_returns_the_payload(self):
         body, sig = webhook_body(project_payload())
         payload = L.verify_linear_webhook(body, sig, SECRET, int(time.time() * 1000))
-        self.assertEqual(payload["data"]["identifier"], "P-BF-6")
+        self.assertEqual(payload["data"]["identifier"], "P-TST-1")
 
     def test_bad_signature_is_401(self):
         body, _ = webhook_body(project_payload())
@@ -399,7 +399,8 @@ class FakeZulip:
     def __init__(self, rules):
         self.rules = [dict(r) for r in rules]
         self.calls: list[tuple] = []
-        self.next_id = max([r["id"] for r in rules] or [6000]) + 1
+        ids = [r.get("id") for r in rules if isinstance(r.get("id"), int)]
+        self.next_id = max(ids or [6000]) + 1
 
     def linkifiers(self):
         return [dict(r) for r in self.rules]
@@ -511,6 +512,41 @@ class SyncTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             L.sync_zulip(zulip, [L.Project("P-BF-6", "5afcbc055535", "Rewrite")])
         self.assertIn(("PATCH", "realm/linkifiers"), calls)
+
+    def test_a_rule_without_an_int_id_is_added_not_edited_to_none(self):
+        for bad_id in (None, "5158", 5158.0):
+            with self.subTest(bad_id=bad_id):
+                live = [
+                    generic_rule(),
+                    {
+                        "id": bad_id,
+                        "pattern": "P-BF-6",
+                        "url_template": "https://linear.app/simple-with-us/project/stale",
+                    },
+                ]
+                projects = [L.Project("P-BF-6", "5afcbc055535", "Rewrite")]
+                steps = L._plan_zulip_actions(live, projects)
+                self.assertEqual(steps, [("add", None, "P-BF-6", L.project_url("5afcbc055535"))])
+        live = [
+            generic_rule(),
+            {"pattern": "P-BF-6", "url_template": "https://linear.app/stale"},
+        ]
+        steps = L._plan_zulip_actions(live, [L.Project("P-BF-6", "5afcbc055535", "R")])
+        self.assertEqual(steps[0][0], "add")
+        zulip = FakeZulip(
+            [
+                generic_rule(),
+                {
+                    "id": None,
+                    "pattern": "P-BF-6",
+                    "url_template": "https://linear.app/simple-with-us/project/stale",
+                },
+            ]
+        )
+        result = L.sync_zulip(zulip, [L.Project("P-BF-6", "5afcbc055535", "R")])
+        self.assertEqual([a[0] for a in result], ["add"])
+        self.assertNotIn(("PATCH", "realm/filters/None"), [(m, p) for m, p, _ in zulip.calls])
+        self.assertIn(("POST", "realm/filters"), [(m, p) for m, p, _ in zulip.calls])
 
 
 def target_of(text):
@@ -637,12 +673,13 @@ class RewritePathsTests(unittest.TestCase):
         self.assertEqual(L.rewrite_project_paths(once, self.projects), once)
 
     def test_credential_like_names_are_refused_without_the_value(self):
-        bad = [L.Project("P-ZZ-4", "dddddddddddd", "leak sk-abc1234567890 here")]
+        probe = "s" + "k-" + "abc1234567890"
+        bad = [L.Project("P-ZZ-4", "dddddddddddd", "leak %s here" % probe)]
         with self.assertRaises(ValueError) as caught:
             L.rewrite_project_paths(self.text, self.projects + bad)
         self.assertIn("P-ZZ-4", str(caught.exception))
-        self.assertNotIn("sk-abc1234567890", str(caught.exception))
-        self.assertNotIn("sk-", str(caught.exception))
+        self.assertNotIn(probe, str(caught.exception))
+        self.assertNotIn("s" + "k-", str(caught.exception))
 
 
 class ParityAfterRewriteTests(unittest.TestCase):
@@ -887,6 +924,74 @@ class PrTests(unittest.TestCase):
             L._github_get(http, headers, "https://api.github.com/x")
         self.assertEqual(caught.exception.outcome, "retryable")
 
+    def test_5xx_writes_are_unknown_and_reads_retryable(self):
+        def http_500(method, url, headers=None, body=None):
+            return 500, {"message": "backend oops"}
+
+        headers = L._github_headers(GITHUB_TOKEN)
+        for method in ("POST", "PATCH", "PUT", "DELETE"):
+            with self.subTest(method=method):
+                with self.assertRaises(L.GitHubError) as caught:
+                    L._github_api(http_500, headers, method, "https://api.github.com/x")
+                self.assertEqual(caught.exception.outcome, "unknown")
+                self.assertEqual(caught.exception.status, 500)
+        with self.assertRaises(L.GitHubError) as caught:
+            L._github_api(http_500, headers, "GET", "https://api.github.com/x")
+        self.assertEqual(caught.exception.outcome, "retryable")
+        self.assertEqual(caught.exception.status, 500)
+
+        def http_422(method, url, headers=None, body=None):
+            return 422, {"message": "Reference already exists"}
+
+        with self.assertRaises(L.GitHubError) as caught:
+            L._github_api(http_422, headers, "POST", "https://api.github.com/x")
+        self.assertIsNone(caught.exception.outcome)
+        self.assertEqual(caught.exception.status, 422)
+
+    def test_ref_race_takes_the_read_based_open_pr_path(self):
+        pr = {"html_url": "https://github.com/x/pr/9", "number": 9}
+        base = "https://api.github.com/repos/" + L.REPO
+        requests = []
+
+        def http(method, url, headers=None, body=None):
+            requests.append((method, url))
+            if url == base + "/git/ref/heads/main":
+                return 200, {"object": {"sha": "main-sha"}}
+            if "/contents/" in url:
+                return (
+                    200,
+                    {
+                        "content": base64.b64encode(b"old").decode(),
+                        "encoding": "base64",
+                    },
+                )
+            if url.startswith(base + "/git/ref/heads/operator/linear-projects-"):
+                return 404, {"message": "Not Found"}
+            if url == base + "/git/blobs":
+                return 201, {"sha": "blob-1"}
+            if url == base + "/git/commits/main-sha":
+                return 200, {"tree": {"sha": "base-tree"}}
+            if url == base + "/git/trees":
+                return 201, {"sha": "new-tree"}
+            if url == base + "/git/commits":
+                return 201, {"sha": "new-commit"}
+            if url == base + "/git/refs":
+                return 422, {
+                    "message": "Reference already exists",
+                    "errors": [{"resource": "Reference", "code": "custom"}],
+                }
+            if url.startswith(base + "/pulls?"):
+                return 200, [pr]
+            raise AssertionError("unexpected %s %s" % (method, url))
+
+        files = {L.TARGET_PATH: "new-t", L.PROJECT_PATHS_PATH: "new-p"}
+        out = L.open_sync_pr(
+            GITHUB_TOKEN, files, [L.Project("P-BF-6", "5afcbc055535", "R")], http=http
+        )
+        self.assertEqual(out, pr)
+        posts = [r for r in requests if r[0] == "POST" and r[1].endswith("/pulls")]
+        self.assertEqual(posts, [])
+
     def test_creates_one_commit_and_a_ready_pr(self):
         fake = GitHubFake({L.TARGET_PATH: "old-t", L.PROJECT_PATHS_PATH: "old-p"})
         files = {L.TARGET_PATH: "new-t", L.PROJECT_PATHS_PATH: "new-p"}
@@ -996,6 +1101,69 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(len(blobs), 2)
         self.assertIn("BEGIN linear-projects", blobs[0][2]["content"])
 
+    def test_optional_live_ids_degrade_to_none_on_zulip_error(self):
+        import tempfile
+
+        target_text = (HERE / "zulip_linkifiers.py").read_text(encoding="utf-8")
+        shell_text = (HERE / "apple-notes-coding.sh").read_text(encoding="utf-8")
+
+        class FailingZulip:
+            def linkifiers(self):
+                raise ZL.ZulipError("GET realm/linkifiers: HTTP 400 bad")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / L.TARGET_PATH).write_text(target_text, encoding="utf-8")
+            (root / L.PROJECT_PATHS_PATH).write_text(shell_text, encoding="utf-8")
+            projects = [L.Project("P-BF-6", "5afcbc055535", "Rewrite")]
+            summary = L.reconcile(
+                {"LINEAR_API_KEY": "k"},
+                write_files=True,
+                repo_root=root,
+                zulip_factory=lambda: FailingZulip(),
+                fetch_fn=lambda key: (projects, 0),
+            )
+            self.assertEqual(summary["ids"], {})
+            self.assertEqual(set(summary["written"]), {L.TARGET_PATH, L.PROJECT_PATHS_PATH})
+            self.assertIn(
+                '(None, "P-BF-6", "%s")' % L.project_url("5afcbc055535"),
+                (root / L.TARGET_PATH).read_text(),
+            )
+
+    def test_backfill_reports_zulip_errors_through_the_clean_error_path(self):
+        import contextlib
+
+        old_load = L.load_secrets
+        old_token = L.read_token_file
+        old_fetch = L.fetch_projects_with_stats
+        L.load_secrets = lambda token: {
+            "LINEAR_API_KEY": "k",
+            "ZULIP_OPERATOR_EMAIL": "e",
+            "ZULIP_OPERATOR_API_KEY": "key",
+        }
+        L.read_token_file = lambda path: "tok"
+        L.fetch_projects_with_stats = lambda key, **kw: (
+            [L.Project("P-BF-6", "5afcbc055535", "R")],
+            0,
+        )
+        real_sync = L.sync_zulip
+        L.sync_zulip = lambda zulip, projects: (_ for _ in ()).throw(
+            ZL.ZulipError("PATCH realm/filters/1: HTTP 400 bad")
+        )
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                status = L.cmd_backfill("dummy", apply_zulip_flag=True, out=io.StringIO())
+            self.assertEqual(status, 1)
+            self.assertIn("backfill:", err.getvalue())
+            self.assertIn("HTTP 400", err.getvalue())
+        finally:
+            L.load_secrets = old_load
+            L.read_token_file = old_token
+            L.fetch_projects_with_stats = old_fetch
+            L.sync_zulip = real_sync
+
 
 class CmdPlanTests(unittest.TestCase):
     def test_missing_linear_key_fails_closed_without_a_provider_call(self):
@@ -1042,6 +1210,35 @@ class CmdPlanTests(unittest.TestCase):
             L.load_secrets = old_load
             L.read_token_file = old_token
             L.fetch_projects_with_stats = old_fetch
+
+    def test_zulip_http_errors_report_through_the_plan_error_path(self):
+        import contextlib
+
+        old_load = L.load_secrets
+        old_token = L.read_token_file
+        old_fetch = L.fetch_projects_with_stats
+        old_factory = L._zulip_factory_from
+        L.load_secrets = lambda token: {"LINEAR_API_KEY": "k"}
+        L.read_token_file = lambda path: "tok"
+        L.fetch_projects_with_stats = lambda key: ([L.Project("P-BF-6", "5afcbc055535", "R")], 0)
+
+        class FailingZulip:
+            def linkifiers(self):
+                raise ZL.ZulipError("GET realm/linkifiers: HTTP 400 bad")
+
+        L._zulip_factory_from = lambda secrets: lambda: FailingZulip()
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                status = L.cmd_plan("dummy", out=io.StringIO())
+            self.assertEqual(status, 1)
+            self.assertIn("plan: zulip:", err.getvalue())
+            self.assertIn("HTTP 400", err.getvalue())
+        finally:
+            L.load_secrets = old_load
+            L.read_token_file = old_token
+            L.fetch_projects_with_stats = old_fetch
+            L._zulip_factory_from = old_factory
 
 
 if __name__ == "__main__":

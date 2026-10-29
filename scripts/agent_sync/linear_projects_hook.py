@@ -122,9 +122,10 @@ def _event_identity(payload: Mapping[str, Any]) -> tuple[str | None, str | None]
 
 
 class LinearProjectsHook:
-    """POST /linear/v1/projects.  `secrets_loader` is called once at construction
-    and cached;  `runner` runs one reconcile (called with the cached secrets when
-    it takes an argument, else with none)."""
+    """POST /linear/v1/projects.  `secrets_loader` is called at construction and
+    on every daemon reload (reload_secrets), and cached;  `runner` runs one
+    reconcile (called with the cached secrets when it takes an argument, else
+    with none)."""
 
     def __init__(
         self,
@@ -136,6 +137,7 @@ class LinearProjectsHook:
     ) -> None:
         self.clock = clock
         self.log = log or (lambda *_args, **_kwargs: None)
+        self._secrets_loader = secrets_loader
         self._runner = runner
         try:
             takes = any(
@@ -169,6 +171,28 @@ class LinearProjectsHook:
         self._thread = threading.Thread(target=self._work, name="linear-projects", daemon=True)
         self._thread.start()
 
+    def reload_secrets(self) -> None:
+        """Re-read Infisical through the stored loader, fail-closed.
+
+        Rotated values are picked up even when the bootstrap token is
+        unchanged.  A failed reload clears the cache (every request 503s)
+        and logs only the reason, never a value.
+        """
+        loader = getattr(self, "_secrets_loader", None)
+        if loader is None:
+            return
+        try:
+            self.secrets = dict(loader() or {})
+            self._secrets_reason = None
+        except LPL.SecretsRefused as exc:
+            self.secrets = None
+            self._secrets_reason = exc.reason
+            self.log("linear-projects-secrets", reason=exc.reason)
+        except Exception as exc:  # noqa: BLE001 - a loader failure must not stop the server
+            self.secrets = None
+            self._secrets_reason = "load_failed"
+            self.log("linear-projects-secrets", reason=type(exc).__name__)
+
     def _invoke(self) -> None:
         assert self.secrets is not None
         if self._runner_takes_secrets:
@@ -188,9 +212,9 @@ class LinearProjectsHook:
                 with self._wake:
                     self._last_error = None
             except BaseException as exc:  # noqa: BLE001 - one run must never kill the worker
-                # zulip_linkifiers.Zulip.call raises SystemExit on an HTTP error, so Exception
-                # alone would end this thread and silently stop every later run.  The failure is
-                # surfaced in the log and last_error;  the next event re-runs the full reconcile.
+                # A Zulip HTTP failure (ZulipError) or an interrupt must not end this
+                # thread and silently stop every later run.  The failure is surfaced
+                # in the log and last_error;  the next event re-runs the full reconcile.
                 outcome = _classify(exc)
                 detail = _safe_detail(exc, self.secrets)
                 self.log(

@@ -45,6 +45,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from zulip_linkifiers import ZulipError
+except ImportError:  # pragma: no cover - the daemon still imports without the Zulip module
+
+    class ZulipError(Exception):
+        pass
+
+
 LINEAR_GRAPHQL = "https://api.linear.app/graphql"
 WORKSPACE_URL = "https://linear.app/simple-with-us/project/"
 INFISICAL_API = "https://app.infisical.com/api"
@@ -103,6 +111,7 @@ class LinearError(Exception):
 
 class GitHubError(Exception):
     outcome: str | None = None
+    status: int | None = None
 
 
 class SecretsRefused(Exception):
@@ -393,7 +402,11 @@ def _plan_zulip_actions(live: list[dict], projects: list[Project]) -> list[tuple
         if current is None:
             steps.append(("add", None, project.code, want))
         elif current.get("url_template") != want:
-            steps.append(("edit", current.get("id"), project.code, want))
+            rule_id = current.get("id")
+            if isinstance(rule_id, int):
+                steps.append(("edit", rule_id, project.code, want))
+            else:
+                steps.append(("add", None, project.code, want))
     return steps
 
 
@@ -610,9 +623,19 @@ def _github_api(
     if 200 <= int(status) < 300:
         return payload
     path = urllib.parse.urlsplit(url).path
-    raise GitHubError(
+    err = GitHubError(
         "GitHub %s %s: HTTP %s error=%s" % (method, path, status, _provider_error_name(payload))
     )
+    try:
+        err.status = int(status)
+    except (TypeError, ValueError):
+        err.status = None
+    if err.status is not None and err.status >= 500:
+        if method.upper() in {"POST", "PATCH", "PUT", "DELETE"}:
+            err.outcome = "unknown"
+        else:
+            err.outcome = "retryable"
+    raise err
 
 
 def _github_get(http: HttpFn, headers: dict[str, str], url: str) -> tuple[int, Any]:
@@ -659,6 +682,44 @@ def _pr_body(codes: list[Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _reuse_or_open_pr(
+    request: HttpFn,
+    headers: dict[str, str],
+    base: str,
+    branch: str,
+    names: str,
+    codes: list[Any],
+) -> dict[str, Any]:
+    """The branch's open PR, or a new one on it when none is open.
+
+    Shared by the existing-branch path and the POST /git/refs 422 path (a
+    concurrent run created the branch first):  both are the read-based
+    open-PR check that makes ref creation idempotent without a ledger.
+    """
+    query = urllib.parse.urlencode({"head": REPO.split("/")[0] + ":" + branch, "state": "open"})
+    found = _github_api(request, headers, "GET", base + "/pulls?" + query)
+    if isinstance(found, list) and found:
+        first = found[0]
+        return dict(first) if isinstance(first, dict) else {"html_url": str(first)}
+    # The branch exists but has no open PR (a closed PR, or a run that died
+    # between POST /git/refs and POST /pulls):  reopen a PR on it.  Returning
+    # None here would report "no changes" and leave the files unsynced forever.
+    pr = _github_api(
+        request,
+        headers,
+        "POST",
+        base + "/pulls",
+        {
+            "title": "chore(linkifiers): sync Linear project links (%s)" % names,
+            "head": branch,
+            "base": BASE_BRANCH,
+            "body": _pr_body(list(codes)),
+            "draft": False,
+        },
+    )
+    return dict(pr) if isinstance(pr, dict) else {"html_url": str(pr)}
+
+
 def open_sync_pr(
     github_token: str,
     files: dict[str, str],
@@ -668,7 +729,9 @@ def open_sync_pr(
 ) -> dict[str, Any] | None:
     """A ready PR syncing the generated files, or None when main already matches.
     Idempotent by reads:  an existing branch reuses its open PR, or reopens one
-    when none is open, instead of opening another."""
+    when none is open, instead of opening another.  A POST /git/refs that answers
+    422 (a concurrent run created the branch first) takes the same read-based
+    path, so ref creation needs no ledger."""
     request = http or _default_http
     headers = _github_headers(github_token)
     base = "https://api.github.com/repos/" + REPO
@@ -701,28 +764,7 @@ def open_sync_pr(
     names = ", ".join(_code_of(c) for c in sorted(codes, key=lambda c: _code_sort_key(_code_of(c))))
     status, _ = _github_get(request, headers, base + "/git/ref/heads/" + branch)
     if status is not None and 200 <= int(status) < 300:
-        query = urllib.parse.urlencode({"head": REPO.split("/")[0] + ":" + branch, "state": "open"})
-        found = _github_api(request, headers, "GET", base + "/pulls?" + query)
-        if isinstance(found, list) and found:
-            first = found[0]
-            return dict(first) if isinstance(first, dict) else {"html_url": str(first)}
-        # The branch exists but has no open PR (a closed PR, or a run that died
-        # between POST /git/refs and POST /pulls):  reopen a PR on it.  Returning
-        # None here would report "no changes" and leave the files unsynced forever.
-        pr = _github_api(
-            request,
-            headers,
-            "POST",
-            base + "/pulls",
-            {
-                "title": "chore(linkifiers): sync Linear project links (%s)" % names,
-                "head": branch,
-                "base": BASE_BRANCH,
-                "body": _pr_body(list(codes)),
-                "draft": False,
-            },
-        )
-        return dict(pr) if isinstance(pr, dict) else {"html_url": str(pr)}
+        return _reuse_or_open_pr(request, headers, base, branch, names, list(codes))
     if status != 404:
         message = ""
         raise GitHubError("GitHub branch check: HTTP %s%s" % (status, message))
@@ -772,13 +814,22 @@ def open_sync_pr(
         new_sha = new_commit["sha"]
     except (KeyError, TypeError):
         raise GitHubError("GitHub commit: unexpected response") from None
-    _github_api(
-        request,
-        headers,
-        "POST",
-        base + "/git/refs",
-        {"ref": "refs/heads/" + branch, "sha": new_sha},
-    )
+    try:
+        _github_api(
+            request,
+            headers,
+            "POST",
+            base + "/git/refs",
+            {"ref": "refs/heads/" + branch, "sha": new_sha},
+        )
+    except GitHubError as exc:
+        # A concurrent run created the branch between our 404 and this POST:
+        # GitHub answers 422 "Reference already exists".  That is the same
+        # existing branch the read above would have found, so take the same
+        # read-based open-PR path instead of failing the retry.
+        if exc.status != 422:
+            raise
+        return _reuse_or_open_pr(request, headers, base, branch, names, list(codes))
     pr = _github_api(
         request,
         headers,
@@ -1101,7 +1152,7 @@ def cmd_plan(token_file: str, out: Any = sys.stdout) -> int:
         return 1
     try:
         live = _zulip_factory_from(secrets)().linkifiers()
-    except (LinearError, SystemExit) as exc:
+    except (LinearError, ZulipError) as exc:
         print("plan: zulip: %s" % exc, file=sys.stderr)
         return 1
     except OSError as exc:
@@ -1171,7 +1222,7 @@ def cmd_backfill(
             write_files=write_files_flag,
             zulip_factory=factory,
         )
-    except (LinearError, GitHubError, SecretsRefused, OSError, ValueError) as exc:
+    except (LinearError, GitHubError, ZulipError, SecretsRefused, OSError, ValueError) as exc:
         print("backfill: %s" % exc, file=sys.stderr)
         return 1
     for code in summary["codes"]:

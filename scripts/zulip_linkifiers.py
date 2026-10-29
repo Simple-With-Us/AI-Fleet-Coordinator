@@ -243,6 +243,14 @@ def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str
     return api["email"], api["key"], api.get("site", REALM).rstrip("/")
 
 
+class ZulipError(Exception):
+    """A Zulip API failure (HTTP error).  An Exception, never SystemExit, so
+    callers choose:  the CLI exits 1 with the message, the webhook worker logs
+    and keeps serving, and optional fetches degrade to None ids."""
+
+    pass
+
+
 class Zulip:
     def __init__(self, email: str, key: str, site: str) -> None:
         self.base = f"{site}/api/v1/"
@@ -257,8 +265,11 @@ class Zulip:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
-            detail = json.loads(exc.read() or b"{}").get("msg", "")
-            raise SystemExit(f"{method} {path}:  HTTP {exc.code} {detail}") from None
+            try:
+                detail = json.loads(exc.read() or b"{}").get("msg", "")
+            except (ValueError, OSError):
+                detail = ""
+            raise ZulipError(f"{method} {path}:  HTTP {exc.code} {detail}") from None
 
     def linkifiers(self) -> list[dict]:
         return self.call("GET", "realm/linkifiers")["linkifiers"]
@@ -401,7 +412,7 @@ def apply_plan(zulip: Zulip, steps: list[tuple], doomed: list[dict]) -> None:
     except BaseException:
         try:
             restore_order(zulip)
-        except SystemExit as exc:
+        except Exception as exc:  # noqa: BLE001 - the original error matters, not the reorder
             print(f"could not restore the rule order:  {exc}", file=sys.stderr)
         raise
     restore_order(zulip)
@@ -429,24 +440,35 @@ def main(argv: list[str] | None = None) -> int:
     if args.admin and args.rc:
         parser.error("--admin and --rc are mutually exclusive")
     zulip = Zulip(*credentials(args.rc, admin=args.admin))
-    if args.check and not args.apply:
-        return 1 if check(zulip) + check_linear() else 0
+    try:
+        if args.check and not args.apply:
+            return 1 if check(zulip) + check_linear() else 0
 
-    steps, unlisted = plan(zulip.linkifiers())
-    for kind, rule_id, pattern, url in steps:
-        print(f"{kind:4} {rule_id or 'new':>5}  {pattern}  ->  {url}")
-    for rule in unlisted:
-        print(
-            f"{'del' if args.delete_unlisted else 'keep'} {rule['id']:>5}  {rule['pattern']}  (not in TARGET)"
-        )
-    if not steps and not (unlisted and args.delete_unlisted) and order(zulip.linkifiers()) is None:
-        print("live rules already match TARGET")
-    if not args.apply:
-        return 0
+        steps, unlisted = plan(zulip.linkifiers())
+        for kind, rule_id, pattern, url in steps:
+            print(f"{kind:4} {rule_id or 'new':>5}  {pattern}  ->  {url}")
+        for rule in unlisted:
+            print(
+                f"{'del' if args.delete_unlisted else 'keep'} {rule['id']:>5}  {rule['pattern']}  (not in TARGET)"
+            )
+        if (
+            not steps
+            and not (unlisted and args.delete_unlisted)
+            and order(zulip.linkifiers()) is None
+        ):
+            print("live rules already match TARGET")
+        if not args.apply:
+            return 0
 
-    apply_plan(zulip, steps, unlisted if args.delete_unlisted else [])
-    print(f"applied {len(steps)} change(s);  checking")
-    return 1 if check(zulip) else 0
+        apply_plan(zulip, steps, unlisted if args.delete_unlisted else [])
+        print(f"applied {len(steps)} change(s);  checking")
+        return 1 if check(zulip) else 0
+    except ZulipError as exc:
+        print(f"zulip: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"zulip: {type(exc).__name__}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

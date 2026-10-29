@@ -1057,7 +1057,8 @@ class Daemon:
         /linear/v1/, or None:  off unless [linear_projects] enabled is true and the
         Coolify runtime-only variable OPERATOR_LINKIFIERS_INFISICAL_TOKEN (the single
         bootstrap binding) is present.  A reload that leaves the token as it was keeps
-        the same hook object, so an event mid-run never races a second worker."""
+        the same hook object, so an event mid-run never races a second worker, but
+        re-reads Infisical through the stored loader so rotated values are picked up."""
         old = getattr(self, "linear_projects_hook", None)
         old_spec = getattr(self, "_linear_projects_spec", None)
         self.linear_projects_hook = None
@@ -1075,6 +1076,22 @@ class Daemon:
         self.hide_values([token])
         if old is not None and old_spec == (token,) and getattr(old, "secrets", None) is not None:
             # Only a hook whose secrets loaded is kept:  a failed load is retried on reload.
+            # The loader runs even when the token is unchanged, so rotated values are
+            # picked up; a failed reload clears the cache (fail-closed) and logs only
+            # the reason, never a value.
+            reload = getattr(old, "reload_secrets", None)
+            if callable(reload):
+                reload()
+            else:
+                loader = getattr(old, "_secrets_loader", None)
+                if callable(loader):
+                    try:
+                        old.secrets = dict(loader() or {})
+                    except Exception:
+                        old.secrets = None
+            fresh = getattr(old, "secrets", None)
+            if isinstance(fresh, dict) and fresh:
+                self.hide_values([v for v in fresh.values() if v])
             self.linear_projects_hook = old
             self._linear_projects_spec = old_spec
             return old
