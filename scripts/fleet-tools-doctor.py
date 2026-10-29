@@ -45,8 +45,10 @@ Checks:
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
-  mcp:codex   Codex registers simple-chat (and FleetLink when a token exists)
-  mcp:claude  Claude Code registers simple-chat (and FleetLink likewise)
+  mcp:codex   Codex registers the fleet's stdio server (simple-chat) and FleetLink when a
+              token exists;  a host that still carries the retired agent-sync name still
+              serves the seat, and is reported as the drift it is
+  mcp:claude  Claude Code registers the same two (the stdio server, FleetLink)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
@@ -1395,6 +1397,7 @@ def check_fleet_mode_doc(report: Report, rt: dict | None = None) -> None:
 # The Zulip key prefix where it differs from the seat (agent_sync/zulip.py SEAT_FILE_OVERRIDES).
 ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
 _names_cache: dict[str, frozenset[str] | None] = {}
+_UNSET = object()
 
 
 def infisical_names(
@@ -1428,7 +1431,36 @@ def infisical_names(
     return names
 
 
-def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
+def seat_has_fleetlink_token(
+    seat: str,
+    env: dict[str, str],
+    fleetlink_names: frozenset[str] | None | object = _UNSET,
+) -> bool | None:
+    """Whether this seat holds a FleetLink token, from the environment or from Infisical.
+
+    A seat without one cannot run the fleetlink server, so the doctor does not ask it to
+    register one.  None is not the same as False:  it means the token names could not be
+    listed, and the doctor reports that as unknown rather than dropping the check.
+    Pass `fleetlink_names` when the caller already listed `/fleetlink` once for this run.
+    """
+    code = seat_file(seat)
+    if env.get(f"FLEETLINK_TOKEN_{code}"):
+        return True
+    if fleetlink_names is _UNSET:
+        names = infisical_names("/fleetlink", env, "ai-fleet-coordinator")
+    else:
+        names = fleetlink_names
+    if names is None:
+        return None
+    return f"FLEETLINK_TOKEN_{code}" in names
+
+
+def check_seat(
+    report: Report,
+    seat: str,
+    env: dict[str, str],
+    fleetlink: bool | None,
+) -> None:
     code = seat_file(seat)
     zulip_names = infisical_names("/zulip", env)
     if zulip_names is None:
@@ -1443,23 +1475,27 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     linear = (
         linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
     )
-    fleetlink = bool(env.get(f"FLEETLINK_TOKEN_{code}")) or f"FLEETLINK_TOKEN_{code}" in (
-        infisical_names("/fleetlink", env, "ai-fleet-coordinator") or frozenset()
-    )
+    # An unreadable fleetlink listing must not hide a missing Zulip bot or Linear app.
+    unreadable = fleetlink is None
     missing = [
         label
         for label, ok in (
             ("zulip bot", zulip),
             ("linear app", linear),
-            ("fleetlink token", fleetlink),
+            ("fleetlink token", unreadable or bool(fleetlink)),
         )
         if not ok
     ]
-    report.add(
-        f"seat:{seat}",
-        "OK" if not missing else "FAIL",
-        "all credentials present" if not missing else "missing " + ", ".join(missing),
-    )
+    notes = ["missing " + ", ".join(missing)] if missing else []
+    if unreadable:
+        notes.append("fleet-secrets could not list Infisical fleetlink token names")
+    if missing:
+        status = "FAIL"
+    elif unreadable:
+        status = "WARN"
+    else:
+        status = "OK"
+    report.add(f"seat:{seat}", status, "; ".join(notes) or "all credentials present")
 
 
 MCP_PROBE = b"".join(
@@ -1521,13 +1557,23 @@ def client_servers(seat: str, home: Path = HOME) -> dict:
     return servers
 
 
+# The stdio MCP server the seats register is the fleet's own local Agent-Sync server.  The name
+# the fleet writes is "simple-chat":  fleet-cli-release.py writes that key into a host's Codex
+# config and install_mcp.py installs the server under it.  "agent-sync" is the retired
+# pre-rename registration key;  a host installed before the rename may still carry it and it
+# still serves the seat, but it is not the name to write, and the next apply retires it.
+MCP_STDIO_NAMES = ("simple-chat", "agent-sync")
+MCP_CANONICAL_NAME = "simple-chat"
+
+
 def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
     """Client files supply only nonsecret locale settings, never credentials or identity.
 
     Approved credentials come from the process environment or fleet-secrets.  Client-file
     values cannot override either source or redirect credential lookup.
     """
-    server = client_servers(seat, home).get("simple-chat", {})
+    servers = client_servers(seat, home)
+    server = next((servers[name] for name in MCP_STDIO_NAMES if name in servers), {})
     env = server.get("env", {})
     return {key: value for key, value in env.items() if key in {"LANG", "LC_ALL"}}
 
@@ -1586,22 +1632,53 @@ def codex_mcp_names(text: str) -> list[str]:
         return []
 
 
-def check_mcp(report: Report) -> None:
+def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None]) -> None:
+    """The registrations each seat holds:  the fleet's stdio server and FleetLink.
+
+    A seat without a FleetLink token cannot run the fleetlink server, so it is not asked to
+    register one.  The token reading is passed in, so this check never lists credentials
+    itself and stays a pure function of the client files.  None means the token names could
+    not be read, and the row says so instead of passing the seat.  The map must carry
+    CODEX and CLAUDE:  a missing key is treated as unreadable, not as no token.
+    """
+    tokens = fleetlink_tokens
     for seat in ("CODEX", "CLAUDE"):
         label = "mcp:" + seat.lower()
+        if seat not in tokens:
+            report.add(label, "FAIL", "internal: fleetlink token map missing " + seat)
+            continue
         try:
             names = sorted(client_servers(seat, HOME))
         except ClientConfigError as exc:
             report.add(label, "FAIL", str(exc))
             continue
-        lacking = [name for name in ("simple-chat", "fleetlink") if name not in names]
-        report.add(
-            label,
-            "WARN" if lacking else "OK",
-            "registered: "
-            + (", ".join(names) or "none")
-            + (";  missing " + ", ".join(lacking) if lacking else ""),
-        )
+        registered = [name for name in MCP_STDIO_NAMES if name in names]
+        retired = [name for name in registered if name != MCP_CANONICAL_NAME]
+        lacking = []
+        unreadable = []
+        if not registered:
+            lacking.append(MCP_CANONICAL_NAME)
+        if "fleetlink" not in names:
+            token = tokens[seat]
+            if token is None:
+                unreadable.append("fleetlink")
+            elif token:
+                lacking.append("fleetlink")
+        status = "OK"
+        detail = "registered: " + (", ".join(names) or "none")
+        if lacking:
+            status = "WARN"
+            detail += ";  missing " + ", ".join(lacking)
+        if unreadable:
+            status = "WARN"
+            detail += ";  " + ", ".join(unreadable) + " token names could not be read"
+        if retired:
+            # The retired pre-rename key alone still serves the seat, but it is not the name the
+            # fleet writes and the next apply retires it, so it is reported as drift.
+            status = "WARN"
+            retired_names = ", ".join(retired)
+            detail += ";  pre-rename name %s, canonical %s" % (retired_names, MCP_CANONICAL_NAME)
+        report.add(label, status, detail)
 
 
 # --- AFC-461:  fleet tool currency ------------------------------------------------------------
@@ -3156,10 +3233,19 @@ def run(
         check_server_tools(report, rt, checkouts, runner)
     if not args.no_registry:
         check_registry(report, host, network, runner, fetch)
-    for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
-        check_seat(report, seat, env)
+    seats = [s.strip().upper() for s in args.seats.split(",") if s.strip()]
+    judged = list(dict.fromkeys(seats + ["CODEX", "CLAUDE"]))
+    fleetlink_names = infisical_names("/fleetlink", env, "ai-fleet-coordinator")
+    fleetlink_tokens = {
+        seat: seat_has_fleetlink_token(seat, env, fleetlink_names) for seat in judged
+    }
+    for seat in seats:
+        check_seat(report, seat, env, fleetlink_tokens[seat])
         check_mcp_startup(report, seat)
-    check_mcp(report)
+    check_mcp(
+        report,
+        {seat: fleetlink_tokens[seat] for seat in ("CODEX", "CLAUDE")},
+    )
     check_notes(report, host, env, runner, network=network)
     finalize_rows(report, host)
     doc = host_document(report, host, expected, network, updater)
