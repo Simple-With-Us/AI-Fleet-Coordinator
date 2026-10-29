@@ -78,6 +78,8 @@ class SeatPolicy:
     # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
     WORKFLOW_ACTIONS = (
         "wf_git_blob_binary_get",
+        "wf_repo_tags",
+        "wf_repo_languages",
         "wf_git_tree_create",
         "wf_git_commit_create",
         "wf_pr_list_page",
