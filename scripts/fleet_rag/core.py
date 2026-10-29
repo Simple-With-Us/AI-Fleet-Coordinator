@@ -595,6 +595,7 @@ class Qdrant:
         key = self._write_key if write else self._read_key
         if write and not key:
             raise FleetRagError("QDRANT_API_KEY (write key) not available on this machine")
+
         def check_storage():
             if self.storage_guard is not None:
                 try:
@@ -602,9 +603,12 @@ class Qdrant:
                     self.storage_guard.check(size)
                 except StorageGuardError as exc:
                     raise FleetRagError(str(exc)) from None
+
         try:
             options = {"before_attempt": check_storage} if write else {}
-            return http_json(f"{self.base}{path}", body, {"api-key": key}, method, timeout=timeout, **options)
+            return http_json(
+                f"{self.base}{path}", body, {"api-key": key}, method, timeout=timeout, **options
+            )
         except FleetRagError as e:
             # A staged read-only key that the server has not loaded yet answers 401/403.
             # Fall back to the write key for the rest of this process instead of failing reads.
