@@ -248,7 +248,6 @@ class ZulipError(Exception):
     callers choose:  the CLI exits 1 with the message, the webhook worker logs
     and keeps serving, and optional fetches degrade to None ids."""
 
-    pass
 
 
 class Zulip:
