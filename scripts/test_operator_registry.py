@@ -14,6 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent_sync import operator_registry as R
 
+# A synthetic credential for the positive scan cases:  32 mixed-case characters with no
+# provider prefix, so the scanner still trips on it while the file carries no real token's
+# shape.  A prefixed value would be caught by a secret scanner on the repository itself.
+SYNTHETIC_SECRET = "A1b2C3d4" * 4
+
 
 def ident(seat="MM", platform="zulip", host="mac-1", scope="simplewithus", native="native-1", **kw):
     base = dict(
@@ -34,6 +39,13 @@ class RegistryTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "registry.sqlite3")
         self.reg = R.SessionRegistry(self.db)
+
+    def _loc(self, **kw):
+        fields = ident(**kw)
+        return {
+            "verified_host": fields["verified_host"],
+            "profile_scope": fields["profile_scope"],
+        }
 
     def tearDown(self):
         self.reg.close_db()
@@ -115,6 +127,24 @@ class RegistryTest(unittest.TestCase):
         kinds = sorted(p["kind"] for p in pending)
         self.assertEqual(kinds, ["event_append", "session_upsert"])
 
+    def test_resume_enqueues_the_session_upsert(self):
+        # The exported sheet refreshes "Last Seen At" only from a session_upsert
+        # payload, so a resume that moves the column without enqueueing one leaves
+        # the database and the sheet disagreeing.
+        a = self.reg.resolve_or_register(ident())
+        R.mark_exported(self.db, [p["outbox_id"] for p in R.pending_outbox(self.db)])
+        self.assertEqual(R.pending_outbox(self.db), [])
+        again = self.reg.resolve_or_register(ident())
+        self.assertEqual(again["outcome"], "resumed")
+        pending = R.pending_outbox(self.db)
+        upserts = [p for p in pending if p["kind"] == "session_upsert"]
+        self.assertEqual(len(upserts), 1)
+        cells = json.loads(upserts[0]["payload"])["cells"]
+        row = self.reg._conn.execute(
+            "SELECT last_seen_at FROM sessions WHERE record_id = ?", (a["record_id"],)
+        ).fetchone()
+        self.assertEqual(cells[R.SESSIONS_HEADERS.index("Last Seen At")], row["last_seen_at"])
+
     def test_mark_exported_then_crash_rerun(self):
         self.reg.resolve_or_register(ident())
         pending = R.pending_outbox(self.db)
@@ -150,6 +180,363 @@ class RegistryTest(unittest.TestCase):
 
     def test_display_title_format(self):
         self.assertEqual(R.display_title("H", "Thread Title"), "H: Thread Title")
+
+    # ---- two letter spaces:  a conversation takes one letter, a subthread two ----
+
+    def test_a_subthread_takes_a_double_letter(self):
+        r = self.reg.resolve_or_register(ident(platform="minimax", letter_space="double"))
+        self.assertEqual(len(r["label"]), 2)
+        self.assertIn(r["label"], R.LETTER_SPACES["double"])
+
+    def test_a_conversation_still_takes_a_single_letter(self):
+        r = self.reg.resolve_or_register(ident(platform="minimax"))
+        self.assertEqual(len(r["label"]), 1)
+        self.assertIn(r["label"], R.LETTERS)
+
+    def test_the_two_spaces_do_not_collide(self):
+        one = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
+        two = self.reg.resolve_or_register(
+            ident(platform="minimax", native="native-2", letter_space="double")
+        )
+        self.assertNotEqual(one["label"], two["label"])
+        self.assertEqual(len(one["label"]), 1)
+        self.assertEqual(len(two["label"]), 2)
+
+    def test_a_subthread_resumes_with_the_same_double_letter(self):
+        first = self.reg.resolve_or_register(
+            ident(platform="minimax", native="native-1", letter_space="double")
+        )
+        again = self.reg.resolve_or_register(
+            ident(platform="minimax", native="native-1", letter_space="double")
+        )
+        self.assertEqual(again["label"], first["label"])
+        self.assertFalse(again["created"])
+
+    # ---- update_session: the title follows the thread, keyed on the session id ----
+
+    def test_update_session_sets_the_title_and_keeps_the_letter(self):
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="Memory sync, fleet skills and Operator session letter",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(out["outcome"], "updated")
+        self.assertEqual(out["label"], a["label"])  # the letter is never touched
+        self.assertEqual(out["record_id"], a["record_id"])
+        self.assertEqual(
+            out["title_display"],
+            "A: Memory sync, fleet skills and Operator session letter",
+        )
+        self.assertEqual(self.reg._get(a["record_id"])["title"], out["title"])
+
+    def test_update_session_strips_a_display_title_prefix(self):
+        self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="A: Memory sync",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(out["title_display"], "A: Memory sync")
+        self.assertEqual(self.reg._get(out["record_id"])["title"], "Memory sync")
+
+    def test_update_session_is_idempotent_on_the_same_session_id(self):
+        self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        first = R.update_session(
+            self.db, platform="minimax", native_session_id="native-1", title="T", **self._loc()
+        )
+        again = R.update_session(
+            self.db, platform="minimax", native_session_id="native-1", title="T", **self._loc()
+        )
+        self.assertEqual(first["outcome"], "updated")
+        self.assertEqual(again["outcome"], "unchanged")
+        self.assertEqual(again["changed"], [])
+        self.assertEqual(again["label"], first["label"])
+
+    def test_register_refuses_a_title_that_carries_a_credential(self):
+        secret = SYNTHETIC_SECRET
+        with self.assertRaises(ValueError) as caught:
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                seat="MM",
+                source="test",
+                title="Deploy with " + secret,
+                issuer=R.ISSUER_OPERATOR,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+        stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        self.assertEqual(stored, 0)
+
+    def test_update_refuses_a_title_that_carries_a_credential(self):
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        secret = SYNTHETIC_SECRET
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                title="Deploy with " + secret,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(self.reg._get(a["record_id"])["title"], "Placeholder")
+
+    def test_update_refuses_a_project_that_carries_a_credential(self):
+        # Every field that is written is scanned, not only the title.
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        secret = SYNTHETIC_SECRET
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                project="Deploy with " + secret,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "project_secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(self.reg._get(a["record_id"])["project"], "")
+
+    def test_update_refuses_a_thread_link_that_carries_a_credential(self):
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        secret = SYNTHETIC_SECRET
+        with self.assertRaises(ValueError) as caught:
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                thread_link="https://example.invalid/" + secret,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "thread_link_secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(self.reg._get(a["record_id"])["thread_link"], "")
+
+    def test_register_refuses_a_field_that_carries_a_credential(self):
+        secret = SYNTHETIC_SECRET
+        with self.assertRaises(ValueError) as caught:
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                seat="MM",
+                source="test",
+                apple_note_link="https://example.invalid/" + secret,
+                issuer=R.ISSUER_OPERATOR,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "apple_note_link_secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+        stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        self.assertEqual(stored, 0)
+
+    def test_a_benign_field_is_still_written(self):
+        # The scan refuses a credential, not a field.
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            project="AFC-564",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(out["outcome"], "updated")
+        self.assertEqual(self.reg._get(a["record_id"])["project"], "AFC-564")
+
+    def test_update_session_on_an_unregistered_session_raises(self):
+        with self.assertRaises(ValueError):
+            R.update_session(
+                self.db, platform="minimax", native_session_id="nope", title="T", **self._loc()
+            )
+
+    def test_update_session_needs_a_field(self):
+        self.reg.resolve_or_register(ident(platform="minimax"))
+        with self.assertRaises(ValueError):
+            R.update_session(
+                self.db, platform="minimax", native_session_id="native-1", **self._loc()
+            )
+
+    def test_update_session_does_not_mint_a_letter(self):
+        self.reg.resolve_or_register(ident(platform="minimax"))
+        R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="T",
+            **self._loc(platform="minimax"),
+        )
+        row = self.reg._conn.execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE platform = 'minimax'"
+        ).fetchone()
+        self.assertEqual(row["n"], 1)
+
+    def test_update_session_on_a_closed_session_answers_the_closed_state(self):
+        # The letter is over, so the row can never change again.  The call answers the
+        # closed state instead of raising:  the seat's stop hook carries only the
+        # title, and a refusal would block that hook forever on a swept session.
+        a = self.reg.resolve_or_register(ident(platform="minimax"))
+        self.reg.close(a["record_id"], actor="MM", source="test")
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="T",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(out["outcome"], "closed")
+        self.assertEqual(out["changed"], [])
+        self.assertEqual(out["record_id"], a["record_id"])
+        # The letter that ended is named, the same one close_session reports.
+        self.assertEqual(out["label"], a["label"])
+        self.assertGreater(out["generation"], 0)
+        row = self.reg._conn.execute(
+            "SELECT title FROM sessions WHERE record_id = ?", (a["record_id"],)
+        ).fetchone()
+        self.assertNotEqual(row["title"], "T")
+
+    def test_update_session_refreshes_last_seen(self):
+        """A long-lived session is alive:  it must not look stale to the sweep."""
+        a = self.reg.resolve_or_register(ident(platform="minimax"))
+        self.reg._conn.execute(
+            "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
+            ("2020-01-01T00:00:00.000Z", a["record_id"]),
+        )
+        self.reg._conn.commit()
+        R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="T",
+            **self._loc(platform="minimax"),
+        )
+        seen = self.reg._get(a["record_id"])["last_seen_at"]
+        self.assertNotEqual(seen, "2020-01-01T00:00:00.000Z")
+        ended = R.sweep_stale(self.db, platform="minimax", seat="MM", stale_after_minutes=120)
+        self.assertEqual(ended, [])
+
+    # ---- the letter's life:  it ends, and the history keeps the window ------------
+
+    def test_close_session_ends_the_letter_and_keeps_the_history(self):
+        a = self.reg.resolve_or_register(ident(platform="minimax", title="Thread Title"))
+        out = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            reason="stale and replaced by a newer session",
+            **self._loc(platform="minimax"),
+        )
+        self.assertTrue(out["closed"])
+        self.assertEqual(out["label"], a["label"])
+        self.assertTrue(out["closed_at"])
+        history = R.letter_history(self.db, "minimax")
+        self.assertEqual(len(history), 1)
+        row = history[0]
+        self.assertEqual(row["letter"], a["label"])
+        self.assertTrue(row["assigned_at"])
+        self.assertTrue(row["ended_at"])  # the window has an end
+        self.assertIn("stale", row["end_reason"])
+        self.assertFalse(row["live"])
+
+    def test_close_session_twice_changes_nothing(self):
+        self.reg.resolve_or_register(ident(platform="minimax"))
+        first = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
+        again = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
+        self.assertTrue(first["closed"])
+        self.assertFalse(again["closed"])
+        self.assertEqual(again["outcome"], "already_closed")
+
+    def test_close_session_twice_still_names_the_letter(self):
+        # The alias is retired by the first close, so the live lookup answers
+        # nothing:  the second close still has to name the letter that ended.
+        self.reg.resolve_or_register(ident(platform="minimax"))
+        first = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
+        again = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(first["label"], "A")
+        self.assertEqual(again["label"], "A")
+        self.assertEqual(again["generation"], 1)
+
+    def test_close_session_on_an_unregistered_session_raises(self):
+        with self.assertRaises(ValueError):
+            R.close_session(
+                self.db,
+                platform="minimax",
+                native_session_id="nope",
+                **self._loc(platform="minimax"),
+            )
+
+    def test_history_lists_live_and_retired_letters_with_their_windows(self):
+        self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
+        self.reg.resolve_or_register(ident(platform="minimax", native="native-2"))
+        R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
+        history = R.letter_history(self.db, "minimax")
+        by_letter = {row["letter"]: row for row in history}
+        self.assertFalse(by_letter["A"]["live"])
+        self.assertTrue(by_letter["B"]["live"])
+        self.assertIsNone(by_letter["B"]["ended_at"])
+
+    def test_sweep_ends_a_stale_session_only_when_it_was_replaced(self):
+        """A stale session nobody replaced keeps its letter:  a reply to it is still
+        the seat's business."""
+        old = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
+        self.reg._conn.execute(
+            "UPDATE sessions SET last_seen_at = ?, registered_at = ? WHERE record_id = ?",
+            ("2020-01-01T00:00:00.000Z", "2020-01-01T00:00:00.000Z", old["record_id"]),
+        )
+        self.reg._conn.commit()
+        ended = R.sweep_stale(self.db, platform="minimax", seat="MM", stale_after_minutes=120)
+        self.assertEqual(ended, [])  # stale, but nobody replaced it
+        self.assertIsNone(self.reg._get(old["record_id"])["closed_at"])
+
+    def test_sweep_ends_a_stale_replaced_session(self):
+        old = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
+        self.reg._conn.execute(
+            "UPDATE sessions SET last_seen_at = ?, registered_at = ? WHERE record_id = ?",
+            ("2020-01-01T00:00:00.000Z", "2020-01-01T00:00:00.000Z", old["record_id"]),
+        )
+        self.reg._conn.commit()
+        self.reg.resolve_or_register(ident(platform="minimax", native="native-2"))
+        ended = R.sweep_stale(self.db, platform="minimax", seat="MM", stale_after_minutes=120)
+        self.assertEqual(len(ended), 1)
+        self.assertEqual(ended[0]["label"], old["label"])
+        self.assertIsNotNone(self.reg._get(old["record_id"])["closed_at"])
+        history = R.letter_history(self.db, "minimax")
+        retired = [row for row in history if row["letter"] == old["label"]]
+        self.assertTrue(retired[0]["ended_at"])
+        self.assertFalse(retired[0]["live"])
 
     def test_missing_identity_fields_raise(self):
         with self.assertRaises(ValueError):

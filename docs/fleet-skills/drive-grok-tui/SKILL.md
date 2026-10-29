@@ -2,18 +2,18 @@
 name: drive-grok-tui
 description: >-
   Drive a live Mac Grok TUI session from any local or cloud agent (Claude,
-  Cursor, Grok, Shellular, Grok Bot, this TUI, …). List chats with
+  Cursor, Grok, Shellular, Grok Bot, this TUI, …).  List chats with
   idle/working/needs-input and pendingTool, peek or tail the transcript, inject
-  a prefixed follow-up, await the next turn via disk poll, or cancel. Cloud
-  seats use https://agents.jays.services/mcp (Access + Bearer), not grok-drive
-  on the VM. Use when you need to send work into an already-open grok terminal
+  a prefixed follow-up, await the next turn via disk poll, or cancel.  Cloud
+  seats use the fleet MCP gateway in docs/RECALL-ACCESS-CHECK.md (Access + Bearer), not grok-drive
+  on the VM.  Use when you need to send work into an already-open grok terminal
   instead of spawning grok-acp :12419.
 ---
 
 # Drive a live Grok TUI
 
-The Mac Grok TUI joins `~/.grok/leader.sock`.  Any agent can attach through
-`grok-drive.py` (Mac) or seat-mcp (Mac or cloud).  Do **not** spawn a second
+The Mac Grok TUI joins `~/.grok/leader.sock`.  Any agent can attach through
+`grok-drive.py` (Mac) or seat-mcp (Mac or cloud).  Do **not** spawn a second
 `grok-acp` on `:12419` to talk to those chats.
 
 After a coordinator merge that touches these helpers, run
@@ -34,35 +34,33 @@ python3 ~/apps/grok-acp-runtime/grok-drive.py close --session-id ID --cwd DIR
 python3 ~/apps/grok-acp-runtime/grok-idle-unload.py --dry-run
 ```
 
-- `list` rows include `live`, `turnState` (`idle` / `working` / `needs-input`), title, `lastTurnSummary`, and `pendingTool` when a permission prompt is waiting.  Do not auto-deny.
+- `list` rows include `live`, `turnState` (`idle` / `working` / `needs-input`), title, `lastTurnSummary`, and `pendingTool` when a permission prompt is waiting.  Do not auto-deny.
 - `prompt` prefixes `[from: NAME]` (`--from-name`, else `$AGENT_TAG` / `$AGENT_SEAT` / `remote`).
 - `prompt` refuses a working / needs-input session unless `--queue`.
 - `prompt` refuses `sessionId == $GROK_SESSION_ID` unless `--self` (stops this TUI from injecting into itself).
-- `prompt` returns `queued: true` as soon as the TUI accepts the message.  It does **not** wait for the turn.
-- `--await-reply N` waits for a **new** `turn_started` after the pre-inject snapshot, then that turn to end.  It does not treat a pre-existing idle as the reply.
+- `prompt` returns `queued: true` as soon as the TUI accepts the message.  It does **not** wait for the turn.
+- `--await-reply N` waits for a **new** `turn_started` after the pre-inject snapshot, then that turn to end.  It does not treat a pre-existing idle as the reply.
 - `await` (no inject) returns immediately if the session is already idle; if working, it waits for **this** turn.
 - Peek/tail/await never `session/load` a live chat (load hangs ~45s).
-- `cancel` is a `session/cancel` **notification** after `session/resume`.  Best-effort.  Idle chats ignore it.
-- `close` is `session/close`: unload that chat's MCP tools and keep the transcript on disk.  Refuses `$GROK_SESSION_ID` unless `--self`.  Refuses working / needs-input unless `--force`.
-- Hourly `com.jay.grok-idle-unload` closes chats that hold MCP processes and sit idle: 30 minutes for a zero-turn stub with no attached client, 4 hours for the rest.  It does not `/delete`.  `/resume` or `grok --resume ID` reloads tools.  `GROK_IDLE_UNLOAD_STUB_MINUTES` and `GROK_IDLE_UNLOAD_HOURS` override the thresholds.
+- `cancel` is a `session/cancel` **notification** after `session/resume`.  Best-effort.  Idle chats ignore it.
+- `close` is `session/close`: unload that chat's MCP tools and keep the transcript on disk.  Refuses `$GROK_SESSION_ID` unless `--self`.  Refuses working / needs-input unless `--force`.
+- Hourly `com.jay.grok-idle-unload` closes chats that hold MCP processes and sit idle: 30 minutes for a zero-turn stub with no attached client, 4 hours for the rest.  It does not `/delete`.  `/resume` or `grok --resume ID` reloads tools.  `GROK_IDLE_UNLOAD_STUB_MINUTES` and `GROK_IDLE_UNLOAD_HOURS` override the thresholds.
 
 ## MCP (local or cloud)
 
 Local stdio launcher: `sh ~/apps/mcp-servers/seat-mcp-launch.sh`
-(already in `~/.grok/config.toml`).  Loopback HTTP: `http://127.0.0.1:8793/mcp`.
+(already in `~/.grok/config.toml`).  Loopback HTTP: `http://127.0.0.1:8793/mcp`.
 
-Cloud / Grok Bot / Cursor cloud / Claude Code Cloud: HTTPS
+Cloud / Grok Bot / Cursor cloud / Claude Code Cloud: HTTPS MCP URL from `docs/RECALL-ACCESS-CHECK.md` (example shape: `https://agents.[REDACTED].com/mcp`).
 
-`https://agents.jays.services/mcp`
-
-Cloudflare Access **and** Bearer `SEAT_MCP_TOKEN`.  Env placeholders only — never
+Cloudflare Access **and** Bearer `SEAT_MCP_TOKEN`.  Env placeholders only — never
 literals in git:
 
 ```json
 {
   "mcpServers": {
     "seat-mcp": {
-      "url": "https://agents.jays.services/mcp",
+      "url": "https://agents.[REDACTED].com/mcp",
       "headers": {
         "Authorization": "Bearer ${SEAT_MCP_TOKEN}",
         "CF-Access-Client-Id": "${CF_ACCESS_CLIENT_ID}",
@@ -73,7 +71,7 @@ literals in git:
 }
 ```
 
-Tracked fragment: `scripts/seat-mcp/mcp.example.json`.  Secrets live in
+Tracked fragment: `scripts/seat-mcp/mcp.example.json`.  Secrets live in
 Infisical Fleet-OPS (`/seat-mcp` and the Cloudflare Access service token, read with
 `fleet-secrets get`) on the Mac, and in the cloud dashboard env vars — not in this skill.
 
@@ -83,16 +81,16 @@ Tools: `grok_sessions_list`, `grok_session_peek`, `grok_session_tail`,
 Flow: list → pick a `live=true` row → prompt `{sessionId, prompt, from}` →
 await `{sessionId}` (or `awaitReply` on the prompt job).
 
-A cloud agent cannot run `grok-drive.py` on the VM.  The MCP hop is the path
-into the Mac TUI.  GET `https://agents.jays.services/health` is public (no
-token).  POST `/mcp` without Access is 302.
+A cloud agent cannot run `grok-drive.py` on the VM.  The MCP hop is the path
+into the Mac TUI.  The gateway health check URL is named in `docs/RECALL-ACCESS-CHECK.md` (public, no
+token).  POST `/mcp` without Access is 302.
 
 ## Do not
 
 - Start a second `grok agent serve` or bind `:2419`.
 - `session/load` a chat the TUI already has open.
 - `--wait` on ACP for a live TUI reply (the wait *is* that TUI turn).
-- Auto-deny a `needs-input` permission.  Surface `pendingTool` and let the TUI
+- Auto-deny a `needs-input` permission.  Surface `pendingTool` and let the TUI
   operator decide.
 - Prompt this process's own `$GROK_SESSION_ID` without `--self`.
 - Put tokens in `mcp.json` / `config.toml` literals.

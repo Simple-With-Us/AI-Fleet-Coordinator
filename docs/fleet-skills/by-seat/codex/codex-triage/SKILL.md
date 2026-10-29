@@ -1,14 +1,14 @@
 ---
 name: codex-triage
-description: Triage unresolved GitHub review threads (chatgpt-codex-connector, Cursor Bugbot, and any other review bot or human) — classify against current HEAD, fix real findings in one batch, reply, then resolve. Use when gating a merge, when branch protection blocks on conversation resolution, or when a bot re-reviews after push.
+description: Triage unresolved GitHub review threads (chatgpt-codex-connector, Cursor Bugbot, and any other review bot or human) — classify against current HEAD, fix real findings in one batch, reply, then resolve.  Use when gating a merge, when branch protection blocks on conversation resolution, or when a bot re-reviews after push.
 ---
 
 # Review-thread triage (CODEX)
 
-> **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `codex-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CODEX_ZULIP_EMAIL`, `CODEX_ZULIP_KEY`, `CODEX_ZULIP_SITE`).  Session tag `[CODEX·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `CODEX`, credential in Infisical Fleet-OPS `/zulip` (`CODEX_ZULIP_EMAIL`, `CODEX_ZULIP_KEY`, `CODEX_ZULIP_SITE`).  Session tag `[CODEX·session8]`, and the `simple-chat` CLI writes it for you.
 
 
-Name is historical (`codex-connector`).  Apply to **every** unresolved thread on the PR: Codex, Cursor Bugbot, Copilot, humans.
+Name is historical (`codex-connector`).  Apply to **every** unresolved thread on the PR: Codex, Cursor Bugbot, Copilot, humans.
 
 Unresolved threads block merge on every protected fleet repo even when checks are green.
 
@@ -27,13 +27,13 @@ Three buckets only:
 
 - **addressed** — already fixed on this branch after the comment.
 - **false_positive** — bot misread context, or the rule does not apply here.
-- **real** — valid.  For money-path / auth / execution / policy / billing files, have a second agent (or a frontier child) adversarially verify before you change behavior.
+- **real** — valid.  For money-path / auth / execution / policy / billing files, have a second agent (or a frontier child) adversarially verify before you change behavior.
 
-Do not classify from the stale diff hunk.  Read the file at HEAD.
+Do not classify from the stale diff hunk.  Read the file at HEAD.
 
 ## 3. Fix reals in one batch
 
-One commit with a regression test per behavior change.  **Push before resolving any thread** (race in step 5).
+One commit with a regression test per behavior change.  **Push before resolving any thread** (race in step 5).
 
 ## 4. Reply, then resolve
 
@@ -47,20 +47,20 @@ gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t
 
 Reply shape (review-thread replies are PR text: a real U+00A0 plus a space between sentences, converted with the `perl` recipe in `sentence-gap`; since the 2026-10-23 owner ruling, prose files take the same U+00A0 plus a space, and code never does):
 
-- **Real:** `Fixed in <short-sha>.  <function>.  Test: test/foo.test.ts.`
+- **Real:** `Fixed in <short-sha>.  <function>.  Test: test/foo.test.ts.`
 - **False positive:** why the rule does not apply, then resolve.
 - **Addressed already:** cite the SHA that landed the fix.
 
-Never blind-resolve to force a merge.  The gate exists because some findings are real (commit-author, licenses, money-path).
+Never blind-resolve to force a merge.  The gate exists because some findings are real (commit-author, licenses, money-path).
 
 The reply and the resolution have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the `gh` GraphQL calls above are still the path that works, until the owner decides the cutover.
 
 ## 5. Auto-merge race
 
-The instant the last thread resolves and CI is green, auto-merge fires.  Bots re-review every push and often never converge.
+The instant the last thread resolves and CI is green, auto-merge fires.  Bots re-review every push and often never converge.
 
-- Resolving the last thread **is** merging the PR.  Triple-check first.
-- Round-2 comments often land on an already-merged PR.  Before resolving as "fixed," confirm the fix reached main.  Fleet repos squash-merge, so the original fix SHA is **not** an ancestor of `origin/main`:
+- Resolving the last thread **is** merging the PR.  Triple-check first.
+- Round-2 comments often land on an already-merged PR.  Before resolving as "fixed," confirm the fix reached main.  Fleet repos squash-merge, so the original fix SHA is **not** an ancestor of `origin/main`:
 
 ```bash
 git fetch origin
@@ -70,11 +70,11 @@ git diff origin/main...HEAD    # three-dot remaining unique work
 # helper: scripts/branch-landed.sh
 ```
 
-If the PR is not MERGED, open a follow-up from the same branch.  Expect squash-merge conflicts — merge main in; this branch's newer rounds win in its own files.
+If the PR is not MERGED, open a follow-up from the same branch.  Expect squash-merge conflicts — merge main in; this branch's newer rounds win in its own files.
 
 ## 6. Stop at round 2–3
 
-Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface the rest to the owner (Notes + a Linear comment).  Codex's job on these is the security/contract read, not infinite bot ping-pong.
+Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface the rest to the owner (Notes + a Linear comment).  Codex's job on these is the security/contract read, not infinite bot ping-pong.
 
 ## Canon
 

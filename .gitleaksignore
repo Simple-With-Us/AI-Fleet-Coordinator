@@ -59,3 +59,7 @@ ef42f132ad746c13dbe89c058d9e895ef64790a8:scripts/agent-sync-mcp/wrangler.jsonc:g
 # strings that prove the send seam withholds secret-looking bodies;  never real credentials.
 7b9d9bd387538decfe9a79eebd3190d8fb096b4e:scripts/agent_sync/tests/test_operator_registration_dm.py:generic-api-key:141
 01b5657a917497809d0c83c1a9148587f2b0363f:scripts/agent_sync/tests/test_operator_registration.py:generic-api-key:195
+
+# PR #1109 historical private-key HEADER ONLY in synthetic refusal tests, never a key.
+# Runtime marker is split in current source; exempt this exact old fixture finding only.
+1719f8b78a2ec9e235371cca7c3a76dbddf393fb:git-relay/git_relay/tests/test_file_request_limits.py:private-key:46
