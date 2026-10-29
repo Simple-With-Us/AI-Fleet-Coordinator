@@ -22,10 +22,16 @@ only job and step conclusions are returned.
 
 import base64
 import binascii
+import bz2
+import gzip
+import io
+import lzma
 import re
+import zipfile
+import zlib
 from urllib.parse import quote
 
-from .github_client import RelayGitHubError
+from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .secret_scan import find_secret
 from .server import PreReadUnavailable, _perm_within_ceiling
 
@@ -55,9 +61,17 @@ MAX_PAGE = 50
 MAX_PROJECT = 100
 MAX_FILES = 20
 MAX_FILES_B64 = 512 * 1024
+MAX_BINARY_ASSET = 180 * 1024  # base64 must fit the Worker 256 KiB MCP body
+MAX_BINARY_ASSET_B64 = 4 * ((MAX_BINARY_ASSET + 2) // 3)
+MAX_ARCHIVE_EXPANDED = 8 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 500
+_ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_file_rename": ({"contents": "write"}, True),
+    "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
     "wf_review_dismiss": ({"pull_requests": "write"}, True),
     "wf_review_pending_delete": ({"pull_requests": "write"}, True),
@@ -130,6 +144,13 @@ SPECS = {
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
+    "wf_release_asset_download": ({"contents": "read"}, False),
+    "wf_release_asset_upload_binary": ({"contents": "write"}, True),
+    "wf_release_asset_update": ({"contents": "write"}, True),
+    "wf_release_asset_delete": ({"contents": "write"}, True),
+    "wf_job_log": ({"actions": "read"}, False),
+    "wf_run_logs": ({"actions": "read"}, False),
+    "wf_artifact_download": ({"actions": "read"}, False),
     "wf_review_submit": ({"pull_requests": "write"}, True),
     "wf_review_inline": ({"pull_requests": "write"}, True),
     "wf_branch_create": ({"contents": "write"}, True),
@@ -251,6 +272,100 @@ def _only(args, allowed):
     extra = set(args) - set(allowed)
     if extra:
         raise Refused("unexpected argument")
+
+
+def _new_budget():
+    """Expansion and member budget shared by one whole scan, every nesting level."""
+    return {"bytes": MAX_ARCHIVE_EXPANDED, "members": MAX_ARCHIVE_MEMBERS}
+
+
+def _bounded_read(stream, budget):
+    chunks = []
+    while True:
+        block = stream.read(65536)
+        if not block:
+            return b"".join(chunks)
+        budget["bytes"] -= len(block)
+        if budget["bytes"] < 0:
+            raise Refused("asset archive expands past the scan bound")
+        chunks.append(block)
+
+
+def _scan_bytes(blob):
+    text = blob.decode("latin-1")
+    if find_secret(text) or find_secret(blob.decode("utf-8", "ignore")):
+        raise Refused("invalid asset content")
+    # UTF-16 text hides ASCII credential shapes from a byte scan.
+    for enc in ("utf-16-le", "utf-16-be"):
+        if find_secret(blob.decode(enc, "ignore")):
+            raise Refused("invalid asset content")
+
+
+def _scan_asset_bytes(content, depth=0, budget=None):
+    """Refuse content that carries a credential shape, including inside common archives.
+
+    Opaque or encrypted containers the scanner cannot open are refused rather than
+    waved through.  Encodings inside an unrecognized binary format (for example a
+    credential base64-encoded within a file) are not detected; this is a shape scan,
+    not a guarantee.
+    """
+    if depth > 1:
+        raise Refused("asset archive nesting is not supported")
+    if budget is None:
+        budget = _new_budget()
+    _scan_bytes(content)
+    head = content[:8]
+    if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(content))
+            infos = archive.infolist()
+            budget["members"] -= len(infos)
+            if budget["members"] < 0 or sum(i.file_size for i in infos) > budget["bytes"]:
+                raise Refused("asset archive expands past the scan bound")
+            for info in infos:
+                if info.flag_bits & 0x1:
+                    raise Refused("encrypted asset archives are not supported")
+                _scan_bytes(info.filename.encode("utf-8", "replace"))
+                if info.is_dir():
+                    continue
+                with archive.open(info) as member:
+                    inner = _bounded_read(member, budget)
+                _scan_asset_bytes(inner, depth + 1, budget)
+        except (
+            zipfile.BadZipFile,
+            NotImplementedError,
+            RuntimeError,
+            EOFError,
+            OSError,
+            zlib.error,
+            lzma.LZMAError,
+            ValueError,
+        ) as exc:
+            if isinstance(exc, Refused):
+                raise
+            raise Refused("asset archive could not be scanned") from None
+    elif head.startswith(b"\x1f\x8b"):
+        try:
+            inner = _bounded_read(gzip.GzipFile(fileobj=io.BytesIO(content)), budget)
+        except (OSError, EOFError, zlib.error, ValueError):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1, budget)
+    elif head.startswith(b"BZh"):
+        try:
+            inner = _bounded_read(bz2.BZ2File(io.BytesIO(content)), budget)
+        except (OSError, EOFError, ValueError, zlib.error):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1, budget)
+    elif head.startswith(b"\xfd7zXZ\x00"):
+        try:
+            inner = _bounded_read(lzma.LZMAFile(io.BytesIO(content)), budget)
+        except (lzma.LZMAError, OSError, EOFError, ValueError, zlib.error):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1, budget)
+    elif head.startswith(
+        (b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x5d\x00\x00")
+    ) or head[:2] in (b"\x1f\x9d", b"\x1f\xa0"):
+        raise Refused("unscannable compressed asset format")
 
 
 _NEW_READS = frozenset(
@@ -825,6 +940,228 @@ class WorkflowVerbs:
         if data["name"] != name or data["state"] != "uploaded" or data["size"] != len(content):
             raise RelayGitHubError(502, "release asset upload outcome unverifiable")
         return {"asset": data}
+
+    def wf_release_asset_upload_binary(self, repo, args):
+        _only(args, ("repo", "release_id", "name", "content_b64"))
+        release_id = _int(args, "release_id")
+        name = args.get("name")
+        if (
+            not isinstance(name, str)
+            or not _ASSET_NAME.fullmatch(name)
+            or name.endswith(".")
+            or find_secret(name)
+        ):
+            raise Refused("invalid asset name")
+        encoded = args.get("content_b64")
+        if not isinstance(encoded, str) or not 1 <= len(encoded) <= MAX_BINARY_ASSET_B64:
+            raise Refused("invalid asset content")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise Refused("asset must be valid base64") from None
+        if not 1 <= len(content) <= MAX_BINARY_ASSET:
+            raise Refused("invalid asset content")
+        _scan_asset_bytes(content)
+        try:
+            release = _obj(self._get(f"/repos/{repo}/releases/{release_id}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "release pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            release.get("id") != release_id
+            or isinstance(release.get("id"), bool)
+            or release.get("upload_url")
+            != f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets{{?name,label}}"
+        ):
+            raise Refused("release upload destination unverifiable")
+        data = self._asset_summary(
+            self.client.upload_release_asset(
+                repo, release_id, name, content, self.bearer, MAX_BINARY_ASSET
+            )
+        )
+        if data["name"] != name or data["state"] != "uploaded" or data["size"] != len(content):
+            raise RelayGitHubError(502, "release asset upload outcome unverifiable")
+        return {"asset": data}
+
+    def _asset_preread(self, repo, asset_id, expected_name):
+        try:
+            data = self._asset_summary(self._get(f"/repos/{repo}/releases/assets/{asset_id}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("asset pre-read unavailable; no write attempted") from None
+            raise
+        if data["id"] != asset_id or data["name"] != expected_name:
+            raise Refused("release asset does not match expected_name")
+        return data
+
+    def _expected_name(self, args):
+        name = args.get("expected_name")
+        if not isinstance(name, str) or not 1 <= len(name) <= 255 or "/" in name:
+            raise Refused("invalid expected_name")
+        return name
+
+    def wf_release_asset_delete(self, repo, args):
+        """Delete one asset by ID, only while its current name matches expected_name."""
+        _only(args, ("repo", "asset_id", "expected_name"))
+        asset_id, expected = _int(args, "asset_id"), self._expected_name(args)
+        self._asset_preread(repo, asset_id, expected)
+        result = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/releases/assets/{asset_id}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        if result != {}:
+            raise RelayGitHubError(502, "release asset delete outcome unverifiable")
+        return {"deleted": True, "asset_id": asset_id}
+
+    def wf_release_asset_update(self, repo, args):
+        """Rename or relabel one asset, fenced on its current name; never changes state."""
+        _only(args, ("repo", "asset_id", "expected_name", "name", "label"))
+        asset_id, expected = _int(args, "asset_id"), self._expected_name(args)
+        patch = {}
+        if "name" in args:
+            name = args["name"]
+            if (
+                not isinstance(name, str)
+                or not _ASSET_NAME.fullmatch(name)
+                or name.endswith(".")
+                or find_secret(name)
+            ):
+                raise Refused("invalid asset name")
+            patch["name"] = name
+        if "label" in args:
+            label = args["label"]
+            if (
+                not isinstance(label, str)
+                or len(label) > 255
+                or find_secret(label)
+                or any(ord(c) < 32 or ord(c) == 127 for c in label)
+            ):
+                raise Refused("invalid label")
+            patch["label"] = label
+        if not patch:
+            raise Refused("name or label required")
+        self._asset_preread(repo, asset_id, expected)
+        receipt = self.client._call(
+            "PATCH", f"/repos/{repo}/releases/assets/{asset_id}", patch, bearer=self.bearer
+        )
+        data = self._asset_summary(receipt)
+        if "label" in patch and receipt.get("label") != patch["label"]:
+            raise RelayGitHubError(502, "release asset label update outcome unverifiable")
+        if data["id"] != asset_id or data["name"] != patch.get("name", expected):
+            raise RelayGitHubError(502, "release asset update outcome unverifiable")
+        return {"asset": data}
+
+    def _range(self, args):
+        offset = _int(args, "offset", 0, 512 * 1024 * 1024) if "offset" in args else 0
+        length = (
+            _int(args, "length", 1, MAX_DOWNLOAD_CHUNK) if "length" in args else MAX_DOWNLOAD_CHUNK
+        )
+        return offset, length
+
+    @staticmethod
+    def _chunk_meta(offset, data, total):
+        end = offset + len(data)
+        complete = total is not None and end >= total
+        return {
+            "offset": offset,
+            "next_offset": end,
+            "total": total,
+            "complete": complete if total is not None else len(data) == 0,
+        }
+
+    def _binary_chunk(self, path, args, key, accept="application/vnd.github+json"):
+        offset, length = self._range(args)
+        data, total = self.client.download_chunk(path, self.bearer, offset, length, accept)
+        out = self._chunk_meta(offset, data, total)
+        out[key] = base64.b64encode(data).decode("ascii")
+        return out
+
+    def wf_release_asset_download(self, repo, args):
+        _only(args, ("repo", "asset_id", "offset", "length"))
+        asset_id = _int(args, "asset_id")
+        meta = self._asset_summary(self._get(f"/repos/{repo}/releases/assets/{asset_id}"))
+        if meta["id"] != asset_id or meta["state"] != "uploaded":
+            raise RelayGitHubError(502, "release asset not downloadable")
+        out = self._binary_chunk(
+            f"/repos/{repo}/releases/assets/{asset_id}",
+            args,
+            "content_b64",
+            "application/octet-stream",
+        )
+        out["asset_id"] = asset_id
+        if out["total"] is None:
+            out["total"] = meta["size"]
+            out["complete"] = out["next_offset"] >= meta["size"]
+        return out
+
+    def wf_artifact_download(self, repo, args):
+        _only(args, ("repo", "artifact_id", "offset", "length"))
+        artifact_id = _int(args, "artifact_id")
+        meta = _obj(self._get(f"/repos/{repo}/actions/artifacts/{artifact_id}"))
+        if (
+            meta.get("id") != artifact_id
+            or isinstance(meta.get("id"), bool)
+            or meta.get("expired") is not False
+        ):
+            raise Refused("artifact missing or expired")
+        out = self._binary_chunk(
+            f"/repos/{repo}/actions/artifacts/{artifact_id}/zip", args, "content_b64"
+        )
+        out["artifact_id"] = artifact_id
+        return out
+
+    def wf_run_logs(self, repo, args):
+        """Zip archive of a run's logs, as one bounded base64 byte range."""
+        _only(args, ("repo", "run_id", "offset", "length"))
+        run_id = _int(args, "run_id")
+        out = self._binary_chunk(f"/repos/{repo}/actions/runs/{run_id}/logs", args, "content_b64")
+        out["run_id"] = run_id
+        return out
+
+    def wf_job_log(self, repo, args):
+        """One job's plain-text log as a bounded UTF-8 byte range (untrusted text)."""
+        _only(args, ("repo", "job_id", "offset", "length"))
+        job_id = _int(args, "job_id")
+        offset, length = self._range(args)
+        # Fetch a little past the bound so a character wider than a tiny length still
+        # fits whole and next_offset always advances.
+        data, total = self.client.download_chunk(
+            f"/repos/{repo}/actions/jobs/{job_id}/logs",
+            self.bearer,
+            offset,
+            min(length + 3, MAX_DOWNLOAD_CHUNK),
+        )
+        if len(data) > length:
+            end = length
+            while end > 0 and (data[end] & 0xC0) == 0x80:
+                end -= 1
+            if end == 0:
+                end = 1
+                while end < len(data) and end < 4 and (data[end] & 0xC0) == 0x80:
+                    end += 1
+            data = data[:end]
+        meta = self._chunk_meta(offset, data, total)
+        text = None
+        for cut in range(4 if not meta["complete"] else 1):
+            if cut >= len(data):
+                break
+            try:
+                text = data[: len(data) - cut].decode("utf-8")
+                data = data[: len(data) - cut]
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            text = data.decode("utf-8", "replace")
+        meta = self._chunk_meta(offset, data, total)
+        meta.update({"job_id": job_id, "content": text})
+        return meta
 
     def _text(self, args, key, limit=32768):
         value = args.get(key)
@@ -1932,6 +2269,55 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "auto-merge outcome unverifiable")
         return {"pull": pull}
 
+    def _review_thread_state(self, repo, args, resolved):
+        _only(args, ("repo", "number", "thread_id"))
+        number = _int(args, "number")
+        thread = args.get("thread_id")
+        if not isinstance(thread, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", thread):
+            raise Refused("invalid thread_id")
+        # A caller node ID is never trusted as a global selector: first bind it to
+        # the chosen repository and PR. Refuse outside the bounded visible page.
+        owner, name = repo.split("/")
+        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:100) { nodes { id } pageInfo { hasNextPage } } } } }"
+        try:
+            result = self._fixed_graph(
+                query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+            )
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "thread membership pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        threads = _sub(_sub(result, "pullRequest"), "reviewThreads").get("nodes")
+        if not isinstance(threads, list) or not any(
+            isinstance(x, dict) and x.get("id") == thread for x in threads
+        ):
+            raise Refused("thread not in bounded repository PR membership page")
+        field = "resolveReviewThread" if resolved else "unresolveReviewThread"
+        mutation = (
+            "mutation($id:ID!) { resolveReviewThread(input:{threadId:$id}) { thread { id isResolved } } }"
+            if resolved
+            else "mutation($id:ID!) { unresolveReviewThread(input:{threadId:$id}) { thread { id isResolved } } }"
+        )
+        result = self._fixed_graph(mutation, {"id": thread}, field)
+        receipt = _sub(result, "thread")
+        if (
+            receipt.get("id") != thread
+            or not isinstance(receipt.get("isResolved"), bool)
+            or receipt["isResolved"] != resolved
+        ):
+            raise RelayGitHubError(502, "thread state outcome unverifiable")
+        return {"thread": {"id": thread, "isResolved": resolved}}
+
+    def wf_review_thread_resolve(self, repo, args):
+        _only(args, ("repo", "number", "thread_id"))
+        return self._review_thread_state(repo, args, True)
+
+    def wf_review_thread_unresolve(self, repo, args):
+        _only(args, ("repo", "number", "thread_id"))
+        return self._review_thread_state(repo, args, False)
+
     def wf_review_threads(self, repo, args):
         _only(args, ("repo", "number"))
         number = _int(args, "number")
@@ -2543,6 +2929,205 @@ class WorkflowVerbs:
 
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
+
+    def wf_file_rename(self, repo, args):
+        """Rename one regular blob without fetching its contents or overwriting a destination."""
+        _only(
+            args,
+            (
+                "repo",
+                "source_path",
+                "destination_path",
+                "branch",
+                "message",
+                "expected_head_sha",
+                "prior_sha",
+            ),
+        )
+        source, dest = _path(args, "source_path"), _path(args, "destination_path")
+        branch, head, prior = (
+            _ref(args, "branch"),
+            _sha(args, "expected_head_sha"),
+            _sha(args, "prior_sha"),
+        )
+        message = args.get("message")
+        if source == dest or source.startswith(dest + "/") or dest.startswith(source + "/"):
+            raise Refused("rename paths overlap")
+        if branch.startswith("refs/") or any(_workflow_path(x) for x in (source, dest)):
+            raise Refused("qualified refs and workflow paths refused")
+        if any(len(x) > 1024 or len(x.split("/")) > 8 for x in (source, dest)):
+            raise Refused("rename path exceeds bounds")
+        if not isinstance(message, str) or not message.strip() or "\x00" in message:
+            raise Refused("invalid rename message")
+        try:
+            encoded = message.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Refused("invalid rename message") from None
+        if (
+            len(encoded) > 500
+            or find_secret(message)
+            or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+                message,
+            )
+        ):
+            raise Refused("invalid rename message")
+        try:
+            info = self._get(f"/repos/{repo}")
+            if (
+                not isinstance(info, dict)
+                or not isinstance(info.get("default_branch"), str)
+                or not info["default_branch"]
+            ):
+                raise RelayGitHubError(502, "rename repository pre-read unverifiable")
+            if branch == info["default_branch"]:
+                raise Refused("default branch is not writable")
+            ref = self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}")
+            if (
+                not isinstance(ref, dict)
+                or ref.get("ref") != "refs/heads/" + branch
+                or not isinstance(ref.get("object"), dict)
+                or ref["object"].get("type") != "commit"
+                or ref["object"].get("sha") != head
+            ):
+                raise Refused("exact branch head not matched")
+            commit = self._get(f"/repos/{repo}/git/commits/{head}")
+            if (
+                not isinstance(commit, dict)
+                or commit.get("sha") != head
+                or not isinstance(commit.get("tree"), dict)
+                or not isinstance(commit["tree"].get("sha"), str)
+                or not _SHA.fullmatch(commit["tree"]["sha"])
+            ):
+                raise RelayGitHubError(502, "rename base commit unverifiable")
+            base = commit["tree"]["sha"]
+            cache = {}
+
+            def entry(path):
+                tree = base
+                parts = path.split("/")
+                for pos, part in enumerate(parts):
+                    if tree not in cache:
+                        value = self._get(f"/repos/{repo}/git/trees/{tree}")
+                        if (
+                            not isinstance(value, dict)
+                            or value.get("sha") != tree
+                            or value.get("truncated") is not False
+                            or not isinstance(value.get("tree"), list)
+                            or len(value["tree"]) > 1000
+                        ):
+                            raise RelayGitHubError(502, "rename tree pre-read incomplete")
+                        entries = {}
+                        for item in value["tree"]:
+                            if (
+                                not isinstance(item, dict)
+                                or not isinstance(item.get("path"), str)
+                                or "/" in item["path"]
+                                or not item["path"]
+                                or item["path"] in entries
+                                or not isinstance(item.get("sha"), str)
+                                or not _SHA.fullmatch(item["sha"])
+                                or (item.get("type"), item.get("mode"))
+                                not in (
+                                    ("blob", "100644"),
+                                    ("blob", "100755"),
+                                    ("blob", "120000"),
+                                    ("tree", "040000"),
+                                    ("commit", "160000"),
+                                )
+                            ):
+                                raise RelayGitHubError(502, "rename tree entry unverifiable")
+                            entries[item["path"]] = item
+                        cache[tree] = entries
+                    item = cache[tree].get(part)
+                    if item is None:
+                        return None
+                    if pos == len(parts) - 1:
+                        return item
+                    if item["type"] != "tree":
+                        raise Refused("rename parent is not a directory")
+                    tree = item["sha"]
+                return None
+
+            original = entry(source)
+            if (
+                original is None
+                or original["type"] != "blob"
+                or original["mode"] not in ("100644", "100755")
+                or original["sha"] != prior
+            ):
+                raise Refused("source is not the exact regular blob")
+            if entry(dest) is not None:
+                raise Refused("rename destination already exists")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "rename pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        # After the first POST, any error keeps the durable outcome UNKNOWN, including
+        # a later definite ref refusal: objects may have been created. Never replay.
+        try:
+            tree = self.client._call(
+                "POST",
+                f"/repos/{repo}/git/trees",
+                {
+                    "base_tree": base,
+                    "tree": [
+                        {"path": source, "mode": original["mode"], "type": "blob", "sha": None},
+                        {"path": dest, "mode": original["mode"], "type": "blob", "sha": prior},
+                    ],
+                },
+                bearer=self.bearer,
+            )
+            if (
+                not isinstance(tree, dict)
+                or not isinstance(tree.get("sha"), str)
+                or not _SHA.fullmatch(tree["sha"])
+            ):
+                raise RelayGitHubError(502, "rename tree receipt unverifiable")
+            result = self.client._call(
+                "POST",
+                f"/repos/{repo}/git/commits",
+                {"message": message, "tree": tree["sha"], "parents": [head]},
+                bearer=self.bearer,
+            )
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get("sha"), str)
+                or not _SHA.fullmatch(result["sha"])
+                or not isinstance(result.get("tree"), dict)
+                or result["tree"].get("sha") != tree["sha"]
+                or not isinstance(result.get("parents"), list)
+                or len(result["parents"]) != 1
+                or not isinstance(result["parents"][0], dict)
+                or result["parents"][0].get("sha") != head
+            ):
+                raise RelayGitHubError(502, "rename commit receipt unverifiable")
+            new = result["sha"]
+            receipt = self.client._call(
+                "PATCH",
+                f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}",
+                {"sha": new, "force": False},
+                bearer=self.bearer,
+            )
+            if (
+                not isinstance(receipt, dict)
+                or receipt.get("ref") != "refs/heads/" + branch
+                or not isinstance(receipt.get("object"), dict)
+                or receipt["object"].get("type") != "commit"
+                or receipt["object"].get("sha") != new
+            ):
+                raise RelayGitHubError(502, "rename ref receipt unverifiable")
+        except (RelayGitHubError, ValueError):
+            raise RelayGitHubError(502, "rename write outcome unverifiable") from None
+        return {
+            "source_path": source,
+            "destination_path": dest,
+            "branch": branch,
+            "commit": new,
+            "blob_sha": prior,
+        }
 
     def wf_file_delete(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "prior_sha"))
