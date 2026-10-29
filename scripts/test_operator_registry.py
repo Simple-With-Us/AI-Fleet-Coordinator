@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
 import sqlite3
@@ -11,13 +9,10 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent_sync import operator_registry as R
-import mm_session_letter as M
-import mm_session_letter as M
 
 # A synthetic credential for the positive scan cases:  32 mixed-case characters with no
 # provider prefix, so the scanner still trips on it while the file carries no real token's

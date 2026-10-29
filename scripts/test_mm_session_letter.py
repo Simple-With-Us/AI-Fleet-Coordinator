@@ -123,16 +123,14 @@ class MmSessionLetterTest(unittest.TestCase):
             M,
             "registry_call",
             return_value={"error": "the registry is out of reach", "code": "no_registry"},
-        ):
-            with self.assertRaises(M.RegistryError):
-                M.register("sid")
+        ), self.assertRaises(M.RegistryError):
+            M.register("sid")
 
     def test_touch_fails_closed_on_a_registry_error(self):
         with mock.patch.object(
             M, "registry_call", return_value={"error": "the registry is out of reach"}
-        ):
-            with self.assertRaises(M.RegistryError):
-                M.touch_session("sid")
+        ), self.assertRaises(M.RegistryError):
+            M.touch_session("sid")
 
     def test_an_interrupted_registry_call_stops_the_child(self):
         # The child sits in its own process group, so an interrupted runner has to
