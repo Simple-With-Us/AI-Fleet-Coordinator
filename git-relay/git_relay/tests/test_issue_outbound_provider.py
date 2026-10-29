@@ -65,3 +65,19 @@ class IssueOutboundProviderTests(unittest.TestCase):
                     "wf_issue_comment", {"repo": REPO, "number": 1, "body": prefix + "X" * 32}
                 )
             self.assertEqual(client.calls, [])
+
+    def test_embedded_provider_shapes_also_refused_before_client_call(self):
+        for prefix in PREFIXES:
+            for field in ("title", "body"):
+                for action in ("wf_issue_create", "wf_issue_update"):
+                    client = Client()
+                    args = {"repo": REPO, "title": "safe issue", "body": "safe body"}
+                    if action == "wf_issue_update":
+                        args["number"] = 1
+                    args[field] = "embedded" + prefix + "X" * 32
+                    with (
+                        self.subTest(prefix=prefix, field=field, action=action),
+                        self.assertRaises(Refused),
+                    ):
+                        self.handle(client, action).run(action, args)
+                    self.assertEqual(client.calls, [])
