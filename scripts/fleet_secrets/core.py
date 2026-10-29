@@ -364,11 +364,12 @@ def load_linux_root_private_bootstrap() -> dict[str, str]:
             or info.st_nlink != 1
         ):
             raise ValueError("unsafe bootstrap file")
-        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        with os.fdopen(fd, "rb") as stream:
             fd = None
-            text = stream.read(LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES + 1)
-        if len(text) > LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES:
+            raw = stream.read(LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES + 1)
+        if len(raw) > LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES:
             raise ValueError("oversized bootstrap")
+        text = raw.decode("utf-8")
         data = json.loads(text, object_pairs_hook=_linux_root_private_bootstrap_pairs)
         expected = {ENV_AUTOMATION_ID, ENV_AUTOMATION_SECRET}
         if (
