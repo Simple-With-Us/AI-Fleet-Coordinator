@@ -135,7 +135,7 @@ test('success completion, file-count receipts and malformed failure metadata',as
    const t=harness(async()=>new Response(JSON.stringify({branch:'b',commit:'a'.repeat(40),files})));
    assert.ok((await t.call('gr_wf_files_put',args)).isError);
  }
- assert.ok(!validWfV1Args('wf_file_put',{repo,path:'a',branch:'b',message:'m',content_b64:'A'.repeat(60001)}));
+ assert.ok(!validWfV1Args('wf_file_put',{repo,path:'a',branch:'b',message:'m',content_b64:'A'.repeat(2796205)}));
 });
 
 test('valid refusal context is stripped without losing status or retry semantics',async()=>{
@@ -558,4 +558,50 @@ test('PR response text scan refuses credential-shaped title and body without blo
  const base={id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}};
  assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,title:'plain',body:null}}),true);
  for(const key of ['title','body'])for(const value of ['ghp_'+'x'.repeat(30),'github_pat_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,[key]:value}}),false);
+});
+
+test('full-file request budgets are action-local, encoded and bounded',()=>{
+ const one=n=>({repo,path:'source.swift',branch:'review',message:'update',content_b64:'A'.repeat(n-1)+'='});
+ for(const n of [60001,191012,2796204]) assert.ok(validWfV1Args('wf_file_put',one(n)));
+ assert.ok(!validWfV1Args('wf_file_put',one(2796205)));
+ const multi={repo,branch:'review',message:'update',expected_head_sha:'a'.repeat(40),files:[{path:'a',content_b64:'A'.repeat(191012)},{path:'b',content_b64:'A'.repeat(61816)}]};
+ assert.ok(validWfV1Args('wf_files_put',multi));
+ multi.files.push({path:'c',content_b64:'A'.repeat(6291456)});
+ assert.ok(!validWfV1Args('wf_files_put',multi));
+ assert.ok(!validWfV1Args('wf_runs',{repo,term:'x'.repeat(70000)}));
+});
+
+test('file aggregate counts actual JSON escapes, not just string bytes',()=>{
+ const make=()=>({repo,branch:'review',message:'m',expected_head_sha:'a'.repeat(40),files:[{path:'a',content_b64:'A'.repeat(2796204)},{path:'b',content_b64:'A'},{path:'c',content_b64:'A'.repeat(1000000)}]});
+ const args=make();
+ args.files[1].content_b64='A'.repeat(6291456-new TextEncoder().encode(JSON.stringify(args)).length+1);
+ assert.equal(new TextEncoder().encode(JSON.stringify(args)).length,6291456);
+ assert.ok(!validWfV1Args('wf_files_put',args));
+ args.files[1].content_b64+='A';assert.ok(!validWfV1Args('wf_files_put',args));
+ const escaped=make();escaped.message='"'.repeat(500);
+ escaped.files[1].content_b64='A'.repeat(6291456-new TextEncoder().encode(JSON.stringify(escaped)).length+2);
+ assert.ok(!validWfV1Args('wf_files_put',escaped));
+});
+
+
+test('only file content advertises the larger content limit',()=>{
+ const schema=name=>WF_V1_TOOLS.find(t=>t.name==='gr_'+name).inputSchema.properties;
+ assert.equal(schema('wf_file_put').content_b64.maxLength,2796204);
+ assert.equal(schema('wf_files_put').files.items.properties.content_b64.maxLength,2796204);
+ for(const action of ['wf_issue_create','wf_issue_update','wf_issue_comment']){
+   const props=schema(action);
+   assert.equal(props.body.maxLength,60000);
+   if(props.title) assert.equal(props.title.maxLength,60000);
+ }
+});
+
+test('decoded per-file and aggregate boundaries match relay budgets',()=>{
+ const file=n=>({path:'a',content_b64:Buffer.alloc(n,97).toString('base64')});
+ const one={repo,branch:'review',message:'update',...file(2*1024*1024)};
+ assert.ok(validWfV1Args('wf_file_put',one));
+ one.content_b64=Buffer.alloc(2*1024*1024+1,97).toString('base64');
+ assert.ok(!validWfV1Args('wf_file_put',one));
+ const multi={repo,branch:'review',message:'update',expected_head_sha:'a'.repeat(40),files:[file(2*1024*1024),{...file(2*1024*1024),path:'b'}]};
+ assert.ok(validWfV1Args('wf_files_put',multi));
+ multi.files.push({...file(1),path:'c'});assert.ok(!validWfV1Args('wf_files_put',multi));
 });
