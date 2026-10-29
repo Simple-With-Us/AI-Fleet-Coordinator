@@ -582,7 +582,8 @@
               "number",
               "string"
             ],
-            "description": "Lifetime in days (files at most 7, links at most 180).  Omit for the default:  3 days for files, 30 for links."
+            "minimum": 0.01,
+            "pattern": "^forever$"
           }
         }
       },

@@ -388,3 +388,14 @@ test("routine CLI parity additions pass through without a new seat or scope", as
     assert.deepEqual(upstream.calls.at(-1).body.params.arguments, args);
   }
 });
+
+test("renew accepts a positive lifetime or forever, not zero, negative or arbitrary strings", async () => {
+  const { tools } = harness();
+  for (const days of [0, -1, "0", "no", "1"]) {
+    const result = await tools.call("fleetlink_renew_share", { slug: "demo", days });
+    assert.equal(result.isError, true, JSON.stringify({ days, result }));
+  }
+  for (const days of [0.01, 3, "forever"]) {
+    assert.equal((await tools.call("fleetlink_renew_share", { slug: "demo", days })).isError, undefined);
+  }
+});

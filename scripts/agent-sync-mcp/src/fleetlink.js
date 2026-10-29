@@ -182,7 +182,7 @@ export const FLEETLINK_TOOLS = Object.freeze([
     name: "fleetlink_renew_share",
     title: "FleetLink Renew Share",
     description: "Extend a share this seat can edit, optionally by days.  A share can be renewed three times.",
-    inputSchema: object({ slug: SLUG, days: DAYS }, ["slug"]),
+    inputSchema: object({ slug: SLUG, days: { type: ["number", "string"], minimum: 0.01, pattern: "^forever$" } }, ["slug"]),
     annotations: WRITE,
   },
   {

@@ -433,7 +433,7 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
         except FleetError as exc:
             raise Z.CredentialError(str(exc)) from None
         selected = getattr(args, "as_seat", None) or getattr(args, "default_seat", None)
-        if selected and selected.upper() != identity:
+        if selected and I.canonical_seat(selected) != identity:
             raise Z.UsageError("--identity/--as cannot override the fleet bearer identity")
     else:
         identity = _identity(rt, args)

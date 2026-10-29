@@ -77,10 +77,10 @@ class FleetBearerTests(unittest.TestCase):
 
     def test_request_containing_token_refused_before_network(self):
         client = F.Client(self.path)
-        with patch.object(F.urllib.request, "build_opener") as opener:
+        with patch.object(F, "gateway_transport") as opener:
             with self.assertRaises(F.FleetError):
                 client.rpc("tools/call", {"title": self.token}, True)
-            opener.assert_not_called()
+            opener.return_value.open.assert_not_called()
 
     def test_nonsecret_launcher_identity_can_only_restrict(self):
         for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CLUTCH"}, {"AGENT_SEAT": "CLUTCH"}):
@@ -202,6 +202,27 @@ class FleetBearerTests(unittest.TestCase):
             self.assertEqual(constructor.return_value.call.call_count, 2)
 
 
+    def test_canonical_hints_match_published_identity_aliases(self):
+        from agent_sync import identity
+        samples = list(identity.SEAT_NAME_ALIASES) + ["grok-build", "Grok (Build)", "grok_build", "grokbuild", "grok-builder", "CODEX", "CLUTCH"]
+        for sample in samples:
+            self.assertEqual(F.canonical_hint(sample), identity.canonical_seat(sample))
+        self.path.write_text("sbt_grok_" + "x" * 43)
+        self.assertEqual(F.Client(self.path, identity_env={"AGENT_LAUNCH_SEAT": "Grok (Build)"}).seat, "GROK")
+        with self.assertRaises(F.FleetError):
+            F.Client(self.path, identity_env={"AGENT_LAUNCH_SEAT": "grok-builder"})
+
+    def test_flags_cannot_inject_gateway_arguments_or_replace_request_id(self):
+        from agent_sync import notes as N
+        host = NC.Host({}, self.home, None, caller="cli", bearer_file=str(self.path))
+        for flags in ({"request_id": "other"}, {"action": "unpin"}, {"identity": "CLUTCH"}, {"wait_seconds": 300}, {"random": True}):
+            request = {"action": "pin", "request_id": "original-id", "identity": "CODEX", "flags": flags}
+            with patch.object(NC, "_fleet_tool") as tool:
+                with self.assertRaises(N.NotesError):
+                    NC._fleet_call(host, "CODEX", request, 0)
+                tool.assert_not_called()
+
+
 
 class TransportTests(FleetBearerTests):
     def answer(self, data, content_type="application/json"):
@@ -212,19 +233,19 @@ class TransportTests(FleetBearerTests):
     def test_json_and_sse_and_header_only_bearer(self):
         reply = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"structuredContent": {"ok": True}}})
         for raw, content_type in ((reply.encode(), "application/json"), (('data: ' + reply + '\n\n').encode(), "text/event-stream")):
-            with patch.object(F.urllib.request, "build_opener") as opener:
+            with patch.object(F, "gateway_transport") as opener:
                 opener.return_value.open.return_value = self.answer(raw, content_type)
                 self.assertTrue(F.Client(self.path).rpc("tools/call", {"name": "notes_list", "arguments": {}})["structuredContent"]["ok"])
                 request = opener.return_value.open.call_args.args[0]
                 self.assertEqual(request.full_url, F.ENDPOINT)
                 self.assertEqual(request.get_header("Authorization"), "Bearer " + self.token)
                 self.assertNotIn(self.token.encode(), request.data)
-                self.assertTrue(any(isinstance(handler, F.NoRedirect) for handler in opener.call_args.args))
-                self.assertTrue(any(isinstance(handler, F.urllib.request.ProxyHandler) and handler.proxies == {} for handler in opener.call_args.args))
+                self.assertEqual(request.get_header("User-agent"), "fleet-bearer-client/1")
+                self.assertEqual(opener.call_count, 1)
 
     def test_bad_oversize_and_reflected_token_answers_are_redacted_unknown_no_retry(self):
         for raw in (b"not JSON", b"x" * (F.MAX_BYTES + 1), json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"content": [{"text": self.token}]}}).encode(), b'{"jsonrpc":"2.0","id":1,"result":{"isError":"false"}}'):
-            with patch.object(F.urllib.request, "build_opener") as opener:
+            with patch.object(F, "gateway_transport") as opener:
                 opener.return_value.open.return_value = self.answer(raw)
                 with self.assertRaises(F.FleetError) as exc:
                     F.Client(self.path).rpc("tools/call", {}, True)
@@ -236,7 +257,7 @@ class TransportTests(FleetBearerTests):
         import http.client
         import urllib.error
         for error in (urllib.error.HTTPError(F.ENDPOINT, 401, "no", {}, None), http.client.IncompleteRead(b"partial")):
-            with patch.object(F.urllib.request, "build_opener") as opener:
+            with patch.object(F, "gateway_transport") as opener:
                 opener.return_value.open.side_effect = error
                 with self.assertRaises(F.FleetError) as exc:
                     F.Client(self.path).rpc("tools/call", {}, True)
@@ -250,12 +271,44 @@ class TransportTests(FleetBearerTests):
     def test_unicode_escaped_bearer_reflection_and_decoded_request_are_refused(self):
         escaped = "\\u0073" + self.token[1:]
         raw = ('{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"nested":["' + escaped + '"]}}}').encode()
-        with patch.object(F.urllib.request, "build_opener") as opener:
+        with patch.object(F, "gateway_transport") as opener:
             opener.return_value.open.return_value = self.answer(raw)
             with self.assertRaises(F.FleetError):
                 F.Client(self.path).rpc("tools/call", {}, True)
         params = json.loads('{"nested":["' + escaped + '"]}')
-        with patch.object(F.urllib.request, "build_opener") as opener:
+        with patch.object(F, "gateway_transport") as opener:
             with self.assertRaises(F.FleetError):
                 F.Client(self.path).rpc("tools/call", params, True)
-            opener.assert_not_called()
+            opener.return_value.open.assert_not_called()
+
+    def test_write_http_transient_status_is_unknown_and_never_retried(self):
+        import urllib.error
+        for status in (408, 429, 500, 503):
+            for write in (True, False):
+                with patch.object(F, "gateway_transport") as factory:
+                    factory.return_value.open.side_effect = urllib.error.HTTPError(F.ENDPOINT, status, "untrusted", {}, None)
+                    with self.assertRaises(F.FleetError) as exc:
+                        F.Client(self.path).rpc("tools/call", {}, write)
+                    self.assertEqual(exc.exception.code, "outcome_unknown" if write else "unavailable")
+                    self.assertEqual(factory.return_value.open.call_count, 1)
+                    self.assertNotIn("untrusted", str(exc.exception))
+
+    def test_tls_connection_reused_and_failure_never_replays_request(self):
+        import http.client
+        with patch.object(F.http.client, "HTTPSConnection") as tls:
+            response = tls.return_value.getresponse.return_value
+            response.status = 200
+            transport = F.GatewayTransport()
+            request = F.urllib.request.Request(F.ENDPOINT, data=b"{}", method="POST")
+            self.assertIs(transport.open(request), response)
+            self.assertIs(transport.open(request), response)
+            self.assertEqual(tls.call_count, 1)
+            self.assertEqual(tls.return_value.request.call_count, 2)
+            tls.return_value.request.side_effect = http.client.RemoteDisconnected("secret")
+            with self.assertRaises(http.client.RemoteDisconnected):
+                transport.open(request)
+            self.assertEqual(tls.return_value.request.call_count, 3)
+            self.assertIsNone(transport.connection)
+            tls.return_value.close.assert_called()
+            with self.assertRaises(ValueError):
+                transport.open(F.urllib.request.Request("https://evil.test/", data=b"{}", method="POST"))

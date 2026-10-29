@@ -730,7 +730,7 @@ def _fleet_call(host, seat, request, wait):
         for key, value in request.items()
         if key in ("title", "markdown", "session", "format", "query", "limit", "request_id")
     }
-    args.update(request.get("flags") or {})
+    args.update(N.check_flags(request.get("flags")))
     args["wait_seconds"] = 0
     deadline = time.monotonic() + wait
     rid = request["request_id"]

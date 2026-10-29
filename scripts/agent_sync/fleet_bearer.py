@@ -125,21 +125,77 @@ def contains_bearer(value, token):
     return False
 
 
+# Mirrored from identity.canonical_seat; parity tests cover published aliases.
+SEAT_ALIASES = {
+    "INSTINCT": "WISE",
+    "WISE-INSTINCT": "WISE",
+    "ECHO-INSTINCT": "WISE",
+    "MUSE-ASSIST": "MA",
+    "ROB": "MA",
+    "ROB-MUSE": "MA",
+}
+
+
+def canonical_hint(raw):
+    text = str(raw or "").strip()
+    if re.fullmatch(r"grok[^a-z0-9]*build[^a-z0-9]*", text, re.IGNORECASE | re.ASCII):
+        return "GROK"
+    return SEAT_ALIASES.get(text.upper(), text.upper())
+
+
+class GatewayTransport:
+    """One verified TLS connection per client. No redirects, proxy or retries."""
+
+    def __init__(self):
+        self.connection = None
+
+    def close(self):
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+
+    def open(self, request, timeout=40):
+        if request.full_url != ENDPOINT or request.get_method() != "POST":
+            raise ValueError("fixed gateway only")
+        if self.connection is None:
+            self.connection = http.client.HTTPSConnection(
+                "agents.simplewithus.com", timeout=timeout
+            )
+        try:
+            self.connection.request(
+                "POST", "/mcp", body=request.data, headers=dict(request.header_items())
+            )
+            response = self.connection.getresponse()
+            if response.status != 200:
+                status = response.status
+                self.close()
+                raise urllib.error.HTTPError(ENDPOINT, status, "gateway refusal", {}, None)
+            return response
+        except Exception:
+            self.close()
+            raise
+
+
+def gateway_transport():
+    return GatewayTransport()
+
+
 class Client:
     def __init__(self, path, expected_seat=None, identity_env=None):
+        self._transport = gateway_transport()
         self.path = path
         self.seat, _ = private_bearer(path)
         identity_env = os.environ if identity_env is None else identity_env
         # Non-secret launcher hints can restrict, never select another bearer.
         for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG"):
-            value = str(identity_env.get(name, "")).strip().upper()
+            value = canonical_hint(identity_env.get(name, ""))
             if value and value != self.seat:
                 raise FleetError(
                     "not_authorized", "fleet bearer conflicts with the current bot identity"
                 )
         if identity_env.get("AGENT_LAUNCHER") and not identity_env.get("AGENT_LAUNCH_SEAT"):
             raise FleetError("not_authorized", "launcher did not bind a bot identity")
-        if expected_seat is not None and self.seat != expected_seat:
+        if expected_seat is not None and self.seat != canonical_hint(expected_seat):
             raise FleetError("not_authorized", "fleet bearer does not name the requested bot")
         self.verified = False
         self._verified_token = None
@@ -166,12 +222,12 @@ class Client:
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream",
                 "MCP-Protocol-Version": "2025-06-18",
+                "User-Agent": "fleet-bearer-client/1",
             },
         )
         try:
             # No environment proxy, cookies, redirects or retry.
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-            with opener.open(request, timeout=40) as response:
+            with self._transport.open(request, timeout=40) as response:
                 raw = response.read(MAX_BYTES + 1)
                 ctype = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
             if len(raw) > MAX_BYTES or token.encode() in raw:
@@ -222,12 +278,15 @@ class Client:
                 raise FleetError(code, "gateway refused the call (" + code + ")" + unknown)
             return result
         except urllib.error.HTTPError as exc:
-            code = "not_authorized" if exc.code in (401, 403) else "unavailable"
+            uncertain = write and (exc.code in (408, 429) or exc.code >= 500)
+            code = (
+                "not_authorized"
+                if exc.code in (401, 403)
+                else ("outcome_unknown" if uncertain else "unavailable")
+            )
             raise FleetError(
                 code,
-                "gateway HTTP "
-                + str(exc.code)
-                + (unknown if exc.code >= 500 or exc.code == 408 else ""),
+                "gateway HTTP " + str(exc.code) + (unknown if uncertain else ""),
             ) from None
         except FleetError:
             raise
@@ -239,6 +298,7 @@ class Client:
             http.client.HTTPException,
             urllib.error.URLError,
         ):
+            self._transport.close()
             raise FleetError(
                 "outcome_unknown" if write else "unavailable",
                 "gateway transport or response failed" + unknown,
