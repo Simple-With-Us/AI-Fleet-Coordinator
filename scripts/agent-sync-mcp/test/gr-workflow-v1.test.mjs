@@ -541,12 +541,14 @@ test('response budgets admit populated threads and discriminate hostile generic 
 });
 
 test('PR response text scan refuses credential-shaped title and body without blocking plain or null text',()=>{
+ // Synthetic-only credential shapes, assembled at runtime; none is a real token.
  const base={id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}};
  assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,title:'plain',body:null}}),true);
  for(const key of ['title','body'])for(const value of ['ghp_'+'x'.repeat(30),'github_pat_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,[key]:value}}),false);
 });
 
 test('persisted status, rename, dismiss and deployment text refuses credential shapes before network',async()=>{
+ // Synthetic-only credential shape, assembled at runtime; not a real token.
  const fake='gh'+'p_'+'A'.repeat(36);
  const cases=[
   ['wf_commit_status_create',{repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'},['description']],
@@ -567,6 +569,10 @@ test('persisted status, rename, dismiss and deployment text refuses credential s
 });
 
 test('per-action checks read the Zod-parsed copy, not the raw caller object',()=>{
+ // validWfV1Args is the parse itself, so a credential check never sees the raw object.
+ const raw={repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'};
+ assert.equal(validWfV1Args('wf_commit_status_create',{...raw,extra:1}),false);
+ assert.equal(validWfV1Args('wf_commit_status_create',{...raw,description:7}),false);
  const args={repo,sha:'a'.repeat(40),context:'swu-wise/report',state:'pending',description:'queued'};
  const parsed=parseWfV1Args('wf_commit_status_create',args);
  assert.deepEqual(parsed,args);assert.notEqual(parsed,args);
