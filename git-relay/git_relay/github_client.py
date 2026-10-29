@@ -214,7 +214,13 @@ class GitHubClient:
         self._opener = opener or urllib.request.build_opener(_NoRedirect()).open
 
     def _call(
-        self, method: str, path: str, payload: dict | None = None, bearer=None, expected_status=None
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        bearer=None,
+        expected_status=None,
+        allow_empty_object=False,
     ) -> dict:
         if bearer is not None and not bearer:
             # Fail closed:  an empty task credential must never fall back to the
@@ -241,8 +247,14 @@ class GitHubClient:
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
                 raw = resp.read(MAX_BODY + 1)
+                completion_body_ok = not raw
+                if allow_empty_object and expected_status in (201, 202):
+                    try:
+                        completion_body_ok = not raw or json.loads(raw) == {}
+                    except (ValueError, UnicodeError):
+                        completion_body_ok = False
                 if expected_status is not None and (
-                    resp.status != expected_status or (expected_status == 204 and raw)
+                    resp.status != expected_status or not completion_body_ok
                 ):
                     raise RelayGitHubError(502, "unexpected upstream completion status or body")
         except urllib.error.HTTPError as exc:
