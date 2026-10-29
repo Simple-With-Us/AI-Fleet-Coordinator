@@ -2133,9 +2133,7 @@ def iter_linear(
     imported = covered_ids if covered_ids is not None else load_linear_covered_ids(map_path)
     scan = light_scan()
     selected = [
-        uid
-        for uid in scan
-        if uid not in imported or _linear_scan_entry(scan[uid])[1] >= freeze
+        uid for uid in scan if uid not in imported or _linear_scan_entry(scan[uid])[1] >= freeze
     ]
     if not os.environ.get("FLEET_RAG_LINEAR_FULL"):
         ingested = _linear_ingested_versions()
