@@ -869,3 +869,26 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
  }
  assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
 });
+
+test('pending user/team request capability receipts correlate and do not dismiss reviews',()=>{
+ const sha='a'.repeat(40);
+ for(const op of ['add','remove','rerequest']){
+  const a='wf_review_requests_'+op,args={repo,number:3,expected_head_sha:sha,reviewers:['bot'],team_reviewers:['devs']},r={number:3,head_sha:sha,operation:op,reviewers:['bot'],team_reviewers:['devs'],atomic:false};
+  assert.ok(validWfV1Args(a,args));assert.ok(validWfV1Response(a,r,args));
+  for(const bad of [{...r,number:4},{...r,head_sha:'b'.repeat(40)},{...r,operation:'dismiss'},{...r,atomic:true},{...r,reviewers:['other']},{...r,team_reviewers:['devs','DEVS']},{...r,result:{private:'unbounded'}}])assert.equal(validWfV1Response(a,bad,args),false);
+  assert.ok(!WF_V1_READ_ACTIONS.includes(a));
+ }
+});
+
+test('Actions new read/write requests bind job/run/head/attempt and expose acceptance not completion',()=>{
+ for(const [a,op] of [['wf_job_get',null],['wf_job_rerun','job_rerun'],['wf_run_rerun_all','rerun_all'],['wf_run_force_cancel','force_cancel'],['wf_run_logs_delete','logs_delete']]){
+  const job=a.startsWith('wf_job_'),args={repo,run_id:3,head_sha:'a'.repeat(40),run_attempt:4,...(job?{job_id:2}:{})};
+  const v={job_id:job?2:null,run_id:3,head_sha:'a'.repeat(40),run_attempt:4,status:'completed',conclusion:'success'};
+  const r=op?{...v,requested:op,completed:false,atomic:false}:{job:v};
+  assert.ok(validWfV1Args(a,args));assert.ok(validWfV1Response(a,r,args));
+  for(const change of [{run_id:4},{head_sha:'b'.repeat(40)},{run_attempt:5},{job_id:job?3:2},{status:'completed',conclusion:null}]){
+   const changed={...v,...change},bad=op?{...r,...change}:{job:changed};assert.equal(validWfV1Response(a,bad,args),false);
+  }
+  assert.equal(WF_V1_READ_ACTIONS.includes(a),a==='wf_job_get');
+ }
+});
