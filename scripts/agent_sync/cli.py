@@ -868,7 +868,12 @@ def build_parser(
     )
     parser.add_argument("--version", action="version", version="%s %s" % (prog, __version__))
     if prog == "simple-notes":
-        parser.add_argument("--fleet-bearer-file", default=argparse.SUPPRESS, metavar="PATH", help="use this bot's existing private fleet bearer file; no direct fallback")
+        parser.add_argument(
+            "--fleet-bearer-file",
+            default=argparse.SUPPRESS,
+            metavar="PATH",
+            help="use this bot's existing private fleet bearer file; no direct fallback",
+        )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
     # The wrapper spans every source that registers onto `sub`, so a verb this command owns from
     # any of them survives; each source narrows its own registration further where it needs to.

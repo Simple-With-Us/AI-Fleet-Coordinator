@@ -363,7 +363,9 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     action = _action(args)
     if action == "runner":
         if getattr(args, "fleet_bearer_file", None) is not None:
-            raise Z.UsageError("runner is a backend service, not a fleet bearer action; no runner was started")
+            raise Z.UsageError(
+                "runner is a backend service, not a fleet bearer action; no runner was started"
+            )
         return _cmd_runner(rt, args)
     audit: dict[str, Any] = {}
     write = action in N.WRITE_ACTIONS
