@@ -90,6 +90,27 @@ def _match(pattern: re.Pattern[str], value: str) -> str:
     return value
 
 
+_CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
+
+
+def _parse_content_length(raw: str | None) -> int | None:
+    """ASCII-digits Content-Length or None when missing or malformed.  str.isdigit
+    accepts characters int() rejects (e.g. U+00B2), which raised ValueError and killed
+    the request thread;  only [0-9] is accepted here.  Overlong values answer 413 via
+    the caller's cap check without converting a huge int."""
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    if not _CONTENT_LENGTH_RE.fullmatch(stripped):
+        return None
+    if len(stripped) > 7:
+        return 10**9
+    try:
+        return int(stripped)
+    except ValueError:  # pragma: no cover - [0-9]{1,7} always converts
+        return None
+
+
 def signing_string(path: str, query: str, timestamp: str) -> bytes:
     return ("%s\nGET\n%s\n%s\n%s" % (CONTRACT, path, query, timestamp)).encode("utf-8")
 
@@ -198,14 +219,13 @@ class ListenerReadApi:
                     return False
                 body = b""
                 if method == "POST":
-                    raw_length = self.headers.get("Content-Length")
-                    if raw_length is None or not raw_length.strip().isdigit():
+                    length = _parse_content_length(self.headers.get("Content-Length"))
+                    if length is None:
                         self._respond(
                             411,
                             {"error": "length_required", "message": "Content-Length is required"},
                         )
                         return True
-                    length = int(raw_length.strip())
                     if length > NW.MAX_BODY:
                         self._respond(
                             413, {"error": "too_large", "message": "the request body is too large"}
@@ -241,14 +261,13 @@ class ListenerReadApi:
                     return False
                 body = b""
                 if method == "POST":
-                    raw_length = self.headers.get("Content-Length")
-                    if raw_length is None or not raw_length.strip().isdigit():
+                    length = _parse_content_length(self.headers.get("Content-Length"))
+                    if length is None:
                         self._respond(
                             411,
                             {"error": "length_required", "message": "Content-Length is required"},
                         )
                         return True
-                    length = int(raw_length.strip())
                     if length > 256 * 1024:  # linear_projects_hook.MAX_BODY
                         self._respond(
                             413, {"error": "too_large", "message": "the request body is too large"}

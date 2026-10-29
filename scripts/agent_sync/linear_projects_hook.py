@@ -55,6 +55,59 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
     return None
 
 
+def _classify(exc: BaseException) -> str:
+    """One failed reconcile as retryable, permanent or outcome_unknown, for the log and
+    last_error only.  No auto-retry here:  the next webhook event re-runs the full
+    idempotent reconcile, while an immediate requeue on a permanent error would loop."""
+    try:
+        text = str(exc).lower()
+    except Exception:  # noqa: BLE001 - a bad __str__ must not break the worker
+        text = ""
+    if isinstance(exc, LPL.SecretsRefused):
+        return "permanent"
+    if "not configured" in text or "not_configured" in text or "missing" in text:
+        return "permanent"
+    padded = " " + text + " "
+    if " 401 " in padded or " 403 " in padded or "http 401" in text or "http 403" in text:
+        return "permanent"
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return "retryable"
+    if isinstance(exc, OSError) and not isinstance(exc, (FileNotFoundError, PermissionError)):
+        return "retryable"
+    for token in (
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "timeout",
+        "timed out",
+        "connection",
+        "network",
+        "temporary",
+        "try again",
+        "rate limit",
+        "rate limited",
+    ):
+        if token in text:
+            return "retryable"
+    return "outcome_unknown"
+
+
+def _safe_detail(exc: BaseException, secrets: dict[str, str] | None) -> str:
+    """One-line truncated failure detail with any cached secret value redacted."""
+    try:
+        detail = str(exc)
+    except Exception:  # noqa: BLE001 - a bad __str__ must not break the worker
+        return ""
+    detail = " ".join(detail.split())[:200]
+    if detail and secrets:
+        for value in secrets.values():
+            if isinstance(value, str) and len(value) >= 4 and value in detail:
+                detail = detail.replace(value, "[redacted]")
+    return detail
+
+
 def _event_identity(payload: Mapping[str, Any]) -> tuple[str | None, str | None]:
     data = payload.get("data")
     data = data if isinstance(data, dict) else {}
@@ -112,6 +165,7 @@ class LinearProjectsHook:
         self._wake = threading.Condition(self._lock)
         self._pending = False
         self._running = False
+        self._last_error: dict[str, Any] | None = None
         self._thread = threading.Thread(target=self._work, name="linear-projects", daemon=True)
         self._thread.start()
 
@@ -131,10 +185,27 @@ class LinearProjectsHook:
                 self._running = True
             try:
                 self._invoke()
+                with self._wake:
+                    self._last_error = None
             except BaseException as exc:  # noqa: BLE001 - one run must never kill the worker
                 # zulip_linkifiers.Zulip.call raises SystemExit on an HTTP error, so Exception
-                # alone would end this thread and silently stop every later run.
-                self.log("linear-projects-error", error=type(exc).__name__)
+                # alone would end this thread and silently stop every later run.  The failure is
+                # surfaced in the log and last_error;  the next event re-runs the full reconcile.
+                outcome = _classify(exc)
+                detail = _safe_detail(exc, self.secrets)
+                self.log(
+                    "linear-projects-error",
+                    error=type(exc).__name__,
+                    outcome=outcome,
+                    detail=detail,
+                )
+                with self._wake:
+                    self._last_error = {
+                        "error": type(exc).__name__,
+                        "outcome": outcome,
+                        "detail": detail,
+                        "at": self.clock(),
+                    }
             finally:
                 with self._wake:
                     self._running = False
@@ -148,6 +219,11 @@ class LinearProjectsHook:
     def queued(self) -> bool:
         with self._lock:
             return self._pending or self._running
+
+    @property
+    def last_error(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._last_error) if self._last_error is not None else None
 
     def handle(
         self, method: str, raw_path: str, headers: Mapping[str, str], body: bytes
