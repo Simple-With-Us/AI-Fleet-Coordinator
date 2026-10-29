@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 from agent_sync import claude_letter as CL
@@ -419,6 +420,38 @@ class HookTests(Base):
         self.assertEqual(settings["hooks"], {"SessionStart": [other]})
         self.assertEqual(settings["env"], {"AGENT_SEAT": "CLAUDE"})  # --remove takes its two settings out too
         self.assertEqual(run("--check")[0], 1)
+
+    def test_install_refuses_a_settings_env_that_is_not_an_object(self) -> None:
+        path = os.path.join(self.home, ".claude", "settings.json")
+        for bad in ({"env": ["x"]}, {"hooks": ["x"]}, {"hooks": {"SessionStart": "x"}}):
+            with open(path, "w") as fh:
+                json.dump(bad, fh)
+            for argv in (["--location", "server"], ["--check"], ["--remove"]):
+                out = io.StringIO()
+                self.assertEqual(CL.install(argv, {"HOME": self.home}, out), 2)
+                self.assertIn("error", json.loads(out.getvalue()))
+            with open(path) as fh:
+                self.assertEqual(json.load(fh), bad)  # refused, never edited
+
+    def test_install_reads_a_null_env_as_empty(self) -> None:
+        path = os.path.join(self.home, ".claude", "settings.json")
+        with open(path, "w") as fh:
+            json.dump({"env": None}, fh)
+        out = io.StringIO()
+        self.assertEqual(CL.install(["--location", "server"], {"HOME": self.home}, out), 0)
+
+    def test_a_long_prompt_scans_a_bounded_number_of_words(self) -> None:
+        calls = []
+        real = CL.secretscan.scan
+
+        def counting(text, *a, **k):
+            calls.append(text)
+            return real(text, *a, **k)
+
+        with mock.patch.object(CL.secretscan, "scan", side_effect=counting):
+            title = CL.title_from_prompt("token=" * 200000 + " fix login")
+        self.assertLessEqual(len(calls), CL.PROMPT_SCAN_WORDS)
+        self.assertIsInstance(title, str)
 
     def test_install_creates_a_private_claude_folder(self) -> None:
         fresh = os.path.join(self.tmp.name, "fresh-home")

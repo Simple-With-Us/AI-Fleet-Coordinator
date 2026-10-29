@@ -100,6 +100,10 @@ RETRY_SECONDS = 600
 PLACEHOLDER = "New Chat"
 TITLE_WORDS = 7
 TITLE_CHARS = 60
+# The most prompt text a title is looked for in, and the most words scanned for secrets:  a pasted wall of text
+# costs a bounded amount of work inside the hook's 15-second budget.
+PROMPT_SCAN_CHARS = 4096
+PROMPT_SCAN_WORDS = 64
 STDIN_LIMIT = 1 << 20
 TRANSCRIPT_LINES = 400
 TRANSCRIPT_BYTES = 4 << 20
@@ -220,13 +224,18 @@ def title_from_prompt(prompt: object) -> str:
     """A short title from a prompt's first line that has words, or "" when it has none.  Markup, code blocks, links
     and a leading slash command are dropped first, so a pasted block or "/review" does not become the title (the
     words after a slash command still can)."""
-    text = str(prompt or "")
+    text = str(prompt or "")[:PROMPT_SCAN_CHARS]
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
     for line in text.splitlines():
         line = re.sub(r"^\s*/\S*", " ", line)
-        words = [w for w in WORD.findall(line) if not secretscan.scan(w)][:TITLE_WORDS]
+        words = []
+        for scanned, match in enumerate(WORD.finditer(line)):
+            if len(words) >= TITLE_WORDS or scanned >= PROMPT_SCAN_WORDS:
+                break
+            if not secretscan.scan(match.group()):
+                words.append(match.group())
         while len(words) > 1 and words[-1].rstrip(".-").lower() in SMALL_WORDS:
             words.pop()  # "... Addressed From" reads cut off;  end on a word that carries meaning
         if words:
@@ -946,10 +955,21 @@ def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
         settings = {}
     if not isinstance(settings, dict):
         return _emit(stdout, {"error": "%s is not a JSON object" % path}, 2)
-    hooks = settings.setdefault("hooks", {})
+    for field in ("hooks", "env"):
+        if settings.get(field) is None:
+            settings[field] = {}
+    hooks, envs = settings["hooks"], settings["env"]
+    # Both are read and written below;  a settings file that holds anything else there is refused, never edited.
+    if not isinstance(hooks, dict) or not all(
+        isinstance(v, list) for k, v in hooks.items() if k in HOOK_TIMEOUTS
+    ):
+        return _emit(
+            stdout, {"error": "%s has a hooks field that is not an object of lists" % path}, 2
+        )
+    if not isinstance(envs, dict):
+        return _emit(stdout, {"error": "%s has an env field that is not an object" % path}, 2)
     have = {ev: any(_ours(e) for e in hooks.get(ev) or []) for ev in HOOK_TIMEOUTS}
     if args.check:
-        envs = settings.get("env") or {}
         return _emit(
             stdout,
             {
@@ -971,7 +991,6 @@ def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
             hooks[event] = entries
         else:
             hooks.pop(event, None)
-    envs = settings.setdefault("env", {})
     for key, want in ((ENV_LOCATION, args.location), (ENV_REMOTE, args.remote)):
         if args.remove:
             if envs.pop(key, None) is not None:
