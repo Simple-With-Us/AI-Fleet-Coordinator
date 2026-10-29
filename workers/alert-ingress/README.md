@@ -42,7 +42,7 @@ A message is only warranted when **state** changes.  The channel ends up as:
 | `GET  /sweep` | run the promotion sweep by hand |
 | `GET  /health` | liveness |
 
-Sources with a bespoke parser: `datadog`, `betterstack`, `sentry`.  Anything else falls back to a conventional-key reader.  The route's source name is authoritative, so a payload cannot claim to be another integration.
+Sources with a bespoke parser: `datadog`, `betterstack`, `sentry`, `pagerduty`.  Anything else falls back to a conventional-key reader.  The route's source name is authoritative, so a payload cannot claim to be another integration.
 
 Both refresh routes are operator-only (the shared bearer token) and both refuse any channel other than `alerts`: the bot only ever writes into the alerts channel, so a standing message can never be written anywhere else.  The two-segment route carries no vendor dimension, so it refreshes every source that tracks that topic, each with its own credential; the three-segment route names one source and refreshes only that one.  A delivery that is held is answered with `409` and `{"error": "status held"}` rather than a silent success, and `GET /status/:source/:channel/:topic?reconcile=<message id>` adopts a standing message id an operator has inspected, which is the one way a held topic is released.  The id is read back from Zulip before it is adopted:  a message that is not this source's standing block in that topic answers `409`, and an id Zulip refuses or never answers for answers `503` with `{"error": "message could not be read"}`, never the writer's generic outage.
 
@@ -57,6 +57,7 @@ Every source has its own identity, its own state namespace and its own standing 
 | `datadog` | `ZULIP_BOT_EMAIL_DATADOG` / `ZULIP_BOT_API_KEY_DATADOG` |
 | `betterstack` | `ZULIP_BOT_EMAIL_BETTERSTACK` / `ZULIP_BOT_API_KEY_BETTERSTACK` |
 | `sentry` | `ZULIP_BOT_EMAIL_SENTRY` / `ZULIP_BOT_API_KEY_SENTRY` |
+| `pagerduty` | `ZULIP_BOT_EMAIL_PAGERDUTY` / `ZULIP_BOT_API_KEY_PAGERDUTY` |
 | `generic` | `ZULIP_BOT_EMAIL_GENERIC` / `ZULIP_BOT_API_KEY_GENERIC`, or the legacy `ZULIP_BOT_EMAIL` / `ZULIP_BOT_API_KEY` pair |
 | any other route name | `ZULIP_BOT_EMAIL_<ROUTE>` / `ZULIP_BOT_API_KEY_<ROUTE>` |
 
@@ -125,11 +126,18 @@ No verifier configured means **reject**, never trust:
 - **Datadog** — the custom header `X-Datadog-Token` set to `DATADOG_WEBHOOK_SECRET`, as supported by [the provider's webhook configuration](https://docs.datadoghq.com/integrations/webhooks/).  Datadog cannot sign an outgoing body, so a body HMAC alone could never be satisfied; a real `x-datadog-signature` HMAC-SHA256 is still accepted for senders that can produce one.
 - **BetterStack** — configure the custom header `X-BetterStack-Token` to match `BETTERSTACK_WEBHOOK_SECRET`, as supported by [the provider's outgoing-webhook documentation](https://betterstack.com/docs/errors/integrations/outgoing-webhooks/).
 - **Sentry** — the `sentry-hook-signature` header, the lowercase hex HMAC-SHA256 digest of the raw request body under `SENTRY_WEBHOOK_SECRET`.  Sentry's integration platform signs the body; it does not send a static secret header, so a `sentry-hook-secret` header is not the contract.  A Sentry request with no Sentry secret configured is **refused**, never served by the shared token: the shared token is the generic path, and letting it stand in for Sentry would let any holder of it post as the Sentry identity.
+- **PagerDuty** — a v3 webhook subscription created with the custom header `X-PagerDuty-Token` set to `PAGERDUTY_WEBHOOK_SECRET`.  PagerDuty also signs every body with the secret it generates for the subscription (`X-PagerDuty-Signature: v1=<hex>`, several during a rotation), and that is accepted when `PAGERDUTY_SIGNING_SECRET` holds it.  Like Sentry, the source is refused rather than served by the shared token.
 - **anything else** — `Authorization: Bearer <token>` matching `INGRESS_SHARED_TOKEN`.  Operator routes use the same header; query-string secrets are rejected.
 
 Stable alert keys retain their first service/topic assignment when vendor labels change, preserving one membership and one standing status.
 
+## PagerDuty
+
+A PagerDuty incident is a row in the standing block of its PagerDuty service, in `#alerts` like every other source (owner, Oct 29, 2026, which settles AFC-472).  PagerDuty stays the pager:  it still pages phones on its own;  this is the readable record, and `#incident-response` is left to people.  The incident id is the key, so an acknowledgement, a reassignment or a priority change edits the row instead of posting, and a resolve closes it.  The incident's own status decides firing, not the event type, so a reassignment of a resolved incident cannot reopen it.  P1 reads SEVERE and P2 MODERATE;  otherwise high urgency reads SEVERE and low urgency MODERATE.  A ping, or an event about something that is not an incident, is answered 200 with `"action": "ignored"` and dropped, because a 4xx would make PagerDuty retry and then disable the subscription.
+
 ## The wait window
+
+A fresh incident whose vendor names no severity opens SEVERE:  Better Stack never sends one and Datadog often does not, so a site that went down used to read INFO.  An open incident keeps its own severity when an update names none.
 
 An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (default 10 minutes; 5 for `prodDown`, matching `zulip-fleet-guide.md`).  A flap that resolves inside the window is **discarded entirely** — nobody saw it open, so nobody needs to see it close.  The `*/5` cron promotes anything that aged out.  That single rule is what turns a flapping monitor from twenty messages into one.
 
@@ -167,7 +175,7 @@ cd workers/alert-ingress && node --test src/*.test.js
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
 
-The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 145 tests.
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 157 tests.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, and a ping dropped without a write.
 
 `vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
 
@@ -199,7 +207,7 @@ A Sentry body carries the vendor's native shape, so it has a rule of its own:  t
 
 ### Credentials
 
-Infisical is the source of truth;  the Worker holds a copy.  `scripts/alert-ingress/provision-secrets.py` reads the six per-vendor Zulip bot pairs from AFC prod `/zulip`, creates the four generated secrets there when they are absent, and PUTs all ten to the Worker under the names the table above asks for.  It is a dry run unless `--apply` is passed, it prints names and lengths only, and it is idempotent:  an existing value is reused, so a rotation in Infisical propagates on the next run.
+Infisical is the source of truth;  the Worker holds a copy.  `scripts/alert-ingress/provision-secrets.py` reads the per-vendor Zulip bot pairs from AFC prod `/zulip`, creates the four generated secrets there when they are absent (`INGRESS_SHARED_TOKEN`, `DATADOG_WEBHOOK_SECRET`, `BETTERSTACK_WEBHOOK_SECRET`, `PAGERDUTY_WEBHOOK_SECRET`), and PUTs them to the Worker under the names the table above asks for.  The PagerDuty pair is optional until its bot exists:  a missing pair is skipped and that source stays closed.  `SENTRY_WEBHOOK_SECRET` is never generated, because Sentry signs with its internal integration's own client secret, which Sentry issues;  a made-up value can never verify a real delivery, so the operator copies Sentry's value into Infisical and the provisioner copies it on.  It is a dry run unless `--apply` is passed, it prints names and lengths only, and it is idempotent:  an existing value is reused, so a rotation in Infisical propagates on the next run.
 
 ```
 python3 scripts/alert-ingress/provision-secrets.py            # dry run
@@ -233,7 +241,8 @@ The Worker is live and its credentials are bound, but no vendor points at it yet
 |---|---|---|
 | Datadog | the monitor's webhook URL and a custom header | `https://alert-ingress.jays-services.workers.dev/webhook/datadog`, with `X-Datadog-Token` set to the `DATADOG_WEBHOOK_SECRET` value |
 | Better Stack | the monitor's outgoing webhook URL and a custom header | `https://alert-ingress.jays-services.workers.dev/webhook/betterstack`, with `X-BetterStack-Token` set to the `BETTERSTACK_WEBHOOK_SECRET` value |
-| Sentry | an integration-platform webhook | `https://alert-ingress.jays-services.workers.dev/webhook/sentry`, signed with `SENTRY_WEBHOOK_SECRET` |
+| Sentry | an integration-platform webhook | `https://alert-ingress.jays-services.workers.dev/webhook/sentry`, signed with the internal integration's client secret, which is then stored as `SENTRY_WEBHOOK_SECRET` |
+| PagerDuty | a v3 webhook subscription on the `jays.services` service | `https://alert-ingress.jays-services.workers.dev/webhook/pagerduty`, with `X-PagerDuty-Token` set to the `PAGERDUTY_WEBHOOK_SECRET` value;  then the `Zulip #incident-response` subscription is deleted |
 
 Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the monitor posts to the ingress.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.
 

@@ -340,6 +340,24 @@ async function verify(request, raw, env, source) {
     if (!sig) return false;
     return safeEqual(sig, await hmacHex(secret, raw));
   }
+  if (source === "pagerduty") {
+    // A v3 webhook subscription carries static custom headers, so the
+    // subscription is created with `X-PagerDuty-Token` set to
+    // PAGERDUTY_WEBHOOK_SECRET.  PagerDuty also signs every body with the
+    // secret it generates for the subscription, sent as
+    // `X-PagerDuty-Signature: v1=<hex>[,v1=<hex>]` (more than one during a
+    // rotation), and that is honoured when PAGERDUTY_SIGNING_SECRET is set.
+    // Like Sentry, the source never falls through to the shared bearer token.
+    const token = env.PAGERDUTY_WEBHOOK_SECRET;
+    const header = request.headers.get("x-pagerduty-token") || "";
+    if (token && header && safeEqual(header, token)) return true;
+    const signing = env.PAGERDUTY_SIGNING_SECRET;
+    if (!signing) return false;
+    const expected = `v1=${await hmacHex(signing, raw)}`;
+    return (request.headers.get("x-pagerduty-signature") || "")
+      .split(",")
+      .some((part) => safeEqual(part.trim(), expected));
+  }
   return authorized(request, env);
 }
 
@@ -1037,7 +1055,7 @@ const handler = {
 
     // Liveness, so a monitor can watch the ingress itself.
     if (url.pathname === "/health") {
-      return json({ ok: true, sources: ["datadog", "betterstack", "sentry", "generic"] });
+      return json({ ok: true, sources: ["datadog", "betterstack", "sentry", "pagerduty", "generic"] });
     }
 
     if (url.pathname === "/sweep") {
@@ -1352,9 +1370,18 @@ const handler = {
       // boundary rule refuses, so it has a rule of its own.  Every other
       // source keeps the generic rule unchanged.
       if (source === "sentry") validateSentryPayload(payload);
+      else if (source === "pagerduty") validatePagerDutyPayload(payload);
       else validatePayload(payload);
     } catch {
       return json({ error: "invalid payload" }, 400);
+    }
+    // A PagerDuty subscription also delivers its own ping and events about
+    // things that are not incidents.  They are authenticated and well formed,
+    // and they say nothing about an alert, so they are acknowledged and
+    // dropped:  answering 4xx would make PagerDuty retry, then disable the
+    // subscription.
+    if (source === "pagerduty" && !pagerDutyIncidentEvent(payload)) {
+      return json({ action: "ignored", posted: false });
     }
     try {
       return json(await handleEvent(source, payload, env));
@@ -1688,6 +1715,15 @@ function validateSentryPayload(payload) {
   }
   if (hasIssue) validateSentryIssue(body);
   else validateSentryMetric(body);
+  walkBounded(payload);
+}
+
+/**
+ * Bound a native vendor body:  depth, breadth, node count and text length, with
+ * control characters refused.  Sentry and PagerDuty both send nested native
+ * shapes that the generic rule cannot accept, and both get this same bound.
+ */
+function walkBounded(payload) {
   let nodes = 0;
   const walk = (value, depth) => {
     if (++nodes > MAX_SENTRY_NODES) throw new Error("payload too large");
@@ -1715,6 +1751,59 @@ function validateSentryPayload(payload) {
     throw new Error("invalid text field");
   };
   walk(payload, 0);
+}
+
+/** True when a PagerDuty v3 delivery is about an incident, whose `data` is the incident. */
+function pagerDutyIncidentEvent(payload) {
+  const event = payload?.event;
+  return (
+    event?.resource_type === "incident" &&
+    typeof event.event_type === "string" &&
+    event.event_type.startsWith("incident.") &&
+    event.data?.type === "incident"
+  );
+}
+
+/**
+ * Validate a PagerDuty v3 webhook body.
+ *
+ * Every delivery is `{ event: { event_type, resource_type, data } }`.  The
+ * envelope is required for every delivery, a ping included.  An incident
+ * event must also carry the incident's identity, and every incident field the
+ * parser reads is checked for the type it reads it as, the same rule as
+ * Sentry:  a body with no identity would otherwise file under a constant key.
+ */
+function validatePagerDutyPayload(payload) {
+  const object = (value) =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!object(payload)) throw new Error("invalid payload");
+  if (Object.keys(payload).length > 20) throw new Error("too many fields");
+  const event = payload.event;
+  if (!object(event)) throw new Error("invalid payload");
+  if (typeof event.event_type !== "string" || !event.event_type.trim()) {
+    throw new Error("missing event type");
+  }
+  if (!object(event.data)) throw new Error("invalid payload");
+  if (pagerDutyIncidentEvent(payload)) {
+    const data = event.data;
+    if (!sentryFirstText(data, ["id"])) throw new Error("missing identity");
+    for (const field of ["id", "status", "title", "number", "html_url", "urgency"]) {
+      const value = data[field];
+      if (value === undefined || value === null) continue;
+      if (sentryText(value) === null) throw new Error("invalid text field");
+    }
+    for (const field of ["service", "priority"]) {
+      const value = data[field];
+      if (value === undefined || value === null) continue;
+      if (!object(value)) throw new Error("invalid payload");
+      for (const name of ["summary", "name"]) {
+        const text = value[name];
+        if (text === undefined || text === null) continue;
+        if (sentryText(text) === null) throw new Error("invalid text field");
+      }
+    }
+  }
+  walkBounded(payload);
 }
 
 // One named object owns every read/render/write transaction.  Durable storage
@@ -1803,6 +1892,7 @@ Object.assign(__testing, {
   listAll,
   mapBounded,
   validatePayload,
+  validatePagerDutyPayload,
   verify,
   handler,
   handleEvent,

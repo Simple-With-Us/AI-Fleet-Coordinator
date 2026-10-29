@@ -9,15 +9,18 @@ integration; the Worker is a copy, never the source of truth.
 
 What this does, in order:
 
-  1. Reads the six per-vendor Zulip bot pairs and the four generated secrets
-     from AFC prod /zulip in ONE batched read.  These are generic bots that
-     already exist; nothing is created and no account is made.
+  1. Reads the per-vendor Zulip bot pairs, the generated secrets and the
+     vendor-issued Sentry secret from AFC prod /zulip in ONE batched read.
+     These are generic bots that already exist; nothing is created and no
+     account is made.  The PagerDuty pair is optional until its bot exists.
   2. Reads or creates four generated secrets in the same folder:
      INGRESS_SHARED_TOKEN, DATADOG_WEBHOOK_SECRET, BETTERSTACK_WEBHOOK_SECRET
-     and SENTRY_WEBHOOK_SECRET.  An existing value is reused, never replaced,
-     so a re-run is idempotent and a rotation in Infisical propagates.
-  3. PUTs the ten values to the Worker as secret_text bindings, one binding
-     per PUT, under the names the Worker asks for
+     and PAGERDUTY_WEBHOOK_SECRET.  An existing value is reused, never
+     replaced, so a re-run is idempotent and a rotation in Infisical
+     propagates.  SENTRY_WEBHOOK_SECRET is Sentry's own client secret and is
+     never generated.
+  3. PUTs the values to the Worker as secret_text bindings, one binding per
+     PUT, under the names the Worker asks for
      (workers/alert-ingress/src/index.js, credentialSlug()).
 
 Every credential is read from the environment first and from `fleet-secrets`
@@ -75,15 +78,31 @@ BOT_PAIRS = (
     ("BETTERSTACK", "ZULIP_BETTERSTACK_BOT_API_KEY", "ZULIP_BOT_API_KEY_BETTERSTACK"),
     ("SENTRY", "ZULIP_SENTRY_BOT_EMAIL", "ZULIP_BOT_EMAIL_SENTRY"),
     ("SENTRY", "ZULIP_SENTRY_BOT_API_KEY", "ZULIP_BOT_API_KEY_SENTRY"),
+    ("PAGERDUTY", "ZULIP_PAGERDUTY_BOT_EMAIL", "ZULIP_BOT_EMAIL_PAGERDUTY"),
+    ("PAGERDUTY", "ZULIP_PAGERDUTY_BOT_API_KEY", "ZULIP_BOT_API_KEY_PAGERDUTY"),
 )
 
-# Generated once, stored in Infisical, copied to the Worker.
+# Sources whose bot pair may not exist yet.  A missing pair is skipped with a
+# line instead of stopping the run:  the Worker fails that source closed until
+# the pair is in Infisical, and every other source is still provisioned.
+OPTIONAL_SOURCES = frozenset({"PAGERDUTY"})
+
+# Generated once, stored in Infisical, copied to the Worker.  Each is a value
+# this fleet chooses:  a bearer token, or a static header the vendor is told to
+# send.
 GENERATED = (
     "INGRESS_SHARED_TOKEN",
     "DATADOG_WEBHOOK_SECRET",
     "BETTERSTACK_WEBHOOK_SECRET",
-    "SENTRY_WEBHOOK_SECRET",
+    "PAGERDUTY_WEBHOOK_SECRET",
 )
+
+# Issued by the vendor, never generated here.  Sentry signs every body with
+# its internal integration's client secret, which Sentry creates, so a value
+# made up here could never verify a real delivery.  The operator copies the
+# vendor's value into Infisical;  this run copies it to the Worker when it is
+# there and says so when it is not.
+VENDOR_ISSUED = ("SENTRY_WEBHOOK_SECRET",)
 
 FLEET_SECRETS_ABSENT = 3
 
@@ -428,7 +447,7 @@ def main():
     #    environment comes first for every name, so a value the environment
     #    already holds is never fetched again.
     bot_names = [infisical_name for _source, infisical_name, _binding in BOT_PAIRS]
-    wanted = bot_names + list(GENERATED)
+    wanted = bot_names + list(GENERATED) + list(VENDOR_ISSUED)
     from_env = {name: os.environ.get(name, "").strip() for name in wanted}
     to_fetch = [name for name in wanted if not from_env[name]]
     try:
@@ -438,9 +457,20 @@ def main():
         return error.code
 
     values = {}
+    present = {
+        name: from_env.get(name) or fetched.get(name)
+        for _source, name, _binding in BOT_PAIRS
+    }
+    skipped = sorted(
+        source
+        for source in OPTIONAL_SOURCES
+        if not all(present[name] for src, name, _b in BOT_PAIRS if src == source)
+    )
     try:
-        for _source, infisical_name, binding in BOT_PAIRS:
-            value = from_env[infisical_name] or fetched.get(infisical_name)
+        for source, infisical_name, binding in BOT_PAIRS:
+            if source in skipped:
+                continue
+            value = present[infisical_name]
             if value is None:
                 raise ReadError(f"{infisical_name} is absent from {AFC_SLUG}{SECRET_PATH}")
             values[binding] = value
@@ -448,6 +478,15 @@ def main():
     except ReadError as error:
         print(f"STOP: {error}.  Nothing was written.")
         return error.code
+    for source in skipped:
+        print(f"  skip  the {source} bot pair is not in {AFC_SLUG}{SECRET_PATH} yet;  that source stays closed")
+    for name in VENDOR_ISSUED:
+        value = from_env[name] or fetched.get(name)
+        if value is None:
+            print(f"  skip  {name} is vendor-issued and not in {AFC_SLUG}{SECRET_PATH} yet")
+            continue
+        values[name] = value
+        print(f"  read  {name}  (len {len(value)})")
 
     # 2. The fleet-ops root:  the automation identity, and -- in apply mode --
     #    the Cloudflare token.  One batched read of the folder, so it is
