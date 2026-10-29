@@ -400,6 +400,105 @@ class OutboundTests(unittest.TestCase):
             "the row is gone once the Worker has acked the give back",
         )
 
+    def test_a_re_reported_refusal_keeps_its_status_code_and_backoff(self):
+        """A refusal whose first report failed is reported again with the same
+        status, code and retry_after_s, so the Worker can still mark the
+        binding suspect and keep the provider backoff."""
+        worker = FakeWorker([reply()])
+        worker.fail_results = True
+        refusal = {"outcome": "refused", "status": 403, "code": 131005}
+        with (
+            patch.object(outbound, "send", lambda *a, **k: dict(refusal)),
+            self.assertRaises(BridgeError),
+        ):
+            self.outbox(worker).step()
+        worker.fail_results = False
+        self.outbox(worker).recover()
+        first, again = worker.results
+        self.assertEqual(again["outcome"], "refused")
+        self.assertEqual(again["status"], 403)
+        self.assertEqual(again["code"], 131005)
+        self.assertEqual(
+            {k: first.get(k) for k in ("status", "code", "error", "retry_after_s")},
+            {k: again.get(k) for k in ("status", "code", "error", "retry_after_s")},
+        )
+        self.assertEqual(self.state.ledger_pending(), [])
+
+    def test_a_re_reported_requeue_keeps_its_retry_after(self):
+        worker = FakeWorker([reply()])
+        worker.fail_results = True
+        with (
+            patch.object(outbound, "send", lambda *a, **k: {"outcome": "requeue"}),
+            patch.object(
+                Outbox, "attempt", lambda *a, **k: {"outcome": "requeue", "retry_after_s": 120}
+            ),
+            self.assertRaises(BridgeError),
+        ):
+            self.outbox(worker).step()
+        worker.fail_results = False
+        self.outbox(worker).recover()
+        self.assertEqual([r.get("retry_after_s") for r in worker.results], [120, 120])
+
+    def test_one_failed_re_report_does_not_block_the_other_rows(self):
+        """Every pending row is tried; the failure still stops new sends."""
+        bad = "wa_reply_" + "b" * 32
+        good = "wa_reply_" + "c" * 32
+        for intent_id in (bad, good):
+            self.state.ledger_put(intent_id, "claimed", body_hash("hi"), None, 1792700000)
+            self.state.ledger_set_token(intent_id, "t-" + intent_id[-1])
+        worker = FakeWorker([reply()])
+
+        def flaky(url, headers, body=None, **options):
+            if url.endswith("/result") and json.loads(body)["intent_id"] == bad:
+                raise BridgeError("network_error")
+            return worker(url, headers, body, **options)
+
+        box = self.outbox(flaky)
+        sent = []
+        with (
+            patch.object(outbound, "send", lambda *a, **k: sent.append(1)),
+            self.assertRaises(BridgeError) as raised,
+        ):
+            box.step()
+        self.assertEqual(str(raised.exception), "outbox_recover_incomplete")
+        self.assertEqual([r["intent_id"] for r in worker.results], [good])
+        self.assertEqual([row[0] for row in self.state.ledger_pending()], [bad])
+        self.assertEqual(sent, [], "no new send while a row is unreconciled")
+
+    def test_recover_stores_the_state_the_worker_acked(self):
+        """The Worker already made the reply outcome_unknown (its lease ran
+        out while the bridge was down): the bridge keeps that state, not its
+        own pending outcome."""
+        intent_id = "wa_reply_" + "a" * 32
+        self.state.ledger_put(
+            intent_id, "sending", body_hash("hello"), "wamid.sent", 1792700000, "sent"
+        )
+        self.state.ledger_set_token(intent_id, "11111111-2222-3333-4444-555555555555")
+
+        def worker(url, headers, body=None, **_options):
+            return {"ok": True, "state": "outcome_unknown", "duplicate": True}
+
+        self.outbox(worker).recover()
+        row = self.state.db.execute("SELECT state, pending_outcome FROM send_ledger").fetchone()
+        self.assertEqual(row[0], "outcome_unknown")
+        self.assertIsNone(row[1])
+
+    def test_settle_stores_the_state_the_worker_acked(self):
+        worker = FakeWorker([reply()])
+
+        def answering(url, headers, body=None, **options):
+            answer = worker(url, headers, body, **options)
+            if url.endswith("/result"):
+                return {"ok": True, "state": "outcome_unknown", "duplicate": True}
+            return answer
+
+        with patch.object(
+            outbound, "send", lambda *a, **k: {"outcome": "sent", "message_id": "wamid.x"}
+        ):
+            self.outbox(answering).step()
+        row = self.state.db.execute("SELECT state FROM send_ledger").fetchone()
+        self.assertEqual(row[0], "outcome_unknown")
+
     def test_the_local_ledger_holds_no_body(self):
         worker = FakeWorker([reply(text="a private reply")])
         with patch.object(outbound, "send", lambda *a, **k: {"outcome": "sent", "message_id": "x"}):

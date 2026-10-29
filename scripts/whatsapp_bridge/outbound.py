@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import json
 import socket
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -224,15 +225,19 @@ class Outbox:
     def recover(self):
         """A restart finds the local ledger: never sent, or maybe sent.
 
-        The outcome the bridge knows is reported again, and the row is made
-        final only after the Worker has acked it.
+        The outcome the bridge knows is reported again, with the fields it
+        was first reported with, and the row is made final only after the
+        Worker has acked it.  One row whose report fails does not stop the
+        others: every row is tried, and the method still raises afterwards,
+        so no new send begins while any row is unreconciled.
         """
+        failed = 0
         for intent_id, state, digest, message_id, pending in self.state.ledger_pending():
             token = self.state.ledger_token(intent_id)
             if pending:
                 # The outcome is known and the Worker has not acked it yet.
                 outcome = pending
-                fields = {}
+                fields = self.state.ledger_pending_fields(intent_id)
                 if outcome == "sent":
                     fields["message_id"] = message_id
             elif state == "claimed":
@@ -243,20 +248,52 @@ class Outbox:
                 # The POST may have gone out: unknown for good, never resent.
                 outcome = "outcome_unknown"
                 fields = {"error": "bridge_restart"}
-            report(
-                self.worker_url,
-                self.signing_key,
-                intent_id,
-                outcome,
-                self.clock,
-                self.request,
-                token=token,
-                **fields,
-            )
-            if outcome in ("requeue", "declined"):
-                self.state.ledger_delete(intent_id)
-            else:
-                self.state.ledger_put(intent_id, outcome, digest, message_id, self.now())
+            try:
+                answer = report(
+                    self.worker_url,
+                    self.signing_key,
+                    intent_id,
+                    outcome,
+                    self.clock,
+                    self.request,
+                    token=token,
+                    **fields,
+                )
+            except BridgeError as error:
+                # The row keeps its claimable state and is reported again on
+                # the next step.  Only the intent id and the error class.
+                failed += 1
+                print(
+                    json.dumps(
+                        {
+                            "state": "outbox_recover_failed",
+                            "intent_id": intent_id,
+                            "error": type(error).__name__,
+                        }
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            self.finalize(intent_id, outcome, answer, digest, message_id)
+        if failed:
+            raise BridgeError("outbox_recover_incomplete")
+
+    def finalize(self, intent_id, outcome, answer, digest, message_id):
+        """Make the local row match the state the Worker acked.
+
+        The Worker's answer wins: when it had already made the reply final
+        (a lease that expired while the bridge was down becomes
+        outcome_unknown there), the bridge stores that state, not its own
+        outcome, so the two never diverge.  A reply the Worker holds or
+        queues again leaves the local ledger.
+        """
+        acked = answer.get("state") if isinstance(answer, dict) else None
+        final = acked if isinstance(acked, str) and acked else outcome
+        if final in ("queued", "held", "requeue", "declined"):
+            self.state.ledger_delete(intent_id)
+        else:
+            self.state.ledger_put(intent_id, final, digest, message_id, self.now())
 
     def rate_ok(self):
         """At most ten sends a minute, and the window is the last minute."""
@@ -273,10 +310,12 @@ class Outbox:
         that may have sent stays sending.
         """
         state = "sending" if started else "claimed"
-        self.state.ledger_put(intent_id, state, digest, message_id, self.now(), outcome)
+        self.state.ledger_put(
+            intent_id, state, digest, message_id, self.now(), outcome, pending_fields=fields
+        )
         if outcome == "sent" and message_id is not None:
             fields["message_id"] = message_id
-        report(
+        answer = report(
             self.worker_url,
             self.signing_key,
             intent_id,
@@ -286,10 +325,7 @@ class Outbox:
             token=token,
             **fields,
         )
-        if outcome in ("requeue", "declined"):
-            self.state.ledger_delete(intent_id)
-        else:
-            self.state.ledger_put(intent_id, outcome, digest, message_id, self.now())
+        self.finalize(intent_id, outcome, answer, digest, message_id)
 
     def deliver(self, reply, recipient):
         intent_id = reply.get("intent_id")
