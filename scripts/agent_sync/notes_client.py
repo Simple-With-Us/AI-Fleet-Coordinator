@@ -495,8 +495,10 @@ class Host:
         *,
         caller: str,
         client_factory: Callable[[], OperatorClient] | None = None,
+        bearer_file: str | None = None,
         script_finder: Callable[[Mapping[str, str], Path], Path | None] | None = None,
     ) -> None:
+        self.bearer_file = bearer_file
         self.env = env
         self.home = home
         self.store = store
@@ -505,7 +507,9 @@ class Host:
         self._client: OperatorClient | None = None
         # Looked up when the host is made, not bound as a default argument at import:  notes.direct_available is the
         # one seam that says "this is a Mac", for the CLI, the stdio tools and their tests alike.
-        self.script = (script_finder or N.direct_available)(env, home)
+        self.script = (
+            None if bearer_file is not None else (script_finder or N.direct_available)(env, home)
+        )
 
     @property
     def client(self) -> OperatorClient:
@@ -612,6 +616,8 @@ def call(
     base = {"request_id": request["request_id"], "action": action}
     if request.get("title"):
         base["title"] = request["title"]
+    if host.bearer_file is not None:
+        return _fleet_call(host, seat, request, wait)
     if host.script is not None:
         script = host.script
 
@@ -649,6 +655,8 @@ def call(
 def status(host: Host, seat: str, request_id: str) -> dict[str, Any]:
     """Where a request stands:  this Mac's own rows on a Mac, the Operator's record elsewhere."""
     N.check_request_id(request_id)
+    if host.bearer_file is not None:
+        return _fleet_tool(host, seat, "notes_status", {"request_id": request_id})
     if host.script is not None:
         found = N.direct_status(host.store, request_id)
         if found is None:
@@ -679,8 +687,123 @@ def status(host: Host, seat: str, request_id: str) -> dict[str, Any]:
 def log(host: Host, args: Mapping[str, Any]) -> dict[str, Any]:
     """The action log:  the file itself on a Mac, the Operator's copy elsewhere."""
     filters = N.check_log_args(args)
+    if host.bearer_file is not None:
+        return _fleet_tool(host, None, "notes_log", dict(args))
     if host.script is not None:
         entries = N.read_action_log(host.env, host.home, **filters)
         return {"entries": entries, "source": "mac", "count": len(entries)}
     entries = host.client.log(filters)
     return {"entries": entries, "source": "operator", "count": len(entries)}
+
+
+def _fleet_tool(host, seat, tool, args, write=False):
+    from .fleet_bearer import Client, FleetError
+
+    try:
+        result = Client(host.bearer_file, seat, identity_env=host.env).call(tool, args, write)
+        data = result.get("structuredContent")
+        if not isinstance(data, dict):
+            raise FleetError(
+                "outcome_unknown" if write else "upstream_error", "gateway returned no notes result"
+            )
+        return data
+    except FleetError as exc:
+        recover = ""
+        if write and args.get("request_id"):
+            recover = (
+                "; check simple-notes status "
+                + args["request_id"]
+                + " using the same fleet bearer file, never retry with a new request id"
+            )
+        raise N.NotesError(exc.code, str(exc) + recover) from None
+
+
+def _fleet_call(host, seat, request, wait):
+    action = request["action"]
+    args = {
+        key: value
+        for key, value in request.items()
+        if key in ("title", "markdown", "session", "format", "query", "limit", "request_id")
+    }
+    args.update(request.get("flags") or {})
+    args["wait_seconds"] = 0
+    deadline = time.monotonic() + wait
+    rid = request["request_id"]
+    recover = (
+        "; check simple-notes status "
+        + rid
+        + " using the same fleet bearer file, never repeat with a new request id"
+    )
+
+    def checked(out):
+        if not isinstance(out, dict) or out.get("request_id") != rid or out.get("action") != action:
+            raise N.NotesError(
+                "outcome_unknown",
+                "gateway notes identity/result did not match the original request" + recover,
+            )
+        state = out.get("status")
+        if state == "refused":
+            error = out.get("error")
+            code = error.get("code") if isinstance(error, dict) else None
+            if not isinstance(code, str) or not _CODE_RE.fullmatch(code):
+                code = "internal"
+            raise N.NotesError(code, "notes request was refused" + recover)
+        if state == "expired":
+            raise N.NotesError(
+                "unavailable",
+                "notes request expired before it was run; nothing was written" + recover,
+            )
+        if state not in ("queued", "running", "done") or out.get("error"):
+            raise N.NotesError("outcome_unknown", "notes request outcome is unknown" + recover)
+        if state == "done" and out.get("result_expired") is True:
+            raise N.NotesError(
+                "result_expired", "notes result expired; no note body is available" + recover
+            )
+        if (
+            state == "done"
+            and action == "read"
+            and (
+                not isinstance(out.get("note"), dict)
+                or not isinstance(out["note"].get("body"), str)
+            )
+        ):
+            raise N.NotesError("upstream_error", "completed notes read has no note" + recover)
+        if (
+            state == "done"
+            and action == "list"
+            and (
+                not isinstance(out.get("notes"), list)
+                or type(out.get("total")) is not int
+                or out["total"] < len(out["notes"])
+                or type(out.get("truncated")) is not bool
+            )
+        ):
+            raise N.NotesError(
+                "upstream_error", "completed notes list has no complete list metadata" + recover
+            )
+        return out
+
+    try:
+        out = _fleet_tool(host, seat, "notes_" + action, args, action in N.WRITE_ACTIONS)
+        # Hosted read/list enqueue summaries omit action. A status fetch binds
+        # both action and request id before accepting their result.
+        if action in ("read", "list") and isinstance(out, dict) and "action" not in out:
+            if out.get("request_id") != rid:
+                raise N.NotesError("outcome_unknown", "notes request id did not match" + recover)
+            out = _fleet_tool(host, seat, "notes_status", {"request_id": rid})
+        out = checked(out)
+        while out.get("status") in ("queued", "running") and time.monotonic() < deadline:
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+            try:
+                candidate = _fleet_tool(host, seat, "notes_status", {"request_id": rid})
+            except N.NotesError:
+                out = {**out, "poll_warning": "status poll failed" + recover}
+                break
+            out = checked(candidate)
+    except N.NotesError as exc:
+        if recover in exc.message:
+            raise
+        raise N.NotesError(exc.code, exc.message + recover) from None
+    if request.get("title"):
+        out.setdefault("title", request["title"])
+    return out

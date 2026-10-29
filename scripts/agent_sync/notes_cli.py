@@ -64,6 +64,12 @@ def add_parsers(
 
     def identity_opt(p: argparse.ArgumentParser) -> None:
         p.add_argument(
+            "--fleet-bearer-file",
+            default=argparse.SUPPRESS,
+            metavar="PATH",
+            help="use this bot's private fleet bearer file via the hosted gateway; no direct fallback",
+        )
+        p.add_argument(
             "--identity",
             dest="as_seat",
             metavar="NAME",
@@ -200,6 +206,12 @@ def add_parsers(
     q.add_argument(
         "--title", metavar="TEXT", default=None, help="only entries whose title contains this text"
     )
+    q.add_argument(
+        "--fleet-bearer-file",
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help="use this bot's private fleet bearer file; no direct fallback",
+    )
     # No --identity:  the log is the whole fleet's (any seat may read every Coding note), so it acts as no one;
     # --by-seat filters it.
     q = add(
@@ -313,12 +325,12 @@ def _home(rt: Any) -> Path:
     )
 
 
-def _host(rt: Any, identity: str | None) -> NC.Host:
+def _host(rt: Any, identity: str | None, bearer_file: str | None = None) -> NC.Host:
     home = _home(rt)
     store = (
         IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json")) if identity else None
     )
-    return NC.Host(rt.env, home, store, caller="cli")
+    return NC.Host(rt.env, home, store, caller="cli", bearer_file=bearer_file)
 
 
 def _wait(args: argparse.Namespace) -> int:
@@ -350,6 +362,8 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
 
     action = _action(args)
     if action == "runner":
+        if getattr(args, "fleet_bearer_file", None) is not None:
+            raise Z.UsageError("runner is a backend service, not a fleet bearer action; no runner was started")
         return _cmd_runner(rt, args)
     audit: dict[str, Any] = {}
     write = action in N.WRITE_ACTIONS
@@ -387,9 +401,14 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
 
 def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
     action = _action(args)
+    if (
+        getattr(args, "fleet_bearer_file", None) is not None
+        and not str(args.fleet_bearer_file).strip()
+    ):
+        raise Z.CredentialError("fleet bearer file path is empty; no fallback was used")
     use_json = bool(getattr(args, "json", False))
     if action == "log":
-        host = _host(rt, None)
+        host = _host(rt, None, getattr(args, "fleet_bearer_file", None))
         try:
             info = NC.log(
                 host,
@@ -403,9 +422,21 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
             raise _fail(exc) from None
         _print_log(rt, info, use_json)
         return 0
-    identity = _identity(rt, args)
+    bearer_file = getattr(args, "fleet_bearer_file", None)
+    if bearer_file is not None:
+        from .fleet_bearer import Client, FleetError
+
+        try:
+            identity = Client(bearer_file, identity_env=rt.env).seat
+        except FleetError as exc:
+            raise Z.CredentialError(str(exc)) from None
+        selected = getattr(args, "as_seat", None) or getattr(args, "default_seat", None)
+        if selected and selected.upper() != identity:
+            raise Z.UsageError("--identity/--as cannot override the fleet bearer identity")
+    else:
+        identity = _identity(rt, args)
     audit["identity"] = identity
-    host = _host(rt, identity)
+    host = _host(rt, identity, bearer_file)
     if action == "status":
         try:
             info = NC.status(host, identity, args.request_id)
@@ -540,6 +571,8 @@ def _print(rt: Any, info: dict[str, Any], use_json: bool) -> None:
         line += ", %s:  %s" % (error.get("code"), error["message"])
     if info.get("pin_skipped"):
         line += ", pin skipped:  %s" % info["pin_skipped"]
+    if info.get("poll_warning"):
+        line += "; " + str(info["poll_warning"])
     if info.get("status") in ("queued", "running"):
         line += ";  the Mac runner has not finished it:  simple-notes status %s" % info.get(
             "request_id"

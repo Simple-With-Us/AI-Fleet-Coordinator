@@ -373,3 +373,18 @@ test("resolveFleetlinkSeatTokens skips disabled seats and still denies them", as
     assert.ok(FLEETLINK_SEATS_DISABLED.includes("GB-ENGINEER"));
   } finally { globalThis.fetch = orig; }
 });
+
+test("routine CLI parity additions pass through without a new seat or scope", async () => {
+  const { tools, upstream } = harness({ respond: () => ({ data: { share: SHARE } }) });
+  for (const [name, args] of [
+    ["fleetlink_create_share", { empty: true, reuse: true, slug: "demo", personal: true, password: "short" }],
+    ["fleetlink_upload_url", { path: "dist/app.zip", password: "short" }],
+    ["fleetlink_renew_share", { slug: "demo", days: "forever" }],
+    ["fleetlink_list_shares", { scope: "bots" }],
+    ["fleetlink_list_shares", { scope: "all" }],
+  ]) {
+    const out = await tools.call(name, args);
+    assert.equal(out.isError, undefined, JSON.stringify(out));
+    assert.deepEqual(upstream.calls.at(-1).body.params.arguments, args);
+  }
+});
