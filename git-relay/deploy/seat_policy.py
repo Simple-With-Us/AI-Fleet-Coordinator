@@ -186,7 +186,9 @@ class Unit:
         host = self.environment.get("GIT_RELAY_HOST", "").strip()
         port = self.environment.get("GIT_RELAY_PORT", "").strip()
         if not host or not port:
-            raise SystemExit(f"{self.name} sets no GIT_RELAY_HOST or GIT_RELAY_PORT;  no health URL")
+            raise SystemExit(
+                f"{self.name} sets no GIT_RELAY_HOST or GIT_RELAY_PORT;  no health URL"
+            )
         return f"http://{host}:{port}/healthz"
 
 

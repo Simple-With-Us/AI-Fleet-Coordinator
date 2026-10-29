@@ -227,7 +227,9 @@ class SeatPolicyFile(unittest.TestCase):
         self.assertEqual(unit.apps_token, "/tmp/fixture/apps-token")
         self.assertEqual(unit.health, "http://localhost:18080/healthz")
         # No assumed bind address:  a unit that sets none cannot be health-checked.
-        no_bind = seat_policy.read_unit("relay.service", show=show.split(" GIT_RELAY_HOST")[0], cat=cat)
+        no_bind = seat_policy.read_unit(
+            "relay.service", show=show.split(" GIT_RELAY_HOST")[0], cat=cat
+        )
         with self.assertRaisesRegex(SystemExit, "no health URL"):
             _ = no_bind.health
         for broken_show, broken_cat in (
