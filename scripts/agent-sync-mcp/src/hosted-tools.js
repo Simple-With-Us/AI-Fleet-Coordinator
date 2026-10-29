@@ -64,7 +64,7 @@ import {
 } from "./recall.js";
 import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES } from "./gr-tools.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
-import { WF_V1_ACTIONS, WF_V1_TOOLS, validWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
+import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
   FLEETLINK_TOOLS,
   FLEETLINK_READ_TOOLS,
@@ -1998,7 +1998,8 @@ for (const action of WF_V1_ACTIONS) {
     if (this.config?.grWorkflowEnabled !== true) {
       throw new ToolError("not_configured", "The git-relay workflow tools are not enabled on this server.  The other tools still work.");
     }
-    if (!validWfV1Args(action, args)) throw new ToolError("invalid_argument", `Invalid arguments for gr_${action}.`);
-    return this.grCall(action, args, {workflow:true});
+    const parsedArgs = parseWfV1Args(action, args);
+    if (parsedArgs === null) throw new ToolError("invalid_argument", `Invalid arguments for gr_${action}.`);
+    return this.grCall(action, parsedArgs, {workflow:true});
   };
 }
