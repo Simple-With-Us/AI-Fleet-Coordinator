@@ -85,7 +85,6 @@ class SeatPolicy:
         "wf_issue_blocking",
         "wf_commit_statuses",
         "wf_commit_status_create",
-
         "wf_review_thread_resolve",
         "wf_review_thread_unresolve",
         "wf_review_update",

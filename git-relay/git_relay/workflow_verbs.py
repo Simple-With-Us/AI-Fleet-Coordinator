@@ -77,7 +77,6 @@ SPECS = {
     "wf_issue_blocking": ({"issues": "read"}, False),
     "wf_commit_statuses": ({"statuses": "read"}, False),
     "wf_commit_status_create": ({"statuses": "write"}, True),
-
     "wf_file_rename": ({"contents": "write"}, True),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
