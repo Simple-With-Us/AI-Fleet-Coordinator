@@ -1080,8 +1080,9 @@ class Daemon:
             return old
         try:
             # Imported here, not at module load, so a missing module never stops the daemon.
-            from . import linear_projects_hook as LPH
             import linear_project_linkifiers as LPL
+
+            from . import linear_projects_hook as LPH
         except ImportError as exc:
             self.log.write("linear-projects-error", error=type(exc).__name__)
             return None
