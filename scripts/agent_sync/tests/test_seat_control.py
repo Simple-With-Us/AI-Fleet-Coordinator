@@ -5,10 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from agent_sync.idem import IdemStore
 from agent_sync.seat_control import (
     CAPABILITY_MATRIX,
+    MAX_ARGUMENT_DEPTH,
+    MAX_ARGUMENT_NODES,
+    MAX_TOOL_ARGUMENT_BYTES,
     REQUEST_TTL_SECONDS,
     SEAT_CONTROL_TOOL_SCHEMAS,
     SeatControlMCP,
@@ -427,6 +431,23 @@ class SeatControlTests(unittest.TestCase):
         self.assertEqual(second["data"]["status"], "failed")
         self.assertEqual(len(self.transport.sent), 1)
 
+    def test_accepted_and_unknown_ids_remain_no_replay_after_ten_years(self):
+        for outcome, expected in (("accepted", "duplicate"), ("unknown", "unknown")):
+            with self.subTest(outcome=outcome):
+                now = [1_000.0]
+                self.transport.sent.clear()
+                path = str(Path(self.temp.name) / f"{outcome}-long-lived.json")
+                self.service.idempotency = IdemStore(path, clock=lambda: now[0])
+                self.service.clock = lambda: now[0]
+                self.transport.outcome = outcome
+                request_id = f"long-lived-{outcome}"
+                first = self.prompt(request_id=request_id)
+                self.assertEqual(first["status"], outcome)
+                now[0] += 10 * 365 * 24 * 60 * 60
+                second = self.prompt(request_id=request_id)
+                self.assertEqual(second["status"], expected)
+                self.assertEqual(len(self.transport.sent), 1)
+
     def test_held_or_failed_request_id_reuse_with_changed_content_conflicts(self):
         self.catalog.rows = [row(status="busy")]
         self.assertEqual(self.prompt()["status"], "held")
@@ -746,6 +767,35 @@ class SeatControlTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(result["data"]["sessions"]), 0)
+
+    def test_argument_structure_is_bounded_before_json_serialization(self):
+        deep = current = {}
+        for _ in range(MAX_ARGUMENT_DEPTH + 1):
+            child = {}
+            current["x"] = child
+            current = child
+        cycle = {}
+        cycle["self"] = cycle
+        oversized_nodes = {"items": [None] * MAX_ARGUMENT_NODES}
+        oversized_text = {"prompt": "x" * (MAX_TOOL_ARGUMENT_BYTES + 1)}
+        cases = (
+            ("depth", deep),
+            ("cycle", cycle),
+            ("nodes", oversized_nodes),
+            ("bytes", oversized_text),
+        )
+        for kind, arguments in cases:
+            with self.subTest(kind=kind):
+                with patch(
+                    "agent_sync.seat_control.json.dumps",
+                    side_effect=AssertionError("oversized input reached serializer"),
+                ) as dump:
+                    self.assertFalse(self.service._arguments_within_bounds(arguments))
+                    dump.assert_not_called()
+
+    def test_argument_byte_limit_counts_json_escaping(self):
+        arguments = {"value": "\x00" * (MAX_TOOL_ARGUMENT_BYTES // 6 + 1)}
+        self.assertFalse(self.service._arguments_within_bounds(arguments))
 
     def test_accepted_replay_survives_later_mutation_gate_refusal(self):
         first = self.prompt()

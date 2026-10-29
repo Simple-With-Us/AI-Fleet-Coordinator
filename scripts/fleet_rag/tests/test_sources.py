@@ -1670,6 +1670,63 @@ class LinearSourceTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def test_archived_history_is_scanned_fetched_and_preserved(self) -> None:
+        """Native archives are not active work, but remain recall source documents."""
+        node = _linear_node(
+            uid="uuid-archived",
+            state=("In Progress", "started"),
+            labels=(),
+            description="Historical source status: in_progress. Original archived evidence.",
+        )
+        queries = []
+
+        def fake_query(query, timeout_s=0):
+            queries.append(query)
+            self.assertIn("includeArchived: true", query)
+            if "orderBy: updatedAt" in query:
+                return {"issues": {"nodes": [{"id": node["id"], "updatedAt": node["updatedAt"]}],
+                                   "pageInfo": {"hasNextPage": False}}}
+            return {"issues": {"nodes": [node], "pageInfo": {"hasNextPage": False}}}
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            (doc,) = sources.iter_linear(covered_ids=set())
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(doc.doc_id, "linear/uuid-archived")
+        self.assertIn("Historical source status: in_progress", doc.text_markdown)
+        self.assertIn("Original archived evidence", doc.text_markdown)
+        self.assertEqual(node["state"], {"name": "In Progress", "type": "started"})
+
+    def test_archived_comment_follow_on_page_uses_singular_lookup(self) -> None:
+        """issue(id:) reads native archives directly; paging retains all comment text."""
+        node = _linear_node(uid="uuid-archived", comments=[("Wise", "first page", "2026-10-20T00:00:00Z")])
+        node["archivedAt"] = "2026-10-21T00:00:00Z"
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "first"}
+
+        def fake_query(query, timeout_s=0):
+            self.assertIn('issue(id: "uuid-archived")', query)
+            self.assertIn('after: "first"', query)
+            return {"issue": {"comments": {"nodes": [
+                {"body": "archived second page", "createdAt": "2026-10-20T01:00:00Z",
+                 "user": {"displayName": "Wise"}, "externalUser": None}],
+                "pageInfo": {"hasNextPage": False, "endCursor": "last"}}}}
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            sources._linear_complete_comments(node)
+        self.assertEqual([c["body"] for c in node["comments"]["nodes"]],
+                         ["first page", "archived second page"])
+        self.assertFalse(node.get("_linear_truncated", False))
+        self.assertEqual(node["archivedAt"], "2026-10-21T00:00:00Z")
+
+    def test_archived_overflow_placeholder_lookup_is_inclusive(self) -> None:
+        def fake_query(query, timeout_s=0):
+            self.assertIn("includeArchived: true", query)
+            return {"issues": {"nodes": [{"id": "uuid-archived", "identifier": "AFC-777"}]}}
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            node = sources._linear_placeholder("uuid-archived")
+        self.assertEqual(node["identifier"], "AFC-777")
+        self.assertTrue(node["_linear_truncated"])
+
     def test_selection_skips_imported_untouched_but_keeps_new_and_updated(self) -> None:
         scan = {
             "uuid-imported-old": "2026-10-11T00:00:00.000Z",  # in TSV, untouched -> skip
