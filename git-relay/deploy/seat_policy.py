@@ -248,7 +248,8 @@ def validate_with(relay_dir: str, seats: dict) -> None:
 
 
 def diff(old: dict, new: dict) -> list[str]:
-    """Seat-level differences, with seat and field names only."""
+    """Seat-level differences:  seat and field names, the actions and repositories added or
+    removed, and the permission levels that moved.  The file holds no secret to print."""
     lines = []
     for slug in sorted(set(old) | set(new)):
         if slug not in old:
