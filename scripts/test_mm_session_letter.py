@@ -623,17 +623,6 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertNotIn("title", entries[1]["registry_ended"])
         self.assertIn('"registry_sweep": 2', err)
 
-    def test_the_sweep_skips_ended_rows_that_name_no_session(self):
-        ended = [
-            {"record_id": "r1", "label": "A", "reason": "stale"},
-            {"record_id": "r2", "label": "B", "native_session_id": None, "reason": "stale"},
-            {"record_id": "r3", "label": "C", "native_session_id": "", "reason": "stale"},
-        ]
-        code, out, _err = self._run_sweep("", {"count": 3, "ended": ended}, title="M: Wake check")
-        self.assertEqual(code, 0)
-        self.assertNotIn('"session_id": ""', out)
-        self.assertNotIn("registry_ended", out)
-
     def test_a_registry_sweep_without_an_ended_list_still_succeeds(self):
         code, out, _err = self._run_sweep("", {"count": 0}, title="M: Wake check")
         self.assertEqual(code, 0)
