@@ -143,6 +143,15 @@ class SeatAndMcpTests(unittest.TestCase):
             self.assertEqual(report.rows[0]["status"], "WARN")
             self.assertIn("fleetlink token names", report.rows[0]["detail"])
             self.assertNotIn("missing fleetlink", report.rows[0]["detail"])
+            # An unreadable listing still reports a missing Zulip bot or Linear app.
+            names["/zulip"] = frozenset()
+            names["/linear"] = frozenset()
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK-WEB", {}, None)
+            self.assertEqual(report.rows[0]["status"], "FAIL")
+            self.assertIn("missing zulip bot, linear app", report.rows[0]["detail"])
+            self.assertIn("fleetlink token names", report.rows[0]["detail"])
+            self.assertNotIn("missing zulip bot, linear app, fleetlink", report.rows[0]["detail"])
 
     def mcp_rows(self, fleetlink_tokens=frozenset(), readable=True):
         """Run check_mcp with a fixed FleetLink token reading for the two seats.

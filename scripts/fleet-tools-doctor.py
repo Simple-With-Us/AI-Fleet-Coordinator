@@ -1475,27 +1475,27 @@ def check_seat(
     linear = (
         linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
     )
-    if fleetlink is None:
-        report.add(
-            f"seat:{seat}",
-            "WARN",
-            "fleet-secrets could not list Infisical fleetlink token names",
-        )
-        return
+    # An unreadable fleetlink listing must not hide a missing Zulip bot or Linear app.
+    unreadable = fleetlink is None
     missing = [
         label
         for label, ok in (
             ("zulip bot", zulip),
             ("linear app", linear),
-            ("fleetlink token", bool(fleetlink)),
+            ("fleetlink token", unreadable or bool(fleetlink)),
         )
         if not ok
     ]
-    report.add(
-        f"seat:{seat}",
-        "OK" if not missing else "FAIL",
-        "all credentials present" if not missing else "missing " + ", ".join(missing),
-    )
+    notes = ["missing " + ", ".join(missing)] if missing else []
+    if unreadable:
+        notes.append("fleet-secrets could not list Infisical fleetlink token names")
+    if missing:
+        status = "FAIL"
+    elif unreadable:
+        status = "WARN"
+    else:
+        status = "OK"
+    report.add(f"seat:{seat}", status, "; ".join(notes) or "all credentials present")
 
 
 MCP_PROBE = b"".join(
