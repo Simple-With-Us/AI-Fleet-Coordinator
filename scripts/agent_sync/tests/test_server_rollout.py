@@ -342,6 +342,42 @@ class ApplyLiveConfigTests(unittest.TestCase):
         self.assertEqual(self.live.read_text(), after)
         self.assertEqual(len(list(self.tmp.glob("listener.toml.bak-*"))), 1, "a second run writes no backup")
 
+    def test_write_is_durable_via_temp_replace_and_fsync(self) -> None:
+        from unittest import mock
+
+        live = self.tmp / "durable.toml"
+        live.write_text("old\n")
+        os.chmod(live, 0o600)
+        replaces: list[tuple[str, str]] = []
+        real_replace = os.replace
+
+        def counting_replace(src, dst):  # type: ignore[no-untyped-def]
+            replaces.append((str(src), str(dst)))
+            return real_replace(src, dst)
+
+        fsyncs: list[int] = []
+        real_fsync = os.fsync
+
+        def counting_fsync(fd):  # type: ignore[no-untyped-def]
+            fsyncs.append(fd)
+            return real_fsync(fd)
+
+        with mock.patch.object(os, "replace", side_effect=counting_replace):
+            with mock.patch.object(os, "fsync", side_effect=counting_fsync):
+                backup = AL.write(live, "new\n", "20250101T000000Z")
+        self.assertEqual(backup.read_text(), "old\n")
+        self.assertEqual(live.read_text(), "new\n")
+        self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(live.stat().st_mode), 0o600)
+        self.assertEqual(len(replaces), 2, "backup and replacement each rename once")
+        for src, _ in replaces:
+            self.assertEqual(Path(src).parent, self.tmp)
+            self.assertTrue(Path(src).name.startswith("."))
+        self.assertEqual(Path(replaces[0][1]).name, backup.name)
+        self.assertEqual(Path(replaces[1][1]), live)
+        self.assertGreaterEqual(len(fsyncs), 4, "both files and both directory entries")
+        self.assertEqual([p.name for p in self.tmp.iterdir() if p.name.startswith(".")], [])
+
     def test_a_missing_target_section_is_appended(self) -> None:
         text = self.live.read_text()
         _, blocks = AL.blocks(text)

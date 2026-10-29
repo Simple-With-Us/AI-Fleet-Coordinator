@@ -91,7 +91,7 @@ Then: type line (`Completion` / `Plan` / `Review` / `Design` / `Handoff` / `Roll
 
 Order: `Needs owner` first when applicable, then Problem → What was done → Decisions → Next steps.
 
-A real U+00A0 plus a normal space between sentences in the body file you pass the helper (owner ruling 2026-10-23).  Never write the `&nbsp;` entity yourself.
+A real U+00A0 plus a normal space between sentences in the body file you pass the helper (owner ruling 2026-10-23).  Never write the `&nbsp;` entity yourself.  The helper makes the gap for you:  two spaces after a sentence, or one, become a real U+00A0 plus a normal space, and Apple Notes stores that as two ordinary spaces, which is the correct stored form and shows as a wide gap.  Notes takes no other gap character.
 
 ## Layout (owner 2026-08-21; updated 2026-10-01 — binding)
 
