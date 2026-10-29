@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -49,6 +50,8 @@ PROFILE_SCOPE = "default"
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 TITLE_MAX = 120
 HOOK_INPUT_MAX = 1_048_576
+HOOK_JSON_MAX_DEPTH = 32
+HOOK_JSON_MAX_NODES = 10_000
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 # The Mac's checkout of AI-Fleet-Coordinator, on the Operator host and here.
@@ -140,6 +143,21 @@ def _registry_identity_args() -> list[str]:
     return ["--location", location(), "--scope", PROFILE_SCOPE]
 
 
+def _json_within_limits(value: object) -> bool:
+    stack: list[tuple[object, int]] = [(value, 1)]
+    nodes = 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > HOOK_JSON_MAX_NODES or depth > HOOK_JSON_MAX_DEPTH:
+            return False
+        if isinstance(item, dict):
+            stack.extend((v, depth + 1) for v in item.values())
+        elif isinstance(item, list):
+            stack.extend((v, depth + 1) for v in item)
+    return True
+
+
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
     local_db = registry_db()
@@ -151,36 +169,53 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         }
     cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=scripts,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return {"error": "the registry did not answer in time", "code": "timeout"}
     except OSError as exc:
         code = "missing_tool" if getattr(exc, "errno", None) == 2 else "spawn_failed"
         return {"error": str(exc)[:400], "code": code}
-    out = (proc.stdout or "").strip()
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.kill()
+        proc.wait()
+        return {"error": "the registry did not answer in time", "code": "timeout"}
+    except OSError as exc:
+        code = "spawn_failed"
+        return {"error": str(exc)[:400], "code": code}
+    out = (stdout or "").strip()
     if not out:
-        err = (proc.stderr or "no answer").strip()[:400]
+        err = (stderr or "no answer").strip()[:400]
         code = "nonzero" if proc.returncode else "empty"
         return {"error": err, "code": code}
     try:
         answer = json.loads(out.splitlines()[-1])
     except json.JSONDecodeError:
         return {"error": "unreadable answer: %s" % out[:200], "code": "bad_json"}
+    if not isinstance(answer, dict):
+        return {"error": "the registry answer was not an object", "code": "bad_shape"}
     if proc.returncode and "error" not in answer:
         answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
     return answer
 
 
-def _require_registry(answer: dict) -> dict:
+def _require_registry(answer: dict, *, needs_label: bool = False) -> dict:
     if answer.get("error"):
         raise RegistryError(str(answer["error"]))
+    if needs_label:
+        label = answer.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise RegistryError("the registry answer carried no letter")
     return answer
 
 
@@ -220,32 +255,36 @@ def update_title(session_id: str, title: str) -> dict:
     _scan_title(title)
     letter = cached_letter(session_id)
     topic = registry_topic_from_display(letter, title)
-    return registry_call(
-        [
-            "update",
-            "--platform",
-            PLATFORM,
-            *_registry_identity_args(),
-            "--session-id",
-            session_id,
-            "--title",
-            topic,
-        ]
+    return _require_registry(
+        registry_call(
+            [
+                "update",
+                "--platform",
+                PLATFORM,
+                *_registry_identity_args(),
+                "--session-id",
+                session_id,
+                "--title",
+                topic,
+            ]
+        )
     )
 
 
 def close_letter(session_id: str, reason: str) -> dict:
-    return registry_call(
-        [
-            "close",
-            "--platform",
-            PLATFORM,
-            *_registry_identity_args(),
-            "--session-id",
-            session_id,
-            "--reason",
-            reason,
-        ]
+    return _require_registry(
+        registry_call(
+            [
+                "close",
+                "--platform",
+                PLATFORM,
+                *_registry_identity_args(),
+                "--session-id",
+                session_id,
+                "--reason",
+                reason,
+            ]
+        )
     )
 
 
@@ -371,7 +410,12 @@ def first_line_states_letter(text: str, letter: str) -> bool:
 def letter_cache_dir() -> str:
     base = os.environ.get("MINIMAX_HOOKS_DATA") or os.path.join(data_dir(), "hook-state")
     path = os.path.join(base, "session-letters")
+    for candidate in (base, path):
+        if os.path.islink(candidate):
+            raise ValueError("the letter cache path must not be a symlink")
     os.makedirs(path, mode=0o700, exist_ok=True)
+    if os.path.islink(path):
+        raise ValueError("the letter cache path must not be a symlink")
     return path
 
 
@@ -435,7 +479,7 @@ def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
         except RegistryError:
             pass
         return letter
-    answer = _require_registry(register(session_id, topic, space))
+    answer = _require_registry(register(session_id, topic, space), needs_label=True)
     letter = str(answer.get("label") or "")
     if letter:
         cache_letter(session_id, letter, topic, space)
@@ -447,18 +491,24 @@ def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
 
 def read_hook_input() -> dict:
     try:
-        raw = sys.stdin.read(HOOK_INPUT_MAX + 1)
+        raw_bytes = sys.stdin.buffer.read(HOOK_INPUT_MAX + 1)
     except (OSError, ValueError):
         return {}
-    if len(raw) > HOOK_INPUT_MAX:
+    if len(raw_bytes) > HOOK_INPUT_MAX:
         return {}
-    if not raw.strip():
+    if not raw_bytes.strip():
+        return {}
+    try:
+        raw = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
         return {}
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict) or not _json_within_limits(data):
+        return {}
+    return data
 
 
 def hook_session_id(payload: dict) -> str:
@@ -729,6 +779,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 except (RegistryError, ValueError) as exc:
                     entry["registry_error"] = str(exc)
         out.append(entry)
+    exit_code = 0
     if apply:
         answer = registry_call(
             [
@@ -743,10 +794,11 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         )
         if answer.get("error"):
             print(json.dumps({"sweep_error": answer["error"]}), file=sys.stderr)
+            exit_code = 2
         else:
             print(json.dumps({"registry_sweep": answer.get("count", 0)}), file=sys.stderr)
     print(json.dumps(out, indent=2))
-    return 0
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -776,7 +828,11 @@ def main(argv: list[str] | None = None) -> int:
         return sweep(args.apply, args.live_hours, args.topics_file)
     if args.command == "letter":
         try:
-            print(json.dumps(_require_registry(register(args.session_id, args.title))))
+            print(
+                json.dumps(
+                    _require_registry(register(args.session_id, args.title), needs_label=True)
+                )
+            )
         except RegistryError as exc:
             print(json.dumps({"error": str(exc)}))
             return 2
