@@ -179,7 +179,8 @@ if __name__ == "__main__":
     import os
     import sys
 
-    from .bridge import BridgeError, State
+    from .bridge import State
+    from .errors import BridgeError
 
     try:
         names = ("WHATSAPP_API_KEY", "WA_BRIDGE_HMAC_KEY_JET", "WA_STATE_DIRECTORY")
