@@ -2209,7 +2209,7 @@ class WorkflowVerbs:
             ),
         )
         comment_id = _int(args, "comment_id")
-        body = self._text(args, "body")
+        body = self._issue_text(args, "body")
         data = self.client._call(
             "PATCH",
             f"/repos/{repo}/issues/comments/{comment_id}",
@@ -2252,7 +2252,7 @@ class WorkflowVerbs:
             ),
         )
         comment_id = _int(args, "comment_id")
-        body = self._text(args, "body")
+        body = self._issue_text(args, "body")
         data = self.client._call(
             "PATCH",
             f"/repos/{repo}/pulls/comments/{comment_id}",

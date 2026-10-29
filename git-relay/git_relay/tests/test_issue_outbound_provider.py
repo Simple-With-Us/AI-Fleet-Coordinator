@@ -81,3 +81,27 @@ class IssueOutboundProviderTests(unittest.TestCase):
                     ):
                         self.handle(client, action).run(action, args)
                     self.assertEqual(client.calls, [])
+
+    def test_comment_update_provider_shapes_refused_before_any_client_call(self):
+        # Synthetic scanner-shape fixtures only; never credentials.
+        for action in ("wf_issue_comment_update", "wf_review_comment_update"):
+            for prefix in PREFIXES:
+                for leading in ("", "embedded"):
+                    client = Client()
+                    args = {"repo": REPO, "comment_id": 1, "body": leading + prefix + "X" * 32}
+                    with self.subTest(action=action, prefix=prefix, leading=leading):
+                        with self.assertRaises(Refused):
+                            self.handle(client, action).run(action, args)
+                        self.assertEqual(client.calls, [])
+
+    def test_clean_comment_updates_preserve_patch_behavior(self):
+        for action, path in (
+            ("wf_issue_comment_update", "/repos/o/r/issues/comments/1"),
+            ("wf_review_comment_update", "/repos/o/r/pulls/comments/1"),
+        ):
+            client = Client({"id": 1, "body": "safe body"})
+            result = self.handle(client, action).run(
+                action, {"repo": REPO, "comment_id": 1, "body": "safe body"}
+            )
+            self.assertEqual(result["result"]["id"], 1)
+            self.assertEqual(client.calls[-1][:2], ("PATCH", path))
