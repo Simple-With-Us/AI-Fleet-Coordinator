@@ -707,7 +707,7 @@ def select_prompt_messages(
     rows = list(history)
     if max_messages is None or max_messages <= 0 or len(rows) <= max_messages:
         return rows
-    newest_first = sorted(range(len(rows)), key=lambda i: (rows[i].get("id") or 0), reverse=True)
+    newest_first = sorted(range(len(rows)), key=lambda i: rows[i].get("id") or 0, reverse=True)
     triggers = set(trigger_ids or ())
     chosen: list[int] = []
     for i in newest_first:

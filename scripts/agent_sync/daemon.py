@@ -2884,9 +2884,7 @@ class Daemon:
         detail, so the budget it runs under is the budget it was measured against.
         """
         if runner.cfg.fallback != "mcode":
-            return self._wake_prompt(
-                runner, pending, history, held, chat_context, letter, board_on
-            )
+            return self._wake_prompt(runner, pending, history, held, chat_context, letter, board_on)
         return self._wake_prompt(
             runner,
             pending,
@@ -2959,9 +2957,7 @@ class Daemon:
             # No platform is passed:  the ambiguity check is cross-platform and the platform named
             # in the body is read off the registry rows the ask actually got.
             self.ask_operator_for_candidates(runner, pending, letter, "", address_sender_id)
-        prompt = self._wake_prompt(
-            runner, pending, history, held, chat_context, letter, board_on
-        )
+        prompt = self._wake_prompt(runner, pending, history, held, chat_context, letter, board_on)
         fallback_prompt = self._fallback_prompt(
             runner, pending, history, held, chat_context, letter, board_on
         )
