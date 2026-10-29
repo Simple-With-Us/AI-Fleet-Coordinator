@@ -444,15 +444,18 @@ const prListObservedRef=z.string().min(1).max(200).refine(v=>!/[\x00-\x20\x7f~^:
 const prListRow=z.object({number:positive,state:z.enum(['open','closed']),draft:z.boolean(),head_ref:prListObservedRef,head_sha:shaValue,base_ref:prListObservedRef,base_sha:shaValue}).strict();
 const prListPage=z.object({pulls:z.array(prListRow).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean(),snapshot:z.literal(false)}).strict();
 const renameReceipt=z.object({source_path:z.string().min(1).max(1024),destination_path:z.string().min(1).max(1024),branch:z.string().min(1).max(200),commit:z.string().regex(/^[0-9a-f]{40}$/),blob_sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict();
+
+const metadataCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/;
+const metadataText=max=>z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=max&&!/[\u0000-\u001f\u007f\uD800-\uDFFF]/u.test(v)&&!metadataCredential.test(v));
+const metadataLanguages=z.object({languages:z.array(z.object({name:metadataText(100),bytes:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)}).strict()).max(100)}).strict();
+const metadataTags=z.object({tags:z.array(z.object({name:metadataText(1024),sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict()).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
 export function validWfV1Response(action, body, args) {
  if(typeof action!=="string")return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
 
  if(action==='wf_repo_tags'||action==='wf_repo_languages'){
-  const metadataCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/;
-  const text=max=>z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=max&&!/[\u0000-\u001f\u007f\uD800-\uDFFF]/u.test(v)&&!metadataCredential.test(v));
-  if(action==='wf_repo_languages')return z.object({languages:z.array(z.object({name:text(100),bytes:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)}).strict()).max(100)}).strict().safeParse(body).success;
-  return z.object({tags:z.array(z.object({name:text(1024),sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict()).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict().safeParse(body).success && (!args || body.page===(args.page??1)&&body.tags.length<=(args.per_page??30)&&body.has_more===(body.tags.length===(args.per_page??30)));
+  if(action==='wf_repo_languages')return metadataLanguages.safeParse(body).success;
+  return metadataTags.safeParse(body).success && (!args || body.page===(args.page??1)&&body.tags.length<=(args.per_page??30)&&body.has_more===(body.tags.length===(args.per_page??30)));
  }
 
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));

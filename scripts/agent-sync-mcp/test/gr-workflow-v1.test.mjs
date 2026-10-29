@@ -862,6 +862,7 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
  const args={repo,page:2,per_page:1},good={tags:[{name:'v1',sha:'a'.repeat(40)}],page:2,has_more:true};
  assert.ok(validWfV1Response('wf_repo_tags',good,args));
  for(const bad of [{...good,page:1},{...good,has_more:false},{...good,tags:[...good.tags,...good.tags]}])assert.equal(validWfV1Response('wf_repo_tags',bad,args),false);
+ // Synthetic scanner-shape fixtures only, assembled at runtime; never credentials.
  for(const name of ['\ud800','bad\nname','bad\0name','sk-'+'x'.repeat(30),'sk_test_'+'x'.repeat(20)]){
   assert.equal(validWfV1Response('wf_repo_tags',{...good,tags:[{name,sha:'a'.repeat(40)}]},args),false);
   assert.equal(validWfV1Response('wf_repo_languages',{languages:[{name,bytes:1}]}),false);
