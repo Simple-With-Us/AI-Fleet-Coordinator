@@ -309,5 +309,31 @@ class FileFrameTests(unittest.TestCase):
         self.assertEqual(mod.MAX_BYTES, 4 * 1024 * 1024)
 
 
+class FileWireEncodingTests(unittest.TestCase):
+    def test_non_ascii_metadata_uses_wire_encoder_for_argument_bytes(self):
+        message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "gr_wf_files_put",
+                "arguments": {
+                    "content_b64": "A" * (5 * 1024 * 1024),
+                    "metadata": "😀" * 10000,
+                },
+            },
+        }
+        wire_size = len(json.dumps(message).encode())
+        compact_args = len(
+            json.dumps(
+                message["params"]["arguments"], separators=(",", ":"), ensure_ascii=False
+            ).encode()
+        )
+        self.assertGreater(wire_size - compact_args, 65536)
+        self.assertTrue(mod.file_frame_allowed(message, wire_size))
+        message["params"]["arguments"]["metadata"] = "😀" * 100000
+        self.assertFalse(mod.file_frame_allowed(message, len(json.dumps(message).encode())))
+
+
 if __name__ == "__main__":
     unittest.main()

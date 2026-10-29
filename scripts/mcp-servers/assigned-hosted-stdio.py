@@ -186,7 +186,7 @@ def file_frame_allowed(message, frame_bytes):
         or not isinstance(params.get("arguments"), dict)
     ):
         return False
-    size = len(json.dumps(params["arguments"], separators=(",", ":"), ensure_ascii=False).encode())
+    size = len(json.dumps(params["arguments"]).encode())
     return size <= MAX_FILE_ARGS_BYTES and frame_bytes - size <= 65536
 
 
