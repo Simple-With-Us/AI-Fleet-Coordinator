@@ -15,7 +15,7 @@ class DetailReads(unittest.TestCase):
     def test_commit_page_bounded_graph_and_history_cap(self):
         pull = {"head": {"sha": SHA}}
         row = {"sha": SHA, "parents": [{"sha": "b" * 40}], "commit": {"message": "private"}}
-        out, c = self.run_read(
+        out, _c = self.run_read(
             "wf_pr_commits_page",
             [pull, [row], pull],
             number=3,
@@ -53,7 +53,7 @@ class DetailReads(unittest.TestCase):
             "html_url": None,
             "body": "private",
         }
-        out, c = self.run_read(
+        out, _c = self.run_read(
             "wf_pr_review_get", [pull, row, pull], number=3, review_id=7, expected_head_sha=SHA
         )
         self.assertEqual(out["review"]["commit_id"], "b" * 40)
