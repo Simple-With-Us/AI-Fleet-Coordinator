@@ -1792,7 +1792,7 @@ LINEAR_COMMENT_PAGE = 100
 LINEAR_COMMENT_MAX_PAGES = 6
 LINEAR_QUERY_TIMEOUT_S = 120
 
-_LINEAR_LIGHT_FIELDS = "nodes { id updatedAt } pageInfo { hasNextPage endCursor }"
+_LINEAR_LIGHT_FIELDS = "nodes { id identifier updatedAt } pageInfo { hasNextPage endCursor }"
 _LINEAR_FULL_FIELDS = (
     "nodes { id identifier title url description priority createdAt updatedAt "
     "state { name type } team { key } labels { nodes { name } } "
@@ -1851,7 +1851,10 @@ def _linear_light_scan() -> dict:
         conn = data.get("issues") or {}
         for node in conn.get("nodes") or []:
             if node.get("id"):
-                out[node["id"]] = node.get("updatedAt") or ""
+                out[node["id"]] = {
+                    "identifier": node.get("identifier") or "",
+                    "updatedAt": node.get("updatedAt") or "",
+                }
         page = conn.get("pageInfo") or {}
         if not page.get("hasNextPage"):
             return out
@@ -2076,6 +2079,41 @@ def _linear_markdown(node: dict, label_names: list) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
+def _linear_scan_entry(node) -> tuple:
+    """(identifier, updatedAt) from a light-scan value.  Tolerates the bare-stamp shape the
+    older test fixtures inject."""
+    if isinstance(node, dict):
+        return node.get("identifier") or "", node.get("updatedAt") or ""
+    return "", str(node or "")
+
+
+def _linear_ingested_versions() -> dict:
+    """doc_id -> ingested updated_at (ms) for the linear rows of the ingest state file, so a
+    routine run fetches only issues Linear changed since they were ingested.  Any read problem
+    degrades to an empty map - the safe direction:  it refetches, it never skips.  This is why
+    the source must stay OUT of the nightly prune set:  prune deletes whatever a source did
+    not yield, and an incrementally skipped doc is still live.  A deliberate full pass
+    (FLEET_RAG_LINEAR_FULL=1, e.g. before a manual `--source linear --prune`) refetches all."""
+    path = pathlib.Path(
+        os.environ.get("FLEET_RAG_LINEAR_STATE")
+        or (pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json")
+    )
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out: dict = {}
+    for doc_id, rec in state.items():
+        if (
+            isinstance(doc_id, str)
+            and doc_id.startswith("linear/")
+            and isinstance(rec, dict)
+            and isinstance(rec.get("updated_at"), int)
+        ):
+            out[doc_id] = rec["updated_at"]
+    return out
+
+
 def iter_linear(
     limit: int | None = None,
     *,
@@ -2086,16 +2124,31 @@ def iter_linear(
     covered_ids=None,
 ) -> Iterator[Doc]:
     """The live board:  Linear issues the frozen board corpus does not cover.  See the section
-    comment above for the selection rule.  `light_scan`/`fetch_full` are test injection points."""
+    comment above for the selection rule.  `light_scan`/`fetch_full` are test injection points.
+    Selection advances from the ingest state file:  an issue already ingested at its current
+    updatedAt is not refetched (set FLEET_RAG_LINEAR_FULL=1 to force a full pass)."""
     freeze = freeze or LINEAR_FREEZE
     light_scan = light_scan or _linear_light_scan
     fetch_full = fetch_full or _linear_fetch_full
     imported = covered_ids if covered_ids is not None else load_linear_covered_ids(map_path)
     scan = light_scan()
     selected = [
-        uid for uid, updated in scan.items() if uid not in imported or (updated or "") >= freeze
+        uid
+        for uid in scan
+        if uid not in imported or _linear_scan_entry(scan[uid])[1] >= freeze
     ]
-    selected.sort(key=lambda uid: scan.get(uid) or "", reverse=True)
+    if not os.environ.get("FLEET_RAG_LINEAR_FULL"):
+        ingested = _linear_ingested_versions()
+        if ingested:
+            kept = []
+            for uid in selected:
+                identifier, updated = _linear_scan_entry(scan[uid])
+                row = ingested.get(f"linear/{identifier}") if identifier else None
+                if row is not None and row >= (parse_ts_ms(updated) or 0):
+                    continue  # already ingested at this version - see _linear_ingested_versions
+                kept.append(uid)
+            selected = kept
+    selected.sort(key=lambda uid: _linear_scan_entry(scan[uid])[1], reverse=True)
     if limit:
         selected = selected[: int(limit)]
     if not selected:

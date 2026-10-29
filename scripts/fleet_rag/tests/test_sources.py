@@ -1859,6 +1859,82 @@ class LinearSourceTests(unittest.TestCase):
             sources._linear_complete_comments(node)
         self.assertTrue(node.get("_linear_truncated"))
 
+    def test_selection_advances_from_the_ingest_state(self) -> None:
+        """An issue already ingested at its current updatedAt is not refetched;  a changed one is."""
+        state_path = pathlib.Path(self.tmp) / "ingest-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "linear/AFC-999": {
+                        "source": "linear",
+                        "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                    },
+                    "board/aaaa1111": {"source": "board", "updated_at": 1},
+                }
+            ),
+            encoding="utf-8",
+        )
+        scan = {
+            "uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"},
+            "uuid-2": {"identifier": "AFC-1000", "updatedAt": "2026-10-22T00:00:00.000Z"},
+        }
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node(uid="uuid-2", identifier="AFC-1000")]
+
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": str(state_path)}):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-2"], seen["ids"])
+        self.assertEqual(["linear/AFC-1000"], [d.doc_id for d in docs])
+
+    def test_full_env_refetches_despite_state(self) -> None:
+        state_path = pathlib.Path(self.tmp) / "ingest-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "linear/AFC-999": {
+                        "source": "linear",
+                        "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node()]
+
+        env = {"FLEET_RAG_LINEAR_STATE": str(state_path), "FLEET_RAG_LINEAR_FULL": "1"}
+        with mock.patch.dict(os.environ, env):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-1"], seen["ids"])
+        self.assertEqual(["linear/AFC-999"], [d.doc_id for d in docs])
+
+    def test_missing_or_corrupt_state_fetches_all(self) -> None:
+        scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node()]
+
+        missing = str(pathlib.Path(self.tmp) / "nope.json")
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": missing}):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-1"], seen["ids"])
+        self.assertEqual(1, len(docs))
+
     def test_missing_ids_after_fetch_raise(self) -> None:
         with mock.patch.object(
             sources, "_linear_query", return_value={"issues": {"nodes": [], "pageInfo": {}}}
