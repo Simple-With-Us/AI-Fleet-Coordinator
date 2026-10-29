@@ -30,6 +30,7 @@ MINT_PERMISSION_CEILING = (
     "actions",
     "checks",
     "variables",
+    "statuses",
     "deployments",
     "metadata",
 )
