@@ -89,6 +89,7 @@ def pairs_after(pair: str) -> tuple[str, ...]:
         if LETTERS[(start + step) % 26] != first
     )
 
+
 MUTABLE_ATTRS = ("title", "project", "thread_link", "apple_note_link", "state", "wake_capability")
 IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session_id")
 
@@ -844,7 +845,11 @@ class SessionRegistry:
                 # A session stays in the space it was first given:  a pair letter comes back as a pair.
                 space = "double" if len(previous) == 2 else "single"
                 parent_pair = self._parent_pair(
-                    conn, row["platform"], parent_session_id, row["native_session_id"], parent_letter
+                    conn,
+                    row["platform"],
+                    parent_session_id,
+                    row["native_session_id"],
+                    parent_letter,
                 )
                 letter, generation = self._allocate(
                     conn, row["platform"], record_id, now, space, pick, parent_pair
