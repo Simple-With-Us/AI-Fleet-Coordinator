@@ -63,7 +63,7 @@ class PrControls(unittest.TestCase):
         self.assertIn("threads", h.run("wf_review_threads", {"repo": "Example/demo", "number": 1}))
         self.assertEqual(
             c.calls[0][2]["variables"],
-            {"owner": "Example", "name": "demo", "number": 1},
+            {"owner": "Example", "name": "demo", "number": 1, "cursor": None},
         )
 
     def test_invalid_method_refused_before_preread(self):

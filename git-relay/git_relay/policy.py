@@ -79,6 +79,9 @@ class SeatPolicy:
     WORKFLOW_ACTIONS = (
         "wf_git_tree_create",
         "wf_git_commit_create",
+        "wf_merge_queue_entry",
+        "wf_merge_queue_enqueue",
+        "wf_merge_queue_dequeue",
         "wf_git_blob_get",
         "wf_git_blob_create",
         "wf_git_commit_get",
