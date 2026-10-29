@@ -59,7 +59,28 @@ REPO_REL = "AI-Fleet-Coordinator/scripts"
 
 
 class RegistryError(RuntimeError):
-    """The Operator registry call failed; callers must not treat it as success."""
+    """The Operator registry call failed; callers must not treat it as success.
+
+    The code and the outcome travel with the error, so a caller can tell a registry
+    that was out of reach from one that refused, and a write whose outcome is unknown
+    from one that never happened.
+    """
+
+    def __init__(self, message: str, code: str = "", outcome: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.outcome = outcome
+
+
+# The statuses a shell expects:  124 for a command that hung, 127 for a command that
+# is not there.  Automation reads these, so a registry that is out of reach has to be
+# distinguishable from one that refused.
+REGISTRY_EXIT_CODES = {"timeout": 124, "missing_tool": 127}
+
+# A registry call that timed out, or answered something unreadable, may have applied
+# the write before the answer was lost.  Those outcomes are unknown rather than
+# failed, so a caller checks the state instead of assuming the write never happened.
+UNKNOWN_OUTCOME_CODES = ("timeout", "nonzero", "empty", "bad_json", "bad_shape")
 
 
 # ---- where things live ------------------------------------------------------------
@@ -158,6 +179,54 @@ def _json_within_limits(value: object) -> bool:
     return True
 
 
+def _interrupt_on_signal(signum, frame):
+    """Turn an interruption into an exception, so the child is stopped on the way out."""
+    raise KeyboardInterrupt("interrupted by signal %s" % signum)
+
+
+def _install_signal_handlers() -> dict:
+    """Catch the signals that would end this process without unwinding.
+
+    SIGINT already raises KeyboardInterrupt on its own;  SIGTERM does not, and the
+    default action for it kills the process outright, leaving the registry child
+    running on its own.  A handler that cannot be installed, which is the case off
+    the main thread, is simply left out of the returned map.
+    """
+    previous = {}
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous[sig] = signal.signal(sig, _interrupt_on_signal)
+        except (ValueError, OSError):
+            continue
+    return previous
+
+
+def _restore_signal_handlers(previous: dict) -> None:
+    for sig, handler in previous.items():
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            continue
+
+
+def _kill_process_group(proc: subprocess.Popen, sig: int) -> None:
+    """Signal the child and everything it started."""
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """Stop the child and its group:  a polite stop first, then a hard one."""
+    _kill_process_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc, signal.SIGKILL)
+        proc.wait()
+
+
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
     local_db = registry_db()
@@ -168,55 +237,96 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
             "code": "no_registry",
         }
     cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
+    previous = _install_signal_handlers()
+    proc = None
     try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=scripts,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        code = "missing_tool" if getattr(exc, "errno", None) == 2 else "spawn_failed"
-        return {"error": str(exc)[:400], "code": code}
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.kill()
-        proc.wait()
-        return {"error": "the registry did not answer in time", "code": "timeout"}
-    except OSError as exc:
-        code = "spawn_failed"
-        return {"error": str(exc)[:400], "code": code}
+            proc = subprocess.Popen(
+                cmd,
+                cwd=scripts,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            # A missing executable is errno 2;  it is a different failure from a spawn
+            # that failed for any other reason, and it has its own exit status.
+            code = "missing_tool" if getattr(exc, "errno", None) == 2 else "spawn_failed"
+            return {"error": str(exc)[:400], "code": code}
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc, signal.SIGKILL)
+            proc.kill()
+            proc.wait()
+            return {
+                "error": "the registry did not answer in time",
+                "code": "timeout",
+                "outcome": "outcome_unknown",
+            }
+        except OSError as exc:
+            _kill_process_group(proc, signal.SIGKILL)
+            proc.kill()
+            proc.wait()
+            return {"error": str(exc)[:400], "code": "spawn_failed"}
+    except BaseException:
+        # This process was interrupted.  The child sits in its own process group, so
+        # it would outlive us unless it is stopped here.
+        if proc is not None:
+            _terminate_process_group(proc)
+        raise
+    finally:
+        _restore_signal_handlers(previous)
     out = (stdout or "").strip()
     if not out:
         err = (stderr or "no answer").strip()[:400]
         code = "nonzero" if proc.returncode else "empty"
-        return {"error": err, "code": code}
+        return {"error": err, "code": code, "outcome": "outcome_unknown"}
     try:
         answer = json.loads(out.splitlines()[-1])
     except json.JSONDecodeError:
-        return {"error": "unreadable answer: %s" % out[:200], "code": "bad_json"}
+        return {
+            "error": "unreadable answer: %s" % out[:200],
+            "code": "bad_json",
+            "outcome": "outcome_unknown",
+        }
     if not isinstance(answer, dict):
-        return {"error": "the registry answer was not an object", "code": "bad_shape"}
+        return {
+            "error": "the registry answer was not an object",
+            "code": "bad_shape",
+            "outcome": "outcome_unknown",
+        }
     if proc.returncode and "error" not in answer:
         answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
     return answer
 
 
 def _require_registry(answer: dict, *, needs_label: bool = False) -> dict:
+    """A registry answer that is not a success is a failure, never a result.
+
+    The failure carries the registry's own code and outcome, so the caller can map
+    it to an exit status and can tell a write whose outcome is unknown from one that
+    never happened.
+    """
+    if not isinstance(answer, dict):
+        raise RegistryError("the registry answer was not an object", "bad_shape")
     if answer.get("error"):
-        raise RegistryError(str(answer["error"]))
+        raise RegistryError(
+            str(answer["error"]),
+            str(answer.get("code") or ""),
+            str(answer.get("outcome") or ""),
+        )
     if needs_label:
         label = answer.get("label")
         if not isinstance(label, str) or not label.strip():
             raise RegistryError("the registry answer carried no letter")
     return answer
+
+
+def _registry_exit_code(exc: RegistryError) -> int:
+    """The status this registry failure gets on the command line."""
+    return REGISTRY_EXIT_CODES.get(getattr(exc, "code", "") or "", 2)
 
 
 def register(session_id: str, title: str = "", space: str = "single") -> dict:
@@ -241,12 +351,21 @@ def register(session_id: str, title: str = "", space: str = "single") -> dict:
     if title:
         _scan_title(title)
         args += ["--title", title]
-    return registry_call(args)
+    return _require_registry(registry_call(args))
 
 
 def touch_session(session_id: str) -> dict:
-    return registry_call(
-        ["touch", "--platform", PLATFORM, *_registry_identity_args(), "--session-id", session_id]
+    return _require_registry(
+        registry_call(
+            [
+                "touch",
+                "--platform",
+                PLATFORM,
+                *_registry_identity_args(),
+                "--session-id",
+                session_id,
+            ]
+        )
     )
 
 
@@ -476,8 +595,15 @@ def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
     if letter:
         try:
             touch_session(session_id)
-        except RegistryError:
-            pass
+        except RegistryError as exc:
+            # The letter came from the cache and it is still this session's, so a
+            # touch that did not land is not a reason to lose it.  It is a reason to
+            # say so:  the sweep reads last_seen_at, and a stale stamp can end a
+            # live letter.  A registry that is not on this host at all is a
+            # configuration state rather than a failure of this call, so it stays
+            # quiet.
+            if getattr(exc, "code", "") != "no_registry":
+                sys.stderr.write("Could not stamp the session as seen: %s\n" % exc)
         return letter
     answer = _require_registry(register(session_id, topic, space), needs_label=True)
     letter = str(answer.get("label") or "")
@@ -644,7 +770,14 @@ def hook_stop() -> int:
         )
         return 2
     fallback = wanted_title(letter, title)
-    if not set_title(session_id, fallback):
+    try:
+        renamed = set_title(session_id, fallback)
+    except ValueError as exc:
+        # The title carries a credential:  the refusal names the problem and never
+        # the value.
+        sys.stderr.write("Could not rename the thread: %s\n" % exc)
+        return 2
+    if not renamed:
         sys.stderr.write("Could not rename the thread in the session store.\n")
         return 2
     try:
@@ -778,7 +911,13 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         }
         if apply:
             if not already_ok:
-                if not set_title(session_id, wanted):
+                try:
+                    renamed = set_title(session_id, wanted)
+                except ValueError as exc:
+                    entry["error"] = str(exc)
+                    out.append(entry)
+                    continue
+                if not renamed:
                     entry["error"] = "could not rename in the session store"
                     out.append(entry)
                     continue
@@ -811,8 +950,13 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         )
         if answer.get("error"):
             error_code = answer.get("code")
-            unknown_codes = {"timeout", "nonzero", "empty", "bad_json"}
-            outcome = "outcome_unknown" if error_code in unknown_codes else "failed"
+            # The registry classifies the failure itself;  the list of codes is the
+            # fallback for an answer that came from somewhere else.
+            outcome = str(answer.get("outcome") or "")
+            if not outcome:
+                outcome = (
+                    "outcome_unknown" if error_code in UNKNOWN_OUTCOME_CODES else "failed"
+                )
             if error_code == "timeout":
                 exit_code = 124
             elif error_code == "missing_tool":
@@ -870,6 +1014,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         except RegistryError as exc:
             print(json.dumps({"error": str(exc)}))
+            return _registry_exit_code(exc)
+        except ValueError as exc:
+            # The title carried a credential:  the refusal names the problem and
+            # never the value.
+            print(json.dumps({"error": str(exc)}))
             return 2
         return 0
     if args.command == "rename":
@@ -877,15 +1026,25 @@ def main(argv: list[str] | None = None) -> int:
             answer = _require_registry(register(args.session_id))
         except RegistryError as exc:
             print(json.dumps({"error": str(exc)}))
-            return 2
+            return _registry_exit_code(exc)
         letter = str(answer.get("label") or "")
         title = wanted_title(letter, args.title)
-        if not set_title(args.session_id, title):
+        try:
+            renamed = set_title(args.session_id, title)
+        except ValueError as exc:
+            # The title carried a credential:  the refusal names the problem and
+            # never the value.
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        if not renamed:
             print(json.dumps({"error": "could not rename in the session store"}))
             return 2
         try:
             update_title(args.session_id, title)
-        except (RegistryError, ValueError) as exc:
+        except RegistryError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return _registry_exit_code(exc)
+        except ValueError as exc:
             print(json.dumps({"error": str(exc)}))
             return 2
         print(json.dumps({"letter": letter, "title": title}))

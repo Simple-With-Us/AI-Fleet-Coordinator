@@ -127,6 +127,24 @@ class RegistryTest(unittest.TestCase):
         kinds = sorted(p["kind"] for p in pending)
         self.assertEqual(kinds, ["event_append", "session_upsert"])
 
+    def test_resume_enqueues_the_session_upsert(self):
+        # The exported sheet refreshes "Last Seen At" only from a session_upsert
+        # payload, so a resume that moves the column without enqueueing one leaves
+        # the database and the sheet disagreeing.
+        a = self.reg.resolve_or_register(ident())
+        R.mark_exported(self.db, [p["outbox_id"] for p in R.pending_outbox(self.db)])
+        self.assertEqual(R.pending_outbox(self.db), [])
+        again = self.reg.resolve_or_register(ident())
+        self.assertEqual(again["outcome"], "resumed")
+        pending = R.pending_outbox(self.db)
+        upserts = [p for p in pending if p["kind"] == "session_upsert"]
+        self.assertEqual(len(upserts), 1)
+        cells = json.loads(upserts[0]["payload"])["cells"]
+        row = self.reg._conn.execute(
+            "SELECT last_seen_at FROM sessions WHERE record_id = ?", (a["record_id"],)
+        ).fetchone()
+        self.assertEqual(cells[R.SESSIONS_HEADERS.index("Last Seen At")], row["last_seen_at"])
+
     def test_mark_exported_then_crash_rerun(self):
         self.reg.resolve_or_register(ident())
         pending = R.pending_outbox(self.db)
@@ -433,6 +451,26 @@ class RegistryTest(unittest.TestCase):
         self.assertTrue(first["closed"])
         self.assertFalse(again["closed"])
         self.assertEqual(again["outcome"], "already_closed")
+
+    def test_close_session_twice_still_names_the_letter(self):
+        # The alias is retired by the first close, so the live lookup answers
+        # nothing:  the second close still has to name the letter that ended.
+        self.reg.resolve_or_register(ident(platform="minimax"))
+        first = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
+        again = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(first["label"], "A")
+        self.assertEqual(again["label"], "A")
+        self.assertEqual(again["generation"], 1)
 
     def test_close_session_on_an_unregistered_session_raises(self):
         with self.assertRaises(ValueError):

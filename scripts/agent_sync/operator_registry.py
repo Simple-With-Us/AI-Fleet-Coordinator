@@ -483,10 +483,16 @@ class SessionRegistry:
                     # The session is alive, so it was seen:  the sweep that ends a stale
                     # letter's use reads this column, and a session that is being resumed
                     # is by definition not stale.
-                    self._conn.execute(
+                    conn.execute(
                         "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
                         (now, record_id),
                     )
+                    # The exported sheet refreshes "Last Seen At" only from a
+                    # session_upsert payload, so the row that just moved has to be
+                    # enqueued in the same transaction.  Without it the database
+                    # advances on every resume while the sheet keeps the value it had
+                    # at registration, and the two copies of the registry disagree.
+                    self._enqueue_session_upsert(conn, record_id, now)
                 self._insert_event(
                     conn,
                     record_id,
@@ -829,12 +835,21 @@ def update_session(
                     % (native_session_id, namespace, verified_host, profile_scope)
                 )
             record_id = row["record_id"]
-            if row["closed_at"]:
-                raise ValueError(
-                    "session %s is closed on %s; open a new registration instead"
-                    % (native_session_id, namespace)
-                )
             letter, generation = registry._active_alias(conn, record_id)
+            if row["closed_at"]:
+                # The letter is already over, so the row can never be updated again.
+                # Answer with the closed state instead of raising:  a caller that
+                # only carries the title (the seat's stop hook) would otherwise be
+                # blocked forever by a row that cannot change.
+                return {
+                    "record_id": record_id,
+                    "label": letter,
+                    "generation": generation,
+                    "title": row["title"],
+                    "outcome": "closed",
+                    "changed": [],
+                    "title_display": display_title(letter, str(row["title"] or "")),
+                }
             if title is not None:
                 wanted["title"] = registry_title(letter, title)
             changed = {k: v for k, v in wanted.items() if (row[k] or "") != v}
@@ -960,6 +975,19 @@ def close_session(
         )
         record_id = row["record_id"]
         letter, generation = registry._active_alias(registry._conn, record_id)
+        if not letter:
+            # The alias was retired by an earlier close, so the live lookup answers
+            # nothing.  The letter this session really held is the last one it was
+            # given:  a caller that closes the same session twice, or asks about one
+            # that is already closed, still needs to know which letter ended.
+            prior = registry._conn.execute(
+                "SELECT letter, generation FROM alias_assignments WHERE record_id = ?"
+                " ORDER BY assigned_at DESC LIMIT 1",
+                (record_id,),
+            ).fetchone()
+            if prior is not None:
+                letter = prior["letter"]
+                generation = prior["generation"]
         closed = registry.close(record_id, actor=actor, source=source, reason=reason)
         current = registry._get(record_id)
     finally:

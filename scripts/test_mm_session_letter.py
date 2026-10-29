@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,35 @@ class _StdinBytes:
 
     def __init__(self, payload: bytes) -> None:
         self.buffer = io.BytesIO(payload)
+
+
+def _kill_recorder(seen: list):
+    """A stand-in for os.killpg that records what it was asked to signal."""
+
+    def record(pid: int, sig: int) -> None:
+        seen.append((pid, sig))
+
+    return record
+
+
+class _FakeProc:
+    """A child process that is interrupted while the parent waits for it."""
+
+    def __init__(self) -> None:
+        self.pid = 4242
+        self.returncode = None
+        self.waited = False
+        self.killed = False
+
+    def communicate(self, timeout=None):
+        raise KeyboardInterrupt("interrupted")
+
+    def wait(self, timeout=None):
+        self.waited = True
+        return 0
+
+    def kill(self):
+        self.killed = True
 
 
 class MmSessionLetterTest(unittest.TestCase):
@@ -77,6 +107,97 @@ class MmSessionLetterTest(unittest.TestCase):
     def test_require_registry_rejects_an_empty_label(self):
         with self.assertRaises(M.RegistryError):
             M._require_registry({"label": ""}, needs_label=True)
+
+    def test_a_registry_failure_carries_its_code_and_its_outcome(self):
+        with self.assertRaises(M.RegistryError) as caught:
+            M._require_registry(
+                {"error": "no answer", "code": "timeout", "outcome": "outcome_unknown"}
+            )
+        self.assertEqual(caught.exception.code, "timeout")
+        self.assertEqual(caught.exception.outcome, "outcome_unknown")
+        self.assertEqual(M._registry_exit_code(caught.exception), 124)
+
+    def test_register_fails_closed_on_a_registry_error(self):
+        # A registry that is out of reach is a failure, not a session with no letter.
+        with mock.patch.object(
+            M,
+            "registry_call",
+            return_value={"error": "the registry is out of reach", "code": "no_registry"},
+        ):
+            with self.assertRaises(M.RegistryError):
+                M.register("sid")
+
+    def test_touch_fails_closed_on_a_registry_error(self):
+        with mock.patch.object(
+            M, "registry_call", return_value={"error": "the registry is out of reach"}
+        ):
+            with self.assertRaises(M.RegistryError):
+                M.touch_session("sid")
+
+    def test_an_interrupted_registry_call_stops_the_child(self):
+        # The child sits in its own process group, so an interrupted runner has to
+        # stop it or it outlives this process.
+        proc = _FakeProc()
+        killed = []
+        with (
+            mock.patch.object(M, "registry_db", return_value="/tmp/registry.sqlite3"),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(M.subprocess, "Popen", return_value=proc),
+            mock.patch.object(M.os, "killpg", side_effect=_kill_recorder(killed)),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                M.registry_call(["register"])
+        self.assertTrue(killed, "the child process group was not stopped")
+        self.assertEqual(killed[0][1], signal.SIGTERM)
+        self.assertTrue(proc.waited)
+
+    # --- the command line answers with the status the failure deserves ------
+
+    def test_the_letter_command_exits_124_on_a_registry_timeout(self):
+        out = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "registry_call", return_value={"error": "no answer", "code": "timeout"}
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.main(["letter", "--session-id", "sid"])
+        self.assertEqual(code, 124)
+
+    def test_the_letter_command_exits_127_on_a_missing_registry(self):
+        out = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "registry_call", return_value={"error": "gone", "code": "missing_tool"}
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.main(["letter", "--session-id", "sid"])
+        self.assertEqual(code, 127)
+
+    def test_the_letter_command_exits_2_on_any_other_registry_error(self):
+        out = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "registry_call", return_value={"error": "denied", "code": "denied"}
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.main(["letter", "--session-id", "sid"])
+        self.assertEqual(code, 2)
+
+    def test_the_rename_command_refuses_a_credential_title_without_a_traceback(self):
+        secret = "ghp_" + "a1B2c3D4" * 5
+        out = io.StringIO()
+        with (
+            mock.patch.object(M, "registry_call", return_value={"label": "B"}),
+            mock.patch.object(M, "set_title", side_effect=ValueError("secret_detected")),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.main(["rename", "--session-id", "sid", "--title", secret])
+        self.assertEqual(code, 2)
+        self.assertIn("secret_detected", out.getvalue())
+        self.assertNotIn(secret, out.getvalue())
 
     def test_read_hook_input_rejects_oversized_bytes(self):
         payload = b"x" * (M.HOOK_INPUT_MAX + 2)
@@ -159,6 +280,31 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertNotIn(secret, out)
         self.assertNotIn(secret, err)
 
+    def test_a_credential_title_is_refused_by_the_sweep_without_a_traceback(self):
+        # The rename in the sweep scans the title it is about to write, and a
+        # refusal has to be an error entry, not a traceback that loses the sweep.
+        rows = [
+            {
+                "session_id": SESSION_ID,
+                "title": "Wake platform verification",
+                "session_kind": "conversation",
+                "created_at_ms": 0,
+            }
+        ]
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=rows),
+            mock.patch.object(M, "letter_for", return_value="M"),
+            mock.patch.object(M, "set_title", side_effect=ValueError("secret_detected")),
+            mock.patch.object(M, "update_title"),
+            mock.patch.object(M, "registry_call", return_value={"count": 0}),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = M.sweep(True)
+        self.assertEqual(code, 0)
+        self.assertIn("secret_detected", out.getvalue())
+
     def test_a_prompt_shaped_title_is_skipped_without_a_topic(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._topic_file(tmp, {"other-session": "A title"})
@@ -189,6 +335,13 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertEqual(code, 127)
         self.assertIn("operator registry unavailable", err)
         self.assertIn("failed", err)
+
+    def test_a_registry_sweep_uses_the_outcome_the_registry_reported(self):
+        code, out, err = self._run_sweep(
+            "", {"error": "no answer", "code": "denied", "outcome": "outcome_unknown"}
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("outcome_unknown", err)
 
     def test_any_other_registry_error_fails_closed_with_2(self):
         code, out, err = self._run_sweep("", {"error": "denied", "code": "denied"})
