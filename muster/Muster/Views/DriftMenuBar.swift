@@ -56,6 +56,7 @@ struct DriftMenuBarContent: View {
                 Text("\(transition.timeText)  \(transition.seat) / \(transition.kindTitle)")
             }
         }
+        FleetAdminMenu()
         Divider()
         Button("Refresh Now") {
             store.refresh()
