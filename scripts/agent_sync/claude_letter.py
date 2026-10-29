@@ -975,13 +975,17 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     if state in ("mismatch", "closed"):
         return 0
     current = one_line(data.get("session_title"))
+    context = ""
     if state != "open":
         if state == "failed" and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
             return 0
-        note = _apply(chat, chat.registry("register", title=str(note.get("title") or "")), note)
+        recovered = chat.registry("register", title=str(note.get("title") or ""))
+        note = _apply(chat, recovered, note)
         if note["state"] != "open":
             chat.write(note)
             return 0
+        # The model was told at the start that this chat had no letter yet:  it is told the one it holds now.
+        context = _reissued(recovered) + reminder(note)
     title = None
     answer: dict[str, Any] = {}
     sent = False  # a registry call this prompt (a title or a touch) also marks the chat seen
@@ -1028,8 +1032,13 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
                     )  # this title replaces the one that never reached the Operator
                     note.pop("title_failed_at", None)
                     note["touched_at"] = chat.now
-    # A title the Operator never took (the first one, when the registry did not answer) is sent again after the wait.
+    # A title the Operator never took (the first one, when the registry did not answer) is sent again after the wait,
+    # unless a registration or a rename since has put a newer title there:  the old one is never sent over it.
     unsent = str(note.get("title_unsent") or "")
+    if unsent and unsent != str(note.get("title") or ""):
+        note.pop("title_unsent", None)
+        note.pop("title_failed_at", None)
+        unsent = ""
     if not sent and unsent and chat.now - float(note.get("title_failed_at") or 0) >= RETRY_SECONDS:
         answer = chat.registry("title", title=unsent)
         sent = True
@@ -1045,11 +1054,15 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     if not sent and chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
         answer = chat.registry("touch")
         note["touched_at"] = chat.now
-    context = ""
     if answer.get("retired"):
         # The letter was retired while this chat was open:  check with the Operator again, in case it needs a new one.
         held = str(note.get("label") or "")
-        text = str(note.get("title") or "") or own_words(current, note) or PLACEHOLDER
+        held_generation = int(note.get("generation") or 1)
+        # The registry's copy of the title is cut and scanned;  the owner's whole words stay on screen when that copy is
+        # only their cut form (a name over TITLE_CHARS, or one the scanner shortened).
+        kept = str(note.get("title") or "")
+        words = own_words(current, note)
+        text = words if words and clean_title(words) == kept else (kept or words or PLACEHOLDER)
         registered = chat.registry("register", title=text)
         note = _apply(chat, registered, note)
         if note["state"] == "open":
@@ -1060,11 +1073,19 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
                 placeholder="%s: %s" % (note["label"], PLACEHOLDER),
             )
             title = "%s: %s" % (note["label"], text)
-            if note["label"] != held:
-                # A different pair:  the model was told the old one at the start, so it is told the new one now.
+            if note["label"] != held or int(note.get("generation") or 1) != held_generation:
+                # A different pair, or the same one as a later generation:  the model was told how this chat is
+                # addressed at the start, so it is told how now.
                 context = _reissued(registered) + reminder(note)
         else:
             title = bare(current, held) if held and current.startswith("%s: " % held) else None
+            if held:
+                # Retired and not replaced yet:  the model must not go on announcing a letter another chat may hold.
+                context = (
+                    "This chat's Operator letter %s was retired and the Operator could not issue another (%s).  "
+                    "It is not %s any more; a prompt after %d minutes tries again."
+                    % (held, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
+                )
     chat.write(note)
     if (title and title != current) or context:
         _hook_out(

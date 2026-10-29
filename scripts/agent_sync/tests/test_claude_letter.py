@@ -921,6 +921,8 @@ class HookTests(Base):
                              "session_title": "AA: Fix Login"}, now=later)
         self.assertEqual(out["sessionTitle"], "AB: Fix Login")  # not "AB: AA: Fix Login"
         self.assertEqual(self.lookup("s-0001")["title"], "Fix Login")
+        # the start told the model there was no letter yet, so the first prompt that recovers tells it the one it holds
+        self.assertIn("Claude AB", out["additionalContext"])
 
     def test_a_secret_in_a_name_given_before_the_first_prompt_is_not_kept_in_the_note(self) -> None:
         key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped:  32 mixed-case letters and digits
@@ -963,6 +965,9 @@ class HookTests(Base):
                              "session_title": "AA: First Task"}, now=later)
         self.assertEqual(out["sessionTitle"], "First Task")  # the stale pair is taken off
         self.assertEqual(self.note("s-0001")["state"], "failed")
+        # and the model is told the letter it was given at the start is gone, so it stops announcing it
+        self.assertIn("letter AA was retired", out["additionalContext"])
+        self.assertIn("could not issue another", out["additionalContext"])
 
     def test_a_secret_shaped_name_is_not_kept_in_the_note_after_a_retired_letter_registers_again(self) -> None:
         key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped:  32 mixed-case letters and digits
@@ -979,7 +984,7 @@ class HookTests(Base):
         self.assertEqual(CL.clean_title(key), "")  # a name that is only a key has no words left once it is scanned
         self.assertEqual((note["state"], note["titled"], note["title"]), ("open", True, ""))
         self.assertNotIn(key, json.dumps(self.lookup("s-0001")))
-        self.assertTrue(out is None or out["sessionTitle"].startswith("AA: "))
+        self.assertTrue(out is None or out.get("sessionTitle", "AA: ").startswith("AA: "))
         ssh = FakeSsh(self)  # and the same name on later prompts is not sent again
         self.assertIsNone(self.hook(
             {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
@@ -1054,7 +1059,7 @@ class HookTests(Base):
         self.assertIn("earlier letter AA went to another chat", context)
         self.assertEqual(self.note("s-0001")["label"], "CC")
 
-    def test_a_retired_letter_that_comes_back_as_the_same_pair_needs_no_new_context(self) -> None:
+    def test_a_retired_letter_that_comes_back_as_the_same_pair_is_told_as_a_later_generation(self) -> None:
         self.titled()
         reg = OR.SessionRegistry(self.db)
         try:
@@ -1067,8 +1072,58 @@ class HookTests(Base):
              "session_title": "AA: Help Get All PR Issues Addressed"},
             now=later,
         )
-        self.assertIsNone(out)  # AA is free and was this chat's:  nothing changed on screen or in the context
+        # AA is free and was this chat's, so the title on screen is right and is left alone;  but a reused pair is the
+        # next generation, and the model is told how the chat is addressed now ("Claude AA (gen 2)").
+        self.assertNotIn("sessionTitle", out)
+        self.assertIn("Claude AA (gen 2)", out["additionalContext"])
+        self.assertNotIn("went to another chat", out["additionalContext"])
         self.assertEqual(self.lookup("s-0001")["label"], "AA")
+
+    def test_a_title_the_registry_never_took_is_not_sent_over_a_newer_one(self) -> None:
+        class TitleDown(FakeSsh):
+            """The Mac does not answer a title call."""
+
+            def __call__(self, cmd, **kwargs):
+                if shlex.split(cmd[8])[3] == "title":
+                    self.calls.append(cmd)
+                    raise subprocess.TimeoutExpired("ssh", 12)
+                return super().__call__(cmd, **kwargs)
+
+        self.start("s-0001")
+        start = time.time()
+        self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=TitleDown(self), now=start,
+        )
+        self.assertEqual(self.note("s-0001")["title_unsent"], "Fix the Login Page")
+        self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "prompt_input_exit"})
+        # Resumed under another name:  the registration carries that name to the Operator.
+        self.start("s-0001", source="resume", session_title="AA: Billing Report")
+        self.assertEqual(self.lookup("s-0001")["title"], "Billing Report")
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+             "session_title": "AA: Billing Report"}, runner=ssh, now=start + CL.RETRY_SECONDS + 5))
+        self.assertNotIn("title", self.registry_ops(ssh))  # the old title is not sent over the new one
+        self.assertNotIn("title_unsent", self.note("s-0001"))
+        self.assertEqual(self.lookup("s-0001")["title"], "Billing Report")
+
+    def test_a_retired_letter_that_comes_back_keeps_the_owners_long_name_on_screen(self) -> None:
+        self.titled()
+        long = "Investigate the intermittent failures of the nightly payments reconciliation job on staging"
+        self.assertIsNone(self.renamed("AA: " + long))  # the registry and the note hold the cut copy
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        out = self.renamed("AA: " + long, now=later)
+        self.assertNotIn("sessionTitle", out)  # the whole name already on screen is not cut to the registry's copy
+        stored = self.lookup("s-0001")["title"]
+        self.assertLessEqual(len(stored), CL.TITLE_CHARS)
+        self.assertTrue(long.startswith(stored))
 
     def test_a_first_title_the_registry_did_not_take_is_sent_again_after_the_wait(self) -> None:
         class TitleFailsOnce(FakeSsh):
