@@ -123,9 +123,14 @@ def repo_scripts_dir() -> str:
 
 
 def _scan_title(text: str) -> None:
-    hit = secretscan.scan(text or "")
-    if hit:
-        raise ValueError("session title refused: %s" % hit)
+    """Refuse a title that carries a credential, with a stable code and no value.
+
+    The code is the same one the Operator's registry answers with, so a caller
+    reading either side sees one name for the refusal.  Neither the secret nor any
+    part of it is ever put in the message.
+    """
+    if secretscan.scan(text or ""):
+        raise ValueError("secret_detected")
 
 
 # ---- the registry, locally only ---------------------------------------------------
@@ -379,8 +384,17 @@ def cache_letter(session_id: str, letter: str, topic: str = "", space: str = "si
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
+            fh.flush()
+            # The bytes have to be on the disk before the name points at them, and the
+            # directory entry has to be on the disk before anyone trusts the name.
+            os.fchmod(fh.fileno(), 0o600)
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
-        os.chmod(path, 0o600)
+        dir_fd = os.open(letter_cache_dir(), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)

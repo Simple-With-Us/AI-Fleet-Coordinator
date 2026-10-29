@@ -32,5 +32,22 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(M.cached_letter("sid"), "")
 
 
+    def test_a_title_with_a_credential_is_refused_with_a_stable_code(self):
+        secret = "ghp_" + "a1B2c3D4" * 5
+        with self.assertRaises(ValueError) as caught:
+            M._scan_title("Deploy with " + secret)
+        self.assertEqual(str(caught.exception), "secret_detected")
+        self.assertNotIn(secret, str(caught.exception))
+
+    def test_the_letter_cache_is_written_and_leaves_no_temp_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["MINIMAX_HOOKS_DATA"] = tmp
+            M.cache_letter("sid", "D", "Wake verification", "single")
+            path = os.path.join(M.letter_cache_dir(), "sid.json")
+            self.assertEqual(M.cached_letter("sid"), "D")
+            self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
+            leftovers = [n for n in os.listdir(M.letter_cache_dir()) if n.endswith(".tmp")]
+            self.assertEqual(leftovers, [])
+
 if __name__ == "__main__":
     unittest.main()

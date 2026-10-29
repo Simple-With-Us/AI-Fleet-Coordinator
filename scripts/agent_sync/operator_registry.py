@@ -31,6 +31,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from . import secretscan
 from . import session_ids as SI
 from .operator_registry_schema import DDL, SCHEMA_VERSION
 
@@ -132,6 +133,23 @@ def _utcnow() -> str:
 def display_title(label: str, title: str) -> str:
     """In-platform display form (owner 2026-10-20):  "H: Title"."""
     return f"{label}: {title}" if label else title
+
+
+SECRET_DETECTED = "secret_detected"
+
+
+def _scan_title(title: str | None) -> None:
+    """Refuse a title that carries a credential, with a stable code and no value.
+
+    The registry is the system of record for every session name, so the scan lives
+    here and not only in the callers:  a title that arrives from anywhere is refused
+    before it is stored, and the answer names the problem without repeating the
+    secret or any part of it.
+    """
+    if title is None:
+        return
+    if secretscan.scan(str(title)):
+        raise ValueError(SECRET_DETECTED)
 
 
 def registry_title(label: str, title: str) -> str:
@@ -647,6 +665,7 @@ def register_session(
     """
     if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
         raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
+    _scan_title(title)
     native = SI.check(native_session_id, "the native session id")
     platform = normalize_platform(platform)
     for name, value in (
@@ -751,6 +770,7 @@ def update_session(
     bad = [k for k in wanted if k not in MUTABLE_ATTRS]
     if bad:
         raise ValueError(f"not mutable: {', '.join(bad)}")
+    _scan_title(wanted.get("title"))
     registry = SessionRegistry(db_path)
     try:
         row = _session_row_for_update(
