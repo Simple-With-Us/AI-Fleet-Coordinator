@@ -618,7 +618,6 @@ class SeatControlTests(unittest.TestCase):
         self.prompt(prompt=secret_prompt)
         audit_text = repr(self.audit_rows)
         identifiers = (
-            "CODEX",
             "mac-fixture",
             "grok-leader",
             "native-session-1",
@@ -628,6 +627,14 @@ class SeatControlTests(unittest.TestCase):
         for identifier in identifiers:
             self.assertNotIn(identifier, audit_text)
             self.assertNotIn(hashlib.sha256(identifier.encode()).hexdigest(), audit_text)
+        self.assertTrue(
+            any(record.get("authenticated_seat") == "CODEX" for record in self.audit_rows),
+            "authenticated seat must be audited without raw session or prompt content",
+        )
+        self.assertTrue(
+            any(record.get("acting_identity") == "GROK" for record in self.audit_rows),
+            "acting identity must be audited for mutation delegation",
+        )
         self.assertNotIn("actor_fingerprint", audit_text)
         self.assertNotIn("host_fingerprint", audit_text)
         self.assertNotIn("session_fingerprint", audit_text)
@@ -680,14 +687,17 @@ class SeatControlTests(unittest.TestCase):
         stored = self.service.idempotency.row(key)
         self.assertIsNotNone(stored)
         now = time.time()
+        self.assertEqual(stored["state"], "sent")
+        self.assertEqual(stored["result"]["status"], "held")
         self.assertGreaterEqual(stored["expires"], now)
         self.assertLessEqual(stored["expires"], now + REQUEST_TTL_SECONDS + 5)
         self.assertNotEqual(stored["expires"], TOMBSTONE_EXPIRES_AT)
 
     def test_list_and_resolve_agree_on_agent_id_backed_sessions(self):
-        self.catalog.rows = [
-            row(session_id="", agent_id="native-session-1"),
-        ]
+        catalog_row = row()
+        catalog_row.pop("session_id")
+        catalog_row["agent_id"] = "native-session-1"
+        self.catalog.rows = [catalog_row]
         listed = self.service.call_tool(
             "seat_control_list",
             {"host_scope": "mac", "host": "mac-fixture", "limit": 4},
@@ -695,6 +705,43 @@ class SeatControlTests(unittest.TestCase):
         self.assertEqual(len(listed["data"]["sessions"]), 1)
         read = self.service.call_tool("seat_control_read", {"target": self.target()})
         self.assertEqual(read["status"], "ok")
+
+    def test_platform_and_owner_length_match_schema(self):
+        long_platform = "p" * 129
+        result = self.service.call_tool(
+            "seat_control_read",
+            {"target": self.target("platform", long_platform)},
+        )
+        self.assertEqual(result["status"], "invalid_request")
+        long_owner = "o" * 129
+        result = self.service.call_tool(
+            "seat_control_read",
+            {"target": self.target("owner", long_owner)},
+        )
+        self.assertEqual(result["status"], "invalid_request")
+
+    def test_malformed_catalog_session_id_fails_closed(self):
+        self.catalog.rows = [row(session_id="  bad whitespace  ")]
+        result = self.service.call_tool("seat_control_list", {"host_scope": "mac", "host": "mac-fixture"})
+        self.assertEqual(result["status"], "unavailable")
+
+    def test_accepted_replay_survives_later_mutation_gate_refusal(self):
+        first = self.prompt()
+        self.assertEqual(first["status"], "accepted")
+        self.service.mutations_enabled = False
+        second = self.prompt()
+        self.assertEqual(second["status"], "duplicate")
+        self.assertEqual(len(self.transport.sent), 1)
+
+    def test_secret_refusal_does_not_erase_accepted_receipt(self):
+        prompt_text = "hello world"
+        self.assertEqual(self.prompt(prompt=prompt_text)["status"], "accepted")
+        token = "sk-" + "ant-" + ("x" * 40)
+        refused = self.prompt(prompt=f"{prompt_text} {token}")
+        self.assertEqual(refused["status"], "invalid_request")
+        clean = self.prompt(prompt=prompt_text)
+        self.assertEqual(clean["status"], "duplicate")
+        self.assertEqual(len(self.transport.sent), 1)
 
 
 if __name__ == "__main__":

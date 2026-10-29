@@ -45,17 +45,15 @@ MAX_LIST = 24
 MAX_OUTPUT_MESSAGES = 8
 MAX_PROMPT_CHARS = 12_000
 MAX_REQUEST_ID_CHARS = 128
+MAX_SHORT_IDENTITY_CHARS = 128
 MAX_TOOL_ARGUMENT_BYTES = 65_536
+MAX_ARGUMENT_DEPTH = 16
+MAX_ARGUMENT_NODES = 1_000
 TARGET_FIELDS = frozenset({"host_scope", "host", "platform", "session_id", "owner"})
 REQUEST_TTL_SECONDS = 7 * 24 * 60 * 60
 # IdemStore prunes rows by this timestamp. Preserve no-replay tombstones beyond
 # the normal request TTL so an old retry cannot become a fresh provider send.
 TOMBSTONE_EXPIRES_AT = 2**63 - 1
-# IdemStore.begin() treats a fresh pending row as an atomic no-replay claim.
-# Keep a held/failed receipt pending with a future claim timestamp so begin()
-# cannot atomically overwrite it as a new send. The result retains the true
-# caller-visible held/failed status.
-TOMBSTONE_CLAIMED_AT = TOMBSTONE_EXPIRES_AT
 
 
 def _states(**overrides: CapabilityState) -> dict[str, CapabilityState]:
@@ -165,9 +163,9 @@ class SessionTarget:
         if scope not in HOST_SCOPES:
             raise ValueError("host_scope must be mac, server, or cloud")
         host = _identity(raw.get("host"), "host")
-        platform = _identity(raw.get("platform"), "platform")
         session_id = _identity(raw.get("session_id"), "session_id")
-        owner = _identity(raw.get("owner"), "owner")
+        owner = _short_identity(raw.get("owner"), "owner")
+        platform = _short_identity(raw.get("platform"), "platform")
         return cls(scope, host, platform, session_id, owner)  # type: ignore[arg-type]
 
     def public(self) -> dict[str, str]:
@@ -186,22 +184,34 @@ def _identity(value: Any, name: str) -> str:
     return value
 
 
+def _short_identity(value: Any, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > MAX_SHORT_IDENTITY_CHARS
+    ):
+        raise ValueError(f"{name} must be a non-empty exact identifier of at most 128 characters")
+    return value
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
 
 
-def _catalog_session_id(row: Mapping[str, Any]) -> str | None:
+def _catalog_session_id(row: Mapping[str, Any]) -> str:
     sid = row.get("session_id")
-    if isinstance(sid, str) and sid.strip():
-        return sid.strip()
-    agent_id = row.get("agent_id")
-    if isinstance(agent_id, str) and agent_id.strip():
-        return agent_id.strip()
-    return None
+    if sid is None:
+        sid = row.get("agent_id")
+        if sid is None:
+            raise ValueError("catalog session id is missing")
+    if not isinstance(sid, str) or not sid or sid != sid.strip():
+        raise ValueError("catalog session id must be an exact non-empty string")
+    return sid
 
 
 def _catalog_flag(value: Any) -> bool:
-    return value is True
+    return isinstance(value, bool) and value
 
 
 def _scope_for(platform: str, local_scope: str) -> str:
@@ -394,10 +404,10 @@ class SeatControlMCP:
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if not self.feature_enabled:
             return self._result("disabled", "seat control is disabled")
-        if not self._arguments_within_bounds(arguments):
-            self._audit(name, None, "invalid_request")
-            return self._result("invalid_request", "arguments exceed the supported bound")
         try:
+            if not self._arguments_within_bounds(arguments):
+                self._safe_audit(name, None, "invalid_request")
+                return self._result("invalid_request", "arguments exceed the supported bound")
             if name == "seat_control_capabilities":
                 if not self.authorize(self.caller_id, "capabilities", None):
                     self._audit("capabilities", None, "permission_refused", delegation="refused")
@@ -416,13 +426,13 @@ class SeatControlMCP:
             }.get(name)
             if operation:
                 return self._mutate(operation, arguments)
-            self._audit(name, None, "unsupported")
+            self._safe_audit(name, None, "unsupported")
             return self._result("unsupported", "unknown seat-control tool")
         except (TypeError, ValueError, KeyError):
-            self._audit(name, None, "invalid_request")
+            self._safe_audit(name, None, "invalid_request")
             return self._result("invalid_request", "invalid seat-control arguments")
         except Exception:
-            self._audit(name, None, "unavailable")
+            self._safe_audit(name, None, "unavailable")
             # Provider or store exceptions may follow a send. The mutating path
             # marks that case unknown before returning; never expose raw errors.
             return self._result("unavailable", "seat-control adapter unavailable")
@@ -454,9 +464,13 @@ class SeatControlMCP:
         for row in rows:
             platform = row.get("platform")
             host = row.get("host")
-            sid = _catalog_session_id(row) if isinstance(row, dict) else None
-            if not isinstance(platform, str) or not isinstance(host, str) or sid is None:
+            if not isinstance(row, dict) or not isinstance(platform, str) or not isinstance(host, str):
                 continue
+            try:
+                sid = _catalog_session_id(row)
+            except ValueError:
+                self._audit("list", None, "invalid_catalog")
+                return self._result("unavailable", "session catalog returned a malformed record")
             if _scope_for(platform, self.local_scope) != target_scope or host != host_filter:
                 continue
             owner = row.get("seat")
@@ -557,17 +571,47 @@ class SeatControlMCP:
         return _digest(self.caller_id + "\0" + request_id)
 
     def _drop_idempotency(self, request_id: str) -> None:
+        """Release only an unclaimed row; never erase a prior no-replay receipt."""
+        key = self._idempotency_key(request_id)
         try:
-            self.idempotency.drop(self._idempotency_key(request_id))
+            prior = self.idempotency.row(key)
+        except Exception:
+            return
+        if prior is None or prior.get("state") in {"sent", "unknown"}:
+            return
+        try:
+            self.idempotency.drop(key)
         except Exception:
             pass
 
     def _arguments_within_bounds(self, arguments: Mapping[str, Any]) -> bool:
         try:
-            payload = json.dumps(dict(arguments), ensure_ascii=False, separators=(",", ":"))
-        except (TypeError, ValueError):
+            normalized = dict(arguments)
+            payload = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError, RecursionError):
             return False
-        return len(payload.encode("utf-8")) <= MAX_TOOL_ARGUMENT_BYTES
+        if len(payload.encode("utf-8")) > MAX_TOOL_ARGUMENT_BYTES:
+            return False
+        nodes = 0
+
+        def walk(value: Any, depth: int, ancestors: set[int]) -> bool:
+            nonlocal nodes
+            nodes += 1
+            if nodes > MAX_ARGUMENT_NODES or depth > MAX_ARGUMENT_DEPTH:
+                return False
+            if isinstance(value, (dict, list)):
+                marker = id(value)
+                if marker in ancestors:
+                    return False
+                ancestors.add(marker)
+                children = value.values() if isinstance(value, dict) else value
+                for child in children:
+                    if not walk(child, depth + 1, ancestors):
+                        return False
+                ancestors.remove(marker)
+            return True
+
+        return walk(normalized, 0, set())
 
     def _scan_prompt(self, prompt: str) -> bool:
         return secretscan.scan(prompt, self.scan_known) is not None
@@ -605,7 +649,6 @@ class SeatControlMCP:
             self._audit(
                 operation, target, "permission_refused", delegation="refused", request_id=request_id
             )
-            self._drop_idempotency(request_id)
             return self._result("permission_refused", "caller is not authorized for this session")
         if operation != "prompt":
             # These operations do not have verified native implementations.
@@ -617,12 +660,13 @@ class SeatControlMCP:
         prompt = args.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_PROMPT_CHARS:
             self._audit(operation, target, "invalid_request", request_id=request_id)
-            self._drop_idempotency(request_id)
             return self._result("invalid_request", "prompt is empty or exceeds the supported bound")
         if self._scan_prompt(prompt):
-            self._audit(operation, target, "invalid_request", request_id=request_id)
-            self._drop_idempotency(request_id)
+            self._audit(operation, target, "secret_refused", request_id=request_id)
             return self._result("invalid_request", "prompt contains a refused secret shape")
+        replay = self._prior_prompt_result(target, request_id, prompt)
+        if replay is not None:
+            return replay
         if not self.mutations_enabled:
             self._audit(
                 operation,
@@ -632,7 +676,6 @@ class SeatControlMCP:
                 delegation="refused",
                 request_id=request_id,
             )
-            self._drop_idempotency(request_id)
             return self._result("permission_refused", "mutations are disabled")
         if self.approve is None or not self.approve(self.caller_id, operation, target, request_id):
             self._audit(
@@ -643,15 +686,10 @@ class SeatControlMCP:
                 delegation="approval_required",
                 request_id=request_id,
             )
-            self._drop_idempotency(request_id)
             return self._result("permission_refused", "per-request mutation approval is required")
-        replay = self._prior_prompt_result(target, request_id, prompt)
-        if replay is not None:
-            return replay
         row, error = self._resolve(target)
         if error:
             self._audit(operation, target, error, prompt=prompt, request_id=request_id)
-            self._drop_idempotency(request_id)
             return self._result(error, "exact session is missing, stale, ambiguous, or unavailable")
         assert row is not None
         row_status = str(row.get("status", "unknown")).strip().lower().replace("-", "_")
@@ -674,7 +712,6 @@ class SeatControlMCP:
         if self._capabilities(target, row).get("prompt") != "implemented":
             capability = self._capabilities(target, row).get("prompt", "unsupported")
             self._audit(operation, target, capability, prompt=prompt, request_id=request_id)
-            self._drop_idempotency(request_id)
             return self._result(capability, "prompt capability is not implemented for this target")
         if self._nudge_pending(target):
             return self._held(
@@ -689,7 +726,6 @@ class SeatControlMCP:
         }
         if not binding["cwd"]:
             self._audit(operation, target, "unsupported", prompt=prompt, request_id=request_id)
-            self._drop_idempotency(request_id)
             return self._result("unsupported", "catalog has no exact workspace binding")
         return self._dispatch_prompt(target, request_id, prompt, binding)
 
@@ -725,6 +761,14 @@ class SeatControlMCP:
                 data=receipt,
             )
         if prior.get("state") == "sent":
+            receipt = prior.get("result")
+            if isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}:
+                status = receipt["status"]
+                return self._result(
+                    status,
+                    receipt.get("reason") or "previous request was not dispatched",
+                    data=receipt,
+                )
             self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
             return self._result(
                 "duplicate", "request was already accepted", data=prior.get("result")
@@ -779,6 +823,13 @@ class SeatControlMCP:
                     data=receipt,
                 )
             if prior.get("state") == "sent":
+                if isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}:
+                    status = receipt["status"]
+                    return self._result(
+                        status,
+                        receipt.get("reason") or "previous request was not dispatched",
+                        data=receipt,
+                    )
                 self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
                 return self._result(
                     "duplicate", "request was already accepted", data=prior.get("result")
@@ -802,6 +853,14 @@ class SeatControlMCP:
                 self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
                 return self._result(
                     "unknown", "idempotency receipt is missing; dispatch is blocked"
+                )
+            receipt = previous.get("result")
+            if isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}:
+                status = receipt["status"]
+                return self._result(
+                    status,
+                    receipt.get("reason") or "previous request was not dispatched",
+                    data=receipt,
                 )
             return self._result(
                 "duplicate", "request was already accepted", data=previous.get("result")
@@ -1068,17 +1127,15 @@ class SeatControlMCP:
         return self._result("held", reason, data=result)
 
     def _pin_receipt(self, key: str, result: dict[str, Any]) -> None:
-        """Persist a terminal non-dispatch receipt without racing IdemStore.begin().
+        """Persist a terminal non-dispatch receipt using IdemStore's sent duplicate path.
 
-        IdemStore.begin() only recognizes `sent` and `pending` as non-new states;
-        it overwrites `held` and `failed`. A future-dated pending claim makes
-        that existing atomic begin return `busy` indefinitely, while `result`
-        preserves the actual held/failed outcome for this adapter's caller.
+        IdemStore.begin() overwrites non-sent rows. Pin held/failed receipts as sent
+        with the caller-visible status in result and a request-scoped expiry so a
+        retry returns the same receipt until TTL, then may dispatch again.
         """
         self.idempotency.set(
             key,
-            state="pending",
-            claimed_at=TOMBSTONE_CLAIMED_AT,
+            state="sent",
             result=result,
             expires=self.clock() + REQUEST_TTL_SECONDS,
         )
@@ -1115,24 +1172,33 @@ class SeatControlMCP:
             rows = self.catalog.discover()
         except Exception:
             return None, "unavailable"
-        matches = [
-            row
-            for row in rows
-            if isinstance(row, dict)
-            and row.get("host") == target.host
-            and row.get("platform") == target.platform
-            and _catalog_session_id(row) == target.session_id
-        ]
+        matches = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                sid = _catalog_session_id(row)
+            except ValueError:
+                return None, "unavailable"
+            if (
+                row.get("host") == target.host
+                and row.get("platform") == target.platform
+                and sid == target.session_id
+            ):
+                matches.append(row)
         if len(matches) > 1:
             return None, "ambiguous"
         if not matches:
-            same_session_elsewhere = [
-                row
-                for row in rows
-                if isinstance(row, dict)
-                and row.get("platform") == target.platform
-                and _catalog_session_id(row) == target.session_id
-            ]
+            same_session_elsewhere = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    sid = _catalog_session_id(row)
+                except ValueError:
+                    return None, "unavailable"
+                if row.get("platform") == target.platform and sid == target.session_id:
+                    same_session_elsewhere.append(row)
             if same_session_elsewhere:
                 return None, "wrong_host"
             return None, "not_found"
@@ -1187,6 +1253,8 @@ class SeatControlMCP:
             "event": "seat_control",
             "operation": operation,
             "outcome": outcome,
+            "authenticated_seat": self.caller_id,
+            "acting_identity": target.owner if target is not None else None,
             "prompt_chars": len(prompt) if prompt is not None else None,
             "at": self.clock(),
         }
@@ -1195,6 +1263,12 @@ class SeatControlMCP:
         if delegation is not None:
             record["delegation"] = delegation
         self.audit(record)
+
+    def _safe_audit(self, *args: Any, **kwargs: Any) -> None:
+        try:
+            self._audit(*args, **kwargs)
+        except Exception:
+            pass
 
     @staticmethod
     def _result(status: str, message: str | None = None, *, data: Any = None) -> dict[str, Any]:
