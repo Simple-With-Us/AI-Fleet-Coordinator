@@ -812,11 +812,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         if answer.get("error"):
             error_code = answer.get("code")
             unknown_codes = {"timeout", "nonzero", "empty", "bad_json"}
-            outcome = (
-                "outcome_unknown"
-                if error_code in unknown_codes
-                else "failed"
-            )
+            outcome = "outcome_unknown" if error_code in unknown_codes else "failed"
             if error_code == "timeout":
                 exit_code = 124
             elif error_code == "missing_tool":

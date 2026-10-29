@@ -137,16 +137,14 @@ class MmSessionLetterTest(unittest.TestCase):
             }
         ]
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(M, "sessions", return_value=rows), mock.patch.object(
-            M, "letter_for", return_value="M"
-        ), mock.patch.object(M, "set_title", return_value=True), mock.patch.object(
-            M, "update_title"
-        ), mock.patch.object(
-            M, "registry_call", return_value=registry_answer
-        ), contextlib.redirect_stdout(
-            out
-        ), contextlib.redirect_stderr(
-            err
+        with (
+            mock.patch.object(M, "sessions", return_value=rows),
+            mock.patch.object(M, "letter_for", return_value="M"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            mock.patch.object(M, "registry_call", return_value=registry_answer),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
         ):
             code = M.sweep(True, topics_file=topic_file)
         return code, out.getvalue(), err.getvalue()
@@ -164,18 +162,14 @@ class MmSessionLetterTest(unittest.TestCase):
     def test_a_prompt_shaped_title_is_skipped_without_a_topic(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._topic_file(tmp, {"other-session": "A title"})
-            code, out, err = self._run_sweep(
-                path, {"count": 0}, title="Reply to Claude in Zulip"
-            )
+            code, out, err = self._run_sweep(path, {"count": 0}, title="Reply to Claude in Zulip")
         self.assertEqual(code, 0)
         self.assertEqual(out.strip(), "[]")
 
     def test_the_topic_file_rescues_a_prompt_shaped_title(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._topic_file(tmp, {SESSION_ID: "Wake platform verification"})
-            code, out, err = self._run_sweep(
-                path, {"count": 0}, title="Reply to Claude in Zulip"
-            )
+            code, out, err = self._run_sweep(path, {"count": 0}, title="Reply to Claude in Zulip")
         self.assertEqual(code, 0)
         self.assertIn("M: Wake platform verification", out)
 
