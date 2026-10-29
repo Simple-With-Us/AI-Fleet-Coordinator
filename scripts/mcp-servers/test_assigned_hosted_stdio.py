@@ -331,8 +331,12 @@ class FileWireEncodingTests(unittest.TestCase):
         )
         self.assertGreater(wire_size - compact_args, 65536)
         self.assertTrue(mod.file_frame_allowed(message, wire_size))
-        message["params"]["arguments"]["metadata"] = "😀" * 100000
-        self.assertFalse(mod.file_frame_allowed(message, len(json.dumps(message).encode())))
+        message["params"]["arguments"]["metadata"] = "😀" * 90000
+        wire = len(json.dumps(message).encode())
+        args_size = len(json.dumps(message["params"]["arguments"]).encode())
+        self.assertGreater(args_size, mod.MAX_FILE_ARGS_BYTES)
+        self.assertLessEqual(wire, mod.MAX_FILE_FRAME_BYTES)
+        self.assertFalse(mod.file_frame_allowed(message, wire))
 
 
 if __name__ == "__main__":
