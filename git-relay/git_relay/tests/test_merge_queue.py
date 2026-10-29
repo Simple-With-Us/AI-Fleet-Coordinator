@@ -84,9 +84,7 @@ class Queue(unittest.TestCase):
     def test_graphql_transport_on_mutation_is_outcome_unverifiable(self):
         class GraphQLDown(Client):
             def __init__(self, status):
-                super().__init__(
-                    {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"}
-                )
+                super().__init__({"node_id": "PR1", "head": {"sha": SHA}, "state": "open"})
                 self.graphql_status = status
 
             def _call(self, method, path, payload=None, bearer=None):
