@@ -71,3 +71,16 @@ class History(unittest.TestCase):
         self.assertIsNone(
             WorkflowVerbs._issue_event({"event": "cross-referenced"}, timeline=True)["id"]
         )
+
+    def test_raw_history_json_is_bounded_before_projection(self):
+        for extra in (
+            {"body": "x" * 65537},
+            {"nested": [[[[[[[1]]]]]]]},
+            {"nodes": list(range(501))},
+        ):
+            c = Client([{"id": 1, "event": "closed", **extra}])
+            a = "wf_issue_events"
+            with self.assertRaises(RelayGitHubError):
+                WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
+                    a, {"repo": REPO, "number": 1}
+                )

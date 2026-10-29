@@ -508,7 +508,7 @@ export function validWfV1Response(action, body, args) {
  if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;
- if(historyResponses[action])return historyResponses[action].safeParse(body).success;
+ if(historyResponses[action])return historyResponses[action].safeParse(body).success && (!args || body.page===(args.page??1)&&body.events.length<=(args.per_page??30)&&body.has_more===(body.events.length===(args.per_page??30)));
 
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));
  if(relationResponses[action])return relationResponses[action].safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>v.repo===args.repo));

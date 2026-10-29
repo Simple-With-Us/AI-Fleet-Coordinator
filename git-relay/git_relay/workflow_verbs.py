@@ -423,9 +423,7 @@ _NEW_READS = frozenset(
 )
 
 
-def _validate_read(action, result):
-    """Bound untrusted JSON and verify each newly exposed endpoint's core shape."""
-
+def _bound_read_json(result):
     def bad():
         raise RelayGitHubError(502, "workflow read receipt unverifiable")
 
@@ -451,6 +449,15 @@ def _validate_read(action, result):
             bad()
         if size > 65536:
             bad()
+
+
+def _validate_read(action, result):
+    """Bound untrusted JSON and verify each newly exposed endpoint's core shape."""
+
+    def bad():
+        raise RelayGitHubError(502, "workflow read receipt unverifiable")
+
+    _bound_read_json(result)
 
     def fields(value, shape):
         if not isinstance(value, dict):
@@ -1061,6 +1068,7 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/issues/{number}/{suffix}?per_page={limit}&page={page}")
         if not isinstance(data, list):
             raise RelayGitHubError(502, "issue history page unverifiable")
+        _bound_read_json(data)
         return {
             "events": [self._issue_event(x, timeline=timeline) for x in data[:limit]],
             "page": page,

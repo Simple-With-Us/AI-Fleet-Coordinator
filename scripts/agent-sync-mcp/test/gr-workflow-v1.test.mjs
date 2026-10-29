@@ -898,3 +898,13 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
  }
  assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
 });
+
+test('history receipts bind requested page size and conservative has_more',()=>{
+ const row={id:1,event:'closed',created_at:null,commit_id:null};
+ for(const action of ['wf_issue_events','wf_issue_timeline']){
+  const args={repo:'o/r',number:1,page:2,per_page:1};
+  const body={events:[row],page:2,has_more:true};
+  assert.equal(validWfV1Response(action,body,args),true);
+  for(const extra of [{page:1},{events:[row,row]},{has_more:false}])assert.equal(validWfV1Response(action,{...body,...extra},args),false);
+ }
+});
