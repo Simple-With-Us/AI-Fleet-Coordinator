@@ -1840,7 +1840,8 @@ function validatePagerDutyPayload(payload) {
 
 // One named object owns every read/render/write transaction.  Durable storage
 // overlays legacy KV without deleting historical records or trusting KV locks.
-const LEGACY_IMPORTED = "legacy:imported";
+const LEGACY_IMPORTED = "legacy:imported",
+  LEGACY_RETRY_AT = "legacy:retryAt";
 export class AlertWriter {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -1857,15 +1858,18 @@ export class AlertWriter {
   // Every KV list counts against the account's free-plan cap of 1,000 a day,
   // and listing it on each sweep and webhook spent about 3,300 a day.  Until a
   // copy succeeds the overlay keeps reading through to KV, retried at most
-  // every ten minutes.
+  // every ten minutes;  the retry time is stored, so an evicted writer waits
+  // too.  The read-through itself is not skipped, because an inventory
+  // without the frozen records could post a second standing block.
   async legacyImported() {
     const storage = this.ctx.storage,
       legacy = this.env.ALERT_STATE;
     if (this.imported) return true;
-    if (Date.now() < (this.importRetryAt || 0)) return false;
     try {
       if (!legacy || (await storage.get(LEGACY_IMPORTED)) !== undefined)
         return (this.imported = true);
+      this.importRetryAt ??= (await storage.get(LEGACY_RETRY_AT)) || 0;
+      if (Date.now() < this.importRetryAt) return false;
       for (const { name } of await listAll(legacy, "")) {
         if ((await storage.get(`kv:${name}`)) !== undefined) continue;
         const value = await legacy.get(name);
@@ -1876,6 +1880,9 @@ export class AlertWriter {
     } catch {
       console.error(JSON.stringify({ event: "alert.legacy_import_failed" }));
       this.importRetryAt = Date.now() + 10 * 60 * 1000;
+      try {
+        await storage.put(LEGACY_RETRY_AT, this.importRetryAt);
+      } catch {}
       return false;
     }
   }

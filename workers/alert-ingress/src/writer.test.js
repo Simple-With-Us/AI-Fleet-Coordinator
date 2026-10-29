@@ -346,6 +346,17 @@ test("a failed copy reads through to KV and retries only after ten minutes", asy
   assert.equal(await status(), 1);
   assert.equal(await status(), 1);
   assert.equal(db.data.get("legacy:imported"), undefined);
+  // The retry time is stored, so a writer evicted and started again waits too.
+  let copies = 0;
+  const counted = kv.list;
+  kv.list = async (opts) => {
+    if (opts.prefix === "") copies++;
+    return counted(opts);
+  };
+  const restarted = new AlertWriter({ storage: db }, { ALERT_STATE: kv });
+  assert.equal((await (await restarted.fetch(new Request("https://test/status"))).json()).summary.alerts, 1);
+  assert.equal(copies, 0);
+  kv.list = counted;
   const before = kv.calls.list;
   quota = false;
   writer.importRetryAt = 0;
