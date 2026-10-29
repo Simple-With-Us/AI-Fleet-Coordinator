@@ -181,11 +181,12 @@ class RegistrySideTests(Base):
             self.assertEqual(self.lookup(sid, "mac")["state"], "active")
 
     def test_full_letters_evict_the_least_recently_seen(self) -> None:
+        # Keep every allocation on the fixture clock, or the stale sweep can free letters mid-fill.
+        now = OR.datetime(2026, 10, 28, 12, tzinfo=OR.UTC).timestamp()
         for i in range(26):
-            self.register("s-%04d" % i)
+            self.register("s-%04d" % i, now=now)
             self.set_seen("s-%04d" % i, "2026-10-28T%02d:%02d:00.000Z" % (10 + i // 60, i % 60))
         self.set_seen("s-0007", "2026-10-28T09:00:00.000Z")  # H is the oldest
-        now = OR.datetime(2026, 10, 28, 12, tzinfo=OR.UTC).timestamp()
         out = self.register("s-0099", now=now)
         self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, "H", 2))
         self.assertEqual(self.lookup("s-0007")["state"], "closed")
