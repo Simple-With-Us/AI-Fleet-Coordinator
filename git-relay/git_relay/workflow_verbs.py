@@ -72,6 +72,8 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_dependency_add": ({"issues": "write"}, True),
+    "wf_issue_dependency_remove": ({"issues": "write"}, True),
     "wf_issue_parent": ({"issues": "read"}, False),
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
@@ -471,12 +473,16 @@ def _validate_read(action, result):
         },
         "wf_pr_reviews": {
             "reviews": lambda v: seq(
-                v, lambda x: fields(x, {"id": positive, "state": text, "commit_id": sha})
+                v,
+                lambda x: fields(x, {"id": positive, "state": text, "commit_id": sha}),
             ),
             "complete": boolean,
         },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
-        "wf_issue_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_issue_comments": {
+            "comments": lambda v: seq(v, comment),
+            "complete": boolean,
+        },
         "wf_commit_get": {"commit": commit},
         "wf_compare": {
             "comparison": lambda v: fields(
@@ -533,7 +539,8 @@ def _validate_read(action, result):
                     "workflows": lambda x: seq(
                         x,
                         lambda y: fields(
-                            y, {"id": positive, "name": text, "path": text, "state": text}
+                            y,
+                            {"id": positive, "name": text, "path": text, "state": text},
                         ),
                     ),
                 },
@@ -613,7 +620,12 @@ class WorkflowVerbs:
                 return stop
 
         handle = cls.__new__(cls)
-        handle.client, handle.policy, handle.seat, handle.bearer = _Probe(), None, "probe", "probe"
+        handle.client, handle.policy, handle.seat, handle.bearer = (
+            _Probe(),
+            None,
+            "probe",
+            "probe",
+        )
         handle.action, handle.repo = action, repo
         try:
             handle.run(action, args)
@@ -706,7 +718,10 @@ class WorkflowVerbs:
         title = self._issue_text(args, "title")
         body = self._issue_text(args, "body")
         result = self.client._call(
-            "POST", f"/repos/{repo}/issues", {"title": title, "body": body}, bearer=self.bearer
+            "POST",
+            f"/repos/{repo}/issues",
+            {"title": title, "body": body},
+            bearer=self.bearer,
         )
         try:
             summary = self._issue_summary(result)
@@ -767,7 +782,10 @@ class WorkflowVerbs:
         body = self._issue_text(args, "body")
         self._issue_before_write(repo, number)
         result = self.client._call(
-            "POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=self.bearer
+            "POST",
+            f"/repos/{repo}/issues/{number}/comments",
+            {"body": body},
+            bearer=self.bearer,
         )
         if (
             not isinstance(result, dict)
@@ -940,6 +958,81 @@ class WorkflowVerbs:
         _only(args, ("repo", "number", "per_page", "page"))
         return self._relation_read(repo, args, "dependencies/blocking")
 
+    def _dependency_target(self, repo, number):
+        # Before either mutation. A missing/unverifiable read is not a write.
+        try:
+            data = self._get(f"/repos/{repo}/issues/{number}")
+        except RelayGitHubError as exc:
+            if exc.status == 0 or exc.status == 408 or exc.status >= 500:
+                raise PreReadUnavailable("dependency issue preread unavailable") from None
+            raise
+        try:
+            item = self._relation_issue(data)
+        except RelayGitHubError:
+            raise Refused("dependency issue preread receipt unverifiable") from None
+        if not item["repo"] or item["repo"].lower() != repo.lower() or item["number"] != number:
+            raise Refused("dependency issue repository or number mismatch")
+        return item
+
+    def _dependency_write(self, repo, args, remove=False):
+        _only(args, ("repo", "number", "blocker_number"))
+        number = _int(args, "number")
+        blocker_number = _int(args, "blocker_number")
+        if number == blocker_number:
+            raise Refused("self dependency refused")
+        issue = self._dependency_target(repo, number)
+        blocker = self._dependency_target(repo, blocker_number)
+        if issue["id"] == blocker["id"]:
+            raise Refused("duplicate dependency identity")
+        path = f"/repos/{repo}/issues/{number}/dependencies/blocked_by"
+        try:
+            result = self.client._call(
+                "DELETE" if remove else "POST",
+                path + f"/{blocker['id']}" if remove else path,
+                None if remove else {"issue_id": blocker["id"]},
+                bearer=self.bearer,
+            )
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise RelayGitHubError(502, "dependency write outcome unverifiable") from None
+            raise
+        if remove:
+            # GitHub answers the blocked_by DELETE with 204 No Content: there is no
+            # receipt body to verify.  The two validated pre-reads are the evidence.
+            return {
+                "completed": True,
+                "number": number,
+                "blocker_number": blocker_number,
+                "blocking": not remove,
+            }
+        # The 201 add answers with an issue body: it may identify either
+        # participant, never an arbitrary third issue.
+        try:
+            receipt = self._relation_issue(result)
+        except (Refused, TypeError, KeyError, RelayGitHubError):
+            raise RelayGitHubError(502, "dependency write receipt unverifiable") from None
+        expected = {issue["id"]: number, blocker["id"]: blocker_number}
+        if (
+            not receipt["repo"]
+            or receipt["repo"].lower() != repo.lower()
+            or expected.get(receipt["id"]) != receipt["number"]
+        ):
+            raise RelayGitHubError(502, "dependency write receipt identity mismatch")
+        return {
+            "completed": True,
+            "number": number,
+            "blocker_number": blocker_number,
+            "blocking": not remove,
+        }
+
+    def wf_issue_dependency_add(self, repo, args):
+        _only(args, ("repo", "number", "blocker_number"))
+        return self._dependency_write(repo, args)
+
+    def wf_issue_dependency_remove(self, repo, args):
+        _only(args, ("repo", "number", "blocker_number"))
+        return self._dependency_write(repo, args, True)
+
     def _asset_summary(self, data):
         if (
             not isinstance(data, dict)
@@ -979,7 +1072,10 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/releases/{release_id}/assets?per_page={page}")
         if not isinstance(data, list) or len(data) > page:
             raise RelayGitHubError(502, "invalid release asset list")
-        return {"assets": [self._asset_summary(x) for x in data], "complete": len(data) < page}
+        return {
+            "assets": [self._asset_summary(x) for x in data],
+            "complete": len(data) < page,
+        }
 
     def wf_release_asset_get(self, repo, args):
         _only(args, ("repo", "asset_id"))
@@ -1139,7 +1235,10 @@ class WorkflowVerbs:
             raise Refused("name or label required")
         self._asset_preread(repo, asset_id, expected)
         receipt = self.client._call(
-            "PATCH", f"/repos/{repo}/releases/assets/{asset_id}", patch, bearer=self.bearer
+            "PATCH",
+            f"/repos/{repo}/releases/assets/{asset_id}",
+            patch,
+            bearer=self.bearer,
         )
         data = self._asset_summary(receipt)
         if "label" in patch and receipt.get("label") != patch["label"]:
@@ -1323,7 +1422,13 @@ class WorkflowVerbs:
         result = self.client._call(
             "POST",
             f"/repos/{repo}/pulls/{number}/comments",
-            {"commit_id": commit, "path": path, "line": line, "side": side, "body": body},
+            {
+                "commit_id": commit,
+                "path": path,
+                "line": line,
+                "side": side,
+                "body": body,
+            },
             bearer=self.bearer,
         )
         if (
@@ -1407,7 +1512,13 @@ class WorkflowVerbs:
             or review_id is not None
             and ident != review_id
             or value.get("state")
-            not in ("PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED")
+            not in (
+                "PENDING",
+                "COMMENTED",
+                "APPROVED",
+                "CHANGES_REQUESTED",
+                "DISMISSED",
+            )
         ):
             raise RelayGitHubError(502, "review receipt unverifiable")
         return {k: value.get(k) for k in ("id", "state", "commit_id", "html_url")}
@@ -1509,7 +1620,11 @@ class WorkflowVerbs:
         )
         if (status == "completed") != (conclusion != "none"):
             raise Refused("conclusion required only for completed checks")
-        payload = {"name": name, "status": status, "output": {"title": title, "summary": summary}}
+        payload = {
+            "name": name,
+            "status": status,
+            "output": {"title": title, "summary": summary},
+        }
         if status == "completed":
             payload["conclusion"] = conclusion
         return payload
@@ -1537,7 +1652,10 @@ class WorkflowVerbs:
         _only(args, ("repo", "sha", "name", "status", "conclusion", "title", "summary"))
         sha, payload = _sha(args, "sha"), self._check_payload(args)
         result = self.client._call(
-            "POST", f"/repos/{repo}/check-runs", {**payload, "head_sha": sha}, bearer=self.bearer
+            "POST",
+            f"/repos/{repo}/check-runs",
+            {**payload, "head_sha": sha},
+            bearer=self.bearer,
         )
         return {"check": self._check_receipt(result, sha, payload)}
 
@@ -1653,7 +1771,10 @@ class WorkflowVerbs:
         }
 
     def wf_deployment_create(self, repo, args):
-        _only(args, ("repo", "sha", "environment", "description", "transient", "production"))
+        _only(
+            args,
+            ("repo", "sha", "environment", "description", "transient", "production"),
+        )
         sha = _sha(args, "sha")
         environment = self._text(args, "environment", 100)
         description = self._text(args, "description", 140)
@@ -1687,7 +1808,15 @@ class WorkflowVerbs:
         state = _enum(
             args,
             "state",
-            ("error", "failure", "inactive", "in_progress", "queued", "pending", "success"),
+            (
+                "error",
+                "failure",
+                "inactive",
+                "in_progress",
+                "queued",
+                "pending",
+                "success",
+            ),
         )
         description = self._text(args, "description", 140)
         # auto_inactive=False avoids changing other deployments as a side effect.
@@ -1851,7 +1980,10 @@ class WorkflowVerbs:
         ):
             raise Refused("invalid labels")
         data = self.client._call(
-            "PUT", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
+            "PUT",
+            f"/repos/{repo}/issues/{number}/labels",
+            {"labels": labels},
+            bearer=self.bearer,
         )
         if not isinstance(data, list):
             raise RelayGitHubError(502, "label receipt unverifiable")
@@ -1990,7 +2122,13 @@ class WorkflowVerbs:
         data = self.client._call(
             "POST",
             f"/repos/{repo}/releases",
-            {"tag_name": tag, "name": name, "body": body, "draft": draft, "prerelease": prerelease},
+            {
+                "tag_name": tag,
+                "name": name,
+                "body": body,
+                "draft": draft,
+                "prerelease": prerelease,
+            },
             bearer=self.bearer,
         )
         if not isinstance(data, dict):
@@ -2080,7 +2218,10 @@ class WorkflowVerbs:
         )
         comment_id = _int(args, "comment_id")
         data = self.client._call(
-            "DELETE", f"/repos/{repo}/issues/comments/{comment_id}", None, bearer=self.bearer
+            "DELETE",
+            f"/repos/{repo}/issues/comments/{comment_id}",
+            None,
+            bearer=self.bearer,
         )
         return {"deleted": True}
 
@@ -2120,7 +2261,10 @@ class WorkflowVerbs:
         )
         comment_id = _int(args, "comment_id")
         data = self.client._call(
-            "DELETE", f"/repos/{repo}/pulls/comments/{comment_id}", None, bearer=self.bearer
+            "DELETE",
+            f"/repos/{repo}/pulls/comments/{comment_id}",
+            None,
+            bearer=self.bearer,
         )
         return {"deleted": True}
 
@@ -3006,7 +3150,7 @@ class WorkflowVerbs:
             "sha": data.get("sha"),
             "size": data.get("size"),
             "encoding": data.get("encoding"),
-            "content": data.get("content") if data.get("size", 0) <= 512 * 1024 else None,
+            "content": (data.get("content") if data.get("size", 0) <= 512 * 1024 else None),
         }
 
     def wf_tree(self, repo, args):
@@ -3084,7 +3228,9 @@ class WorkflowVerbs:
             q += "&head_sha=" + _sha(args, "head_sha")
         if "status" in args:
             q += "&status=" + _enum(
-                args, "status", ("queued", "in_progress", "completed", "success", "failure")
+                args,
+                "status",
+                ("queued", "in_progress", "completed", "success", "failure"),
             )
         data = _obj(self._get(f"/repos/{repo}/actions/runs?{q}"))
         return {
@@ -3166,7 +3312,10 @@ class WorkflowVerbs:
         _only(args, ("repo", "run_id"))
         run_id = _int(args, "run_id")
         self.client._call(
-            "POST", f"/repos/{repo}/actions/runs/{run_id}/{suffix}", None, bearer=self.bearer
+            "POST",
+            f"/repos/{repo}/actions/runs/{run_id}/{suffix}",
+            None,
+            bearer=self.bearer,
         )
         return {"requested": suffix, "run_id": run_id}
 
@@ -3566,7 +3715,12 @@ class WorkflowVerbs:
             or not _SHA.fullmatch(result["commit"]["sha"])
         ):
             raise RelayGitHubError(502, "file deletion receipt unverifiable")
-        return {"deleted": True, "path": path, "branch": branch, "commit": result["commit"]["sha"]}
+        return {
+            "deleted": True,
+            "path": path,
+            "branch": branch,
+            "commit": result["commit"]["sha"],
+        }
 
     def wf_file_put(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "content_b64", "prior_sha"))
@@ -3595,7 +3749,10 @@ class WorkflowVerbs:
         if not isinstance(default, str) or not default or branch == default:
             raise Refused("default branch is not writable")
         data = self.client._call(
-            "PUT", f"/repos/{repo}/contents/{quote(path, safe='/')}", payload, bearer=self.bearer
+            "PUT",
+            f"/repos/{repo}/contents/{quote(path, safe='/')}",
+            payload,
+            bearer=self.bearer,
         )
         result = _obj(data)
         commit = _sub(result, "commit").get("sha")
