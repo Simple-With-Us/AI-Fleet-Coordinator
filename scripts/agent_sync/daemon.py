@@ -871,9 +871,9 @@ class Daemon:
                 self.config_notified = True
                 self.notifier.notify(
                     cfg.claude_seat or "LISTENER",
-                    "agent-sync listener",
+                    "simple-chat listener",
                     "config problem: %d issue%s; "
-                    "see agent-sync status"
+                    "see simple-chat daemon status"
                     % (len(cfg.errors), "" if len(cfg.errors) == 1 else "s"),
                     kind="config",
                 )
@@ -909,12 +909,12 @@ class Daemon:
                 continue
             self.notifier.notify(
                 seat,
-                "agent-sync %s" % seat,
+                "simple-chat %s" % seat,
                 "%s wake config problem, so %s wakes are inbox-only (messages still queue): %s"
                 % (seat, seat, self.scrub(seat_cfg.config_problems[0])),
                 kind="config-wake",
                 key="config-wake:%s" % seat,
-                note="%d problem%s in listener.toml for this seat; agent-sync status lists them"
+                note="%d problem%s in listener.toml for this seat; simple-chat daemon status lists them"
                 % (
                     len(seat_cfg.config_problems),
                     "" if len(seat_cfg.config_problems) == 1 else "s",
@@ -923,12 +923,12 @@ class Daemon:
         for seat, problems in sorted(cfg.skipped_seats.items()):
             self.notifier.notify(
                 seat,
-                "agent-sync %s" % seat,
+                "simple-chat %s" % seat,
                 "%s is NOT loaded, so nothing is captured for it: %s"
                 % (seat, self.scrub(problems[0] if problems else "config problem")),
                 kind="config-seat",
                 key="config-seat:%s" % seat,
-                note="fix listener.toml, then agent-sync daemon reload",
+                note="fix listener.toml, then simple-chat daemon reload",
             )
 
     def _configure_outgoing_webhook(self) -> None:
@@ -1210,9 +1210,9 @@ class Daemon:
             self.log.write("reload-refused", errors=refused)
             self.notifier.notify(
                 self.config.claude_seat or "LISTENER",
-                "agent-sync listener",
-                "reload refused: the config holds a seat this instance may not hold; see agent-sync "
-                "status",
+                "simple-chat listener",
+                "reload refused: the config holds a seat this instance may not hold; see simple-chat "
+                "daemon status",
                 kind="partition",
                 key="partition-reload",
             )
@@ -1240,7 +1240,7 @@ class Daemon:
                 if view.get("owner"):
                     self.notifier.notify(
                         runner.seat,
-                        "agent-sync %s" % runner.seat,
+                        "simple-chat %s" % runner.seat,
                         "a wake for your message stopped mid-run and was not re-run",
                         kind="wake-crashed",
                         key="crash:%s" % view.get("wake_id"),
@@ -1593,7 +1593,7 @@ class Daemon:
                                 "id": gap["oldest"],
                                 "ts": self.clock.time(),
                                 "sender": "agent-sync",
-                                "content": "Older messages were not fetched; use agent-sync read --since with an older id.",
+                                "content": "Older messages were not fetched; use simple-chat read --since with an older id.",
                             }
                         ],
                     )
@@ -1801,7 +1801,7 @@ class Daemon:
                 continue  # routine spacing:  the item is a passive headline, no banner and no throttle line
             if self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "live budget reached (%s); the topic is passive in that session" % reason,
                 kind="live-budget",
                 key="live:%s:%s" % (lease_id, c.key),
@@ -1978,7 +1978,7 @@ class Daemon:
             if owner:
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a message from you is waiting in the %s seat inbox (no headless wake)"
                     % runner.seat,
                     kind="inbox-owner",
@@ -2076,7 +2076,7 @@ class Daemon:
             self._held_rows(runner, lost, "evicted", now)
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "%d held-back message%s lost past the held_back caps (max %d plus overflow_max %d)"
                 % (
                     len(lost),
@@ -2212,7 +2212,7 @@ class Daemon:
         current = pin.get("muse") or "<unresolved>"
         recorded = pin.get("pinned_muse") or "<none>"
         note = (
-            "pinned %s, on disk %s; run `agent-sync daemon test-wake --seat %s --run` "
+            "pinned %s, on disk %s; run `simple-chat daemon test-wake --seat %s --run` "
             "then `--pin`.  It is never re-pinned automatically:  the pin records "
             "that a person checked this build's wake contract." % (recorded, current, runner.seat)
         )
@@ -2223,7 +2223,7 @@ class Daemon:
             )
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "the muse binary changed (%s), so %s wakes are inbox-only until it is "
             "re-pinned" % (current, runner.seat),
             kind="wake-pin_stale",
@@ -2257,12 +2257,12 @@ class Daemon:
             recorded = pin.get("pinned_claude") or "<none>"
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "the claude binary changed (%s), so %s wakes are inbox-only until it is "
                 "re-pinned" % (current, runner.seat),
                 kind="wake-" + reason,
                 key="wake:%s:%s" % (runner.seat, reason),
-                note="pinned %s, on disk %s; run `agent-sync daemon test-wake --seat %s --run` "
+                note="pinned %s, on disk %s; run `simple-chat daemon test-wake --seat %s --run` "
                 "then `--pin`.  It is never re-pinned automatically:  the pin records "
                 "that a person checked this build's wake contract."
                 % (recorded, current, runner.seat),
@@ -2275,19 +2275,19 @@ class Daemon:
             tool = "claude" if reason == "no_claude" else "muse"
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "no %s binary found, so %s wakes are inbox-only until it is installed or "
                 "seat.%s.%s names it" % (tool, runner.seat, runner.seat, tool),
                 kind="wake-" + reason,
                 key="wake:%s:%s" % (runner.seat, reason),
                 note="messages still queue in the seat inbox; fix listener.toml or the install, then "
-                "agent-sync daemon reload",
+                "simple-chat daemon reload",
                 trigger_ids=pending.trigger_ids,
             )
             return
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "a wake was not run (%s); the message is in the seat inbox" % reason,
             kind="wake-" + reason,
             key="wake:%s:%s" % (runner.seat, reason),
@@ -2352,7 +2352,7 @@ class Daemon:
         try:
             if not self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 text,
                 kind="wake-quota-hold",
                 key=key,
@@ -2417,7 +2417,7 @@ class Daemon:
         )
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "wakes in %s are not running (%s)" % (where, reason),
             kind="wake-" + reason,
             key="wake:%s:%s:%s" % (runner.seat, reason, key),
@@ -3115,7 +3115,7 @@ class Daemon:
                 # the owner is not left debugging an adapter that is working exactly as built.
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "%s wakes are not running: %s"
                     % (
                         runner.cfg.provider or "the provider",
@@ -3131,7 +3131,7 @@ class Daemon:
             if result.refused or pending.owner:
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a wake %s: %s"
                     % (
                         "was refused" if result.refused else "failed",
@@ -3165,7 +3165,7 @@ class Daemon:
             if pending.owner:
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a wake could not be read (%s); nothing was posted" % A.clean_banner(why, 60),
                     kind="wake-invalid",
                     key="wake-invalid:%s" % pending.wake_id,
@@ -3222,7 +3222,7 @@ class Daemon:
             if pending.owner:
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a wake was not delivered: %s"
                     % A.clean_banner(refused or "the reply was not posted", 60),
                     kind="wake-undelivered",
@@ -5403,7 +5403,7 @@ class Daemon:
             # A 4xx is a contract or key problem:  say so once a day, whoever triggered it.
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "the %s routine refused a wake (HTTP %d); check the routine URL, key and format"
                 % (runner.seat, status),
                 kind="routine-refused",
@@ -5412,7 +5412,7 @@ class Daemon:
         if pending.owner:
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "a wake for your message did not reach the %s routine (%s); it is in the seat inbox"
                 % (runner.seat, A.clean_banner(reason, 60)),
                 kind="wake-failed",
@@ -5471,7 +5471,7 @@ class Daemon:
                 outcome["refused"] = "secret scanner: %s" % found
                 self.notifier.notify(
                     runner.seat,
-                    "agent-sync %s" % runner.seat,
+                    "simple-chat %s" % runner.seat,
                     "a wake reply was refused by the secret scanner",
                     kind="wake-secret",
                     key="secret:%s" % pending.wake_id,
@@ -5494,7 +5494,7 @@ class Daemon:
             risk = obj.get("risk") if obj.get("risk") in W.RISKS else None
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "a note for you about %s" % where,
                 kind="owner_note",
                 key="note:%s" % pending.wake_id,
@@ -5760,7 +5760,7 @@ class Daemon:
         target = A.clean_banner(seat or "an invalid route", 40)
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "a route to %s was dropped (%s) in %s" % (target, A.clean_banner(why, 40), where),
             kind="route_dropped",
             key="route:%s" % pending.wake_id,
@@ -5810,7 +5810,7 @@ class Daemon:
         )
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             "paged %s for you in %s" % (seat, where),
             kind="route",
             key="route:%s" % pending.wake_id,
@@ -6153,7 +6153,7 @@ class Daemon:
             note += "\nnew message ids: %s" % ", ".join(str(r["message_id"]) for r in named)
         sent = self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             text,
             kind="held-back",
             key="held-back:%s" % runner.seat,
@@ -6577,7 +6577,7 @@ class Daemon:
         self.log.write("paused", seat=seat or "*", wakes_only=wakes_only, by=by)
         self.notifier.notify(
             self.config.claude_seat or (seat or "LISTENER"),
-            "agent-sync listener",
+            "simple-chat listener",
             "paused by %s; resume with simple-chat daemon resume" % by,
             kind="paused",
             key="paused:%s" % (message_id or by),
@@ -6668,7 +6668,7 @@ class Daemon:
             if pin and pin["why"] == "pin_stale":
                 red.append(
                     "wake pin is stale: claude moved to %s (pinned %s); run "
-                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
+                    "`simple-chat daemon test-wake --seat %s --run`, then `--pin`"
                     % (pin["claude"], pin["pinned_claude"], seat)
                 )
             # A muse seat reports the same pin state on its own file;  any wake that names a
@@ -6834,7 +6834,7 @@ class Daemon:
         self.log.write("seat-refused", seat=runner.seat, error=runner.error)
         self.notifier.notify(
             runner.seat,
-            "agent-sync %s" % runner.seat,
+            "simple-chat %s" % runner.seat,
             A.clean_banner(runner.error),
             kind="seat-refused",
         )
@@ -6851,7 +6851,7 @@ class Daemon:
         if self.clock.time() - runner.down_since > DOWN_NOTIFY_SECONDS:
             self.notifier.notify(
                 runner.seat,
-                "agent-sync %s" % runner.seat,
+                "simple-chat %s" % runner.seat,
                 "the %s queue has been down for 30 minutes" % runner.seat,
                 kind="seat-down",
             )
@@ -7112,7 +7112,7 @@ class Daemon:
         exit before the flock, any thread or any register.  Nothing writes status.json, so a
         container health check fails too."""
         for problem in self.refusal:
-            self.stderr.write("agent-sync daemon: refusing to start: %s\n" % self.scrub(problem))
+            self.stderr.write("simple-chat daemon: refusing to start: %s\n" % self.scrub(problem))
         try:
             self.stderr.flush()
         except (OSError, ValueError):
@@ -7120,7 +7120,7 @@ class Daemon:
         self.log.write("refused-start", errors=self.refusal)
         self.notifier.notify(
             self.config.claude_seat or "LISTENER",
-            "agent-sync listener",
+            "simple-chat listener",
             "refused to start: the seat partition check failed; see the listener log",
             kind="partition",
             key="partition-start",
@@ -7155,13 +7155,13 @@ class Daemon:
                     )  # stopped while waiting for the other listener:  nothing to clean up
                     return 0
                 if not wait_lock:
-                    self.stderr.write("agent-sync daemon: another listener is already running\n")
+                    self.stderr.write("simple-chat daemon: another listener is already running\n")
                     os.close(lock_fd)
                     return 1
                 if not waiting:
                     waiting = True
                     self.stderr.write(
-                        "agent-sync daemon: another listener holds the state directory; waiting for it "
+                        "simple-chat daemon: another listener holds the state directory; waiting for it "
                         "to stop\n"
                     )
                     self.log.write("waiting-for-lock", pid=os.getpid())
