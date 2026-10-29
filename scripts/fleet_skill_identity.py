@@ -297,8 +297,8 @@ GROK_BOT_IDENTITY = (
     "Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  "
     "Notes name is the role in Title Case.  Cloud branches are often "
     "`cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or "
-    "`simple-board --by`, and a `simple-board` write also needs "
-    "`LINEAR_BOARD_WRITES=1`, which the `board` wrapper sets for you.  "
+    "`simple-board --by`, and a `simple-board` write needs your "
+    "bearer-verified seat and nothing else.  "
     "Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI "
     "is `[GROK]`."
 )
@@ -1111,6 +1111,14 @@ def _insert_after_first_heading(text: str, block: str) -> str:
     for i, line in enumerate(lines):
         if line.startswith("# "):
             return "".join(lines[: i + 1] + ["\n", block] + lines[i + 1 :])
+    # No top-level heading (secret-safety starts at `## `):  keep YAML front
+    # matter at line 1 by inserting after its closing delimiter instead of
+    # prepending ahead of it, which no front-matter parser would read.
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end >= 0:
+            cut = end + len("\n---\n")
+            return text[:cut] + "\n" + block + text[cut:]
     return block + text
 
 
