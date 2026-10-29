@@ -114,6 +114,15 @@ const deliveryBarrierKey = (source, c, t) =>
 // Which source pinned a standing message id.  A vendor never edits a message
 // another vendor pinned.
 const statusOwnerKey = (id) => `statusowner:${id}`;
+// Sources whose alert key names one incident rather than one monitor.  A
+// monitor comes back, so its records are kept;  an incident does not, so a
+// closed one is pruned, or every incident ever opened would stay a row of the
+// standing block and the inventory would grow until it hit MAX_KEYS.
+const PER_INCIDENT_SOURCES = new Set(["pagerduty"]);
+// What is left of a pruned incident:  the time it closed.  It is never
+// listed, so it costs nothing in the inventory, and it is what stops a late
+// retry of the original trigger from opening the incident a second time.
+const closedKey = (k) => `closed:${k}`;
 // Source names are route segments, so they are bounded and boring.
 const SOURCE_TOKEN = /^[a-z0-9_-]{1,32}$/;
 
@@ -829,6 +838,15 @@ async function handleEvent(source, payload, env) {
   }
   const event = normalize(sourceName, payload);
   const channel = DEFAULT_CHANNEL;
+  const perIncident = PER_INCIDENT_SOURCES.has(sourceName);
+  if (perIncident && (await env.ALERT_STATE.get(closedKey(event.key)))) {
+    // The incident closed and was pruned.  Only a reopen revives it;
+    // anything else is a late or repeated delivery about a closed incident.
+    if (!event.reopened) {
+      return { action: "ignored", posted: false, status: null, statusDelivery: null };
+    }
+    await env.ALERT_STATE.delete(closedKey(event.key));
+  }
   // Keep the original topic for a stable key when vendor labels change.  The
   // svc: pin and the state read are independent, so they run in parallel.
   let [priorService, prev] = await Promise.all([
@@ -901,15 +919,29 @@ async function handleEvent(source, payload, env) {
     );
   }
 
-  await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
-  await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
-  // The source is recorded with the state so the sweep can resolve the right
-  // vendor credential for this incident.
-  await env.ALERT_STATE.put(srcKey(event.key), JSON.stringify(sourceName));
-  if (event.key === `${sourceName}:${event.service.toLowerCase()}`) {
-    await env.ALERT_STATE.put(svcNameKey(sourceName, event.service), JSON.stringify(event.key));
+  if (perIncident && result.state.phase === "ok") {
+    // A closed incident is pruned:  its row leaves the standing block and its
+    // records leave the inventory, and the tombstone keeps it closed.
+    await env.ALERT_STATE.put(closedKey(event.key), String(now));
+    for (const key of [
+      indexPrefix(sourceName, channel, topic) + event.key,
+      stateKey(event.key),
+      svcKey(event.key),
+      srcKey(event.key),
+    ]) {
+      await env.ALERT_STATE.delete(key);
+    }
+  } else {
+    await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
+    await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
+    // The source is recorded with the state so the sweep can resolve the right
+    // vendor credential for this incident.
+    await env.ALERT_STATE.put(srcKey(event.key), JSON.stringify(sourceName));
+    if (event.key === `${sourceName}:${event.service.toLowerCase()}`) {
+      await env.ALERT_STATE.put(svcNameKey(sourceName, event.service), JSON.stringify(event.key));
+    }
+    await env.ALERT_STATE.put(indexPrefix(sourceName, channel, topic) + event.key, "1");
   }
-  await env.ALERT_STATE.put(indexPrefix(sourceName, channel, topic) + event.key, "1");
   await env.ALERT_STATE.put(topicKey(sourceName, channel, topic), "1");
 
   // Every outcome refreshes the standing status, which is what makes the
@@ -1834,6 +1866,13 @@ export class AlertWriter {
       },
       async put(key, value) {
         await storage.put(`kv:${key}`, value);
+      },
+      // Only the writer's own records are deleted.  The one caller prunes the
+      // records of a closed per-incident alert, and every such record was
+      // written through this overlay, after the legacy KV was frozen, so there
+      // is no legacy copy to show through.
+      async delete(key) {
+        await storage.delete(`kv:${key}`);
       },
       async list({ prefix }) {
         const previous = await listAll(legacy, prefix);

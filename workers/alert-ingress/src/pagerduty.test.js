@@ -24,6 +24,9 @@ function fakeKV() {
     async put(key, value) {
       store.set(key, value);
     },
+    async delete(key) {
+      store.delete(key);
+    },
     async list({ prefix = "" } = {}) {
       return {
         keys: [...store.keys()].filter((key) => key.startsWith(prefix)).map((name) => ({ name })),
@@ -284,6 +287,53 @@ test("a trigger and a resolve inside the wait window never reach the channel as 
     // Only the standing block was written:  one POST creating it, no alert line.
     const posts = zulip.calls.filter((call) => call.method === "POST");
     assert.equal(posts.length, 1);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("a closed incident is pruned:  no state, no row, only a tombstone", async () => {
+  const kv = fakeKV();
+  const zulip = stubZulip();
+  try {
+    const env = envFor(kv);
+    const headers = { "x-pagerduty-token": "header-fixture" };
+    await handler.fetch(post(incident("triggered"), headers), env, {});
+    // The incident aged past the wait window and was announced by the sweep.
+    const key = "pagerduty:q094ck9dag3rye";
+    const open = JSON.parse(kv.store.get(stateKey(key)));
+    kv.store.set(stateKey(key), JSON.stringify({ ...open, phase: "alerting", since: 0 }));
+    const response = await handler.fetch(post(incident("resolved"), headers), env, {});
+    const answer = await response.json();
+    assert.equal(answer.action, "resolve");
+    const left = [...kv.store.keys()].filter((name) => name.includes(key));
+    assert.deepEqual(left, [`closed:${key}`]);
+    // The standing block no longer lists it.
+    assert.doesNotMatch(answer.status, /BotFleet production error spike/);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("after a close, a late trigger is ignored and a reopen revives the incident", async () => {
+  const kv = fakeKV();
+  const zulip = stubZulip();
+  try {
+    const env = envFor(kv);
+    const headers = { "x-pagerduty-token": "header-fixture" };
+    const key = "pagerduty:q094ck9dag3rye";
+    await handler.fetch(post(incident("triggered"), headers), env, {});
+    await handler.fetch(post(incident("resolved"), headers), env, {});
+    assert.ok(kv.store.has(`closed:${key}`));
+    const late = await handler.fetch(post(incident("triggered"), headers), env, {});
+    assert.equal((await late.json()).action, "ignored");
+    assert.equal(kv.store.has(stateKey(key)), false);
+    const reopen = incident("triggered");
+    reopen.event.event_type = "incident.reopened";
+    const revived = await handler.fetch(post(reopen, headers), env, {});
+    assert.equal((await revived.json()).action, "hold");
+    assert.equal(kv.store.has(`closed:${key}`), false);
+    assert.equal(JSON.parse(kv.store.get(stateKey(key))).phase, "pending");
   } finally {
     zulip.restore();
   }

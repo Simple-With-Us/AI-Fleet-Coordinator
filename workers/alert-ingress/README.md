@@ -28,7 +28,7 @@ inbound event -> normalize() -> state machine -> decide()
 
 A message is only warranted when **state** changes.  The channel ends up as:
 
-- **one standing status block per topic**, edited in place, always showing current truth; and
+- **one standing status block per topic**, edited in place, always showing current truth (a recovered signal is counted in its header but not drawn as a row); and
 - **a sparse timeline** of events that actually mattered.
 
 ## Routes
@@ -133,7 +133,7 @@ Stable alert keys retain their first service/topic assignment when vendor labels
 
 ## PagerDuty
 
-A PagerDuty incident is a row in the standing block of its PagerDuty service, in `#alerts` like every other source (owner, Oct 29, 2026, which settles AFC-472).  PagerDuty stays the pager:  it still pages phones on its own;  this is the readable record, and `#incident-response` is left to people.  The incident id is the key, so an acknowledgement, a reassignment or a priority change edits the row instead of posting, and a resolve closes it.  The incident's own status decides firing, not the event type, so a reassignment of a resolved incident cannot reopen it.  P1 reads SEVERE and P2 MODERATE;  otherwise high urgency reads SEVERE and low urgency MODERATE.  A ping, or an event about something that is not an incident, is answered 200 with `"action": "ignored"` and dropped, because a 4xx would make PagerDuty retry and then disable the subscription.
+A PagerDuty incident is a row in the standing block of its PagerDuty service, in `#alerts` like every other source (owner, Oct 29, 2026, which settles AFC-472).  PagerDuty stays the pager:  it still pages phones on its own;  this is the readable record, and `#incident-response` is left to people.  The incident id is the key, so an acknowledgement, a reassignment or a priority change edits the row instead of posting, and a resolve closes it.  The incident's own status decides firing, not the event type, so a reassignment of a resolved incident cannot reopen it.  P1 reads SEVERE and P2 MODERATE;  otherwise high urgency reads SEVERE and low urgency MODERATE.  A closed incident is pruned:  its state, service, source and membership records are deleted and a `closed:<key>` tombstone is left, so the standing block and the inventory hold only open incidents instead of every incident ever opened, which would grow until the 2,000-key inventory bound refused the source.  The tombstone is never listed;  a late retry of the original trigger is answered `ignored`, and only `incident.reopened` revives the incident.  A ping, or an event about something that is not an incident, is answered 200 with `"action": "ignored"` and dropped, because a 4xx would make PagerDuty retry and then disable the subscription.
 
 ## The wait window
 
@@ -153,6 +153,7 @@ An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (def
 | `idx:<source>:<channel>:<topic>:<key>` | membership marker, so a status rebuild knows its rows |
 | `status:<source>:<channel>:<topic>` | message id of that source's standing status, for the PATCH |
 | `statusowner:<message id>` | the source that pinned a standing message |
+| `closed:<key>` | when a per-incident alert (PagerDuty) closed and was pruned;  never listed |
 
 The durable delivery outcome of a standing status is keyed per source as well: `delivery:["<source>","<channel>","<topic>"]`, so a held write for one vendor never blocks another vendor's refresh.
 
@@ -175,7 +176,7 @@ cd workers/alert-ingress && node --test src/*.test.js
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
 
-The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 157 tests.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, and a ping dropped without a write.
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 159 tests.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
 
 `vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
 

@@ -417,6 +417,9 @@ export function fromPagerDuty(payload) {
     text: `${number ? `#${number} ` : ""}${title}${acked}`,
     link: sentryFirst(data.html_url),
     prodDown: /production|prod down|site down/i.test(title),
+    // Only a reopen may revive an incident that already closed:  a late
+    // retry of the original trigger must not.
+    reopened: eventType === "incident.reopened",
   };
 }
 
