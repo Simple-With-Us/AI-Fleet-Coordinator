@@ -921,7 +921,7 @@ class WorkflowVerbs:
 
         def scoped(value):
             item = self._relation_issue(value)
-            if item["repo"] != repo:
+            if not item["repo"] or item["repo"].lower() != repo.lower():
                 raise Refused("relation repository is outside or unverifiable in authorized scope")
             return item
 
@@ -989,14 +989,27 @@ class WorkflowVerbs:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise RelayGitHubError(502, "dependency write outcome unverifiable") from None
             raise
-        # GitHub documents an issue body for BOTH201 add and200 delete.
-        # It may identify either participant, never an arbitrary third issue.
+        if remove:
+            # GitHub answers the blocked_by DELETE with 204 No Content: there is no
+            # receipt body to verify.  The two validated pre-reads are the evidence.
+            return {
+                "completed": True,
+                "number": number,
+                "blocker_number": blocker_number,
+                "blocking": not remove,
+            }
+        # The 201 add answers with an issue body: it may identify either
+        # participant, never an arbitrary third issue.
         try:
             receipt = self._relation_issue(result)
         except (Refused, TypeError, KeyError, RelayGitHubError):
             raise RelayGitHubError(502, "dependency write receipt unverifiable") from None
         expected = {issue["id"]: number, blocker["id"]: blocker_number}
-        if receipt["repo"] != repo or expected.get(receipt["id"]) != receipt["number"]:
+        if (
+            not receipt["repo"]
+            or receipt["repo"].lower() != repo.lower()
+            or expected.get(receipt["id"]) != receipt["number"]
+        ):
             raise RelayGitHubError(502, "dependency write receipt identity mismatch")
         return {
             "completed": True,
