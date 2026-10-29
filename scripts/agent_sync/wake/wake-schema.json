@@ -6,10 +6,7 @@
     "reply",
     "board",
     "owner_note",
-    "risk",
-    "route",
-    "chat_target",
-    "chat_inspect"
+    "risk"
   ],
   "properties": {
     "action": {
