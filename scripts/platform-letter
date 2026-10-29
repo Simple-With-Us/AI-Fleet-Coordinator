@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""platform-letter: Operator session letters for the platforms other than Claude and MiniMax.  See
+scripts/agent_sync/README.md (Platform Session Letters).
+
+    platform-letter hook --platform P       the hook a platform runs on start, prompt, rename and end
+    platform-letter registry OP --platform P ...   the registry side, run on the Mac (the server reaches it over ssh)
+    platform-letter show --platform P       this chat's letter from its local note
+    platform-letter install --platform P    add the platform's hooks (--check, --remove)
+
+This file is symlinked as ~/.local/bin/platform-letter on the Mac (agent_sync/install.sh) and is a fleet-cli managed
+wrapper on the server (fleet-cli-release.py), so it resolves its own real path before it puts the scripts directory
+on sys.path.  It is dispatched on its own, apart from simple-chat, so the hook path loads only light modules.
+
+A hook never blocks a chat: under launchd or a GUI app `/usr/bin/env python3` can be the system Python 3.9, which
+cannot run this package.  Then the script re-runs itself with a Homebrew python3 when one exists, and a hook that
+finds none (or a checkout it cannot import) exits 0 and says nothing.  This part must stay valid Python 3.9."""
+import os
+import sys
+
+if sys.version_info < (3, 11):
+    for candidate in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+        if os.access(candidate, os.X_OK) and os.path.realpath(candidate) != os.path.realpath(sys.executable):
+            os.execv(candidate, [candidate, os.path.realpath(__file__)] + sys.argv[1:])
+    if sys.argv[1:2] == ["hook"]:
+        sys.exit(0)
+    sys.stderr.write("platform-letter: Python 3.11 or newer is required (found %d.%d)\n" % sys.version_info[:2])
+    sys.exit(1)
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+try:
+    from agent_sync.platform_letter import main  # noqa: E402
+except Exception:  # noqa: BLE001 - a hook never blocks a chat, even from a checkout that cannot be imported
+    if sys.argv[1:2] == ["hook"]:
+        sys.exit(0)
+    raise
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

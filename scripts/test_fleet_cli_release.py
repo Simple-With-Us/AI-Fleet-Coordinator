@@ -241,6 +241,26 @@ class ReleaseTests(unittest.TestCase):
                 "'/usr/bin/python3', '-I', '-B', str(release", (bin_dir / name).read_text()
             )
 
+    def test_platform_letter_gets_a_managed_isolated_wrapper(self):
+        # AFC-564: the session-letter hook of the non-Claude platforms runs this wrapper on the server.  It is
+        # isolated like the other Python tools, carries no lane roots, and execs the script of the current release.
+        self.receive()
+        path = self.home / ".local/bin/platform-letter"
+        text = path.read_text()
+        self.assertIn(release.MARKER, text)
+        self.assertIn("scripts/platform-letter", text)
+        self.assertIn("'/usr/bin/python3', '-I', '-B', str(release", text)
+        self.assertNotIn("FLEET_CODE_ROOT", text)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+
+    def test_a_host_without_platform_letter_gets_its_wrapper_on_the_next_update(self):
+        self.receive()
+        bin_dir = self.home / ".local/bin"
+        (bin_dir / "platform-letter").unlink()
+        result = self.receive(make_bundle("two"), install=False)
+        self.assertEqual(result["status"], "activated")
+        self.assertIn(release.MARKER, (bin_dir / "platform-letter").read_text())
+
     def test_a_routine_update_adds_new_wrappers_but_never_overwrites(self):
         # A host installed before recall, lane and fleet-mode existed gets their wrappers on the next push.
         self.receive()

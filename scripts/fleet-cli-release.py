@@ -433,6 +433,10 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "recall": (wrapper(home, "scripts/recall"), 0o755),
         bin_dir / "lane": (wrapper(home, "scripts/fleet_lanes/bin/lane"), 0o755),
         bin_dir / "fleet-mode": (wrapper(home, "scripts/fleet-mode"), 0o755),
+        # AFC-564: the session-letter hook and its registry side for the non-Claude platforms.  The git-update path
+        # runs the whole checkout, so the script is there once a release holds it.  The paused Mac-push bundle path
+        # would also need it in EXACT (and the doctor's SHIPPED_EXACT).
+        bin_dir / "platform-letter": (wrapper(home, "scripts/platform-letter"), 0o755),
     }
 
 
