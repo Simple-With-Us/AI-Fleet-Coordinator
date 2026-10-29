@@ -42,7 +42,7 @@ class FakeCLI:
         self.calls.append(argv)
         names = []
         path = ""
-        after_get = argv[argv.index("get") + 1:]
+        after_get = argv[argv.index("get") + 1 :]
         for token in after_get:
             if token == "--path":
                 break
@@ -150,16 +150,12 @@ class InfisicalLogin(unittest.TestCase):
                 }
             )
         self.assertEqual(access, "the-access-token")
-        self.assertEqual(
-            seen["data"], {"clientId": "the-id", "clientSecret": "the-secret"}
-        )
+        self.assertEqual(seen["data"], {"clientId": "the-id", "clientSecret": "the-secret"})
 
     def test_an_absent_credential_is_refused(self):
         with self.assertRaises(provision.ReadError) as caught:
             provision.infisical_login({"INFISICAL_AUTOMATION_CLIENT_ID": "the-id"})
-        self.assertEqual(
-            caught.exception.reason, "INFISICAL_AUTOMATION_CLIENT_SECRET is absent"
-        )
+        self.assertEqual(caught.exception.reason, "INFISICAL_AUTOMATION_CLIENT_SECRET is absent")
 
 
 if __name__ == "__main__":
