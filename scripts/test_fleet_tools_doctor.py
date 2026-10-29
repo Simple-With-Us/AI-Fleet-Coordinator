@@ -130,9 +130,7 @@ class SeatAndMcpTests(unittest.TestCase):
             "/zulip": frozenset(
                 {"GROK_WEB_ZULIP_EMAIL", "GROK_WEB_ZULIP_KEY", "GROK_WEB_ZULIP_SITE"}
             ),
-            "/linear": frozenset(
-                {"GROK_WEB_LINEAR_CLIENT_ID", "GROK_WEB_LINEAR_CLIENT_SECRET"}
-            ),
+            "/linear": frozenset({"GROK_WEB_LINEAR_CLIENT_ID", "GROK_WEB_LINEAR_CLIENT_SECRET"}),
             "/fleetlink": None,
         }
 
