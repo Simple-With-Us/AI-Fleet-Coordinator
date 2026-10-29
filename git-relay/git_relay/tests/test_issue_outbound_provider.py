@@ -105,3 +105,42 @@ class IssueOutboundProviderTests(unittest.TestCase):
             )
             self.assertEqual(result["result"]["id"], 1)
             self.assertEqual(client.calls[-1][:2], ("PATCH", path))
+
+    def test_git_writers_provider_shapes_refused_before_client_call(self):
+        for prefix in PREFIXES:
+            for leading in ("", "embedded"):
+                text = leading + prefix + "X" * 32
+                for action, args in (
+                    ("wf_git_blob_create", {"text": text}),
+                    (
+                        "wf_git_commit_create",
+                        {"tree_sha": "a" * 40, "parents": ["b" * 40], "message": text},
+                    ),
+                    (
+                        "wf_git_tree_create",
+                        {
+                            "base_tree": "a" * 40,
+                            "files": [{"path": "safe.txt", "mode": "100644", "text": text}],
+                        },
+                    ),
+                ):
+                    client = Client()
+                    with self.subTest(action=action, prefix=prefix, leading=leading):
+                        with self.assertRaises(Refused):
+                            self.handle(client, action).run(action, {"repo": REPO, **args})
+                        self.assertEqual(client.calls, [])
+
+    def test_relation_receipt_taint_is_upstream_unverifiable(self):
+        from git_relay.github_client import RelayGitHubError
+
+        client = Client()
+        row = {
+            "id": 1,
+            "number": 1,
+            "state": "open",
+            "title": "safe",
+            "repository_url": "https://api.github.com/repos/sk-" + "X" * 32 + "/r",
+        }
+        with self.assertRaises(RelayGitHubError) as caught:
+            WorkflowVerbs._relation_issue(row)
+        self.assertEqual(caught.exception.status, 502)
