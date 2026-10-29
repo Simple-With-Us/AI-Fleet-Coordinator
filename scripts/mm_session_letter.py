@@ -564,7 +564,12 @@ def cache_letter(session_id: str, letter: str, topic: str = "", space: str = "si
 
 
 def cached_letter(session_id: str) -> str:
-    path = os.path.join(letter_cache_dir(), session_id + ".json")
+    try:
+        path = os.path.join(letter_cache_dir(), session_id + ".json")
+    except ValueError:
+        # The cache path was refused, so there is no cached letter to read.  That is
+        # a missing cache and not a failure:  the registry still knows the letter.
+        return ""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -580,13 +585,25 @@ def cached_letter(session_id: str) -> str:
     return ""
 
 
-def space_for(session_id: str) -> str:
-    """The letter space a session belongs in:  single for a conversation, double for a
-    subthread, so a subthread never takes the letter a conversation holds."""
-    row = session_row(session_id) or {}
+def space_for_row(row: dict) -> str:
+    """The letter space a session row belongs in:  single for a conversation, double for
+    a subthread, so a subthread never takes the letter a conversation holds.
+
+    The sweep and the hooks ask this question about the same session, so they ask it
+    here and they get the same answer.
+    """
     if row.get("parent_session_id") or row.get("session_kind") == "task":
         return "double"
     return "single"
+
+
+def space_for(session_id: str, row: dict | None = None) -> str:
+    """The letter space a session belongs in.
+
+    The caller usually holds the row already, so it can hand it over and save a
+    second read of the whole session table.
+    """
+    return space_for_row(row if row is not None else (session_row(session_id) or {}))
 
 
 def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
@@ -652,7 +669,7 @@ def hook_session_start() -> int:
     if not session_id:
         return 0
     row = session_row(session_id) or {}
-    space = space_for(session_id)
+    space = space_for(session_id, row)
     try:
         letter = letter_for(session_id, str(row.get("title") or ""), space)
     except (RegistryError, ValueError):
@@ -699,8 +716,10 @@ def hook_pre_tool_use() -> int:
     if not isinstance(tool_input, dict):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id, "", space_for(session_id))
-    except RegistryError:
+        letter = cached_letter(session_id) or letter_for(
+            session_id, "", space_for(session_id, row)
+        )
+    except (RegistryError, ValueError):
         return 0
     if not letter:
         return 0
@@ -748,8 +767,10 @@ def hook_stop() -> int:
     if row.get("parent_session_id") or row.get("session_kind") not in (None, "conversation"):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id, "", space_for(session_id))
-    except RegistryError:
+        letter = cached_letter(session_id) or letter_for(
+            session_id, "", space_for(session_id, row)
+        )
+    except (RegistryError, ValueError):
         return 0
     if not letter:
         return 0
@@ -862,6 +883,9 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             print("cannot read the topic file: %s" % exc, file=sys.stderr)
             return 2
     out = []
+    # The registry answers for one session at a time, so one failure is one session's
+    # failure.  The count is what makes the sweep fail closed at the end.
+    registry_failures = 0
     for row in sessions():
         kind = str(row.get("session_kind") or "")
         if kind not in ("conversation", "task"):
@@ -872,10 +896,16 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         # file names one of them on purpose, so the operator's own list rescues it.
         if looks_like_prompt(title) and session_id not in topics:
             continue
-        space = "single" if kind == "conversation" else "double"
+        space = space_for_row(row)
         try:
             letter = letter_for(session_id, title, space)
         except RegistryError as exc:
+            out.append({"session_id": session_id, "error": str(exc)})
+            registry_failures += 1
+            continue
+        except ValueError as exc:
+            # The title carries a credential and the scan refused it.  One bad
+            # session must not end the sweep:  the rest still get their letters.
             out.append({"session_id": session_id, "error": str(exc)})
             continue
         if not letter:
@@ -923,7 +953,12 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                     continue
                 try:
                     update_title(session_id, wanted)
-                except (RegistryError, ValueError) as exc:
+                except RegistryError as exc:
+                    entry["error"] = str(exc)
+                    registry_failures += 1
+                    out.append(entry)
+                    continue
+                except ValueError as exc:
                     entry["error"] = str(exc)
                     out.append(entry)
                     continue
@@ -932,10 +967,15 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 try:
                     update_title(session_id, title)
                     entry["registry_synced"] = True
-                except (RegistryError, ValueError) as exc:
+                except RegistryError as exc:
+                    entry["registry_error"] = str(exc)
+                    registry_failures += 1
+                except ValueError as exc:
                     entry["registry_error"] = str(exc)
         out.append(entry)
-    exit_code = 0
+    # A sweep that could not reach the registry for some of its sessions did not
+    # finish its work, so it does not report success.
+    exit_code = 2 if registry_failures else 0
     if apply:
         answer = registry_call(
             [

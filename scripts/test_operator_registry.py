@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent_sync import operator_registry as R
 import mm_session_letter as M
-import mm_session_letter as M
 
 # A synthetic credential for the positive scan cases:  32 mixed-case characters with no
 # provider prefix, so the scanner still trips on it while the file carries no real token's
@@ -702,6 +701,89 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
         made = self.reg.resolve_or_register(ident(native="native-7"))
         self.assertTrue(self.reg.close(made["record_id"], actor="MM", source="test"))
         self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-7"), [])
+
+
+class SessionLetterTest(unittest.TestCase):
+    """The MM seat's session-letter hook, next to the registry it talks to.
+
+    These cases cover the paths where a refusal or a failure used to escape as a
+    traceback, and the one place where the sweep and the hooks disagreed about a
+    session's letter space.
+    """
+
+    def _row(self, **kw):
+        row = {
+            "session_id": "sid-1",
+            "title": "B: Memory sync",
+            "session_kind": "conversation",
+            "parent_session_id": "",
+            "created_at_ms": 0,
+        }
+        row.update(kw)
+        return row
+
+    def test_a_refused_letter_cache_reads_as_no_letter(self):
+        # A symlinked cache path is refused on purpose, so a read of it must answer
+        # "no cached letter" and not raise out of the caller.
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            os.makedirs(real)
+            link = os.path.join(tmp, "link")
+            os.symlink(real, link)
+            old = os.environ.get("MINIMAX_HOOKS_DATA")
+            os.environ["MINIMAX_HOOKS_DATA"] = link
+            try:
+                self.assertEqual(M.cached_letter("sid-1"), "")
+            finally:
+                if old is None:
+                    os.environ.pop("MINIMAX_HOOKS_DATA", None)
+                else:
+                    os.environ["MINIMAX_HOOKS_DATA"] = old
+
+    def test_the_sweep_survives_a_refused_title(self):
+        # The scan refuses a title that carries a credential.  One refused session
+        # must not end the sweep with a traceback.
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=[self._row()]),
+            mock.patch.object(M, "letter_for", side_effect=ValueError("secret_detected")),
+            mock.patch.object(M, "registry_call", return_value={"count": 0}),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = M.sweep(True)
+        self.assertEqual(code, 0)
+        self.assertIn("secret_detected", out.getvalue())
+
+    def test_the_sweep_fails_closed_when_the_registry_fails(self):
+        # The sweep could not reach the registry for one of its sessions, so it did
+        # not finish its work and it must not answer success.
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=[self._row()]),
+            mock.patch.object(M, "letter_for", side_effect=M.RegistryError("no answer")),
+            mock.patch.object(M, "registry_call", return_value={"count": 0}),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = M.sweep(True)
+        self.assertEqual(code, 2)
+
+    def test_the_sweep_and_the_hooks_agree_on_the_letter_space(self):
+        # A subthread conversation is a double-space session for both paths.
+        row = self._row(parent_session_id="parent-1")
+        self.assertEqual(M.space_for_row(row), "double")
+        self.assertEqual(M.space_for("sid-1", row), "double")
+        self.assertEqual(M.space_for_row(self._row(session_kind="task")), "double")
+        self.assertEqual(M.space_for_row(self._row()), "single")
+
+    def test_space_for_does_not_read_the_session_table_again(self):
+        # The caller usually holds the row already, so it hands it over.
+        def boom(session_id):
+            raise AssertionError("the session table was read again")
+
+        with mock.patch.object(M, "session_row", side_effect=boom):
+            self.assertEqual(M.space_for("sid-1", self._row()), "single")
 
 
 if __name__ == "__main__":
