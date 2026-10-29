@@ -24,12 +24,13 @@ import base64
 import binascii
 import bz2
 import gzip
+import hashlib
 import io
 import lzma
 import re
 import zipfile
 import zlib
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .secret_scan import find_secret
@@ -69,6 +70,19 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_parent": ({"issues": "read"}, False),
+    "wf_issue_subissues": ({"issues": "read"}, False),
+    "wf_issue_blocked_by": ({"issues": "read"}, False),
+    "wf_issue_blocking": ({"issues": "read"}, False),
+    "wf_merge_queue_entry": ({"pull_requests": "read"}, False),
+    "wf_merge_queue_enqueue": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_merge_queue_dequeue": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_git_blob_get": ({"contents": "read"}, False),
+    "wf_git_blob_create": ({"contents": "write"}, True),
+    "wf_git_commit_get": ({"contents": "read"}, False),
+    "wf_git_tree_get": ({"contents": "read"}, False),
+    "wf_commit_statuses": ({"statuses": "read"}, False),
+    "wf_commit_status_create": ({"statuses": "write"}, True),
     "wf_file_rename": ({"contents": "write"}, True),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
@@ -849,6 +863,81 @@ class WorkflowVerbs:
             )
         }
 
+    @staticmethod
+    def _relation_issue(data):
+        if (
+            not isinstance(data, dict)
+            or "pull_request" in data
+            or type(data.get("id")) is not int
+            or data["id"] < 1
+            or type(data.get("number")) is not int
+            or data["number"] < 1
+            or not isinstance(data.get("title"), str)
+            or len(data["title"].encode("utf-8")) > 4096
+            or data.get("state") not in ("open", "closed")
+        ):
+            raise RelayGitHubError(502, "issue relation receipt unverifiable")
+        title = data["title"]
+        if find_secret(title) or re.search(
+            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", title
+        ):
+            title = "<withheld: credential-shaped title>"
+        url = data.get("repository_url")
+        bound = None
+        if isinstance(url, str):
+            parsed = urlsplit(url)
+            candidate = parsed.path.removeprefix("/repos/")
+            if (
+                parsed.scheme == "https"
+                and parsed.netloc == "api.github.com"
+                and parsed.path.startswith("/repos/")
+                and not parsed.query
+                and not parsed.fragment
+                and _REPO.fullmatch(candidate)
+            ):
+                bound = candidate
+        return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
+
+    def _relation_read(self, repo, args, suffix, single=False):
+        _only(args, ("repo", "number") if single else ("repo", "number", "per_page", "page"))
+        number = _int(args, "number")
+        page = 1 if single else (_int(args, "page", 1, 1000) if "page" in args else 1)
+        limit = 1 if single else _page(args)
+        query = "" if single else f"?per_page={limit}&page={page}"
+        data = self._get(f"/repos/{repo}/issues/{number}/{suffix}{query}")
+
+        def scoped(value):
+            issue = self._relation_issue(value)
+            if issue["repo"] is None or issue["repo"].casefold() != repo.casefold():
+                raise Refused("relation repository is outside or unverifiable in authorized scope")
+            return issue
+
+        if single:
+            return {"issue": scoped(data)}
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "issue relations page unverifiable")
+        return {
+            "issues": [scoped(x) for x in data[:limit]],
+            "page": page,
+            "has_more": len(data) >= limit,
+        }
+
+    def wf_issue_parent(self, repo, args):
+        _only(args, ("repo", "number"))
+        return self._relation_read(repo, args, "parent", True)
+
+    def wf_issue_subissues(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "sub_issues")
+
+    def wf_issue_blocked_by(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "dependencies/blocked_by")
+
+    def wf_issue_blocking(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "dependencies/blocking")
+
     def _asset_summary(self, data):
         if (
             not isinstance(data, dict)
@@ -1244,6 +1333,65 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "inline write outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
+
+    @staticmethod
+    def _status_summary(value):
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "status receipt unverifiable")
+        if (
+            isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] <= 0
+            or value.get("state") not in ("error", "failure", "pending", "success")
+            or not isinstance(value.get("context"), str)
+            or not value["context"].strip()
+            or not 1 <= len(value["context"].encode("utf-8")) <= 255
+            or value.get("description") is not None
+            and (
+                not isinstance(value["description"], str)
+                or len(value["description"].encode("utf-8")) > 140
+            )
+            or value.get("created_at") is not None
+            and (not isinstance(value["created_at"], str) or len(value["created_at"]) > 100)
+        ):
+            raise RelayGitHubError(502, "commit status receipt unverifiable")
+        return {k: value.get(k) for k in ("id", "state", "context", "description", "created_at")}
+
+    def wf_commit_statuses(self, repo, args):
+        _only(args, ("repo", "sha", "per_page"))
+        sha, count = _sha(args, "sha"), _page(args)
+        rows = _arr(self._get(f"/repos/{repo}/commits/{sha}/statuses?per_page={count}"))
+        if len(rows) > count:
+            raise RelayGitHubError(502, "commit status list unverifiable")
+        return {"statuses": [self._status_summary(x) for x in rows], "complete": len(rows) < count}
+
+    def wf_commit_status_create(self, repo, args):
+        _only(args, ("repo", "sha", "state", "context", "description"))
+        sha = _sha(args, "sha")
+        state = _enum(args, "state", ("error", "failure", "pending", "success"))
+        context, description = (
+            self._text(args, "context", 255),
+            self._text(args, "description", 140),
+        )
+        if not re.fullmatch(r"swu-[a-z0-9-]+/report", context) or (
+            self.seat != "probe" and context != self.seat + "/report"
+        ):
+            raise Refused("status context must be own App report namespace")
+        result = self._status_summary(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/statuses/{sha}",
+                {"state": state, "context": context, "description": description},
+                bearer=self.bearer,
+            )
+        )
+        if (
+            result["state"] != state
+            or result["context"] != context
+            or result["description"] != description
+        ):
+            raise RelayGitHubError(502, "commit status write unverifiable")
+        return {"status": result}
 
     @staticmethod
     def _review_summary(value, review_id=None):
@@ -2194,6 +2342,84 @@ class WorkflowVerbs:
         data = self.client._call("DELETE", path, None, bearer=self.bearer)
         return {"deleted": True, "ref": "refs/tags/" + name}
 
+    def _queue_pr_node(self, repo, number, sha=None):
+        try:
+            prior = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+            node = prior.get("node_id")
+            head = _sub(prior, "head").get("sha")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "queue PR pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
+            raise Refused("queue PR node unavailable")
+        if sha is not None and (head != sha or prior.get("state") != "open"):
+            raise Refused("queue PR head or state changed")
+        return node
+
+    @staticmethod
+    def _queue_receipt(value, node):
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "queue outcome unverifiable")
+        if (
+            not isinstance(value.get("id"), str)
+            or not value["id"]
+            or not isinstance(value.get("pullRequest"), dict)
+            or value["pullRequest"].get("id") != node
+        ):
+            raise RelayGitHubError(502, "queue outcome unverifiable")
+        return {"id": value["id"], "pull_request_id": node}
+
+    def wf_merge_queue_entry(self, repo, args):
+        _only(args, ("repo", "number"))
+        number = _int(args, "number")
+        owner, name = repo.split("/")
+        query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id mergeQueueEntry{id state position jump enqueuedAt}}}}"
+        result = self._fixed_graph(
+            query,
+            {"owner": owner, "name": name, "number": number},
+            "repository",
+            write=False,
+        )
+        pull = _sub(result, "pullRequest")
+        if not isinstance(pull.get("id"), str) or "mergeQueueEntry" not in pull:
+            raise RelayGitHubError(502, "queue read unverifiable")
+        entry = pull["mergeQueueEntry"]
+        if entry is not None:
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("id"), str)
+                or not entry["id"]
+                or entry.get("state")
+                not in ("AWAITING_CHECKS", "LOCKED", "MERGEABLE", "QUEUED", "UNMERGEABLE")
+                or isinstance(entry.get("position"), bool)
+                or not isinstance(entry.get("position"), int)
+                or entry["position"] < 1
+                or type(entry.get("jump")) is not bool
+                or not isinstance(entry.get("enqueuedAt"), str)
+            ):
+                raise RelayGitHubError(502, "queue read unverifiable")
+            entry = {k: entry[k] for k in ("id", "state", "position", "jump", "enqueuedAt")}
+        return {"entry": entry}
+
+    def wf_merge_queue_enqueue(self, repo, args):
+        _only(args, ("repo", "number", "expected_sha"))
+        number, sha = _int(args, "number"), _sha(args, "expected_sha")
+        node = self._queue_pr_node(repo, number, sha)
+        query = "mutation($id:ID!,$sha:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$sha,jump:false}){mergeQueueEntry{id pullRequest{id}}}}"
+        result = self._fixed_graph(query, {"id": node, "sha": sha}, "enqueuePullRequest")
+        return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
+
+    def wf_merge_queue_dequeue(self, repo, args):
+        _only(args, ("repo", "number", "expected_sha"))
+        number, sha = _int(args, "number"), _sha(args, "expected_sha")
+        node = self._queue_pr_node(repo, number, sha)
+        query = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){mergeQueueEntry{id pullRequest{id}}}}"
+        result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
+        return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
+
     def _pr_node(self, repo, number):
         try:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
@@ -2207,9 +2433,17 @@ class WorkflowVerbs:
         return node
 
     def _fixed_graph(self, query, variables, field, write=True):
-        data = self.client._call(
-            "POST", "/graphql", {"query": query, "variables": variables}, bearer=self.bearer
-        )
+        try:
+            data = self.client._call(
+                "POST",
+                "/graphql",
+                {"query": query, "variables": variables},
+                bearer=self.bearer,
+            )
+        except RelayGitHubError as exc:
+            if write and (exc.status in (0, 408) or exc.status >= 500):
+                raise RelayGitHubError(502, "GraphQL outcome unverifiable") from None
+            raise
         # GraphQL HTTP200 errors may follow partial mutation application; never call them definitely unsent.
         if (
             not isinstance(data, dict)
@@ -2319,12 +2553,20 @@ class WorkflowVerbs:
         return self._review_thread_state(repo, args, False)
 
     def wf_review_threads(self, repo, args):
-        _only(args, ("repo", "number"))
+        _only(args, ("repo", "number", "cursor"))
         number = _int(args, "number")
+        cursor = args.get("cursor")
+        if cursor is not None and (
+            not isinstance(cursor, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", cursor)
+        ):
+            raise Refused("invalid cursor")
         owner, name = repo.split("/")
-        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:50) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:20) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
+        query = "query($owner:String!, $name:String!, $number:Int!, $cursor:String) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:5, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:2) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
         result = self._fixed_graph(
-            query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+            query,
+            {"owner": owner, "name": name, "number": number, "cursor": cursor},
+            "repository",
+            write=False,
         )
         threads = _sub(_sub(result, "pullRequest"), "reviewThreads")
         if not isinstance(threads.get("nodes"), list):
@@ -2569,7 +2811,12 @@ class WorkflowVerbs:
         )
         number = _int(args, "number")
         data = self._get(f"/repos/{repo}/pulls/{number}")
-        return {"pull": _obj(data)}
+        pull = _obj(data)
+        for key in ("title", "body"):
+            value = pull.get(key)
+            if value is not None and (not isinstance(value, str) or find_secret(value)):
+                raise Refused("credential-shaped or invalid PR text refused")
+        return {"pull": pull}
 
     def wf_pr_reviews(self, repo, args):
         _only(
@@ -2929,6 +3176,131 @@ class WorkflowVerbs:
 
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
+
+    def wf_git_blob_get(self, repo, args):
+        _only(args, ("repo", "sha"))
+        sha = _sha(args, "sha")
+        value = self._get(f"/repos/{repo}/git/blobs/{sha}")
+        if isinstance(value, dict) and type(value.get("size")) is int and value["size"] > 40000:
+            raise Refused("blob exceeds supported text size")
+        if (
+            not isinstance(value, dict)
+            or value.get("sha") != sha
+            or value.get("encoding") != "base64"
+            or type(value.get("size")) is not int
+            or not 0 <= value["size"] <= 40000
+            or not isinstance(value.get("content"), str)
+            or len(value["content"]) > 60000
+        ):
+            raise RelayGitHubError(502, "blob receipt unsupported or unverifiable")
+        try:
+            raw = base64.b64decode(value["content"].replace("\n", ""), validate=True)
+            text = raw.decode("utf-8")
+        except UnicodeError:
+            raise Refused("binary blob text is not supported") from None
+        except (ValueError, binascii.Error):
+            raise RelayGitHubError(502, "blob encoding unverifiable") from None
+        if (
+            len(raw) != value["size"]
+            or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() != sha
+        ):
+            raise RelayGitHubError(502, "blob identity unverifiable")
+        if find_secret(text):
+            raise Refused("credential-shaped blob text refused")
+        # Explicitly scan decoded text, never opaque base64.
+        return {"blob": {"sha": sha, "size": len(raw), "text": text}}
+
+    def wf_git_blob_create(self, repo, args):
+        _only(args, ("repo", "text"))
+        text = args.get("text")
+        if not isinstance(text, str) or len(text.encode("utf-8")) > 40000 or find_secret(text):
+            raise Refused("invalid blob text")
+        raw = text.encode("utf-8")
+        sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/git/blobs",
+            {"content": text, "encoding": "utf-8"},
+            bearer=self.bearer,
+        )
+        if not isinstance(result, dict) or result.get("sha") != sha:
+            raise RelayGitHubError(502, "blob creation receipt unverifiable")
+        return {"blob": {"sha": sha, "size": len(raw)}}
+
+    def wf_git_commit_get(self, repo, args):
+        _only(args, ("repo", "sha"))
+        sha = _sha(args, "sha")
+        result = self._get(f"/repos/{repo}/git/commits/{sha}")
+        if isinstance(result, dict) and (
+            isinstance(result.get("message"), str)
+            and len(result["message"].encode("utf-8")) > 32768
+            or isinstance(result.get("parents"), list)
+            and len(result["parents"]) > 20
+        ):
+            raise Refused("commit exceeds supported read limits")
+        if (
+            not isinstance(result, dict)
+            or result.get("sha") != sha
+            or not isinstance(result.get("tree"), dict)
+            or not isinstance(result["tree"].get("sha"), str)
+            or not _SHA.fullmatch(result["tree"]["sha"])
+            or not isinstance(result.get("message"), str)
+            or len(result["message"].encode("utf-8")) > 32768
+            or not isinstance(result.get("parents"), list)
+            or len(result["parents"]) > 20
+        ):
+            raise RelayGitHubError(502, "git commit receipt unsupported or unverifiable")
+        parents = []
+        for value in result["parents"]:
+            if (
+                not isinstance(value, dict)
+                or not isinstance(value.get("sha"), str)
+                or not _SHA.fullmatch(value["sha"])
+            ):
+                raise RelayGitHubError(502, "git commit parent unverifiable")
+            parents.append(value["sha"])
+        return {
+            "commit": {
+                "sha": sha,
+                "tree_sha": result["tree"]["sha"],
+                "parents": parents,
+                "message": result["message"],
+            }
+        }
+
+    def wf_git_tree_get(self, repo, args):
+        _only(args, ("repo", "sha"))
+        sha = _sha(args, "sha")
+        result = self._get(f"/repos/{repo}/git/trees/{sha}")
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("tree"), list)
+            and len(result["tree"]) > 100
+        ):
+            raise Refused("tree exceeds supported entry count")
+        if (
+            not isinstance(result, dict)
+            or result.get("sha") != sha
+            or type(result.get("truncated")) is not bool
+            or not isinstance(result.get("tree"), list)
+            or len(result["tree"]) > 100
+        ):
+            raise RelayGitHubError(502, "git tree receipt unsupported or unverifiable")
+        entries = []
+        for value in result["tree"]:
+            if (
+                not isinstance(value, dict)
+                or not isinstance(value.get("sha"), str)
+                or not _SHA.fullmatch(value["sha"])
+                or value.get("type") not in ("blob", "tree", "commit")
+                or value.get("mode") not in ("100644", "100755", "040000", "120000", "160000")
+                or not isinstance(value.get("path"), str)
+                or not value["path"]
+                or len(value["path"].encode("utf-8")) > 1024
+            ):
+                raise RelayGitHubError(502, "git tree entry unverifiable")
+            entries.append({k: value[k] for k in ("sha", "type", "mode", "path")})
+        return {"tree": {"sha": sha, "entries": entries, "truncated": result["truncated"]}}
 
     def wf_file_rename(self, repo, args):
         """Rename one regular blob without fetching its contents or overwriting a destination."""

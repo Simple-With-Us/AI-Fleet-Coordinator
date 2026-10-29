@@ -42,8 +42,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # FLEET-PROTOCOL.md is excluded because it is a Fleet-OPS mirror:  it is generated from
 # the Fleet-OPS handbook, which carries the same fix, so this repo does not edit it.
-# FLEET-UI-COPY.md is excluded because it is owned by open PR #904, which carries the
-# same fix there; editing it here would collide with that pull request.
 # The Cursor rule is not listed here:  like the canonical sentence-gap skill it keeps
 # the 2026-08-19/20 findings block, which records what was found that day rather than
 # prescribing a rule, so the stale-split scan would read that block as a prescription.
@@ -64,6 +62,9 @@ STALE_RULE_FILES = (
     "docs/INSTINCT-ONBOARDING-PROMPT.md",
     "docs/OPENCODE-ONBOARDING-PROMPT.md",
     "docs/fleet-skills/README-add-in-app.md",
+    # The compliance inventory's AFC-P05 row states the mechanism for every
+    # surface, so it states the exception with it.
+    "docs/compliance/inventory.md",
     # The converter and its own test describe the entity mode, and each one names the
     # two chat panes as the surfaces that take it.  They are scanned here so the
     # withdrawn 2026-10-22 GitHub-entity split can never come back into them.  The
@@ -73,7 +74,11 @@ STALE_RULE_FILES = (
     "scripts/test_sentence_gap_program.py",
 )
 
-# The packs whose own text states the rule.  The installer writes a copy of each
+# Dated rollout records whose body is intentionally preserved; the stale-prescription
+# scan skips them wholesale because their tables are history, not live guidance.
+HISTORY_FILES = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
+
+# The packs whose own text states the rule.
 # one into skills/ and a per-seat copy into docs/fleet-skills/by-seat/, so the
 # gate covers every copy through a glob instead of a hand-kept list of paths.
 RULE_STATING_PACKS = ("fleet-coordination", "land-lane", "owner-copy", "sentence-gap")
@@ -89,9 +94,9 @@ def _pack_copies(pack: str) -> tuple[str, ...]:
     return tuple(str(p.relative_to(ROOT)) for p in paths if p.is_file())
 
 
-# The files that state the rule, and therefore must carry the one exception.
+# The files that state the rule, and therefore must carry the pane exception.
 # The Cursor rule and the Zulip guide all state the rule, so all of them must
-# name the one exception.
+# name the pane exception.
 EXCEPTION_FILES = (
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
     "docs/grok-web/INSTRUCTIONS.md",
@@ -121,11 +126,24 @@ EXCEPTION_FILES = (
     # The status log carries the rule as it stands, next to the dated entries
     # that record how it stood before.
     "STATUS.md",
+    # The dated rollout record for the 2026-10-08 ruling, and the compliance
+    # inventory's AFC-P05 row.  Both state the mechanism for every surface, so
+    # both name the pane exception with it.
+    "docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",
+    "docs/compliance/inventory.md",
+    # The UI copy standard states the mechanism for product copy, so it names the
+    # pane exceptions with it; line 264 is marked history-only for the stale scan.
+    "FLEET-UI-COPY.md",
 ) + tuple(path for pack in RULE_STATING_PACKS for path in _pack_copies(pack))
 
 # The files whose fenced block is what a reader pastes.  A rule inside the
 # block reaches every app, so it has to carry the exception with it.
 PASTED_BLOCK_FILES = ("docs/AGENTS-RECALL-SNIPPET.md",)
+
+# Every file that states the rule states both exceptions:  the two chat panes and
+# the Apple Note body.  One list, so a rule-stating file can never be left out of
+# the Apple Notes gate.
+APPLE_NOTES_FILES = EXCEPTION_FILES
 
 # The stale prescriptions, as they are written.  Each one is a live instruction a
 # reader could follow:  GitHub takes the entity, or two plain ASCII spaces are the
@@ -152,6 +170,10 @@ BLANKET_PANE_CLAIMS = (
     re.compile(r"chat replies in any pane"),
 )
 
+# A heading that starts a history block:  the lines under it record what was found
+# or ruled that day, so they are not a prescription.
+HISTORY_HEADING_RE = re.compile(r"^#{1,6}\s.*\bHistory\b", re.IGNORECASE)
+
 # A line that marks itself as a record of a past ruling is not a prescription, so it
 # is allowed to hold the old text.  The markers are phrases rather than the bare word
 # "history":  the Zulip switch prompt says "your shell history" in a sentence about
@@ -168,8 +190,44 @@ HISTORY_MARKERS = (
     re.compile(r"^\| v\d"),
 )
 
-# The exception has to be named as the only exception, not as one option among many.
-ONLY_EXCEPTION_RE = re.compile(r"only exception|one exception|single exception", re.IGNORECASE)
+# The panes have to be called an exception, not listed as one option among many.
+# The wording moved with AFC-552:  there are two exceptions now, so a file may
+# say "two exceptions" where it used to say "the one exception", so the check
+# looks for an explicit exception phrase and not for a bare "exception".
+EXCEPTION_PHRASE_RE = re.compile(
+    r"(only exception|one exception|single exception|two exceptions)",
+    re.IGNORECASE,
+)
+
+# A file that states the rule has to name the Apple Note exception with it, or a
+# reader who reads only that file thinks there is one exception.  The mechanism is
+# the narrow no-break space (U+202F), which is what the note helper writes.
+APPLE_NOTES_MECHANISM = ("narrow no-break space", "&#8239;", "U+202F")
+
+# A live line that calls one thing the only exception, while the rule has two.  The
+# singular forms only, so a line that says "the only exceptions" passes.
+SINGLE_EXCEPTION_CLAIMS = re.compile(
+    r"\bonly exception\b|\bone exception\b|\bsingle exception\b", re.IGNORECASE
+)
+
+# The phrase is a common one and it is used about other things entirely:  a pipeline
+# step with one exception, a seat with one, a rule that is not this rule.  A line only
+# makes a claim about this rule when it also speaks about this rule, so the scan looks
+# for a term from this list on the same line before it calls the line out.  The list
+# holds every way the rule is named in these files.
+GAP_RULE_TERMS = (
+    "U+00A0",
+    "&nbsp;",
+    "Apple Note",
+    "Claude Code",
+    "MiniMax Code",
+    "sentence gap",
+    "sentence-gap",
+    "gap rule",
+    "the gap",
+    "chat pane",
+    "no-break space",
+)
 
 
 def _read(rel: str) -> str:
@@ -191,16 +249,65 @@ def _is_history(line: str) -> bool:
 
 
 def _states_the_exception(text: str) -> bool:
-    """Whether the text names the entity next to both panes.
+    """Whether the text calls the entity the exception for both panes.
 
     The entity is mentioned in several places, and only the mention that sits with
-    both pane names is the exception itself.
+    both pane names is the exception itself.  The word "exception" has to sit in
+    the same window, so the panes are called an exception rather than listed as
+    one option among many.
     """
     for match in re.finditer(re.escape("`&nbsp;`"), text):
         window = text[max(0, match.start() - 600) : match.end() + 600]
         if "Claude Code" in window and "MiniMax Code" in window:
+            if EXCEPTION_PHRASE_RE.search(window):
+                return True
+    return False
+
+
+def _states_the_apple_notes_exception(text: str) -> bool:
+    """Whether the text names the Apple Note exception and its mechanism.
+
+    The mechanism is what makes it an exception rather than a passing mention:  a
+    note body takes the narrow no-break space plus a normal space, because Apple
+    Notes normalizes a no-break space away on import.
+    """
+    for match in re.finditer(r"Apple Note", text):
+        window = text[max(0, match.start() - 600) : match.end() + 600]
+        if any(mechanism in window for mechanism in APPLE_NOTES_MECHANISM):
             return True
     return False
+
+
+def _claims_a_single_exception(line: str) -> bool:
+    """Whether a line calls the gap rule a single exception.
+
+    The phrase alone is not enough:  it is used about pipeline steps and other rules,
+    and a file that mentions the gap once is not a file about the gap on every line.
+    So the line has to name the rule as well.
+    """
+    if not SINGLE_EXCEPTION_CLAIMS.search(line):
+        return False
+    folded = line.casefold()
+    return any(term.casefold() in folded for term in GAP_RULE_TERMS)
+
+
+def _live_lines(text: str) -> tuple[tuple[int, str], ...]:
+    """The lines that prescribe a rule, not the lines that record a past ruling.
+
+    A "History" heading starts a block that records what was found or ruled that
+    day, so the lines under it are history and are skipped.  A line that carries
+    its own history marker is skipped too.
+    """
+    live: list[tuple[int, str]] = []
+    in_history = False
+    for number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            in_history = bool(HISTORY_HEADING_RE.match(stripped))
+        if in_history or _is_history(line):
+            continue
+        live.append((number, line))
+    return tuple(live)
 
 
 class StaleGuidanceTests(unittest.TestCase):
@@ -209,6 +316,8 @@ class StaleGuidanceTests(unittest.TestCase):
     def test_no_live_line_prescribes_the_github_entity_split(self) -> None:
         problems = []
         for rel in STALE_RULE_FILES:
+            if rel in HISTORY_FILES:
+                continue
             for number, line in enumerate(_read(rel).splitlines(), start=1):
                 if _is_history(line):
                     continue
@@ -226,7 +335,7 @@ class StaleGuidanceTests(unittest.TestCase):
 
 
 class PaneExceptionTests(unittest.TestCase):
-    """Every file that states the rule names the one exception."""
+    """Every file that states the rule names the pane exception."""
 
     def test_each_file_names_both_panes_and_the_entity_together(self) -> None:
         for rel in EXCEPTION_FILES:
@@ -243,10 +352,6 @@ class PaneExceptionTests(unittest.TestCase):
                 self.assertTrue(
                     _states_the_exception(text),
                     "%s does not state the entity as the exception for the two panes" % rel,
-                )
-                self.assertTrue(
-                    ONLY_EXCEPTION_RE.search(text),
-                    "%s does not call the two panes the only exception" % rel,
                 )
 
     def test_no_file_claims_every_chat_pane_takes_the_real_nbsp(self) -> None:
@@ -284,11 +389,62 @@ class PaneExceptionTests(unittest.TestCase):
                     "%s has a pasted block that states the gap rule without the pane exception"
                     % rel,
                 )
+
+
+class AppleNotesExceptionTests(unittest.TestCase):
+    """Every file that states the rule names the Apple Note exception too."""
+
+    def test_each_file_names_the_apple_notes_exception(self) -> None:
+        for rel in APPLE_NOTES_FILES:
+            with self.subTest(rel=rel):
                 self.assertTrue(
-                    ONLY_EXCEPTION_RE.search(block),
-                    "%s has a pasted block that does not call the two panes the only exception"
-                    % rel,
+                    _states_the_apple_notes_exception(_read(rel)),
+                    "%s does not name the Apple Note exception and its mechanism" % rel,
                 )
+
+    def test_no_live_line_calls_the_rule_a_single_exception(self) -> None:
+        """A live line may not name one exception while the rule has two.
+
+        The history blocks are skipped:  they record the 2026-10-23 ruling, when
+        the Apple Note exception had not been measured yet.
+        """
+        problems = []
+        for rel in APPLE_NOTES_FILES:
+            for number, line in _live_lines(_read(rel)):
+                match = SINGLE_EXCEPTION_CLAIMS.search(line)
+                if match and _claims_a_single_exception(line):
+                    problems.append(
+                        "%s:%d  %r\n    %s" % (rel, number, match.group(0), line.strip()[:200])
+                    )
+        self.assertEqual(
+            problems,
+            [],
+            "live lines that still call the rule a single exception:\n" + "\n".join(problems),
+        )
+
+    def test_the_scan_catches_a_claim_about_the_rule(self) -> None:
+        """The scope the scan uses has to catch a real claim, not only skip a false one.
+
+        A scan that skips everything passes every file, so the scope is proved both
+        ways here:  a line that calls the gap rule a single exception is caught, and a
+        line that calls something else that is not caught.
+        """
+        self.assertTrue(
+            _claims_a_single_exception(
+                "The one exception is the Claude Code Code tab and the MiniMax Code chat pane."
+            ),
+            "the scan does not catch a claim about the rule",
+        )
+        self.assertTrue(
+            _claims_a_single_exception("Sentence gaps have ONE EXCEPTION:  THE CHAT PANE."),
+            "the scan misses a claim whose rule name is not lower case",
+        )
+        self.assertFalse(
+            _claims_a_single_exception(
+                "GB-Plumber is the one exception at step 4: see below the list."
+            ),
+            "the scan reads a pipeline step as a claim about the rule",
+        )
 
 
 class PublishedGapTests(unittest.TestCase):
