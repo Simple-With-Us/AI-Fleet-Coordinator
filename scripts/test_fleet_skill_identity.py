@@ -165,7 +165,9 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
 
         out_pickup = specialize_universal(
-            Path(ROOT, "docs", "fleet-skills", "pickup-seat", "SKILL.md").read_text(encoding="utf-8"),
+            Path(ROOT, "docs", "fleet-skills", "pickup-seat", "SKILL.md").read_text(
+                encoding="utf-8"
+            ),
             skill_name="pickup-seat",
         )
         self.assertIn("You are **<YOUR_AGENT_TAG>**.\u00a0 Keep", out_pickup)

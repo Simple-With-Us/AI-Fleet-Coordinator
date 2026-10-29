@@ -956,7 +956,9 @@ class DocumentationExecutionTests(unittest.TestCase):
                         if "body.entity.prose.txt" in block:
                             entity = (Path(tmp) / "body.entity.txt").read_text(encoding="utf-8")
                             prose = re.sub(r"(`+)([^\n]*?)\1", " ", entity)
-                            (Path(tmp) / "body.entity.prose.txt").write_text(prose, encoding="utf-8")
+                            (Path(tmp) / "body.entity.prose.txt").write_text(
+                                prose, encoding="utf-8"
+                            )
                         values = []
                         for command in commands:
                             proc = subprocess.run(
