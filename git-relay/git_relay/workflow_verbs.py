@@ -1017,6 +1017,7 @@ class WorkflowVerbs:
     def wf_issue_timeline(self, repo, args):
         _only(args, ("repo", "number", "per_page", "page"))
         return self._issue_history(repo, args, True)
+
     def _dependency_target(self, repo, number):
         # Before either mutation. A missing/unverifiable read is not a write.
         try:
