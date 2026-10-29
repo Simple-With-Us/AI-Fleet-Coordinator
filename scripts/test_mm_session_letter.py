@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mm_session_letter as M
 
-SESSION_ID = "mvs_df2c110b38c7469cb1566174b03447e8"
+# Synthetic:  the accepted session-ID shape, never a real native session.
+SESSION_ID = "mvs_test0000000000000000000000000001"
 
 
 class _StdinBytes:
@@ -101,7 +102,7 @@ class MmSessionLetterTest(unittest.TestCase):
             link = os.path.join(tmp, "hook-state")
             os.symlink("/tmp", link)
             os.environ["MINIMAX_HOOKS_DATA"] = link
-            with self.assertRaises(ValueError):
+            with self.assertRaises(M.RegistryError):
                 M.letter_cache_dir()
 
     def test_require_registry_rejects_an_empty_label(self):
@@ -279,7 +280,7 @@ class MmSessionLetterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._topic_file(tmp, {SESSION_ID: secret})
             code, out, err = self._run_sweep(path, {"count": 0})
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertIn("topic_secret_detected", out)
         self.assertNotIn(secret, out)
         self.assertNotIn(secret, err)
@@ -306,7 +307,7 @@ class MmSessionLetterTest(unittest.TestCase):
             contextlib.redirect_stderr(err),
         ):
             code = M.sweep(True)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertIn("secret_detected", out.getvalue())
 
     def test_a_prompt_shaped_title_is_skipped_without_a_topic(self):
@@ -352,6 +353,93 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("operator registry unavailable", err)
         self.assertNotIn("denied", err.replace('"code": "denied"', ""))
+
+    # --- round 5:  partial failures, recursion, cache path, one table read ---
+
+    def test_a_partial_registry_failure_fails_the_sweep(self):
+        rows = [
+            {
+                "session_id": SESSION_ID,
+                "title": "M: Wake platform verification",
+                "session_kind": "conversation",
+                "created_at_ms": 0,
+            },
+        ]
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=rows),
+            mock.patch.object(M, "letter_for", return_value="M"),
+            mock.patch.object(
+                M,
+                "update_title",
+                side_effect=M.RegistryError("lost", "timeout", "outcome_unknown"),
+            ),
+            mock.patch.object(M, "registry_call", return_value={"count": 0}),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = M.sweep(True)
+        self.assertEqual(code, 2)
+        entry = json.loads(out.getvalue())[0]
+        self.assertEqual(entry["outcome"], "outcome_unknown")
+        self.assertEqual(entry["code"], "timeout")
+        self.assertIn('"sessions_failed": 1', err.getvalue())
+        self.assertNotIn("live", entry)
+
+    def test_a_clean_sweep_still_exits_zero(self):
+        code, _out, err = self._run_sweep("", {"count": 0}, title="M: Wake platform verification")
+        self.assertEqual(code, 0)
+        self.assertNotIn("sessions_failed", err)
+
+    def test_read_hook_input_survives_parser_recursion(self):
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(b'{"a": 1}')),
+            mock.patch.object(M.json, "loads", side_effect=RecursionError("deep")),
+        ):
+            self.assertEqual(M.read_hook_input(), {})
+
+    def test_a_symlinked_letter_cache_is_a_registry_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            os.mkdir(real)
+            link = os.path.join(tmp, "link")
+            os.symlink(real, link)
+            with mock.patch.dict(os.environ, {"MINIMAX_HOOKS_DATA": link}):
+                with self.assertRaises(M.RegistryError) as ctx:
+                    M.letter_cache_dir()
+                self.assertEqual(ctx.exception.code, "unsafe_cache")
+                payload = json.dumps(
+                    {
+                        "session_id": SESSION_ID,
+                        "tool_name": "zulip_post",
+                        "tool_input": {"body": "hi"},
+                    }
+                ).encode()
+                row = {"session_id": SESSION_ID, "session_kind": "conversation"}
+                with (
+                    mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+                    mock.patch.object(M, "session_row", return_value=row),
+                ):
+                    self.assertEqual(M.hook_pre_tool_use(), 0)
+
+    def test_hooks_read_the_session_table_once(self):
+        payload = json.dumps(
+            {"session_id": SESSION_ID, "tool_name": "zulip_post", "tool_input": {"body": "M: hi"}}
+        ).encode()
+        row = {"session_id": SESSION_ID, "session_kind": "conversation"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row) as read,
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="M"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
+        self.assertEqual(read.call_count, 1)
+
+    def test_space_for_row_reads_the_given_row(self):
+        self.assertEqual(M.space_for_row({"session_kind": "task"}), "double")
+        self.assertEqual(M.space_for_row({"parent_session_id": "p"}), "double")
+        self.assertEqual(M.space_for_row({"session_kind": "conversation"}), "single")
 
 
 if __name__ == "__main__":

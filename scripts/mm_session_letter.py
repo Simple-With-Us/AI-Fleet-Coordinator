@@ -38,7 +38,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import time
 import unicodedata
 
 from agent_sync import secretscan
@@ -390,23 +389,6 @@ def update_title(session_id: str, title: str) -> dict:
     )
 
 
-def close_letter(session_id: str, reason: str) -> dict:
-    return _require_registry(
-        registry_call(
-            [
-                "close",
-                "--platform",
-                PLATFORM,
-                *_registry_identity_args(),
-                "--session-id",
-                session_id,
-                "--reason",
-                reason,
-            ]
-        )
-    )
-
-
 def registry_topic_from_display(letter: str, title: str) -> str:
     text = (title or "").strip()
     if letter and text.startswith(letter + ":"):
@@ -527,14 +509,17 @@ def first_line_states_letter(text: str, letter: str) -> bool:
 
 
 def letter_cache_dir() -> str:
+    """The letter cache directory.  An unsafe path is a RegistryError with its own
+    code, so every hook and the sweep, which already handle RegistryError, refuse it
+    cleanly instead of failing with a traceback."""
     base = os.environ.get("MINIMAX_HOOKS_DATA") or os.path.join(data_dir(), "hook-state")
     path = os.path.join(base, "session-letters")
     for candidate in (base, path):
         if os.path.islink(candidate):
-            raise ValueError("the letter cache path must not be a symlink")
+            raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
     os.makedirs(path, mode=0o700, exist_ok=True)
     if os.path.islink(path):
-        raise ValueError("the letter cache path must not be a symlink")
+        raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
     return path
 
 
@@ -580,10 +565,12 @@ def cached_letter(session_id: str) -> str:
     return ""
 
 
-def space_for(session_id: str) -> str:
+def space_for_row(row: dict) -> str:
     """The letter space a session belongs in:  single for a conversation, double for a
-    subthread, so a subthread never takes the letter a conversation holds."""
-    row = session_row(session_id) or {}
+    subthread, so a subthread never takes the letter a conversation holds.
+
+    It reads the row the caller already fetched, so a hook reads the session table
+    and scans its titles once per call."""
     if row.get("parent_session_id") or row.get("session_kind") == "task":
         return "double"
     return "single"
@@ -630,7 +617,9 @@ def read_hook_input() -> dict:
         return {}
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # The size is bounded before parsing;  nesting deep enough to exhaust the
+        # parser's recursion is refused here, the rest by _json_within_limits.
         return {}
     if not isinstance(data, dict) or not _json_within_limits(data):
         return {}
@@ -652,7 +641,7 @@ def hook_session_start() -> int:
     if not session_id:
         return 0
     row = session_row(session_id) or {}
-    space = space_for(session_id)
+    space = space_for_row(row)
     try:
         letter = letter_for(session_id, str(row.get("title") or ""), space)
     except (RegistryError, ValueError):
@@ -699,8 +688,8 @@ def hook_pre_tool_use() -> int:
     if not isinstance(tool_input, dict):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id, "", space_for(session_id))
-    except RegistryError:
+        letter = cached_letter(session_id) or letter_for(session_id, "", space_for_row(row))
+    except (RegistryError, ValueError):
         return 0
     if not letter:
         return 0
@@ -748,8 +737,8 @@ def hook_stop() -> int:
     if row.get("parent_session_id") or row.get("session_kind") not in (None, "conversation"):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id, "", space_for(session_id))
-    except RegistryError:
+        letter = cached_letter(session_id) or letter_for(session_id, "", space_for_row(row))
+    except (RegistryError, ValueError):
         return 0
     if not letter:
         return 0
@@ -828,14 +817,13 @@ def looks_like_prompt(title: str) -> bool:
     return text.startswith(PROMPT_PREFIXES)
 
 
-def is_live(row: dict, live_hours: int) -> bool:
-    """A thread is live while it was touched inside the window."""
-    created = row.get("created_at_ms") or 0
-    try:
-        age_hours = (time.time() * 1000 - float(created)) / 3600000.0
-    except (TypeError, ValueError):
-        return True
-    return age_hours <= max(1, int(live_hours))
+def _failure_entry(session_id: str, exc: RegistryError) -> dict:
+    """One session's registry failure, with the code and the outcome kept."""
+    code = str(getattr(exc, "code", "") or "")
+    outcome = str(getattr(exc, "outcome", "") or "")
+    if not outcome:
+        outcome = "outcome_unknown" if code in UNKNOWN_OUTCOME_CODES else "failed"
+    return {"session_id": session_id, "error": str(exc), "code": code, "outcome": outcome}
 
 
 def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
@@ -876,7 +864,10 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         try:
             letter = letter_for(session_id, title, space)
         except RegistryError as exc:
-            out.append({"session_id": session_id, "error": str(exc)})
+            out.append(_failure_entry(session_id, exc))
+            continue
+        except ValueError as exc:
+            out.append({"session_id": session_id, "error": str(exc), "outcome": "failed"})
             continue
         if not letter:
             out.append({"session_id": session_id, "error": "no letter"})
@@ -907,7 +898,6 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             "current_title": title,
             "wanted_title": wanted,
             "already_ok": already_ok,
-            "live": is_live(row, live_hours),
         }
         if apply:
             if not already_ok:
@@ -923,7 +913,11 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                     continue
                 try:
                     update_title(session_id, wanted)
-                except (RegistryError, ValueError) as exc:
+                except RegistryError as exc:
+                    entry.update(_failure_entry(session_id, exc))
+                    out.append(entry)
+                    continue
+                except ValueError as exc:
                     entry["error"] = str(exc)
                     out.append(entry)
                     continue
@@ -932,11 +926,33 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 try:
                     update_title(session_id, title)
                     entry["registry_synced"] = True
-                except (RegistryError, ValueError) as exc:
+                except RegistryError as exc:
+                    failure = _failure_entry(session_id, exc)
+                    entry["registry_error"] = failure.pop("error")
+                    entry.update(failure)
+                except ValueError as exc:
                     entry["registry_error"] = str(exc)
         out.append(entry)
-    exit_code = 0
+    # A sweep that could not handle every session is not a success:  the caller sees
+    # a nonzero status and a count on stderr, and the entries say which ones failed.
+    failed = [e for e in out if e.get("error") or e.get("registry_error")]
+    exit_code = 2 if failed else 0
+    if failed:
+        print(
+            json.dumps(
+                {
+                    "sessions_failed": len(failed),
+                    "sessions_outcome_unknown": sum(
+                        1 for e in failed if e.get("outcome") == "outcome_unknown"
+                    ),
+                }
+            ),
+            file=sys.stderr,
+        )
     if apply:
+        # The registry sweep converges:  it ends, in one write transaction, only the
+        # letters that are stale and replaced, so a rerun finds them ended and does
+        # nothing more.
         answer = registry_call(
             [
                 "sweep",
