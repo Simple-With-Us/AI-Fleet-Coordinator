@@ -5,7 +5,8 @@ This file is symlinked as ~/.local/bin/simple-chat, so it resolves its own real 
 puts the scripts directory on sys.path.
 
 `attach` and `detach` (the Claude Code hooks run them on every prompt and Stop) are dispatched
-before the CLI is imported, so the hook path loads only light modules.
+before the CLI is imported, so the hook path loads only light modules.  So is `letter`, the
+session-letter hook (AFC-564).
 
 Under launchd or a GUI app, `/usr/bin/env python3` can be the system Python 3.9, which cannot
 run this package.  Then the script re-runs itself with a Homebrew python3 when one exists.
@@ -32,6 +33,17 @@ if (
     from agent_sync.attach import main as attach_main  # noqa: E402
 
     sys.exit(attach_main(sys.argv[2:], command=sys.argv[1]))
+
+# `letter` (AFC-564) is the Claude Code session-letter hook and its registry side;  it is local like attach.
+if (
+    __name__ == "__main__"
+    and len(sys.argv) > 1
+    and sys.argv[1] == "letter"
+    and os.environ.get("SIMPLE_CHAT_REMOTE", "").strip() != "1"
+):
+    from agent_sync.claude_letter import main as letter_main  # noqa: E402
+
+    sys.exit(letter_main(sys.argv[2:]))
 
 # Deterministic handbook service is not a roster seat or an admin API escape hatch.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "handbook-service":

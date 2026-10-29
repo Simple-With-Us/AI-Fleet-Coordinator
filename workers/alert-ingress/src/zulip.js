@@ -88,6 +88,20 @@ export async function postEvent({
 }
 
 /**
+ * Post one vendor alert as it arrived, already rendered by renderRaw().
+ * @returns {Promise<number|null>} the new message id
+ */
+export async function postRaw({ email, apiKey, channel, topic, content }) {
+  const data = await zulip("/messages", {
+    email,
+    apiKey,
+    method: "POST",
+    form: { type: "stream", to: channel, topic, content },
+  });
+  return data && data.id ? data.id : null;
+}
+
+/**
  * Rewrite the standing status message for a topic.
  *
  * Creates it the first time, then PATCHes it forever after.  `statusId` is the
@@ -240,9 +254,10 @@ export function renderStatus({ topic, states, updatedAt, source }) {
 
   // Each source owns one standing message per topic, so the block says which
   // vendor it belongs to.
+  // The sentence gap is U+00A0 plus a space, which Zulip keeps (owner, Oct 23, 2026).
   const footer = source
-    ? `_Updated ${updatedAt}.  Source: ${source}.  This message is edited in place; new events post below it._`
-    : `_Updated ${updatedAt}.  This message is edited in place; new events post below it._`;
+    ? `_Updated ${updatedAt}.  Source: ${source}.  This message is edited in place, and each change is logged in #**Alerts-Log**, same topic._`
+    : `_Updated ${updatedAt}.  This message is edited in place, and each change is logged in #**Alerts-Log**, same topic._`;
 
   return [
     `${STANDING_BLOCK_HEADER}${topic}**`,

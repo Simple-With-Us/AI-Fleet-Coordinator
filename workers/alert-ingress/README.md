@@ -31,6 +31,16 @@ A message is only warranted when **state** changes.  The channel ends up as:
 - **one standing status block per topic**, edited in place, always showing current truth (a recovered signal is counted in its header but not drawn as a row); and
 - **a sparse timeline** of events that actually mattered.
 
+Three channels, one topic per service in each, and every channel requires topics (owner, Oct 29, 2026):
+
+| Channel | Holds |
+|---|---|
+| `#Alerts` | only the standing status blocks, the distilled view |
+| `#Alerts-Log` | the sparse one-line timeline |
+| `#Alerts-Raw` | every authenticated delivery as the vendor sent it:  its own title and full text, then the whole payload in a collapsed spoiler |
+
+The raw copy is a record, not a decision.  It is posted for every authenticated, well-formed delivery except a PagerDuty ping, under the topic the event is filed under (its pinned service), and it runs beside the event path, so a failure to post it never changes how the event is handled.  A body the validator refuses gets no raw copy:  the 400 tells the vendor, and input that failed the size, depth and character checks is not posted into Zulip.  Vendor text cannot ping anyone (user, silent and group mention syntax is broken with a zero-width space), and every credential shape the identity check knows is replaced with `[redacted]` in each string value before the payload is encoded, so a token after an encoded newline is caught too.  It goes through the normal messages API with the vendor's status bot, because Zulip's own vendor integrations take the key only in the URL.
+
 ## Routes
 
 | Route | Purpose |
@@ -176,11 +186,11 @@ cd workers/alert-ingress && node --test src/*.test.js
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
 
-The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 159 tests.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 173 tests.  `raw.test.js` covers the raw copy:  each vendor's title and text, the payload spoiler, mentions made harmless, credentials redacted, fences a payload cannot close or inflate, and the 10,000-character Zulip limit.  `writer.test.js` checks that the legacy KV is listed once and never again, and that a failed copy reads through and waits ten minutes to retry.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
 
 `vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
 
-`vendor-routing-hardening.test.js` covers the hardening that answered the review: the missing credential names the operator has to set, a failed status delivery is surfaced instead of swallowed, only an unknown outcome holds a repeat delivery, the delivery outcome is scoped to a content revision while the uncertainty barrier is scoped to the source, channel and topic, a standing message id whose owner is unknown is held rather than adopted or posted over, a standing message another source owns is left alone, a pre-routing membership marker names an incident rather than a source, the credential slug is injective in the source name, the sweep survives one bad incident, the legacy refresh route reports the sources it could not refresh, a malformed percent-escape is a bad request, and an unknown webhook field never reaches persistence or the channel.
+`vendor-routing-hardening.test.js` covers the hardening that answered the review: the missing credential names the operator has to set, a failed status delivery is surfaced instead of swallowed, only an unknown outcome holds a repeat delivery, the delivery outcome is scoped to a content revision while the uncertainty barrier is scoped to the source, channel and topic, a standing message id whose owner is unknown is held rather than adopted or posted over, a standing message another source owns is left alone, a pre-routing membership marker names an incident rather than a source, the credential slug is injective in the source name, the sweep survives one bad incident, the legacy refresh route reports the sources it could not refresh, a malformed percent-escape is a bad request, and an unknown webhook field never reaches persistence, the standing block or the timeline (only the raw copy keeps it).
 
 It also covers the Sentry source, which arrives as a native webhook body rather than through the generic shape: the issue shape and the metric-alert shape are both parsed, the webhook is accepted only under the Sentry identity and only with the Sentry secret, a request with no Sentry secret is refused rather than served by the shared token, and the generic route refuses a native Sentry body instead of flattening it into a generic alert.
 
@@ -194,7 +204,7 @@ It also covers the Sentry source, which arrives as a native webhook body rather 
 
 The ingress is deployed and live at `https://alert-ingress.jays-services.workers.dev`.  The committed `wrangler.toml` is the deployment manifest:  it binds the `ALERT_STATE` KV namespace the Worker has used since its first deployment, the `ALERT_WRITER` Durable Object, the `alert-writer-v1` SQLite class migration that creates only `AlertWriter`, and the `*/5 * * * *` sweep cron that promotes incidents which stayed open past the wait window.  A deploy keeps the bound secrets (`--keep-vars`), so the credential set below survives it.
 
-`AlertWriter` is a single named Durable Object (`alerts-v1`) that serializes complete state reads, transitions, inventory rendering and Zulip writes.  Its durable storage overlays the existing KV records; historical KV records remain readable and are never deleted or migrated destructively.  All status readers route through the same object, avoiding stale KV reads after mutation.  A KV get/put lock is not used.
+`AlertWriter` is a single named Durable Object (`alerts-v1`) that serializes complete state reads, transitions, inventory rendering and Zulip writes.  Its durable storage overlays the existing KV records; historical KV records remain readable and are never deleted or migrated destructively.  Nothing writes the KV namespace once the writer owns the records, so the writer copies it into durable storage once (a record it already holds wins) and marks the copy `legacy:imported`.  From then on it never lists or reads KV.  Every KV list counts against the account's free-plan cap of 1,000 a day, and listing KV on each sweep and webhook had spent about 3,300 a day.  Until a copy succeeds, the writer keeps reading through to KV and retries the copy at most every ten minutes.  All status readers route through the same object, avoiding stale KV reads after mutation.  A KV get/put lock is not used.
 
 Rollback keeps the previous Worker version and the same KV namespace available, and it preserves the durable outcome records, so an unknown send cannot replay.  No existing listener or model session needs restarting.
 
@@ -217,7 +227,7 @@ python3 scripts/alert-ingress/provision-secrets.py --apply    # write
 
 ### Proving it
 
-`scripts/alert-ingress/selftest.py` is the end-to-end proof against the live Worker.  It posts synthetic Datadog and Better Stack events, reads the topic back through the vendor bots' own credentials, and asserts that a flapping monitor produces exactly one standing message, that two vendors sharing a service name own separate standing messages, and that a second alert joins the same standing block as a second row.
+`scripts/alert-ingress/selftest.py` is the end-to-end proof against the live Worker.  It posts synthetic Datadog and Better Stack events, reads the topic back through the vendor bots' own credentials, and asserts that a flapping monitor produces exactly one standing message, that two vendors sharing a service name own separate standing messages, that a second alert joins the same standing block as a second row, and that every delivery left its raw copy in `#Alerts-Raw` while `#Alerts` got no alert line.  `--cleanup` resolves the test incidents and deletes the test messages in all three channels, keeping the standing blocks the Worker still points at.
 
 ```
 python3 scripts/alert-ingress/selftest.py              # prove
@@ -226,7 +236,7 @@ python3 scripts/alert-ingress/selftest.py --cleanup    # remove the test message
 
 The first firing event is **held** for `MIN_OPEN_MS` before it is announced as an alert line, so the alert line that proves the announcement path is posted by the cron sweep minutes later, not by the script.  Check the topic again once the sweep has run:  one line per announced incident, never one per event.
 
-The cleanup removes only the one-line alert rows.  The standing status message the ingress still points at is left in place and its id is printed, because deleting it would leave the Worker pinned to a message that no longer exists.  When the cleanup prints "No standing status message was left behind", the topic has no standing block at all:  either the ingress has not fired for it yet, or the block was deleted -- by an earlier version of this script, or by hand -- while the Worker still holds its id.  A stale id is refused by Zulip, so no fresh standing block is created and the topic stays without one.  Repair it by removing the pinned keys from the `ALERT_STATE` KV namespace -- `status:<source>:<channel>:<topic>` and `statusowner:<message id>` -- with the Cloudflare KV API (`DELETE /accounts/<account>/storage/kv/namespaces/<namespace>/values/<key>`), so the next standing block whose content differs from the stale one is created fresh;  a refresh that renders the same content still finds the stale id in the writer's record of the last delivery, and is refused again.  The reconcile route is the lever for the other case, where a standing block exists but the Worker does not know its id:  `GET /status/:source/:channel/:topic?reconcile=<message id>`.
+The cleanup removes only the one-line alert rows.  The standing status message the ingress still points at is left in place and its id is printed, because deleting it would leave the Worker pinned to a message that no longer exists.  When the cleanup prints "No standing status message was left behind", the topic has no standing block at all:  either the ingress has not fired for it yet, or the block was deleted -- by an earlier version of this script, or by hand -- while the Worker still holds its id.  A stale id is refused by Zulip, so no fresh standing block is created and the topic stays without one.  The pinned keys -- `status:<source>:<channel>:<topic>` and `statusowner:<message id>` -- live in the writer's durable storage (prefixed `kv:`), not in the `ALERT_STATE` KV namespace, so deleting them from KV changes nothing.  No operator route removes them yet.  Once they are gone, the next standing block whose content differs from the stale one is created fresh;  a refresh that renders the same content still finds the stale id in the writer's record of the last delivery, and is refused again.  The reconcile route is the lever for the other case, where a standing block exists but the Worker does not know its id:  `GET /status/:source/:channel/:topic?reconcile=<message id>`.
 
 ### Deployment gate
 
@@ -236,27 +246,27 @@ As of Oct 29, 2026 that variable is not set in the repository, the organization 
 
 ### Vendor cutover
 
-State on Thu, Oct 29, 2026, 1:05 AM (AFC-566):
+State on Thu, Oct 29, 2026, 3:00 AM (AFC-566):
 
 | Vendor | Route into Zulip | How it was changed |
 |---|---|---|
 | Datadog | **ingress** | The one webhook every monitor names, `zulip-alerts` (Integrations > Webhooks), now posts to `https://alert-ingress.jays-services.workers.dev/webhook/datadog` with the custom header `X-Datadog-Token` set to `DATADOG_WEBHOOK_SECRET` and the JSON payload below.  Because the name is unchanged, every monitor that says `@webhook-zulip-alerts` follows without an edit. |
 | Better Stack | **ingress** | Outgoing webhook 88178, renamed `alert-ingress`, now posts the default incident body to `https://alert-ingress.jays-services.workers.dev/webhook/betterstack` with `X-BetterStack-Token` set to `BETTERSTACK_WEBHOOK_SECRET`.  The API returns the header in the webhook's `included` custom-template record, not on the webhook itself. |
-| PagerDuty | Zulip incoming webhook, `#incident-response` | Waits on the PagerDuty status bot:  a generic Zulip bot whose pair is stored as `ZULIP_PAGERDUTY_BOT_EMAIL` / `ZULIP_PAGERDUTY_BOT_API_KEY` in AFC prod `/zulip`.  Then a v3 subscription on the `jays.services` service posts to `/webhook/pagerduty` with `X-PagerDuty-Token` set to a generated `PAGERDUTY_WEBHOOK_SECRET`, and the `Zulip #incident-response` subscription is deleted. |
+| PagerDuty | **ingress** | The generic bot `pagerduty-status-bot` posts the standing block;  its pair is `ZULIP_PAGERDUTY_BOT_EMAIL` / `ZULIP_PAGERDUTY_BOT_API_KEY` in AFC prod `/zulip`.  v3 subscription PZU1X4I, filtered to the `jays.services` service, posts eight incident events to `/webhook/pagerduty` with `X-PagerDuty-Token` set to the generated `PAGERDUTY_WEBHOOK_SECRET`.  The `Zulip #incident-response` subscription (PJCDNVU) was deleted.  PagerDuty's BotFleet subscription is unchanged. |
 | Sentry | through PagerDuty | Sentry's alerts reach Zulip only through PagerDuty's `jays.services` service, so they move with PagerDuty.  A direct route needs an internal integration whose client secret is stored as `SENTRY_WEBHOOK_SECRET`. |
 
 Every change was made through the vendor's API from the server, with the vendor key and the header secret read from Infisical into the process's memory, so no secret passed through a transcript or a URL.  The vendor keys are Fleet-OPS `DD_API_KEY` / `DD_APP_KEY` / `DD_SITE` and `BETTERSTACK_API_KEY` in `/global-api-keys`, and `PAGERDUTY_API_KEY` in `/pagerduty-api-key`.  The previous configurations were saved for rollback first.
 
-The Datadog payload template, which is what `fromDatadog()` reads (`$EVENT_MSG`, the long runbook body, is left out on purpose):
+The Datadog payload template, which is what `fromDatadog()` reads, plus `event_msg` (`$EVENT_MSG`, the full Markdown body with the runbook) for the raw copy.  That one field may run to 32 KiB;  every other text field stays under 4 KiB:
 
 ```json
 {"monitor_id": "$ALERT_ID", "alert_id": "$ALERT_ID", "alert_type": "$ALERT_TYPE",
  "alert_transition_type": "$ALERT_TRANSITION", "alert_title": "$ALERT_TITLE",
  "alert_transition": "$ALERT_TITLE", "priority": "$ALERT_PRIORITY", "host": "$HOSTNAME",
- "scope": "$ALERT_SCOPE", "event_url": "$LINK"}
+ "scope": "$ALERT_SCOPE", "event_url": "$LINK", "event_msg": "$EVENT_MSG"}
 ```
 
-Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the vendor posts to the ingress.  The incoming-webhook bots `[Datadog]` and `[BetterStack]` are now unused, and their keys sat in the old vendor URLs, so deactivating them is the clean end of the cutover.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.
+Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the vendor posts to the ingress.  The incoming-webhook bots `[Datadog]`, `[BetterStack]`, `[PagerDuty]` and `[Sentry]` are now unused, and their keys sat in the old vendor URLs, so deactivating them is the clean end of the cutover.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.
 
 Timeline transitions use a separate durable outcome keyed by the exact normalized transition and previous state.  Destination inventory is completed before mutation; a definitive pre-send failure leaves the previous phase unchanged.  Timeline `unknown` is never resent, while a definitive provider refusal can retry the same transition safely.  Sweep failures are isolated per incident, so one refusal cannot abort independent promotions.
 

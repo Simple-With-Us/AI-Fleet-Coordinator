@@ -11,8 +11,8 @@ Since 2026-10-19 the Hetzner server runs `simple-chat`, `simple-board`, `recall`
 
 ## How an update happens
 
-1. A merge to main that touches the tools runs `.github/workflows/fleet-cli-server-update.yml`.  It SSHes to the server with a key whose `authorized_keys` entry is `restrict` plus a forced command that only starts `fleet-cli-git-update.service`.  The key can do nothing else.
-2. The service runs `scripts/fleet-cli-git-update.py update`.  It fetches main, checks the new commit out, and runs the smoke test (every tool starts with an empty HOME).  A failure returns to the last good commit and skips the bad one until main moves again.  Any wrapper the host lacks is written; existing ones are never touched.
+1. A merge to main that touches the tools runs `.github/workflows/fleet-cli-server-update.yml`.  It SSHes to the server with a key whose `authorized_keys` entry is `restrict` plus a forced command that only starts `fleet-cli-git-update.service`.  The key can do nothing else.
+2. The service runs `scripts/fleet-cli-git-update.py update --home <account-home>` (the script accepts `--home`;  the unit also sets `Environment=HOME=` to that same home).  It fetches main, checks the new commit out, and runs the smoke test (every tool starts with an empty HOME).  A failure returns to the last good commit and skips the bad one until main moves again.  Any wrapper the host lacks is written;  existing ones are never touched.
 3. `fleet-cli-git-update.timer` runs the same service hourly, in case a signal is lost.
 
 The workflow runs only when the repository variable `FLEET_CLI_SIGNAL_ENABLED` is `true`.  It reads three repository secrets, which Infisical (AFC `prod` `/fleet-cli`) holds as the source of truth: `FLEET_CLI_UPDATE_SSH_KEY`, `FLEET_CLI_UPDATE_HOST` and `FLEET_CLI_UPDATE_KNOWN_HOSTS`.
@@ -40,10 +40,18 @@ journalctl -u fleet-cli-git-update -n 20
 
 ## Install (once)
 
+Run the setup as the account that owns the checkout:  the updater moves
+`$HOME/.local/share/fleet-cli/repo` and writes wrappers into `$HOME/.local/bin`, so the service has to
+run as that same account.  The unit says so, and the paths in `ExecStart` name that home outright, so a
+checkout is never moved by a different account than the one that owns it, and a root-run unit cannot
+rewrite the fleet's own tools.  The paths are spelled out instead of using the `%h` specifier, because `%h`
+expands to the root account's home on the server's systemd even when the unit sets a user, which
+would point the updater at the wrong tree.  Run the `install` step as root, because the unit files land in `/etc/systemd/system/`.
+
 ```bash
-python3 -I scripts/fleet-cli-git-update.py setup
-install -m 644 scripts/systemd/fleet-cli-git-update.service scripts/systemd/fleet-cli-git-update.timer /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now fleet-cli-git-update.timer
+sudo -u <account> python3 -I scripts/fleet-cli-git-update.py setup
+sudo install -m 644 scripts/systemd/fleet-cli-git-update.service scripts/systemd/fleet-cli-git-update.timer scripts/systemd/fleet-tools-doctor.service scripts/systemd/fleet-tools-doctor.timer /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now fleet-cli-git-update.timer fleet-tools-doctor.timer
 ```
 
 Then add the signal key to `/root/.ssh/authorized_keys` as `restrict,command="/usr/bin/systemctl start --no-block fleet-cli-git-update.service" ssh-ed25519 ...`.

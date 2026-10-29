@@ -221,6 +221,13 @@ const CREDENTIAL_SHAPES = [
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
 ];
 
+const CREDENTIAL_SHAPES_GLOBAL = CREDENTIAL_SHAPES.map((shape) => new RegExp(shape.source, "g"));
+
+/** `text` with every credential shape replaced, for the raw copy of a delivery. */
+export function redactCredentials(text) {
+  return CREDENTIAL_SHAPES_GLOBAL.reduce((out, shape) => out.replace(shape, "[redacted]"), String(text ?? ""));
+}
+
 /** True when `value` carries a credential shape rather than an identity. */
 function credentialShape(value) {
   const text = String(value || "");
