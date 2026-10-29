@@ -36,6 +36,7 @@ from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import PolicyError, SeatPolicy
+from .policy_input import seats_json_from_env
 from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
@@ -1043,11 +1044,13 @@ def _build_shared_verifier():
 def from_env() -> Relay:
     try:
         policy = SeatPolicy(
-            os.environ.get("GIT_RELAY_SEATS_JSON", ""),
+            seats_json_from_env(),
             rate_per_hour=int(os.environ.get("GIT_RELAY_RATE_PER_HOUR", "120")),
             verifier=_build_shared_verifier(),
         )
     except PolicyError as exc:
+        if "GIT_RELAY_SEATS_FILE" in os.environ:
+            raise SystemExit("git-relay config: file seat policy invalid or unreadable") from None
         raise SystemExit(f"git-relay config: {exc}") from exc
     client = GitHubClient(_owner_token_from_cli())
     # An explicitly configured path is the operator's business:  adoption only
