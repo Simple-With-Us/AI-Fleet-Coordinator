@@ -439,7 +439,9 @@ def cleanup(dd_email, dd_key, bs_email, bs_key):
             f"the delete of message {message['id']} was refused "
             f"(HTTP {status}, permanent)  credential={masked_preview(key)}"
         )
-    print(f"Cleanup: {deleted} test message(s) deleted from #{CHANNEL}, #{LOG_CHANNEL} and #{RAW_CHANNEL} > {TEST_SERVICE}.")
+    print(
+        f"Cleanup: {deleted} test message(s) deleted from #{CHANNEL}, #{LOG_CHANNEL} and #{RAW_CHANNEL} > {TEST_SERVICE}."
+    )
     if kept:
         print("Left in place (the standing status message the ingress still points at):")
         for sender, message_id in kept:
@@ -622,8 +624,14 @@ def main():
     raw_dd = [m for m in raw_new if m.get("sender_email") == dd_email]
     raw_bs = [m for m in raw_new if m.get("sender_email") == bs_email]
     # Section A sent four Datadog deliveries and C one more;  B sent one Better Stack delivery.
-    ok &= check("each Datadog delivery left a raw copy", len(raw_dd) == len(events) + 1, f"{len(raw_dd)} copies")
-    ok &= check("the Better Stack delivery left a raw copy", len(raw_bs) == 1, f"{len(raw_bs)} copies")
+    ok &= check(
+        "each Datadog delivery left a raw copy",
+        len(raw_dd) == len(events) + 1,
+        f"{len(raw_dd)} copies",
+    )
+    ok &= check(
+        "the Better Stack delivery left a raw copy", len(raw_bs) == 1, f"{len(raw_bs)} copies"
+    )
     ok &= check(
         "a raw copy carries the full payload in a spoiler",
         all("spoiler Original" in m.get("content", "") for m in raw_new),
