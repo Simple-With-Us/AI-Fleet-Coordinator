@@ -201,6 +201,27 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(len(self.qd.upserts), n_upserts)
         self.assertEqual(len(self.sentinels), 2)
 
+    def test_hash_skip_advances_provider_timestamp(self) -> None:
+        self._run()
+        st = json.loads(self.state.read_text())
+        self.assertEqual(st["doc/a"]["updated_at"], 1700000000000)
+        # Provider bumps updatedAt while the text stays identical: nothing re-ingests,
+        # but the state row tracks the newer provider timestamp so state-selecting
+        # sources stop refetching the doc.
+        self.docs["doc"] = [
+            make_doc("doc/a", LONG_A, updated_at_ms=1700000000000 + 60000),
+            make_doc("doc/b", LONG_B, updated_at_ms=1700000000000 + 60000),
+        ]
+        self.embed_calls.clear()
+        n_upserts = len(self.qd.upserts)
+        rep = self._run()
+        self.assertEqual(rep["per_source"]["doc"]["docs_changed"], 0)
+        self.assertEqual(self.embed_calls, [])
+        self.assertEqual(len(self.qd.upserts), n_upserts)
+        st = json.loads(self.state.read_text())
+        self.assertEqual(st["doc/a"]["updated_at"], 1700000000000 + 60000)
+        self.assertEqual(st["doc/b"]["updated_at"], 1700000000000 + 60000)
+
     def test_existing_points_not_reembedded_without_state(self) -> None:
         self._run()
         self.embed_calls.clear()
