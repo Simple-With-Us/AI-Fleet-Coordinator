@@ -222,6 +222,16 @@ class SourceTests(Fixture):
         self.commit()
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
+    def test_file_count_exact_limit_builds_but_one_more_is_refused(self):
+        count = len(S.build_bundle(self.repo)[0]["files"])
+        for number in range(S.MAX_FILES - count):
+            self.put(f"scripts/agent_sync/boundary_{number}.py", "# boundary\n")
+        self.commit()
+        self.assertEqual(len(S.build_bundle(self.repo)[0]["files"]), S.MAX_FILES)
+        self.put("scripts/agent_sync/one_too_many.py", "# boundary\n")
+        self.commit()
+        self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
+
     def test_encoded_size_limit_is_checked_after_base64(self):
         self.put("scripts/agent_sync/large.py", "x" * (6 * 1024 * 1024))
         self.commit()
