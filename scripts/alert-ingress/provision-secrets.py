@@ -164,9 +164,7 @@ def fleet_secrets_get(name, project, path):
             f"{name}:  fleet-secrets is not installed", EXIT_MISSING_EXECUTABLE
         ) from None
     except OSError as error:
-        raise ReadError(
-            f"{name}:  fleet-secrets could not run ({type(error).__name__})"
-        ) from None
+        raise ReadError(f"{name}:  fleet-secrets could not run ({type(error).__name__})") from None
     if proc.returncode == FLEET_SECRETS_ABSENT:
         return None
     if proc.returncode != 0:
@@ -252,17 +250,11 @@ def fleet_secrets_get_many(names, project, path):
                 env=env,
             )
         except subprocess.TimeoutExpired:
-            raise ReadError(
-                "fleet-secrets timed out reading the folder", EXIT_TIMEOUT
-            ) from None
+            raise ReadError("fleet-secrets timed out reading the folder", EXIT_TIMEOUT) from None
         except FileNotFoundError:
-            raise ReadError(
-                "fleet-secrets is not installed", EXIT_MISSING_EXECUTABLE
-            ) from None
+            raise ReadError("fleet-secrets is not installed", EXIT_MISSING_EXECUTABLE) from None
         except OSError as error:
-            raise ReadError(
-                f"fleet-secrets could not run ({type(error).__name__})"
-            ) from None
+            raise ReadError(f"fleet-secrets could not run ({type(error).__name__})") from None
         if proc.returncode == 0:
             try:
                 payload = json.loads(proc.stdout.decode("utf-8"))
@@ -270,9 +262,7 @@ def fleet_secrets_get_many(names, project, path):
                 raise ReadError("fleet-secrets returned unreadable output") from None
             if not isinstance(payload, dict):
                 raise ReadError("fleet-secrets returned an unexpected shape")
-            found.update(
-                {name: payload[name] for name in pending if name in payload}
-            )
+            found.update({name: payload[name] for name in pending if name in payload})
             break
         if proc.returncode == FLEET_SECRETS_ABSENT:
             absent = _absent_names(proc.stderr, pending)

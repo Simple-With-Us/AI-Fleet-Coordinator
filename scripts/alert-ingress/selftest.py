@@ -113,9 +113,7 @@ def fs_get(name, project, path):
             check=False,
         )
     except subprocess.TimeoutExpired:
-        raise Failed(
-            f"{name} could not be read:  fleet-secrets timed out", EXIT_TIMEOUT
-        ) from None
+        raise Failed(f"{name} could not be read:  fleet-secrets timed out", EXIT_TIMEOUT) from None
     except FileNotFoundError:
         raise Failed(
             f"{name} could not be read:  fleet-secrets is not installed",
@@ -123,8 +121,7 @@ def fs_get(name, project, path):
         ) from None
     except OSError as error:
         raise Failed(
-            f"{name} could not be read:  fleet-secrets could not run "
-            f"({type(error).__name__})"
+            f"{name} could not be read:  fleet-secrets could not run ({type(error).__name__})"
         ) from None
     if proc.returncode == 3:
         return None
@@ -155,6 +152,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     origin.  Every request that carries a credential goes through the opener
     below instead.
     """
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
@@ -192,9 +190,7 @@ def post_json(url, body, headers=None, timeout=40):
     except urllib.error.HTTPError as error:
         return error.code, _decode_json(error.read())
     except urllib.error.URLError as error:
-        raise Failed(
-            f"the Worker could not be reached:  {type(error.reason).__name__}"
-        ) from None
+        raise Failed(f"the Worker could not be reached:  {type(error.reason).__name__}") from None
     except TimeoutError:
         raise Failed("the Worker could not be reached:  the request timed out") from None
 
@@ -219,9 +215,7 @@ def zulip(path, email, api_key, form=None, method="GET"):
     except urllib.error.HTTPError as error:
         return error.code, _decode_json(error.read())
     except urllib.error.URLError as error:
-        raise Failed(
-            f"Zulip could not be reached:  {type(error.reason).__name__}"
-        ) from None
+        raise Failed(f"Zulip could not be reached:  {type(error.reason).__name__}") from None
     except TimeoutError:
         raise Failed("Zulip could not be reached:  the request timed out") from None
 
@@ -305,15 +299,11 @@ def topic_messages(email, api_key, topic):
     )
     status, data = zulip(f"/messages?{query}", email, api_key)
     if status in (401, 403):
-        raise Failed(
-            zulip_refusal(status, data, api_key, f"the read of #{CHANNEL} > {topic}")
-        )
+        raise Failed(zulip_refusal(status, data, api_key, f"the read of #{CHANNEL} > {topic}"))
     if status != 200:
         raise Failed(f"the topic could not be read (HTTP {status})")
     if not isinstance(data, dict):
-        raise Failed(
-            f"the topic read answered with {type(data).__name__}, not a JSON object"
-        )
+        raise Failed(f"the topic read answered with {type(data).__name__}, not a JSON object")
     messages = data.get("messages")
     if not isinstance(messages, list):
         raise Failed("the topic read carried no message list")
@@ -327,11 +317,7 @@ def is_standing(message):
 
 def standing_ids(messages, sender_email):
     """The ids of the standing blocks one vendor owns in the topic."""
-    return [
-        m["id"]
-        for m in messages
-        if m.get("sender_email") == sender_email and is_standing(m)
-    ]
+    return [m["id"] for m in messages if m.get("sender_email") == sender_email and is_standing(m)]
 
 
 def datadog_payload(monitor_id, scope, transition, title, severity="SEVERE"):
@@ -410,14 +396,9 @@ def cleanup(dd_email, dd_key, bs_email, bs_key):
             f"the delete of message {message['id']} was refused "
             f"(HTTP {status}, permanent)  credential={masked_preview(key)}"
         )
-    print(
-        f"Cleanup: {deleted} one-line alert message(s) deleted from "
-        f"#{CHANNEL} > {TEST_SERVICE}."
-    )
+    print(f"Cleanup: {deleted} one-line alert message(s) deleted from #{CHANNEL} > {TEST_SERVICE}.")
     if kept:
-        print(
-            "Left in place (the standing status message the ingress still points at):"
-        )
+        print("Left in place (the standing status message the ingress still points at):")
         for sender, message_id in kept:
             print(f"  id={message_id}  bot={sender}")
     else:
@@ -503,8 +484,7 @@ def main():
     ok &= check(
         "the four events did not post one message each",
         len(dd_new) < len(events),
-        f"{len(dd_new)} new message(s) from the datadog bot:  "
-        f"{[m['id'] for m in dd_new]}",
+        f"{len(dd_new)} new message(s) from the datadog bot:  {[m['id'] for m in dd_new]}",
     )
     ok &= check(
         "no alert line was posted while the incident was held",
