@@ -1840,6 +1840,7 @@ function validatePagerDutyPayload(payload) {
 
 // One named object owns every read/render/write transaction.  Durable storage
 // overlays legacy KV without deleting historical records or trusting KV locks.
+const LEGACY_IMPORTED = "legacy:imported";
 export class AlertWriter {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -1851,13 +1852,41 @@ export class AlertWriter {
     this.tail = task.catch(() => {});
     return task;
   }
-  async dispatch(request) {
+  // The legacy KV is frozen (nothing writes it once the writer owns the
+  // records), so it is copied into durable storage once and never read again.
+  // Every KV list counts against the account's free-plan cap of 1,000 a day,
+  // and listing it on each sweep and webhook spent about 3,300 a day.  Until a
+  // copy succeeds the overlay keeps reading through to KV, retried at most
+  // every ten minutes.
+  async legacyImported() {
     const storage = this.ctx.storage,
       legacy = this.env.ALERT_STATE;
+    if (this.imported) return true;
+    if (Date.now() < (this.importRetryAt || 0)) return false;
+    try {
+      if (!legacy || (await storage.get(LEGACY_IMPORTED)) !== undefined)
+        return (this.imported = true);
+      for (const { name } of await listAll(legacy, "")) {
+        if ((await storage.get(`kv:${name}`)) !== undefined) continue;
+        const value = await legacy.get(name);
+        if (value !== null) await storage.put(`kv:${name}`, value);
+      }
+      await storage.put(LEGACY_IMPORTED, Date.now());
+      return (this.imported = true);
+    } catch {
+      console.error(JSON.stringify({ event: "alert.legacy_import_failed" }));
+      this.importRetryAt = Date.now() + 10 * 60 * 1000;
+      return false;
+    }
+  }
+  async dispatch(request) {
+    const storage = this.ctx.storage,
+      legacy = this.env.ALERT_STATE,
+      imported = await this.legacyImported();
     const overlay = {
       async get(key, type) {
         let value = await storage.get(`kv:${key}`);
-        if (value === undefined) value = await legacy.get(key);
+        if (value === undefined && !imported) value = await legacy.get(key);
         return value == null
           ? null
           : type === "json"
@@ -1875,7 +1904,7 @@ export class AlertWriter {
         await storage.delete(`kv:${key}`);
       },
       async list({ prefix }) {
-        const previous = await listAll(legacy, prefix);
+        const previous = imported ? [] : await listAll(legacy, prefix);
         const local = await storage.list({
           prefix: `kv:${prefix}`,
           limit: MAX_KEYS + 1,
