@@ -550,7 +550,7 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertTrue(M._raw_json_too_deep("]]]]" + "[" * (M.HOOK_JSON_MAX_DEPTH + 1)))
         self.assertFalse(M._raw_json_too_deep("[" * M.HOOK_JSON_MAX_DEPTH))
 
-    def _hook_fault(self, hook, payload: dict, error: "M.RegistryError"):
+    def _hook_fault(self, hook, payload: dict, error: M.RegistryError):
         err = io.StringIO()
         row = {"session_id": SESSION_ID, "session_kind": "conversation", "title": "M: T"}
         with (
