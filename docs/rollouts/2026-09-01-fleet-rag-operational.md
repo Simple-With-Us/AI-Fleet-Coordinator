@@ -72,7 +72,7 @@ recall doctor
 recall stats
 recall "how do I avoid leaking credentials from the handoff file"
 recall eval --k 5
-: "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}" || exit 1
+: "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the ssh target in the operator inventory}" || exit 1
 ssh "$HOUSEKEEPER_SSH_ALIAS" 'ls -la /data/backups/qdrant/*/ ; /usr/local/sbin/fleet-qdrant-health.sh'
 curl -s http://127.0.0.1:8799/api/routines | python3 -c 'import json,sys;[print(r["name"],r["schedule"]) for r in json.load(sys.stdin)["routines"] if "RAG" in r["name"]]'
 ```

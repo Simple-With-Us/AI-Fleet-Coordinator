@@ -2405,5 +2405,110 @@ class PrivateInventoryTests(unittest.TestCase):
         )
 
 
+class GuardedBlockSyntaxTests(unittest.TestCase):
+    """A `:?` guard whose word holds a quote cannot be parsed.
+
+    bash reads the word of a `:?` guard inside the surrounding double quotes,
+    so an apostrophe in it opens a single-quoted string that never closes and
+    the whole block fails to parse.  The guard line reads like ordinary
+    English and the snippet cannot run at all, so the check belongs to the
+    pack:  a seat that copies the block gets a syntax error instead of the
+    lock the prose describes.
+
+    The scan reads the fenced blocks and nothing else.  A guard quoted inline
+    in a sentence is prose, and a `:?` word whose match runs over a line
+    break names text the reader never sees as one command, so the guard scan
+    never runs over the whole document.
+    """
+
+    # A fence is a run of three or more backticks, and the closing fence has to
+    # be the same run, so a four-backtick block can hold a three-backtick one.
+    # The opener and the closer may both sit inside a list item, so up to three
+    # spaces of indentation are allowed in front of them.
+    FENCE = re.compile(
+        r"^[ ]{0,3}(?P<fence>`{3,})(?P<info>[^\n`]*)\n(?P<body>.*?)^[ ]{0,3}(?P=fence)[ \t]*$",
+        re.DOTALL | re.MULTILINE,
+    )
+    GUARD = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}")
+    # The info strings that name a shell.  A block in any other language is
+    # not shell code, so parsing it as shell reports a failure nobody can fix.
+    SHELL_LANGUAGES = frozenset({"bash", "sh", "shell"})
+    # A block that takes longer than this to parse is a runaway, not a guard.
+    BASH_TIMEOUT = 10
+
+    def _texts(self):
+        for root, dirs, files in os.walk(ROOT):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
+            for name in files:
+                if name.endswith((".md", ".mdc")):
+                    path = os.path.join(root, name)
+                    try:
+                        with open(path, encoding="utf-8") as handle:
+                            yield path, handle.read()
+                    except (OSError, UnicodeDecodeError):
+                        continue
+
+    def _bash_parse(self, body: str) -> tuple[int, str]:
+        """The exit code and the first line of the complaint from `bash -n`.
+
+        A block that never finishes and a host without bash both count as a
+        failure, so a broken guard can never hide behind either one.
+        """
+        try:
+            proc = subprocess.run(
+                ["bash", "-n"],
+                input=body,
+                capture_output=True,
+                text=True,
+                timeout=self.BASH_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return 124, "bash -n did not finish within %d seconds" % self.BASH_TIMEOUT
+        except FileNotFoundError:
+            return 127, "bash is not on the PATH of this host"
+        except OSError as exc:
+            return 127, "bash could not be run: %s" % exc
+        if proc.returncode != 0:
+            return proc.returncode, proc.stderr.strip().split("\n")[0][:90]
+        return 0, ""
+
+    def test_no_guard_word_holds_a_quote(self) -> None:
+        offenders: list[str] = []
+        for path, text in self._texts():
+            rel = os.path.relpath(path, ROOT)
+            for fence in self.FENCE.finditer(text):
+                body = fence.group("body")
+                body_line = text[: fence.start("body")].count("\n") + 1
+                for guard in self.GUARD.finditer(body):
+                    if "'" in guard.group(0) or '"' in guard.group(0):
+                        line = body_line + body[: guard.start()].count("\n")
+                        offenders.append("%s:%d %s" % (rel, line, guard.group(0)))
+        self.assertEqual(
+            offenders,
+            [],
+            "a `:?` guard word holds a quote, so the block cannot parse:\n" + "\n".join(offenders),
+        )
+
+    def test_every_guarded_block_parses(self) -> None:
+        broken: list[str] = []
+        for path, text in self._texts():
+            rel = os.path.relpath(path, ROOT)
+            for fence in self.FENCE.finditer(text):
+                if fence.group("info").strip().lower() not in self.SHELL_LANGUAGES:
+                    continue
+                body = fence.group("body")
+                if ":?" not in body:
+                    continue
+                code, complaint = self._bash_parse(body)
+                if code != 0:
+                    line = text[: fence.start("body")].count("\n") + 1
+                    broken.append("%s:%d exit %d: %s" % (rel, line, code, complaint))
+        self.assertEqual(
+            broken,
+            [],
+            "a block with a `:?` guard does not parse:\n" + "\n".join(broken),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
