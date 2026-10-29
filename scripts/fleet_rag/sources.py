@@ -1779,8 +1779,17 @@ def iter_chat_logs(
 LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
 SIMPLE_BOARD_CLI = os.environ.get("FLEET_RAG_SIMPLE_BOARD", "simple-board")
 LINEAR_PAGE = 250
+LINEAR_FULL_PAGE = 50  # full nodes are heavy (descriptions + comments);  keep each call modest
+# simple-board caps --max-chars at 64000 and exits 1 past it, so oversized responses cannot be
+# lifted away:  the fetch below halves its id chunk on overflow instead, and an issue that
+# overflows even alone is SKIPPED (flagged) rather than ingested partial.
+LINEAR_MAX_CHARS = 64_000
 LINEAR_COMMENT_PAGE = 100
-LINEAR_COMMENT_MAX_PAGES = 6  # first page plus up to five follow-ups;  beyond that, warn
+# First page plus up to five follow-ups.  Beyond the bound the issue is SKIPPED (with a run
+# warning) rather than ingested truncated:  comments sort oldest-first, so a truncated doc
+# would never pick up the omitted tail and its content hash would freeze the partial copy in
+# place forever - including over an earlier complete one.
+LINEAR_COMMENT_MAX_PAGES = 6
 LINEAR_QUERY_TIMEOUT_S = 120
 
 _LINEAR_LIGHT_FIELDS = "nodes { id updatedAt } pageInfo { hasNextPage endCursor }"
@@ -1807,7 +1816,7 @@ def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
     GraphQL error raises LinearSourceError so a broken read can never look like an empty board."""
     try:
         proc = subprocess.run(
-            [SIMPLE_BOARD_CLI, "api", "query", query],
+            [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query],
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -1883,34 +1892,74 @@ def load_linear_covered_ids(
     }
 
 
-def _linear_fetch_full(ids: list) -> list:
-    """Full nodes (bodies, labels, attachments, comments) for the selected ids, 250 per call."""
+def _linear_is_overflow(err: LinearSourceError) -> bool:
+    """The CLI refused the response for size (it exits 1 with this stderr), not for a real read
+    failure:  only this error may degrade to a smaller read or a skip, everything else raises."""
+    return "exceeds --max-chars" in str(err)
+
+
+def _linear_placeholder(issue_id: str) -> dict:
+    """A skipped issue still needs a node so the missing-id check does not misfire on it."""
+    try:
+        data = _linear_query(
+            "query { issues(first: 1, filter: { id: { in: [%s] } }) { nodes { id identifier } } }"
+            % json.dumps(issue_id)
+        )
+        nodes = (data.get("issues") or {}).get("nodes") or []
+        identifier = nodes[0].get("identifier") if nodes else None
+    except LinearSourceError:
+        identifier = None
+    return {"id": issue_id, "identifier": identifier or issue_id, "_linear_truncated": True}
+
+
+def _linear_fetch_chunk(chunk: list) -> list:
+    """One id chunk's full nodes.  A response too large for the CLI halves the chunk;  an issue
+    too large even alone degrades to a flagged placeholder (skipped downstream), never a partial
+    doc.  Any other read failure raises - fail closed."""
+    id_list = ", ".join(json.dumps(i) for i in chunk)
+    after = None
     nodes: list = []
-    for start in range(0, len(ids), LINEAR_PAGE):
-        chunk = ids[start : start + LINEAR_PAGE]
-        id_list = ", ".join(json.dumps(i) for i in chunk)
-        after = None
+    try:
         while True:
             clause = f', after: "{after}"' if after else ""
             data = _linear_query(
                 "query { issues(first: %d, filter: { id: { in: [%s] } }%s) { %s } }"
-                % (LINEAR_PAGE, id_list, clause, _LINEAR_FULL_FIELDS)
+                % (LINEAR_FULL_PAGE, id_list, clause, _LINEAR_FULL_FIELDS)
             )
             conn = data.get("issues") or {}
-            batch = conn.get("nodes") or []
-            for node in batch:
-                _linear_complete_comments(node)
-            nodes.extend(batch)
+            nodes.extend(conn.get("nodes") or [])
             page = conn.get("pageInfo") or {}
             if not page.get("hasNextPage"):
                 break
             after = page.get("endCursor")
             if not after:
                 raise LinearSourceError("linear: full fetch lost its cursor mid-chunk")
-        if len(batch) == 0 and chunk:
-            raise LinearSourceError(
-                "linear: a full fetch returned no nodes for a non-empty id chunk"
-            )
+    except LinearSourceError as e:
+        if not _linear_is_overflow(e):
+            raise
+        if len(chunk) > 1:
+            mid = len(chunk) // 2
+            return _linear_fetch_chunk(chunk[:mid]) + _linear_fetch_chunk(chunk[mid:])
+        warn(
+            "linear: one issue exceeds the CLI size cap on its own;  skipped instead of "
+            "ingesting a truncated copy (any earlier complete version stays current)"
+        )
+        return [_linear_placeholder(chunk[0])]
+    if not nodes:
+        raise LinearSourceError(
+            "linear: a full fetch returned no nodes for a non-empty id chunk"
+        )
+    for node in nodes:
+        _linear_complete_comments(node)
+    return nodes
+
+
+def _linear_fetch_full(ids: list) -> list:
+    """Full nodes (bodies, labels, attachments, comments) for the selected ids, LINEAR_FULL_PAGE
+    per call, halving on CLI size overflow."""
+    nodes: list = []
+    for start in range(0, len(ids), LINEAR_FULL_PAGE):
+        nodes.extend(_linear_fetch_chunk(ids[start : start + LINEAR_FULL_PAGE]))
     found = {n.get("id") for n in nodes}
     missing = [i for i in ids if i not in found]
     if missing:
@@ -1922,9 +1971,11 @@ def _linear_fetch_full(ids: list) -> list:
 
 
 def _linear_complete_comments(node: dict) -> None:
-    """Page the comment connection past the first page when the issue has one.  A failure here
-    raises (the doc would otherwise freeze in a truncated state);  only the page bound itself
-    degrades to a warning."""
+    """Page the comment connection past the first page when the issue has one.  Any truncation
+    risk - the page bound, or a comment page too large for the CLI - flags the node so the run
+    SKIPS it;  every other failure raises.  A truncated copy must never become the corpus's
+    current version of the doc (comments sort oldest-first, so the omitted tail would never
+    arrive and the partial hash would freeze in place)."""
     comments = node.get("comments") or {}
     page = comments.get("pageInfo") or {}
     seen = 1
@@ -1934,22 +1985,25 @@ def _linear_complete_comments(node: dict) -> None:
             raise LinearSourceError(
                 f"linear: comment pageInfo for {node.get('identifier')} lost its cursor"
             )
-        data = _linear_query(
-            'query { issue(id: "%s") { comments(first: %d, after: "%s", orderBy: createdAt) '
-            "{ nodes { body createdAt user { displayName } externalUser { displayName } } "
-            "pageInfo { hasNextPage endCursor } } } }"
-            % (node.get("id"), LINEAR_COMMENT_PAGE, after)
-        )
+        try:
+            data = _linear_query(
+                'query { issue(id: "%s") { comments(first: %d, after: "%s", orderBy: createdAt) '
+                "{ nodes { body createdAt user { displayName } externalUser { displayName } } "
+                "pageInfo { hasNextPage endCursor } } } }"
+                % (node.get("id"), LINEAR_COMMENT_PAGE, after)
+            )
+        except LinearSourceError as e:
+            if not _linear_is_overflow(e):
+                raise
+            node["_linear_truncated"] = True
+            return
         conn = (data.get("issue") or {}).get("comments") or {}
         comments.setdefault("nodes", []).extend(conn.get("nodes") or [])
         page = conn.get("pageInfo") or {}
         seen += 1
     if page.get("hasNextPage"):
-        warn(
-            f"linear: {node.get('identifier')} has more than "
-            f"{LINEAR_COMMENT_PAGE * LINEAR_COMMENT_MAX_PAGES} comments;  ingesting the first "
-            f"{LINEAR_COMMENT_PAGE * LINEAR_COMMENT_MAX_PAGES} only"
-        )
+        # See LINEAR_COMMENT_MAX_PAGES:  a truncated issue is skipped, never ingested partial.
+        node["_linear_truncated"] = True
     comments["pageInfo"] = page
 
 
@@ -2049,6 +2103,14 @@ def iter_linear(
     if not selected:
         return
     for node in fetch_full(selected):
+        if node.get("_linear_truncated"):
+            warn(
+                f"linear: {node.get('identifier')} has more than "
+                f"{LINEAR_COMMENT_PAGE * LINEAR_COMMENT_MAX_PAGES} comments or exceeds the CLI "
+                f"size cap;  skipped instead of ingesting a truncated copy (any earlier "
+                f"complete version stays current)"
+            )
+            continue
         labels = [l.get("name") or "" for l in (node.get("labels") or {}).get("nodes") or []]
         team_key = (node.get("team") or {}).get("key")
         created = parse_ts_ms(node.get("createdAt"))

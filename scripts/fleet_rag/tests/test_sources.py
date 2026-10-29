@@ -1727,7 +1727,7 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(doc.seat, "WISE")
         self.assertEqual(doc.extra["severity"], "P2")  # priority 3 -> P2 without a label
 
-    def test_comment_pages_are_followed_and_the_bound_warns(self) -> None:
+    def test_comment_pages_are_followed_and_the_bound_flags_truncation(self) -> None:
         def fake_query(query, timeout_s=0):
             if "issue(id:" in query:
                 return {
@@ -1755,8 +1755,26 @@ class LinearSourceTests(unittest.TestCase):
         # one original page plus the follow-up pages up to the bound
         self.assertEqual(len(bodies), sources.LINEAR_COMMENT_MAX_PAGES)
         self.assertIn("extra page body", bodies)
+        # past the bound the node is flagged, not warned: iter_linear decides to skip it
+        self.assertTrue(node.get("_linear_truncated"))
+
+    def test_overlong_thread_is_skipped_not_ingested_partial(self) -> None:
+        node = _linear_node()
+        node["_linear_truncated"] = True
+        sources.take_warnings()  # drain anything earlier tests left
+        docs = list(
+            sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+                fetch_full=lambda ids: [node],
+            )
+        )
+        self.assertEqual([], docs)
         warnings = sources.take_warnings()
-        self.assertTrue(any(w.startswith("linear: AFC-999") for w in warnings))
+        self.assertTrue(
+            any("skipped instead of ingesting a truncated copy" in w for w in warnings),
+            warnings,
+        )
 
     def test_scan_and_fetch_fail_closed(self) -> None:
         with mock.patch.object(
@@ -1780,6 +1798,66 @@ class LinearSourceTests(unittest.TestCase):
         with mock.patch.object(sources.subprocess, "run", side_effect=bad_rc):
             with self.assertRaises(sources.LinearSourceError):
                 sources._linear_query("query { x }")
+
+    def test_oversized_chunk_halves_until_it_fits(self) -> None:
+        """A response past the CLI size cap is retried as smaller chunks, not a failure."""
+        def fake_query(query, timeout_s=0):
+            if "filter: { id: { in: [" in query and query.count("uuid-") > 1:
+                raise sources.LinearSourceError(
+                    "linear: simple-board api query exited 1: simple-board: the Linear "
+                    "response exceeds --max-chars 64000.  Use pagination or select fewer fields."
+                )
+            for uid in ("uuid-a", "uuid-b"):
+                if uid in query:
+                    return {"issues": {"nodes": [_linear_node(uid=uid)], "pageInfo": {}}}
+            raise AssertionError("unexpected query")
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            nodes = sources._linear_fetch_full(["uuid-a", "uuid-b"])
+        self.assertEqual(["uuid-a", "uuid-b"], [n["id"] for n in nodes])
+
+    def test_single_issue_too_large_is_skipped_with_a_placeholder(self) -> None:
+        """An issue that overflows even alone degrades to a flagged placeholder, so the run
+        skips it (warning) instead of dying or ingesting a partial copy."""
+        def fake_query(query, timeout_s=0):
+            if "title url description" in query:
+                raise sources.LinearSourceError(
+                    "linear: simple-board api query exited 1: simple-board: the Linear "
+                    "response exceeds --max-chars 64000.  Use pagination or select fewer fields."
+                )
+            return {"issues": {"nodes": [{"id": "uuid-huge", "identifier": "AFC-777"}]}}
+
+        sources.take_warnings()  # drain
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            docs = list(
+                sources.iter_linear(
+                    covered_ids=set(),
+                    light_scan=lambda: {"uuid-huge": "2026-10-26T00:00:00.000Z"},
+                )
+            )
+        self.assertEqual([], docs)
+        warnings = sources.take_warnings()
+        self.assertTrue(any("exceeds the CLI size cap" in w for w in warnings), warnings)
+        self.assertTrue(
+            any("skipped instead of ingesting a truncated copy" in w for w in warnings), warnings
+        )
+
+    def test_oversized_comment_page_flags_the_node_not_raises(self) -> None:
+        """A comment page too large for the CLI flags the node for skipping;  it must not kill
+        the run, and must not let a partial copy through."""
+        def fake_query(query, timeout_s=0):
+            if "issue(id:" in query:
+                raise sources.LinearSourceError(
+                    "linear: simple-board api query exited 1: simple-board: the Linear "
+                    "response exceeds --max-chars 64000.  Use pagination or select fewer fields."
+                )
+            raise AssertionError("unexpected query")
+
+        node = _linear_node(comments=[("Claude", "first page body", "2026-10-20T00:00:00.000Z")])
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "c0"}
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            sources._linear_complete_comments(node)
+        self.assertTrue(node.get("_linear_truncated"))
 
     def test_missing_ids_after_fetch_raise(self) -> None:
         with mock.patch.object(
