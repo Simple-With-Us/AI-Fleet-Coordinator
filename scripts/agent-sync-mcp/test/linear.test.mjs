@@ -278,7 +278,7 @@ test("a seat whose Linear tools are off is told so in the instructions", () => {
   for (const seat of ["GROK-WEB", "CURSOR", "JET", "ECHO", "WISE", "CLAUDE"]) {
     assert.match(hostedInstructions(seat), /BEGIN_UNTRUSTED_LINEAR and END_UNTRUSTED_LINEAR/, seat);
   }
-  assert.equal(hostedInstructions("MA").includes("UNTRUSTED_LINEAR"), false);
+  assert.equal(hostedInstructions("BF-BUILDER").includes("UNTRUSTED_LINEAR"), false);
 });
 
 // ---------------------------------------------------------------- routing
@@ -380,11 +380,11 @@ test("with the write switch off every Linear write is refused and no mutation is
 });
 
 test("a seat not on LINEAR_SEATS is refused at run time, even with a client, naming the seat and sending nothing", async () => {
-  // MA has no Linear app and is not enabled:  the requireLinear gate answers before any mint.
-  const { tools, fake } = harness({ seat: "MA" });
+  // BF-BUILDER is retired and not enabled:  the requireLinear gate answers before any mint.
+  const { tools, fake } = harness({ seat: "BF-BUILDER" });
   for (const [name, args] of [["linear_whoami", {}], ["linear_list", {}], ["linear_show", { id: "AFC-1" }], ["linear_file", { title: "x" }], ["linear_comment", { id: "AFC-1", body: "hello" }]]) {
     const error = toolError(await tools.call(name, args), "not_configured");
-    assert.match(error.message, /not enabled for MA/);
+    assert.match(error.message, /not enabled for BF-BUILDER/);
   }
   assert.equal(fake.requests.length, 0);
 });
@@ -839,6 +839,40 @@ test("appNameOk: an own-app seat accepts only its grounded app name, never the b
   assert.ok(!L.appNameOk("FX", "FX"), "bare tag is not the grounded name FX.sh");
   assert.ok(L.appNameOk("FX.sh", "FX"));
   assert.ok(!L.appNameOk("Codex", "CLUTCH") && !L.appNameOk("Clutch", "CODEX"));
-  assert.ok(!L.appNameOk("BF-ENGINEER", "BF-ENGINEER") && !L.appNameOk("BF-TRADER", "BF-TRADER"), "a seat with no grounded name accepts nothing");
+  // BF names equal their tags case-insensitively, so the bare-tag refusal is moot for them;  only cross-seat names are refused.
+  assert.ok(L.appNameOk("BF-Engineer", "BF-ENGINEER") && L.appNameOk("BF-Trader", "BF-TRADER") && !L.appNameOk("BF-Trader", "BF-ENGINEER"));
   assert.ok(L.appNameOk("CODEX", "CODEX"), "an original seat keeps its tag");
+});
+
+test("an enabled own-app seat with an empty token cache mints its own token once with its qualified scope, then reads", async () => {
+  const { tools, fake, gate } = harness({ seat: "BF-ENGINEER", viewer: { id: "u-eng", name: "BF-Engineer", app: true } });
+  assert.equal(await gate.linearTokenGet(), null, "cache starts empty");
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1);
+  assert.ok((await gate.linearTokenGet())?.access_token);
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1, "second call reuses the cache");
+});
+
+test("BF-TRADER mints once with its minimal first-grant scope from an empty cache, then reuses it", async () => {
+  const L = await import("../src/linear.js");
+  assert.equal(L.mintScopeFor("BF-TRADER"), "read,write,app:assignable");
+  assert.ok(!L.mintScopeFor("BF-TRADER").includes("mentionable"));
+  const { tools, fake } = harness({ seat: "BF-TRADER", viewer: { id: "u-trader", name: "BF-Trader", app: true } });
+  ok(await tools.call("linear_list", {}), "linear_list");
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1);
+  assert.equal(new URLSearchParams(fake.mints()[0].raw).get("scope"), "read,write,app:assignable");
+});
+
+test("MA is parked: it is enabled but sends no mint and no data request until its mint effect is qualified", async () => {
+  const L = await import("../src/linear.js");
+  assert.deepEqual([...L.MINT_SCOPE_PENDING], ["MA"]);
+  assert.equal(L.mintScopeFor("MA"), null, "parked beats the stored scope");
+  assert.equal(L.SEAT_MINT_SCOPES.MA, "comments:create,issues:create,read,write", "its own installed scope is held ready, not the standard four");
+  assert.equal(L.mintScopeFor("BF-ENGINEER"), L.LINEAR_SCOPE);
+  const { tools, fake } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
+  toolError(await tools.call("linear_list", {}), "not_authorized");
+  assert.equal(fake.mints().length, 0);
+  assert.equal(fake.calls().length, 0);
 });

@@ -39,6 +39,27 @@ export const LINEAR_RESPONSE_LIMIT = 4_000_000; // bytes
 // token with a different string revokes every token the app holds, so it is a
 // constant here and is never read from the environment (board SCOPE).
 export const LINEAR_SCOPE = "read,write,app:assignable,app:mentionable";
+// A different scope string revokes every token the app holds, so a seat mints only with a
+// scope that has been checked against that app's own grant.  A seat added to MINT_SCOPE_PENDING is
+// enabled (tools and viewer check work with any token already cached for it) but does NOT
+// mint on first use until their exact scope is qualified and given in SEAT_MINT_SCOPES
+// (seat tag -> scope string, the app's own).  The other seats use LINEAR_SCOPE.  MA and BF-TRADER have
+// their own scope strings below, and the rest use LINEAR_SCOPE.
+// MA is parked:  its installed client has a scope of its own and the effect of a new client_credentials
+// mint on its existing installation (prior grant type) is not qualified, so it does not auto-mint.
+// Removing "MA" here is the release step, done only after that effect is qualified.
+export const MINT_SCOPE_PENDING = Object.freeze(["MA"]);
+// MA: the installation's own client.scope as the provider returned it (2026-10-29), not LINEAR_SCOPE.
+// BF-TRADER: no installation exists, so this is a new first grant, set to the least the hosted tools use:
+// read and write, plus app:assignable because linear_claim/linear_status set the app as issue delegate
+// (hosted-tools.js delegateId).  No hosted tool needs app:mentionable, so it is left off.
+export const SEAT_MINT_SCOPES = Object.freeze({ "MA": "comments:create,issues:create,read,write", "BF-TRADER": "read,write,app:assignable" });
+export function mintScopeFor(seat) {
+  const tag = seatTagForSeat(seat);
+  if (MINT_SCOPE_PENDING.includes(tag)) return null;
+  if (Object.hasOwn(SEAT_MINT_SCOPES, tag)) return SEAT_MINT_SCOPES[tag];
+  return LINEAR_SCOPE;
+}
 export const LINEAR_WORKSPACE_URL_KEY = "simple-with-us";
 
 // The one key per seat, with hyphens as underscores:  an env var name cannot
@@ -213,6 +234,13 @@ export const LINEAR_OWN_APP_ENABLED = Object.freeze([
   "BF-ORACLE",
   "BF-PLUMBER",
   "BF-PUBLISHER",
+  // MA, BF-ENGINEER and BF-TRADER: no cached token is needed to be on.  The hosted client mints
+  // each seat's own token from its own /linear pair on first use (LinearClient.token), under the
+  // seat lock and the one-mint-per-day rule.  Their names are the provider registration names
+  // for the canonical client ids (applicationInfo, 2026-10-29), and the viewer check confirms them.
+  "MA",
+  "BF-ENGINEER",
+  "BF-TRADER",
 ]);
 export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX", ...LINEAR_OWN_APP_ENABLED]);
 
@@ -312,7 +340,7 @@ export const SEAT_APP_NAMES = Object.freeze({
   // Own-app seats: the viewer name Linear returned for each seat's existing cached
   // app token in a read-only GraphQL viewer query (2026-10-29, app:true).  A name here
   // is grounding for the viewer check, NOT enablement (LINEAR_OWN_APP_ENABLED).
-  // MA already has its entry above;  BF-ENGINEER and BF-TRADER had no token to read, so no entry.
+  // MA keeps its entry above.  BF-ENGINEER and BF-TRADER: registration names read from the provider by canonical client id.
   "AG": "Antigravity (AG)",
   "CLUTCH": "Clutch",
   "FX": "FX.sh",
@@ -330,6 +358,8 @@ export const SEAT_APP_NAMES = Object.freeze({
   "BF-ORACLE": "BF-Oracle",
   "BF-PLUMBER": "BF-Plumber",
   "BF-PUBLISHER": "BF-Publisher",
+  "BF-ENGINEER": "BF-Engineer",
+  "BF-TRADER": "BF-Trader",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
@@ -1006,11 +1036,15 @@ export class LinearClient {
   }
 
   async #mint() {
+    const scope = mintScopeFor(this.seat);
+    if (!scope) {
+      throw new LinearError("mint", { message: `the ${this.seatLabel()} app's own token scope is not qualified yet, so this server does not mint for it` });
+    }
     const body = new URLSearchParams({
       grant_type: "client_credentials",
       client_id: this.clientId,
       client_secret: this.#clientSecret,
-      scope: LINEAR_SCOPE,
+      scope,
     }).toString();
     let response;
     try {
