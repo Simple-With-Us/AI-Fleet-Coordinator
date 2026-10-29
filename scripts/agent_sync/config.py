@@ -886,7 +886,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         )
         cfg.notes_queue_enabled = False
     linear_errors_before = len(errors)
-    linear_section = raw.get("linear_projects") or {}
+    linear_section = raw.get("linear_projects", {})
     if not isinstance(linear_section, dict):
         errors.append("[linear_projects] must be a table")
         linear_section = {}

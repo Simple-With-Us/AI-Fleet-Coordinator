@@ -187,6 +187,97 @@ class HookTests(unittest.TestCase):
         self.assertEqual(runs, [1])
 
 
+class FailureSurfacingTests(unittest.TestCase):
+    def test_classify(self):
+        self.assertEqual(H._classify(LPL.SecretsRefused("x")), "permanent")
+        self.assertEqual(
+            H._classify(RuntimeError("GITHUB_TOKEN is not configured")), "permanent"
+        )
+        self.assertEqual(
+            H._classify(RuntimeError("GitHub GET: HTTP 401 oops")), "permanent"
+        )
+        self.assertEqual(
+            H._classify(SystemExit("PATCH realm/filters/1:  HTTP 403 no")), "permanent"
+        )
+        self.assertEqual(H._classify(TimeoutError("timed out")), "retryable")
+        self.assertEqual(H._classify(ConnectionError("refused")), "retryable")
+        self.assertEqual(H._classify(OSError("network down")), "retryable")
+        self.assertEqual(
+            H._classify(RuntimeError("Linear GraphQL: HTTP 503 busy")), "retryable"
+        )
+        self.assertEqual(H._classify(RuntimeError("boom")), "outcome_unknown")
+        self.assertEqual(
+            H._classify(SystemExit("PATCH realm/filters/1:  HTTP 400 bad")),
+            "outcome_unknown",
+        )
+
+    def test_failed_run_is_surfaced_and_the_next_run_clears_it(self):
+        events: list[tuple] = []
+        calls: list[int] = []
+
+        def runner(secrets):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("zulip down HTTP 503")
+
+        hook = H.LinearProjectsHook(
+            lambda: {"LINEAR_WEBHOOK_SECRET": SECRET},
+            runner,
+            clock=time.time,
+            log=lambda event, **fields: events.append((event, fields)),
+        )
+        self.assertIsNone(hook.last_error)
+        body, heads = signed(project_event())
+        self.assertEqual(hook.handle("POST", H.PATH, heads, body)[0], 200)
+        deadline = time.time() + 5
+        while (not calls or hook.queued) and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(calls), 1)
+        err = hook.last_error
+        self.assertIsNotNone(err)
+        assert err is not None
+        self.assertEqual(err["error"], "RuntimeError")
+        self.assertEqual(err["outcome"], "retryable")
+        self.assertIn("503", err["detail"])
+        logged = [f for e, f in events if e == "linear-projects-error"]
+        self.assertEqual(len(logged), 1)
+        self.assertEqual(logged[0]["outcome"], "retryable")
+        # A later event still runs and clears the surfaced failure.
+        body, heads = signed(project_event())
+        self.assertEqual(hook.handle("POST", H.PATH, heads, body)[0], 200)
+        deadline = time.time() + 5
+        while (len(calls) < 2 or hook.queued) and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(hook.last_error)
+
+    def test_secret_values_are_redacted_from_the_surfaced_detail(self):
+        events: list[tuple] = []
+
+        def runner(secrets):
+            raise RuntimeError("failed with " + SECRET)
+
+        hook = H.LinearProjectsHook(
+            lambda: {"LINEAR_WEBHOOK_SECRET": SECRET},
+            runner,
+            clock=time.time,
+            log=lambda event, **fields: events.append((event, fields)),
+        )
+        body, heads = signed(project_event())
+        hook.handle("POST", H.PATH, heads, body)
+        deadline = time.time() + 5
+        while hook.last_error is None and time.time() < deadline:
+            time.sleep(0.01)
+        err = hook.last_error
+        self.assertIsNotNone(err)
+        assert err is not None
+        self.assertNotIn(SECRET, err["detail"])
+        self.assertIn("[redacted]", err["detail"])
+        logged = [f for e, f in events if e == "linear-projects-error"]
+        self.assertEqual(len(logged), 1)
+        self.assertNotIn(SECRET, json.dumps(logged[0]))
+
+
 class SecretsFailedTests(unittest.TestCase):
     def test_every_request_is_503_and_the_reason_is_logged_once(self):
         events = []
@@ -204,6 +295,70 @@ class SecretsFailedTests(unittest.TestCase):
         reasons = [f for e, f in events if e == "linear-projects-secrets"]
         self.assertEqual(len(reasons), 1)
         self.assertEqual(reasons[0], {"reason": "token_not_read_only"})
+
+
+class ContentLengthTests(unittest.TestCase):
+    def test_parse_accepts_only_ascii_digits(self):
+        self.assertIsNone(API._parse_content_length(None))
+        self.assertIsNone(API._parse_content_length(""))
+        self.assertIsNone(API._parse_content_length("   "))
+        self.assertEqual(API._parse_content_length("0"), 0)
+        self.assertEqual(API._parse_content_length("123"), 123)
+        self.assertEqual(API._parse_content_length("  123  "), 123)
+        self.assertEqual(API._parse_content_length("000123"), 123)
+        # str.isdigit() accepts U+00B2 but int() rejects it:  the old guard crashed.
+        self.assertTrue("\u00b2".isdigit())
+        self.assertIsNone(API._parse_content_length("\u00b2"))
+        self.assertIsNone(API._parse_content_length("12a"))
+        self.assertIsNone(API._parse_content_length("-5"))
+        self.assertIsNone(API._parse_content_length("1.0"))
+        self.assertEqual(API._parse_content_length("9" * 20), 10**9)
+
+    def test_malformed_content_length_answers_411_and_keeps_serving(self):
+        import socket
+
+        runs: list = []
+        hook = H.LinearProjectsHook(
+            lambda: {"LINEAR_WEBHOOK_SECRET": SECRET},
+            lambda secrets: runs.append(secrets),
+            clock=time.time,
+        )
+        api = API.ListenerReadApi("127.0.0.1", 0, "/tmp", {}, linear_projects=hook)
+        api.start()
+        self.addCleanup(api.close)
+        host, port = api.address
+
+        def raw_status(header_value: bytes) -> bytes:
+            sock = socket.create_connection((host, port), timeout=5)
+            try:
+                sock.sendall(
+                    b"POST "
+                    + H.PATH.encode()
+                    + b" HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                    + header_value
+                    + b"\r\nConnection: close\r\n\r\n"
+                )
+                out = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    out += chunk
+                return out.split(b"\r\n")[0]
+            finally:
+                sock.close()
+
+        self.assertIn(b"411", raw_status("\u00b2".encode("latin-1")))
+        self.assertIn(b"413", raw_status(b"9999999999"))
+        body = json.dumps(project_event()).encode("utf-8")
+        req = urllib.request.Request(
+            "http://%s:%d%s" % (host, port, H.PATH),
+            data=body,
+            method="POST",
+            headers={"Linear-Signature": sign(body)},
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            self.assertEqual(response.status, 200)
 
 
 class ListenerApiSocketTests(unittest.TestCase):
@@ -268,6 +423,31 @@ class ImageTests(unittest.TestCase):
         for name in ("linear_project_linkifiers.py", "zulip_linkifiers.py"):
             self.assertIn("scripts/" + name, dockerfile)
             self.assertIn("!scripts/" + name, ignore)
+
+
+class LinearProjectsConfigTests(unittest.TestCase):
+    def test_malformed_sections_are_rejected_not_coerced_to_empty(self):
+        from agent_sync import config as C
+
+        for bad in (None, [], "", 0, False):
+            with self.subTest(bad=bad):
+                cfg = C.from_dict({"linear_projects": bad})
+                self.assertIn("[linear_projects] must be a table", cfg.errors)
+                self.assertFalse(cfg.linear_projects_enabled)
+
+    def test_missing_and_valid_sections_stay_valid(self):
+        from agent_sync import config as C
+
+        self.assertNotIn(
+            "[linear_projects] must be a table", C.from_dict({}).errors
+        )
+        self.assertFalse(C.from_dict({}).linear_projects_enabled)
+        self.assertTrue(
+            C.from_dict({"linear_projects": {"enabled": True}}).linear_projects_enabled
+        )
+        cfg = C.from_dict({"linear_projects": {"enabled": "yes"}})
+        self.assertIn("linear_projects.enabled must be true or false", cfg.errors)
+        self.assertFalse(cfg.linear_projects_enabled)
 
 
 class DaemonWiringTests(unittest.TestCase):
