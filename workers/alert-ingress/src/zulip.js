@@ -88,6 +88,20 @@ export async function postEvent({
 }
 
 /**
+ * Post one vendor alert as it arrived, already rendered by renderRaw().
+ * @returns {Promise<number|null>} the new message id
+ */
+export async function postRaw({ email, apiKey, channel, topic, content }) {
+  const data = await zulip("/messages", {
+    email,
+    apiKey,
+    method: "POST",
+    form: { type: "stream", to: channel, topic, content },
+  });
+  return data && data.id ? data.id : null;
+}
+
+/**
  * Rewrite the standing status message for a topic.
  *
  * Creates it the first time, then PATCHes it forever after.  `statusId` is the
