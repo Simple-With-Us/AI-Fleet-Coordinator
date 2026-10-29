@@ -21,9 +21,11 @@ import urllib.error
 import urllib.request
 
 if __package__:
-    from .bridge import BridgeError, NoRedirect, request_json, retry_delay
+    from .bridge import NoRedirect, request_json, retry_delay
+    from .errors import BridgeError
 else:
-    from bridge import BridgeError, NoRedirect, request_json, retry_delay
+    from bridge import NoRedirect, request_json, retry_delay
+    from errors import BridgeError
 
 SEND_URL = "https://api.whatsapp.com/agent/v1/messages"
 MAX_RESPONSE = 8 * 1024 * 1024

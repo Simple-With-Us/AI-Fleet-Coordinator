@@ -19,18 +19,15 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+if __package__:
+    from .errors import BridgeError, StopBridge
+else:
+    from errors import BridgeError, StopBridge
+
 MAX_RESPONSE = 8 * 1024 * 1024
 MAX_OFFSET = 2**63 - 1
 LEDGER_RETENTION = 35 * 86400
 TARGET_RING = 500
-
-
-class BridgeError(Exception):
-    """Fixed, content-free failure code."""
-
-
-class StopBridge(BridgeError):
-    pass
 
 
 def digest(value, key=None):
@@ -464,12 +461,6 @@ def send_enabled(state_directory):
 
 
 def main():
-    # runpy executes this module as __main__; alias its canonical import so
-    # outbound shares these exact exception classes instead of loading twice.
-    if __name__ == "__main__":
-        sys.modules.setdefault(
-            (__package__ + ".bridge") if __package__ else "bridge", sys.modules[__name__]
-        )
     if __package__:
         from . import outbound
     else:
