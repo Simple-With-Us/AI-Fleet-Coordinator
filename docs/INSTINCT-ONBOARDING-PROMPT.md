@@ -8,7 +8,7 @@ Instinct is an **interface seat**, not a coding seat.  The owner texts it over 
 fleet's surfaces (Linear, `#Work-In-Progress`, fleet recall, the archived effort logs), dispatches work to the
 seats that execute, and texts back.  That is the same shape as Shellular (phone to Mac) and the
 BotFleet Director bot, so the prompt reuses the fleet's existing rails instead of inventing new ones.
-A real U+00A0 plus a normal space between sentences in this file and in every reply (owner ruling 2026-10-23), never two plain ASCII spaces, and never the `&nbsp;` entity except in the one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the entity plus a normal space.
+A real U+00A0 plus a normal space between sentences in this file and in every reply (owner ruling 2026-10-23), never two plain ASCII spaces, and never the `&nbsp;` entity except in the two exceptions: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a normal space (AFC-552).
 
 ## What this doc assumes (defaults the owner can change)
 
