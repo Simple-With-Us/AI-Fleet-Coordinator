@@ -359,7 +359,7 @@ cloud), not a per-app seat.  Other agents state their cadence in their first mes
   Skim every message for your tag / your repos / your topics; full-read on match.
 - Tooling: the `simple-chat` CLI (`~/.local/bin/simple-chat`) for everything —
   `post`, `reply`, `read`, `listen`, `wait`, `inbox`, `topics`, `react`, `follow`, `mute`,
-  `resolve`, `dm --owner` — and ST-MCP (hosted/local MCP with its own tool names) where MCP is required.
+  `resolve`, `dm --owner` — and Fleet MCP (hosted/local MCP with its own tool names) where MCP is required.
 Details: `FLEET-PROTOCOL.md` (repo copy) and `~/apps/FLEET-PROTOCOL.md` (Mac live copy) § Chat: The Zulip Contract, § Posting, and § Linear and the Claim Lifecycle.
 
 ## Apple Notes for owner-facing review docs (all apps, all agents)
@@ -536,7 +536,9 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
 
 Canonical: `~/apps/FLEET-PROTOCOL.md` § Secret handoff / Infisical / Coolify tokens.
 
-Chat engine: the `simple-chat` CLI (`~/.local/bin/simple-chat`, AFC `scripts/agent_sync`) and ST-MCP are the
+`simple-chat` is for Zulip messaging tools, including message reads, not a required Operator session-letter route.  Reading messages does not imply event subscription.  Operator is separate; use only its separately verified entry point.  Ordinary Operator clarification DMs remain ordinary messages, not a tool integration or required letter route.
+
+Chat engine: the `simple-chat` CLI (`~/.local/bin/simple-chat`) and Fleet MCP are the
 tools for chat — `post`, `reply`, `read`, `wait`, `listen`, `inbox`, `topics`, `subscribe`,
 `react`, `follow`, `mute`, `resolve`, and `whoami`.  Credentials: Mac seats use
 Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_*`, read through `fleet-secrets`); cloud seats use env `ZULIP_EMAIL`,
@@ -718,16 +720,13 @@ address:
   - Because `verify` runs `npm run build`, a PR that breaks the build cannot merge —
     always run the full tsc/test/build trio locally before pushing.
 
-### The fleet's GitHub tools: git-relay and GR-MCP (relay path — NOT LIVE YET)
+### Fleet MCP and the Git Relay backend
 
-`git-relay` is the fleet's GitHub relay, and `GR-MCP` (`git-relay mcp`) is its MCP wrapper.  Together they expose seven tools: `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`.
+Connect to **Fleet MCP** at `https://agents.simplewithus.com/mcp` with your own assigned bearer for the tool families allowed to your agent.  Remote-capable clients connect directly; stdio-only clients use the reviewed assigned-hosted-stdio connector on their own runtime host.  Git Relay (`git-relay`) is the server-side backend, not a local per-agent replacement or bypass.  Fleet MCP is the MCP configuration target.  The owner wants one supported route for Mac agents across fleet tools and Git Relay; the final all-tool transport recommendation is pending, so do not add a parallel direct CLI route or remove a working route from these instructions.  Any approved client must retain the same assigned identity, backend policy, audit and operation limits, without a second broker, raw minted tokens, or credentials in arguments or logs.
 
-- **The relay is the ONLY path in the fleet that mints per-bot GitHub App tokens.**  A seat never handles an App id, a private key, or the 1-hour token expiry; the relay mints and refreshes the seat's own token server-side.
-- **PR-write authoring runs under the owner's scoped PR-only token** (`open_pr`, `edit_pr`, `reply_thread`, `comment_pr`), so a PR is authored as the owner and the review bots work normally.  Everything else (`merge_pr`, `workflow_dispatch`, `resolve_thread`) runs under the seat's own GitHub App token.  A seat can never push.
-- **Per-seat policy is an allowlist layer that can only NARROW the underlying credential, never exceed it** (allowed actions, allowed repos, mint ceilings, an hourly call cap).  Every call, allowed or denied, lands in an audit log.
-- `mint_token` is deliberately NOT exposed over MCP, because it returns a raw credential.
-- **How a seat reaches them:** with its own bearer token.  ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server.  The tool names are the same either way.
-- **STATUS (verified Oct 23 2026): implemented, policy-checked and tested, but NOT DEPLOYED.**  No daemon, no launchd job, no seat pointed at it, and no service host chosen yet.  Until the owner decides the cutover, keep using the interim `gh` and shell path below.
+The seven core Git tools are `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`.  Additional workflow tools require their scoped rollout; this instruction is not a permission grant or a claim that every pending tool is deployed.  `mint_token` is not exposed because it returns a raw credential.  Policy, permission ceilings and audit remain server-side.  Use the supported configuration for your actual client transport, never invented fields or another agent's bearer.  The admin page must show missing service credentials explicitly, such as a missing Zulip token; having a bearer is not full-service readiness.
+
+These are the intended connection and tool names.  Actual deployment, runtime startup and native custody qualification are recorded separately and must not be inferred from these instructions.  If your assigned connection does not expose a needed tool or reports a missing service credential, report that exact readiness gap.  Use an already-authorized GitHub route only within its existing scope; never mint credentials, widen permissions, borrow another agent's bearer or bypass the backend to make these target instructions appear live.  Until the owner decides the git-relay cutover, Mac seats keep the interim `gh` and shell path for GitHub work within that authorized scope; that path runs outside git-relay and therefore outside Fleet MCP's server-side policy, permission ceilings, and audit log, and must not mint credentials, widen permissions, or replace the target configuration above.
 
 ## Product philosophy — real trading, owner's risk (READ FIRST; do not re-paternalize)
 
@@ -876,4 +875,4 @@ The script calls `GET /api/ops/snapshot` (token via `x-ops-token`). See
 
 ## Fleet recall (shared agent memory)
 
-Search before re-deriving.  **Contribute every reusable lesson** (owner 2026-09-02) — the seat that just burned tokens is the only one that knows.  Mac: MCP `recall_search` / `recall_contribute` / `recall_stats` or CLI `recall "query"`.  Cloud / phone: `https://agents.jays.services/mcp` or REST `/recall/*`.  A hit is a lead, not a verdict.  Do not bulk-ingest chat transcripts as lessons.  Canonical: `AI-Fleet-Coordinator/docs/RAG-FLEET-INFRA.md`.
+Search before re-deriving.  **Contribute every reusable lesson** (owner 2026-09-02) — the seat that just burned tokens is the only one that knows.  Mac: MCP `recall_search` / `recall_contribute` / `recall_stats` or CLI `recall "query"`.  Cloud / phone: `https://agents.simplewithus.com/mcp` or REST `/recall/*`.  A hit is a lead, not a verdict.  Do not bulk-ingest chat transcripts as lessons.  Canonical: `AI-Fleet-Coordinator/docs/RAG-FLEET-INFRA.md`.

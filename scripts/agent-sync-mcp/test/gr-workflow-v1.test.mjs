@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,107);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,108);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,107);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,108);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -467,7 +467,6 @@ test('review lifecycle projected receipts use cached strict schemas and own bear
  assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
 });
-
 test('history endpoint-specific ID contract and preparse structural limits',async()=>{
  const noid={id:null,event:'cross-referenced',created_at:null,commit_id:null};
  assert.equal(validWfV1Response('wf_issue_events',{events:[noid],page:1,has_more:false}),false);
@@ -478,4 +477,15 @@ test('history endpoint-specific ID contract and preparse structural limits',asyn
  // Runtime-only synthetic provider shapes, never credentials.
  for(const title of ['sk-'+'x'.repeat(30),'sk-ant-'+'x'.repeat(30),'sk-proj-'+'x'.repeat(30),'sk_live_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title,state:'open',repo}},{repo}),false);
  const prior=globalThis.Buffer;try{globalThis.Buffer=undefined;assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ok',state:'open',repo}},{repo}),true);}finally{globalThis.Buffer=prior;}
+});
+test('rename strict receipts correlate paths branch and prior blob and use caller bearer',async()=>{
+ const args={repo,source_path:'old.txt',destination_path:'new.txt',branch:'feature/x',message:'Rename file',expected_head_sha:'a'.repeat(40),prior_sha:'b'.repeat(40)};
+ const receipt={source_path:'old.txt',destination_path:'new.txt',branch:'feature/x',commit:'c'.repeat(40),blob_sha:'b'.repeat(40)};
+ assert.equal(validWfV1Args('wf_file_rename',args),true);
+ assert.equal(validWfV1Response('wf_file_rename',receipt,args),true);
+ for(const bad of [{...receipt,source_path:'wrong'},{...receipt,blob_sha:'d'.repeat(40)},{...receipt,commit:7},{...receipt,extra:true}])assert.equal(validWfV1Response('wf_file_rename',bad,args),false);
+ let calls=0;const t=harness(async(u,i)=>{calls++;assert.ok(u.endsWith('/v1/wf_file_rename'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(i.body),args);return new Response(JSON.stringify(receipt));});
+ assert.ok(!(await t.call('gr_wf_file_rename',args)).isError);assert.equal(calls,1);
+ for(const bad of [{...args,force:true},{...args,message:' '},{...args,message:'é'.repeat(251)},{...args,source_path:'../x'}])assert.ok((await t.call('gr_wf_file_rename',bad)).isError);
+ assert.equal(calls,1);
 });
