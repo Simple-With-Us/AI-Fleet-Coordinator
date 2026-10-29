@@ -403,6 +403,12 @@ def cleanup(dd_email, dd_key, bs_email, bs_key):
             print(f"  id={message_id}  bot={sender}")
     else:
         print("No standing status message was left behind.")
+        print(
+            "  If the ingress has already fired for this topic, it still pins a "
+            "message id that no longer exists:  a stale id is refused, so no fresh "
+            "standing block is created.  See the cleanup runbook in "
+            "workers/alert-ingress/README.md."
+        )
     return 0
 
 

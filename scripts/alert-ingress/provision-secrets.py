@@ -257,8 +257,20 @@ def fleet_secrets_get_many(names, project, path):
             raise ReadError(f"fleet-secrets could not run ({type(error).__name__})") from None
         if proc.returncode == 0:
             try:
-                payload = json.loads(proc.stdout.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
+                raw = proc.stdout.decode("utf-8")
+            except UnicodeDecodeError:
+                raise ReadError("fleet-secrets returned unreadable output") from None
+            if len(pending) == 1:
+                # One name asked for:  the CLI answers with the raw value and
+                # no JSON wrapper (scripts/fleet_secrets/cli.py:133-134).  A
+                # one-name batch is the common case -- the retry after an
+                # absent name leaves exactly one -- so it must decode as
+                # itself and not as a JSON object.
+                found[pending[0]] = raw
+                break
+            try:
+                payload = json.loads(raw)
+            except ValueError:
                 raise ReadError("fleet-secrets returned unreadable output") from None
             if not isinstance(payload, dict):
                 raise ReadError("fleet-secrets returned an unexpected shape")
@@ -281,18 +293,29 @@ def fleet_secrets_get_many(names, project, path):
     return found
 
 
-def handoff(name, project, path):
-    """One credential:  the environment first, then fleet-secrets.
+def batch_values(names, project, path):
+    """Every named value:  the environment first, one batched read second.
 
-    The name is ever reported;  the value never is.
+    A name the folder does not hold is an error here, not a silent gap:  the
+    caller asked for a value it cannot do without.  The names are ever
+    reported;  the values never are.
     """
-    value = os.environ.get(name, "").strip()
-    if value:
-        return value
-    value = fleet_secrets_get(name, project, path)
-    if value is None:
-        raise ReadError(f"{name} is absent")
-    return value
+    values = {}
+    missing = []
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            values[name] = value
+        else:
+            missing.append(name)
+    if missing:
+        fetched = fleet_secrets_get_many(missing, project, path)
+        for name in missing:
+            value = fetched.get(name)
+            if not value:
+                raise ReadError(f"{name} is absent from {project}{path}")
+            values[name] = value
+    return values
 
 
 def api(method, url, token, data=None, timeout=35, write=None):
@@ -332,15 +355,14 @@ def api(method, url, token, data=None, timeout=35, write=None):
         raise ReadError("not-json") from None
 
 
-def infisical_login():
-    """The automation identity's access token.  Never printed."""
-    names = ("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET")
-    values = {name: os.environ.get(name, "").strip() for name in names}
-    missing = [name for name in names if not values[name]]
-    if missing:
-        values.update(fleet_secrets_get_many(missing, FLEETOPS_SLUG, "/"))
-    client_id = values["INFISICAL_AUTOMATION_CLIENT_ID"]
-    client_secret = values["INFISICAL_AUTOMATION_CLIENT_SECRET"]
+def infisical_login(values):
+    """The automation identity's access token.  Never printed.
+
+    The values arrive from the caller, so the fleet-ops folder is read once
+    for the whole run instead of once per credential.
+    """
+    client_id = values.get("INFISICAL_AUTOMATION_CLIENT_ID", "")
+    client_secret = values.get("INFISICAL_AUTOMATION_CLIENT_SECRET", "")
     if not client_id:
         raise ReadError("INFISICAL_AUTOMATION_CLIENT_ID is absent")
     if not client_secret:
@@ -427,10 +449,23 @@ def main():
         print(f"STOP: {error}.  Nothing was written.")
         return error.code
 
-    # 2. The generated secrets:  read what exists, create what does not.
+    # 2. The fleet-ops root:  the automation identity, and -- in apply mode --
+    #    the Cloudflare token.  One batched read of the folder, so it is
+    #    exported once for the whole run.  It is read before the login, so a
+    #    missing Cloudflare token is found before anything is written.
+    fleetops_names = ["INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"]
+    if not dry:
+        fleetops_names.append("CLOUDFLARE_FLEET_API_TOKEN")
+    try:
+        fleetops = batch_values(fleetops_names, FLEETOPS_SLUG, "/")
+    except ReadError as error:
+        print(f"STOP: {error}.  Nothing was written.")
+        return error.code
+
+    # 3. The generated secrets:  read what exists, create what does not.
     created = []
     try:
-        infisical_token = infisical_login()
+        infisical_token = infisical_login(fleetops)
     except ReadError as error:
         print(f"STOP: the Infisical login failed ({error}).  Nothing was written.")
         return error.code
@@ -470,15 +505,9 @@ def main():
         print(f"Dry run: {len(values)} bindings would be set on {WORKER}.  Re-run with --apply.")
         return 0
 
-    # 3. The Worker bindings.
-    try:
-        cloudflare_token = handoff("CLOUDFLARE_FLEET_API_TOKEN", FLEETOPS_SLUG, "/")
-    except ReadError as error:
-        print(
-            f"STOP: the Cloudflare token could not be read ({error}).  Infisical holds "
-            "every value;  re-run to reconcile."
-        )
-        return error.code
+    # 4. The Worker bindings.  The Cloudflare token came with the fleet-ops
+    #    batch above, so the folder is not exported a second time.
+    cloudflare_token = fleetops["CLOUDFLARE_FLEET_API_TOKEN"]
     bound = 0
     for name, value in values.items():
         try:
