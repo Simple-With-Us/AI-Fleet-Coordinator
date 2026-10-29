@@ -83,7 +83,6 @@ class Metadata(unittest.TestCase):
                 )
 
     def test_relation_repository_provider_pattern_is_unverifiable(self):
-        from git_relay.workflow_verbs import Refused
 
         # Runtime-assembled scanner-shaped synthetic data only, never a credential.
         fake = "sk-" + "x" * 30
