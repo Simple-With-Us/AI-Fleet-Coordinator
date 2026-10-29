@@ -98,6 +98,43 @@ def safe_error_diagnostics(headers=None, message=None):
     return result
 
 
+MAX_DOWNLOAD_CHUNK = 256 * 1024
+MAX_DOWNLOAD_OFFSET = 512 * 1024 * 1024
+# A 200 means the storage host ignored Range; skipping to the offset would drain the stream.
+MAX_200_SKIP = 1024 * 1024
+# Signed download origins GitHub redirects to.  Matched on whole labels, https only.
+_SIGNED_HOST_SUFFIXES = (
+    ".githubusercontent.com",
+    ".blob.core.windows.net",
+)
+
+
+def _signed_download_url(location) -> str:
+    """Validate a redirect target before any bytes are fetched from it."""
+    from urllib.parse import urlsplit
+
+    if not isinstance(location, str) or not 8 <= len(location) <= 4096:
+        raise RelayGitHubError(0, "download redirect missing")
+    if any(ord(c) < 33 or ord(c) == 127 for c in location):
+        raise RelayGitHubError(0, "download redirect invalid")
+    try:
+        parts = urlsplit(location)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        raise RelayGitHubError(0, "download redirect invalid") from None
+    if (
+        parts.scheme != "https"
+        or not host
+        or parts.username is not None
+        or parts.password is not None
+        or port not in (None, 443)
+        or not host.endswith(_SIGNED_HOST_SUFFIXES)
+        or parts.fragment
+    ):
+        raise RelayGitHubError(0, "download redirect origin refused")
+    return location
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """A 3xx must never be followed:  redirects can carry the bearer to another origin."""
 
@@ -250,7 +287,7 @@ class GitHubClient:
         except json.JSONDecodeError as exc:
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
 
-    def upload_release_asset(self, repo, release_id, name, content, bearer):
+    def upload_release_asset(self, repo, release_id, name, content, bearer, max_bytes=32768):
         """Fixed GitHub upload host, own bearer, no redirects or arbitrary URL."""
         from urllib.parse import quote
 
@@ -264,7 +301,7 @@ class GitHubClient:
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", name)
             or name.endswith(".")
             or not isinstance(content, bytes)
-            or not 1 <= len(content) <= 32768
+            or not 1 <= len(content) <= max_bytes
         ):
             raise ValueError("bounded own-App asset upload required")
         client = GitHubClient(bearer, "https://uploads.github.com", opener=self._opener)
@@ -274,6 +311,115 @@ class GitHubClient:
             content,
             bearer=bearer,
         )
+
+    def download_chunk(self, path, bearer, offset, length, accept="application/vnd.github+json"):
+        """One bounded byte range of a GitHub download that answers with a signed redirect.
+
+        The first request carries the seat's own bearer to the fixed API origin only.  Its
+        3xx Location is validated (https, no userinfo, default port, allowlisted storage
+        host) and fetched by a second request that never carries Authorization.  Neither
+        request follows a redirect.  Returns (bytes, total_or_None).
+        """
+        if not bearer:
+            raise ValueError("empty task credential; refusing to use the owner token")
+        if (
+            not isinstance(path, str)
+            or not path.startswith("/repos/")
+            or isinstance(offset, bool)
+            or isinstance(length, bool)
+            or not isinstance(offset, int)
+            or not isinstance(length, int)
+            or not 0 <= offset <= MAX_DOWNLOAD_OFFSET
+            or not 1 <= length <= MAX_DOWNLOAD_CHUNK
+        ):
+            raise ValueError("bounded download required")
+        first = urllib.request.Request(
+            f"{self._base}{path}",
+            method="GET",
+            headers={
+                "Accept": accept,
+                "Authorization": f"Bearer {bearer}",
+                "User-Agent": "swu-git-relay",
+            },
+        )
+        location = None
+        try:
+            with self._opener(first, timeout=TIMEOUT_SECONDS) as resp:
+                resp.read(1)  # a direct 2xx body is not a download this client trusts
+            raise RelayGitHubError(0, "expected a download redirect")
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                location = exc.headers.get("Location")
+            else:
+                preview = exc.read(MAX_ERROR_PREVIEW).decode("utf-8", "replace")
+                try:
+                    body = json.loads(preview)
+                except json.JSONDecodeError:
+                    body = None
+                message = body.get("message") if isinstance(body, dict) else None
+                raise RelayGitHubError(
+                    exc.code,
+                    (message if isinstance(message, str) else "download refused")[
+                        :MAX_ERROR_PREVIEW
+                    ],
+                    retry_after=_retry_after_seconds(exc.headers),
+                    diagnostics=safe_error_diagnostics(exc.headers, message),
+                    credential_preview=(
+                        mask_credential(bearer) if exc.code in (401, 403) else None
+                    ),
+                ) from exc
+        except urllib.error.URLError as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc}") from exc
+        target = _signed_download_url(location)
+        second = urllib.request.Request(
+            target,
+            method="GET",
+            headers={
+                "Accept": "*/*",
+                "Range": f"bytes={offset}-{offset + length - 1}",
+                "User-Agent": "swu-git-relay",
+            },
+        )
+        try:
+            with self._opener(second, timeout=TIMEOUT_SECONDS) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                total = None
+                if status == 206:
+                    match = re.fullmatch(
+                        r"bytes (\d+)-(\d+)/(\d+|\*)", resp.headers.get("Content-Range") or ""
+                    )
+                    if not match or int(match.group(1)) != offset:
+                        raise RelayGitHubError(0, "download range mismatch")
+                    total = None if match.group(3) == "*" else int(match.group(3))
+                    data = resp.read(length + 1)
+                elif status == 200:
+                    if offset > MAX_200_SKIP:
+                        raise RelayGitHubError(
+                            416, "download range not honored beyond bounded fallback"
+                        )
+                    skipped = 0
+                    while skipped < offset:
+                        block = resp.read(min(65536, offset - skipped))
+                        if not block:
+                            break
+                        skipped += len(block)
+                    data = resp.read(length) if skipped == offset else b""
+                    declared = resp.headers.get("Content-Length")
+                    if declared and declared.isdigit():
+                        total = int(declared)
+                else:
+                    raise RelayGitHubError(0, "unexpected download status")
+        except urllib.error.HTTPError as exc:
+            raise RelayGitHubError(exc.code, "download refused") from exc
+        except urllib.error.URLError as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc}") from exc
+        if len(data) > length:
+            raise RelayGitHubError(0, "download exceeded the requested bound")
+        return data, total
 
     @staticmethod
     def _check_repo(repo: str) -> None:

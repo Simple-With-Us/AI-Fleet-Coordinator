@@ -73,7 +73,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 55)
+        self.assertEqual(len(ACTIONS), 107)
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
@@ -240,7 +240,9 @@ class Tests(unittest.TestCase):
 
     def test_spec_permissions_stay_inside_shared_ceiling(self):
         for action, (perms, _) in SPECS.items():
-            if action == "wf_checks" or action.startswith("wf_repo_variable"):
+            if action in ("wf_checks", "wf_check_create", "wf_check_update") or action.startswith(
+                ("wf_deployment", "wf_repo_variable")
+            ):
                 continue  # deliberately outside the ceiling; see the next test
             self.assertEqual(set(perms) - set(CEILING), set(), action)
 
@@ -307,7 +309,7 @@ class Tests(unittest.TestCase):
         }
 
         class Routed(Client):
-            def _call(self, method, path, payload=None, bearer=None, expected_status=None):
+            def _call(self, method, path, payload=None, bearer=None):
                 self.calls.append((method, path, payload, bearer))
                 return routes[(method, path)]
 
@@ -418,12 +420,12 @@ class Tests(unittest.TestCase):
             c = self._git_data_client()
             base = c._call
 
-            def call(method, path, payload=None, bearer=None, expected_status=None):
+            def call(method, path, payload=None, bearer=None):
                 for (m, suffix), reply in patch.items():
                     if method == m and path.endswith(suffix):
                         c.calls.append((method, path, payload, bearer))
                         return reply
-                return base(method, path, payload, bearer, expected_status=expected_status)
+                return base(method, path, payload, bearer)
 
             c._call = call
             return c
