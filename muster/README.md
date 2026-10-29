@@ -115,7 +115,7 @@ The Touch ID gate for persistence-class writes lives inside the engine, behind a
 
 The repository root is a setting:  the `fleetConfigRepoRoot` user default (`defaults write services.jays.Muster fleetConfigRepoRoot /path/to/repo`), then the `MUSTER_REPO_ROOT` environment variable, then `~/Code/AI-Fleet-Coordinator`.
 
-Apply unit tests are an XcodeGen target that compiles the non-view sources directly, so they run unsigned:
+Apply unit tests are an XcodeGen target that compiles the non-view sources directly, so they run unsigned.  The same target decodes the server, Worker Health and LaunchAgent fixtures in `MusterTests/Fixtures/` (current, old shape, malformed and stale) and drives the operations flow with an injected runner, so no test starts a process or asks Touch ID:
 
 ```sh
 cd muster && xcodegen generate --spec project.yml
