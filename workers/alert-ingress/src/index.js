@@ -15,6 +15,11 @@
 // So the channel becomes: one editable status block per topic that always shows
 // current truth, plus a sparse timeline of events that actually mattered.
 //
+// Three channels, one topic per service in each (owner, Oct 29, 2026):
+//   #Alerts      only the standing status blocks
+//   #Alerts-Log  the sparse one-line timeline
+//   #Alerts-Raw  every authenticated delivery as the vendor sent it
+//
 // Routes:
 //   POST /webhook/:source            receive a vendor event (signature-verified)
 //   GET  /status                     machine-readable status for any consumer
@@ -47,13 +52,19 @@ import {
 } from "./state.js";
 import {
   postEvent,
+  postRaw,
   writeStatus,
   renderStatus,
   fetchMessage,
   STANDING_BLOCK_HEADER,
 } from "./zulip.js";
+import { renderRaw } from "./raw.js";
 
 const DEFAULT_CHANNEL = "alerts";
+// The standing blocks keep DEFAULT_CHANNEL, which also names their records;
+// the timeline and the raw copies go to channels of their own.
+const LOG_CHANNEL = "Alerts-Log",
+  RAW_CHANNEL = "Alerts-Raw";
 
 const stateKey = (k) => `state:${k}`;
 // Which source owns a state.  The sweep needs it to pick the right vendor
@@ -827,6 +838,36 @@ async function sendEventOnce(env, identity, args) {
   }
 }
 
+// The raw copy is a record, not a decision:  it is posted for every
+// authenticated delivery, under the service's topic, and a failure to post it
+// never changes how the event itself is handled.  A vendor retry posts it again,
+// as the old per-vendor integrations did.
+async function postRawCopy(env, source, payload) {
+  const credential = resolveCredential(env, source);
+  if (!credential) return;
+  let topic = source;
+  try {
+    // The topic the event path files this alert under:  its pinned service
+    // when it has one, so a renamed vendor label does not split the record.
+    const event = normalize(source, payload);
+    const pinned = await env.ALERT_STATE.get(svcKey(event.key), "json");
+    topic = boundedTopic(typeof pinned === "string" && pinned ? pinned : event.service) || source;
+  } catch {
+    // An identity the event path refuses still leaves a raw record, by source.
+  }
+  try {
+    await postRaw({
+      email: credential.email,
+      apiKey: credential.apiKey,
+      channel: RAW_CHANNEL,
+      topic,
+      content: renderRaw(source, payload),
+    });
+  } catch {
+    console.error(JSON.stringify({ event: "alert.raw_copy_failed", source }));
+  }
+}
+
 async function handleEvent(source, payload, env) {
   // The route is authoritative: it names the source, and the source names the
   // credential, the state namespace and the standing message.
@@ -894,7 +935,7 @@ async function handleEvent(source, payload, env) {
       {
         email: credential.email,
         apiKey: credential.apiKey,
-        channel,
+        channel: LOG_CHANNEL,
         topic,
         severity: sev,
         service: event.service,
@@ -909,7 +950,7 @@ async function handleEvent(source, payload, env) {
       {
         email: credential.email,
         apiKey: credential.apiKey,
-        channel,
+        channel: LOG_CHANNEL,
         topic,
         severity: "INFO",
         service: event.service,
@@ -1040,7 +1081,7 @@ async function runSweep(env) {
         {
           email: credential.email,
           apiKey: credential.apiKey,
-          channel: DEFAULT_CHANNEL,
+          channel: LOG_CHANNEL,
           topic,
           severity: s.state.severity,
           service,
@@ -1415,6 +1456,11 @@ const handler = {
     if (source === "pagerduty" && !pagerDutyIncidentEvent(payload)) {
       return json({ action: "ignored", posted: false });
     }
+    // The raw copy runs beside the event path rather than before it, so a
+    // delivery waits for one Zulip round trip, not two.  It is awaited before
+    // the response either way, because the writer's request is what keeps it
+    // alive, and postRawCopy never throws.
+    const rawCopy = postRawCopy(env, source, payload);
     try {
       return json(await handleEvent(source, payload, env));
     } catch (error) {
@@ -1436,6 +1482,8 @@ const handler = {
         );
       }
       throw error;
+    } finally {
+      await rawCopy;
     }
   },
 
@@ -1579,9 +1627,13 @@ function validatePayload(payload, depth = 0) {
     ) {
       throw new Error("invalid field");
     }
+    // Datadog's full Markdown body (`event_msg`, for the raw copy) carries the
+    // monitor's runbook, so it alone may run past 4 KiB;  the 64 KiB body
+    // limit still bounds it.
+    const longest = key === "event_msg" ? 32768 : 4096;
     if (
       typeof value === "string" &&
-      (value.length > 4096 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))
+      (value.length > longest || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))
     )
       throw new Error("invalid text");
   }
