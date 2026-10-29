@@ -908,3 +908,22 @@ test('Git blob and commit receipts keep credential rejection through main valida
  assert.equal(validWfV1Response('wf_git_blob_get',{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}),true);
  assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'safe'}}),true);
 });
+test('review context exact inputs, receipts and correlation',()=>{
+ const sha='a'.repeat(40), author={id:3,login:'bot',type:'Bot'},comment={id:7,commit_id:sha,author,body:'untrusted',body_withheld:false};
+ const args={repo,sha,comment_id:7};
+ assert.ok(validWfV1Args('wf_commit_comment_get',args));
+ assert.ok(!validWfV1Args('wf_commit_comment_get',{...args,url:'https://invalid'}));
+ assert.ok(validWfV1Response('wf_commit_comment_get',{comment},args));
+ assert.ok(!validWfV1Response('wf_commit_comment_get',{comment:{...comment,id:8}},args));
+ assert.ok(!validWfV1Response('wf_commit_comment_get',{comment:{...comment,commit_id:'b'.repeat(40)}},args));
+ const page={sha,comments:[comment],page:2,has_more:true,snapshot:false},pa={repo,sha,page:2,per_page:1};
+ assert.ok(validWfV1Response('wf_commit_comments_page',page,pa));
+ for(const bad of [{...page,page:1},{...page,has_more:false},{...page,comments:[comment,comment]},{...page,snapshot:true}])assert.ok(!validWfV1Response('wf_commit_comments_page',bad,pa));
+ const ra={repo,number:9,expected_head_sha:sha},rr={number:9,head_sha:sha,users:[author],teams:[{id:4,slug:'devs'}],snapshot:false};
+ assert.ok(validWfV1Response('wf_pr_requested_reviewers',rr,ra));
+ for(const bad of [{...rr,number:8},{...rr,head_sha:'b'.repeat(40)},{...rr,users:[author,author]},{...rr,teams:[{id:4,slug:'devs',name:'extra'}]}])assert.ok(!validWfV1Response('wf_pr_requested_reviewers',bad,ra));
+ // Runtime-assembled synthetic scanner shapes only, never credentials.
+ assert.ok(!validWfV1Response('wf_commit_comment_get',{comment:{...comment,body:'sk-'+('x'.repeat(25))}},args));
+ assert.ok(validWfV1Response('wf_commit_comment_get',{comment:{...comment,body:'<withheld: credential-shaped text>',body_withheld:true}},args));
+ assert.ok(WF_V1_READ_ACTIONS.includes('wf_pr_requested_reviewers'));
+});

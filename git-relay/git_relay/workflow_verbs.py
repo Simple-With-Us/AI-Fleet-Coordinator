@@ -74,6 +74,9 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 # action -> (permissions needed, writes)
 SPECS = {
     "wf_git_blob_binary_get": ({"contents": "read"}, False),
+    "wf_commit_comments_page": ({"contents": "read"}, False),
+    "wf_commit_comment_get": ({"contents": "read"}, False),
+    "wf_pr_requested_reviewers": ({"pull_requests": "read"}, False),
     "wf_repo_tags": ({"contents": "read"}, False),
     "wf_repo_languages": ({"metadata": "read"}, False),
     "wf_git_tree_create": ({"contents": "write"}, True),
@@ -701,6 +704,139 @@ class WorkflowVerbs:
         ):
             raise Refused("credential-shaped repository metadata name refused")
         return value
+
+    @staticmethod
+    def _context_user(user):
+        if (
+            not isinstance(user, dict)
+            or type(user.get("id")) is not int
+            or not 0 < user["id"] <= 9007199254740991
+            or not isinstance(user.get("login"), str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", user["login"])
+            or user.get("type") not in ("User", "Bot", "Organization")
+            or find_secret(user["login"])
+        ):
+            raise RelayGitHubError(502, "context author unverifiable")
+        return {key: user[key] for key in ("id", "login", "type")}
+
+    @classmethod
+    def _commit_comment(cls, row, sha, expected_id=None):
+        if (
+            not isinstance(row, dict)
+            or type(row.get("id")) is not int
+            or not 0 < row["id"] <= 9007199254740991
+            or expected_id is not None
+            and row["id"] != expected_id
+            or row.get("commit_id") != sha
+        ):
+            raise RelayGitHubError(502, "commit comment identity unverifiable")
+        author = cls._context_user(row.get("user"))
+        body = row.get("body")
+        if not isinstance(body, str) or "\x00" in body:
+            raise RelayGitHubError(502, "commit comment body unverifiable")
+        try:
+            size = len(body.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "commit comment body unverifiable") from None
+        if size > 32768:
+            raise Refused("commit comment exceeds supported text size")
+        withheld = bool(
+            find_secret(body)
+            or re.search(
+                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                body,
+            )
+        )
+        return {
+            "id": row["id"],
+            "commit_id": sha,
+            "author": author,
+            "body": "<withheld: credential-shaped text>" if withheld else body,
+            "body_withheld": withheld,
+        }
+
+    @staticmethod
+    def _context_size(receipt):
+        if len(json.dumps(receipt).encode("utf-8")) > 262144:
+            raise Refused("context receipt exceeds supported size")
+        return receipt
+
+    def wf_commit_comments_page(self, repo, args):
+        _only(args, ("repo", "sha", "page", "per_page"))
+        sha = _sha(args, "sha")
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        rows = self._get(f"/repos/{repo}/commits/{sha}/comments?per_page={limit}&page={page}")
+        if not isinstance(rows, list) or len(rows) > limit:
+            raise RelayGitHubError(502, "commit comment page unverifiable")
+        comments = [self._commit_comment(row, sha) for row in rows]
+        if len({c["id"] for c in comments}) != len(comments):
+            raise RelayGitHubError(502, "duplicate commit comment")
+        return self._context_size(
+            {
+                "sha": sha,
+                "comments": comments,
+                "page": page,
+                "has_more": len(comments) == limit,
+                "snapshot": False,
+            }
+        )
+
+    def wf_commit_comment_get(self, repo, args):
+        _only(args, ("repo", "sha", "comment_id"))
+        sha, comment_id = _sha(args, "sha"), _int(args, "comment_id")
+        row = self._get(f"/repos/{repo}/comments/{comment_id}")
+        return self._context_size({"comment": self._commit_comment(row, sha, comment_id)})
+
+    def wf_pr_requested_reviewers(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+
+        def verify():
+            pull = self._get(f"/repos/{repo}/pulls/{number}")
+            if (
+                not isinstance(pull, dict)
+                or type(pull.get("number")) is not int
+                or pull["number"] != number
+                or not isinstance(pull.get("head"), dict)
+                or pull["head"].get("sha") != head
+            ):
+                raise Refused("PR head not matched")
+
+        verify()
+        row = self._get(f"/repos/{repo}/pulls/{number}/requested_reviewers")
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("users"), list)
+            or not isinstance(row.get("teams"), list)
+            or len(row["users"]) > 100
+            or len(row["teams"]) > 100
+        ):
+            raise RelayGitHubError(502, "requested reviewers unverifiable")
+        users = [self._context_user(user) for user in row["users"]]
+        teams = []
+        for team in row["teams"]:
+            if (
+                not isinstance(team, dict)
+                or type(team.get("id")) is not int
+                or not 0 < team["id"] <= 9007199254740991
+                or not isinstance(team.get("slug"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", team["slug"])
+                or find_secret(team["slug"])
+            ):
+                raise RelayGitHubError(502, "requested team unverifiable")
+            teams.append({"id": team["id"], "slug": team["slug"]})
+        if (
+            len({u["id"] for u in users}) != len(users)
+            or len({u["login"].lower() for u in users}) != len(users)
+            or len({t["id"] for t in teams}) != len(teams)
+            or len({t["slug"].lower() for t in teams}) != len(teams)
+        ):
+            raise RelayGitHubError(502, "duplicate requested reviewer")
+        verify()
+        return self._context_size(
+            {"number": number, "head_sha": head, "users": users, "teams": teams, "snapshot": False}
+        )
 
     def wf_repo_tags(self, repo, args):
         _only(args, ("repo", "per_page", "page"))
