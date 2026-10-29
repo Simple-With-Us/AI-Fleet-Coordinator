@@ -239,6 +239,12 @@ class State:
             row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")
         }:
             self.db.execute("ALTER TABLE send_ledger ADD COLUMN claim_token TEXT")
+        # The outcome the Worker has not acked yet: a restart reports
+        # the same outcome again instead of losing it.
+        if "pending_outcome" not in {
+            row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")
+        }:
+            self.db.execute("ALTER TABLE send_ledger ADD COLUMN pending_outcome TEXT")
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS recipient (id INTEGER PRIMARY KEY CHECK(id=1),"
             " value TEXT NOT NULL, updated_at INTEGER NOT NULL)"
@@ -313,15 +319,26 @@ class State:
     def target_for(self, id_hash):
         return self._targets.get(id_hash)
 
-    def ledger_put(self, intent_id, state, body_hash, message_id, now):
+    def ledger_put(self, intent_id, state, body_hash, message_id, now, pending_outcome=None):
+        """One row per intent.  The pending outcome is the result the
+        Worker has not acked yet, and it keeps the row claimable."""
         with self.db:
             self.db.execute(
                 "INSERT INTO send_ledger (intent_id, state, body_hash, message_id, attempts,"
-                " created_at, updated_at) VALUES(?,?,?,?,0,?,?)"
+                " pending_outcome, created_at, updated_at) VALUES(?,?,?,?,0,?,?,?)"
                 " ON CONFLICT(intent_id) DO UPDATE SET state=excluded.state,"
                 " body_hash=excluded.body_hash, message_id=excluded.message_id,"
+                " pending_outcome=excluded.pending_outcome,"
                 " updated_at=excluded.updated_at",
-                (intent_id, state, body_hash, message_id, int(now), int(now)),
+                (
+                    intent_id,
+                    state,
+                    body_hash,
+                    message_id,
+                    pending_outcome,
+                    int(now),
+                    int(now),
+                ),
             )
 
     def ledger_token(self, intent_id):
@@ -338,7 +355,8 @@ class State:
 
     def ledger_pending(self):
         return self.db.execute(
-            "SELECT intent_id, state, body_hash FROM send_ledger WHERE state IN ('claimed','sending')"
+            "SELECT intent_id, state, body_hash, message_id, pending_outcome"
+            " FROM send_ledger WHERE state IN ('claimed','sending')"
         ).fetchall()
 
     def ledger_delete(self, intent_id):

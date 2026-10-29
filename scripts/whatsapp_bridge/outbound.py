@@ -220,39 +220,74 @@ class Outbox:
         return self.deliver(reply, recipient)
 
     def recover(self):
-        """A restart finds the local ledger: never sent, or maybe sent."""
-        for intent_id, state, digest in self.state.ledger_pending():
-            if state == "claimed":
+        """A restart finds the local ledger: never sent, or maybe sent.
+
+        The outcome the bridge knows is reported again, and the row is made
+        final only after the Worker has acked it.
+        """
+        for intent_id, state, digest, message_id, pending in self.state.ledger_pending():
+            token = self.state.ledger_token(intent_id)
+            if pending:
+                # The outcome is known and the Worker has not acked it yet.
+                outcome = pending
+                fields = {}
+                if outcome == "sent":
+                    fields["message_id"] = message_id
+            elif state == "claimed":
                 # The POST never started, so the reply goes back to the queue.
-                report(
-                    self.worker_url,
-                    self.signing_key,
-                    intent_id,
-                    "requeue",
-                    self.clock,
-                    self.request,
-                    token=self.state.ledger_token(intent_id),
-                )
-                self.state.ledger_delete(intent_id)
+                outcome = "requeue"
+                fields = {}
             else:
                 # The POST may have gone out: unknown for good, never resent.
-                report(
-                    self.worker_url,
-                    self.signing_key,
-                    intent_id,
-                    "outcome_unknown",
-                    self.clock,
-                    self.request,
-                    error="bridge_restart",
-                    token=self.state.ledger_token(intent_id),
-                )
-                self.state.ledger_put(intent_id, "outcome_unknown", digest, None, self.now())
+                outcome = "outcome_unknown"
+                fields = {"error": "bridge_restart"}
+            report(
+                self.worker_url,
+                self.signing_key,
+                intent_id,
+                outcome,
+                self.clock,
+                self.request,
+                token=token,
+                **fields,
+            )
+            if outcome in ("requeue", "declined"):
+                self.state.ledger_delete(intent_id)
+            else:
+                self.state.ledger_put(intent_id, outcome, digest, message_id, self.now())
 
     def rate_ok(self):
         """At most ten sends a minute, and the window is the last minute."""
         now = self.clock()
         self._sent_at = [at for at in self._sent_at if now - at < 60]
         return len(self._sent_at) < SENDS_PER_MINUTE
+
+    def settle(self, intent_id, outcome, digest, token, message_id=None, started=True, **fields):
+        """Report the outcome, and only then make the local row final.
+
+        The row keeps its claimable state until the Worker acks, so a report
+        that fails is reported again by recover() instead of losing the
+        outcome.  A row whose POST never started stays claimed, and a row
+        that may have sent stays sending.
+        """
+        state = "sending" if started else "claimed"
+        self.state.ledger_put(intent_id, state, digest, message_id, self.now(), outcome)
+        if outcome == "sent" and message_id is not None:
+            fields["message_id"] = message_id
+        report(
+            self.worker_url,
+            self.signing_key,
+            intent_id,
+            outcome,
+            self.clock,
+            self.request,
+            token=token,
+            **fields,
+        )
+        if outcome in ("requeue", "declined"):
+            self.state.ledger_delete(intent_id)
+        else:
+            self.state.ledger_put(intent_id, outcome, digest, message_id, self.now())
 
     def deliver(self, reply, recipient):
         intent_id = reply.get("intent_id")
@@ -266,16 +301,7 @@ class Outbox:
         if not self.enabled():
             # The switch flipped before the POST: a decline is a result, so
             # the reply goes back to held and never becomes unknown.
-            report(
-                self.worker_url,
-                self.signing_key,
-                intent_id,
-                "declined",
-                self.clock,
-                self.request,
-                token=token,
-            )
-            self.state.ledger_delete(intent_id)
+            self.settle(intent_id, "declined", digest, token, None, started=False)
             return {"state": "declined"}
         context_id = None
         if reply.get("reply_to_id_hash"):
@@ -284,77 +310,56 @@ class Outbox:
         if not self.rate_ok():
             # The claim is given back: the reply is queued again and nothing
             # is sent this minute.
-            report(
-                self.worker_url,
-                self.signing_key,
-                intent_id,
-                "requeue",
-                self.clock,
-                self.request,
-                token=token,
-            )
-            self.state.ledger_delete(intent_id)
+            self.settle(intent_id, "requeue", digest, token, None, started=False)
             return {"state": "rate_limited"}
         self._sent_at.append(self.clock())
         self.state.ledger_put(intent_id, "sending", digest, None, self.now())
         answer = self.attempt(recipient, text, context_id, reply.get("attempts") or 0)
         outcome = answer["outcome"]
         if outcome == "sent":
-            self.state.ledger_put(intent_id, "sent", digest, answer.get("message_id"), self.now())
-            report(
-                self.worker_url,
-                self.signing_key,
+            self.settle(
                 intent_id,
                 "sent",
-                self.clock,
-                self.request,
-                message_id=answer.get("message_id"),
-                token=token,
+                digest,
+                token,
+                answer.get("message_id"),
                 context_missing=context_missing or None,
             )
             return {"state": "sent"}
         if outcome == "refused":
-            self.state.ledger_put(intent_id, "refused", digest, None, self.now())
-            report(
-                self.worker_url,
-                self.signing_key,
+            self.settle(
                 intent_id,
                 "refused",
-                self.clock,
-                self.request,
+                digest,
+                token,
+                None,
                 status=answer.get("status"),
                 code=answer.get("code"),
                 error=answer.get("error"),
                 retry_after_s=answer.get("retry_after_s"),
-                token=token,
             )
             return {"state": "refused"}
         if outcome == "requeue":
-            report(
-                self.worker_url,
-                self.signing_key,
+            self.settle(
                 intent_id,
                 "requeue",
-                self.clock,
-                self.request,
-                token=token,
+                digest,
+                token,
+                None,
+                started=False,
                 retry_after_s=answer.get("retry_after_s"),
             )
-            self.state.ledger_delete(intent_id)
             return {"state": "requeue"}
         # Unknown: it stays unknown for good, and it is never sent again.
-        self.state.ledger_put(intent_id, "outcome_unknown", digest, None, self.now())
-        report(
-            self.worker_url,
-            self.signing_key,
+        self.settle(
             intent_id,
             "outcome_unknown",
-            self.clock,
-            self.request,
+            digest,
+            token,
+            None,
             status=answer.get("status"),
             code=answer.get("code"),
             error=answer.get("error"),
-            token=token,
         )
         return {"state": "outcome_unknown"}
 

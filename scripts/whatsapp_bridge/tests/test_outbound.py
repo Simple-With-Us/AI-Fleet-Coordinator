@@ -5,7 +5,7 @@ import urllib.error
 from unittest.mock import patch
 
 from whatsapp_bridge import outbound
-from whatsapp_bridge.bridge import State
+from whatsapp_bridge.bridge import BridgeError, State
 from whatsapp_bridge.outbound import Outbox, body_hash
 
 KEY = "k" * 64
@@ -19,6 +19,8 @@ class FakeWorker:
         self.replies = list(replies or [])
         self.results = []
         self.requests = []
+        # A Worker that does not answer: the result never reaches it.
+        self.fail_results = False
 
     def __call__(self, url, headers, body=None, **_options):
         self.requests.append((url, headers, body))
@@ -26,6 +28,8 @@ class FakeWorker:
         if url.endswith("/internal/wa-outbox/JET"):
             return {"ok": True, "reply": self.replies.pop(0) if self.replies else None}
         self.results.append(decoded)
+        if self.fail_results:
+            raise BridgeError("network_error")
         return {"ok": True, "state": decoded.get("outcome")}
 
 
@@ -324,6 +328,77 @@ class OutboundTests(unittest.TestCase):
         self.assertEqual(answer["state"], "rate_limited")
         self.assertEqual(len(calls), 0, "nothing is sent this minute")
         self.assertEqual(worker.results[0]["outcome"], "requeue")
+
+    def test_a_failed_report_leaves_the_row_claimable_and_the_outcome_is_not_lost(self):
+        """The result is reported before the local row is made final, so a
+        report that fails is reported again instead of losing the outcome."""
+        worker = FakeWorker([reply()])
+        worker.fail_results = True
+        with (
+            patch.object(
+                outbound, "send", lambda *a, **k: {"outcome": "sent", "message_id": "wamid.sent"}
+            ),
+            self.assertRaises(BridgeError),
+        ):
+            self.outbox(worker).step()
+        row = self.state.db.execute(
+            "SELECT state, pending_outcome, message_id FROM send_ledger"
+        ).fetchone()
+        self.assertEqual(row[0], "sending", "the row stays claimable")
+        self.assertEqual(row[1], "sent", "the outcome is held, not lost")
+        self.assertEqual(row[2], "wamid.sent")
+        # The Worker answers now: the same outcome is reported again, and the
+        # row is final only after the ack.
+        worker.fail_results = False
+        self.outbox(worker).step()
+        self.assertEqual([r["outcome"] for r in worker.results], ["sent", "sent"])
+        self.assertEqual(worker.results[1]["message_id"], "wamid.sent")
+        row = self.state.db.execute("SELECT state, pending_outcome FROM send_ledger").fetchone()
+        self.assertEqual(row[0], "sent")
+        self.assertIsNone(row[1])
+
+    def test_a_restart_reports_the_outcome_it_still_owns(self):
+        """A row that holds an unacked outcome reports that outcome, not the
+        generic unknown, so a sent reply is never lost."""
+        worker = FakeWorker([])
+        self.state.ledger_put(
+            "wa_reply_" + "a" * 32,
+            "sending",
+            body_hash("hello"),
+            "wamid.sent",
+            1792700000,
+            "sent",
+        )
+        self.state.ledger_set_token("wa_reply_" + "a" * 32, "11111111-2222-3333-4444-555555555555")
+        self.outbox(worker).step()
+        self.assertEqual(worker.results[0]["outcome"], "sent")
+        self.assertEqual(worker.results[0]["message_id"], "wamid.sent")
+        self.assertEqual(worker.results[0]["token"], "11111111-2222-3333-4444-555555555555")
+        row = self.state.db.execute("SELECT state, pending_outcome FROM send_ledger").fetchone()
+        self.assertEqual(row[0], "sent")
+        self.assertIsNone(row[1])
+
+    def test_a_failed_report_on_a_give_back_keeps_the_reply_queued(self):
+        """A reply that never left the bridge is given back, and a failed
+        report keeps it queued instead of turning it into an unknown."""
+        worker = FakeWorker([reply()])
+        worker.fail_results = True
+        with (
+            patch.object(outbound, "send", lambda *a, **k: {"outcome": "requeue"}),
+            self.assertRaises(BridgeError),
+        ):
+            self.outbox(worker).step()
+        row = self.state.db.execute("SELECT state, pending_outcome FROM send_ledger").fetchone()
+        self.assertEqual(row[0], "claimed", "the POST never started")
+        self.assertEqual(row[1], "requeue")
+        worker.fail_results = False
+        self.outbox(worker).step()
+        self.assertEqual([r["outcome"] for r in worker.results], ["requeue", "requeue"])
+        self.assertEqual(
+            self.state.db.execute("SELECT COUNT(*) FROM send_ledger").fetchone()[0],
+            0,
+            "the row is gone once the Worker has acked the give back",
+        )
 
     def test_the_local_ledger_holds_no_body(self):
         worker = FakeWorker([reply(text="a private reply")])
