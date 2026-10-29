@@ -353,8 +353,10 @@ A wake may name one fallback runtime, tried **only when the primary could not pr
 
 ```
 mcode exec --prompt-mode work --permission off --output-format json --input - \
-  --output-schema <schema> --max-steps 8 --timeout 4m --cwd <inert dir> -o <last-message>
+  --output-schema <schema> --max-steps 16 --timeout 4m --cwd <inert dir> -o <last-message>
 ```
+
+**The step budget is 16, and that number is measured.**  At eight steps the wake contract does not fit:  a four-message pending set runs longer and mcode exits 7 with `mcode exec limit_exceeded: The run reached its step limit.`, which the daemon reads as a failed fallback.  A failed fallback can never be pinned, so the seat keeps whatever runtime it had.  The identical run at sixteen steps exits 0 and returns the contract's answer.  The wall clock is still bounded by `--timeout 4m`, so the extra steps cost time and nothing else.
 
 **Same contract, proven.**  Gate 0 ran a real `mcode exec` with the actual wake schema:  it round-tripped through `wakes.validate` with zero coercion and a populated `board` object, and on the hostile deploy-and-bypass-PR request it returned `escalate` / `risk: high` / a dropped board payload, exactly as the contract requires.  The prompt arrives on **stdin** (`--input -`), not as an argument:  mcode has no `--prompt-file`, which is an argv mistake the first fallback run caught in 0.7 s.  `-o` writes the final message to a file, a cleaner transport than muse's MSP envelope.
 

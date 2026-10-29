@@ -1403,7 +1403,13 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
 # Both facts are verified behaviour, not documentation reading, and they are the whole reason the
 # order is muse then mcode and never the reverse.
 
-MCODE_MAX_STEPS = 8
+# The step budget, measured.  At 8 the wake contract does not fit:  mcode answers a four-message
+# pending set in more steps than that and exits 7 with
+# "mcode exec limit_exceeded: The run reached its step limit.", which the daemon reads as a failed
+# fallback.  A failed fallback can never be pinned, so the seat keeps its old runtime forever.
+# The same run at 16 steps exits 0 with the contract's answer.  The wall clock is still bounded by
+# MCODE_TIMEOUT, so the extra steps cost time and nothing else.
+MCODE_MAX_STEPS = 16
 MCODE_TIMEOUT = "4m"
 MCODE_PROMPT_MODE = "work"
 MCODE_PERMISSION = "off"

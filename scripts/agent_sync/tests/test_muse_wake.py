@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import pathlib
 import stat
 import sys
 import tempfile
@@ -714,6 +715,22 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertNotIn("--disable-web-tools", argv)
         self.assertNotIn("--disable-sandbox", argv)
         self.assertNotIn("--no-foreign-personal-context", argv)
+
+    def test_the_step_budget_is_big_enough_for_the_wake_contract(self) -> None:
+        # Measured, not guessed.  At 8 steps mcode answers a four-message pending set in more steps
+        # than that and exits 7 with "limit_exceeded", which the daemon reads as a failed fallback.
+        # A failed fallback can never be pinned, so the seat keeps its old runtime forever.  The same
+        # run at 16 exits 0 with the contract's answer.
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertEqual(argv[argv.index("--max-steps") + 1], str(A.MCODE_MAX_STEPS))
+        self.assertGreaterEqual(A.MCODE_MAX_STEPS, 16)
+
+    def test_the_documented_argv_carries_the_step_budget_the_code_uses(self) -> None:
+        # The protocol doc quotes the fallback argv.  A number that drifts from the code is a doc
+        # that lies about the command, so the two are pinned together here.
+        doc = pathlib.Path(__file__).resolve().parents[3] / "docs" / "protocols" / "agent-sync-listener.md"
+        text = doc.read_text(encoding="utf-8")
+        self.assertIn("--max-steps %d --timeout 4m" % A.MCODE_MAX_STEPS, text)
 
     def test_the_backup_names_its_model_on_the_command_line(self) -> None:
         # Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, and on this Mac that
