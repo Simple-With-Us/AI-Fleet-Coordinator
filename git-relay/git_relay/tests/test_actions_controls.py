@@ -1,6 +1,8 @@
 import unittest
-from .test_workflow_verbs import Client, Policy, REPO, SHA, Minter
-from git_relay.workflow_verbs import WorkflowVerbs, Refused
+
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
+
+from .test_workflow_verbs import REPO, SHA, Client, Minter, Policy
 
 
 class ActionsControls(unittest.TestCase):

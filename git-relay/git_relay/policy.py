@@ -82,7 +82,6 @@ class SeatPolicy:
         "wf_run_rerun_all",
         "wf_run_force_cancel",
         "wf_run_logs_delete",
-
         "wf_review_requests_add",
         "wf_review_requests_remove",
         "wf_review_requests_rerequest",
