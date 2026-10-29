@@ -12,10 +12,11 @@ program does what it says:  the code comes out untouched (every inline span, eve
 block, and an indented block that really is one), the gaps are made, the prose runs
 collapse, a hard break survives, a numbered marker stays a numbered marker, and the
 whole thing is idempotent, which is the check that sees a prose double space that no
-grep over the body can see.  Third, that the two gap forms are the two the owner ruling
-of 2026-10-23 names:  a real U+00A0 plus a space with no flag, and the `&nbsp;` entity
-plus a normal space with `--entity`, which is the form the chat panes of Claude Code
-(the Code tab) and MiniMax Code (the MiniMax Code pane) take.
+grep over the body can see.  Third, that the two gap forms the program produces are the
+two the owner ruling of 2026-10-23 names:  a real U+00A0 plus a space with no flag, on
+every surface, and the `&nbsp;` entity plus a normal space with `--entity`, which is the
+form the two chat panes take.  (The body of an Apple Note takes the narrow no-break space
+plus a normal space, AFC-552; the note helper writes that one, not this program.)
 """
 
 from __future__ import annotations
@@ -55,13 +56,11 @@ _CANONICAL = (
 )
 
 #  The canonical pattern with the entity in place of the byte pair:  the same
-#  substitution, for the text the chat panes of Claude Code and MiniMax Code take
-#  (owner ruling 2026-10-23, final).  The `&` is escaped, because in a perl replacement
-#  it would otherwise stand for the matched text.
+#  substitution, for the text the two chat panes take (owner ruling 2026-10-23).  The `&` is
+#  escaped, because in a perl replacement it would otherwise stand for the matched text.
 _ENTITY_CANONICAL = _CANONICAL.replace(r"\x{a0} ", r"\&nbsp; ")
 
-#  The entity the chat panes of Claude Code and MiniMax Code take, and the space that
-#  follows it.
+#  The entity the two chat panes take, and the space that follows it.
 ENTITY = "&nbsp; "
 
 NBSP = "\u00a0"
@@ -204,9 +203,9 @@ class SurfaceTests(unittest.TestCase):
         the same converter.
 
         The surfaces are the pack's own copies of the program.  The copy in the
-        checkout is one release ahead of them:  it carries the `--entity` mode, which
-        the pack's copy does not have yet, because the pack is rewritten by its own
-        pull request.  So the pin that still holds between the
+        checkout is one release ahead of them:  it carries the `--entity` mode (owner
+        ruling 2026-10-23), which the pack's copy does not have yet, because the pack is
+        rewritten by its own pull request.  So the pin that still holds between the
         checkout and the pack's copy is the behaviour, and it is pinned in
         `test_the_checkout_program_agrees_with_the_pack_copy`.
         """
@@ -414,6 +413,16 @@ class ProgramBehaviourTests(unittest.TestCase):
             "the program and the canonical one-liner disagree on a body with no code",
         )
 
+    def test_the_entity_mode_holds_every_inline_span(self) -> None:
+        """Every inline span is held before the gap, not only the first one."""
+        out = run_program(self.program, INLINE_SPANS_BODY, "--entity")
+        self.assertIn("&nbsp; Next.", out)
+        self.assertNotIn("&nbsp; Bar", out.split("`", 1)[0])
+        for region in ("`span one with  two spaces`", "`span two with  two spaces`"):
+            self.assertIn(region, out)
+        for span in re.findall(r"`[^`\n]*`", out):
+            self.assertNotIn("&nbsp;", span, "the entity landed inside a span")
+
     def test_the_entity_mode_holds_a_fenced_block_byte_for_byte(self) -> None:
         """The entity mode holds the code aside exactly as the default mode does.
 
@@ -493,6 +502,17 @@ class ProgramBehaviourTests(unittest.TestCase):
             run_program(program_text(), body),
             run_program(match.group("program"), body),
             "the checkout's program and the pack's copy no longer agree",
+        )
+
+    def test_the_checkout_program_agrees_with_the_pack_copy_in_entity_mode(self) -> None:
+        """The pack's embedded program must match the checkout in entity mode too."""
+        match = _HEREDOC_RE.search((ROOT / SURFACES[0]).read_text(encoding="utf-8"))
+        self.assertIsNotNone(match, "%s embeds no program" % SURFACES[0])
+        body = "Plain sentence.  Next sentence.\n"
+        self.assertEqual(
+            run_program(program_text(), body, "--entity"),
+            run_program(match.group("program"), body, "--entity"),
+            "the checkout's program and the pack's copy disagree in entity mode",
         )
 
     def test_the_program_holds_a_fence_that_is_never_closed(self) -> None:

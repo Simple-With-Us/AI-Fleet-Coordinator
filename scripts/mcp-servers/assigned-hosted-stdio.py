@@ -11,6 +11,8 @@ import urllib.request
 
 ENDPOINT = "https://agents.simplewithus.com/mcp"
 MAX_BYTES = 4 * 1024 * 1024
+MAX_FILE_ARGS_BYTES = 6 * 1024 * 1024
+MAX_FILE_FRAME_BYTES = MAX_FILE_ARGS_BYTES + 65536
 TOKEN_RE = re.compile(
     r"^(?:sbt_([a-z][a-z0-9-]{1,19})|gbb_([a-z][a-z0-9]{1,19}))_[A-Za-z0-9_-]{43}$"
 )
@@ -102,9 +104,10 @@ class Adapter:
             headers["Mcp-Session-Id"] = self.session
         if self.protocol:
             headers["MCP-Protocol-Version"] = self.protocol
-        request = urllib.request.Request(
-            ENDPOINT, data=json.dumps(message).encode(), headers=headers, method="POST"
-        )
+        encoded = json.dumps(message).encode()
+        if not file_frame_allowed(message, len(encoded)):
+            raise TransportFailure("Input frame too large.")
+        request = urllib.request.Request(ENDPOINT, data=encoded, headers=headers, method="POST")
         try:
             with self.opener(request, timeout=120) as response:
                 status = response.status
@@ -167,6 +170,26 @@ class Adapter:
             return failure(message)
 
 
+def file_frame_allowed(message, frame_bytes):
+    if frame_bytes <= MAX_BYTES:
+        return True
+    if frame_bytes > MAX_FILE_FRAME_BYTES or not isinstance(message, dict):
+        return False
+    params = message.get("params")
+    if (
+        message.get("jsonrpc") != "2.0"
+        or message.get("method") != "tools/call"
+        or not isinstance(params, dict)
+        or params.get("name") not in {"gr_wf_file_put", "gr_wf_files_put"}
+        or set(message) - {"jsonrpc", "id", "method", "params"}
+        or set(params) - {"name", "arguments", "_meta"}
+        or not isinstance(params.get("arguments"), dict)
+    ):
+        return False
+    size = len(json.dumps(params["arguments"]).encode())
+    return size <= MAX_FILE_ARGS_BYTES and frame_bytes - size <= 65536
+
+
 def main():
     token = os.environ.pop("ASSIGNED_MCP_BEARER", "").strip()
     try:
@@ -175,13 +198,13 @@ def main():
         print("assigned-hosted-stdio: assigned bearer is missing or malformed", file=sys.stderr)
         return 3
     while True:
-        raw = sys.stdin.buffer.readline(MAX_BYTES + 1)
+        raw = sys.stdin.buffer.readline(MAX_FILE_FRAME_BYTES + 1)
         if not raw:
             return 0
-        if len(raw) > MAX_BYTES:
+        if len(raw) > MAX_FILE_FRAME_BYTES:
             # Drain the rejected frame; its tail must not become another request.
             while raw and not raw.endswith(b"\n"):
-                raw = sys.stdin.buffer.readline(MAX_BYTES + 1)
+                raw = sys.stdin.buffer.readline(MAX_FILE_FRAME_BYTES + 1)
             print(
                 json.dumps(
                     {
@@ -195,6 +218,8 @@ def main():
             continue
         try:
             message = json.loads(raw)
+            if not file_frame_allowed(message, len(raw)):
+                raise TransportFailure("Input frame too large.")
             result = adapter.call(message)
         except (ValueError, TransportFailure):
             print(

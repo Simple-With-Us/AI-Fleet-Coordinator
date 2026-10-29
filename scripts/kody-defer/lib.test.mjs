@@ -128,6 +128,26 @@ test('buildIssueTitle decodes &nbsp; so the raw entity never reaches the title',
   assert.equal(title, 'Deferred review: First sentence here.');
 });
 
+test('cleanFindingText gives a GitHub body the real gap, never the entity', () => {
+  const cleaned = cleanFindingText('First sentence here.&nbsp; Second sentence follows.');
+  assert.equal(cleaned.includes('&nbsp;'), false);
+  assert.equal(cleaned.includes('\u00a0'), true);
+  assert.equal(cleaned, 'First sentence here.\u00a0 Second sentence follows.');
+});
+
+test('cleanFindingText keeps the entity literal inside a code fence', () => {
+  const body = 'Prose here.&nbsp; Next.\n\n```js\nconst gap = \'.&nbsp; \';\n```\n';
+  const cleaned = cleanFindingText(body);
+  assert.ok(cleaned.startsWith('Prose here.\u00a0 Next.'));
+  assert.ok(cleaned.includes("const gap = '.&nbsp; ';"));
+});
+
+test('cleanFindingText leaves an escaped entity as literal text', () => {
+  const cleaned = cleanFindingText('Prose that mentions &amp;nbsp; by name.');
+  assert.equal(cleaned, 'Prose that mentions &nbsp; by name.');
+  assert.equal(cleaned.includes('\u00a0'), false);
+});
+
 test('buildIssueBody contains the finding, links, and the sweep marker', () => {
   const body = buildIssueBody({
     finding: 'The watcher reports a false DOWN.',

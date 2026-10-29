@@ -124,6 +124,14 @@ jobs:
         python3 scripts/test_fleet_cli_sync.py
         python3 scripts/test_fleet_cli_runtime.py
         bash -n scripts/agent-sync-runtime-sync.sh
+    # systemd unit templates (the fleet CLI updater unit):  the measured host
+    # quirk that %h expands to the root account's home inside a system unit even
+    # when User= names another account, the unit's own internal consistency, and
+    # the compliance inventory row that quotes its ExecStart.  A unit that
+    # changes without the row changing is the drift this suite exists to catch.
+    # Unwired tests are decoration:  a step is what makes the test real.
+    - name: systemd unit template tests
+      run: python3 -m unittest discover -s scripts/systemd -t scripts/systemd -v
     # fleet-server-status (AFC-548):  the server collector whose report the Muster
     # Server Status panel reads.  The drift against the previous report, the omission
     # of a measurement that could not be taken, the credential path filter and the
@@ -157,6 +165,14 @@ jobs:
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
+    # The Operator's session registry and the MM seat's letter hook:  the letter
+    # allocation, the two letter spaces, the registry CLI, and the secret scan that
+    # guards every title.  Both files sit at the top of scripts/, outside the
+    # directories discovery walks, so nothing ran them:  before this step their
+    # assertions were decoration and a regression would ship under a green CI.
+    - name: Operator session registry and letter hook tests
+      run: |
+        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
@@ -243,12 +259,20 @@ jobs:
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_program -v
     # The FINAL owner sentence-gap policy (AFC-521):  every file that states the
-    # rule names the one exception (the Claude Code Code tab and the MiniMax Code
-    # chat pane take the entity), no live line prescribes the superseded 2026-10-22
+    # rule names the exceptions (the Claude Code Code tab and the MiniMax Code chat
+    # pane take the entity, and an Apple Note body takes the narrow no-break space),
+    # no live line prescribes the superseded 2026-10-22
     # GitHub-entity split, and the published note takes a real U+00A0 on GitHub too.
     - name: Sentence gap final policy tests
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_final_policy -v
+    # The App Store sheet's sentence-gap rule (CPY-1) must agree with the canonical
+    # rule:  the same mechanism, the same two chat-pane exceptions and the same
+    # Apple Notes exception.  The requirements are read from the canonical skill, so
+    # the sheet rule cannot drift away from the one home of the rule.
+    - name: Sheet rule sentence gap tests
+      run: |
+        cd scripts && python3 -m unittest test_sheet_rules_sentence_gap -v
     # AFC-478 follow-up:  the Muster reader of the Worker's Linear token health
     # (signature scheme, document shape, atomic 0600 write).
     - name: Worker health reader tests
@@ -352,6 +376,15 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_apple_notes_linkify
+    # AFC-565:  a note body over the command line budget could not be written.  The helper passed the
+    # body as an argument, so a body over 1048576 bytes died with "Argument list too long" and the
+    # note kept the content it already had, which left the pinned Background Jobs Master List stale
+    # with nothing to show for it.  The body travels on stdin now.  The test drives the script
+    # through the preview hook, so it touches no Notes.
+    - name: Notes body size (AFC-565)
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_body_size
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
@@ -390,9 +423,16 @@ jobs:
     - name: Set up Node
       uses: actions/setup-node@v7
       with:
-        node-version: '24'
+        node-version: '26'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # The alert-ingress secret provisioner (AFC-351):  the batched read against a
+    # fake `fleet-secrets` that keeps the CLI's own contract -- one name answers
+    # with the raw value, several answer with a JSON object -- so a one-name
+    # batch cannot decode as the other.  No network, no secret in any assertion.
+    - name: alert_ingress provisioner tests
+      run: |
+        cd scripts && python3 -m unittest test_alert_ingress_provision -v
     # Shared alert ingress: state transitions, vendor normalization, and the
     # Zulip status rendering.  Pure functions, so no Workers runtime needed.
     # The test files are named explicitly: on Node 24 the directory form

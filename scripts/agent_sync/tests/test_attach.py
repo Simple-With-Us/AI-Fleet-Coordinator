@@ -143,7 +143,7 @@ class HookTests(AttachHarness):
 
     def test_stop_refreshes_and_session_end_removes_the_lease(self) -> None:
         self.hook("session-start", {"source": "startup"})
-        self.hook("stop", {"permission_mode": "acceptEdits", "background_tasks": [{"command": "agent-sync attach --rewake"}]})
+        self.hook("stop", {"permission_mode": "acceptEdits", "background_tasks": [{"command": "simple-chat attach --rewake"}]})
         lease = L.load_lease(self.seat_paths(), LEASE)
         self.assertEqual(lease["permission_mode"], "acceptEdits")
         self.assertTrue(lease["watcher_listed"])

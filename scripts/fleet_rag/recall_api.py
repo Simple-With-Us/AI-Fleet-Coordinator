@@ -62,6 +62,7 @@ SOURCES = (
     "memory",
     "chat-log",
     "agent-contribution",
+    "linear",
 )
 CATEGORIES = (
     "lesson",
