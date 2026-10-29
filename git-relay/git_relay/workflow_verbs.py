@@ -3124,7 +3124,10 @@ class WorkflowVerbs:
                 or find_secret(text)
             ):
                 raise Refused("invalid file content or path")
-            total += len(text.encode("utf-8"))
+            try:
+                total += len(text.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise Refused("invalid file content or path") from None
             if total > 40000:
                 raise Refused("file content budget exceeded")
             seen.add(path)
@@ -3156,9 +3159,14 @@ class WorkflowVerbs:
             or len(set(parents)) != len(parents)
             or not isinstance(message, str)
             or not message.strip()
-            or len(message.encode("utf-8")) > 32768
             or find_secret(message)
         ):
+            raise Refused("invalid commit input")
+        try:
+            message_size = len(message.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise Refused("invalid commit input") from None
+        if message_size > 32768:
             raise Refused("invalid commit input")
         result = self.client._call(
             "POST",
@@ -3224,9 +3232,14 @@ class WorkflowVerbs:
     def wf_git_blob_create(self, repo, args):
         _only(args, ("repo", "text"))
         text = args.get("text")
-        if not isinstance(text, str) or len(text.encode("utf-8")) > 40000 or find_secret(text):
+        if not isinstance(text, str) or find_secret(text):
             raise Refused("invalid blob text")
-        raw = text.encode("utf-8")
+        try:
+            raw = text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Refused("invalid blob text") from None
+        if len(raw) > 40000:
+            raise Refused("invalid blob text")
         sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
         result = self.client._call(
             "POST",

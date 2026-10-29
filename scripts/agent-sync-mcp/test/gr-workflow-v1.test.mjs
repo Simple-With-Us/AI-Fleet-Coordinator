@@ -541,3 +541,23 @@ test('PR response text scan refuses credential-shaped title and body without blo
  assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,title:'plain',body:null}}),true);
  for(const key of ['title','body'])for(const value of ['ghp_'+'x'.repeat(30),'github_pat_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,[key]:value}}),false);
 });
+
+
+test('Git create receipts bind counts tree and ordered parents to request',async()=>{
+ const treeArgs={repo,base_tree:'a'.repeat(40),files:[{path:'x',text:'hi',mode:'100644'}]};
+ const commitArgs={repo,tree_sha:'a'.repeat(40),parents:['b'.repeat(40),'c'.repeat(40)],message:'edit'};
+ const tree={tree:{sha:'d'.repeat(40),files:1}};
+ const commit={commit:{sha:'d'.repeat(40),tree_sha:commitArgs.tree_sha,parents:commitArgs.parents}};
+ for(const [action,args,good,bad] of [
+  ['wf_git_tree_create',treeArgs,tree,{tree:{...tree.tree,files:2}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,tree_sha:'e'.repeat(40)}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:[...commitArgs.parents].reverse()}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:[commitArgs.parents[0]]}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:['e'.repeat(40),'f'.repeat(40)]}}],
+ ]){
+  assert.equal(validWfV1Response(action,good,args),true);
+  assert.equal(validWfV1Response(action,bad,args),false);
+  let calls=0;const t=harness(async()=>{calls++;return new Response(JSON.stringify(bad));});
+  const result=await t.call('gr_'+action,args);assert.ok(result.isError);assert.match(result.content[0].text,/unknown/i);assert.equal(calls,1);
+ }
+});

@@ -347,7 +347,12 @@ export function validWfV1Response(action, body, args) {
     wf_git_tree_create:z.object({tree:z.object({sha:gitSha,files:z.number().int().min(1).max(20)}).strict()}).strict(),
     wf_git_commit_create:z.object({commit:z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).min(1).max(2).refine(v=>new Set(v).size===v.length)}).strict()}).strict()
    };
-   const parsed=schemas[action]?.safeParse(body);if(!parsed?.success)return false;return true;
+   const parsed=schemas[action]?.safeParse(body);if(!parsed?.success)return false;
+   if(args){
+    if(action==='wf_git_tree_create' && (!Array.isArray(args.files) || parsed.data.tree.files!==args.files.length))return false;
+    if(action==='wf_git_commit_create' && (!Array.isArray(args.parents) || parsed.data.commit.tree_sha!==args.tree_sha || parsed.data.commit.parents.length!==args.parents.length || parsed.data.commit.parents.some((parent,index)=>parent!==args.parents[index])))return false;
+   }
+   return true;
  }
  if (action.startsWith('wf_merge_queue_')) {
    if (!body || !Object.hasOwn(body,'entry')) return false;
