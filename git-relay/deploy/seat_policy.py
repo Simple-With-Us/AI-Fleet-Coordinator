@@ -293,7 +293,7 @@ def install(args) -> int:
         return 2
     with open(args.config, encoding="utf-8") as fh:
         before = fh.read()
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = f"{args.config}.backup-seat-policy-{stamp}"
     _write_atomic(backup, before)
     lines[index] = f"{SEATS_VAR}={compact(seats)}"
@@ -312,8 +312,12 @@ def install(args) -> int:
 
 
 def _unit_env(unit: str) -> dict:
-    out = subprocess.run(["systemctl", "show", "-p", "Environment", "--value", unit],
-                         check=True, capture_output=True, text=True).stdout.split()
+    out = subprocess.run(
+        ["systemctl", "show", "-p", "Environment", "--value", unit],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
     return dict(item.split("=", 1) for item in out if "=" in item)
 
 
@@ -369,8 +373,18 @@ def verify_apps(args) -> int:
         ]
         for name, value in env.items():
             cmd += ["-p", f"Environment={name}={value}"]
-        cmd += ["/usr/bin/python3", "-I", script, "verify-inner", "--seats", policy,
-                "--relay", args.relay, "--secrets-path", secrets_path.strip()]
+        cmd += [
+            "/usr/bin/python3",
+            "-I",
+            script,
+            "verify-inner",
+            "--seats",
+            policy,
+            "--relay",
+            args.relay,
+            "--secrets-path",
+            secrets_path.strip(),
+        ]
         return subprocess.run(cmd, check=False).returncode
     finally:
         shutil.rmtree(folder, ignore_errors=True)
