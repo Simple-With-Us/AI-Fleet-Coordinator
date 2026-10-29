@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -9,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -211,6 +214,97 @@ class RegistryTest(unittest.TestCase):
         )
         self.assertEqual(again["label"], first["label"])
         self.assertFalse(again["created"])
+
+    # ---- the pick:  the lowest free letter, or the one unused the longest ----
+
+    def _pair(self, native, pick="lowest"):
+        return self.reg.resolve_or_register(
+            ident(platform="claude", native=native, letter_space="double", letter_pick=pick)
+        )
+
+    def test_the_default_pick_is_the_lowest_free_letter(self):
+        a = self._pair("n-1")
+        self.reg.close(a["record_id"])
+        self.assertEqual((a["label"], self._pair("n-2")["label"]), ("AA", "AA"))
+
+    def test_the_oldest_pick_leaves_a_retired_letter_alone_while_unused_ones_remain(self):
+        a = self._pair("n-1", "oldest")
+        self.reg.close(a["record_id"])
+        self.assertEqual(
+            [self._pair(n, "oldest")["label"] for n in ("n-2", "n-3")], ["AB", "AC"]
+        )
+
+    def test_the_oldest_pick_takes_the_longest_retired_letter_once_every_letter_was_used(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "AC")}):
+            made = [self._pair("n-%d" % i, "oldest") for i in (1, 2, 3)]
+            self.assertEqual([m["label"] for m in made], ["AA", "AB", "AC"])
+            for step, index in enumerate((2, 0, 1)):  # retired in this order:  AC first, AB last
+                self.reg.close(made[index]["record_id"], at="2026-10-01T00:00:0%d.000Z" % step)
+            again = [self._pair("n-%d" % i, "oldest") for i in (4, 5, 6)]
+        self.assertEqual([(a["label"], a["generation"]) for a in again], [("AC", 2), ("AA", 2), ("AB", 2)])
+
+    def test_exhaustion_says_which_space_was_full(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"single": ("A",), "double": ("AA",)}):
+            self.reg.resolve_or_register(ident(platform="claude", native="n-1"))
+            self.reg.resolve_or_register(ident(platform="claude", native="n-2", letter_space="double"))
+            with self.assertRaises(R.LabelExhausted) as one:
+                self.reg.resolve_or_register(ident(platform="claude", native="n-3"))
+            with self.assertRaises(R.LabelExhausted) as two:
+                self.reg.resolve_or_register(ident(platform="claude", native="n-4", letter_space="double"))
+        self.assertEqual((one.exception.space, two.exception.space), ("single", "double"))
+
+    def test_a_pick_that_is_not_known_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            R.register_session(
+                self.db,
+                platform="claude",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="native-1",
+                seat="CLAUDE",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                letter_space="double",
+                letter_pick="random",
+            )
+        self.assertIn("letter_pick", str(caught.exception))
+
+    def test_the_register_command_answers_json_when_every_letter_is_live(self):
+        # What a platform that asks for its own letter (BotFleet, say) reads:  a code it can act on, not a traceback.
+        base = [
+            "register", "--db", self.db, "--platform", "botfleet", "--location", "mac", "--scope", "default",
+            "--seat", "BF-BUILDER", "--source", "test", "--letter-space", "double", "--letter-pick", "oldest",
+        ]
+        out = io.StringIO()
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA",)}), contextlib.redirect_stdout(out):
+            first = R.main(base + ["--session-id", "thread-0001"])
+            second = R.main(base + ["--session-id", "thread-0002"])
+        lines = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual((first, second), (0, 2))
+        self.assertEqual(lines[0]["label"], "AA")
+        self.assertEqual(lines[1]["code"], "labels_exhausted")
+        self.assertIn("1 letters are active", lines[1]["error"])
+
+    def test_reopen_gives_a_chat_its_own_letter_back_when_it_is_free(self):
+        pair = self._pair("n-1", "oldest")
+        single = self.reg.resolve_or_register(ident(platform="claude", native="n-2"))
+        for made in (pair, single):
+            self.reg.close(made["record_id"])
+        # Both letters are free, so each chat has its own back (no allocation runs;  the space rule is tested below).
+        self.assertEqual(self.reg.reopen(pair["record_id"], pick="oldest")[0], "AA")
+        self.assertEqual(self.reg.reopen(single["record_id"], pick="oldest")[0], "A")
+
+    def test_reopen_allocates_in_the_space_of_the_letter_it_held(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB")}):
+            held = self._pair("n-1", "oldest")  # AA
+            self.reg.close(held["record_id"])
+            self._pair("n-2", "oldest")  # AB
+            self._pair("n-3", "oldest")  # AA again, generation 2
+            other = self.reg.lookup("claude", "mac-1", "simplewithus", "n-2")
+            self.reg.close(other["record_id"])  # AB is free now
+            letter, generation, previous = self.reg.reopen(held["record_id"], pick="oldest")
+        self.assertEqual((letter, previous), ("AB", "AA"))  # a pair, not a single letter
+        self.assertEqual(generation, 2)
 
     # ---- update_session: the title follows the thread, keyed on the session id ----
 

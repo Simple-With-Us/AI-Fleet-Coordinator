@@ -1009,6 +1009,63 @@ class TaggedLetterTests(DaemonHarness):
         history = [{"id": 1, "content": "@**Codex** Z is that yours?"}]
         self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
 
+    def hold_pair(self, d, native="s-0001"):
+        """A live Claude chat holding a pair of letters, as the Claude hook registers one."""
+        return OR.register_session(
+            OR.registry_db_path(d.root, d.env),
+            platform="claude",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=native,
+            seat="CLAUDE",
+            source="test",
+            title="Work",
+            issuer=OR.ISSUER_OPERATOR,
+            letter_space="double",
+            letter_pick="oldest",
+        )
+
+    def test_a_pair_that_someone_holds_is_an_address(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        pair = self.hold_pair(d)["label"]
+        self.assertEqual(len(pair), 2)
+        history = [{"id": 1, "content": "@**Claude** %s what is the state of the closeout?" % pair}]
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1])[0], pair)
+        history = [{"id": 1, "content": "@**Claude|9001** %s" % pair}]  # the id form, standing alone
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1])[0], pair)
+
+    def test_a_pair_nobody_holds_is_prose(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        self.hold_pair(d)  # AA is live
+        for body in (
+            "@**Claude** OK thanks, ship it",  # two capitals that are a word
+            "@**Claude** ZZ is not anyone's pair",
+            "@**Claude** AAA is three letters",
+            "@**Claude** Ab is not capitals",
+        ):
+            history = [{"id": 1, "content": body}]
+            self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None), body)
+
+    def test_a_pair_that_was_retired_is_prose_again(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        made = self.hold_pair(d)
+        registry = OR.SessionRegistry(OR.registry_db_path(d.root, d.env))
+        try:
+            registry.close(made["record_id"])
+        finally:
+            registry.close_db()
+        history = [{"id": 1, "content": "@**Claude** %s are you there?" % made["label"]}]
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
+
+    def test_a_pair_is_prose_when_the_registry_cannot_be_read(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        history = [{"id": 1, "content": "@**Claude** AA are you there?"}]  # no registry file at all
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
+
     def test_the_candidate_query_finds_the_live_holder(self) -> None:
         d = self.daemon()
         db = OR.registry_db_path(d.root, d.env)
