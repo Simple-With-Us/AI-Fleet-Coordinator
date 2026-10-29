@@ -236,7 +236,7 @@ As of Oct 29, 2026 that variable is not set in the repository, the organization 
 
 ### Vendor cutover
 
-State on Thu, Oct 29, 2026, 1:05 AM (AFC-566):
+State on Thu, Oct 29, 2026, 3:00 AM (AFC-566):
 
 | Vendor | Route into Zulip | How it was changed |
 |---|---|---|
@@ -256,7 +256,7 @@ The Datadog payload template, which is what `fromDatadog()` reads (`$EVENT_MSG`,
  "scope": "$ALERT_SCOPE", "event_url": "$LINK"}
 ```
 
-Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the vendor posts to the ingress.  The incoming-webhook bots `[Datadog]` and `[BetterStack]` are now unused, and their keys sat in the old vendor URLs, so deactivating them is the clean end of the cutover.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.
+Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the vendor posts to the ingress.  The incoming-webhook bots `[Datadog]`, `[BetterStack]`, `[PagerDuty]` and `[Sentry]` are now unused, and their keys sat in the old vendor URLs, so deactivating them is the clean end of the cutover.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.
 
 Timeline transitions use a separate durable outcome keyed by the exact normalized transition and previous state.  Destination inventory is completed before mutation; a definitive pre-send failure leaves the previous phase unchanged.  Timeline `unknown` is never resent, while a definitive provider refusal can retry the same transition safely.  Sweep failures are isolated per incident, so one refusal cannot abort independent promotions.
 
