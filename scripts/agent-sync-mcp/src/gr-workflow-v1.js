@@ -394,7 +394,7 @@ const checkRunsPage=z.object({checks:z.array(checkRunMetadata).max(50),head_sha:
 const checkRunGet=z.object({check:checkRunMetadata}).strict();
 const fileHistorySha=z.string().regex(/^[0-9a-f]{40}$/);
 const fileHistoryReceipt=z.object({commits:z.array(z.object({sha:fileHistorySha,parents:z.array(fileHistorySha).max(16)}).strict()).max(50),path:z.string().min(1).max(1024),head_sha:fileHistorySha,page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
-const runPageConclusions=['action_required','cancelled','failure','neutral','skipped','stale','success','timed_out'];
+const runPageConclusions=['action_required','cancelled','failure','neutral','skipped','stale','success','timed_out','startup_failure'];
 const runPageItem=z.object({id:positive,run_attempt:positive,workflow_id:positive,head_branch:z.string().max(200).regex(/^[A-Za-z0-9._/-]+$/).nullable(),head_sha:shaValue,status:z.enum(['queued','in_progress','completed','requested','waiting','pending']),conclusion:z.enum(runPageConclusions).nullable(),pull_numbers:z.array(positive).max(100)}).strict().refine(v=>(v.status==='completed')===(v.conclusion!==null)&&new Set(v.pull_numbers).size===v.pull_numbers.length);
 const runPage=z.object({runs:z.array(runPageItem).max(50),total:z.number().int().min(0).max(1e9),page:z.number().int().min(1).max(1000),has_more:z.boolean(),search_cap:z.literal(1000).nullable(),snapshot:z.literal(false)}).strict();
 const workflowPagePath=z.string().min(1).max(1024).regex(/^\.github\/workflows\/[A-Za-z0-9._/+@~-]+\.ya?ml$/).refine(v=>v.split('/').every(x=>!['','.','..'].includes(x))&&!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bst\.[A-Za-z0-9]{20,})/.test(v));

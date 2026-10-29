@@ -3359,6 +3359,7 @@ class WorkflowVerbs:
             "stale",
             "success",
             "timed_out",
+            "startup_failure",
         )
         branch = _ref(args, "branch") if "branch" in args else None
         sha = _sha(args, "head_sha") if "head_sha" in args else None
