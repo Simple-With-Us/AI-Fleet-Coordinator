@@ -24,7 +24,9 @@ import time
 
 DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-MAX_FILES = 128
+# The reviewed allowlisted runtime contains 129 files. Keep the exact minimum
+# ceiling in sender and receiver: a new file still needs an explicit policy review.
+MAX_FILES = 129
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

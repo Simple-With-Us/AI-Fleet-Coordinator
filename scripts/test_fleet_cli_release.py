@@ -505,6 +505,22 @@ class ReleaseTests(unittest.TestCase):
             self.receive()
         self.assertFalse(self.base.exists())
 
+    def test_file_count_boundary_preserves_decode_and_refusal(self):
+        # All entries are allowed and digest-valid, so count is the only boundary.
+        for number in range(release.MAX_FILES - len(self.bundle["files"])):
+            self.bundle["files"][f"scripts/agent_sync/boundary_{number}.py"] = {
+                "mode": 0o644, "sha256": hashlib.sha256(b"# boundary\n").hexdigest(),
+                "data": base64.b64encode(b"# boundary\n").decode(),
+            }
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        raw = json.dumps(self.bundle).encode()
+        self.assertEqual(len(release.decode_bundle(raw)[1]), release.MAX_FILES)
+        self.bundle["files"]["scripts/agent_sync/one_too_many.py"] = next(iter(self.bundle["files"].values()))
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(self.bundle).encode())
+        self.assertFalse(self.base.exists())
+
     def test_rejects_corrupt_content(self):
         self.bundle["files"]["scripts/simple-chat"]["data"] = base64.b64encode(
             b"different"
