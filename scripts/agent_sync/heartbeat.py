@@ -246,7 +246,7 @@ def build_envelope(
                     "platform": "python",
                     "level": "warning",
                     "logger": "agent-sync.listener",
-                    "message": "agent-sync listener (%s) degraded: %s%s"
+                    "message": "simple-chat listener (%s) degraded: %s%s"
                     % (instance, "; ".join(shown), "; +%d more" % more if more else ""),
                     "environment": environment,
                     "release": "agent-sync@%s" % version,

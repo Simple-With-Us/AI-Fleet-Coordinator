@@ -12,10 +12,11 @@ program does what it says:  the code comes out untouched (every inline span, eve
 block, and an indented block that really is one), the gaps are made, the prose runs
 collapse, a hard break survives, a numbered marker stays a numbered marker, and the
 whole thing is idempotent, which is the check that sees a prose double space that no
-grep over the body can see.  Third, that the two gap forms are the two the owner ruling
-of 2026-10-23 names:  a real U+00A0 plus a space with no flag, and the `&nbsp;` entity
-plus a normal space with `--entity`, which is the form the chat panes of Claude Code
-(the Code tab) and MiniMax Code (the MiniMax Code pane) take.
+grep over the body can see.  Third, that the two gap forms the program produces are the
+two the owner ruling of 2026-10-23 names:  a real U+00A0 plus a space with no flag, on
+every surface, and the `&nbsp;` entity plus a normal space with `--entity`, which is the
+form the two chat panes take.  (The body of an Apple Note takes the narrow no-break space
+plus a normal space, AFC-552; the note helper writes that one, not this program.)
 """
 
 from __future__ import annotations
@@ -55,13 +56,11 @@ _CANONICAL = (
 )
 
 #  The canonical pattern with the entity in place of the byte pair:  the same
-#  substitution, for the text the chat panes of Claude Code and MiniMax Code take
-#  (owner ruling 2026-10-23, final).  The `&` is escaped, because in a perl replacement
-#  it would otherwise stand for the matched text.
+#  substitution, for the text the two chat panes take (owner ruling 2026-10-23).  The `&` is
+#  escaped, because in a perl replacement it would otherwise stand for the matched text.
 _ENTITY_CANONICAL = _CANONICAL.replace(r"\x{a0} ", r"\&nbsp; ")
 
-#  The entity the chat panes of Claude Code and MiniMax Code take, and the space that
-#  follows it.
+#  The entity the two chat panes take, and the space that follows it.
 ENTITY = "&nbsp; "
 
 NBSP = "\u00a0"
@@ -204,9 +203,9 @@ class SurfaceTests(unittest.TestCase):
         the same converter.
 
         The surfaces are the pack's own copies of the program.  The copy in the
-        checkout is one release ahead of them:  it carries the `--entity` mode, which
-        the pack's copy does not have yet, because the pack is rewritten by its own
-        pull request.  So the pin that still holds between the
+        checkout is one release ahead of them:  it carries the `--entity` mode (owner
+        ruling 2026-10-23), which the pack's copy does not have yet, because the pack is
+        rewritten by its own pull request.  So the pin that still holds between the
         checkout and the pack's copy is the behaviour, and it is pinned in
         `test_the_checkout_program_agrees_with_the_pack_copy`.
         """
