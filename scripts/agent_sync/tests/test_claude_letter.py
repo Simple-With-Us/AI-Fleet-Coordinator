@@ -191,7 +191,7 @@ class RegistrySideTests(Base):
 
 
 class FakeSsh:
-    """Stands in for `ssh mac ...`:  checks the command's shape and runs the remote registry side in process."""
+    """Stands in for the SSH call to the Mac:  checks the command's shape and runs the remote registry side in process."""
 
     def __init__(self, test: Base, fail: Exception | None = None):
         self.test, self.fail, self.calls = test, fail, []

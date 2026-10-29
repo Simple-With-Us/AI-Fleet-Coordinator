@@ -8,10 +8,9 @@ on the Mac and on the server (AFC-564, owner request Oct 28, 2026).
 
 Where the letter comes from.  The Operator's session registry (`operator_registry`, AFC-412) is one SQLite file on the
 Mac, the one allocator for every host.  A chat on the Mac reaches it in process.  A chat on the server reaches it over
-ssh to the Mac (the destination in CLAUDE_LETTER_REMOTE) by running `simple-chat letter registry ...` there, so the
-Mac's own managed runtime makes the write.  The
-registry side refuses a host that has no registry file and never creates one:  a second file would issue letters that
-collide with the Mac's, and the server has none.
+an SSH hop to the Mac (the destination in CLAUDE_LETTER_REMOTE) by running `simple-chat letter registry ...` there,
+so the Mac's own managed runtime makes the write.  The registry side refuses a host that has no registry file and
+never creates one:  a second file would issue letters that collide with the Mac's, and the server has none.
 
 What the hook does.
 - SessionStart registers the chat, or resumes its registration, and titles it:  "<letter>: <Title>" when the chat
