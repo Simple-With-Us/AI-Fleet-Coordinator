@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent_sync import operator_registry as R
 
-
 # A synthetic credential for the positive scan cases:  32 mixed-case characters with no
 # provider prefix, so the scanner still trips on it while the file carries no real token's
 # shape.  A prefixed value would be caught by a secret scanner on the repository itself.
@@ -272,7 +271,6 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(str(caught.exception), "secret_detected")
         self.assertNotIn(secret, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["title"], "Placeholder")
-
 
     def test_update_refuses_a_project_that_carries_a_credential(self):
         # Every field that is written is scanned, not only the title.
