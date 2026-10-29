@@ -2,7 +2,7 @@
 
 A discussion, for WISE, ECHO and JET to weigh in on, written from Jay's rulings in
 `#Work-In-Progress` on Oct 25, 2026 and in the MiniMax Code pane on Oct 26, 2026, and checked
-against the code on `main` at `12521ef35`.
+against the code on `main` at `12521ef35`.  The Oct 29 additions describe the status message built after that check.
 
 This document says what the Operator is, what already exists, what does not, and which parts
 are a decision rather than a task.
@@ -49,6 +49,13 @@ does it today.
     them but should in DMs so it doesn't make conversations get bloated".  This supersedes the
     Oct 25 framing that the Operator does not converse with users, which is kept above as part of
     the record.
+*  The Operator's one to one status messages:  Jay, in the Claude Code pane on Thu, Oct 29, 2026,
+    about 3:35 AM, verbatim, "DM one to one since from bot to another bot but since deterministic
+    bot not something about like the project or details I want to be able to see".  This settles the
+    guard for the Operator's deterministic status messages:  they go to the sender alone, with
+    Jay left out, because they carry no project detail.  A message with detail, such as the
+    candidate list, is unchanged and keeps Jay in the conversation.  The Operator's clarifying
+    question is not part of this yet:  its reply leg is not built.
 
 1.  **The Operator is the thing that listens.**  It holds the eavesdropper, it runs on the server,
     and it is the service identity the fleet talks to.
@@ -91,7 +98,7 @@ does it today.
 | --- | --- | --- |
 | The Operator as a service seat | `scripts/agent_sync/config.py`: the `OPERATOR` seat requires `bot = "Operator"`, `creds = "infisical"` and `wake = "inbox"` | built |
 | The Operator's identity, read from the environment | `scripts/agent_sync/service_identity.py`, `scripts/agent_sync/dm_policy.py`: `operator_user_id(env, pinned)` | built |
-| The Operator's direct message rule | `scripts/agent_sync/dm_policy.py`: `check_new_dm()` lets the Operator open a direct message only for its one clarifying question, and `scripts/agent_sync/zulip.py`: `check_dm_guard()` refuses a direct message that does not carry the owner, with no Operator exemption | built, narrower than the Oct 26 ruling |
+| The Operator's direct message rule | `scripts/agent_sync/dm_policy.py`: `check_new_dm()` lets the Operator open a direct message for its one clarifying question and, with `status=True`, for its status message; `scripts/agent_sync/zulip.py`: `check_dm_guard()` refuses a direct message that does not carry the owner, and `ZulipClient.operator_status_dm` is the one exemption, for the status message alone | built for the status message, narrower than the Oct 26 ruling |
 | Session letters | `scripts/agent_sync/operator_registry.py`: the `sessions` and `alias_assignments` tables, one live holder per `(platform, letter)`, generation on recycle | built (AFC-412) |
 | The registry on the Fleet Reference sheet | `scripts/agent_sync/operator_sheets_export.mjs`: the exporter writes the Sessions (`2033000102`) and Events (`2033000103`) tabs and never touches Reference (`2033000101`) | built (AFC-412 PR2) |
 | The Zulip to Linear mirror | `scripts/agent_sync/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
@@ -244,8 +251,9 @@ as a participant under the guard as it stands.  That was in tension with "the O
 converse with users", and the two ways out were:  the question carries Jay and is addressed to the
 seat, or the question does not go by direct message at all.  Jay's Oct 26 ruling settles it the
 other way:  the Operator converses by direct message, it does not carry Jay, and the guard gains
-an Operator exemption.  That exemption is code and is not written yet, so the running code still
-refuses an Operator direct message that does not carry Jay.
+an Operator exemption.  That exemption is written for the Operator's deterministic status
+message alone (`ZulipClient.operator_status_dm`, `operator_send.py`, Oct 29, 2026), so any other
+Operator direct message still has to carry Jay.
 
 **The headless consultant is a different thing.**  Jay's boundary is that the Muse spark 1.3
 contributor or the MiniMax M3.1 fallback is for the headless consultant, and it is not the
@@ -259,11 +267,14 @@ and not a proof of immunity.
 says a direct message may go out only when the owner is in the conversation, checked by user id.
 The Operator's direct message does not carry Jay, because Jay's Oct 26 ruling is that the Operator
 converses by direct message and that it may be addressed to anyone, so the guard has to let the
-Operator through.  That is a change in the code and it is not made yet:  the AFC-469 guard gains
-an Operator exemption, and until that exemption ships the running guard still refuses an Operator
-direct message that does not carry Jay, and `dm_policy.py` still limits the Operator to its one
-clarifying question.  The ruling is recorded here as a ruling, not as a claim about the running
-code.
+Operator through.  That change is made for the Operator's status message:  the AFC-469 guard
+has one exemption, `ZulipClient.operator_status_dm`, enforced in `ZulipClient.request` on the
+exact shape of the call:  a client verified as the pinned Operator bot and still authenticating
+as it, one recipient, a message that opens with the Operator status tag, and no mention.
+`dm_policy.check_new_dm` accepts `status=True` for the Operator.  The text is built from a fixed
+vocabulary in `operator_send.py`, with no project, topic or quoted message in it.  Every other
+Operator direct message, the candidate list included, still carries Jay, and the Operator's
+clarifying question waits for its reply leg.
 
 ### 3.3: The letter's fact bundle
 
@@ -329,8 +340,8 @@ the residual, so that nobody asks him the same thing twice.
 *  **The Operator asks by direct message, and the direct message is the fleet's only exception.**
     That is ruled.  Jay's Oct 26 ruling settles the audience as well:  the Operator may address
     anyone, and the direct message does not carry Jay, so the owner-in-the-conversation guard
-    (AFC-469, pull request 947) gains an Operator exemption.  That exemption is code and is not
-    written yet.
+    (AFC-469, pull request 947) gains an Operator exemption.  That exemption is written for the Operator's status message alone
+    (Oct 29, 2026);  the rest of the Operator's conversation is still open.
 *  **A message that names an issue its topic does not gets its own Linear post.**  That is ruled.
     What is open is the granularity WISE and ECHO raised:  one comment per message, or those
     batched by issue and kept distinct from the topic's standing comment.
@@ -342,7 +353,8 @@ the residual, so that nobody asks him the same thing twice.
 *  The pairing test that decides whether the Operator speaks, and the direct message that carries
     what it says.
 *  The AFC-469 owner-in-the-conversation guard gains an Operator exemption, so that the
-    Operator's direct message does not have to carry Jay.
+    Operator's direct message does not have to carry Jay:  written for the status message on
+    Oct 29, 2026, and still to do for the clarifying question and the rest of the conversation.
 *  The location column and the short summary column, in the registry and on the sheet.
 *  The relay's second key, for the message-named issue.
 *  The Operator's own voice on the server, so it authors its own threads instead of a seat
