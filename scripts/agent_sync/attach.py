@@ -888,7 +888,7 @@ def cmd_attach(ctx: Ctx, argv: list[str]) -> int:
                     per_message=L.DRAIN_PER_MESSAGE,
                     now=now,
                     stale_seconds=stale,
-                    header="[agent-sync wait]",
+                    header="[simple-chat wait]",
                 )
                 L.update_lease(
                     paths,
