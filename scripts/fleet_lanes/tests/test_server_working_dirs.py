@@ -914,12 +914,13 @@ class ServerWorkingDirsTest(unittest.TestCase):
         self.assertTrue(self.settings.is_symlink(), "the link must stay a link")
         self.assertEqual(json.loads(target.read_text())["worktree"]["location"], str(self.lanes.resolve()))
 
-    def test_a_symlinked_knob_in_a_read_only_directory_is_written_in_place(self) -> None:
-        """A link into a directory the account cannot write is still written.
+    def test_a_symlinked_knob_in_a_read_only_directory_is_skipped(self) -> None:
+        """A link into a directory the account cannot write is skipped.
 
         The staged replace cannot happen in a directory the account cannot
-        write, so the write goes through the link in place instead of being
-        skipped:  the file the account already edits is the one that changes.
+        write, so the write fails closed instead of going through the link in
+        place:  a write that truncates the file is not a write.  The knob is
+        skipped and reported, and the file it had is untouched.
         """
         volume = self.tmp / "volume"
         volume.mkdir()
@@ -931,19 +932,181 @@ class ServerWorkingDirsTest(unittest.TestCase):
         real_access = os.access
 
         def access(path, mode, **kwargs):
-            if str(path) == str(target.parent):
+            if os.path.realpath(str(path)) == os.path.realpath(str(target.parent)):
                 return False
             return real_access(path, mode, **kwargs)
 
         try:
             with mock.patch.object(swd.os, "access", access):
-                self.apply()
+                code, printed = self.apply_output()
         finally:
             volume.chmod(0o700)
+        self.assertIn("skipped  claude desktop worktrees", printed)
+        self.assertIn("not writable by this account", printed)
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
         self.assertTrue(self.settings.is_symlink(), "the link must stay a link")
         self.assertEqual(
-            json.loads(target.read_text())["worktree"]["location"],
-            str(self.lanes.resolve()),
+            target.read_text(),
+            '{"old": true}\n',
+            "the file the link points at must survive the refused write",
+        )
+
+    def test_a_symlinked_knob_in_a_directory_that_cannot_be_searched_is_skipped(self) -> None:
+        """A directory that is writable but not searchable cannot stage a file.
+
+        Creating and renaming a file in a directory needs search permission as
+        well as write permission, so the staged replace cannot happen there and
+        the knob is skipped instead of being written in place.
+        """
+        volume = self.tmp / "volume"
+        volume.mkdir()
+        target = volume / "settings.json"
+        target.write_text('{"old": true}\n')
+        self.settings.unlink()
+        self.settings.symlink_to(target)
+        real_access = os.access
+
+        def access(path, mode, **kwargs):
+            if os.path.realpath(str(path)) == os.path.realpath(str(target.parent)):
+                # Writable, but not searchable:  the staged replace cannot happen.
+                return not (mode & os.X_OK)
+            return real_access(path, mode, **kwargs)
+
+        with mock.patch.object(swd.os, "access", access):
+            code, printed = self.apply_output()
+
+        self.assertIn("skipped  claude desktop worktrees", printed)
+        self.assertIn("not writable by this account", printed)
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+        self.assertEqual(
+            target.read_text(),
+            '{"old": true}\n',
+            "the file the link points at must survive the refused write",
+        )
+
+    def test_the_skip_line_names_the_directory_that_needs_the_permission(self) -> None:
+        """The refusal names the directory, so the operator is sent to it.
+
+        The file the link points at can be writable while the directory the
+        staged file has to be created in is not, and only the directory can be
+        fixed, so the skip line has to carry it.
+        """
+        volume = self.tmp / "volume"
+        volume.mkdir()
+        target = volume / "settings.json"
+        target.write_text('{"old": true}\n')
+        self.settings.unlink()
+        self.settings.symlink_to(target)
+        real_access = os.access
+
+        def access(path, mode, **kwargs):
+            if os.path.realpath(str(path)) == os.path.realpath(str(target.parent)):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with mock.patch.object(swd.os, "access", access):
+            code, printed = self.apply_output()
+
+        self.assertIn("not writable by this account", printed)
+        self.assertIn(
+            str(target.parent),
+            printed,
+            "the skip line must name the directory that needs the permission",
+        )
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+
+    def test_a_refused_write_leaves_no_backup_behind(self) -> None:
+        """A refused write takes no backup, so the directory does not fill up.
+
+        The backup is taken before the write, so a knob that can never be
+        applied would drop another copy beside the link on every run, and
+        nothing would ever restore from it.
+        """
+        volume = self.tmp / "volume"
+        volume.mkdir()
+        target = volume / "settings.json"
+        target.write_text('{"old": true}\n')
+        self.settings.unlink()
+        self.settings.symlink_to(target)
+        real_access = os.access
+
+        def access(path, mode, **kwargs):
+            if os.path.realpath(str(path)) == os.path.realpath(str(target.parent)):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with mock.patch.object(swd.os, "access", access):
+            code, printed = self.apply_output()
+
+        self.assertIn("skipped  claude desktop worktrees", printed)
+        leftovers = sorted(
+            path.name for path in self.home.joinpath(".claude").glob("*.bak-*")
+        )
+        self.assertEqual(
+            leftovers, [], "a refused write must not leave a backup behind"
+        )
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+
+    def test_a_symlinked_bashrc_in_a_read_only_directory_is_skipped(self) -> None:
+        """A bashrc that is a link into a read-only directory is skipped too.
+
+        A bashrc is commonly a link into a home on a volume, so the fail-closed
+        behaviour reaches it:  the knob is skipped and reported rather than
+        written through the link in place, and no backup is left behind.
+        """
+        volume = self.tmp / "volume"
+        volume.mkdir()
+        target = volume / ".bashrc"
+        target.write_text("# base\n")
+        bashrc = self.home / ".bashrc"
+        bashrc.unlink()
+        bashrc.symlink_to(target)
+        real_access = os.access
+
+        def access(path, mode, **kwargs):
+            if os.path.realpath(str(path)) == os.path.realpath(str(target.parent)):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with mock.patch.object(swd.os, "access", access):
+            code, printed = self.apply_output()
+
+        self.assertIn("skipped  bashrc", printed)
+        self.assertEqual(
+            target.read_text(), "# base\n", "the file the link points at must survive"
+        )
+        leftovers = sorted(path.name for path in self.home.glob(".bashrc.bak-*"))
+        self.assertEqual(
+            leftovers, [], "a refused write must not leave a backup behind"
+        )
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+
+    def test_a_staged_directory_that_does_not_exist_is_created_private(self) -> None:
+        """A staged directory the tool creates holds a copy of the operator's file.
+
+        It is created private, so the staged copy is not readable by the other
+        accounts on the host.
+        """
+        missing = self.tmp / "missing" / "deeper"
+        swd.prepare_staged_directory(missing / "settings.json")
+        self.assertTrue(missing.is_dir(), "the directory is created")
+        self.assertEqual(
+            missing.stat().st_mode & 0o777,
+            0o700,
+            "a directory the tool creates must be private",
+        )
+
+    def test_a_staged_directory_that_is_a_symlink_is_refused(self) -> None:
+        """A symlink where the directory belongs would send the file elsewhere."""
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        redirect = self.tmp / "redirect"
+        redirect.symlink_to(elsewhere / "not-there")
+        with self.assertRaises(PermissionError):
+            swd.prepare_staged_directory(redirect / "settings.json")
+        self.assertFalse(
+            (elsewhere / "not-there").exists(),
+            "nothing may be created through the symlink",
         )
 
     def test_a_refused_group_change_is_reported(self) -> None:

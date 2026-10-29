@@ -33,7 +33,11 @@ jobs:
       - run: echo "$GITHUB_WORKSPACE/scripts/agent-sync-mcp/node_modules/.bin" >> "$GITHUB_PATH"
       - run: npm test
         working-directory: scripts/agent-sync-mcp
-      - run: node --test workers/pr-conflict-watch/state.test.js
+      # The pr-conflict-watch unit tests.  The test files are named explicitly:
+      # the directory form (`node --test workers/pr-conflict-watch/`) resolves
+      # index.js as a single module and reports one passing test without
+      # running any test file, which would leave this gate vacuous.
+      - run: node --test workers/pr-conflict-watch/*.test.js
       - run: node --test workers/alert-ingress/src/*.test.js
       - run: python3 scripts/test-deploy-mapped-worker.py
       - name: Load scoped deploy credential from Fleet-OPS
