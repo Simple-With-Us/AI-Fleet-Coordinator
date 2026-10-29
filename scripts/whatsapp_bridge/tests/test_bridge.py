@@ -2,8 +2,11 @@ import hashlib
 import hmac
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import mock_open, patch
 
 from whatsapp_bridge.bridge import (
@@ -885,6 +888,51 @@ class BoundaryRegressionTests(unittest.TestCase):
                 Bridge(state, "synthetic", "k" * 64, "https://worker.example", request).step()
             finally:
                 state.close()
+
+
+class BridgeModuleAliasTests(unittest.TestCase):
+    """The launcher boots the bridge with runpy, so the module runs as
+    __main__ and the outbound module imports it by its package name."""
+
+    def test_the_bridge_module_is_one_copy_under_the_launcher_boot(self):
+        """One copy of the module means one BridgeError and one StopBridge,
+        so the handlers in main() catch what the outbound module raises."""
+        script = (
+            "import runpy, sys\n"
+            "try:\n"
+            "    runpy.run_module('whatsapp_bridge.bridge', run_name='__main__')\n"
+            "except SystemExit:\n"
+            "    pass\n"
+            "from whatsapp_bridge import bridge, outbound\n"
+            "from whatsapp_bridge.errors import BridgeError, StopBridge\n"
+            "print('SAME_ERROR', outbound.BridgeError is BridgeError and bridge.BridgeError is BridgeError)\n"
+            "print('SAME_STOP', bridge.StopBridge is StopBridge and issubclass(StopBridge, BridgeError))\n"
+        )
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key
+            not in (
+                "WHATSAPP_API_KEY",
+                "WA_BRIDGE_HMAC_KEY_JET",
+                "WA_WORKER_URL",
+                "WA_STATE_DIRECTORY",
+                "WA_AGENT_HASH_JET",
+                "WA_SENDER_HASH_JET",
+                "WHATSAPP_BRIDGE_ENABLED",
+            )
+        }
+        root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(root),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertIn("SAME_ERROR True", result.stdout, result.stderr)
+        self.assertIn("SAME_STOP True", result.stdout, result.stderr)
 
 
 if __name__ == "__main__":
