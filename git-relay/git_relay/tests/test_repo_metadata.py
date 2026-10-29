@@ -50,6 +50,21 @@ class Metadata(unittest.TestCase):
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(a, {"repo": REPO, "url": "x"}, REPO)
 
+    def test_metadata_names_refuse_malformed_and_credentials(self):
+        for name in ("\ud800", "bad\nname", "bad\x00name", "sk-" + "x" * 30, "sk_test_" + "x" * 20):
+            for action, reply in (
+                ("wf_repo_tags", [{"name": name, "commit": {"sha": "a" * 40}}]),
+                ("wf_repo_languages", {name: 1}),
+            ):
+                with self.assertRaises((Refused, RelayGitHubError)):
+                    self.runverb(Client(reply), action, {"repo": REPO})
+        self.assertEqual(
+            self.runverb(Client({"C++": 1, "日本語": 2}), "wf_repo_languages", {"repo": REPO})[
+                "languages"
+            ][1]["name"],
+            "日本語",
+        )
+
     def test_relation_safe_integer_and_page_audit_contract(self):
         from git_relay.github_client import RelayGitHubError
         from git_relay.server import _WORKFLOW_AUDIT_SCALARS

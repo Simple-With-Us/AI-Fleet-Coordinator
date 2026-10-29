@@ -341,6 +341,37 @@ test('relation provider-pattern scanner and request bounds fail closed',async()=
  for(const args of [cycle,{repo,term:'x'.repeat(70000)}, {repo,extra:[[[[[[[1]]]]]]]}])assert.ok((await h.call('gr_wf_repo_tags',args)).isError);
  assert.equal(calls,0);
 });
+test('bounded git object fixed own-bearer calls and unknown blob creates',async()=>{
+ for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message'}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
+  assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,url:'https://evil.invalid'}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
+ }
+ const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_wf_git_blob_create',{repo,text:'hi'});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+});
+
+test('unattached tree commit writes have closed schemas own bearer and UNKNOWN',async()=>{
+ for(const [action,args,reply] of [['wf_git_tree_create',{base_tree:'a'.repeat(40),files:[{path:'x.txt',text:'hi',mode:'100644'}]},{tree:{sha:'b'.repeat(40),files:1}}],['wf_git_commit_create',{tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'},{commit:{sha:'c'.repeat(40),tree_sha:'a'.repeat(40),parents:['b'.repeat(40)]}}]]){
+  assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,author:'other'}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
+  const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_'+action,{repo,...args});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+ }
+});
+
+test('Git create UTF8 budgets and strict receipt parent sets',()=>{
+ const args={repo,tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'};
+ assert.ok(!validWfV1Args('wf_git_commit_create',{...args,message:'é'.repeat(16385)}));
+ assert.ok(!validWfV1Args('wf_git_commit_create',{...args,parents:['b'.repeat(40),'b'.repeat(40)]}));
+ assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:'é'.repeat(20001)}));
+ assert.ok(!validWfV1Response('wf_git_commit_create',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[]}}));
+ assert.ok(!validWfV1Response('wf_git_commit_create',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:['c'.repeat(40),'c'.repeat(40)]}}));
+});
+
+test('all actions parse strict Zod before dispatch including nongit',async()=>{
+ for(const args of [{repo,number:1,extra:1},{repo,number:true}])assert.equal(validWfV1Args('wf_pr_get',args),false);
+ let calls=0;const t=harness(async()=>{calls++;throw Error('must not dispatch');});const r=await t.call('gr_wf_pr_get',{repo,number:1,extra:1});assert.ok(r.isError);assert.equal(calls,0);
+ let sent=0;const ok=harness(async(url,init)=>{sent++;assert.ok(url.endsWith('/v1/wf_git_commit_create'));assert.equal(JSON.parse(init.body).message,'edit');return new Response(JSON.stringify({commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:['c'.repeat(40)]}}));});assert.ok(!(await ok.call('gr_wf_git_commit_create',{repo,tree_sha:'b'.repeat(40),parents:['c'.repeat(40)],message:'edit'})).isError);assert.equal(sent,1);
+});
+
 test('comment and release lifecycle envelopes and write UNKNOWN',async()=>{
  const cases=[['wf_issue_comment_update',{comment_id:2,body:'updated'},{result:{id:2}}],['wf_issue_comment_delete',{comment_id:2},{deleted:true}],['wf_review_comment_update',{comment_id:2,body:'updated'},{result:{id:2}}],['wf_review_comment_delete',{comment_id:2},{deleted:true}],['wf_release_list',{},{releases:[],complete:false}],['wf_release_get',{release_id:4},{result:{id:4}}],['wf_release_delete',{release_id:4},{deleted:true}]];
  for(const [action,args,reply] of cases){
@@ -595,6 +626,25 @@ test('PR response text scan refuses credential-shaped title and body without blo
  for(const key of ['title','body'])for(const value of ['ghp_'+'x'.repeat(30),'github_pat_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,[key]:value}}),false);
 });
 
+
+test('Git create receipts bind counts tree and ordered parents to request',async()=>{
+ const treeArgs={repo,base_tree:'a'.repeat(40),files:[{path:'x',text:'hi',mode:'100644'}]};
+ const commitArgs={repo,tree_sha:'a'.repeat(40),parents:['b'.repeat(40),'c'.repeat(40)],message:'edit'};
+ const tree={tree:{sha:'d'.repeat(40),files:1}};
+ const commit={commit:{sha:'d'.repeat(40),tree_sha:commitArgs.tree_sha,parents:commitArgs.parents}};
+ for(const [action,args,good,bad] of [
+  ['wf_git_tree_create',treeArgs,tree,{tree:{...tree.tree,files:2}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,tree_sha:'e'.repeat(40)}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:[...commitArgs.parents].reverse()}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:[commitArgs.parents[0]]}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:['e'.repeat(40),'f'.repeat(40)]}}],
+ ]){
+  assert.equal(validWfV1Response(action,good,args),true);
+  assert.equal(validWfV1Response(action,bad,args),false);
+  let calls=0;const t=harness(async()=>{calls++;return new Response(JSON.stringify(bad));});
+  const result=await t.call('gr_'+action,args);assert.ok(result.isError);assert.match(result.content[0].text,/unknown/i);assert.equal(calls,1);
+ }
+});
 test('persisted status, rename, dismiss and deployment text refuses credential shapes before network',async()=>{
  // Synthetic-only credential shape, assembled at runtime; not a real token.
  const fake='gh'+'p_'+'A'.repeat(36);
@@ -805,4 +855,16 @@ test('label lookup dot segments and percent escapes never dispatch',()=>{
  const repo='Simple-With-Us/AI-Fleet-Coordinator',base={repo,name:'safe',expected_label_id:7,new_name:'safe',color:'000000',description:''};
  for(const name of ['.','..','a/../b','%2e%2e','a/%2f/b'])for(const k of ['name','new_name'])assert.equal(validWfV1Args('wf_label_update',{...base,[k]:name}),false);
  for(const name of ['.','..','a/../b'])assert.equal(validWfV1Args('wf_labels_add',{repo,number:2,labels:[name]}),false);
+});
+
+
+test('metadata receipts correlate tag pages and reject malformed or credential names',()=>{
+ const args={repo,page:2,per_page:1},good={tags:[{name:'v1',sha:'a'.repeat(40)}],page:2,has_more:true};
+ assert.ok(validWfV1Response('wf_repo_tags',good,args));
+ for(const bad of [{...good,page:1},{...good,has_more:false},{...good,tags:[...good.tags,...good.tags]}])assert.equal(validWfV1Response('wf_repo_tags',bad,args),false);
+ for(const name of ['\ud800','bad\nname','bad\0name','sk-'+'x'.repeat(30),'sk_test_'+'x'.repeat(20)]){
+  assert.equal(validWfV1Response('wf_repo_tags',{...good,tags:[{name,sha:'a'.repeat(40)}]},args),false);
+  assert.equal(validWfV1Response('wf_repo_languages',{languages:[{name,bytes:1}]}),false);
+ }
+ assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
 });
