@@ -109,3 +109,58 @@ class ActionsControls(unittest.TestCase):
                 m.calls[0][2],
                 {"actions": "read" if a == "wf_job_get" else "write", "metadata": "read"},
             )
+
+
+class ReviewFixes(unittest.TestCase):
+    def test_empty_json_completion_opt_in_never_relaxes_204(self):
+        import io
+
+        from git_relay.github_client import GitHubClient, RelayGitHubError
+
+        class Response(io.BytesIO):
+            def __init__(self, raw, status):
+                super().__init__(raw)
+                self.status = status
+
+        for status in [201, 202]:
+            for raw in [b"", b"{}", b" { }\n"]:
+                c = GitHubClient(
+                    "synthetic",
+                    opener=lambda *a, raw=raw, status=status, **k: Response(raw, status),
+                )
+                self.assertEqual(
+                    c._call("POST", "/fixture", expected_status=status, allow_empty_object=True), {}
+                )
+            for raw in [b"[]", b"null", b'{"extra":1}', b"bad"]:
+                c = GitHubClient(
+                    "synthetic",
+                    opener=lambda *a, raw=raw, status=status, **k: Response(raw, status),
+                )
+                with self.assertRaises(RelayGitHubError):
+                    c._call("POST", "/fixture", expected_status=status, allow_empty_object=True)
+        c = GitHubClient("synthetic", opener=lambda *a, **k: Response(b"{}", 204))
+        with self.assertRaises(RelayGitHubError):
+            c._call("DELETE", "/fixture", expected_status=204, allow_empty_object=True)
+
+    def test_transient_prereads_retryable_before_mutation(self):
+        from git_relay.github_client import RelayGitHubError
+        from git_relay.server import PreReadUnavailable
+
+        class C(Client):
+            def _call(self, *a, **k):
+                self.calls.append(a)
+                raise RelayGitHubError(503, "synthetic")
+
+        for action, args in [
+            (
+                "wf_review_requests_remove",
+                {"number": 3, "expected_head_sha": SHA, "reviewers": ["bot"]},
+            ),
+            ("wf_job_rerun", {"job_id": 2, "run_id": 3, "head_sha": SHA, "run_attempt": 4}),
+        ]:
+            c = C()
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+            with self.assertRaises(PreReadUnavailable):
+                h.run(action, {"repo": REPO, **args})
+            self.assertEqual(len(c.calls), 1)
+            self.assertEqual(c.calls[0][0], "GET")

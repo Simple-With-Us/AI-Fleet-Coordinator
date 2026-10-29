@@ -892,3 +892,7 @@ test('Actions new read/write requests bind job/run/head/attempt and expose accep
   assert.equal(WF_V1_READ_ACTIONS.includes(a),a==='wf_job_get');
  }
 });
+
+test('review request caller shape rejects empty or duplicate principals before network',()=>{
+ for(const op of ['add','remove','rerequest'])for(const v of [{},{reviewers:[]},{reviewers:['bot','BOT']},{team_reviewers:['devs','DEVS']},{reviewers:['sk-'+('x'.repeat(25))]}])assert.equal(validWfV1Args('wf_review_requests_'+op,{repo,number:3,expected_head_sha:'a'.repeat(40),...v}),false);
+});

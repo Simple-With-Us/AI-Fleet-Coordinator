@@ -2110,7 +2110,14 @@ class WorkflowVerbs:
             raise Refused("invalid team slug")
         # The REST endpoint has no atomic head precondition. The receipt states
         # this explicitly; no submitted review is ever deleted or dismissed.
-        pull = self._get(f"/repos/{repo}/pulls/{number}")
+        try:
+            pull = self._get(f"/repos/{repo}/pulls/{number}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "review request pre-read unavailable; no write attempted"
+                ) from None
+            raise
         if (
             not isinstance(pull, dict)
             or type(pull.get("number")) is not int
@@ -4305,11 +4312,18 @@ class WorkflowVerbs:
         run_id, head = _int(args, "run_id"), _sha(args, "head_sha")
         attempt = _int(args, "run_attempt", 1, 1000000)
         job_id = _int(args, "job_id") if job else None
-        row = self._get(
-            f"/repos/{repo}/actions/jobs/{job_id}"
-            if job
-            else f"/repos/{repo}/actions/runs/{run_id}"
-        )
+        try:
+            row = self._get(
+                f"/repos/{repo}/actions/jobs/{job_id}"
+                if job
+                else f"/repos/{repo}/actions/runs/{run_id}"
+            )
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "Actions pre-read unavailable; no write attempted"
+                ) from None
+            raise
         if (
             not isinstance(row, dict)
             or type(row.get("id")) is not int
@@ -4376,6 +4390,7 @@ class WorkflowVerbs:
             {"enable_debug_logging": False} if rerun else None,
             bearer=self.bearer,
             expected_status=201 if rerun else 202 if operation == "force_cancel" else 204,
+            allow_empty_object=rerun or operation == "force_cancel",
         )
         return {**observed, "requested": operation, "completed": False, "atomic": False}
 
