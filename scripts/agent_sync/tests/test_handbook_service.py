@@ -54,7 +54,7 @@ class Tests(unittest.TestCase):
             operator_email="operator@example.test",
             site="https://example.zulipchat.com",
             action="post",
-            repo="jaywedgeworth22/Fleet-OPS",
+            repo="Simple-With-Us/Fleet-OPS",
             body_file=str(self.body),
             to_owner=True,
             message_id=22,
