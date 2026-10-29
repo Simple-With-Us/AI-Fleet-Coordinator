@@ -48,9 +48,27 @@ class ReleaseTests(unittest.TestCase):
         self.home.mkdir()
         self.base = self.home / ".local/share/fleet-cli"
         self.bundle = make_bundle()
+        # The wrapper carries the roots the host names, so the suite must not read
+        # the roots of the machine it runs on:  every one of them is empty here and
+        # the tests that need a root name it themselves.
+        self.patches = [
+            mock.patch.dict(
+                os.environ,
+                {
+                    "FLEET_CODE_ROOT": "",
+                    "FLEET_APPS_ROOT": "",
+                    "FLEET_LANES_ROOT": "",
+                    "FLEET_SERVER_VOLUME": "",
+                },
+            ),
+        ]
+        for patch in self.patches:
+            patch.start()
+        self.addCleanup(self._stop)
 
-    def tearDown(self):
-        self.temp.cleanup()
+    def _stop(self):
+        for patch in reversed(self.patches):
+            patch.stop()
 
     def receive(self, bundle=None, install=True):
         return release.receive(json.dumps(bundle or self.bundle).encode(), self.home, install)
@@ -347,6 +365,76 @@ class ReleaseTests(unittest.TestCase):
         )
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(out.stdout.strip(), "/from/the/caller")
+
+    def test_the_lane_wrapper_carries_the_lanes_root_the_host_names(self):
+        # A host names its lanes root when the lanes do not sit beside the apps
+        # folder:  the wrapper carries that one and not a derived path.
+        lanes = self.home / "elsewhere" / "lanes"
+        lanes.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"FLEET_LANES_ROOT": str(lanes)}):
+            self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertIn(f"os.environ.setdefault('FLEET_LANES_ROOT', {str(lanes)!r})", text)
+        self.assertNotIn(
+            f"os.environ.setdefault('FLEET_LANES_ROOT', {str(self.home / 'apps' / 'lanes')!r})",
+            text,
+        )
+
+    def test_the_lane_wrapper_carries_no_lanes_root_the_host_does_not_name(self):
+        self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertNotIn("FLEET_LANES_ROOT", text)
+
+    def test_the_wrapper_never_overrides_the_lanes_root_the_caller_set(self):
+        # setdefault, never an assignment:  an agent that exports the lanes root
+        # itself keeps it.
+        body = b'#!/bin/bash\necho "${FLEET_LANES_ROOT:-unset}"\n'
+        bundle = make_bundle()
+        bundle["files"]["scripts/fleet_lanes/bin/lane"] = {
+            "mode": 0o755,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "data": base64.b64encode(body).decode(),
+        }
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        self.receive(bundle)
+        wrapper = self.home / ".local/bin/lane"
+        out = subprocess.run(
+            [str(wrapper)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "FLEET_LANES_ROOT": "/from/the/caller"},
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), "/from/the/caller")
+
+    def test_every_path_the_wrapper_carries_comes_from_the_fake_home(self):
+        (self.home / "Code").mkdir()
+        (self.home / "apps").mkdir()
+        self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        roots = [line for line in text.splitlines() if "setdefault('FLEET_" in line]
+        self.assertTrue(roots)
+        for line in roots:
+            self.assertIn(str(self.home), line)
+
+    def test_a_whitespace_only_root_is_not_a_relative_path(self) -> None:
+        # A value of spaces must not become "." and point the lane tools at the
+        # caller's working directory.
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "   "}):
+            self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertNotIn("os.environ.setdefault('FLEET_CODE_ROOT', '.')", text)
+        self.assertIn(
+            f"os.environ.setdefault('FLEET_CODE_ROOT', {str(self.home / 'Code')!r})", text
+        )
+
+    def test_a_tilde_user_root_is_left_alone(self) -> None:
+        # A ~user spelling names another account's home:  the wrapper carries it as it
+        # was named, and the tool that reads it resolves it.
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "~otheruser/Code"}):
+            self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertIn("os.environ.setdefault('FLEET_CODE_ROOT', '~otheruser/Code')", text)
 
     def old_bundle(self):
         """A release as installed before AFC-331:  only the base files."""

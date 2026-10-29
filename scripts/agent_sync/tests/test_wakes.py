@@ -96,8 +96,29 @@ class ValidateTests(unittest.TestCase):
         schema = json.loads(W.schema_text())
         self.assertIn("risk", schema["required"])
         self.assertEqual(schema["properties"]["risk"], {"enum": ["low", "uncertain", "high", None]})
-        self.assertEqual(sorted(schema["properties"]), sorted(schema["required"]))
         self.assertEqual(W.RISKS, ("low", "uncertain", "high"))
+
+    def test_the_schema_requires_exactly_the_keys_the_validator_requires(self) -> None:
+        # The schema and the daemon's own validator have to name the same required set.  A schema
+        # that demands a key the model naturally leaves out refuses the whole answer before the
+        # daemon ever sees it, and the runtime that enforces the schema hard (mcode, muse) then
+        # fails the wake outright.  route, chat_target and chat_inspect are optional here, because
+        # the validator has always treated them as optional.
+        schema = json.loads(W.schema_text())
+        required = set(schema["required"])
+        self.assertEqual(required, {"action", "reply", "board", "owner_note", "risk"})
+        optional_keys = {"route", "chat_target", "chat_inspect"}
+        for optional in sorted(optional_keys):
+            self.assertIn(optional, schema["properties"])
+            self.assertNotIn(optional, required)
+        # A property the validator does not know is accepted by the strict runtimes and then
+        # thrown away by the daemon, so the two key sets are pinned to each other here.
+        self.assertEqual(set(schema["properties"]), required | optional_keys)
+        result, why = W.validate(
+            {"action": "reply", "reply": "hi", "board": None, "owner_note": None, "risk": "low"}
+        )
+        self.assertIsNone(why)
+        self.assertEqual(result["action"], "reply")
 
     def test_high_and_uncertain_risk_always_become_escalate(self) -> None:
         for risk in ("high", "uncertain"):
@@ -175,7 +196,13 @@ class ValidateTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
-    """The responder's contract is code:  it must carry the same screen as AGENT-SYNC Precedence rule 3."""
+    """The responder's contract is code:  it must carry the same screen the fleet documents.
+
+    The screen the fleet documents lives in the Zulip fleet guide, which this repository owns
+    and which is canonical for chat conduct.  The protocol document is a generated mirror of
+    the Fleet-OPS handbook, and the trim of 2026-10-28 turned it into a tools manual that does
+    not restate the chat rules, so the screen is read from the guide and not from the mirror.
+    """
 
     def contract(self) -> str:
         with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
@@ -193,7 +220,7 @@ class ContractTests(unittest.TestCase):
         self.assertLess(text.index("## Untrusted Content"), text.index("## Peer Requests"))
         self.assertLess(text.index("## Peer Requests"), text.index("## Choosing an Action"))
 
-    def test_the_high_risk_list_matches_the_protocol(self) -> None:
+    def test_the_high_risk_list_matches_the_documented_peer_screen(self) -> None:
         text = self.contract()
         for phrase in (
             "secret, key, token or credential",
@@ -210,20 +237,27 @@ class ContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
                 self.assertIn(
-                    phrase, self.protocol(), "the contract and AGENT-SYNC rule 3 name the same risk"
+                    phrase,
+                    self.zulip_guide(),
+                    "the contract and the fleet's peer screen name the same risk",
                 )
 
-    def protocol(self) -> str:
-        # The protocol document is being renamed:  read whichever name the mirror holds.  Remove the old name
-        # when the rename is complete.
-        root = os.path.join(os.path.dirname(W.CONTRACT_PATH), "..", "..", "..")
-        path = next(
-            (
-                os.path.join(root, n)
-                for n in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
-                if os.path.isfile(os.path.join(root, n))
-            ),
-            os.path.join(root, "FLEET-PROTOCOL.md"),
+    def zulip_guide(self) -> str:
+        """The Zulip fleet guide, which is canonical for chat conduct.
+
+        The trim of 2026-10-28 moved the working rules out of the protocol document and into
+        each repository's AGENTS.md, so the protocol document is now a tools manual that does
+        not restate them.  The peer screen itself is documented in this guide, which this
+        repository owns, so the guide and the contract are the two halves that have to agree.
+        """
+        path = os.path.join(
+            os.path.dirname(W.CONTRACT_PATH),
+            "..",
+            "..",
+            "..",
+            "docs",
+            "protocols",
+            "zulip-fleet-guide.md",
         )
         with open(path, encoding="utf-8") as fh:
             return fh.read()
@@ -237,20 +271,31 @@ class ContractTests(unittest.TestCase):
             "a low-risk peer request for work is queued for the seat's next session", text.lower()
         )
 
-    def test_the_protocol_names_the_dm_command_the_cli_implements(self) -> None:
+    def test_the_chat_guide_names_the_dm_command_the_cli_implements(self) -> None:
+        import argparse
+
         from agent_sync import cli
 
-        # The protocol is a generated mirror of the Fleet-OPS handbook, so it spells the command
-        # with whichever launcher name it was generated from.  `simple-chat` is the current one
-        # and `agent-sync` survives only as a compatibility launcher for it, so both spell the
-        # same command and the mirror may carry the older spelling until it is regenerated.
-        protocol = self.protocol()
+        # The guide is canonical for chat conduct and this repository owns it, so the guide is
+        # the document that has to name the command.  The CLI runs `_check_text_args` for `dm`
+        # and refuses an invocation that carries no message text, so the documented invocation
+        # carries the text placeholder.  The prefix on its own is documented too, for the
+        # fleet-wake emergency case, and it is asserted on its own so it can never stand in for
+        # the full invocation and let a guide that documents only a call the CLI rejects pass.
+        guide = self.zulip_guide()
         spellings = ['%s dm --owner -- "<text>"' % prog for prog in ("simple-chat", "agent-sync")]
         self.assertTrue(
-            any(spelling in protocol for spelling in spellings),
-            "the protocol does not name the dm --owner command the CLI implements",
+            any(spelling in guide for spelling in spellings),
+            "the chat guide does not name the dm --owner invocation the CLI implements",
+        )
+        prefixes = ["%s dm --owner" % prog for prog in ("simple-chat", "agent-sync")]
+        self.assertTrue(
+            any(prefix in guide for prefix in prefixes),
+            "the chat guide does not name the dm --owner prefix",
         )
         self.assertEqual(cli.build_parser().parse_args(["dm", "--owner", "--", "x"]).command, "dm")
+        with self.assertRaises(cli.UsageError):
+            cli._check_text_args(argparse.Namespace(text=[], body_file=None))
 
     def test_the_owner_ack_points_at_this_seat_not_at_a_product(self) -> None:
         """The ack names the seat's own next session, never another seat's product.
@@ -800,9 +845,6 @@ class ClaudeRunnerTests(ListenerHarness):
                 "board",
                 "owner_note",
                 "risk",
-                "route",
-                "chat_target",
-                "chat_inspect",
             ],
         )
         self.assertTrue(

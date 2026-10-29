@@ -150,7 +150,7 @@ test("the completed-ack page shows outcome metadata, never a token, and is not c
   assert.match(html, /Already Minted/);
   assert.match(html, /never shown again/);
   assert.match(html, /mint #3/);
-  assert.match(html, /GR-MCP only/);
+  assert.match(html, /Git Relay only/);
   assert.ok(html.includes("identity&#39;s"), "single-escaped apostrophe");
   assert.ok(!html.includes("&#38;"), "no double-escaping");
   assert.ok(!html.includes('<code id="gb-bearer-token">'), "no token element");
@@ -165,20 +165,20 @@ test("the reveal send line matches what the minted bearer can actually do", asyn
   // that.  It names simple-board as the first tool and claims landing
   // support, never a shipped one.
   const fleetNote = "A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity&#39;s credential.";
-  // Persona:  ST-MCP /mcp and GR-MCP.
+  // Persona:  Fleet MCP /mcp and Git Relay.
   const persona = await gbBearerRevealPage({ identity: ID, token: "t", expiresAt: NOW, kind: "persona", mcpAccept: true }).text();
-  assert.ok(persona.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(persona.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
   assert.ok(persona.includes(fleetNote));
   // Ticked seat:  same reach.
   const ticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: true }).text();
-  assert.ok(ticked.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(ticked.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
   assert.ok(ticked.includes(fleetNote));
-  // Unticked seat:  GR-MCP ONLY, and the page says /mcp refuses it - it must
-  // never imply the bearer works on ST-MCP's /mcp.
+  // Unticked seat:  Git Relay ONLY, and the page says /mcp refuses it - it must
+  // never imply the bearer works on Fleet MCP's /mcp.
   const unticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: false }).text();
-  assert.ok(unticked.includes("to GR-MCP (git-relay) only"));
-  assert.ok(unticked.includes("ST-MCP&#39;s /mcp refuses this bearer"));
-  assert.ok(!unticked.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(unticked.includes("to Git Relay (git-relay) only"));
+  assert.ok(unticked.includes("Fleet MCP&#39;s /mcp refuses this bearer"));
+  assert.ok(!unticked.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
   assert.ok(unticked.includes(fleetNote), "fleet tools are not gated by the /mcp acceptance");
 });
 
@@ -690,7 +690,7 @@ test("bearer reveal copy preserves every internal rendered sentence gap in all m
     assert.ok(copy.includes(".\u00a0 A fleet tool"), "the new fleet-tool sentence keeps its rendered gap");
     assert.ok(!/\. +[A-Z]/.test(copy), "no internal ASCII-only sentence gap may collapse in HTML");
     if (kind === "seat" && !mcpAccept) {
-      assert.ok(copy.includes(".\u00a0 ST-MCP"));
+      assert.ok(copy.includes(".\u00a0 Fleet MCP"));
       assert.ok(copy.includes(".\u00a0 If this seat"));
     }
   }
@@ -701,4 +701,50 @@ test("admin credential diagnostic failure is unknown, not absent or mintable", a
   assert.ok(html.includes("Credential readiness unknown (diagnostic read failed)"));
   assert.ok(!html.includes("No credentials loaded"));
   assert.ok(!html.includes('name="action" value="mint_gb_bearer"'));
+});
+
+test("legacy missing acceptance is distinct from explicit GR-only in status", async () => {
+  const store = S.memoryStore();
+  const { hash } = await newGbBearer(ID);
+  await S.gbBearerMint(store, {hash, by:"owner", expiresAt:NOW+10000, mcpAccept:false}, NOW);
+  const explicit = await S.gbBearerStatus(store, NOW+1);
+  assert.equal(explicit.mcp_accept_recorded, true);
+  // Find the actual stored bearer row without exposing its secret hash.
+  const keys = [...(await store.list()).keys()];
+  const bearerKey = keys.find(k => k.includes("bearer") && !k.includes("mismatch"));
+  assert.ok(bearerKey);
+  const row = await store.get(bearerKey);
+  delete row.mcp_accept; await store.put(bearerKey,row);
+  const legacy = await S.gbBearerStatus(store,NOW+1);
+  assert.equal(legacy.mcp_accept_recorded,false);
+  assert.equal((await S.gbBearerCheck(store,hash,NOW+1)).mcp_accept,false);
+});
+
+
+test("bearer activity cannot hide missing or unknown service readiness", async () => {
+  const html = await adminPage({ email: "offline@example.invalid", seats: [], clients: [], refusals: [], audits: [], calls: [], csrf: "a".repeat(64), generatedAt: NOW, gbBearers: [
+    {identity: "ECHO", kind: "seat", credentials: false, status: {active: true, mcp_accept: true}},
+    {identity: "CODEX", kind: "seat", credentials: false, credentialsUnavailable: true, status: {active: true}},
+    {identity: ID, kind: "persona", credentials: false, status: {active: true}},
+    {identity: "WISE", kind: "seat", credentials: true, status: {active: true}},
+  ]}, new Headers()).text();
+  assert.match(html, /Service Readiness/);
+  assert.match(html, /class="service-missing">Missing Zulip credentials \(token or bot email\)/);
+  assert.match(html, /Not ready for service calls; an active bearer is not service readiness/);
+  assert.match(html, /Service readiness unknown \(diagnostic read failed\)/);
+  assert.match(html, /Missing service credentials \(Zulip or Linear bundle\)/);
+  assert.match(html, /Service credentials loaded; connectivity not verified/);
+});
+
+
+test("persona admin lookup failure is unknown without aborting the page", async () => {
+  const {adminDelegatedReadiness} = await import("../src/delegated-identities.js");
+  const failed = await adminDelegatedReadiness({}, async () => {throw new Error("synthetic lookup failure");});
+  assert.equal(failed.credentialsUnavailable, true);
+  assert.equal(failed.roles.size, 0);
+  const absent = await adminDelegatedReadiness({}, async () => ({roles: new Map()}));
+  assert.equal(absent.credentialsUnavailable, false);
+  const html = await adminPage({ email: "preview@example.invalid", seats: [], clients: [], refusals: [], audits: [], csrf: "a".repeat(64), generatedAt: NOW, gbBearers: [{identity: ID, kind: "persona", credentials: false, credentialsUnavailable: failed.credentialsUnavailable, status: {active:true}}]}, new Headers()).text();
+  assert.match(html, /Service readiness unknown/);
+  assert.doesNotMatch(html, /Missing service credentials|No credentials loaded|name="action" value="mint_gb_bearer"/);
 });

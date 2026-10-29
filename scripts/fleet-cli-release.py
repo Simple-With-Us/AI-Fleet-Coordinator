@@ -306,7 +306,25 @@ BASH_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane", "scripts/fleet-mode"})
 # wrappers carry the roots, so every shell that calls them resolves the same
 # directories, with or without an interactive login (owner 2026-10-25).
 ENV_SERVER_VOLUME = "FLEET_SERVER_VOLUME"
+ENV_CODE_ROOT = "FLEET_CODE_ROOT"
+ENV_APPS_ROOT = "FLEET_APPS_ROOT"
+ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 ROOTED_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane"})
+
+
+def expand(candidate: str, home: Path) -> Path:
+    """A path the host named, with `~` expanded against the given home.
+
+    The home is the one the release runs under, and a test runs inside a throwaway
+    home, so a `~` never resolves against the real one.  A `~user` spelling names
+    another account's home, and it is left exactly as it was named.
+    """
+    text = candidate.strip()
+    if text == "~":
+        text = str(home)
+    elif text.startswith("~/"):
+        text = str(home) + text[1:]
+    return Path(text)
 
 
 def host_root(home: Path, name: str) -> str:
@@ -316,28 +334,50 @@ def host_root(home: Path, name: str) -> str:
     fleet is using.  Then the copy under the home wins when it is there; then the
     volume the host names holds these folders, and it holds the real trees when
     the home holds no alias for them.
+
+    The authoritative resolution for the fleet is `server_working_dirs.py`
+    (server_volume(), code_root(), apps_root(), lanes_root()) and the roots the
+    lane tools read in `fleet_lanes/layout.py`.  This is the release's own copy,
+    because the release payload ships no fleet_lanes module, and the two must
+    agree.
     """
-    configured = os.environ.get("FLEET_CODE_ROOT" if name == "Code" else "FLEET_APPS_ROOT")
+    configured = (os.environ.get(ENV_CODE_ROOT if name == "Code" else ENV_APPS_ROOT) or "").strip()
     if configured:
-        return configured
+        return str(expand(configured, home))
     local = home / name
     if local.is_dir():
         return str(local)
     raw = (os.environ.get(ENV_SERVER_VOLUME) or "").strip()
     if raw:
-        volume = Path(raw).expanduser() / name
+        volume = expand(raw, home) / name
         if volume.is_dir():
             return str(volume)
     return str(local)
 
 
+def host_lanes_root(home: Path, apps: str) -> str:
+    """The lanes root this host names, or the one beside the apps folder.
+
+    A host that names its lanes root carries that one:  the lanes do not always sit
+    beside the apps folder, and a wrapper that derived one would point the lane
+    tools at a directory the host does not use.
+    """
+    named = (os.environ.get(ENV_LANES_ROOT) or "").strip()
+    if named:
+        return str(expand(named, home))
+    candidate = os.path.join(apps, "lanes")
+    return candidate if os.path.isdir(candidate) else ""
+
+
 def root_exports(home: Path) -> str:
-    """The root exports a wrapper sets when the caller has not set them itself."""
+    """The root exports a wrapper sets when the caller has not set them itself.
+
+    Every line is a setdefault and never an assignment, so the environment wins
+    over the wrapper.
+    """
     code = host_root(home, "Code")
     apps = host_root(home, "apps")
-    lanes = os.path.join(apps, "lanes")
-    if not os.path.isdir(lanes):
-        lanes = ""
+    lanes = host_lanes_root(home, apps)
     return (
         f"os.environ.setdefault('FLEET_CODE_ROOT', {code!r})\n"
         f"os.environ.setdefault('FLEET_APPS_ROOT', {apps!r})\n"

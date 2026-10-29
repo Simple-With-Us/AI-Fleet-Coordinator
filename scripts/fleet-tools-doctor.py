@@ -25,6 +25,11 @@ with whether each is required or optional there and where its latest version is 
 `--remote ALIAS` reads the server's doctor JSON over a read-only SSH key whose forced command
 runs this doctor with `--json`;  `--write PATH` writes the combined Mac + server report that
 Muster reads (`-` prints it).  docs/protocols/fleet-tool-parity.md has both owner steps.
+On the server, `--json` also carries `serverStatus`:  the collector's
+~/.local/state/fleet-tools/server-status.json, when it is a JSON object from
+fleet-server-status of at most 512 KiB.  On the Mac, `--remote` with `--write PATH` writes a
+valid `serverStatus` to ~/.local/state/fleet-tools/server-status.json (0600, atomically) and
+leaves it out of the combined report.
 
 Checks:
   runtime     the installed fleet-cli release (simple-chat, simple-notes, simple-board, recall, lane,
@@ -45,7 +50,9 @@ Checks:
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
-              the server's fleet-cli-git-update and fleet-tools-doctor timers)
+              the server's fleet-cli-git-update and fleet-tools-doctor timers);  on the server,
+              updater:fleet-server-status.timer also says whether the collector's report is
+              fresh and linger is on for the user it runs as
 
 Exit 1 on any FAIL on this host, 0 otherwise.  Standard library only, and Python 3.9 compatible
 (the Mac's LaunchAgent runs /usr/bin/python3).
@@ -184,7 +191,11 @@ REPORT_RELATIVE = ".local/state/fleet-tools/report.json"  # under HOME;  the Lau
 NO_ROUTE = "no read-only route to the server"
 SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes")
 REMOTE_TIMEOUT = 150  # the server's doctor reads GitHub and npm, so allow it time
-MAX_REMOTE_BYTES = 1024 * 1024  # the same bound fleet_config puts on a doctor's answer
+# The bound fleet_config puts on a doctor's answer, plus room for the server status it carries.
+MAX_REMOTE_BYTES = 2 * 1024 * 1024
+SERVER_STATUS_RELATIVE = ".local/state/fleet-tools/server-status.json"  # under HOME, both hosts
+SERVER_STATUS_TOOL = "fleet-server-status"
+MAX_SERVER_STATUS_BYTES = 512 * 1024
 PROBE_TIMEOUT = 5  # each `<tool> --version`
 LATEST_TIMEOUT = 20  # each npm view / brew info
 GITHUB_TIMEOUT = 8
@@ -195,6 +206,11 @@ REGISTRY_WORKERS = 4
 GRACE_MINUTES = 70  # an hourly timer that fired within this window is still on schedule
 MAC_UPDATER_LABEL = "com.jay.agent-sync-runtime-sync"
 SERVER_TIMERS = ("fleet-cli-git-update.timer", "fleet-tools-doctor.timer")
+# The collector is a systemd user unit for the forced-command user (scripts/systemd), so it
+# runs only while that user's manager does:  with linger on, or while someone is logged in.
+SERVER_STATUS_TIMER = "fleet-server-status.timer"
+SERVER_STATUS_FRESH_MINUTES = 45  # Muster's freshness window for the report
+LINGER_DIR = Path("/var/lib/systemd/linger")
 STATUS_FOR_STATE = {
     "current": "OK",
     "absent": "OK",
@@ -662,7 +678,9 @@ def read_json_file(path: Path, limit: int = 2 * 1024 * 1024) -> dict | None:
         if path.stat().st_size > limit:
             return None
         data = json.loads(path.read_text())
-    except (OSError, ValueError):
+    # RecursionError:  a file of nested brackets within the size limit is malformed too, and must
+    # never crash the doctor (the server's --json would then print nothing for the Mac).
+    except (OSError, ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -768,6 +786,60 @@ def check_server_timers(report: Report, runner: Callable = subprocess.run) -> di
         else:
             report.add(check, "FAIL", why, state="stale", **fields)
     return timers
+
+
+def current_user() -> str | None:
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except (ImportError, KeyError, OSError):
+        return None
+
+
+def check_server_status_timer(
+    report: Report,
+    path: Path | None = None,
+    clock: Callable = time.time,
+    user: str | None = None,
+    linger_dir: Path | None = None,
+) -> None:
+    """The collector's user timer (`updater:fleet-server-status.timer`), judged by what it leaves:
+    a report written within Muster's window, and linger on for this user so the timer keeps
+    running with nobody logged in.  No report in this HOME is `absent`:  the doctor also runs as
+    a user that does not collect."""
+    path = path or (HOME / SERVER_STATUS_RELATIVE)
+    user = user or current_user() or "this user"
+    linger = (linger_dir or LINGER_DIR) / user
+    check = f"updater:{SERVER_STATUS_TIMER}"
+    fields = {"category": "fleet-tool", "tool": None}
+    no_linger = (
+        f"linger is off for {user}, so the user timer stops when the last session closes:"
+        f"  run loginctl enable-linger {user}"
+    )
+    if not path.exists():
+        why = f"no server status report under this HOME ({SERVER_STATUS_TIMER} is not installed for {user})"
+        report.add(check, "OK", why, state="absent", reason=why, **fields)
+        return
+    status = read_server_status(path)
+    stamp = parse_utc(status.get("generatedAt")) if status else None
+    if stamp is None:
+        why = "the server status report is unreadable or has no generatedAt"
+        report.add(check, "FAIL", why, state="stale", reason=why, **fields)
+        return
+    minutes = max(0, int((clock() - stamp) // 60))
+    lingering = linger.exists()
+    if minutes > SERVER_STATUS_FRESH_MINUTES:
+        why = f"the server status report was written {minutes} minutes ago"
+        if not lingering:
+            why += f";  {no_linger}"
+        report.add(check, "FAIL", why, state="stale", reason=why, **fields)
+    elif not lingering:
+        why = f"report written {minutes} minutes ago, but {no_linger}"
+        report.add(check, "WARN", why, state="unknown", reason=why, **fields)
+    else:
+        why = f"report written {minutes} minutes ago;  linger is on for {user}"
+        report.add(check, "OK", why, state="current", reason=why, **fields)
 
 
 def check_git_runtime(
@@ -1900,41 +1972,9 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
                     tool=command,
                 ),
             )
-    board = HOME / ".local/bin/board"
-    try:
-        text = board.read_text(errors="replace")[:65536]
-    except OSError:
-        text = None
-    if text is None:
-        why = f"{board} is not installed"
-        add_tool_row(
-            report,
-            "board",
-            dict(
-                status="FAIL",
-                state="missing",
-                detail=why,
-                reason=why,
-                category="fleet-tool",
-                tool="board",
-            ),
-        )
-    elif str(MAC_RUNTIME) in text and "scripts/linear-board/board" in text:
-        add_tool_row(report, "board", inherit_row("board", rt, f"{board} runs the runtime's board"))
-    else:
-        why = f"{board} does not run {MAC_RUNTIME}/scripts/linear-board/board"
-        add_tool_row(
-            report,
-            "board",
-            dict(
-                status="FAIL",
-                state="stale",
-                detail=why,
-                reason=why,
-                category="fleet-tool",
-                tool="board",
-            ),
-        )
+    # The `board` wrapper is retired (2026-10-28):  `simple-board` is the entry point and is already
+    # checked through FLEET_TOOLS and MAC_SIMPLE_TOOLS, so no `board` row is emitted.  A row for a
+    # deliberately retired wrapper would be a permanent false failure in the published report.
     for name in ("recall", "fleet-mode", "fleet-secrets"):
         add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
     check_lane_tools(report, rt, runner)
@@ -2902,6 +2942,44 @@ def fetch_remote(alias: str, runner: Callable = subprocess.run) -> dict:
     return doc
 
 
+def server_status_valid(status) -> bool:
+    """A server status the Mac may keep:  a JSON object from fleet-server-status, within the
+    size, depth and node bounds.  Anything else is dropped, never written."""
+    if not isinstance(status, dict) or status.get("tool") != SERVER_STATUS_TOOL:
+        return False
+    # Half the node budget, so the doctor's own rows always fit beside it on the way to the Mac.
+    if not json_within_limits(status, max_nodes=MAX_REMOTE_NODES // 2):
+        return False
+    try:
+        # Measured as the doctor prints it, so the answer stays inside MAX_REMOTE_BYTES.
+        size = len(json.dumps(status, indent=2).encode("utf-8"))
+    except (TypeError, ValueError, RecursionError):
+        return False
+    return size <= MAX_SERVER_STATUS_BYTES
+
+
+def read_server_status(path: Path | None = None) -> dict | None:
+    """The collector's report on this host, or None when it is absent, too big or not one."""
+    status = read_json_file(path or (HOME / SERVER_STATUS_RELATIVE), MAX_SERVER_STATUS_BYTES)
+    return status if server_status_valid(status) else None
+
+
+def keep_server_status(server: dict | None, path: Path | None = None) -> bool:
+    """Take `serverStatus` out of the server's half and write it, when valid, 0600 and atomically
+    to ~/.local/state/fleet-tools/server-status.json.  True when it was written.  A failed
+    write leaves the previous file, which a reader ages out, and never fails the doctor."""
+    if not isinstance(server, dict) or "serverStatus" not in server:
+        return False
+    status = server.pop("serverStatus")
+    if not server.get("reachable") or not server_status_valid(status):
+        return False
+    try:
+        write_report(path or (HOME / SERVER_STATUS_RELATIVE), status)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def combined_report(docs: list) -> dict:
     apply_skew(docs)
     return {
@@ -3074,6 +3152,7 @@ def run(
         check_mac_tools(report, rt, runner)
     elif host == "server" and (RUNTIME / "repo/.git").exists():
         check_server_timers(report, runner)
+        check_server_status_timer(report)
         check_server_tools(report, rt, checkouts, runner)
     if not args.no_registry:
         check_registry(report, host, network, runner, fetch)
@@ -3089,6 +3168,12 @@ def run(
     server = None
     if args.remote:
         server = fetch_remote(args.remote, runner)
+        # The server's status report rides in its doctor document;  it never enters the combined
+        # report, and only the Mac, writing a report file, keeps a copy.
+        if host == "mac" and report_path:
+            keep_server_status(server)
+        else:
+            server.pop("serverStatus", None)
     elif host == "mac" and args.write:
         server = unreachable_server(f"{NO_ROUTE} (no --remote given)")
     combined = None
@@ -3102,6 +3187,10 @@ def run(
     if args.write == "-":
         print(json.dumps(combined, indent=2))
     elif args.json:
+        if host == "server":
+            status = read_server_status()
+            if status is not None:
+                doc["serverStatus"] = status
         print(json.dumps(doc, indent=2))
     elif report_path:
         far = ""

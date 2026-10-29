@@ -104,12 +104,30 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 | `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
 | `ZULIP_DATADOG_EMAIL` / `ZULIP_DATADOG_API_KEY` | env config / secret | Datadog `zulip-alerts` webhook to #alerts (`slack_incoming`) |
 
+## pr-conflict-watch (Cloudflare Worker)
+
+`workers/pr-conflict-watch` reads every secret from Infisical at runtime.  The Worker's only secret binding is one read-only Infisical service token; the other five secrets live in the Fleet-OPS project, `prod`, folder `/pr-conflict-watch`.  Names only, no values:
+
+| Name | Kind | Who reads it |
+|---|---|---|
+| `GITHUB_WEBHOOK_SECRET` | secret | the Worker, to verify `X-Hub-Signature-256` |
+| `GITHUB_TOKEN` | secret | the Worker, for read-only GitHub PR lookups |
+| `ZULIP_SITE` | config (URL) | the Worker, the Zulip site base URL |
+| `ZULIP_BOT_EMAIL` | config | the Worker, the fleet alerts bot (the MA bot) email |
+| `ZULIP_BOT_API_KEY` | secret | the Worker, that bot's API key |
+
+The Zulip pair is the fleet alerts bot, the MA bot: the same credential lives at Fleet-OPS prod `/zulip` as `MA_ZULIP_SITE` / `MA_ZULIP_EMAIL` / `MA_ZULIP_KEY`.  The folder holds plain values, not Infisical references, because expanding a reference would need the service token to read `/zulip` too.
+
+One read-only service token, `pr-conflict-watch-read`, is scoped to exactly `prod` + `/pr-conflict-watch` and is bound to the Worker as the secret `INFISICAL_SERVICE_TOKEN`.  The Worker discovers the project id from the token itself (the repo is public, so the id is not committed) and refuses a token that may write or that is not scoped to that folder (`token_not_read_only`, `token_scope_mismatch`).  See [workers/pr-conflict-watch/README.md](workers/pr-conflict-watch/README.md).
+
 ## Runtime contract
 
 1. **Load at startup.**  `main()` calls `infisical_settings.configure()` + `init_settings()` before binding: universal-auth login → access token → `GET /api/v3/secrets/raw`.  A missing required key fails fast with a `SettingsError` naming the key and pointing here.  Backend keys (`QDRANT_*`, `TEI_*`) are then mirrored into `os.environ` so the `fleet_rag` library (which reads env) keeps working unchanged.  Migration bridge: any managed key missing from Infisical is backfilled from the process environment, and the backfilled key names are logged, so the service keeps its old behavior while the admin fills Infisical in.
 2. **Never fetch per-request.**  All runtime reads come from the in-memory cache (`infisical_settings.get()`).  There is no per-request, per-tick, or per-event Infisical call anywhere in the request path — verified by test (`test_runtime_reads_make_zero_network_calls_after_init`).
 3. **Background refresh.**  A daemon thread re-fetches every `SETTINGS_REFRESH_SECONDS` (default 300), re-exports the backend keys, and on failure logs loudly while keeping the last-known-good cache.  On-demand refresh: `SIGHUP` to the process, `POST /admin/reload-settings`, or the admin settings save.
 4. **Write-through on admin save.**  `POST /admin/settings` calls `infisical_settings.set()`, which writes to Infisical FIRST (`POST`/`PATCH /api/v3/secrets/raw`) and only then updates the local cache.  A failed write fails the save (502) and the cache is left untouched.
+
+**Service token.**  A consumer can bind an Infisical service token as `INFISICAL_TOKEN` in the service environment, and it wins over the machine identity: the token is the bearer directly, so no universal-auth login happens at all, and a 401 raises a `SettingsError` naming the variable instead of a re-login retry, because a service token is not something the loader can refresh.  The token must carry the `st.` prefix, no whitespace and 20 to 2048 characters, or startup refuses it before any API call; its value never reaches a log, an error message, the admin listing or the environment export.  Bind it in the platform's own secret store for that service and let the platform inject it as an environment variable at start (Coolify, systemd, a container runtime); never write it into an image, a repository or a sheet.
 
 ## Admin gating
 
@@ -126,7 +144,6 @@ This service has no per-user settings: seat identity is passed per-request by th
 - Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there through the `INFISICAL_AUTOMATION` identity, after the `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` environment pair, and it reads no credential file at all (AFC-348, AFC-359).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
 - `fleet-sentry-monitor/monitor.py`: operator cron script; env-configured on the box that runs it.
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
-- `workers/pr-conflict-watch`: Cloudflare Worker.
 - `RECALL_FAKE=1`: local test/smoke switch only; stays an env var.  Bootstrap plumbing (`RECALL_REF`, `GITLEAKS_*`) likewise stays env-only.
 
 ## Fleet knobs
@@ -391,3 +408,29 @@ The owner selected dedicated read-only service tokens in AFC.  This supersedes t
 Approved bootstrap tokens expire 90 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed `fleet_secrets run` strips bootstrap authentication before executing its exact child-key allowlist.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
 
 No daily wake quota is introduced.  The [bridge runbook](scripts/whatsapp_bridge/README.md) gives exact token names, expiry, protected storage, recipients and action-time approval steps.  The parent relayed owner approval for the bounded 90-day token setup; provisioning and activation still await required CI/review readiness and coordination.  Neither client receives renewal or credential-management permission.
+
+### Existing Linux root-private bootstrap launcher
+
+For a Linux root host that already has its automation identity in
+`/root/.config/fleet-secrets/bootstrap.json`, the reviewed opt-in installer is:
+
+```sh
+bash scripts/install-fleet-secrets.sh --linux-private-bootstrap
+```
+
+This installs code only. It neither creates nor copies that private file, changes
+its contents, nor exports credentials into the shell or service configuration.
+The file must be a root-owned, single-link regular file, mode 0600, in its
+root-owned mode-0700 `fleet-secrets` directory. Ancestor directories must be
+root-owned and not group/world writable. Symlinks are refused. The bounded JSON
+must contain exactly two nonempty string fields:
+`INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET`.
+
+An inherited token still wins. A complete inherited automation pair wins over
+the private file; a partial pair fails rather than mixing sources. Only Linux
+UID 0 can use the fixed private-file fallback. Login is scoped to the child
+process; the automation pair is stripped before delegation and never printed.
+Help reads no credential and performs no login. The normal installer, including
+Mac installs, is unchanged. Re-running without the flag restores the plain
+launcher. Applying this on a host and checking that host's tools is separate
+from source review and tests.

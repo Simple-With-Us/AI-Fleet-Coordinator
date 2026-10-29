@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -218,7 +219,7 @@ class FileSourceTests(unittest.TestCase):
         (repo / "docs" / "big.md").write_text("x" * (sources.DOC_MAX_BYTES + 1))
         (repo / "node_modules" / "x" / "README.md").write_text("# nm\n")
         (repo / ".claude" / "skills" / "s1" / "SKILL.md").write_text("---\nname: s1\n---\n# S1\n")
-        extra = self.root / "AGENT-SYNC.md"
+        extra = self.root / "FLEET-PROTOCOL.md"
         extra.write_text("# Agent sync\n")
         (repo / "docs" / "dist").mkdir()
         (repo / "docs" / "dist" / "out.md").write_text("# dist\n")
@@ -239,7 +240,7 @@ class FileSourceTests(unittest.TestCase):
         }
         names = {pathlib.Path(p).name for p in docs}
         # the repo's .claude/skills copy is the skill source's job (mirror rule b)
-        self.assertEqual(names, {"README.md", "A.md", "2026-review.md", "AGENT-SYNC.md"})
+        self.assertEqual(names, {"README.md", "A.md", "2026-review.md", "FLEET-PROTOCOL.md"})
         self.assertEqual(docs[str(repo / "docs" / "A.md")].category, "doc")
         # not a git repo -> no url, local doc id, mtime dates
         a = docs[str(repo / "docs" / "A.md")]
@@ -616,7 +617,7 @@ class ExtraDocWalkerTests(unittest.TestCase):
         (um / "README.md").write_text("# Usage Monitor\n")
 
         self.apps.mkdir()
-        (self.apps / "AGENT-SYNC.md").write_text("# Agent sync protocol\n")
+        (self.apps / "FLEET-PROTOCOL.md").write_text("# Agent sync protocol\n")
         (self.apps / "COOLIFY.md").write_text("# Coolify\n")
         (self.apps / "SOCRATIC-TRADE-EFFORT-LOG.md").write_text("# ST effort\n")
         (self.apps / "EFFORT-LOG-PROTOCOL.md").write_text("# Protocol\n")
@@ -647,7 +648,7 @@ class ExtraDocWalkerTests(unittest.TestCase):
         self.assertNotIn("SOCRATIC-TRADE-EFFORT-LOG.md", names)
         self.assertNotIn("EFFORT-LOG-PROTOCOL.md", names)
         self.assertIn("COOLIFY.md", names)
-        self.assertIn("AGENT-SYNC.md", names)
+        self.assertIn("FLEET-PROTOCOL.md", names)
         self.assertIn("sessions.md", names)
         self.assertNotIn("SKILL.md", names)  # ~/.grok/skills is a skill-source tree now
         self.assertNotIn("out.md", names)
@@ -717,16 +718,16 @@ class MirrorSkipTests(unittest.TestCase):
         return kept, skipped
 
     def test_rule_a_live_apps_copy_beats_the_repo_mirror(self):
-        live_sync = self._w(self.apps / "AGENT-SYNC.md", "# Agent sync (live)\n")
+        live_sync = self._w(self.apps / "FLEET-PROTOCOL.md", "# Agent sync (live)\n")
         live_mlp = self._w(self.apps / "MAC-LOCAL-PROCESSES.md", "# Mac local processes (live)\n")
         live_ui = self._w(self.apps / "FLEET-UI-COPY.md")
         self._w(self.apps / "README.md", "# apps readme\n")
-        mirror_sync = self._w(self.fleet / "AGENT-SYNC.md", "# Agent sync (mirror)\n")
+        mirror_sync = self._w(self.fleet / "FLEET-PROTOCOL.md", "# Agent sync (mirror)\n")
         mirror_mlp = self._w(self.fleet / "docs" / "MAC-LOCAL-PROCESSES.md", "# mirror\n")
         mirror_ui = self._w(self.fleet / "FLEET-UI-COPY.md")
         fleet_readme = self._w(self.fleet / "README.md", "# Fleet coordinator\n")
         fleet_only = self._w(self.fleet / "docs" / "RAG-FLEET-INFRA.md")
-        st_sync = self._w(self.st / "docs" / "AGENT-SYNC.md", "# ST's own copy\n")
+        st_sync = self._w(self.st / "docs" / "FLEET-PROTOCOL.md", "# ST's own copy\n")
         kept, skipped = self._walk()
         for live in (live_sync, live_mlp, live_ui, fleet_readme, fleet_only, st_sync):
             self.assertIn(str(live), kept, live)
@@ -736,7 +737,7 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIn(str(self.apps / "README.md"), kept)
 
     def test_rule_a_only_when_the_live_copy_exists(self):
-        mirror = self._w(self.fleet / "AGENT-SYNC.md")
+        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md")
         kept, skipped = self._walk()
         self.assertIn(str(mirror), kept)
         self.assertEqual(skipped, {})
@@ -794,8 +795,8 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIn(str(other), kept)
 
     def test_skips_are_logged_once_per_rule(self):
-        self._w(self.apps / "AGENT-SYNC.md")
-        self._w(self.fleet / "AGENT-SYNC.md")
+        self._w(self.apps / "FLEET-PROTOCOL.md")
+        self._w(self.fleet / "FLEET-PROTOCOL.md")
         for i in range(5):
             self._w(
                 self.fleet / "docs" / "fleet-skills" / "by-seat" / f"seat{i}" / "x" / "SKILL.md"
@@ -821,7 +822,7 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertTrue(
             by_rule[sources.SKIP_APPS_MIRROR].startswith("doc: skipped 1 apps-mirror file(s): ")
         )
-        self.assertIn("AGENT-SYNC.md", by_rule[sources.SKIP_APPS_MIRROR])
+        self.assertIn("FLEET-PROTOCOL.md", by_rule[sources.SKIP_APPS_MIRROR])
         self.assertTrue(
             by_rule[sources.SKIP_SKILL_COPY].startswith("doc: skipped 5 skill-copy file(s): ")
         )
@@ -864,10 +865,10 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(pathlib.Path("/x/.claude/CLAUDE.md")))
         self.assertIsNone(r(pathlib.Path("/x/Code/Socratic.Trade/docs/skills.md")))
         # rule (a) needs a real checkout to resolve against; use the temp fleet dir
-        live = {"AGENT-SYNC.md", "README.md"}
-        mirror = self._w(self.fleet / "AGENT-SYNC.md")
+        live = {"FLEET-PROTOCOL.md", "README.md"}
+        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md")
         readme = self._w(self.fleet / "README.md")
-        outside = self._w(self.st / "AGENT-SYNC.md")
+        outside = self._w(self.st / "FLEET-PROTOCOL.md")
         self.assertEqual(
             r(mirror, fleet_repos=[self.fleet], live_basenames=live), sources.SKIP_APPS_MIRROR
         )
@@ -875,7 +876,7 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(outside, fleet_repos=[self.fleet], live_basenames=live))
         self.assertIsNone(r(mirror, fleet_repos=[self.fleet], live_basenames=()))
 
-    # ---- rule (d): the Fleet-OPS handbook.  Its public pages and generated/ are the text of the live AGENT-SYNC.md.
+    # ---- rule (d): the Fleet-OPS handbook.  Its public pages and generated/ are the text of the live FLEET-PROTOCOL.md.
 
     PUBLIC = (
         "---\ntitle: {t}\norder: {o}\nvisibility: public\nsection: {s}\n---\n## {t}\n\n{body}\n"
@@ -887,11 +888,11 @@ class MirrorSkipTests(unittest.TestCase):
 
     def _handbook(self):
         """The shapes build.mjs makes: public pages, a private page, a ruling log whose front matter says public by
-        mistake, the README, and generated/AGENT-SYNC.md; plus the live file and the AFC mirror that hold the same text."""
-        live = self._w(self.apps / "AGENT-SYNC.md", f"# Agent sync (live)\n\n{self.RULE}\n")
-        mirror = self._w(self.fleet / "AGENT-SYNC.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
+        mistake, the README, and generated/FLEET-PROTOCOL.md; plus the live file and the AFC mirror that hold the same text."""
+        live = self._w(self.apps / "FLEET-PROTOCOL.md", f"# Agent sync (live)\n\n{self.RULE}\n")
+        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
         generated = self._w(
-            self.ops / "generated" / "AGENT-SYNC.md", f"# Agent sync (generated)\n\n{self.RULE}\n"
+            self.ops / "generated" / "FLEET-PROTOCOL.md", f"# Agent sync (generated)\n\n{self.RULE}\n"
         )
         h = self.ops / "handbook"
         public = [
@@ -971,7 +972,7 @@ class MirrorSkipTests(unittest.TestCase):
         )
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         kept = {d.path for d in docs}
-        # the mirror is the one AGENT-SYNC.md the walk ingests, so the public pages are dropped for it, as they are
+        # the mirror is the one FLEET-PROTOCOL.md the walk ingests, so the public pages are dropped for it, as they are
         # for the live file:  a handbook rule is one hit, which is what it was before the handbook was walked at all
         self.assertIn(str(mirror), kept)
         for page in public:
@@ -1007,7 +1008,7 @@ class MirrorSkipTests(unittest.TestCase):
         live.unlink()
         mirror.unlink()
         self._w(
-            self.st / "docs" / "AGENT-SYNC.md", f"# ST's own copy\n\n{self.RULE}\n"
+            self.st / "docs" / "FLEET-PROTOCOL.md", f"# ST's own copy\n\n{self.RULE}\n"
         )  # not the coordinator's mirror
         kept, skipped = self._walk()
         for page in public:
@@ -1130,14 +1131,14 @@ class MirrorSkipTests(unittest.TestCase):
         late = self._w(
             h / "chat" / "late.md", "## No front matter\n\n---\nvisibility: public\n---\n"
         )
-        gen = self._w(self.ops / "generated" / "AGENT-SYNC.md")
+        gen = self._w(self.ops / "generated" / "FLEET-PROTOCOL.md")
         docs_gen = self._w(self.ops / "docs" / "generated" / "x.md")
         elsewhere = self._w(
             self.st / "handbook" / "chat" / "posting.md",
             self.PUBLIC.format(t="P", o="1", s="chat", body="x"),
         )
         ops = [self.ops]
-        live = {"AGENT-SYNC.md"}
+        live = {"FLEET-PROTOCOL.md"}
         self.assertEqual(r(pub, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
         self.assertEqual(r(gen, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
         for kept in (priv, ruling, quoted, nofm, crlf, late, docs_gen):
@@ -1480,12 +1481,13 @@ class ChatLogTests(unittest.TestCase):
 
 
 class ProtocolDocRename(unittest.TestCase):
-    """The protocol document is being renamed;  readers accept either name until the old one is retired."""
+    """The protocol document was renamed;  readers know the current name only."""
 
-    def test_both_names_are_known_and_the_extra_docs_list_both(self) -> None:
-        self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md", "AGENT-SYNC.md"})
+    def test_only_the_current_name_is_known_and_the_extra_docs_list_it(self) -> None:
+        self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md"})
         names = {p.name for p in sources.EXTRA_DOCS}
-        self.assertTrue({"FLEET-PROTOCOL.md", "AGENT-SYNC.md"} <= names)
+        self.assertTrue({"FLEET-PROTOCOL.md"} <= names)
+        self.assertNotIn("AGENT-SYNC.md", names)
 
 if __name__ == "__main__":
     unittest.main()
@@ -1601,3 +1603,605 @@ class CaseVariantRepoTests(unittest.TestCase):
         self._git_init()
         d = sources.doc_from_file(self.repo / "README.md")
         self.assertEqual(d.doc_id, "doc/Autorotate/README.md")
+
+
+# --------------------------------------------------------------------------- linear source
+
+
+def _linear_node(
+    uid="uuid-1",
+    identifier="AFC-999",
+    title="Board row filed after the freeze",
+    state=("Done", "completed"),
+    team="AFC",
+    labels=("Kind/agent-report", "Severity/P2", "seat:CLAUDE"),
+    description="The body of the issue.",
+    comments=(),
+    created="2026-10-20T01:00:00.000Z",
+    updated="2026-10-21T01:00:00.000Z",
+    priority=3,
+):
+    return {
+        "id": uid,
+        "identifier": identifier,
+        "title": title,
+        "url": f"https://linear.app/simple-with-us/issue/{identifier}/slug",
+        "description": description,
+        "priority": priority,
+        "createdAt": created,
+        "updatedAt": updated,
+        "state": {"name": state[0], "type": state[1]},
+        "team": {"key": team},
+        "labels": {"nodes": [{"name": n} for n in labels]},
+        "attachments": {"nodes": []},
+        "comments": {
+            "nodes": [
+                {
+                    "body": body,
+                    "createdAt": ts,
+                    "user": {"displayName": author} if author else None,
+                    "externalUser": None,
+                }
+                for author, body, ts in comments
+            ],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        },
+    }
+
+
+class LinearSourceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        # keep the source's state files inside the test tmpdir, never the real install paths
+        env = mock.patch.dict(
+            os.environ,
+            {
+                "FLEET_RAG_LINEAR_STATE": str(pathlib.Path(self.tmp) / "ingest-state.json"),
+            },
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        self.map_path = pathlib.Path(self.tmp) / "board-to-linear.tsv"
+        self.map_path.write_text(
+            "board_id\tsource_key\tteam\tlinear_identifier\tlinear_url\tlinear_id\n"
+            "aaaa1111\tsk\tAFC\tAFC-1\thttps://linear.app/x/AFC-1\tuuid-imported-old\n"
+            "bbbb2222\tsk\tAFC\tAFC-2\thttps://linear.app/x/AFC-2\tuuid-imported-active\n",
+            encoding="utf-8",
+        )
+
+    def test_selection_skips_imported_untouched_but_keeps_new_and_updated(self) -> None:
+        scan = {
+            "uuid-imported-old": "2026-10-11T00:00:00.000Z",  # in TSV, untouched -> skip
+            "uuid-imported-active": "2026-10-25T00:00:00.000Z",  # in TSV, post-freeze -> yield
+            "uuid-new": "2026-10-12T00:00:00.000Z",  # not in TSV -> yield however old
+        }
+        nodes = [
+            _linear_node(uid="uuid-imported-active", identifier="AFC-2"),
+            _linear_node(uid="uuid-new", identifier="AFC-3", title="Filed straight into Linear"),
+        ]
+        seen_fetch = {}
+
+        def fetch(ids):
+            seen_fetch["ids"] = list(ids)
+            return nodes
+
+        docs = list(
+            sources.iter_linear(
+                covered_ids={"uuid-imported-old", "uuid-imported-active"},
+                light_scan=lambda: scan,
+                fetch_full=fetch,
+            )
+        )
+        self.assertEqual(sorted(seen_fetch["ids"]), ["uuid-imported-active", "uuid-new"])
+        # doc_id is the stable issue UUID, not the identifier (team moves rename identifiers)
+        self.assertEqual(
+            [d.doc_id for d in docs], ["linear/uuid-imported-active", "linear/uuid-new"]
+        )
+        self.assertTrue(all(d.source == "linear" for d in docs))
+
+    def test_mapping_category_seat_url_markdown_and_comment_order(self) -> None:
+        node = _linear_node(
+            comments=[
+                ("Codex", "second", "2026-10-21T02:00:00.000Z"),
+                ("Claude", "first", "2026-10-20T02:00:00.000Z"),
+            ],
+            description="Body with marker.\n\n<!-- effort-key: deadbeef -->",
+        )
+        docs = list(
+            sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+                fetch_full=lambda ids: [node],
+            )
+        )
+        (doc,) = docs
+        self.assertEqual(doc.doc_id, "linear/uuid-1")
+        self.assertEqual(doc.category, "lesson")  # state type completed
+        self.assertEqual(doc.seat, "CLAUDE")
+        self.assertEqual(doc.app, "fleet")  # AFC team maps to the fleet app, not "afc"
+        self.assertTrue(doc.url.startswith("https://linear.app/"))
+        self.assertEqual(doc.extra["severity"], "P2")  # Severity label beats priority number
+        self.assertIn("## Description", doc.text_markdown)
+        self.assertNotIn("effort-key", doc.text_markdown)  # machine marker stripped
+        self.assertLess(doc.text_markdown.index("first"), doc.text_markdown.index("second"))
+        self.assertIn("## Comments", doc.text_markdown)
+        self.assertEqual(doc.created_at_ms, sources.parse_ts_ms("2026-10-20T01:00:00.000Z"))
+        self.assertEqual(doc.updated_at_ms, sources.parse_ts_ms("2026-10-21T01:00:00.000Z"))
+
+    def test_open_state_is_a_finding_and_seat_falls_back_to_claimed(self) -> None:
+        node = _linear_node(state=("In Progress", "started"), labels=("claimed:WISE",))
+        (doc,) = sources.iter_linear(
+            covered_ids=set(),
+            light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+            fetch_full=lambda ids: [node],
+        )
+        self.assertEqual(doc.category, "finding")
+        self.assertEqual(doc.seat, "WISE")
+        self.assertEqual(doc.extra["severity"], "P2")  # priority 3 -> P2 without a label
+
+    def test_comment_pages_are_followed_and_the_bound_flags_truncation(self) -> None:
+        def fake_query(query, timeout_s=0):
+            if "issue(id:" in query:
+                return {
+                    "issue": {
+                        "comments": {
+                            "nodes": [
+                                {
+                                    "body": "extra page body",
+                                    "createdAt": "2026-10-22T00:00:00.000Z",
+                                    "user": None,
+                                    "externalUser": {"displayName": "Relay"},
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": True, "endCursor": "c"},
+                        }
+                    }
+                }
+            raise AssertionError("unexpected query")
+
+        node = _linear_node(comments=[("Claude", "first page body", "2026-10-20T00:00:00.000Z")])
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "c0"}
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            sources._linear_complete_comments(node)
+        bodies = [c["body"] for c in node["comments"]["nodes"]]
+        # one original page plus the follow-up pages up to the bound
+        self.assertEqual(len(bodies), sources.LINEAR_COMMENT_MAX_PAGES)
+        self.assertIn("extra page body", bodies)
+        # past the bound the node is flagged, not warned: iter_linear decides to skip it
+        self.assertTrue(node.get("_linear_truncated"))
+
+    def test_overlong_thread_is_skipped_not_ingested_partial(self) -> None:
+        node = _linear_node()
+        node["_linear_truncated"] = True
+        sources.take_warnings()  # drain anything earlier tests left
+        docs = list(
+            sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+                fetch_full=lambda ids: [node],
+            )
+        )
+        self.assertEqual([], docs)
+        warnings = sources.take_warnings()
+        self.assertTrue(
+            any("skipped instead of ingesting a truncated copy" in w for w in warnings),
+            warnings,
+        )
+
+    def test_scan_and_fetch_fail_closed(self) -> None:
+        with mock.patch.object(
+            sources.subprocess,
+            "run",
+            side_effect=OSError("no simple-board here"),
+        ):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan()
+
+        def ok_proc(*a, **k):
+            return subprocess.CompletedProcess(a, 0, stdout='{"errors": [{"message": "boom"}]}', stderr="")
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=ok_proc):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_query("query { x }")
+
+        def bad_rc(*a, **k):
+            return subprocess.CompletedProcess(a, 4, stdout="", stderr="no Fleet credentials")
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=bad_rc):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_query("query { x }")
+
+    def test_oversized_chunk_halves_until_it_fits(self) -> None:
+        """A response past the CLI size cap is retried as smaller chunks, not a failure."""
+        def fake_query(query, timeout_s=0):
+            if "filter: { id: { in: [" in query and query.count("uuid-") > 1:
+                raise sources.LinearSourceError(
+                    "linear: simple-board api query exited 1: response exceeds the CLI size cap",
+                    overflow=True,
+                )
+            for uid in ("uuid-a", "uuid-b"):
+                if uid in query:
+                    return {"issues": {"nodes": [_linear_node(uid=uid)], "pageInfo": {}}}
+            raise AssertionError("unexpected query")
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            nodes = sources._linear_fetch_full(["uuid-a", "uuid-b"])
+        self.assertEqual(["uuid-a", "uuid-b"], [n["id"] for n in nodes])
+
+    def test_single_issue_too_large_is_skipped_with_a_placeholder(self) -> None:
+        """An issue that overflows even alone degrades to a flagged placeholder, so the run
+        skips it (warning) instead of dying or ingesting a partial copy."""
+        def fake_query(query, timeout_s=0):
+            if "title url description" in query:
+                raise sources.LinearSourceError(
+                    "linear: simple-board api query exited 1: response exceeds the CLI size cap",
+                    overflow=True,
+                )
+            return {"issues": {"nodes": [{"id": "uuid-huge", "identifier": "AFC-777"}]}}
+
+        sources.take_warnings()  # drain
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            docs = list(
+                sources.iter_linear(
+                    covered_ids=set(),
+                    light_scan=lambda: {"uuid-huge": "2026-10-26T00:00:00.000Z"},
+                )
+            )
+        self.assertEqual([], docs)
+        warnings = sources.take_warnings()
+        self.assertTrue(any("exceeds the CLI size cap" in w for w in warnings), warnings)
+        self.assertTrue(
+            any("skipped instead of ingesting a truncated copy" in w for w in warnings), warnings
+        )
+
+    def test_oversized_comment_page_flags_the_node_not_raises(self) -> None:
+        """A comment page too large for the CLI flags the node for skipping;  it must not kill
+        the run, and must not let a partial copy through."""
+        def fake_query(query, timeout_s=0):
+            if "issue(id:" in query:
+                raise sources.LinearSourceError(
+                    "linear: simple-board api query exited 1: response exceeds the CLI size cap",
+                    overflow=True,
+                )
+            raise AssertionError("unexpected query")
+
+        node = _linear_node(comments=[("Claude", "first page body", "2026-10-20T00:00:00.000Z")])
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "c0"}
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            sources._linear_complete_comments(node)
+        self.assertTrue(node.get("_linear_truncated"))
+
+    def test_selection_advances_from_the_ingest_state(self) -> None:
+        """An issue already ingested at its current updatedAt is not refetched;  a changed one is."""
+        state_path = pathlib.Path(self.tmp) / "ingest-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "linear/uuid-1": {
+                        "source": "linear",
+                        "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                        "refreshed_at": sources.now_ms(),
+                    },
+                    "board/aaaa1111": {"source": "board", "updated_at": 1},
+                }
+            ),
+            encoding="utf-8",
+        )
+        scan = {
+            "uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"},
+            "uuid-2": {"identifier": "AFC-1000", "updatedAt": "2026-10-22T00:00:00.000Z"},
+        }
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node(uid="uuid-2", identifier="AFC-1000")]
+
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": str(state_path)}):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-2"], seen["ids"])
+        self.assertEqual(["linear/uuid-2"], [d.doc_id for d in docs])
+
+    def test_full_env_refetches_despite_state(self) -> None:
+        state_path = pathlib.Path(self.tmp) / "ingest-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "linear/uuid-1": {
+                        "source": "linear",
+                        "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node()]
+
+        env = {"FLEET_RAG_LINEAR_STATE": str(state_path), "FLEET_RAG_LINEAR_FULL": "1"}
+        with mock.patch.dict(os.environ, env):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-1"], seen["ids"])
+        self.assertEqual(["linear/uuid-1"], [d.doc_id for d in docs])
+
+    def test_missing_or_corrupt_state_fetches_all(self) -> None:
+        scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node()]
+
+        missing = str(pathlib.Path(self.tmp) / "nope.json")
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": missing}):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-1"], seen["ids"])
+        self.assertEqual(1, len(docs))
+
+    def test_app_label_wins_and_team_fallbacks_match_the_frozen_board(self) -> None:
+        """The migration's app:<slug> label preserves the original board app for merged rows;
+        team fallbacks follow the frozen board's own evidence."""
+        node = _linear_node(team="AFC", labels=("app:codecaps", "seat:CLAUDE"))
+        (doc,) = sources.iter_linear(
+            covered_ids=set(),
+            light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+            fetch_full=lambda ids: [node],
+        )
+        self.assertEqual(doc.app, "codecaps")
+        for team, expected in (
+            ("AFC", "fleet"),
+            ("OPS", "fleet-ops"),
+            ("C", "clutch"),
+            ("CK", "clutch"),
+            ("HH", "hoghunter"),
+            ("CC", "codecaps"),
+            ("ST", "socratic-trade"),  # lowercase alias path
+        ):
+            plain = _linear_node(team=team, labels=())
+            (doc,) = sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+                fetch_full=lambda ids, n=plain: [n],
+            )
+            self.assertEqual(doc.app, expected, team)
+
+    def test_stale_refresh_window_forces_refetch_despite_covering_state(self) -> None:
+        """An unchanged updatedAt only skips the fetch inside the refresh window:  past it the
+        doc is refetched, so a comment edit that never bumped updatedAt cannot hide forever.
+        The window reads refreshed_at from the COMMITTED state row;  a fetch alone writes
+        nothing, so a refresh that never commits (failed upsert, dry run, crash) cannot
+        suppress the next refetch."""
+        state_path = pathlib.Path(self.tmp) / "ingest-state.json"
+        stale = sources.now_ms() - 8 * 24 * 3600 * 1000  # beyond the 7-day default window
+        state_body = {
+            "linear/uuid-1": {
+                "source": "linear",
+                "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                "refreshed_at": stale,
+            }
+        }
+        state_path.write_text(json.dumps(state_body), encoding="utf-8")
+        scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node()]
+
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": str(state_path)}):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-1"], seen["ids"])
+        self.assertEqual(1, len(docs))
+        # the generator records nothing:  only a committed or hash-verified ingest may
+        # advance refreshed_at, so the uncommitted fetch above leaves the row stale
+        self.assertEqual(state_body, json.loads(state_path.read_text(encoding="utf-8")))
+
+    def test_fetch_deadline_is_per_chunk_not_per_selection(self) -> None:
+        """A backlog fetch spanning more healthy CLI time than one deadline must still
+        complete:  the stall bound resets per chunk (the full-repair run died when one
+        deadline was shared across every chunk of a multi-hour selection)."""
+        clock = [1000.0]
+        remainings = []
+
+        def fake_chunk(ids, deadline):
+            remainings.append(deadline - clock[0])
+            clock[0] += 500  # healthy but slow chunk, slower than the whole budget
+            return [_linear_node(uid=u) for u in ids]
+
+        fake_time = mock.Mock(wraps=time)
+        fake_time.monotonic = lambda: clock[0]
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_DEADLINE_S": "200"}):
+            with mock.patch.object(sources, "time", fake_time):
+                with mock.patch.object(sources, "_linear_fetch_chunk", fake_chunk):
+                    nodes = sources._linear_fetch_full([f"uuid-{i}" for i in range(120)])
+        self.assertEqual(120, len(nodes))
+        self.assertEqual(3, len(remainings))  # 50-wide chunks
+        self.assertTrue(all(r > 150 for r in remainings), remainings)
+
+    def test_fetch_chunk_deadline_still_fails_closed(self) -> None:
+        """The stall guard is intact inside a fetch:  an already-exhausted chunk deadline
+        raises instead of issuing another CLI read (fail closed, retried next run)."""
+        past = sources.time.monotonic() - 1
+        with self.assertRaises(sources.LinearSourceError):
+            sources._linear_fetch_full(["uuid-1"], deadline=past)
+
+    def test_missing_refreshed_at_counts_as_stale(self) -> None:
+        """Rows written before refreshed_at existed (and any hand-built row) refetch once,
+        then the next commit stamps the field - fail-safe toward refetching, never skipping."""
+        state_path = pathlib.Path(self.tmp) / "ingest-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "linear/uuid-1": {
+                        "source": "linear",
+                        "updated_at": sources.parse_ts_ms("2026-10-21T01:00:00.000Z"),
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        scan = {"uuid-1": {"identifier": "AFC-999", "updatedAt": "2026-10-21T01:00:00.000Z"}}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = list(ids)
+            return [_linear_node()]
+
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_STATE": str(state_path)}):
+            docs = list(
+                sources.iter_linear(covered_ids=set(), light_scan=lambda: scan, fetch_full=fetch)
+            )
+        self.assertEqual(["uuid-1"], seen["ids"])
+        self.assertEqual(1, len(docs))
+
+    def test_coverage_files_missing_fails_closed(self) -> None:
+        missing = pathlib.Path(self.tmp) / "nope"
+        with self.assertRaises(sources.LinearSourceError) as ctx:
+            sources.load_linear_covered_ids(missing / "map.tsv", missing / "db.sqlite")
+        self.assertIn("db.sqlite", str(ctx.exception))
+        db = pathlib.Path(self.tmp) / "findings.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE findings (id TEXT PRIMARY KEY)")
+        con.commit()
+        con.close()
+        with self.assertRaises(sources.LinearSourceError) as ctx:
+            sources.load_linear_covered_ids(missing / "map.tsv", db)
+        self.assertIn("map.tsv", str(ctx.exception))
+
+    def test_empty_scan_is_a_broken_read_not_an_empty_board(self) -> None:
+        def empty_page(*a, **k):
+            return subprocess.CompletedProcess(
+                a, 0, stdout='{"issues": {"nodes": [], "pageInfo": {"hasNextPage": false}}}', stderr=""
+            )
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=empty_page):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan()
+
+        def no_connection(*a, **k):
+            return subprocess.CompletedProcess(a, 0, stdout="{}", stderr="")
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=no_connection):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan()
+
+    def test_full_node_shape_is_validated_before_use(self) -> None:
+        node = _linear_node()
+        del node["comments"]
+        with self.assertRaises(sources.LinearSourceError):
+            sources._linear_validate_full(node)
+        node2 = _linear_node()
+        node2["id"] = 42
+        with self.assertRaises(sources.LinearSourceError):
+            sources._linear_validate_full(node2)
+
+    def test_shared_deadline_stops_pagination(self) -> None:
+        past = sources.time.monotonic() - 1
+        with self.assertRaises(sources.LinearSourceError) as ctx:
+            sources._linear_remaining(past)
+        self.assertIn("deadline", str(ctx.exception))
+        with mock.patch.object(
+            sources, "_linear_query", return_value={"issues": {"nodes": [], "pageInfo": {}}}
+        ) as q:
+            try:
+                sources._linear_light_scan(deadline=past)
+            except sources.LinearSourceError:
+                pass
+        q.assert_not_called()
+
+    def test_missing_ids_after_fetch_raise(self) -> None:
+        with mock.patch.object(
+            sources, "_linear_query", return_value={"issues": {"nodes": [], "pageInfo": {}}}
+        ):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_fetch_full(["uuid-gone"])
+
+    def test_limit_picks_the_most_recently_updated(self) -> None:
+        scan = {"a": "2026-10-20T00:00:00.000Z", "b": "2026-10-26T00:00:00.000Z"}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = ids
+            return [_linear_node(uid="b", identifier="AFC-7")]
+
+        docs = list(
+            sources.iter_linear(
+                limit=1,
+                covered_ids=set(),
+                light_scan=lambda: scan,
+                fetch_full=fetch,
+            )
+        )
+        self.assertEqual(seen["ids"], ["b"])
+        self.assertEqual([d.doc_id for d in docs], ["linear/b"])
+
+    def test_covered_ids_come_from_actual_frozen_coverage_not_tsv_membership(self) -> None:
+        db = pathlib.Path(self.tmp) / "findings.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE findings (id TEXT PRIMARY KEY)")
+        con.executemany("INSERT INTO findings VALUES (?)", [("aaaa1111",), ("bbbb2222",)])
+        con.commit()
+        con.close()
+        covered = sources.load_linear_covered_ids(self.map_path, db)
+        # uuid-imported-old maps aaaa1111 (in the frozen db) -> covered
+        self.assertIn("uuid-imported-old", covered)
+        # uuid-imported-active maps bbbb2222 (in the frozen db) -> covered too
+        self.assertIn("uuid-imported-active", covered)
+        # a TSV row whose board_id never became a finding is NOT skipped
+        self.map_path.write_text(
+            self.map_path.read_text(encoding="utf-8")
+            + "cccc3333\tgh:Simple-With-Us/X#1\tAFC\tAFC-3\thttps://linear.app/x/AFC-3\tuuid-gh-only\n",
+            encoding="utf-8",
+        )
+        covered = sources.load_linear_covered_ids(self.map_path, db)
+        self.assertNotIn("uuid-gh-only", covered)
+
+    def test_merged_issue_is_covered_only_when_every_mapped_row_is(self) -> None:
+        db = pathlib.Path(self.tmp) / "findings.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE findings (id TEXT PRIMARY KEY)")
+        con.execute("INSERT INTO findings VALUES ('aaaa1111')")
+        con.commit()
+        con.close()
+        self.map_path.write_text(
+            self.map_path.read_text(encoding="utf-8")
+            + "dddd4444\tgh:x\tAFC\tAFC-2\thttps://linear.app/x/AFC-2\tuuid-imported-active\n",
+            encoding="utf-8",
+        )
+        covered = sources.load_linear_covered_ids(self.map_path, db)
+        # uuid-imported-active now maps bbbb2222 (missing) and dddd4444 (missing) -> not covered
+        self.assertNotIn("uuid-imported-active", covered)
+        self.assertIn("uuid-imported-old", covered)
+
+    def test_rereading_a_changed_issue_keeps_the_doc_id_and_changes_the_text(self) -> None:
+        scan = {"uuid-1": "2026-10-21T01:00:00.000Z"}
+        first = list(
+            sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: scan,
+                fetch_full=lambda ids: [_linear_node(description="version one")],
+            )
+        )
+        second = list(
+            sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: {"uuid-1": "2026-10-22T01:00:00.000Z"},
+                fetch_full=lambda ids: [_linear_node(description="version two", updated="2026-10-22T01:00:00.000Z")],
+            )
+        )
+        self.assertEqual(first[0].doc_id, second[0].doc_id)
+        self.assertNotEqual(first[0].text_markdown, second[0].text_markdown)
+        self.assertLess(first[0].updated_at_ms, second[0].updated_at_ms)

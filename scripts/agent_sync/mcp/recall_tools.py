@@ -238,7 +238,7 @@ def search(
     limit = int(args.get("limit") or 5)
     hits = [hit_item(h) for h in (data.get("hits") or [])[:limit] if isinstance(h, Mapping)]
     mode = clean(data.get("mode") if isinstance(data.get("mode"), str) else "", 40)[0]
-    header = "agent-sync recall_search:  query %s%s%s" % (
+    header = "simple-tools recall_search:  query %s%s%s" % (
         json.dumps(clean(query, 100)[0], ensure_ascii=False),
         (", app %s" % json.dumps(args["app"])) if args.get("app") else "",
         (", category %s" % json.dumps(args["category"])) if args.get("category") else "",

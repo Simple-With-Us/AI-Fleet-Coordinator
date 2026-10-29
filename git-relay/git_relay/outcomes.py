@@ -47,6 +47,20 @@ class OutcomeStoreError(RuntimeError):
 
 
 def key_for(seat: str, action: str, args: dict) -> str:
+    if action == "wf_file_delete":
+        args = {k: args[k] for k in ("repo", "path", "branch", "prior_sha")}
+    if action == "wf_file_rename":
+        args = {
+            k: args[k]
+            for k in (
+                "repo",
+                "source_path",
+                "destination_path",
+                "branch",
+                "expected_head_sha",
+                "prior_sha",
+            )
+        }
     canonical = json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(f"{seat}\0{action}\0{canonical}".encode()).hexdigest()
 
@@ -118,7 +132,7 @@ class OutcomeStore:
         self._save()
         return rows
 
-    def begin(self, key: str) -> dict | None:
+    def begin(self, key: str, *, reapply_ok: bool = False) -> dict | None:
         """Mark a key in flight;  return the existing row when the key is already taken.
 
         Refuses (OutcomeStoreError) when the registry is at capacity with no
@@ -127,8 +141,17 @@ class OutcomeStore:
         """
         with self._lock:
             existing = self._rows.get(key)
-            if existing and existing["state"] in ("ok", "unknown", "pending"):
+            if existing and (
+                existing["state"] in ("unknown", "pending")
+                or existing["state"] == "ok"
+                and not reapply_ok
+            ):
                 return existing
+            if existing and existing["state"] == "ok" and reapply_ok:
+                # Only a verified success is replaceable.  Pending/unknown never re-arm.
+                self._rows[key] = {"state": "pending", "ts": self._clock()}
+                self._save()
+                return None
             self._trim(MAX_ENTRIES - 1)
             if len(self._rows) >= MAX_ENTRIES:
                 raise OutcomeStoreError(

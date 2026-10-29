@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Tests for the AGENT-SYNC.md checks in scripts/check-fleet-registry.py.
+"""Tests for the FLEET-PROTOCOL.md checks in scripts/check-fleet-registry.py.
 
     python3 scripts/test_check_fleet_registry.py
 
-Since the handbook flip, AGENT-SYNC.md starts with a GENERATED comment that names Fleet-OPS.  These tests pin that
+Since the handbook flip, FLEET-PROTOCOL.md starts with a GENERATED comment that names Fleet-OPS.  These tests pin that
 the repo and acronym checks read the text under that line, so the header can never stand in for a missing row.
 Nothing here reads ~/apps or the network.
 """
@@ -55,7 +55,7 @@ class StripHeader(unittest.TestCase):
 class AgentSyncRows(unittest.TestCase):
     def test_a_headered_copy_with_every_row_passes(self) -> None:
         text = HEADER.format(sha="b" * 64) + FULL_BODY
-        self.assertEqual(reg.agent_sync_errors(APPS, text, "coordinator AGENT-SYNC.md"), [])
+        self.assertEqual(reg.agent_sync_errors(APPS, text, "coordinator FLEET-PROTOCOL.md"), [])
 
     def test_the_header_cannot_stand_in_for_a_missing_row(self) -> None:
         # The header holds "Fleet-OPS", so "OPS" and (case-folded) "fleet-ops" are both substrings of it.
@@ -63,10 +63,10 @@ class AgentSyncRows(unittest.TestCase):
         text = HEADER.format(sha="c" * 64) + body
         self.assertIn("OPS", text)
         self.assertEqual(
-            reg.agent_sync_errors(APPS, text, "coordinator AGENT-SYNC.md"),
+            reg.agent_sync_errors(APPS, text, "coordinator FLEET-PROTOCOL.md"),
             [
-                "coordinator AGENT-SYNC.md missing repo fleet-ops",
-                "coordinator AGENT-SYNC.md missing acronym OPS",
+                "coordinator FLEET-PROTOCOL.md missing repo fleet-ops",
+                "coordinator FLEET-PROTOCOL.md missing acronym OPS",
             ],
         )
         self.assertEqual(

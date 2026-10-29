@@ -32,6 +32,10 @@ struct FleetOverviewView: View {
                     .tabItem { Label("Fleet", systemImage: "list.bullet.rectangle") }
                 FleetHostsView()
                     .tabItem { Label("Fleet Hosts", systemImage: "server.rack") }
+                ServerStatusPanel()
+                    .tabItem { Label("Server Status", systemImage: "cpu") }
+                OperationsView()
+                    .tabItem { Label("Operations", systemImage: "gearshape.2") }
                 ControlsView()
                     .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
                 WakeSettingsView()
@@ -49,6 +53,10 @@ struct FleetOverviewView: View {
         // The plan sheet hangs off the window root,  so the apply flow can present a
         // plan from any view that holds a red cell.
         .applyPlanSheet()
+        // The operations sheet hangs off the root the same way,  so the Server Status,
+        // Operations and Controls tabs share one plan,  one Touch ID question and one
+        // action in flight.
+        .opsActionSheet()
         .toolbar {
             ToolbarItemGroup {
                 Picker("Theme", selection: $theme) {
