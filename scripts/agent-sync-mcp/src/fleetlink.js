@@ -74,7 +74,7 @@ export const FLEETLINK_TOOLS = Object.freeze([
     description:
       "Publish a file or note at a FleetLink link owned by this seat:  base64 content with filename and content_type, or text, or markdown.  " +
       "It lands in the Fleet team (edit access) unless personal is true or team_id names another team.  Post the link in Zulip or Linear instead of pasting long output.",
-    inputSchema: object({ ...BODY, filename: { type: "string", minLength: 1, maxLength: 200 }, slug: SLUG, days: DAYS, password: { type: "string", maxLength: 256 }, title: TITLE, team_id: TEAM_ID, team_access: TEAM_ACCESS, personal: PERSONAL }),
+    inputSchema: object({ ...BODY, empty: { type: "boolean" }, reuse: { type: "boolean" }, filename: { type: "string", minLength: 1, maxLength: 200 }, slug: SLUG, days: DAYS, password: { type: "string", maxLength: 256 }, title: TITLE, team_id: TEAM_ID, team_access: TEAM_ACCESS, personal: PERSONAL }),
     annotations: WRITE,
   },
   {
@@ -88,7 +88,7 @@ export const FLEETLINK_TOOLS = Object.freeze([
     name: "fleetlink_list_shares",
     title: "FleetLink List Shares",
     description: "Live shares this seat can see:  scope mine (default), teams (every team, the other seats' shared work), team with team_id, and an optional q search.  Read-only.",
-    inputSchema: object({ scope: { type: "string", enum: ["mine", "team", "teams"] }, team_id: TEAM_ID, q: { type: "string", maxLength: 100 }, limit: { type: "integer", minimum: 1, maximum: 200 } }),
+    inputSchema: object({ scope: { type: "string", enum: ["mine", "bots", "team", "teams", "all"] }, team_id: TEAM_ID, q: { type: "string", maxLength: 100 }, limit: { type: "integer", minimum: 1, maximum: 200 } }),
     annotations: READ,
   },
   {
@@ -169,6 +169,7 @@ export const FLEETLINK_TOOLS = Object.freeze([
       content_type: { type: "string", maxLength: 200 },
       max_bytes: { type: "integer", minimum: 1 },
       ttl_seconds: { type: "integer", minimum: 30, maximum: 1800 },
+      password: { type: "string", maxLength: 256 },
       days: DAYS,
       title: TITLE,
       team_id: TEAM_ID,
@@ -181,7 +182,7 @@ export const FLEETLINK_TOOLS = Object.freeze([
     name: "fleetlink_renew_share",
     title: "FleetLink Renew Share",
     description: "Extend a share this seat can edit, optionally by days.  A share can be renewed three times.",
-    inputSchema: object({ slug: SLUG, days: { type: "number", minimum: 0.01 } }, ["slug"]),
+    inputSchema: object({ slug: SLUG, days: { type: ["number", "string"], minimum: 0.01, pattern: "^forever$" } }, ["slug"]),
     annotations: WRITE,
   },
   {
