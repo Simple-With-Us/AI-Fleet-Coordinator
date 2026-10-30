@@ -309,6 +309,25 @@ test('file write receipts require string branch and path',()=>{
  for (const bad of [{path:'x',branch:{},commit:'a'.repeat(40)},{path:2,branch:'b',commit:'a'.repeat(40)},{path:'x',branch:'',commit:'a'.repeat(40)}]) assert.equal(validWfV1Response('wf_file_put',bad),false);
  assert.equal(validWfV1Response('wf_file_put',{path:'x',branch:'b',commit:'a'.repeat(40)}),true);
 });
+test('nonsecret repo variables own bearer closed inputs UNKNOWN writes',async()=>{
+ const a={repo,name:'BUILD_MODE',value:'release'};
+ assert.ok(validWfV1Args('wf_repo_variable_create',a));assert.ok(!validWfV1Args('wf_repo_variable_create',{...a,token:'x'}));
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_repo_variable_create'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({completed:true,name:'BUILD_MODE'}));});assert.ok(!(await t.call('gr_wf_repo_variable_create',a)).isError);
+ const f=harness(async()=>{throw Error('lost');});assert.match((await f.call('gr_wf_repo_variable_create',a)).content[0].text,/unknown/i);
+ assert.ok(!validWfV1Response('wf_repo_variable_get',{variable:{name:'BUILD_MODE',value:7,created_at:'x',updated_at:'x'}}));
+});
+
+test('variable inputs are strict Zod parsed copies with UTF8 byte refinement', async()=>{
+ const a={repo,name:'BUILD_MODE',value:'é'.repeat(4096)};
+ const parsed=parseWfV1Args('wf_repo_variable_create',a);
+ assert.deepEqual(parsed,a);assert.notEqual(parsed,a);
+ for(const action of ['wf_repo_variable_create','wf_repo_variable_update']) {
+  assert.equal(parseWfV1Args(action,{...a,value:'é'.repeat(4097)}),null);
+  assert.equal(parseWfV1Args(action,{...a,extra:true}),null);
+  let calls=0;const h=harness(async()=>{calls++;throw Error('not reached');});
+  assert.ok((await h.call('gr_'+action,{...a,value:'é'.repeat(4097)})).isError);assert.equal(calls,0);
+ }
+});
 test('issue relation pages closed boundary and own bearer',async()=>{
  const a={repo,number:1,page:2,per_page:2},reply={issues:[{id:7,number:8,title:'Child',state:'open',repo}],page:2,has_more:false};
  assert.ok(validWfV1Args('wf_issue_subissues',a));assert.ok(!validWfV1Args('wf_issue_subissues',{...a,page:1001}));
@@ -924,6 +943,22 @@ test('Git blob and commit receipts keep credential rejection through main valida
  }
  assert.equal(validWfV1Response('wf_git_blob_get',{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}),true);
  assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'safe'}}),true);
+});
+
+test('variable receipts bind page size and exact name without Node Buffer',()=>{
+ const prior=globalThis.Buffer;globalThis.Buffer=undefined;
+ try{
+  const variable={name:'MODE',value:'release',created_at:'x',updated_at:'x'};
+  const args={repo:'o/r',page:2,per_page:1};
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable],total_count:1,page:2},args),true);
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable],total_count:1,page:1},args),false);
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable,variable],total_count:2,page:2},args),false);
+  for(const action of ['wf_repo_variable_get','wf_repo_variable_create','wf_repo_variable_update','wf_repo_variable_delete']){
+   const body=action.endsWith('_get')?{variable}:{completed:true,name:'MODE'};
+   assert.equal(validWfV1Response(action,body,{repo:'o/r',name:'MODE'}),true);
+   assert.equal(validWfV1Response(action,body,{repo:'o/r',name:'OTHER'}),false);
+  }
+ }finally{globalThis.Buffer=prior;}
 });
 
 test('pending user/team request capability receipts correlate and do not dismiss reviews',()=>{
