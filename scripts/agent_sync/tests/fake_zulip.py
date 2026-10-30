@@ -124,6 +124,7 @@ class FakeZulip:
         self.queue_counter = 0
         self.registrations: list[dict[str, Any]] = []
         self.deleted_queues: list[str] = []
+        self.can_delete_any: set[int] = set()  # user ids in the realm's can_delete_any_message_group
         self.faults: list[dict[str, Any]] = []
         self.echo_auth = False
         self.longpoll_timeout = 90
@@ -283,13 +284,18 @@ class FakeZulip:
             return [m["id"] for m in moved]
 
     def edit_content(self, message_id: int, content: str) -> None:
-        """A content-only edit: an update_message event with no topic change."""
+        """A content-only edit: an update_message event with no topic change.  Like Zulip's, the event
+        carries the old text (`orig_content`), the edit time and each receiving user's own new flags."""
         with self.cond:
             found = self._find(message_id)
+            old = found["content"]
             found["content"] = content
+            edited_at = int(time.time())
             self._push(lambda q: "update_message" in q.event_types, lambda q: {
                 "type": "update_message", "message_id": message_id, "message_ids": [message_id],
-                "content": content, "rendering_only": False, "user_id": found["sender_id"]})
+                "content": content, "orig_content": old, "rendering_only": False,
+                "user_id": found["sender_id"], "edit_timestamp": edited_at,
+                "flags": self._flags(found, q.user_id)})
 
     def set_topic_policy(self, bot: dict[str, Any], channel: str, topic: str, policy: int) -> None:
         with self.cond:
@@ -619,7 +625,7 @@ class FakeZulip:
             return self._patch_message(found, params, caller)
         if match and method == "DELETE":
             found = self._find(int(match.group(1)))
-            if found["sender_id"] != caller["user_id"]:
+            if found["sender_id"] != caller["user_id"] and caller["user_id"] not in self.can_delete_any:
                 raise _Reject(400, "You don't have permission to delete this message", "BAD_REQUEST")
             with self.cond:
                 self.messages.remove(found)

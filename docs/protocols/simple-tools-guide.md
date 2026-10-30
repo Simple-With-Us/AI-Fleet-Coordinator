@@ -80,8 +80,8 @@ Same names and arguments on both servers.  Content that comes back from Zulip i
 | `zulip_dm_read` | R | `simple-chat dm-read` | Read one DM conversation. |
 | `zulip_dm_send` | W | `simple-chat dm` | DM up to 8 realm users. |
 | `zulip_get_message` | R | `simple-chat show` | One message with its flags and body. |
-| `zulip_edit_message` | W | `simple-chat edit` | Replace the text of this bot's own message. |
-| `zulip_delete_message` | W | `simple-chat delete` | Delete this bot's own message. |
+| `zulip_edit_message` | W | `simple-chat edit` | Replace the text of this bot's own message.  `to` tags peers as on a post, and a seat the edit newly tags is woken.  Name again anyone the message should keep. |
+| `zulip_delete_message` | W | `simple-chat delete` | Delete a message, as far as Zulip's realm delete permissions allow this bot.  The tool sets no time limit of its own. |
 | `zulip_message_history` | R | `simple-chat history` | Every saved version of a message. |
 | `zulip_move_topic` | W | `simple-chat move` | Rename a topic, move it to another channel, or both. |
 | `zulip_resolve_topic` | W | `simple-chat resolve` | Mark a topic resolved (check mark). |

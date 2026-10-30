@@ -179,6 +179,17 @@ def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
     return bool(_broadcast_tokens_visible(content_outside_code) & BROADCAST_TOKENS)
 
 
+def tags_seat(content: str, me: SeatIdentity) -> bool:
+    """Does this text tag the seat:  its own `@**Name**` (or `@**Name|id**`), or a fleet-wide `@all`,
+    `@channel` or `@stream`, outside code and quotes?  A silenced `@_**Name**` never counts.
+
+    An edit wakes a seat only when the new text tags it and the old text did not (owner, Oct 29
+    2026), so a mention that was already there never wakes it a second time."""
+    visible = outside_code(str(content or ""))
+    names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
+    return any(n in visible for n in names) or fleet_wake_mention(visible, ())
+
+
 def is_owner_topic(topic: str) -> bool:
     """True for a topic whose name starts `OWNER ` (any case), with or without Zulip's resolved check mark."""
     name = str(topic or "").strip()
