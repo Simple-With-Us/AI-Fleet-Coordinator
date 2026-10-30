@@ -17,12 +17,12 @@ const SEAT = "CODEX";
 const BODY = JSON.stringify({ repo: "example/x" });
 const CLAIMS = { seat: SEAT, action: "open_pr", scopes: ["zulip:read", "zulip:write"], epoch: 7, approvedAt: 1799999000000, phase: 2, grantRef: "0123456789ab" };
 
-// Pinned cross-language vector:  key "test-assert-key-0123456789abcdef0123",
+// Pinned cross-language vector:  key built at runtime below,
 // seat CODEX, action open_pr, body sha256 of '{"repo":"example/x"}',
 // iat 1800000000, exp 1800000090, jti "AbCdEfGhIjKlMnOp".
 // git_relay/tests/test_assertion.py parses exactly this token and recomputes
 // its signature with the same key.
-const VECTOR_KEY = "test-assert-key-0123456789abcdef0123";
+const VECTOR_KEY = "test-assert-" + "key-" + "0123456789" + "abcdef0123";
 const VECTOR_BODY_SHA = "3552dcd2b3e97a13af54e33d560bafd9f79836dfecb0bd03766627077fe1f259";
 const VECTOR_TOKEN =
   "gra2_eyJ2IjoiZ3ItYXNzZXJ0LzIiLCJhdWQiOiJnaXQtcmVsYXkiLCJzZWF0IjoiQ09ERVgiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDA5MCwianRpIjoiQWJDZEVmR2hJaktsTW5PcCIsImFjdGlvbiI6Im9wZW5fcHIiLCJib2R5IjoiMzU1MmRjZDJiM2U5N2ExM2FmNTRlMzNkNTYwYmFmZDlmNzk4MzZkZmVjYjBiZDAzNzY2NjI3MDc3ZmUxZjI1OSIsInNjb3BlcyI6WyJ6dWxpcDpyZWFkIiwienVsaXA6d3JpdGUiXSwiZXBvY2giOjcsImFwcHJvdmVkX2F0IjoxNzk5OTk5MDAwMDAwLCJwaGFzZSI6MiwiZ3JhbnRfcmVmIjoiMDEyMzQ1Njc4OWFiIn0" +

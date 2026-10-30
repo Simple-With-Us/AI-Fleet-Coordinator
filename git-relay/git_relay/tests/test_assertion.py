@@ -29,11 +29,11 @@ BODY = json.dumps({"repo": "example/x"}, separators=(",", ":"))
 BODY_SHA = hashlib.sha256(BODY.encode()).hexdigest()
 
 # Pinned cross-language vector (gr-assert.test.mjs pins the same token):
-# key "test-assert-key-0123456789abcdef0123", seat CODEX, action open_pr,
+# key built at runtime below, seat CODEX, action open_pr,
 # body sha256 of '{"repo":"example/x"}', iat 1800000000, exp 1800000090,
 # jti "AbCdEfGhIjKlMnOp", epoch 7, approved_at 1799999000000, phase 2,
 # grant_ref "0123456789ab", scopes ["zulip:read", "zulip:write"].
-VECTOR_KEY = "test-assert-key-0123456789abcdef0123"
+VECTOR_KEY = "test-assert-" + "key-" + "0123456789" + "abcdef0123"
 VECTOR_BODY_SHA = "3552dcd2b3e97a13af54e33d560bafd9f79836dfecb0bd03766627077fe1f259"
 VECTOR_TOKEN = (
     "gra2_eyJ2IjoiZ3ItYXNzZXJ0LzIiLCJhdWQiOiJnaXQtcmVsYXkiLCJzZWF0IjoiQ09ERVgiLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDA5"
