@@ -127,6 +127,25 @@ TOKEN_URL = "https://api.linear.app/oauth/token"
 # with a different string revokes every token the app holds, so it is a
 # constant here and is never read from the environment.
 SCOPE = "read,write,app:assignable,app:mentionable"
+# A seat whose installed app holds a different scope than SCOPE mints with that app's own scope, never the
+# global one:  asking Linear for another string revokes the app's tokens.  MA's installation carries exactly
+# the four below (no app:assignable, no app:mentionable).  Any other seat, and the shared Fleet app, use SCOPE.
+SEAT_MINT_SCOPES = {"MA": "comments:create,issues:create,read,write"}
+
+
+def mint_scope(ident) -> str:
+    """The scope this identity's app is minted with, chosen by the identity's kind and not by the caller's seat.
+    Only a seat's own app (kind "seat") takes its per-seat scope; the Fleet app (kind "fleet", which a seat
+    with no pair of its own resolves to) takes SCOPE.  A generic LINEAR_CLIENT_ID pair (kind "env") may hold
+    the seat's app or Fleet and nothing says which, so for a seat with its own scope it is refused before any
+    mint:  the wrong string would revoke that app's tokens."""
+    seat = ident.seat or ""
+    if ident.kind == "seat":
+        return SEAT_MINT_SCOPES.get(seat, SCOPE)
+    if ident.kind == "env" and seat in SEAT_MINT_SCOPES:
+        die(f"the LINEAR_CLIENT_ID pair cannot mint for the {seat} seat: it may be the {seat} app or Fleet, "
+            f"and each takes a different scope", EXIT_AUTH)
+    return SCOPE
 WORKSPACE_URL_KEY = "simple-with-us"
 USER_AGENT = "swu-board-cli/1"
 LOOPBACK_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}(/[A-Za-z0-9._/-]*)?")
@@ -1773,7 +1792,7 @@ class Auth:
         blob = {
             "access_token": new["access_token"],
             "token_type": new.get("token_type") or "Bearer",
-            "scope": new.get("scope") or SCOPE,
+            "scope": new.get("scope") or mint_scope(ident),
             "minted_at": now,
             "expires_at": now + float(new.get("expires_in") or 30 * 86400),
             "cred_fp": fp,
@@ -1825,7 +1844,7 @@ class Auth:
                 "grant_type": "client_credentials",
                 "client_id": ident.cid,
                 "client_secret": ident.sec,
-                "scope": SCOPE,
+                "scope": mint_scope(ident),
             }
         ).encode()
         req = urllib.request.Request(
