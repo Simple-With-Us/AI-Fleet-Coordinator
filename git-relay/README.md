@@ -133,8 +133,8 @@ limits a leaked seat token's blast radius.
 every seat is `auth: shared` and signs in with its own admin-minted bearer.  It lists one entry
 for each of the 38 identities the Worker can mint a bearer for, each acting as the `swu-` App
 whose GitHub description names that seat.  Three slugs are not `swu-<identity>`:  MA is
-`swu-rob`, GROK is `swu-grok-build` and MM is `swu-minimax`.  JET-CHAT has no entry, because it
-is a second login on Jet's bot and one bot has one App (Q7).  Seats share the `fleet` profile
+`swu-rob`, GROK is `swu-grok-build` and MM is `swu-minimax`.  JET-CHAT is the full Jet login and reaches Jet's own `swu-jet` App. The original
+JET login is wake-only and has no Git entry (Q7).  Seats share the `fleet` profile
 (the same actions, repositories and permission ceiling);  Echo keeps its own narrower repository
 set.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
 Worker's identity lists and each action's permission needs.
