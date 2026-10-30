@@ -73,6 +73,11 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_repo_variables": ({"variables": "read"}, False),
+    "wf_repo_variable_get": ({"variables": "read"}, False),
+    "wf_repo_variable_create": ({"variables": "write"}, True),
+    "wf_repo_variable_update": ({"variables": "write"}, True),
+    "wf_repo_variable_delete": ({"variables": "write"}, True),
     "wf_workflow_get": ({"actions": "read"}, False),
     "wf_artifact_get": ({"actions": "read"}, False),
     "wf_artifacts_page": ({"actions": "read"}, False),
@@ -903,13 +908,21 @@ class WorkflowVerbs:
         return {k: data.get(k) for k in ("number", "state", "title", "updated_at", "html_url")}
 
     @staticmethod
-    def _issue_text(args, key, required=True):
+    def _provider_token_text(value):
+        return bool(
+            re.search(
+                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}", value
+            )
+        )
+
+    @classmethod
+    def _issue_text(cls, args, key, required=True):
         value = args.get(key)
         if value is None and not required:
             return None
         if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 32768:
             raise Refused(f"invalid {key}")
-        if find_secret(value):
+        if find_secret(value) or cls._provider_token_text(value):
             raise Refused("credential-shaped outbound text")
         return value
 
@@ -1102,6 +1115,132 @@ class WorkflowVerbs:
         }
 
     @staticmethod
+    def _variable_name(args):
+        name = args.get("name")
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,99}", name)
+            or name.startswith("GITHUB_")
+        ):
+            raise Refused("invalid variable name")
+        return name
+
+    @staticmethod
+    def _variable_value(args):
+        value = args.get("value")
+        if (
+            not isinstance(value, str)
+            or len(value.encode("utf-8")) > 8192
+            or "\x00" in value
+            or find_secret(value)
+        ):
+            raise Refused("invalid or secret variable value; this is not a secrets API")
+        return value
+
+    @staticmethod
+    def _variable_receipt(data, name=None):
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get("name"), str)
+            or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,99}", data["name"])
+            or (name is not None and data["name"] != name)
+            or not isinstance(data.get("value"), str)
+            or len(data["value"].encode("utf-8")) > 8192
+            or any(
+                not isinstance(data.get(k), str) or len(data[k]) > 100
+                for k in ("created_at", "updated_at")
+            )
+        ):
+            raise RelayGitHubError(502, "variable receipt unverifiable")
+        if find_secret(data["name"]) or find_secret(data["value"]):
+            raise Refused("variable contains a credential pattern")
+        return {k: data[k] for k in ("name", "value", "created_at", "updated_at")}
+
+    def wf_repo_variables(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/actions/variables?per_page={limit}&page={page}")
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or data["total_count"] < 0
+            or not isinstance(data.get("variables"), list)
+            or len(data["variables"]) > limit
+        ):
+            raise RelayGitHubError(502, "variables page unverifiable")
+        return {
+            "variables": [self._variable_receipt(x) for x in data["variables"]],
+            "total_count": data["total_count"],
+            "page": page,
+        }
+
+    def wf_repo_variable_get(self, repo, args):
+        _only(args, ("repo", "name"))
+        name = self._variable_name(args)
+        return {
+            "variable": self._variable_receipt(
+                self._get(f"/repos/{repo}/actions/variables/{name}"), name
+            )
+        }
+
+    def wf_repo_variable_create(self, repo, args):
+        _only(args, ("repo", "name", "value"))
+        name = self._variable_name(args)
+        value = self._variable_value(args)
+        receipt = self.client._call(
+            "POST",
+            f"/repos/{repo}/actions/variables",
+            {"name": name, "value": value},
+            bearer=self.bearer,
+            expected_status=201,
+            allow_empty_object=True,
+        )
+        if receipt != {}:
+            raise RelayGitHubError(502, "unexpected variable create receipt")
+        return {"completed": True, "name": name}
+
+    def wf_repo_variable_update(self, repo, args):
+        _only(args, ("repo", "name", "value"))
+        name = self._variable_name(args)
+        value = self._variable_value(args)
+        self.client._call(
+            "PATCH",
+            f"/repos/{repo}/actions/variables/{name}",
+            {"value": value},
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        return {"completed": True, "name": name}
+
+    def wf_repo_variable_delete(self, repo, args):
+        _only(args, ("repo", "name"))
+        name = self._variable_name(args)
+        try:
+            self.client._call(
+                "DELETE",
+                f"/repos/{repo}/actions/variables/{name}",
+                None,
+                bearer=self.bearer,
+                expected_status=204,
+            )
+        except RelayGitHubError as exc:
+            if exc.status != 404:
+                raise
+            # A hidden or missing repo also returns 404.  Verify this exact repo
+            # before treating a missing variable as the desired absent state.
+            repository = self._get(f"/repos/{repo}")
+            if (
+                not isinstance(repository, dict)
+                or type(repository.get("id")) is not int
+                or repository["id"] <= 0
+                or not isinstance(repository.get("full_name"), str)
+                or repository["full_name"].lower() != repo.lower()
+            ):
+                raise RelayGitHubError(502, "variable repository receipt unverifiable")
+        return {"completed": True, "name": name}
+
+    @staticmethod
     def _relation_issue(data):
         if (
             not isinstance(data, dict)
@@ -1136,7 +1275,7 @@ class WorkflowVerbs:
                 if find_secret(candidate) or re.search(
                     r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", candidate
                 ):
-                    raise Refused("relation repository contains credential pattern")
+                    raise RelayGitHubError(502, "issue relation receipt unverifiable")
                 bound = candidate
         return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
 
@@ -2531,7 +2670,7 @@ class WorkflowVerbs:
             ),
         )
         comment_id = _int(args, "comment_id")
-        body = self._text(args, "body")
+        body = self._issue_text(args, "body")
         data = self.client._call(
             "PATCH",
             f"/repos/{repo}/issues/comments/{comment_id}",
@@ -2574,7 +2713,7 @@ class WorkflowVerbs:
             ),
         )
         comment_id = _int(args, "comment_id")
-        body = self._text(args, "body")
+        body = self._issue_text(args, "body")
         data = self.client._call(
             "PATCH",
             f"/repos/{repo}/pulls/comments/{comment_id}",
@@ -3686,7 +3825,7 @@ class WorkflowVerbs:
             "page": page,
             "has_more": len(results) == limit,
         }
-        # Match server JSON escaping, not only raw UTF-8 text. Refuse whole page,
+        # Match server JSON escaping, not only raw UTF-8 text.  Refuse whole page,
         # never silently clip or drop author/review records.
         if len(json.dumps(receipt).encode("utf-8")) > 262144:
             raise Refused("PR discussion serialized page exceeds supported size")
@@ -4803,7 +4942,7 @@ class WorkflowVerbs:
                 raise Refused("invalid file")
             _only(value, ("path", "text", "mode"))
             path = _path(value)
-            if find_secret(path):
+            if find_secret(path) or self._provider_token_text(path):
                 raise Refused("credential-shaped file path refused")
             mode = _enum(value, "mode", ("100644", "100755"))
             text = value.get("text")
@@ -4813,6 +4952,7 @@ class WorkflowVerbs:
                 or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
                 or not isinstance(text, str)
                 or find_secret(text)
+                or self._provider_token_text(text)
             ):
                 raise Refused("invalid file content or path")
             try:
@@ -4851,6 +4991,7 @@ class WorkflowVerbs:
             or not isinstance(message, str)
             or not message.strip()
             or find_secret(message)
+            or self._provider_token_text(message)
         ):
             raise Refused("invalid commit input")
         try:
@@ -4923,7 +5064,7 @@ class WorkflowVerbs:
     def wf_git_blob_create(self, repo, args):
         _only(args, ("repo", "text"))
         text = args.get("text")
-        if not isinstance(text, str) or find_secret(text):
+        if not isinstance(text, str) or find_secret(text) or self._provider_token_text(text):
             raise Refused("invalid blob text")
         try:
             raw = text.encode("utf-8")
