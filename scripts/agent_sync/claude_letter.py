@@ -243,9 +243,9 @@ def clean_title(text: object) -> str:
 
     A title is relayed to the registry and from there to the Fleet Reference sheet, and a first prompt can carry a
     pasted key, so every word goes through the fleet's secret scanner first;  it reports only that a word matched."""
-    words = [w for w in one_line(text).split(" ") if w and not secretscan.scan(w)]
+    words = [w for w in one_line(text).split(" ") if w and not _secret_like(w)]
     line = " ".join(words)
-    if secretscan.scan(line):
+    if _reads_secret(line):
         return ""
     if len(line) <= TITLE_CHARS:
         return line
@@ -310,6 +310,13 @@ def _secret_like(token: str) -> bool:
     )
 
 
+def _reads_secret(text: str) -> bool:
+    """Whether the scanner flags the text, or the text with its quote marks taken out:  in a JSON line such as
+    "password": "<value>" a quote sits between the name and the colon, which the scanner's assignment patterns do
+    not allow."""
+    return bool(secretscan.scan(text) or secretscan.scan(text.replace('"', "").replace("'", "")))
+
+
 def _without_secrets(line: str) -> str:
     """The line with every whitespace-delimited token that looks like a secret removed."""
     return " ".join(token for token in line.split() if not _secret_like(token))
@@ -325,9 +332,18 @@ def title_from_prompt(prompt: object) -> str:
     secret once those are gone, alone or joined with a neighbouring line ("Authorization:" then "Bearer <key>"), gives
     no title.  A pasted key block (BEGIN line to END line) is cut out whole, and a line that is a single token right
     after a line that held a secret is skipped too:  a key broken over a line break leaves its end alone on the
-    next line, shorter than SECRET_RUN."""
-    text = str(prompt or "")[:PROMPT_SCAN_CHARS]
+    next line, shorter than SECRET_RUN.  When the prompt is longer than the scan window, the word the window ends
+    inside of is dropped (a key cut short passes every length check), and so is a fenced block it ends inside of."""
+    whole = str(prompt or "")
+    text = whole[:PROMPT_SCAN_CHARS]
+    cut = len(whole) > PROMPT_SCAN_CHARS
+    if cut and not whole[PROMPT_SCAN_CHARS].isspace():
+        # The window ends inside a word, and a key cut short passes every length check:  the partial word is dropped.
+        parts = text.rsplit(None, 1)
+        text = parts[0] if len(parts) == 2 else ""
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    if cut:
+        text = re.sub(r"```.*\Z", " ", text, flags=re.DOTALL)  # a pasted block the window ends inside of
     text = KEY_BLOCK.sub(" ", text)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
@@ -338,8 +354,8 @@ def title_from_prompt(prompt: object) -> str:
         before = lines[number - 1] if number else ""
         after = lines[number + 1] if number + 1 < len(lines) else ""
         # A neighbour's own secret does not make this line one:  only a secret that the join of the two makes.
-        secret = bool(secretscan.scan(line)) or any(
-            secretscan.scan(joined) and not secretscan.scan(neighbour)
+        secret = _reads_secret(line) or any(
+            _reads_secret(joined) and not _reads_secret(neighbour)
             for joined, neighbour in ((before + " " + line, before), (line + " " + after, after))
         )
         tail = leaked and len(line.split()) == 1

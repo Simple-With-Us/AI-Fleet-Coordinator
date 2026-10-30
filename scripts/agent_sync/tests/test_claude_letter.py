@@ -172,6 +172,35 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(CL.title_from_prompt(prompt), "Debug the Refresh Failure")
         self.assertEqual(CL.title_from_prompt("password:\nx7Kp2mQ9vL4nR8sT1"), "")
 
+    TOKEN20 = "x7Kp2mQ9vL4nR8sT1aBc"  # fake:  20 mixed letters and digits, under every length limit
+
+    def test_a_key_the_scan_window_cuts_short_leaves_nothing_in_the_title(self) -> None:
+        # A fenced paste, then a key that the window ends 20 characters into:  'ghp_' and 20 more is no secret to
+        # the scanner (it wants 36) or to SECRET_RUN (28), so the partial word has to go.
+        pasted = "```\n" + "pass\n" * 812 + "```\n"
+        self.assertEqual(len(pasted), CL.PROMPT_SCAN_CHARS - 28)
+        title = CL.title_from_prompt(pasted + "use ghp_%s to push the branch" % self.BODY)
+        self.assertEqual(title, "Use")
+        self.assertNotIn(self.BODY[:8], title)
+
+    def test_a_pasted_block_the_scan_window_ends_inside_is_not_read_as_prose(self) -> None:
+        code = "```\n" + "import os\n" * 500  # never closed within the window
+        self.assertGreater(len(code), CL.PROMPT_SCAN_CHARS)
+        self.assertEqual(CL.title_from_prompt(code), "")
+        self.assertEqual(CL.title_from_prompt("fix the build\n" + code), "Fix the Build")
+        # a stray fence in a short prompt is left alone
+        self.assertEqual(CL.title_from_prompt("how do I write ``` in markdown"), "How Do I Write in Markdown")
+
+    def test_a_json_quoted_assignment_never_reaches_a_title(self) -> None:
+        # A quote between the name and the colon keeps the scanner's assignment patterns from matching it.
+        for name in ("password", "api_key"):
+            self.assertEqual(CL.title_from_prompt('{\n  "%s": "%s"\n}' % (name, self.TOKEN20)), "", name)
+        self.assertEqual(CL.clean_title('"password": "%s"' % self.TOKEN20), "")
+
+    def test_a_long_mixed_word_in_a_name_is_kept_out_of_the_copy_the_registry_holds(self) -> None:
+        token = self.NPM + "_" + "AbCdEf0123456789" * 2 + "AbCd"
+        self.assertEqual(CL.clean_title("Publish with %s now" % token), "Publish with now")
+
     def test_a_resumed_chats_first_prompt_is_scanned_too(self) -> None:
         with tempfile.TemporaryDirectory() as home:
             folder = os.path.join(home, ".claude", "projects", "p")
@@ -926,6 +955,15 @@ class HookTests(Base):
         self.assertEqual(self.lookup("s-0001")["title"], "Rotate Today")
         self.assertNotIn(key, json.dumps(self.note("s-0001")))
         self.assertIsNone(self.renamed("AA: Rotate %s Today" % key))  # and it is not a rename again
+
+    def test_an_unprefixed_key_in_a_new_name_never_reaches_the_registry(self) -> None:
+        self.titled()
+        token = TitleTests.NPM + "_" + "AbCdEf0123456789" * 2 + "AbCd"  # no prefix the scanner knows
+        out = self.renamed("Publish with %s now" % token)
+        self.assertEqual(out["sessionTitle"], "AA: Publish with %s now" % token)  # the owner's words stay whole
+        self.assertEqual(self.lookup("s-0001")["title"], "Publish with now")
+        self.assertNotIn(token, json.dumps(self.note("s-0001")))
+        self.assertIsNone(self.renamed("AA: Publish with %s now" % token))  # and it is not a rename again
 
     def test_a_rename_on_a_retired_pair_registers_again_under_the_new_words(self) -> None:
         self.titled()
