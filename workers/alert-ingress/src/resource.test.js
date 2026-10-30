@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
-import { RESOURCE_MENTIONS, resourceMentions } from "./resource.js";
+import { isSevereCpu, RESOURCE_MENTIONS, resourceMentions } from "./resource.js";
 
 const { handleEvent, runSweep, stateKey, srcKey, svcKey, topicKey, indexPrefix } = __testing;
 
@@ -101,10 +101,83 @@ test("each Datadog resource monitor tags both Housekeepers and Jay, with or with
 
 test("the CPU monitor tags only SEVERE saturation events", () => {
   const key = "datadog:22024794:host:fleet-hetzner-nbg1";
+  assert.equal(isSevereCpu(key, "SEVERE"), true);
+  assert.equal(isSevereCpu(key, "MODERATE"), false);
+  assert.equal(isSevereCpu("datadog:220247940", "SEVERE"), false);
   assert.equal(resourceMentions(key, "SEVERE"), RESOURCE_MENTIONS);
   assert.equal(resourceMentions(key, "MODERATE"), "");
   assert.equal(resourceMentions(key, "INFO"), "");
   assert.equal(resourceMentions(key), "");
+});
+
+test("severe CPU bypasses the ingress hold, dedupes repeats, and keeps recovery quiet", async () => {
+  const kv = fakeKV();
+  const zulip = stubZulip();
+  const env = envFor(kv);
+  const warning = {
+    monitor_id: "22024794",
+    alert_type: "warning",
+    alert_transition_type: "Warning",
+    priority: "P2",
+    host: "fleet-hetzner-nbg1",
+    alert_title: "CPU is elevated",
+  };
+  const severe = {
+    monitor_id: "22024794",
+    alert_type: "error",
+    alert_transition_type: "Triggered",
+    host: "fleet-hetzner-nbg1",
+    alert_title: "CPU saturation",
+  };
+  try {
+    const held = await handleEvent("datadog", warning, env);
+    assert.equal(held.action, "hold");
+    assert.equal(zulip.events().length, 0);
+
+    const announced = await handleEvent("datadog", severe, env);
+    assert.equal(announced.action, "announce");
+    const repeated = await handleEvent("datadog", severe, env);
+    assert.equal(repeated.action, "refresh");
+
+    const recovered = await handleEvent(
+      "datadog",
+      { ...severe, alert_type: "success", alert_transition_type: "Recovered" },
+      env,
+    );
+    assert.equal(recovered.action, "resolve");
+    const events = zulip.events();
+    assert.equal(events.length, 2);
+    assert.match(events[0].form.get("content"), /^SEVERE  •  fleet-hetzner-nbg1/);
+    assert.match(events[0].form.get("content"), /@\*\*Jay Wedgeworth\|1211974\*\*/);
+    assert.match(events[1].form.get("content"), /recovered/);
+    assert.doesNotMatch(events[1].form.get("content"), /@\*\*/);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("a fresh Datadog error/Triggered CPU event announces immediately", async () => {
+  const kv = fakeKV();
+  const zulip = stubZulip();
+  try {
+    const result = await handleEvent(
+      "datadog",
+      {
+        monitor_id: "22024794",
+        alert_type: "error",
+        alert_transition_type: "Triggered",
+        host: "fleet-hetzner-nbg1",
+        alert_title: "CPU saturation",
+      },
+      envFor(kv),
+    );
+    assert.equal(result.action, "announce");
+    const [event] = zulip.events();
+    assert.match(event.form.get("content"), /^SEVERE  •  fleet-hetzner-nbg1/);
+    assert.match(event.form.get("content"), /@\*\*Jay Wedgeworth\|1211974\*\*/);
+  } finally {
+    zulip.restore();
+  }
 });
 
 test("other monitors, other vendors and look-alike ids tag nobody", () => {
