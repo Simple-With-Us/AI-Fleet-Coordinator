@@ -39,6 +39,13 @@ export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 // tag is SEAT_TAG_EXPECTATIONS in src/contract.js.
 // MA (Rob's admin-arming seat) landed on main via #894, and CODEX (Codex's
 // admin-arming seat, #890) joins beside it;  every seat set stays.
+// The one standard ChatGPT connector callback and the only seats that may list it together.  Each of them
+// keeps its own client (a CIMD id bound to one seat, or a manual client tagged for one seat) and /authorize
+// still needs exactly one armed, hosted seat among those listed, so sharing the string grants none of them
+// the others' access.  Any other seat or any other https callback listed twice is refused at load.
+export const SHARED_CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
+export const SHARED_CHATGPT_SEATS = Object.freeze(["JET", "JET-CHAT", "CODEX"]);
+
 export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "MA", "CODEX"]);
 
 // Seats whose connection serves event notifications only.  tools/list is
@@ -189,7 +196,7 @@ export function loadConfig(env) {
   if (typeof seatsRaw !== "object" || Array.isArray(seatsRaw)) throw new Error("config: SEATS must be an object");
   const seats = {};
   // Redirect URI -> every seat that lists it.  An https redirect belongs to
-  // exactly one seat except the pinned JET/CODEX ChatGPT callback below. A loopback redirect (http://127.0.0.1:<port>/<path>)
+  // exactly one seat except the pinned JET/JET-CHAT/CODEX ChatGPT callback below. A loopback redirect (http://127.0.0.1:<port>/<path>)
   // may be listed under several seats of one native app;  /authorize then
   // picks the one seat that is armed (policy.js resolveArmedSeat).
   const redirectSeats = new Map();
@@ -208,12 +215,12 @@ export function loadConfig(env) {
       const listed = redirectSeats.get(uri) ?? [];
       if (listed.includes(seat)) throw new Error(`config: ${seat} lists a redirect URI twice`);
       // ChatGPT custom connectors accept a distinct admin-created manual client
-      // for CODEX while the existing JET CIMD remains bound only to JET.
+      // for each seat while any CIMD client remains bound to one seat.
       // Existing policy requires a seat-bound client plus exactly one armed
       // seat at consent GET and POST. No other HTTPS callback/seat is shared.
-      const sharedChatGpt = uri === "https://chatgpt.com/connector_platform_oauth_redirect"
-        && [seat, ...listed].every((candidate) => candidate === "JET" || candidate === "CODEX");
-      if (listed.length > 0 && !isLoopbackRedirect(uri) && !sharedChatGpt) throw new Error("config: a redirect URI is listed under two seats (only loopback or the pinned JET/CODEX ChatGPT callback may be shared)");
+      const sharedChatGpt = uri === SHARED_CHATGPT_REDIRECT
+        && [seat, ...listed].every((candidate) => SHARED_CHATGPT_SEATS.includes(candidate));
+      if (listed.length > 0 && !isLoopbackRedirect(uri) && !sharedChatGpt) throw new Error("config: a redirect URI is listed under two seats (only loopback or the pinned JET/JET-CHAT/CODEX ChatGPT callback may be shared)");
       redirectSeats.set(uri, [...listed, seat]);
     }
     for (const id of cimdClientIds) {

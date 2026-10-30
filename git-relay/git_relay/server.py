@@ -35,7 +35,7 @@ from .app_tokens import AppTokenError
 from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
-from .policy import DEFAULT_RATE_PER_HOUR, PolicyError, SeatPolicy
+from .policy import DEFAULT_RATE_PER_HOUR, DEFAULT_WRITE_RATE_PER_HOUR, PolicyError, SeatPolicy
 from .policy_input import seats_json_from_env
 from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
@@ -1060,6 +1060,9 @@ def from_env() -> Relay:
                 os.environ.get("GIT_RELAY_RATE_PER_HOUR", str(DEFAULT_RATE_PER_HOUR))
             ),
             verifier=_build_shared_verifier(),
+            write_rate_per_hour=int(
+                os.environ.get("GIT_RELAY_WRITE_RATE_PER_HOUR", str(DEFAULT_WRITE_RATE_PER_HOUR))
+            ),
         )
     except PolicyError as exc:
         if "GIT_RELAY_SEATS_FILE" in os.environ or "GIT_RELAY_SEATS_CREDENTIAL" in os.environ:

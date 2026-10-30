@@ -225,6 +225,7 @@ credential (never cached in the store) and a re-mint is safe under the minter's 
 | GIT_RELAY_HOST | 127.0.0.1 | Bind address |
 | GIT_RELAY_PORT | 8471 | Bind port |
 | GIT_RELAY_RATE_PER_HOUR | 3600 | Per-seat hourly call cap |
+| GIT_RELAY_WRITE_RATE_PER_HOUR | 500 | Per-seat hourly cap on state-changing dispatches (logical writes, a second bound under the call cap; not a GitHub request count) |
 | GIT_RELAY_APP_MINT | 1 | Set to 0 to disable App actions and all App minting |
 | GIT_RELAY_SECRETS_PATH | /github-apps | Fleet-OPS prod folder the GH_APP_<SLUG>_* pairs are read from;  a set-but-empty value is a startup config error |
 | GIT_RELAY_URL | http://127.0.0.1:8471 | GR-MCP (`git-relay mcp`) only:  the relay base URL each tool call is posted to, as `<url>/v1/<tool>` |

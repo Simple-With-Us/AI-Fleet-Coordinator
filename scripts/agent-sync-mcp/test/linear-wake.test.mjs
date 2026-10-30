@@ -21,6 +21,8 @@ import {
   ZULIP_RELAY_MARKER,
 } from "../src/linear-wake.js";
 import { _resetInfisicalForTests } from "../src/infisical.js";
+import * as S from "../src/seat-state.js";
+import { memoryQuota } from "./quota-helper.mjs";
 
 const SECRET = "s".repeat(64);
 const NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
@@ -104,7 +106,7 @@ function fakeFetch({ secrets = {}, linear = true, endpointStatus = 200, endpoint
     }
     if (href.includes("api.linear.app/graphql")) {
       if (!linear) return new Response("{}", { status: 500 });
-      return new Response(JSON.stringify({ data: { viewer: { id: "user-gb-fixer", name: "GB-Fixer", displayName: "GB-Fixer", url: "https://linear.app/simple-with-us/profiles/gb-fixer" } } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ data: { viewer: { id: "user-gb-fixer", name: "GB-Fixer", displayName: "GB-Fixer", url: "https://linear.app/simple-with-us/profiles/gb-fixer" }, organization: { urlKey: "simple-with-us" } } }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (href === GB_ENDPOINT || href === BF_ENDPOINT || href.startsWith("http://insecure")) {
       if (endpointRedirect) return new Response("", { status: endpointRedirect, headers: { Location: "https://elsewhere.example/" } });
@@ -500,11 +502,69 @@ test("the seat map leaves an unmapped seat out and logs it once", async () => {
   console.log = (...args) => lines.push(args.join(" "));
   let map;
   try {
-    map = await buildSeatMap(env(), { fetchImpl: fakeFetch({ linear: false }), now: () => NOW, gateFor: () => ({ linearTokenGet: async () => null, linearTokenSet: async () => {}, idemBegin: async () => ({ verdict: "go" }), idemDrop: async () => {} }) });
+    map = await buildSeatMap(env(), { fetchImpl: fakeFetch({ linear: false }), now: () => NOW, gateFor: () => ({ linearTokenGet: async () => null, linearTokenSet: async () => {}, idemBegin: async () => ({ verdict: "go" }), idemDrop: async () => {} }), quota: memoryQuota() });
   } finally {
     console.log = real;
   }
   assert.ok(map.size < 23, "not every seat mapped");
   assert.ok(lines.some((line) => line.includes("linear_wake_seat_unmapped")), "the unmapped seat was logged");
   assert.ok(!lines.join("\n").includes("sec-gb-fixer"), "no secret in the log");
+});
+
+/** A per-seat gate over real seat-state storage, as the SeatGate holds a seat's token cache. */
+function memoryGateFor() {
+  const stores = new Map();
+  return (seat) => {
+    if (!stores.has(seat)) stores.set(seat, S.memoryStore());
+    const store = stores.get(seat);
+    return {
+      linearTokenGet: () => S.linearTokenGet(store),
+      linearTokenSet: (e) => S.linearTokenSet(store, e),
+      linearMintNote: (e) => S.linearMintNote(store, e),
+      idemBegin: (o) => S.idemBegin(store, o, NOW),
+      idemSet: (o) => S.idemSet(store, o, NOW),
+      idemDrop: (o) => S.idemDrop(store, o, NOW),
+    };
+  };
+}
+
+const graphqlCalls = (fetcher) => fetcher.calls.filter((call) => call.url.includes("api.linear.app/graphql"));
+
+test("the seat map meters every Linear request it makes, charging the user the viewer proves", async () => {
+  _resetInfisicalForTests();
+  _resetLinearWakeForTests();
+  const quota = memoryQuota({ now: () => NOW });
+  const fetcher = fakeFetch();
+  const map = await buildSeatMap(env(), { fetchImpl: fetcher, now: () => NOW, gateFor: memoryGateFor(), quota });
+  assert.ok(map.has(GB), "the seat whose credentials are installed is mapped");
+  const sent = graphqlCalls(fetcher).length;
+  assert.ok(sent >= 1);
+  assert.equal(quota.calls.length, sent, "one charge per GraphQL fetch");
+  const identities = [...quota.stores.keys()].filter((k) => k !== "unknown");
+  assert.equal(identities.length, 1, "one proven user");
+  const used = async (store) => (await store.get("quota_buckets") ?? []).reduce((n, [, c]) => n + c, 0);
+  assert.equal(await used(quota.stores.get(identities[0])), sent, "every request is on the proven user's bucket");
+});
+
+test("the seat map sends no Linear request when the quota denies or is unavailable", async () => {
+  for (const quota of [
+    { reserve: async () => ({ ok: false, code: "budget_exhausted", resetAt: "2026-10-27T13:00:00Z" }), debit: async () => ({ ok: true }) },
+    undefined, // the env has no SEAT_GATE, so the default quota cannot reserve and must fail closed
+  ]) {
+    _resetInfisicalForTests();
+    _resetLinearWakeForTests();
+    const fetcher = fakeFetch();
+    const lines = [];
+    const real = console.log;
+    console.log = (...args) => lines.push(args.join(" "));
+    let map;
+    try {
+      map = await buildSeatMap(env(), { fetchImpl: fetcher, now: () => NOW, gateFor: memoryGateFor(), quota });
+    } finally {
+      console.log = real;
+    }
+    assert.equal(graphqlCalls(fetcher).length, 0, "nothing reached Linear");
+    assert.equal(map.size, 0);
+    assert.ok(lines.some((line) => line.includes("linear_wake_seat_unmapped")));
+  }
 });

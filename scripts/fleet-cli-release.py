@@ -23,9 +23,11 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The composed allowlisted runtime has 132 files: main131 plus storage_guard.py.
-# Keep the exact ceiling in sender and receiver; a new file needs policy review.
-MAX_FILES = 132
+# The reviewed allowlisted runtime contains 133 files. Keep the exact minimum
+# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
+# library), added for that review.
+MAX_FILES = 133
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -470,6 +472,10 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "recall": (wrapper(home, "scripts/recall"), 0o755),
         bin_dir / "lane": (wrapper(home, "scripts/fleet_lanes/bin/lane"), 0o755),
         bin_dir / "fleet-mode": (wrapper(home, "scripts/fleet-mode"), 0o755),
+        # AFC-564: the session-letter hook and its registry side for the non-Claude platforms.  The git-update path
+        # runs the whole checkout, so the script is there once a release holds it.  The paused Mac-push bundle path
+        # would also need it in EXACT (and the doctor's SHIPPED_EXACT).
+        bin_dir / "platform-letter": (wrapper(home, "scripts/platform-letter"), 0o755),
     }
 
 

@@ -276,6 +276,52 @@ export async function reserve(store, { kind, policy }, now = Date.now()) {
   return { ok: true, waitMs };
 }
 
+// ---- shared provider quota (a separate Durable Object name per provider identity, never a seat)
+//
+// The Linear API limits requests per user or app user (5,000 an hour, plus a complexity budget), so the
+// gateway meters ACTUAL provider requests, one per fetch, charged before the fetch is sent.  The bucket lives
+// in a SeatGate instance named `providerquota:linear:<identity>` (src/gate.js), where <identity> is a hash of
+// the workspace and the app user id that Linear itself returned, or the shared "unknown" bucket used until
+// that answer is known.  Storage operations only, so the input gate makes each reserve atomic:  two concurrent
+// requests can never both take the last slot.  Minute buckets bound the stored row to 60 entries.
+export const PROVIDER_QUOTA_MAX_LIMIT = 1_000_000;
+export async function providerQuotaReserve(store, { limit, n = 1, force = false } = {}, now = Date.now()) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > PROVIDER_QUOTA_MAX_LIMIT) throw new Error("invalid provider quota limit");
+  if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error("invalid provider quota count");
+  const cooldown = await store.get("quota_cooldown_until");
+  // `force` is a DEBIT, not a reservation:  the request already went out (a whoami that proved which user it
+  // spent), so it is recorded even over the limit or in a cooldown, and the next reserve then refuses.
+  if (!force && Number.isFinite(cooldown) && cooldown > now) {
+    return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((cooldown - now) / 1000)) };
+  }
+  const buckets = new Map();
+  for (const entry of (await store.get("quota_buckets")) ?? []) {
+    const minute = Array.isArray(entry) ? entry[0] : NaN;
+    const count = Array.isArray(entry) ? entry[1] : NaN;
+    if (!Number.isFinite(minute) || !Number.isInteger(count) || count < 1) continue;
+    if (minute <= now - HOUR_MS || minute > now + MINUTE_MS) continue;
+    buckets.set(minute, (buckets.get(minute) ?? 0) + count);
+  }
+  let used = 0;
+  for (const count of buckets.values()) used += count;
+  if (!force && used + n > limit) {
+    return { ok: false, code: "budget_exhausted", window: "hour", resetAt: iso(Math.min(...buckets.keys()) + HOUR_MS) };
+  }
+  const minute = Math.ceil(now / MINUTE_MS) * MINUTE_MS;
+  buckets.set(minute, (buckets.get(minute) ?? 0) + n);
+  await store.put("quota_buckets", [...buckets]);
+  return { ok: true, used: used + n };
+}
+
+/** The provider answered 429:  every caller of this identity backs off for its retry-after (1 s to 1 h). */
+export async function providerQuotaNoteRateLimited(store, { retryAfterS } = {}, now = Date.now()) {
+  const seconds = Number.isFinite(retryAfterS) ? Math.min(Math.max(Math.ceil(retryAfterS), 1), 3600) : 30;
+  const until = now + seconds * 1000;
+  const current = await store.get("quota_cooldown_until");
+  if (!Number.isFinite(current) || current < until) await store.put("quota_cooldown_until", until);
+  return { until };
+}
+
 /** After Zulip's 429 outlasted the per-call budget:  a seat-wide cooldown. */
 export async function noteRateLimited(store, { retryAfterS }, now = Date.now()) {
   const seconds = Number.isFinite(retryAfterS) ? Math.min(Math.max(retryAfterS, 1), 3600) : 30;
@@ -504,6 +550,31 @@ export async function linearHealth(store) {
     token: cached ? { minted_at: cached.minted_at, expires_at: cached.expires_at, mint_count: cached.mint_count } : null,
     note: { last_ok_at: Number(note.last_ok_at) || 0, last_fail_at: Number(note.last_fail_at) || 0, last_fail_kind: typeof note.last_fail_kind === "string" ? note.last_fail_kind : null },
   };
+}
+
+// Which Linear user the cached token acts as, proven by a whoami and bound to the token's own fingerprint, so
+// every isolate of the seat reads one proof (src/linear.js).  Holds no token, only a fingerprint and a hash.
+export async function linearIdentityGet(store) {
+  const row = await store.get("linear_identity");
+  if (!row || typeof row.fp !== "string" || !/^[0-9a-f]{32}$/.test(row.fp) || typeof row.identity !== "string" || !/^[0-9a-f]{64}$/.test(row.identity)) return null;
+  return { fp: row.fp, identity: row.identity, proven_at: Number(row.proven_at) || 0, valid_until: Number(row.valid_until) || 0 };
+}
+
+export async function linearIdentitySet(store, entry) {
+  const row = {
+    fp: String(entry?.fp ?? ""),
+    identity: String(entry?.identity ?? ""),
+    proven_at: Number(entry?.proven_at) || 0,
+    valid_until: Number(entry?.valid_until) || 0,
+  };
+  if (!/^[0-9a-f]{32}$/.test(row.fp) || !/^[0-9a-f]{64}$/.test(row.identity)) throw new Error("invalid linear identity");
+  await store.put("linear_identity", row);
+  return { ...row };
+}
+
+export async function linearIdentityClear(store) {
+  await store.delete("linear_identity");
+  return { cleared: true };
 }
 
 /** Forget the token, so the next call mints.  Only the owner needs this. */

@@ -115,12 +115,78 @@ class TestPolicy(unittest.TestCase):
         self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=4601.0))
 
 
+class TestWriteRate(unittest.TestCase):
+    REPO = "example/fixture-repo"
+
+    def test_default_write_cap_is_a_rolling_hour_bound_below_the_call_cap(self):
+        from git_relay.policy import DEFAULT_RATE_PER_HOUR, DEFAULT_WRITE_RATE_PER_HOUR
+
+        self.assertEqual(DEFAULT_WRITE_RATE_PER_HOUR, 500)
+        self.assertLess(DEFAULT_WRITE_RATE_PER_HOUR, DEFAULT_RATE_PER_HOUR)
+        self.assertEqual(SeatPolicy(SEATS_JSON)._write_rate_per_hour, 500)
+
+    def test_every_action_is_classified_from_structured_metadata(self):
+        from git_relay.workflow_verbs import SPECS
+
+        for action in SeatPolicy.ALL_ACTIONS:
+            self.assertIsInstance(SeatPolicy.is_write(action), bool, action)
+        for action in SeatPolicy.WORKFLOW_ACTIONS:
+            self.assertIn(action, SPECS, action)
+            self.assertEqual(SeatPolicy.is_write(action), bool(SPECS[action][1]), action)
+        self.assertFalse(SeatPolicy.is_write("mint_token"))
+        for action in ("open_pr", "merge_pr", "workflow_dispatch", "resolve_thread", "edit_pr", "reply_thread", "comment_pr"):
+            self.assertTrue(SeatPolicy.is_write(action), action)
+        # registered but unwired, and unknown, names count as writes
+        for action in SeatPolicy.REGISTERED_ACTIONS + ("not_a_real_action",):
+            self.assertTrue(SeatPolicy.is_write(action), action)
+
+    def test_writes_stop_at_the_write_cap_while_reads_run_to_the_call_cap(self):
+        policy = SeatPolicy(SEATS_JSON, rate_per_hour=10, write_rate_per_hour=2)
+        repo = self.REPO
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0))
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1001.0))
+        denial = policy.authorize("swu-echo", "open_pr", repo, now=1002.0)
+        self.assertEqual(denial, "hourly write limit reached for this seat")
+        # the window rolls after an hour
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=4602.0))
+
+    def test_reads_and_mint_token_never_draw_from_the_write_bucket(self):
+        seats = json.dumps({"swu-r": {"token": "r" * 32, "actions": ["mint_token", "wf_repo_languages"], "repos": ["example/*"], "app_slug": "swu-r", "mint_permissions": {"metadata": "read"}}})
+        policy = SeatPolicy(seats, rate_per_hour=50, write_rate_per_hour=1)
+        for i in range(40):
+            self.assertIsNone(policy.authorize("swu-r", "wf_repo_languages" if i % 2 else "mint_token", "example/x", now=100.0 + i))
+        self.assertEqual(policy._writes["swu-r"], [])
+        self.assertEqual(len(policy._calls["swu-r"]), 40)
+
+    def test_a_refused_write_charges_no_call_slot_and_a_full_call_bucket_charges_no_write(self):
+        policy = SeatPolicy(SEATS_JSON, rate_per_hour=3, write_rate_per_hour=1)
+        repo = self.REPO
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=10.0))
+        self.assertIsNotNone(policy.authorize("swu-echo", "open_pr", repo, now=11.0))
+        self.assertIsNotNone(policy.authorize("swu-echo", "open_pr", repo, now=12.0))
+        self.assertEqual(len(policy._calls["swu-echo"]), 1)
+        policy = SeatPolicy(SEATS_JSON, rate_per_hour=1, write_rate_per_hour=5)
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=10.0))
+        self.assertEqual(policy.authorize("swu-echo", "open_pr", repo, now=11.0), "hourly rate limit reached for this seat")
+        self.assertEqual(len(policy._writes["swu-echo"]), 1)
+
+    def test_write_cap_must_be_positive(self):
+        with self.assertRaises(PolicyError):
+            SeatPolicy(SEATS_JSON, write_rate_per_hour=0)
+
+    def test_typed_disarm_treats_both_rate_denials_as_retryable_quota(self):
+        from git_relay.policy import RATE_LIMIT_DENIALS
+
+        self.assertEqual(set(RATE_LIMIT_DENIALS), {"hourly rate limit reached for this seat", "hourly write limit reached for this seat"})
+
+
 class TestDefaultRate(unittest.TestCase):
     def test_default_cap_is_generous_and_still_a_rolling_hour_bound(self):
         from git_relay.policy import DEFAULT_RATE_PER_HOUR
 
         self.assertEqual(DEFAULT_RATE_PER_HOUR, 3600)
-        policy = SeatPolicy(SEATS_JSON)
+        # the write bucket has its own tests (TestWriteRate);  here only the all-calls bucket is under test
+        policy = SeatPolicy(SEATS_JSON, write_rate_per_hour=DEFAULT_RATE_PER_HOUR + 10)
         repo = "example/fixture-repo"
         for i in range(DEFAULT_RATE_PER_HOUR):
             self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0 + i))

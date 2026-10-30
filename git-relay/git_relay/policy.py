@@ -25,6 +25,19 @@ class PolicyError(ValueError):
 # 429/Retry-After is already returned to the caller as a retryable refusal (server.py), so GitHub's limits remain
 # the real ceiling.  3600 is one call a second on average for a full hour.  GIT_RELAY_RATE_PER_HOUR overrides it.
 DEFAULT_RATE_PER_HOUR = 3600
+# Per-seat state-changing calls an hour, a second rolling bound on top of the one above.  A stolen seat token
+# can read a lot but must not be able to write without limit, so every authorized state-changing dispatch also
+# draws from this bucket.  It counts LOGICAL writes (one authorized dispatch each), not GitHub requests:  one
+# write verb can issue more than one mutating request upstream, and GitHub's own content-creation guideline
+# (about 80 a minute and 500 an hour, lower on some endpoints, see docs.github.com/en/rest/using-the-rest-api/
+# rate-limits-for-the-rest-api) is a provider guideline, not what this number measures.  500 is a blast-radius
+# choice, generous for routine work (one write every 7 seconds for a full hour).  GIT_RELAY_WRITE_RATE_PER_HOUR
+# overrides it.  Reads, and mint_token (a credential issue, not a repository change), draw only from the
+# all-calls bucket.
+DEFAULT_WRITE_RATE_PER_HOUR = 500
+RATE_LIMIT_DENIAL = "hourly rate limit reached for this seat"
+WRITE_RATE_LIMIT_DENIAL = "hourly write limit reached for this seat"
+RATE_LIMIT_DENIALS = (RATE_LIMIT_DENIAL, WRITE_RATE_LIMIT_DENIAL)
 
 
 class SeatPolicy:
@@ -254,7 +267,13 @@ class SeatPolicy:
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
 
-    def __init__(self, seats_json: str, rate_per_hour: int = DEFAULT_RATE_PER_HOUR, verifier=None):
+    def __init__(
+        self,
+        seats_json: str,
+        rate_per_hour: int = DEFAULT_RATE_PER_HOUR,
+        verifier=None,
+        write_rate_per_hour: int = DEFAULT_WRITE_RATE_PER_HOUR,
+    ):
         if not seats_json:
             raise PolicyError("GIT_RELAY_SEATS_JSON is empty")
         try:
@@ -347,9 +366,13 @@ class SeatPolicy:
                 claimed[cfg["identity"]] = seat
         if rate_per_hour < 1:
             raise PolicyError("rate_per_hour must be at least 1")
+        if write_rate_per_hour < 1:
+            raise PolicyError("write_rate_per_hour must be at least 1")
         self._verifier = verifier
         self._rate_per_hour = rate_per_hour
+        self._write_rate_per_hour = write_rate_per_hour
         self._calls: dict[str, list[float]] = {}
+        self._writes: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
     def authenticate(self, token: str) -> str | None:
@@ -400,14 +423,40 @@ class SeatPolicy:
                 return True
         return False
 
-    def _rate_ok(self, seat: str, now: float) -> bool:
+    @classmethod
+    def is_write(cls, action: str) -> bool:
+        """Whether an authorized dispatch of this action can change something upstream.
+
+        Read from structured metadata, never a name pattern:  wf_ verbs carry their own writes flag in
+        workflow_verbs.SPECS, native actions are listed here.  mint_token issues a credential and changes no
+        repository state.  Registered-but-unwired actions and any unclassified name count as writes, so the
+        write bucket can only err toward counting.
+        """
+        if action == "mint_token":
+            return False
+        if action in cls.WORKFLOW_ACTIONS:
+            # Imported here:  workflow_verbs imports server, which imports this module.
+            from .workflow_verbs import SPECS
+
+            spec = SPECS.get(action)
+            return True if spec is None else bool(spec[1])
+        return True
+
+    def _rate_ok(self, seat: str, now: float, write: bool = False) -> str | None:
+        """Charge one call, and one write when `write`, or None and nothing charged when either bucket is full."""
         with self._lock:
             window = [t for t in self._calls.get(seat, []) if now - t < 3600]
             self._calls[seat] = window
+            writes = [t for t in self._writes.get(seat, []) if now - t < 3600]
+            self._writes[seat] = writes
             if len(window) >= self._rate_per_hour:
-                return False
+                return RATE_LIMIT_DENIAL
+            if write and len(writes) >= self._write_rate_per_hour:
+                return WRITE_RATE_LIMIT_DENIAL
             window.append(now)
-            return True
+            if write:
+                writes.append(now)
+            return None
 
     def authorize(self, seat: str, action: str, repo: str, now: float | None = None) -> str | None:
         """Return None when allowed, else a short denial reason (safe to return to the caller)."""
@@ -417,9 +466,9 @@ class SeatPolicy:
             return f"action {action!r} not allowed for this seat"
         if not self._repo_allowed(seat, repo):
             return f"repo {repo!r} not allowed for this seat"
-        if not self._rate_ok(seat, now if now is not None else time.time()):
-            return "hourly rate limit reached for this seat"
-        return None
+        # One authorize is one dispatch:  the quota is charged here, once, before the idempotency gate, exactly as
+        # the all-calls bucket always was, so a replayed request still consumes quota.
+        return self._rate_ok(seat, now if now is not None else time.time(), write=self.is_write(action))
 
     def app_identity(self, seat: str) -> tuple[str, dict]:
         """(app_slug, mintable permission ceiling) for a seat's App actions."""

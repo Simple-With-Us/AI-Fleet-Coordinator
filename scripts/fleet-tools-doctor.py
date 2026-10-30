@@ -88,7 +88,15 @@ RUNTIME = HOME / ".local/share/fleet-cli"
 SERVER_CODE_ROOTS = (Path("/root/Code"), Path("/home/jay/Code"))
 REPOS = ("AI-Fleet-Coordinator", "FleetLink")
 # The tools both hosts carry (docs/protocols/fleet-tool-parity.md), then FleetLink's CLI.
-FLEET_TOOLS = ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode")
+FLEET_TOOLS = (
+    "simple-chat",
+    "simple-notes",
+    "simple-board",
+    "recall",
+    "lane",
+    "fleet-mode",
+    "platform-letter",
+)
 COMMANDS = (*FLEET_TOOLS, "fleetlink")
 # The Mac keeps lane and fleet-mode in ~/apps rather than on PATH.
 COMMAND_FALLBACK_DIRS = (HOME / "apps",)
@@ -99,6 +107,10 @@ MAC_SIMPLE_TOOLS = (
     ("simple-chat", "simple-chat"),
     ("simple-notes", "simple-notes"),
     ("simple-board", "simple-board"),
+    # AFC-564: the session-letter hook and registry side.  The Mac gets the link only from install.sh, which the
+    # runtime sync never runs, so without this row a Mac that lacks it would be silent, and every server hook that
+    # reaches the registry through it would fail.
+    ("platform-letter", "platform-letter"),
 )
 MAC_FLEET_MODE_DOC = HOME / "apps/FLEET-MODE.md"
 AFC_REMOTE_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator"
@@ -412,6 +424,7 @@ SERVER_WRAPPERS = {
     "recall": "scripts/recall",
     "lane": "scripts/fleet_lanes/bin/lane",
     "fleet-mode": "scripts/fleet-mode",
+    "platform-letter": "scripts/platform-letter",
 }
 RUNPY = (
     "import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); "

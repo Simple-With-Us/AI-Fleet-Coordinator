@@ -5,6 +5,7 @@ import * as S from "../src/seat-state.js";
 import { classifyPath } from "../src/policy.js";
 import { wakeSignature } from "../src/wake.js";
 import { HEALTH_CONTRACT, classifySeat, healthReport, healthKey, verifyHealth } from "../src/health.js";
+import { memoryQuota } from "./quota-helper.mjs";
 
 const KEY = "k".repeat(40);
 const SECRET = ["lin", "oauth", "secret", "value"].join("_");
@@ -115,7 +116,7 @@ test("a failed and a good mint each leave a note through the real LinearClient",
   };
   let ok = false;
   const fetchFn = async () => new Response(JSON.stringify(ok ? { access_token: "tok_x", expires_in: 2592000 } : { error: "invalid_client" }), { status: ok ? 200 : 401 });
-  const client = new LinearClient({ seat: "ECHO", clientId: "id", clientSecret: "sec", gate, fetch: fetchFn, now: () => clock.t, log: () => {} });
+  const client = new LinearClient({ quota: memoryQuota(), seat: "ECHO", clientId: "id", clientSecret: "sec", gate, fetch: fetchFn, now: () => clock.t, log: () => {} });
   await assert.rejects(() => client.token());
   let h = await S.linearHealth(store);
   assert.equal(h.note.last_fail_kind, "mint");

@@ -864,10 +864,11 @@ class MuseRunner:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(contract.rstrip() + "\n\n--- BEGIN DAEMON WAKE PROMPT ---\n" + prompt)
         # The schema is written from the same source claude passes inline, so the two runtimes can
-        # never drift onto different contracts.
+        # never drift onto different contracts.  Muse's own default is the strict variant (every property
+        # required), which the provider's strict structured-output mode demands.
         fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(schema if schema is not None else schema_text())
+            fh.write(schema if schema is not None else schema_text(strict=True))
         # muse takes these three by path, and the paths are the wake dir's own private files, so
         # the argv is rebuilt here with the real paths in place of the placeholders.
         argv = [
@@ -985,7 +986,8 @@ def muse_wake_fingerprint() -> str | None:
             contract = fh.read()
         # Ensure the bytes can be consumed by MuseRunner as UTF-8 before considering them pinnable.
         contract.decode("utf-8")
-        schema = schema_text()
+        # The strict schema is the one the muse runner sends, so the pin vouches for what is sent.
+        schema = schema_text(strict=True)
     except (OSError, UnicodeError, ValueError):
         return None
     command = json.dumps(
@@ -1362,12 +1364,10 @@ def provider_quota(
     }
 
 
-def quota_block(provider: str, now: float | None = None, path: str | None = None) -> str | None:
-    """Why this wake must not start, or None.  Only a fresh, positive exhaustion reading blocks;
-    everything else returns None so a quota source that is down never silences the fleet."""
+def _quota_verdict(provider: str, state: Mapping[str, Any]) -> str | None:
+    """The gate's verdict on a quota reading that is already in hand:  why a wake must not start, or None."""
     if (provider or "").strip().casefold() in QUOTA_NEVER_CAP_PROVIDERS:
         return None  # muse runs on the MiniMax subscription the daemon's user already pays for
-    state = provider_quota(provider, now, path)
     if state["known"] and state["exhausted"]:
         reset = state.get("reset_at")
         return "%s quota is exhausted%s" % (
@@ -1375,6 +1375,33 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
             (" until %s" % clean_banner(str(reset), 40)) if reset else "",
         )
     return None
+
+
+def quota_block(provider: str, now: float | None = None, path: str | None = None) -> str | None:
+    """Why this wake must not start, or None.  Only a fresh, positive exhaustion reading blocks;
+    everything else returns None so a quota source that is down never silences the fleet."""
+    if (provider or "").strip().casefold() in QUOTA_NEVER_CAP_PROVIDERS:
+        return None  # an uncapped provider never needs the file read
+    return _quota_verdict(provider, provider_quota(provider, now, path))
+
+
+def quota_red_from_state(provider: str, state: Mapping[str, Any]) -> str | None:
+    """The status page's RED line for a seat whose wake the quota gate stops, or None, from a reading already taken.
+
+    It is the gate's own verdict (`_quota_verdict`, the one `quota_block` uses), so the two can never disagree:  a
+    provider the gate never caps (muse, minimax) shows no RED however its quota reads, because for those the reading
+    is information and no wake is stopped.  The status used to raise RED on the reading alone and showed "wakes are
+    not running" for a muse seat whose wakes the gate was letting through.  The caller reads the file once and passes
+    the same state here that it reports, so the line and the reported quota cannot diverge."""
+    blocked = _quota_verdict(provider, state)
+    return "wakes are not running: the %s" % blocked if blocked else None
+
+
+def quota_red(provider: str, now: float | None = None, path: str | None = None) -> str | None:
+    """`quota_red_from_state` for a caller that has no reading yet."""
+    if (provider or "").strip().casefold() in QUOTA_NEVER_CAP_PROVIDERS:
+        return None
+    return quota_red_from_state(provider, provider_quota(provider, now, path))
 
 
 # --------------------------------------------------------------------------------------------

@@ -14,6 +14,7 @@ import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { FakeLinear, TOKEN_URL, GRAPHQL_URL, opOf } from "./fake-linear.mjs";
 import { testEnv } from "./helpers.mjs";
+import { memoryQuota } from "./quota-helper.mjs";
 import {
   LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId,
   neutralizeLinearMentions, linearGraphqlErrorMeta, mapLinearError, linearCommentCreateInput, M_COMMENT,
@@ -49,9 +50,10 @@ function harness({ seat = "GROK-WEB", writes = true, credentials = true, viewer 
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
   const logs = [];
+  const quota = memoryQuota();
   // The workspace cache holds ids only and is keyed by seat, so each harness
   // gets its own:  one test's teams must never answer another test's state.
-  const client = credentials ? new LinearClient({ seat, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now }) : null;
+  const client = credentials ? new LinearClient({ quota, seat, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now }) : null;
   const tools = new HostedTools({
     seat,
     scopes,
@@ -74,7 +76,7 @@ function harness({ seat = "GROK-WEB", writes = true, credentials = true, viewer 
     channelsCache: new Map(),
     linearWorkspaceCache: new Map(),
   });
-  return { fake, tools, gate, clock, logs };
+  return { fake, tools, gate, clock, logs, quota };
 }
 
 /** A bare client, for the checks that sit under the tools (minting, viewer). */
@@ -82,7 +84,7 @@ function clientHarness({ seat = "GROK-WEB", viewer } = {}) {
   const fake = new FakeLinear(viewer ? { viewer } : {});
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
-  const client = new LinearClient({ seat, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now });
+  const client = new LinearClient({ quota: memoryQuota(), seat, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now });
   return { fake, gate, clock, client };
 }
 
@@ -496,6 +498,22 @@ test("a claim label past the first label page is still found", async () => {
   assert.equal(labelCalls[1].body.variables.after, String(LINEAR_LABEL_PAGE_SIZE));
 });
 
+test("cold paged workspace charges actual whoami, teams and every label page", async () => {
+  const { tools, fake, quota } = harness();
+  for (let n = 0; n < 600; n += 1) fake.addLabel(`meter-filler-${n}`);
+  await tools.linearWorkspace();
+  const sent = fake.calls();
+  const labels = sent.filter(r => opOf(r.body.query)?.name === "BoardLabels");
+  assert.equal(labels.length, 3);
+  assert.equal(sent.length, 5, "one proof, one teams fetch, three label pages");
+  assert.equal(quota.calls.length, sent.length, "every GraphQL fetch reserved a slot");
+  assert.equal(quota.calls.filter(x => x === "unknown").length, 1);
+  assert.equal(new Set(quota.calls.filter(x => x !== "unknown")).size, 1);
+  const identity = quota.calls.find(x => x !== "unknown");
+  const used = (await quota.stores.get(identity).get("quota_buckets")).reduce((n, [, count]) => n + count, 0);
+  assert.equal(used, sent.length, "bootstrap debit plus all pages belong to the proven user");
+});
+
 /** Answer the next BoardLabels read with `data` instead of the fake's own page. */
 function nextLabelPage(fake, data) {
   fake.failNext((entry) => opOf(entry.body?.query)?.name === "BoardLabels", () => fake.json(200, { data }));
@@ -720,6 +738,7 @@ test("linear_comment logs GraphQL metadata when Linear still refuses (scrubbed, 
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
   const client = new LinearClient({
+    quota: memoryQuota(),
     seat: "GROK-WEB",
     clientId: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
@@ -797,7 +816,7 @@ test("a logger that throws during the early mint still leaves the cached token i
   const fake = new FakeLinear();
   const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
   const gate = memoryGate(clock);
-  const client = new LinearClient({ seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now, log: () => { throw new Error("log sink down"); } });
+  const client = new LinearClient({ quota: memoryQuota(), seat: "GROK-WEB", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate, fetch: fake.fetch, now: () => clock.now, log: () => { throw new Error("log sink down"); } });
   const first = await client.token();
   await ageCachedToken(gate, clock, 29 * 24);
   gate.idemBegin = async () => { throw new TypeError("boom"); };
@@ -918,7 +937,7 @@ test("a proof belongs to its client: a different client on the same request is p
   const first = await tools.confirmedViewer();
   assert.equal(await tools.confirmedViewer(), first);
   assert.equal(viewerQueries(fake), 1);
-  const other = new LinearClient({ seat: "BF-COMPILER", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate: tools.gate, fetch: fake.fetch, now: () => Date.parse("2026-10-09T10:00:00Z") });
+  const other = new LinearClient({ quota: memoryQuota(), seat: "BF-COMPILER", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate: tools.gate, fetch: fake.fetch, now: () => Date.parse("2026-10-09T10:00:00Z") });
   tools.linear = other;
   await tools.confirmedViewer();
   assert.equal(viewerQueries(fake), 2, "a swapped client is not covered by the earlier proof");
@@ -929,7 +948,7 @@ test("a seat with no resolved pair gets no client, whether the pair is null, emp
   const gate = memoryGate({ now: Date.now() });
   const f = async () => ({});
   for (const pair of [null, undefined, {}, { clientId: "", clientSecret: "" }, { clientId: "id", clientSecret: "" }, { clientId: "", clientSecret: "sec" }]) {
-    assert.equal(L.linearClientFromPair(pair, "BF-ENGINEER", { gate, fetch: f }), null, JSON.stringify(pair));
+    assert.equal(L.linearClientFromPair(pair, "BF-ENGINEER", { gate, quota: memoryQuota(), fetch: f }), null, JSON.stringify(pair));
   }
 });
 
