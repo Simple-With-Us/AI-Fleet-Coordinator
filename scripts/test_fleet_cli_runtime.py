@@ -232,6 +232,26 @@ class ActualRuntime(unittest.TestCase):
             "offline credential-path audit refused access",
         )
 
+    def test_notes_reader_import_is_in_installed_runtime(self):
+        path = "scripts/agent_sync/notes_service_reader.py"
+        self.assertIn(path, self.bundle["files"])
+        self.assertIn(path, self.receiver.TOOL_REQUIRED)
+        self.assertNotIn(path, self.receiver.BASE_REQUIRED)
+        command = [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            AUDIT + "\nimport sys; sys.path.insert(0, sys.argv[1]); "
+            "from agent_sync import notes_client, notes_service_reader; "
+            "assert notes_client.SR is notes_service_reader; "
+            "assert notes_service_reader.load() is None",
+            str(self.release / "scripts"),
+        ]
+        result = RUN(command, env=self.env, cwd=self.home, capture_output=True, timeout=15)
+        self.assert_exit(result, 0)
+        self.assertFalse(result.stdout)
+
     def test_actual_allowlist_installs_and_verifies(self):
         self.assertEqual(self.receipt["status"], "activated")
         self.assertEqual(self.receipt["bundle_sha256"], self.bundle["bundle_sha256"])
@@ -243,6 +263,8 @@ class ActualRuntime(unittest.TestCase):
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
+        self.assertEqual(self.receiver.MAX_FILES, 139)
+        self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
 
         status = self.receiver.control(self.home, "status")
         self.assertEqual(status["status"], "ready")
@@ -310,13 +332,9 @@ class ActualRuntime(unittest.TestCase):
         )
         self.assert_exit(result, 3)
         self.assertFalse(result.stdout, "unauthenticated MCP emitted protocol output")
-        # AFC-359:  no zuliprc default;  with no fleet-secrets on PATH it fails fast naming the Infisical keys.
-        self.assertTrue(
-            b"cannot read Infisical Fleet-OPS /zulip" in result.stderr
-            and b"CODEX_ZULIP_KEY" in result.stderr
-            and b"fleet-secrets is not installed" in result.stderr,
-            "missing-credential diagnostic absent",
-        )
+        # Own-bearer proof comes before provider credentials or any protocol output.
+        self.assertIn(b"CODEX's own bearer was not accepted (not_configured)", result.stderr)
+        self.assertNotIn(b"cannot read Infisical", result.stderr)
 
     @staticmethod
     def requests():

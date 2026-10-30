@@ -78,11 +78,10 @@ class LinearSessionToolTests(FakePrograms):
             self.assertEqual(call["argv"][call["argv"].index("--session") + 1], SERVER_SESSION)
 
     def test_another_identity_does_not_borrow_the_servers_session(self):
-        session = self.session(self.env())
+        # A server authenticated as CURSOR holds CLAUDE's platform session variable, which is not CURSOR's.
+        session = self.session(self.env(AGENT_SEAT="CURSOR"))
         for name, args in self.WRITES:
-            error = self.assert_tool_error(
-                session.call(name, args, identity="CURSOR"), "session_required"
-            )
+            error = self.assert_tool_error(session.call(name, args), "session_required")
             self.assertIn("Linear board", error["message"])
             self.assertIn("`session` argument", error["message"])
         self.assertEqual(
@@ -90,9 +89,10 @@ class LinearSessionToolTests(FakePrograms):
         )
 
     def test_another_identity_passes_its_own_session(self):
-        session = self.session(self.env())
+        # a server authenticated as CURSOR does not hold CLAUDE's platform variable
+        session = self.session(self.env(AGENT_SEAT="CURSOR", CLAUDE_CODE_SESSION_ID=None))
         for name, args in self.WRITES:
-            result = session.call(name, dict(args, session="cursor-chat-0009"), identity="CURSOR")
+            result = session.call(name, dict(args, session="cursor-chat-0009"))
             self.assertNotIn("isError", result, name)
         for call in self.calls(self.board_out):
             self.assertEqual(call["argv"][call["argv"].index("--session") + 1], "cursor-chat-0009")
@@ -104,9 +104,9 @@ class LinearSessionToolTests(FakePrograms):
 
     @unittest.skipUnless(PERSONA in ENABLED, "the persona is not enabled in this build")
     def test_a_single_thread_identity_needs_none(self):
-        session = self.session(self.env())
+        session = self.session(self.env(AGENT_SEAT=PERSONA, CLAUDE_CODE_SESSION_ID=None))
         for name, args in self.WRITES:
-            self.assertNotIn("isError", session.call(name, args, identity=PERSONA), name)
+            self.assertNotIn("isError", session.call(name, args), name)
         for call in self.calls(self.board_out):
             self.assertNotIn("--session", call["argv"])
 
@@ -118,8 +118,13 @@ class LinearSessionToolTests(FakePrograms):
         )
 
     def test_reads_do_not_need_one(self):
-        session = self.session(self.env())
-        self.assertNotIn("isError", session.call("linear_list", {"limit": 1}, identity="CURSOR"))
+        session = self.session(self.env(AGENT_SEAT="CURSOR"))
+        self.assertNotIn("isError", session.call("linear_list", {"limit": 1}))
+        # a CLAUDE-authenticated server does not read as CURSOR
+        self.assert_tool_error(
+            self.session(self.env()).call("linear_list", {"limit": 1}, identity="CURSOR"),
+            "identity_not_allowed",
+        )
 
 
 class BearerLocatorTests(FakePrograms):

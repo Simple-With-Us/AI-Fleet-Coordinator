@@ -71,6 +71,49 @@ Apple Notes requests from the server and cloud seats go to the Operator's notes 
 | `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the server's CLIs and stdio MCP (`fleet-secrets get OPERATOR_NOTES_SERVER_KEY --path /operator --project ai-fleet-coordinator`, held in memory) |
 | `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, the same `fleet-secrets get`) |
 
+### Server Notes reader without environment credentials
+
+The server's `simple-notes` and stdio MCP can use the existing read-only
+`operator-notes-read` service token without a personal login or a CLI credential
+argument. The SERVER consumer reads `~/.config/operator-notes/reader.json`.
+Its parent directory must be owned by the current user and mode 0700; the file
+must be a regular single-link current-user file, mode 0600, with no symlinks.
+The schema has exactly `schema` (integer 1), `service_token` (the existing token),
+`operator_api_url`, `project_id`, `token_id`, and `token_name`. The four non-secret
+deployment pins are provisioned from the host's verified metadata and must match
+the reviewed SHA-256 commitment in the reader, computed over canonical sorted JSON
+with compact separators. They are not learned from the API response. Other
+identities or destinations fail closed. No private inventory IDs or hostnames are
+stored in source. Do not put a token in source, arguments, environment or logs.
+
+When that file exists, it is authoritative for SERVER Notes. An unsafe file,
+wrong token, expired token, failed request or unverified key fails closed; it does
+not fall back to a personal login, environment credential or disk cache. An absent
+file preserves existing behavior on hosts not using this reader. RUNNER and
+WORKER are unchanged.
+
+The reader checks the existing token's ID, name, AFC project, exact `prod:/operator`
+scope, read-only permission and expiry, then makes a bounded, no-redirect point
+read of `OPERATOR_NOTES_SERVER_KEY`. It verifies the returned key's project,
+environment, folder, name, shared type and visible value. It never exports the
+folder, writes a secret cache, creates/renews a login, or changes token scope.
+Malformed HTTP status lines and incomplete responses are reduced to a short
+redacted failure, never an exception containing response data.
+
+A process may reuse the verified key for at most 600 monotonic elapsed seconds,
+with a separate wall-clock check against the token's UTC expiry minus 30 seconds.
+A backward wall-clock correction cannot extend the elapsed TTL. As with the existing KeySource cache, an Infisical
+revocation or scope change can remain unobserved during this window if the Operator
+still accepts the key. Every use rechecks the private config's custody and content;
+changes invalidate the cache and require a new client. An Operator 401 drops it
+without retrying the request. Expired cache is discarded before refresh, so a
+failed refresh never returns a stale key. The cache is thread-safe and memory-only.
+
+The non-secret URL comes from the committed private deployment pins; this does not
+change fleet-knobs local-value or last-known-good freshness rules. Host provisioning,
+private token custody and runtime activation remain separate release steps. Generic
+`fleet-secrets` verified reads and writes are unchanged.
+
 Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
 
 ## Linear project linkifiers (AFC-565)

@@ -31,8 +31,8 @@ So the connection says who may act, and each call says who is acting.  Bots are 
 | Hosted CURSOR grant | CURSOR, GROK-WEB, and every **enabled** GB-* persona in `delegated-identities.js` (twelve today:  DIRECTOR, FIXER, DESIGNER, COMPILER, HOUSEKEEPER, PUBLISHER, DEPLOYER, MONITOR, PLUMBER, ORACLE, TRADER, ENGINEER) |
 | Hosted GROK-WEB grant | GROK-WEB, CURSOR, and the same enabled GB-* personas (one shared group) |
 | Any other hosted grant | Its own seat |
-| Stdio MCP or CLI on the Mac | Every agent bot whose credential file is on the Mac:  the seat bots, BF-* and GB-* |
-| Stdio MCP or CLI on the server | Every agent bot whose credential the server holds |
+| Stdio MCP (`simple-chat mcp`) on the Mac or the server | Its own seat only:  the seat whose own bearer (`~/.secrets/fleet-tools/<seat>`) the hosted gateway confirms at start and again before every call.  No seat, or a bearer that is missing, unsafe, revoked or another seat's, serves nothing.  Other bots this host holds keys for are refused as `identity_not_allowed` |
+| CLI on the Mac or the server (`simple-chat identities` and the verbs) | Every agent bot whose credential the host holds:  the seat bots, BF-* and GB-* (unchanged) |
 
 Never in any set:  the owner's own account, the realm-admin bot (`ZULIP_OPERATOR_*` in `/zulip_operator`, used only by the owner-run provisioning script) and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry), whatever `/zulip` key names exist (`zulip.NOT_SEAT_PREFIXES` drops the owner's, `REALM_ADMIN_*` and the rest).  The listener daemon keeps its partition (`agent-sync-partition.toml`) unchanged:  this page is about who an agent may act as, not which instance listens for whom.
 
@@ -40,7 +40,7 @@ GB-ENGINEER was enabled on 2026-10-22.  A persona joins a set only by being enab
 
 ### Which Connection a Client Gets
 
-- **A Mac app that can run a local command** uses the stdio server (`simple-chat mcp`, no `--as`).  It needs no OAuth and no arming, and its allowed set is every agent bot credential on the Mac.
+- **A Mac app that can run a local command** uses the stdio server (`simple-chat mcp --default-seat SEAT`).  It needs no OAuth and no arming, but it needs the seat's own private bearer file and a reachable gateway, and its allowed set is that one seat.
 - **A client that only speaks remote MCP** (a web app, a phone, or a Mac app with no local command support) uses the hosted server.  The owner arms the seat in `/admin` before the client starts OAuth, as `scripts/agent-sync-mcp/ARMING-JAY.md` describes.  The armed seat becomes the grant's default identity and picks its allowed set from the table above, and each call still names the bot it acts as.
 
 The hosted shared group lives in one table (`delegated-identities.js`), replacing `CURSOR_IDENTITIES`.  Its persona list is `scripts/agent_sync/mcp/gb-identities.json`, which `delegated-identities.js` imports as `GB_IDENTITIES` and the stdio server reads too, so there is still one list.  Its credentials stay in the encrypted `GB_IDENTITY_CREDENTIALS` bundle;  GROK-WEB and CURSOR keep their own per-seat secrets.

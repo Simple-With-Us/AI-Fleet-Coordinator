@@ -187,6 +187,7 @@ class McpRobustnessTests(unittest.TestCase):
         spec = importlib.util.spec_from_loader(loader.name, loader)
         mod = importlib.util.module_from_spec(spec)
         loader.exec_module(mod)
+        mod.FAKE_CORPUS = True  # these tests install the in-process fake corpus themselves
         saved = {k: getattr(recall_api, k) for k in
                  ("load_config", "embed", "embedder_healthy", "rerank_healthy", "Qdrant", "gitleaks_flagged",
                  "gitleaks_available")}
@@ -263,6 +264,7 @@ class McpRobustnessTests(unittest.TestCase):
         spec = importlib.util.spec_from_loader(loader.name, loader)
         mod = importlib.util.module_from_spec(spec)
         loader.exec_module(mod)
+        mod.FAKE_CORPUS = True  # these tests install the in-process fake corpus themselves
 
         def crash(msg):
             if "id" not in msg:
@@ -294,6 +296,7 @@ class SearchOptionsTests(unittest.TestCase):
         spec = importlib.util.spec_from_loader(loader.name, loader)
         mod = importlib.util.module_from_spec(spec)
         loader.exec_module(mod)
+        mod.FAKE_CORPUS = True  # these tests install the in-process fake corpus themselves
         return mod
 
     def setUp(self):
@@ -380,6 +383,7 @@ class ContributeFallbackKwargsTests(unittest.TestCase):
         spec = importlib.util.spec_from_loader(loader.name, loader)
         mod = importlib.util.module_from_spec(spec)
         loader.exec_module(mod)
+        mod.FAKE_CORPUS = True  # these tests install the in-process fake corpus themselves
         return mod
 
     def test_force_stripped_from_shared_work_before_fallback(self):
@@ -412,6 +416,7 @@ class DuplicateGuardTests(unittest.TestCase):
         spec = importlib.util.spec_from_loader(loader.name, loader)
         mod = importlib.util.module_from_spec(spec)
         loader.exec_module(mod)
+        mod.FAKE_CORPUS = True  # these tests install the in-process fake corpus themselves
         return mod
 
     def setUp(self):
