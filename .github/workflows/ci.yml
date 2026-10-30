@@ -502,6 +502,9 @@ jobs:
     # evaluate();  nothing here reads the host or sends a webhook.
     - name: Mac resource watch tests
       run: bash scripts/test-mac-resource-watch.sh
+    # Qdrant snapshot log lines: UTC stamp plus Central time with offset.
+    - name: Qdrant snapshot log label tests
+      run: bash scripts/test-fleet-qdrant-log-label.sh
 
   mac-scripts:
     name: Mac scripts
