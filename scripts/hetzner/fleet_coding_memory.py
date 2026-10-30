@@ -616,11 +616,7 @@ def production_protection_counts(
     candidates = dedupe_nested(paths)
     limits = limits or {}
     eligible = [p for p in candidates if parent and parent in p.parents]
-    protected = sum(
-        1
-        for p in eligible
-        if max(0, limits.get(p, read_int(p / "memory.max"))) > 0
-    )
+    protected = sum(1 for p in eligible if max(0, limits.get(p, read_int(p / "memory.max"))) > 0)
     return protected, len(candidates) - protected
 
 
@@ -661,12 +657,7 @@ def step(
         not psi_active or some <= policy["recovery_some_avg10"]
     ):
         since = state.get("recovery_since")
-        if (
-            type(since) not in (int, float)
-            or not math.isfinite(since)
-            or since < 0
-            or since > now
-        ):
+        if type(since) not in (int, float) or not math.isfinite(since) or since < 0 or since > now:
             since = now
             state["recovery_since"] = now
         if now - since >= policy["recovery_seconds"]:
