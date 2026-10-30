@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from . import fleet_bearer as F
 from .core import FleetRagError
@@ -56,18 +57,24 @@ def verify(env: Mapping[str, str] | None = None, home: Path | None = None) -> st
     if not seat:
         raise FleetRagError(
             "no seat named (AGENT_SEAT or the launcher's seat):  the seat's own bearer cannot be checked;  "
-            "nothing was served")
+            "nothing was served"
+        )
     path = bearer_path(home or Path.home(), seat)
     try:
         client = client_factory(path, expected_seat=seat, identity_env=env)
         who = client.rpc("tools/call", {"name": "whoami", "arguments": {}}).get("structuredContent")
     except F.FleetError as exc:
-        raise FleetRagError("%s's own bearer was not accepted (%s);  nothing was served" % (seat, exc.code)) from None
+        raise FleetRagError(
+            "%s's own bearer was not accepted (%s);  nothing was served" % (seat, exc.code)
+        ) from None
     if (
         client.seat != seat
         or not isinstance(who, dict)
         or who.get("authenticated_seat") != seat
         or who.get("seat") != seat
     ):
-        raise FleetRagError("the gateway's identity answer did not match %s's own bearer;  nothing was served" % seat)
+        raise FleetRagError(
+            "the gateway's identity answer did not match %s's own bearer;  nothing was served"
+            % seat
+        )
     return seat

@@ -650,7 +650,10 @@ def run(
         log(refused.message)
         return refused.exit_code
     if not seat or seat != bearer_seat:
-        log("the confirmed bearer names %s, not %s;  nothing is served" % (bearer_seat, seat or "no seat"))
+        log(
+            "the confirmed bearer names %s, not %s;  nothing is served"
+            % (bearer_seat, seat or "no seat")
+        )
         return 3
     launcher_pinned = True
     codex_thread_meta = bool(getattr(args, "codex_thread_meta", False))
@@ -824,7 +827,11 @@ def run(
         # The hosted gateway must still accept this seat's own bearer for every call:  a revoked, replaced
         # or unreadable bearer refuses the call before any tool runs.  The refusal carries no bearer.
         try:
-            return None if _bearer_verify(rt, args) == bearer_seat else "the seat's bearer no longer matches;  nothing ran"
+            return (
+                None
+                if _bearer_verify(rt, args) == bearer_seat
+                else "the seat's bearer no longer matches;  nothing ran"
+            )
         except BG.Refused as refused:
             return "bearer check failed:  %s;  nothing ran" % refused.message
 
