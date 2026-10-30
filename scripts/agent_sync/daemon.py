@@ -6710,9 +6710,7 @@ class Daemon:
         self._operator_pace_ready()
         return self.operator_voice.post(params, wait=wait)
 
-    def _operator_edit(
-        self, message_id: int, content: str, *, wait: bool = True
-    ) -> dict[str, Any]:
+    def _operator_edit(self, message_id: int, content: str, *, wait: bool = True) -> dict[str, Any]:
         """Edit one of the Operator's own messages, with the same scan and no other client."""
         found = secretscan.scan(str(content or ""), self.hidden)
         if found:

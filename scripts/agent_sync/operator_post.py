@@ -126,7 +126,7 @@ class _Flight:
     wait); the others wait on `done` and read the outcome.  Nothing here is touched without
     `OperatorVoice._lock` except `done`, which is set last."""
 
-    __slots__ = ("owner", "done", "client", "user_id", "error")
+    __slots__ = ("client", "done", "error", "owner", "user_id")
 
     def __init__(self, owner: int) -> None:
         self.owner = owner
@@ -203,11 +203,12 @@ class OperatorVoice:
         if not wait:
             if started_here:
                 threading.Thread(
-                    target=self._run_flight, args=(flight,), name="operator-voice-build", daemon=True
+                    target=self._run_flight,
+                    args=(flight,),
+                    name="operator-voice-build",
+                    daemon=True,
                 ).start()
-            raise OperatorUnavailable(
-                "the Operator client is being built", code=CODE_BUILDING
-            )
+            raise OperatorUnavailable("the Operator client is being built", code=CODE_BUILDING)
         if started_here:
             self._run_flight(flight)
         else:
@@ -298,10 +299,13 @@ class OperatorVoice:
             if failed_build and error is not None and current:
                 self._failure = error.reason
                 self._failed_until = self._clock() + self._retry
-                event, fields = "operator-voice-unavailable", {
-                    "code": error.code,
-                    "reason": error.reason,
-                }
+                event, fields = (
+                    "operator-voice-unavailable",
+                    {
+                        "code": error.code,
+                        "reason": error.reason,
+                    },
+                )
             flight.client, flight.user_id, flight.error = client, user_id, error
         if event:
             self._write(event, **fields)
