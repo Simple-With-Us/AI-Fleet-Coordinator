@@ -877,6 +877,19 @@ class InstallTests(Base):
         self.assertEqual((code, out["healthy"]), (0, True))
         self.assertNotIn("enabled_group", self.install()[1])  # on already: nothing more to write
 
+    def test_a_group_switched_off_with_a_zero_is_off_too(self) -> None:
+        self.seed()
+        self.install()
+        doc = self.load()
+        doc[PA.GROUP]["enabled"] = 0
+        self.seed(doc)
+        code, out = self.install(check=True)
+        self.assertEqual((code, out["healthy"]), (1, False))
+        self.assertIn("switched off", out["problems"][0])
+        code, out = self.install()
+        self.assertEqual(out["enabled_group"], PA.GROUP)
+        self.assertIs(self.load()[PA.GROUP]["enabled"], True)
+
     def test_an_install_into_a_group_that_is_off_adds_the_hooks_and_switches_it_on(self) -> None:
         self.seed(dict(OWNERS_HOOKS, **{PA.GROUP: {"enabled": False}}))
         code, out = self.install()

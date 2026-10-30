@@ -402,6 +402,11 @@ def prune_group(path: str) -> bool:
     return True
 
 
+def _switched_off(value: object) -> bool:
+    """`"enabled": false`, and the 0 a hand edit may leave for it;  a missing key or null is on."""
+    return value is False or (isinstance(value, int) and not isinstance(value, bool) and value == 0)
+
+
 def enable_group(path: str) -> str:
     """Switch the group back on when it is off (`"enabled": false`, which is how a person or agy turns a group off, and
     agy then runs none of its hooks), after a backup.  Returns the backup's name, or "" when the group was on or absent.
@@ -409,7 +414,7 @@ def enable_group(path: str) -> str:
     group; any other hook in the group is switched back on with it."""
     doc = _load(path)
     group = doc.get(GROUP) if doc else None
-    if doc is None or not isinstance(group, dict) or group.get("enabled") is not False:
+    if doc is None or not isinstance(group, dict) or not _switched_off(group.get("enabled")):
         return ""
     group["enabled"] = True
     return _save(path, doc)
@@ -439,7 +444,7 @@ def hook_problems(path: str) -> list[str]:
     if not isinstance(group, dict):
         return []
     problems = []
-    if group.get("enabled") is False:
+    if _switched_off(group.get("enabled")):
         problems.append(
             'the "%s" group is switched off ("enabled": false), so agy runs none of its hooks'
             % GROUP

@@ -945,6 +945,31 @@ class WriterTests(Tree):
         self.assertEqual(self.started, [(other, self.home)])
         self.assertEqual(MR.read_record(other)["worker_pid"], 4242)
 
+    def test_a_hook_scans_the_spool_at_most_once_in_the_gap(self) -> None:
+        PLM.muse_rename(self.request())  # queues the title and scans the spool once, which makes the stamp
+        stamp = os.path.join(PLM.spool_dir(self.env()), ".revived")
+        self.assertTrue(os.path.exists(stamp))
+        later = os.path.join(PLM.spool_dir(self.env()), "later-session-0002.json")
+        MR.write_record(later, dict(session_id="later-session-0002", name="AC: Later", label="AC", home=self.home,
+                                    state="waiting", queued_at=time.time(), worker_pid=9998))
+        self.started.clear()
+        self.assertEqual(PLM.revive(self.env(), self.home, skip=SID, min_gap=PLM.REVIVE_EVERY), 0, "scanned a moment ago")
+        self.assertEqual(self.started, [], "a job whose helper is gone waits for the next scan")
+        long_ago = time.time() - PLM.REVIVE_EVERY - 5
+        os.utime(stamp, (long_ago, long_ago))
+        PLM.revive(self.env(), self.home, skip=SID, min_gap=PLM.REVIVE_EVERY)
+        self.assertIn(later, [spool for spool, _ in self.started], "the gap is over: the scan runs again")
+
+    def test_a_session_id_that_is_not_a_muse_one_makes_no_spool_path(self) -> None:
+        for bad in ("../../x", "a/b/c/d/e/f/g", "..", "", "x" * 80, "short"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                PLM.spool_path(self.env(), bad)
+        escaping = PL.TitleRequest(platform="muse", session_id="../../escape-session", label="AA", title="AA: New Chat",
+                                   words="New Chat", current="", reason="start", data={"cwd": "/work"}, env=self.env())
+        self.assertIs(PLM.muse_rename(escaping), False)
+        self.assertFalse(os.path.exists(os.path.join(PLM.spool_dir(self.env()), "..", "..", "escape-session.json")))
+        self.assertEqual(PLM.spool_path(self.env(), SID), os.path.join(PLM.spool_dir(self.env()), SID + ".json"))
+
 
 class FakeStore:
     """The Muse side of one stored session, as the helper meets it: read, rename (stored in lower case, as the runtime

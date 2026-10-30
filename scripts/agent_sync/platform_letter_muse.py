@@ -102,6 +102,8 @@ VERSION = "1.0.0"
 PARENT_KEYS = ("source_session_id", "parent_session_id")
 FIRST_RECORD_BYTES = 262144
 REVIVE_LIMIT = 3
+#: Seconds between two scans of the spool made from a hook (a hook holds the prompt while it runs).
+REVIVE_EVERY = 300.0
 CLI_NAMES = ("muse", "muse-bin")
 
 #: Where the parent process is looked up, and which pid is the hook's parent (a test replaces both).
@@ -205,6 +207,10 @@ def spool_dir(env: Mapping[str, str]) -> str:
 
 
 def spool_path(env: Mapping[str, str], sid: str) -> str:
+    """The spool record of one chat.  Only a Muse session id makes a path:  anything else (a separator, a dot-dot)
+    raises ValueError before a file name is built."""
+    if not MR.SESSION_ID_RE.fullmatch(sid or ""):
+        raise ValueError("not a Muse session id")
     return os.path.join(spool_dir(env), sid + ".json")
 
 
@@ -231,7 +237,10 @@ def muse_rename(req: PL.TitleRequest) -> bool:
     False when it could not be queued, which the library tries again on a later prompt."""
     env, sid = req.env, req.session_id
     home = str(env.get("HOME") or os.path.expanduser("~"))
-    path = spool_path(env, sid)
+    try:
+        path = spool_path(env, sid)
+    except ValueError:
+        return False  # not a session id Muse makes:  nothing is written for it
     rec = MR.read_record(path)
     applied = [str(a) for a in rec.get("applied") or []]
     if (
@@ -269,7 +278,7 @@ def muse_rename(req: PL.TitleRequest) -> bool:
         if pid:
             _claim(path, pid)
     if pid:
-        revive(env, home, skip=sid)
+        revive(env, home, skip=sid, min_gap=REVIVE_EVERY)
     return bool(queued and pid)
 
 
@@ -282,14 +291,27 @@ def _claim(path: str, pid: int, stale: int = 0) -> None:
         MR.write_record(path, rec)
 
 
-def revive(env: Mapping[str, str], home: str, *, skip: str = "") -> int:
+def revive(env: Mapping[str, str], home: str, *, skip: str = "", min_gap: float = 0.0) -> int:
     """Start a helper for each queued job whose helper is gone (a reboot, a killed process), at most REVIVE_LIMIT.
     Returns how many were started."""
     started = 0
+    stamp = os.path.join(spool_dir(env), ".revived")
+    if min_gap > 0:  # a hook asks:  not twice within the gap
+        try:
+            if time.time() - os.stat(stamp).st_mtime < min_gap:
+                return 0
+        except OSError:
+            pass
     try:
         names = sorted(os.listdir(spool_dir(env)))
     except OSError:
         return 0
+    if min_gap > 0:
+        try:
+            with open(stamp, "a"):
+                os.utime(stamp, None)
+        except OSError:
+            pass
     for name in names:
         if started >= REVIVE_LIMIT:
             break
