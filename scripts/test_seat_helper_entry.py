@@ -95,6 +95,23 @@ class EntryTests(unittest.TestCase):
         self.assertIsNone(self.ran())
         self.assertEqual(self.err, "")
 
+    def test_an_absent_helper_is_optional_even_under_untrusted_parents(self):
+        # Untrusted parent modes matter only once the helper is present:  no helper means no refusal.
+        self.conf.mkdir(parents=True)
+        for directory in (self.root / "home", self.root / "home" / ".config", self.conf):
+            os.chmod(directory, 0o777)
+        self.assertIsNone(self.run_snippet())
+        self.assertEqual(self.err, "")
+        shutil.rmtree(self.conf)
+        self.assertIsNone(self.run_snippet())
+        # the same parents with the helper PRESENT refuse, and the helper never runs
+        self.install()
+        for directory in (self.root / "home", self.root / "home" / ".config", self.conf):
+            os.chmod(directory, 0o777)
+        self.assertEqual(self.run_snippet(), 3)
+        self.assertIsNone(self.ran())
+        self.assertEqual(self.err, "fleet-cli: the seat helper could not be trusted\n")
+
     def test_a_present_but_untrusted_helper_fails_closed_without_running(self):
         for label, prepare, shift in (
             ("group writable", lambda: self.install(mode=0o620), 0),

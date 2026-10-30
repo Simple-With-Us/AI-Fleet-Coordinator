@@ -28,7 +28,7 @@ _SEAT_HELPER_ANCHOR = "/"
 def _seat_defaults(command):
     """Run the host's seat helper when the host has installed one.  The helper picks the declared seat's own
     hosted route and holds no credential.  ABSENT (a missing path component or file) is the optional case:  do
-    nothing, the tool behaves as before.  PRESENT but not trustworthy, or failing for any reason other than its
+    nothing, the tool behaves as before, whatever the parent modes.  PRESENT but not trustworthy, or failing for any reason other than its
     own SystemExit, is a refusal (exit 3):  a broken or swapped helper never degrades to an un-routed run.
     Trust is checked on file descriptors:  the directory chain is walked from the anchor with no symlink
     followed (each directory owned by root or this user and closed to group/other write), the file is opened
@@ -62,16 +62,17 @@ def _seat_defaults(command):
                 current = os.open(part, flags, dir_fd=current)
                 fds.append(current)
                 chain.append(current)
-            for fd in chain:
-                info = os.fstat(fd)
-                if info.st_uid not in (0, uid) or info.st_mode & 0o022:
-                    raise PermissionError
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=current)
             fds.append(fd)
         except OSError as exc:
             if exc.errno == errno.ENOENT:
                 return
             raise
+        # The helper is PRESENT:  only now do the parent directories and the file have to be trustworthy.
+        for directory in chain:
+            info = os.fstat(directory)
+            if info.st_uid not in (0, uid) or info.st_mode & 0o022:
+                raise PermissionError
         info = os.fstat(fd)
         if (
             not stat.S_ISREG(info.st_mode)
