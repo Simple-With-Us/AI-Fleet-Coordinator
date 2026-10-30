@@ -71,14 +71,14 @@ test("the route resolves a live bearer, and refuses none/mismatch/expired/paused
   const store = memStore();
   await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
 
-  const call = async (h, gates = fakeGates(store)) => {
+  const call = async (h, gates = fakeGates(store), options = {}) => {
     const { bytes, signature } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity: ID, hash: h, sent_at: Math.floor(Date.now() / 1000) });
     const req = new Request("https://x.test/internal/gr-bearer-verify", {
       method: "POST",
       headers: { "Content-Type": "application/json", [WAKE_SIGNATURE_HEADER]: signature },
       body: bytes,
     });
-    const resp = await serveGrBearerVerify(req, {}, gates, { resolveKey: async () => KEY });
+    const resp = await serveGrBearerVerify(req, {}, gates, { resolveKey: async () => KEY, ...options });
     return { status: resp.status, body: await resp.json() };
   };
 
@@ -109,6 +109,10 @@ test("the route resolves a live bearer, and refuses none/mismatch/expired/paused
   assert.deepEqual(await S.gbBearerMismatches(expiredStore), {});
 
   assert.equal((await call(hash, fakeGates(store, { paused: true }))).body.reason, "paused");
+
+  // A wake-only seat's bearer stays minted but verifies refused:  GR-MCP maps
+  // any ok:false to 401, so the seat keeps no git tools while it is events-only.
+  assert.equal((await call(hash, fakeGates(store), { eventsOnlySeats: [ID] })).body.reason, "events_only");
 });
 
 test("a failed refusal audit propagates so the relay fails closed", async () => {

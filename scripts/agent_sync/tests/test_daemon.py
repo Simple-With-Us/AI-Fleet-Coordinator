@@ -2455,7 +2455,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertEqual(send.call_count, 1)
         self.assertEqual(send.call_args.kwargs["channel"], "agent-sync")
         self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
-        self.assertIn("letter A", send.call_args.kwargs["question"])
+        self.assertIn("letter AA", send.call_args.kwargs["question"])
         self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
 
     def test_a_failed_confirmation_retries_without_a_second_registration(self):
@@ -2504,7 +2504,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertTrue(consumed)
         self.assertIn((42, "send-confirmation"), done)
         self.assertEqual(send.call_count, 1)
-        self.assertIn("letter A", send.call_args.kwargs["question"])
+        self.assertIn("letter AA", send.call_args.kwargs["question"])
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual(len(rows), 1)
 
@@ -2937,7 +2937,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             )
         self.assertTrue(consumed)
         self.assertIn((42, "send-confirmation"), done)
-        self.assertIn("letter A", send.call_args.kwargs["question"])
+        self.assertIn("letter AA", send.call_args.kwargs["question"])
         # Sentry 4368820226:  the confirmation is its own read-back marker, so the
         # question (same ref) is never read as the landed confirmation.
         self.assertEqual(
@@ -3027,7 +3027,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             daemon.route_message(daemon.seats["CLAUDE"], message)
         self.assertEqual(send.call_count, 2)
         first, second = (call.kwargs["question"] for call in send.call_args_list)
-        self.assertIn("letter A", first)
+        self.assertIn("letter AA", first)
         self.assertEqual(second, first)
         # Both the fresh send and the retry read back by the confirmation's own text.
         for call in send.call_args_list:

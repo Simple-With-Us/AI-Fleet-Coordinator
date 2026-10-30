@@ -291,7 +291,9 @@ class GitHubClient:
         except (OSError, http.client.HTTPException) as exc:
             raise RelayGitHubError(0, f"connection failed: {exc}") from exc
         if len(raw) > MAX_BODY:
-            raise RelayGitHubError(0, "github response exceeded 1 MiB bound")
+            raise RelayGitHubError(
+                0, "github response exceeded 1 MiB bound", code="response_too_large"
+            )
         if not raw:
             return {}
         try:
