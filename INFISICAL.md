@@ -488,6 +488,13 @@ An inherited token still wins. A complete inherited automation pair wins over
 the private file; a partial pair fails rather than mixing sources. Only Linux
 UID 0 can use the fixed private-file fallback. Login is scoped to the child
 process; the automation pair is stripped before delegation and never printed.
+When neither an inherited token nor an automation pair nor a root-private
+bootstrap is available, the wrapper delegates to the plain CLI's existing auth
+policy rather than requiring a machine identity. Plain reads can use the CLI's
+own valid session; `get-verified` and writes still refuse session-only auth.
+A partial pair, invalid inherited token, unsafe bootstrap or failed machine
+login remains a refusal, never a session downgrade. Delegation does not create
+or renew a session and does not prove that the current host is authenticated.
 Help reads no credential and performs no login. The normal installer, including
 Mac installs, is unchanged. Re-running without the flag restores the plain
 launcher. Applying this on a host and checking that host's tools is separate
