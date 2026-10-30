@@ -566,12 +566,18 @@ class RegistrySideTests(Base):
 
     def test_full_letters_evict_the_least_recently_seen(self) -> None:
         pairs = ("AA", "BB", "CC")
+        # Times are relative to the clock:  the registry's stale sweep reads the real clock, so fixed dates fall more
+        # than 36 hours behind it and the rows are closed as stale before the least recently seen can be evicted.
+        now = time.time()
+
+        def seen(hours_ago: float) -> str:
+            return OR.datetime.fromtimestamp(now - hours_ago * 3600, OR.UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
         with mock.patch.dict(OR.LETTER_SPACES, {"double": pairs}):
             for i in range(3):
                 self.register("s-%04d" % i)
-                self.set_seen("s-%04d" % i, "2026-10-28T%02d:00:00.000Z" % (10 + i))
-            self.set_seen("s-0001", "2026-10-28T09:00:00.000Z")  # the oldest
-            now = OR.datetime(2026, 10, 28, 12, tzinfo=OR.UTC).timestamp()
+                self.set_seen("s-%04d" % i, seen(2 - i))
+            self.set_seen("s-0001", seen(3))  # the oldest
             held = self.lookup("s-0001")["label"]
             out = self.register("s-0099", now=now)
         self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, held, 2))
