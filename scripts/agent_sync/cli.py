@@ -3326,8 +3326,16 @@ def _remote_write_identity(env: Mapping[str, str]) -> str:
         raise
     info = res.get("structuredContent")
     info = info if isinstance(info, dict) else {}
-    who, seat, listed = info.get("default_identity"), info.get("authenticated_seat"), info.get("identities")
-    names = [r.get("identity") for r in listed if isinstance(r, dict)] if isinstance(listed, list) else []
+    who, seat, listed = (
+        info.get("default_identity"),
+        info.get("authenticated_seat"),
+        info.get("identities"),
+    )
+    names = (
+        [r.get("identity") for r in listed if isinstance(r, dict)]
+        if isinstance(listed, list)
+        else []
+    )
     ok = (
         isinstance(who, str)
         and _REMOTE_IDENTITY_RE.fullmatch(who)
@@ -3338,8 +3346,10 @@ def _remote_write_identity(env: Mapping[str, str]) -> str:
         and names.count(who) == 1
     )
     if not ok:
-        raise RemoteError("the hosted server's identity answer did not match this bearer's own seat and allowed "
-                          "set, so the write was not sent")
+        raise RemoteError(
+            "the hosted server's identity answer did not match this bearer's own seat and allowed "
+            "set, so the write was not sent"
+        )
     return who
 
 
