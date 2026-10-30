@@ -42,12 +42,19 @@ try:
 except ImportError:  # pragma: no cover - Python 3.10 and older
     tomllib = None  # type: ignore[assignment]
 
-KNOWN_WAKES = ("inbox", "claude", "http", "muse")
-WORKER_WAKES = ("claude", "http", "muse")  # adapters that run on a per-seat wake worker thread
+KNOWN_WAKES = ("inbox", "claude", "http", "muse", "openrouter")
+WORKER_WAKES = (
+    "claude",
+    "http",
+    "muse",
+    "openrouter",
+)  # adapters that run on a per-seat wake worker thread
 # The runtimes a wake may name as its fallback (AFC-291).  `muse` is the primary and `mcode` is the
 # fallback:  both shape the answer with `--output-schema`, but only muse can state "hold no tools",
 # so the order is fixed and a seat may not invert it (checked against the wake type in from_dict).
-KNOWN_FALLBACKS = ("mcode",)
+# `openrouter` is both a wake type and a fallback:  one HTTPS call, no tools offered, so it needs
+# no containment acknowledgment and may stand behind any worker seat.
+KNOWN_FALLBACKS = ("mcode", "openrouter")
 INSTANCES = ("mac", "server")
 PARTITION_VALUES = ("mac", "server", "none")
 ENV_INSTANCE = (
@@ -96,6 +103,18 @@ MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
 # A MiniMax Code model id is `provider/model`, so the case and the slash are part of it (unlike a
 # muse model alias, which is lowercase).  This is the shape the fallback's `--model` value must have.
 MCODE_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
+# The OpenRouter HTTP runtime's models.  `wake = "openrouter"` defaults to the Muse contributor tier run
+# through OpenRouter (so it needs no muse binary, no pin on one and no Meta login);  the fallback
+# defaults to the DeepSeek Flash "latest" alias.  The leading `~` is part of OpenRouter's id for a
+# "latest" alias, not a shell-ism.  Both are defaults only:  `seat.X.model` and `seat.X.fallback_model`
+# win, so a move to another model shows up in the config.  A "latest" alias can change the served
+# weights upstream without changing anything the pin fingerprints, which the owner accepted when he asked
+# for it;  the slug itself is part of the fingerprint.
+OPENROUTER_DEFAULT_MODEL = "meta/muse-spark-1.3-contributor"
+OPENROUTER_FALLBACK_MODEL = "~deepseek/deepseek-flash-latest"
+# `provider/name`, with an optional leading `~`.  No `:` suffix on purpose:  OpenRouter's `:online`
+# adds web search and `:nitro` or `:floor` re-route, and an unattended no-tools wake wants none of them.
+OPENROUTER_MODEL_PATTERN = r"^~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -255,6 +274,7 @@ class SeatConfig:
         mcode_model: str = MCODE_DEFAULT_MODEL,
         fallback: str | None = None,
         fallback_uncontained_ok: bool = False,
+        fallback_model: str = OPENROUTER_FALLBACK_MODEL,
         muse_bridge: bool = False,
         typing_indicator: bool = False,
         bearer_locator: str | None = None,
@@ -282,6 +302,9 @@ class SeatConfig:
         # effect that already happened inside the child, so trusting it is an explicit, named risk
         # rather than a default.  False means the fallback is held and the hold is logged.
         self.fallback_uncontained_ok = fallback_uncontained_ok
+        # The model the OpenRouter fallback runs on (`fallback = "openrouter"`), as `provider/name`.
+        # The fallback's model is its own setting, because `model` belongs to the seat's wake.
+        self.fallback_model = fallback_model
         self.provider = provider  # the CodeCaps provider name this seat's quota is read under
         self.instance = instance
         self.enabled = enabled
@@ -338,7 +361,13 @@ class SeatConfig:
         eviction reserve `reserve_usd` from this value to decide what a wake might still spend.  At
         0.0 a muse seat reserves nothing, so nothing is held back on cost grounds.  That is correct
         rather than a gap:  a wake is held back when a COUNT cap is hit, and holding it back "in
-        case it turns out to be expensive" is not a reason that can apply to a run with no cost."""
+        case it turns out to be expensive" is not a reason that can apply to a run with no cost.
+
+        The openrouter value is 0.0 too, for a different reason:  it bills credits, not a subscription
+        window, but one call is bounded by the prompt it is given and by the request's `max_tokens`,
+        at the catalog's per-million prices (about $0.001 to $0.003 a wake at today's Muse and DeepSeek
+        Flash prices).  That is two orders of magnitude under the $0.25 a claude run reserves, so a
+        reserve would be a made-up number, and the count caps are the bound that matters."""
         if self.wake == "claude":
             return WAKE_MAX_BUDGET_USD
         if self.wake == "http" and self.routine is not None:
@@ -1031,8 +1060,21 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             routine = _routine(seat_name, section.get("routine"), wake_problems)
         elif "routine" in section:
             wake_problems.append('seat.%s.routine applies only to wake = "http"' % seat_name)
-        model = section.get("model") or (MUSE_DEFAULT_MODEL if wake == "muse" else "sonnet")
-        if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
+        model = section.get("model") or (
+            MUSE_DEFAULT_MODEL
+            if wake == "muse"
+            else OPENROUTER_DEFAULT_MODEL
+            if wake == "openrouter"
+            else "sonnet"
+        )
+        if wake == "openrouter":
+            # An OpenRouter model id is `provider/name` (and may start with `~`), not a CLI alias.
+            if not isinstance(model, str) or not re.fullmatch(OPENROUTER_MODEL_PATTERN, model):
+                wake_problems.append(
+                    "seat.%s.model must be an OpenRouter model such as %s"
+                    % (seat_name, OPENROUTER_DEFAULT_MODEL)
+                )
+        elif not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
             wake_problems.append("seat.%s.model must be a model alias such as sonnet" % seat_name)
         claude = section.get("claude")
         if claude is not None and (not isinstance(claude, str) or not os.path.isabs(claude)):
@@ -1067,8 +1109,24 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             wake_problems.append(
                 "seat.%s.fallback applies only to a wake that runs a turn" % seat_name
             )
-        if fallback is not None and fallback == wake:
+        # An OpenRouter wake may name an OpenRouter fallback:  the same HTTPS call with another model
+        # (`fallback_model`, checked to differ below).  Every other runtime may not back itself.
+        if fallback is not None and fallback == wake and wake != "openrouter":
             wake_problems.append("seat.%s.fallback may not be its own wake type" % seat_name)
+        if fallback == "openrouter" and wake == "http":
+            # (An inbox seat is already refused above:  a fallback applies only to a wake that runs a
+            # turn.  An http wake is a remote routine that answers in Zulip itself, so it has no
+            # answer of the daemon's to fall back from.)
+            wake_problems.append(
+                'seat.%s.fallback = "openrouter" applies only to a claude, muse or openrouter wake'
+                % seat_name
+            )
+        # The mcode fallback runs a binary whose path (`mcode`) and model (`mcode_model`) belong to a
+        # claude or muse seat, so it does not stand behind an OpenRouter wake.
+        if fallback == "mcode" and wake == "openrouter":
+            wake_problems.append(
+                'seat.%s.fallback = "mcode" applies only to a claude or muse wake' % seat_name
+            )
         # Naming a fallback is not enough to run it.  mcode's tools are live while it answers, and a
         # parent cannot undo a side effect that already happened inside the child, so the fallback
         # runtime is not contained to the posture an unattended wake needs (measured: asked to write
@@ -1078,10 +1136,36 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             wake_problems.append(
                 "seat.%s.fallback_uncontained_ok applies only with a fallback" % seat_name
             )
+        # The OpenRouter runtime offers the model no tools, so there is nothing to acknowledge:  the
+        # flag would read as a risk that is not there, and it is refused rather than ignored.
+        if "fallback_uncontained_ok" in section and fallback == "openrouter":
+            wake_problems.append(
+                'seat.%s.fallback_uncontained_ok applies only to fallback = "mcode" (the openrouter '
+                "runtime offers the model no tools, so there is nothing to acknowledge)" % seat_name
+            )
         uncontained = section.get("fallback_uncontained_ok", False)
         if not isinstance(uncontained, bool):
             wake_problems.append(
                 "seat.%s.fallback_uncontained_ok must be true or false" % seat_name
+            )
+        # The model the OpenRouter fallback runs on:  `provider/name`, its own setting because `model`
+        # belongs to the seat's wake.  Only meaningful with `fallback = "openrouter"`.
+        fallback_model = section.get("fallback_model", OPENROUTER_FALLBACK_MODEL)
+        if "fallback_model" in section and fallback != "openrouter":
+            wake_problems.append(
+                'seat.%s.fallback_model applies only with fallback = "openrouter"' % seat_name
+            )
+        if not isinstance(fallback_model, str) or not re.fullmatch(
+            OPENROUTER_MODEL_PATTERN, fallback_model
+        ):
+            wake_problems.append(
+                "seat.%s.fallback_model must be an OpenRouter model such as %s"
+                % (seat_name, OPENROUTER_FALLBACK_MODEL)
+            )
+        elif fallback == "openrouter" and wake == "openrouter" and fallback_model == model:
+            # The same call twice cannot answer what the first one did not.
+            wake_problems.append(
+                "seat.%s.fallback_model must differ from model when both use openrouter" % seat_name
             )
         provider = section.get("provider")
         if provider is not None:
@@ -1157,6 +1241,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             uncontained = False
             provider = None
             mcode_model = MCODE_DEFAULT_MODEL
+            fallback_model = OPENROUTER_FALLBACK_MODEL
             if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
                 model = "sonnet"
         seat_cfg = SeatConfig(
@@ -1182,6 +1267,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             mcode_model=mcode_model,
             fallback=fallback,
             fallback_uncontained_ok=uncontained,
+            fallback_model=fallback_model,
             muse_bridge=muse_bridge,
             typing_indicator=typing_indicator,
             bearer_locator=bearer_locator,
