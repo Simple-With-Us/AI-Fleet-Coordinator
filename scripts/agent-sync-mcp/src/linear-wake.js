@@ -41,7 +41,7 @@ import { GB_ENABLED_IDENTITIES } from "./infisical-manifest.js";
 import { BF_BEARER_SEATS } from "./bearer-identities.js";
 import { delegatedNames } from "./delegated-identities.js";
 import { redactSecret } from "./contract.js";
-import { gate } from "./gate.js";
+import { gate, linearQuotaFromEnv } from "./gate.js";
 
 /** The one path this feature answers. */
 export const LINEAR_WAKE_PATH = "/webhooks/linear";
@@ -91,6 +91,7 @@ export const NO_WAKE_MARKERS = Object.freeze([":eyes:", "\u{1F440}"]);
 /** The GraphQL document that names a seat's own Linear app user. */
 export const Q_WAKE_VIEWER = `query LinearWakeViewer {
   viewer { id name displayName url }
+  organization { urlKey }
 }`;
 
 /**
@@ -293,10 +294,13 @@ export function carriesZulipThread({ text = "", data = {}, issue = {}, actor = {
  * linear_wake_seat_unmapped:  an unmapped seat simply never wakes, and the log
  * says which one and why (a fixed code, never a secret).
  */
-export async function buildSeatMap(env, { fetchImpl, now, gateFor, log = logEvent } = {}) {
+export async function buildSeatMap(env, { fetchImpl, now, gateFor, quota, log = logEvent } = {}) {
   const fetchFn = fetchImpl ?? globalThis.fetch?.bind(globalThis);
   const clock = now ?? (() => Date.now());
   const gateFn = gateFor ?? ((seat) => gate(env, seat));
+  // Every Linear request of this map build is metered like any other seat's:  one charge per fetch, against the
+  // app user Linear names (the viewer query below proves it).  The quota is built once and shared by the seats.
+  const quotaFn = quota ?? linearQuotaFromEnv(env);
   const map = new Map();
   const seats = wakeSeats();
   // One listing warms every /linear name this feature reads, so a refresh
@@ -324,13 +328,13 @@ export async function buildSeatMap(env, { fetchImpl, now, gateFor, log = logEven
       log("linear_wake_seat_unmapped", { seat, code: "not_configured" });
       return;
     }
-    const client = linearClientFromPair({ clientId, clientSecret }, seat, { gate: gateFn(seat), fetch: fetchFn, now: clock });
+    const client = linearClientFromPair({ clientId, clientSecret }, seat, { gate: gateFn(seat), quota: quotaFn, fetch: fetchFn, now: clock });
     if (!client) {
       log("linear_wake_seat_unmapped", { seat, code: "not_configured" });
       return;
     }
     try {
-      const answer = await client.call(Q_WAKE_VIEWER);
+      const answer = await client.call(Q_WAKE_VIEWER, {}, { proveIdentity: true });
       const viewer = isObject(answer?.viewer) ? answer.viewer : {};
       const userId = typeof viewer.id === "string" ? viewer.id : "";
       const urlKey = profileKeyOf(viewer.url);
@@ -773,7 +777,7 @@ export async function serveLinearWake(request, env, ctx, deps = {}) {
   if ((type !== "Comment" && type !== "Issue") || (action !== "create" && action !== "update")) {
     return jsonResponse({ ok: true, skipped: "not_a_wake_event" }, 200);
   }
-  const map = deps.seatMap ?? await seatMap(env, { fetchImpl: deps.fetchImpl, now, gateFor: deps.gateFor, log });
+  const map = deps.seatMap ?? await seatMap(env, { fetchImpl: deps.fetchImpl, now, gateFor: deps.gateFor, quota: deps.quota, log });
   const decision = decideLinearWake(payload, map);
   if (decision.skip) {
     log("linear_wake_skipped", { reason: decision.skip, type, action });

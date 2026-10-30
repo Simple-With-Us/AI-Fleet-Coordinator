@@ -1,6 +1,7 @@
 """Bounded two-stage Muse chat inspection."""
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -127,6 +128,10 @@ class ChatInspectionTests(ListenerHarness):
         first, second = muse.calls
         self.assertEqual((first["argv"], first["env"], first["cwd"], first["schema"]),
                          (second["argv"], second["env"], second["cwd"], second["schema"]))
+        # Both muse calls send the strict schema (every property required), which the provider's strict
+        # structured-output mode demands:  with the shorter list every muse wake died with a 400.
+        sent = json.loads(first["schema"])
+        self.assertEqual(set(sent["required"]), set(sent["properties"]))
         self.assertNotIn("recent_messages", first["prompt"])
         self.assertTrue(second["prompt"].startswith(first["prompt"]))
         self.assertIn("UNTRUSTED CHAT EXCERPT", second["prompt"])

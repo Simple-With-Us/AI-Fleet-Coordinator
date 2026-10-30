@@ -8,7 +8,8 @@ Every function takes the CLI's `Agent` (identity already pinned, every request a
 gated on the bot check) and returns plain data.  Nothing here prints.
 
 Safety rules that hold on every path:
-  - Only this bot's own messages are edited or deleted (`own_message`).
+  - Only this bot's own messages are edited (`own_message`).  A delete adds no rule of its own:
+    Zulip's realm delete permissions decide (owner, Oct 29 2026).
   - Outbound text (edits, scheduled messages, drafts, status text, uploaded text) is secret-scanned
     by the caller before any request:  the CLI with `_read_text`, the MCP layer with its own scan.
   - The generic escape hatch (`simple-chat api`) reaches only `API_ALLOWLIST`, a fixed list of
@@ -42,6 +43,11 @@ PRESENCE_ACTIVE_S = (
     140  # Zulip's own thresholds:  active within 140 seconds, idle within 15 minutes
 )
 PRESENCE_IDLE_S = 15 * 60
+# Zulip's own text is left out (it can quote member-authored names);  the hosted Worker says the same.
+DELETE_REFUSED = (
+    "Zulip refused to delete message %d:  this bot has no permission to delete it, or it is past"
+    " the realm's delete time limit.  The owner sets both in the realm's settings."
+)
 _EMOJI_RE = re.compile(r"^[a-z0-9_+-]{1,60}$")
 
 # The generic escape hatch (`simple-chat api`, CLI only).  Non-admin endpoints a member bot may call
@@ -144,12 +150,11 @@ def is_own(agent: Any, message: Mapping[str, Any]) -> bool:
 
 
 def own_message(agent: Any, message_id: int) -> dict[str, Any]:
-    """The message, when this bot sent it;  else a usage error (edit and delete touch only our own)."""
+    """The message, when this bot sent it;  else a usage error (an edit touches only our own)."""
     message = get_message(agent, message_id)
     if not is_own(agent, message):
         raise UsageError(
-            "message %d was not sent by this bot; only its own messages can be edited or deleted"
-            % message_id
+            "message %d was not sent by this bot; only its own messages can be edited" % message_id
         )
     return message
 
@@ -161,8 +166,22 @@ def edit_message(agent: Any, message_id: int, body: str) -> dict[str, Any]:
 
 
 def delete_message(agent: Any, message_id: int) -> dict[str, Any]:
-    own_message(agent, message_id)
-    agent.client.delete("messages/%d" % message_id)
+    """Delete any message this bot can see.  The tools add no rule of their own (owner, Oct 29 2026):
+    Zulip's delete permissions decide, so another sender's message, or one past the realm's delete
+    time limit, is refused by Zulip until the owner grants this bot that right."""
+    get_message(agent, message_id)
+    try:
+        agent.client.delete("messages/%d" % message_id)
+    except Z.ApiError as exc:
+        if exc.status != 400:
+            raise
+        # Zulip answers 400 for a refusal and for a message that is gone.  Only a message that is still
+        # there was refused (permission or the time limit);  any other 400 is Zulip's own error.
+        try:
+            get_message(agent, message_id)
+        except Z.ApiError:
+            raise exc from None
+        raise UsageError(DELETE_REFUSED % message_id) from None
     return {"id": message_id, "deleted": True}
 
 

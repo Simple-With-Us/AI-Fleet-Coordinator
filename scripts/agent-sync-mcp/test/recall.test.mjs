@@ -398,13 +398,16 @@ test("an explicit idempotency key does not collide with a post's key", async () 
   assert.equal(result.duplicate, false);
 });
 
-test("budget:  ten contributions an hour, then budget_exhausted;  the post budget is untouched", async () => {
+test("budget:  the recall hourly budget, then budget_exhausted;  the post budget is untouched", async () => {
   const { tools, upstream, gate } = harness();
-  for (let i = 0; i < 10; i++) ok(await tools.call("recall_contribute", { text: `${LESSON} Variant ${i}.`, category: "lesson" }), "recall_contribute");
-  const error = toolError(await tools.call("recall_contribute", { text: `${LESSON} Variant 10.`, category: "lesson" }), "budget_exhausted");
+  const hourly = S.BUDGETS.recall.find((w) => w.windowMs === S.HOUR_MS).limit;
+  const now = Date.parse("2026-10-09T10:00:00Z");
+  await gate.store.put("budget:recall", [[now, hourly - 3]]);
+  for (let i = 0; i < 3; i++) ok(await tools.call("recall_contribute", { text: `${LESSON} Variant ${i}.`, category: "lesson" }), "recall_contribute");
+  const error = toolError(await tools.call("recall_contribute", { text: `${LESSON} Variant 3.`, category: "lesson" }), "budget_exhausted");
   assert.match(error.message, /recall budget/);
   assert.ok(error.reset_at);
-  assert.equal(upstream.requests.length, 10);
+  assert.equal(upstream.requests.length, 3);
   assert.equal((await gate.store.get("budget:write")) ?? undefined, undefined);
 });
 

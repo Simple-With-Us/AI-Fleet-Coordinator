@@ -31,6 +31,25 @@ Do **not** authorize deleting worktrees solely for age ≥3d.  Sentry HIGH: mat
 
 The Datadog disk alert is a three-day forecast (≥99%), not a live reading over 90%.  The data volume improved to about 84%;  still reclaim regenerable waste under pressure.
 
+## Alert Tiers
+
+Owner, Oct 29 2026 (AFC-577):  a mild resource issue alerts both Housekeepers and Jay with @ tags, and a filesystem seriously close to full alerts `@all`.
+
+| Tier | When | Tags | Then |
+| --- | --- | --- | --- |
+| Mild | A filesystem at least 80% used or under 40 GB free;  load, RAM, swap or CPU past a warning line (not Datadog's high-CPU alert);  a database growing fast;  Litestream staging ballooning or replication blocked | `@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**` | The Housekeeper that owns the host reclaims (above), the other stands by |
+| Critical | A filesystem at least 90% used or under 20 GB free (a small tmpfs such as `/tmp` by percent only) | `@**all**` | The sending bot DMs Jay why, as every bot `@all` must (`scripts/agent_sync/broadcast_audit.py`) |
+
+Load is never a space issue, so even the simulator reaper's emergency post stays mild.  Datadog raises high CPU all the time, so its CPU alert tags no one (owner, Oct 29 2026);  its memory, load and disk alerts are tagged like any mild alert by the alert-ingress work in AFC-566.  Datadog's own posts come from an incoming-webhook bot, which the fleet routers never let wake anyone.
+
+The senders today:
+
+- **The server disk guardrail** (`/usr/local/sbin/fleet-disk-guardrail.sh`, cron every 2 minutes, posts as the Operator to `#alerts` › `host-disk-guardrail`):  root, the fleet volume (the one the host names in `FLEET_SERVER_VOLUME`) and `/tmp`, plus Litestream staging and replication errors.  Mild posts tag Jay beside the Housekeepers.  The script is a host file in no repo yet;  its backup from before AFC-577 is `fleet-disk-guardrail.sh.bak-20261030-afc577` beside it.
+- **The server storage watch** (`/root/vps-storage-watch.sh`, cron every 15 minutes, `#alerts` › `vps-storage`):  database growth only, always mild, tagging both Housekeepers and Jay.  It records free space, and the guardrail alerts on it.
+- **The simulator reaper** (`scripts/sim-idle-reaper.py`, Mac LaunchAgent, `#Alerts` › `sim-idle-reaper` as MA):  its load-guard post tags both Housekeepers and Jay on a second line, so the first line still starts with its severity.
+
+Repeated mild posts in one topic stop waking BF-Housekeeper after four peer wakes without Jay posting there (BotFleet's loop guard), and GB-Housekeeper takes at most two peer wakes per topic per hour.
+
 ## Canonical bot prompt
 
 ```

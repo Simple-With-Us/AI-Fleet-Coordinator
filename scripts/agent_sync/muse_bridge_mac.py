@@ -70,7 +70,7 @@ def fingerprint() -> str | None:
     try:
         contract = CONTRACT.read_bytes()
         contract.decode("utf-8")
-        schema = W.schema_text()
+        schema = W.schema_text(strict=True)  # the schema the bridge's muse runs actually send
     except (OSError, UnicodeError, ValueError):
         return None
     data = json.dumps(
@@ -147,7 +147,7 @@ def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> d
         A.muse_env(env, home, wake_path),
         wake_dir,
         prompt,
-        schema=W.schema_text(),
+        schema=W.schema_text(strict=True),
     )
     obj, why = W.validate(result.parsed)
     if (
@@ -361,7 +361,7 @@ class MacBridge:
             A.muse_env(self.daemon.env, self.daemon.home, self.daemon.wake_path),
             wake_dir,
             prompt,
-            schema=W.schema_text(),
+            schema=W.schema_text(strict=True),
         )
         if not result.ok or result.models != [model]:
             return {"kind": "hold", "reason": "model_unavailable", "model_attempted": True}

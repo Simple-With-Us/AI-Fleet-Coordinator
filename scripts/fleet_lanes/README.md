@@ -103,7 +103,8 @@ python3 -m fleet_lanes.doctor --cleaner-list       # only the paths a cleaner ma
 | `--gh-limit N` | PRs fetched per repo, default 500, maximum 1000.  A list that fills the limit cannot prove a branch has no PR, so unmatched checkouts report UNKNOWN instead of NONE. |
 | `--only-class CLASS` | Show only one location class.  `--strict` still judges the whole machine.  `cleaner_candidates` follows what is shown. |
 | `--strict` | Exit 2 if any FORBIDDEN_TMP, FORBIDDEN_CODE_TOPLEVEL or UNSANCTIONED checkout exists.  Plugin caches and third-party clones do not count toward UNSANCTIONED. |
-| `--fresh-days N` | Number, 0 to 3650, default 7.  Sets the fresh-lane rule below.  The cleaner age floor is `max(N, 7)`, so no value makes a younger lane a candidate.  `nan`, `inf`, a negative or non-number exits 64. |
+| `--fresh-days N` | Number, 0 to 3650, default 7.  Sets the fresh-lane rule below.  Without `--cleaner-retention-days`, the cleaner age floor is `max(N, 7)`, so no value makes a younger lane a candidate.  `nan`, `inf`, a negative or non-number exits 64. |
+| `--cleaner-retention-days N` | Integer, 1 to 90, default 7.  Sets the minimum age and idle time for cleaner candidates, independently of the fresh-lane label rule.  Without this option the existing `max(--fresh-days, 7)` floor applies. |
 | `--cleaner-list` | Print only the `cleaner_candidates` real paths, one per line (nothing at all when the list is empty).  Notes about skipped or failed `gh` and `lsof` go to stderr.  Cannot be combined with `--json` (exit 64); use `--write PATH` to keep the JSON.  `--write`, `--strict` and `--only-class` still work with it. |
 | `--home PATH`, `--tmp-root PATH` | Point the sweep at a fake home and fake temp root (tests). |
 
@@ -212,7 +213,7 @@ A legacy empty `.janitor-keep` is `valid: false` and still honored.  Any present
 `cleaner_candidates` is the only list a cleaner may act on.  It is a sorted array of real paths, computed over the checkouts shown (so `--only-class` narrows it), and a checkout is on it only when ALL of these hold:
 
 - safety is SAFE-TO-REMOVE and the PR state is MERGED or CLOSED (merged evidence, not "no PR found");
-- `lane_age_days` and `idle_days` are both known and at least `cleaner_min_days` (the larger of `--fresh-days` and 7);
+- `lane_age_days` and `idle_days` are both known and at least `cleaner_min_days` (the larger of `--fresh-days` and 7 unless `--cleaner-retention-days` is set);
 - no `.janitor-keep` marker, no `git_op_in_progress`, `cwd_procs` is an empty list (lsof worked and found no process) and `active` is false;
 - the location class is one of the five lane classes, it is not a tool cache, and `read_errors` is empty;
 - its `owner_repo` has `gh_repos[repo] == "ok"` (the PR list for that repo was read in full);
@@ -229,7 +230,7 @@ Schema 2 is schema 1 plus `fresh_days`, `cleaner_min_days`, `gh_repos`, `cleaner
   "schema": 2,
   "generated_at": "2026-10-07T16:15:00+00:00",   # UTC, from an injected clock
   "host": "...", "layout_mode": "nested|flat", "home": "...", "only_class": null,
-  "fresh_days": 7, "cleaner_min_days": 7,        # the option, and max(option, 7)
+  "fresh_days": 7, "cleaner_min_days": 7,        # effective candidate age floor; explicit cleaner retention overrides max(option, 7)
   "lsof": "ok|unavailable", "gh": "ok|partial|failed|skipped", "warnings": [...],   # partial/failed name the repos
   "gh_repos": {"owner/repo": "ok|failed"},       # every repo that needed a PR lookup
   "scan": [{"label", "path", "depth", "found"}],
@@ -257,7 +258,7 @@ Anomaly types, most urgent first: FORBIDDEN_TMP, FORBIDDEN_CODE_TOPLEVEL, ORPHAN
 - Timeouts are enforced per call (git and lsof 20 seconds, du 30, gh 60 because it lists over the network) and the whole process group is killed.  A repo that times out or cannot be read becomes UNKNOWN and the sweep continues.
 - Credentials in remote URLs and in stored stderr are replaced (`user:token@host` becomes `REDACTED@host`), including passwords that contain `/` or `@` and a token in the user slot of an scp-style remote (`TOKEN@github.com:o/r.git`).  The ssh user `git` is kept.
 - The test suite proves the refusals, then runs the doctor over real temp repos with a stale index and compares a hash and mtime of every file before and after, with a control that shows plain `git status` does rewrite that index.
-- The cleaner contract only ever narrows the doctor's answer.  The new options change what is printed (`--cleaner-list`) or how a lane is labelled (`--fresh-days`); none of them adds a command to the allowlist.
+- The cleaner contract only ever narrows the doctor's answer.  The new options change what is printed (`--cleaner-list`) or how a lane is labelled (`--fresh-days`) or which aged lanes qualify for cleaning (`--cleaner-retention-days`); none of them adds a command to the allowlist.
 
 ### Known limits (doctor)
 

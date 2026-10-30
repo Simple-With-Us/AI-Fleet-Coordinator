@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { SEAT_NAME_ALIASES } from "./identity-aliases.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
@@ -202,9 +203,9 @@ export async function resolveLinearPair(env, seat) {
 
 /** Sync: build a client from an already-resolved pair (same null contract as
  * linearClientFromEnv). */
-export function linearClientFromPair(pair, seat, { gate, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
-  if (!pair || !pair.clientId || !pair.clientSecret || typeof fetchImpl !== "function" || !gate) return null;
-  return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, gate, fetch: fetchImpl, now });
+export function linearClientFromPair(pair, seat, { gate, quota, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
+  if (!pair || !pair.clientId || !pair.clientSecret || typeof fetchImpl !== "function" || !gate || !validQuota(quota)) return null;
+  return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, gate, quota, fetch: fetchImpl, now });
 }
 
 // Seats whose Linear tools are live.  GROK-WEB first (owner 2026-10-11):  it is
@@ -875,7 +876,7 @@ export function linearGraphqlErrorMeta(errorEntry, known = []) {
 
 /** A failed Linear call.  `kind` is mint, timeout, network, redirect, too_large, rate_limited, status, unauthorized or unexpected. */
 export class LinearError extends Error {
-  constructor(kind, { status = null, message = null, retryAfterS = null, graphql = null } = {}) {
+  constructor(kind, { status = null, message = null, retryAfterS = null, graphql = null, resetAt = null } = {}) {
     super(`linear ${kind}`);
     this.name = "LinearError";
     this.kind = kind;
@@ -883,6 +884,7 @@ export class LinearError extends Error {
     this.upstreamMessage = message;
     this.retryAfterS = retryAfterS;
     this.graphql = graphql;
+    this.resetAt = resetAt;
   }
 }
 
@@ -896,18 +898,32 @@ export class LinearError extends Error {
  * serializes the mint:  two requests of one seat cannot both mint, because the
  * second finds the cache filled by the first.
  */
-export function linearClientFromEnv(env, seat, { gate, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
+export function linearClientFromEnv(env, seat, { gate, quota, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
   const names = linearSecretNames(seat);
   if (!names) return null;
   const read = (name) => (typeof env?.[name] === "string" ? env[name].trim() : "");
   const clientId = read(names.clientId);
   const clientSecret = read(names.clientSecret);
-  if (!clientId || !clientSecret || typeof fetchImpl !== "function" || !gate) return null;
-  return new LinearClient({ seat, clientId, clientSecret, gate, fetch: fetchImpl, now });
+  if (!clientId || !clientSecret || typeof fetchImpl !== "function" || !gate || !validQuota(quota)) return null;
+  return new LinearClient({ seat, clientId, clientSecret, gate, quota, fetch: fetchImpl, now });
 }
 
+// A proof of which Linear user a token acts as is trusted for at most a day, and never past the token's own expiry.
+export const LINEAR_IDENTITY_REPROVE_MS = 24 * 60 * 60 * 1000;
+const validQuota = (quota) => !!quota && typeof quota.reserve === "function" && typeof quota.debit === "function";
+// Provider identity data crosses a trust boundary before it selects any shared quota bucket.
+const LinearIdentityPayload = z.object({
+  viewer: z.object({ id: z.string().min(1).max(256) }).passthrough(),
+  organization: z.object({ urlKey: z.string().min(1).max(256) }).passthrough(),
+}).passthrough();
+
+
 export class LinearClient {
-  constructor({ seat, clientId, clientSecret, gate, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS, log = null } = {}) {
+  constructor({ seat, clientId, clientSecret, gate, quota, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS, log = null } = {}) {
+    // Every GraphQL request is metered against the Linear user or app user it acts as (see #chargeRequest), so a
+    // client without a quota cannot exist:  there is no unmetered path to Linear.
+    if (!quota || typeof quota.reserve !== "function" || typeof quota.debit !== "function") throw new TypeError("LinearClient requires a quota");
+    this.quota = quota;
     this.seat = seat;
     this.clientId = clientId;
     this.gate = gate;
@@ -923,6 +939,102 @@ export class LinearClient {
   #clientSecret;
   #secrets;
   #log;
+  // The Linear user this client's CURRENT access token was proven to act as.  A token acts as one user for its whole
+  // life (the app user it was minted for), so the proof is bound to the token's own fingerprint and kept in the
+  // seat's Durable Object, where every isolate and request of the seat reads it.  A new token, a 401 or an
+  // expired proof means unknown again.  Never read from config, and never keyed by client credentials alone.
+  #idMemo = null; // { fp, identity, validUntil } as last read or written by this instance
+  #resolving = null;
+
+  async #tokenFingerprint(token) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear-token:${token}`));
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+  }
+
+  /** The identity proven for this exact token, or null when none is stored, it is for another token, or it has expired. */
+  async #knownIdentity(fp) {
+    const now = this.now();
+    const fresh = (row) => row && row.fp === fp && typeof row.identity === "string" && /^[0-9a-f]{64}$/.test(row.identity) && Number(row.validUntil) > now;
+    if (fresh(this.#idMemo)) return this.#idMemo.identity;
+    this.#idMemo = null;
+    let row = null;
+    try {
+      row = (await this.gate.linearIdentityGet?.()) ?? null;
+    } catch {
+      row = null; // an unreadable proof is an unknown identity, which only costs one proving request
+    }
+    if (row && fresh({ ...row, validUntil: row.valid_until })) {
+      this.#idMemo = { fp, identity: row.identity, validUntil: Number(row.valid_until) };
+      return row.identity;
+    }
+    return null;
+  }
+
+  async #forgetIdentity() {
+    this.#idMemo = null;
+    try {
+      await this.gate.linearIdentityClear?.();
+    } catch {
+      // the proof also expires on its own, and is bound to a token fingerprint
+    }
+  }
+
+  /** Hash the workspace and app user id Linear returned for this token, or null when the answer lacks either. */
+  async #identityOf(payload) {
+    const parsed = LinearIdentityPayload.safeParse(payload);
+    if (!parsed.success) return null;
+    const id = parsed.data.viewer.id;
+    const workspace = parsed.data.organization.urlKey;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear-quota:${workspace}:${id}`));
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  /** Keep a proof for this token until the earlier of a day and the token's own expiry. */
+  async #rememberIdentity(fp, token, identity) {
+    const now = this.now();
+    let validUntil = now + LINEAR_IDENTITY_REPROVE_MS;
+    try {
+      const row = await this.gate.linearTokenGet();
+      validUntil = row?.access_token === token && Number(row.expires_at) > 0 ? Math.min(validUntil, Number(row.expires_at) * 1000) : now + 3_600_000;
+    } catch {
+      validUntil = now + 3_600_000;
+    }
+    this.#idMemo = { fp, identity, validUntil };
+    try {
+      await this.gate.linearIdentitySet?.({ fp, identity, proven_at: now, valid_until: validUntil });
+    } catch {
+      // not stored: the next request proves it again, and that costs one request, never an unmetered one
+    }
+  }
+
+  /**
+   * Charge ONE provider request before it is sent, and return the identity bucket it was charged to (null for the
+   * unknown bucket).  A request is a fetch to the GraphQL endpoint:  the 401 retry, each label page and each whoami
+   * are each charged, not the logical tool call.  Until Linear has said who this token is, the only request allowed
+   * is a proving one (whoami); any other request proves the identity first, and a client that cannot prove it
+   * refuses (no per-seat fallback).
+   */
+  async #chargeRequest(isProving, fp) {
+    let identity = await this.#knownIdentity(fp);
+    if (!identity && !isProving) {
+      this.#resolving ??= this.viewer().finally(() => { this.#resolving = null; });
+      await this.#resolving;
+      identity = await this.#knownIdentity(fp);
+      // A caller that raced the mint can hold a token other than the one stored and proven.  It does not
+      // charge or send with it: it is told to take the stored token, once, and a token it still cannot prove refuses.
+      if (!identity) return { retoken: true };
+    }
+    let slot;
+    try {
+      slot = await this.quota.reserve({ identity });
+    } catch {
+      throw new LinearError("quota");
+    }
+    if (!slot?.ok) {
+      throw new LinearError(slot?.code === "budget_exhausted" ? "budget_exhausted" : "rate_limited", { retryAfterS: slot?.retryAfterS ?? null, resetAt: slot?.resetAt ?? null });
+    }
+    return { identity };
+  }
 
   /** The loaded secret values, for the caller's scrub list. */
   secrets() {
@@ -1098,9 +1210,25 @@ export class LinearClient {
    * holds the token that failed:  token() then re-mints if it may, and throws a
    * clear mint error when it may not (under 24 hours).  The retry can therefore
    * never turn into a mint loop.
+   *
+   * Every fetch here is metered (#chargeRequest).  `proveIdentity` marks a query whose answer carries `viewer.id`
+   * and `organization.urlKey` (Q_WHOAMI always does):  it is allowed before the identity is known, and the user
+   * it proves is debited for it.
    */
-  async call(query, variables = {}, { failed = null, retryOn401 = true } = {}) {
-    const token = await this.token(failed);
+  async call(query, variables = {}, { failed = null, retryOn401 = true, proveIdentity = false } = {}) {
+    let token = await this.token(failed);
+    const proving = proveIdentity === true || query === Q_WHOAMI;
+    let fp = await this.#tokenFingerprint(token);
+    let charge = await this.#chargeRequest(proving, fp);
+    if (charge.retoken) {
+      token = await this.token();
+      const next = await this.#tokenFingerprint(token);
+      if (next === fp) throw new LinearError("quota"); // the same token could not be proven: refuse, no second proof
+      fp = next;
+      charge = await this.#chargeRequest(proving, fp);
+      if (charge.retoken) throw new LinearError("quota");
+    }
+    const charged = charge.identity;
     let response;
     try {
       response = await this.fetch(LINEAR_GRAPHQL_URL, {
@@ -1114,10 +1242,13 @@ export class LinearClient {
       const timeout = error?.name === "TimeoutError" || error?.name === "AbortError";
       throw new LinearError(timeout ? "timeout" : "network");
     }
-    if (response.status === 401 && retryOn401) return this.call(query, variables, { failed: token, retryOn401: false });
+    // A 401 may mean the app user behind this token changed:  forget the identity, so the next request proves it again.
+    if (response.status === 401) await this.#forgetIdentity();
+    if (response.status === 401 && retryOn401) return this.call(query, variables, { failed: token, retryOn401: false, proveIdentity });
     if (response.status === 401) throw new LinearError("unauthorized", { status: 401 });
     if (response.status === 429) {
       const after = Number(response.headers?.get?.("retry-after"));
+      try { await this.quota.noteRateLimited?.({ identity: charged, retryAfterS: Number.isFinite(after) ? after : null }); } catch { /* the cooldown is best effort */ }
       throw new LinearError("rate_limited", { status: 429, retryAfterS: Number.isFinite(after) ? Math.max(1, Math.min(after, 3600)) : null });
     }
     const data = await this.#json(response);
@@ -1149,7 +1280,28 @@ export class LinearClient {
     // GraphQL answers `{"data": {...}}`;  every caller here reads the payload
     // itself (`data.issue`, `data.viewer`), so the envelope is unwrapped once,
     // here.  Returning the envelope would make every read look empty.
-    return data?.data ?? {};
+    const payload = data?.data ?? {};
+    if (proving) {
+      const learned = await this.#identityOf(payload);
+      if (!learned) throw new LinearError("quota");
+      if (learned && charged && learned !== charged) {
+        // A token acts as one user for its whole life, so a proven token answering as someone else is not a
+        // normal change:  nothing is trusted or debited, the proof is dropped, and this call is refused.
+        await this.#forgetIdentity();
+        throw new LinearError("identity_changed");
+      }
+      if (learned && !charged) {
+        // The bootstrap request is also this user's request:  debit it to the bucket it proved, and remember
+        // the proof for this token.
+        try {
+          await this.quota.debit({ identity: learned });
+        } catch {
+          throw new LinearError("quota");
+        }
+        await this.#rememberIdentity(fp, token, learned);
+      }
+    }
+    return payload;
   }
 
   /** Who Linear says this token belongs to:  {name, app, workspace}. */
@@ -1187,6 +1339,12 @@ export function mapLinearError(error, { write = false, known = [] } = {}) {
       return new ToolError("not_authorized", "Linear redirected the token request.  The owner checks the Worker secret pair (DEPLOY.md).", { extra: { status: error.status } });
     case "rate_limited":
       return new ToolError("rate_limited", "Linear is rate limiting this app", { retryable: true, retryAfterS: error.retryAfterS });
+    case "budget_exhausted":
+      return new ToolError("budget_exhausted", "This Linear app user's request budget for the hour is spent.  Try again after reset_at.", { retryable: true, resetAt: error.resetAt });
+    case "identity_changed":
+      return new ToolError("not_authorized", "The Linear token now answers as a different user than the one it was proven to act as.  Refusing.  Jay checks the app's credentials.", { retryable: false });
+    case "quota":
+      return new ToolError("unavailable", "could not check the Linear request budget", { retryable: !write });
     case "too_large":
       return new ToolError("upstream_error", "Linear answered something this server could not read", { extra: { status: error.status } });
     case "swapped":

@@ -90,6 +90,8 @@ cleanmymac clean --force
 
 ## Thresholds that must wake this role
 
+**Who an alert tags (owner, Oct 29 2026).**  A mild resource issue tags both Housekeepers and Jay (`@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**`), except Datadog's high-CPU alert, which tags no one;  only a filesystem seriously close to full (at least 90% used or under 20 GB free) tags `@all`, and its sender then DMs Jay why.  The tiers and today's senders are in `docs/HOUSEKEEPER.md`, Alert Tiers.
+
 These are the live defaults for the resource-watch job (every 5 min):
 
 | Signal | Wake when | Immediate action |

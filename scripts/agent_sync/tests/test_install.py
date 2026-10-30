@@ -86,6 +86,25 @@ class InstallTests(unittest.TestCase):
             self.home_listing(), [".agent-sync", ".local", ".local/bin", ".local/bin/simple-board", ".local/bin/simple-chat", ".local/bin/simple-notes"]
         )
 
+    def test_platform_letter_is_linked_when_the_checkout_has_it(self) -> None:
+        # AFC-564: an older checkout (the tests above) still installs; one that has the script gets its link too.
+        script = self.checkout / "scripts" / "platform-letter"
+        shutil.copy(ENTRY.with_name("platform-letter"), script)
+        os.chmod(script, 0o755)
+        result = self.run_install(str(self.checkout))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        link = self.home / ".local" / "bin" / "platform-letter"
+        self.assertEqual(os.readlink(link), str(script))
+        again = self.run_install(str(self.checkout))
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("symlink already correct: %s" % link, again.stdout)
+        # A regular file at the link path is never overwritten.
+        link.unlink()
+        link.write_text("mine")
+        refused = self.run_install(str(self.checkout))
+        self.assertEqual(refused.returncode, 1)
+        self.assertEqual(link.read_text(), "mine")
+
     def test_a_relative_checkout_path_still_makes_an_absolute_link_that_works(self) -> None:
         link = self.home / ".local" / "bin" / "simple-chat"
         wanted = os.path.realpath(self.checkout / "scripts" / "simple-chat")

@@ -64,6 +64,7 @@ export class FakeZulip {
     this.reactions = new Set();
     // AFC-330:  the rest of the API the full-coverage tools use.
     this.histories = new Map();
+    this.canDeleteAny = new Set(); // user ids in the realm's can_delete_any_message_group
     this.presence = new Map();
     this.statuses = [];
     this.userGroups = [];
@@ -299,7 +300,7 @@ export class FakeZulip {
     }
     if (m && method === "DELETE") {
       const msg = find(m[1]);
-      if (!msg || msg.sender_id !== caller.user_id) return this.error(400, "BAD_REQUEST");
+      if (!msg || (msg.sender_id !== caller.user_id && !this.canDeleteAny.has(caller.user_id))) return this.error(400, "BAD_REQUEST");
       this.messages = this.messages.filter((x) => x !== msg);
       return this.ok();
     }
