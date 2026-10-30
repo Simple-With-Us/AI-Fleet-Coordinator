@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +21,7 @@ spec.loader.exec_module(U)
 
 PY_OK = "#!/usr/bin/python3\nimport sys\nsys.exit(0)\n"
 PY_BROKEN = "#!/usr/bin/python3\nimport sys\nsys.exit(1)\n"
-BOARD = "#!/usr/bin/python3\nimport sys\nsys.exit(4 if sys.argv[1:] == ['whoami'] else 0)\n"
+BOARD = "#!/usr/bin/python3\nimport sys\nsys.exit(2 if sys.argv[1:] == ['show'] else 0)\n"
 BASH_OK = "#!/bin/bash\nexit 0\n"
 # A stand-in for fleet-cli-release.py:  only what the updater imports.
 RELEASE = """from pathlib import Path
@@ -289,6 +290,27 @@ class GitUpdateTests(unittest.TestCase):
     def test_status_json_is_printable(self) -> None:
         U.setup(self.home)
         json.dumps(U.status(self.home))
+
+
+class SmokeCaseTests(unittest.TestCase):
+    def test_the_board_smoke_case_gives_the_same_exit_on_every_host(self) -> None:
+        # The case used to be `simple-board whoami`, expecting exit 4 (missing credentials).  A host that has the seat
+        # helper and a bearer for the smoke seat authenticates and exits 0, and the updater then refused every
+        # release.  A usage error is decided by the argument parser before any credential or helper is consulted.
+        case = next(
+            c for c in U.SMOKE_CASES if c[1] == "scripts/simple-board" and c[0] != "simple_board_help"
+        )
+        self.assertEqual((case[2], case[3]), (["show"], 2))
+        with tempfile.TemporaryDirectory() as home:
+            env = {"HOME": home, "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENT_SEAT": "CODEX"}
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", str(HERE / "simple-board"), *case[2]],
+                env=env,
+                cwd=home,
+                capture_output=True,
+                timeout=30,
+            )
+        self.assertEqual(result.returncode, case[3])
 
 
 if __name__ == "__main__":
