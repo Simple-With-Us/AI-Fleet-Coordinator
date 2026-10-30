@@ -88,6 +88,7 @@
     // (instinct.com), each posting as its own member bot.
     // CLAUDE hosted configuration is prepared; its key and connection are pending.
     "HOSTED_SEATS": "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE",
+    "EVENTS_ONLY_SEATS": "JET",
     // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
     // whose users/me is not this bot, not a bot, or not a member is refused.
     "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
