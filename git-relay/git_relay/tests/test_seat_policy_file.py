@@ -48,8 +48,9 @@ NOT_SWU_IDENTITY = {
     "MM": "swu-minimax",
     "JET-CHAT": "swu-jet",
 }
-# Original Jet login is wake-only; only JET-CHAT reaches Jet's own App (Q7).
-EXCLUDED = {"JET"}
+# Explicit policy exclusions, documented in the deployed policy's header.
+# Original Jet is wake-only. AMP is hosted-bearer only with no GitHub App.
+EXCLUDED = {"JET", "AMP"}
 
 
 def worker_identities() -> set[str]:
@@ -123,6 +124,14 @@ class SeatPolicyFile(unittest.TestCase):
             self.assertIsNone(
                 policy.authorize("swu-jet", action, "Simple-With-Us/AI-Fleet-Coordinator")
             )
+
+    def test_amp_hosted_login_has_no_git_app_or_relay_access(self):
+        self.assertIn("AMP", worker_identities())
+        self.assertIn("AMP", DOC["//"])
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertIsNone(policy.authenticate(bearer_for("AMP")))
+        self.assertNotIn("swu-amp", SEATS)
+        self.assertFalse(any(row["identity"] == "AMP" for row in SEATS.values()))
 
     def test_a_bearer_the_worker_does_not_confirm_reaches_no_seat(self):
         # The token shape alone names a seat;  only the Worker's answer may admit it.
