@@ -985,7 +985,8 @@ def muse_wake_fingerprint() -> str | None:
             contract = fh.read()
         # Ensure the bytes can be consumed by MuseRunner as UTF-8 before considering them pinnable.
         contract.decode("utf-8")
-        schema = schema_text()
+        # The strict schema is the one the muse runner sends, so the pin vouches for what is sent.
+        schema = schema_text(strict=True)
     except (OSError, UnicodeError, ValueError):
         return None
     command = json.dumps(

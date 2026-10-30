@@ -1454,7 +1454,7 @@ class LiveMuseTest(unittest.TestCase):
             A.muse_env(os.environ, home, wake_path, seat="MM"),
             work,
             prompt,
-            schema=W.schema_text(["CLAUDE", "MM"]),
+            schema=W.schema_text(["CLAUDE", "MM"], strict=True),
         )
         self.assertTrue(result.ok, "muse refused or failed: %s" % (result.refused or result.error))
         self.assertEqual(result.models, [C.MUSE_DEFAULT_MODEL])

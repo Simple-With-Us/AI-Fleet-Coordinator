@@ -941,7 +941,11 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         return 0
     if is_muse:
         result = A.MuseRunner().run(
-            argv, env, paths.wake_dir, prompt, schema=W.schema_text(C.fleet_tags(partition))
+            argv,
+            env,
+            paths.wake_dir,
+            prompt,
+            schema=W.schema_text(C.fleet_tags(partition), strict=True),
         )
         agents_note = (
             "n/a (the muse runtime has no agents listing; lease liveness is pid and start time)"
