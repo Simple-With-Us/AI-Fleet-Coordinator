@@ -10,6 +10,11 @@ UID or root, mode0400 or0600, nonempty UTF-8 and at most4MiB. The descriptor is
 opened no-follow/nonblocking/close-on-exec and verified before a bounded read.
 The same SeatPolicy parser receives its exact text; actions, identities, tokens,
 repositories, shared-auth verifier and App ceilings are not altered or synthesized.
+A seat entry may also carry `"oauth_assert": true`:  the per-seat opt-in that
+lets the Worker's hosted-OAuth assertion path (git_relay/assertion.py)
+authenticate as that seat's identity.  Absent the flag the seat refuses
+assertions exactly as before;  the flag is never rendered from profiles or
+synthesized, and the renderer refuses any value but literal true.
 This is startup-only input, not hot reload or a new secret manager.
 
 Errors from file-backed configuration do not expose paths, bytes, seat names or

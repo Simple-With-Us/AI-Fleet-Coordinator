@@ -55,18 +55,93 @@ test("GrRelayClient posts the action with Access headers and the caller's bearer
 });
 
 test("GrRelayClient maps an unreachable upstream and a bad answer to fixed statuses", async () => {
-  const down = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "i", accessSecret: "s", bearer: "b", fetch: async () => { throw new Error("ECONNREFUSED"); } });
+  const down = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef", bearer: "sbt_jet-chat_" + "a".repeat(43), fetch: async () => { throw new Error("ECONNREFUSED"); } });
   assert.equal((await down.call("open_pr", {})).status, 0);
-  const garbage = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "i", accessSecret: "s", bearer: "b", fetch: async () => new Response("not json", { status: 200 }) });
+  const garbage = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef", bearer: "sbt_jet-chat_" + "a".repeat(43), fetch: async () => new Response("not json", { status: 200 }) });
   assert.equal((await garbage.call("open_pr", {})).status, 502);
-  const refused = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "i", accessSecret: "s", bearer: "b", fetch: async () => new Response(JSON.stringify({ error: "policy_denied" }), { status: 403 }) });
+  const refused = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef", bearer: "sbt_jet-chat_" + "a".repeat(43), fetch: async () => new Response(JSON.stringify({ error: "policy_denied" }), { status: 403 }) });
   const { status, body } = await refused.call("merge_pr", {});
   assert.equal(status, 403);
   assert.equal(body.error, "policy_denied");
-  const midbody = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "i", accessSecret: "s", bearer: "b", fetch: async () => ({ status: 200, text: async () => { throw new Error("stream reset"); } }) });
+  const midbody = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef", bearer: "sbt_jet-chat_" + "a".repeat(43), fetch: async () => ({ status: 200, text: async () => { throw new Error("stream reset"); } }) });
   const cut = await midbody.call("open_pr", {});
   assert.equal(cut.status, 0);
   assert.equal(cut.body.error, "upstream_unreachable");
+});
+
+test("a minter-minted assertion that echoes back in any response is refused", async () => {
+  let assertion = "";
+  const echoing = new GrRelayClient({
+    baseUrl: "https://git-relay.example.test",
+    accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef",
+    minter: async () => { assertion = "gra2_" + "x".repeat(80); return assertion; },
+    fetch: async () => new Response(JSON.stringify({ echoed: assertion }), { status: 200 }),
+  });
+  const echoed = await echoing.call("open_pr", {});
+  assert.equal(echoed.status, 502);
+  assert.equal(echoed.body.error, "upstream_echo");
+  // A clean answer passes with the minted assertion sent as the bearer.
+  const seen = [];
+  const clean = new GrRelayClient({
+    baseUrl: "https://git-relay.example.test",
+    accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef",
+    minter: async ({ action, body }) => `gra2_${action}_${"y".repeat(80)}`,
+    fetch: async (url, init) => { seen.push(init.headers["Authorization"]); return new Response(JSON.stringify({ ok: true }), { status: 200 }); },
+  });
+  const ok = await clean.call("open_pr", { repo: "a/b" });
+  assert.equal(ok.status, 200);
+  assert.match(seen[0], /^Bearer gra2_open_pr_/);
+});
+
+test("an interleaved call's assertion in a response is refused by the family fallback", async () => {
+  // Call B's response echoes call A's token:  B's request-scoped guard cannot
+  // name A's token, so the assertion FAMILY pattern is what refuses it.  No
+  // history of prior mints is retained or needed.
+  const others = "gra2_" + "q".repeat(60) + "_" + "0".repeat(64);
+  const client = new GrRelayClient({
+    baseUrl: "https://git-relay.example.test",
+    accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef",
+    minter: async () => "gra2_" + "r".repeat(60) + "_" + "1".repeat(64),
+    fetch: async () => new Response(JSON.stringify({ note: `saw ${others}` }), { status: 200 }),
+  });
+  const r = await client.call("open_pr", {});
+  assert.equal(r.status, 502);
+  assert.equal(r.body.error, "upstream_echo");
+});
+
+test("scrubbing never depends on history:  100 in-flight mints each guard their own token", async () => {
+  let n = 0;
+  const client = new GrRelayClient({
+    baseUrl: "https://git-relay.example.test",
+    accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef",
+    minter: async () => `gra2_${String(++n).padStart(61, "m")}_` + "2".repeat(64),
+    fetch: async (url, init) => {
+      const mine = init.headers["Authorization"].slice("Bearer ".length);
+      // Every call's own token echoes back:  each must be refused no matter
+      // how many other mints happened around it.
+      return new Response(JSON.stringify({ mine }), { status: 200 });
+    },
+  });
+  const results = await Promise.all(Array.from({ length: 100 }, () => client.call("open_pr", {})));
+  for (const r of results) {
+    assert.equal(r.status, 502);
+    assert.equal(r.body.error, "upstream_echo");
+  }
+  assert.equal(n, 100);
+});
+
+test("a minter that cannot mint fails the call closed, never unauthenticated", async () => {
+  let calls = 0;
+  const client = new GrRelayClient({
+    baseUrl: "https://git-relay.example.test",
+    accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef",
+    minter: async () => null,
+    fetch: async () => { calls++; return new Response("{}", { status: 200 }); },
+  });
+  const r = await client.call("open_pr", {});
+  assert.equal(r.status, 503);
+  assert.equal(r.body.error, "not_configured");
+  assert.equal(calls, 0);
 });
 
 /** A minimal HostedTools over an in-memory gate, mirroring hosted-tools.test.mjs. */
@@ -105,7 +180,7 @@ test("gr_open_pr runs through the front and returns the relay's answer", async (
   const seen = [];
   const gr = new GrRelayClient({
     baseUrl: "https://git-relay.example.test",
-    accessId: "i", accessSecret: "s", bearer: "b",
+    accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef", bearer: "sbt_jet-chat_" + "a".repeat(43),
     fetch: async (url, init) => { seen.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ number: 9, url: "u" }), { status: 200 }); },
   });
   const tools = grHarness(gr);

@@ -14,7 +14,7 @@ class Stub:
     def __init__(self):
         self.calls = []
 
-    def handle(self, token, action, args):
+    def handle(self, token, action, args, proof=None):
         self.calls.append((token, action, args))
         return 403, {"error": "stub refuses authorization"}
 

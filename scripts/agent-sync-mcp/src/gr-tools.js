@@ -18,6 +18,7 @@
 
 import { z } from "zod";
 import { callTypedV1 } from "./gr-typed-v1.js";
+import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
 import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
 
@@ -84,24 +85,56 @@ export class GrRelayClient {
   #headers;
   #secrets;
 
+  #bearer;
+  #minter;
+
   /** `bearer` is the caller's own admin-minted bearer, forwarded verbatim on
-   * every call;  the relay authenticates it. */
-  constructor({ baseUrl, accessId, accessSecret, bearer, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), timeoutMs = GR_TIMEOUT_MS }) {
+   * every call;  the relay authenticates it.  `minter` instead mints a fresh
+   * per-call assertion (src/gr-assert.js) bound to the action and the exact
+   * serialized body;  exactly one of the two is set. */
+  constructor({ baseUrl, accessId, accessSecret, bearer, minter = null, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), timeoutMs = GR_TIMEOUT_MS }) {
     this.#base = baseUrl;
+    this.#bearer = bearer ?? null;
+    this.#minter = minter;
     this.#headers = {
       "CF-Access-Client-Id": accessId,
       "CF-Access-Client-Secret": accessSecret,
-      "Authorization": `Bearer ${bearer}`,
+      ...(this.#bearer ? { "Authorization": `Bearer ${this.#bearer}` } : {}),
       "Content-Type": "application/json",
       "User-Agent": "agent-sync-mcp/2.0",
     };
-    this.#secrets = [accessId, accessSecret, bearer];
+    this.#secrets = [accessId, accessSecret, ...(this.#bearer ? [this.#bearer] : [])];
     this.fetch = fetchImpl;
     this.timeoutMs = timeoutMs;
   }
 
+  /** The credential for one call:  the static bearer, or a freshly minted
+   * assertion bound to this action and body.  A mint that fails closed
+   * (null) makes the call answer not_configured, never an unauthenticated
+   * shot at the relay. */
+  async #credential(action, body) {
+    if (this.#bearer) return this.#bearer;
+    const token = await this.#minter({ action, body });
+    if (typeof token !== "string" || !token) return null;
+    return token;
+  }
+
+  /** Echo guard for every response/error path:  REQUEST-SCOPED - the exact
+   * credential this call sent (its own minted assertion or the bearer) -
+   * plus the assertion family pattern as the fallback for any OTHER live
+   * assertion (an interleaved call's token, which no per-client history can
+   * reliably name).  The fixed Access pair stays in #secrets' guard in
+   * callWorkflow/callTyped;  here the response is raw text, so the pair is
+   * checked too.  No history retention:  nothing here can be evicted while
+   * its call is still in flight. */
+  #echoed(text, credential) {
+    if (typeof credential === "string" && credential && text.includes(credential)) return true;
+    if (ASSERTION_FAMILY_RE.test(text)) return true;
+    return this.#secrets.filter(Boolean).some((secret) => text.includes(secret));
+  }
+
   async callTyped(action, args, expectedPrincipal) {
-    return callTypedV1({action,args,baseUrl:this.#base,bearer:this.#secrets[2],
+    return callTypedV1({action,args,baseUrl:this.#base,bearer:this.#bearer,minter:this.#minter,
       accessId:this.#secrets[0],accessSecret:this.#secrets[1],fetchImpl:this.fetch,expectedPrincipal});
   }
 
@@ -126,9 +159,11 @@ export class GrRelayClient {
     if (new TextEncoder().encode(serialized).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const write = !WF_V1_READ_ACTIONS.includes(action);
     const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});
+    const credential = await this.#credential(action, serialized);
+    if (credential === null) return {status:503,body:{error:"not_configured"}};
     try {
       const response = await this.fetch(`${this.#base}/v1/${action}`, {
-        method:"POST", headers:this.#headers, body:serialized,
+        method:"POST", headers:{...this.#headers, "Authorization": `Bearer ${credential}`}, body:serialized,
         redirect:"manual", signal:AbortSignal.timeout(110000),
       });
       if (!response.body) return unavailable();
@@ -143,7 +178,7 @@ export class GrRelayClient {
       for(const chunk of chunks){bytes.set(chunk,at);at+=chunk.byteLength;}
       const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
       const encoded=JSON.stringify(body);
-      if(this.#secrets.filter(Boolean).some(secret=>encoded.includes(secret))) return unavailable();
+      if(this.#echoed(encoded, credential)) return unavailable();
       if(response.status===200) {
         if(!validWfV1Response(action,body,args)) return unavailable();
         return {status:200,body};
@@ -167,12 +202,15 @@ export class GrRelayClient {
    * and HTTP status.  Never throws on a relay refusal - a 4xx body is data
    * the tool caller should see (its own allowlist answer). */
   async call(action, args) {
+    const body = JSON.stringify(args ?? {});
+    const credential = await this.#credential(action, body);
+    if (credential === null) return { status: 503, body: { error: "not_configured" } };
     let response;
     try {
       response = await this.fetch(`${this.#base}/v1/${action}`, {
         method: "POST",
-        headers: this.#headers,
-        body: JSON.stringify(args ?? {}),
+        headers: { ...this.#headers, "Authorization": `Bearer ${credential}` },
+        body,
         redirect: "manual",
         signal: AbortSignal.timeout(this.timeoutMs),
       });
@@ -193,6 +231,12 @@ export class GrRelayClient {
     if (text.length > GR_RESPONSE_LIMIT) {
       return { status: 502, body: realServerError ? { error: "upstream_oversize", outcome: "unknown" } : { error: "upstream_oversize" } };
     }
+    // No credential - the Access pair, this call's bearer or minted
+    // assertion, or ANY assertion-family string - may come back in a
+    // response body (same guard callWorkflow/callTyped run, request-scoped).
+    if (this.#echoed(text, credential)) {
+      return { status: 502, body: realServerError ? { error: "upstream_echo", outcome: "unknown" } : { error: "upstream_echo" } };
+    }
     let parsed;
     try {
       parsed = JSON.parse(text);
@@ -211,12 +255,14 @@ export class GrRelayClient {
 }
 
 /** A configured client, or null when the front is not configured (no upstream
- * URL, or the Access pair is absent).  `bearer` is required:  the front never
- * answers for an OAuth grant, only for bearer identities. */
-export function grClientFromResolved({ accessId, accessSecret }, env, { bearer } = {}) {
+ * URL, or the Access pair is absent).  Exactly one credential form:  `bearer`
+ * (the caller's own admin-minted bearer, forwarded verbatim) or `minter` (a
+ * per-call assertion minter for a verified OAuth seat, src/gr-assert.js). */
+export function grClientFromResolved({ accessId, accessSecret }, env, { bearer, minter = null } = {}) {
   const baseUrl = grUpstreamUrl(env?.GR_UPSTREAM_URL);
-  if (!baseUrl || !accessId || !accessSecret || typeof bearer !== "string" || !bearer) return null;
-  return new GrRelayClient({ baseUrl, accessId, accessSecret, bearer });
+  const hasBearer = typeof bearer === "string" && !!bearer;
+  if (!baseUrl || !accessId || !accessSecret || hasBearer === (typeof minter === "function")) return null;
+  return new GrRelayClient({ baseUrl, accessId, accessSecret, bearer: hasBearer ? bearer : undefined, minter: hasBearer ? null : minter });
 }
 
 const REPO = { type: "string", description: "owner/name" };

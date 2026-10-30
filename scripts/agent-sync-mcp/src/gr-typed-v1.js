@@ -37,18 +37,26 @@ export const TYPED_V1_TOOLS = Object.freeze(TYPED_V1_ACTIONS.map(action => ({
     expected_head:{type:'string',pattern:HEAD.source}}}
 })));
 
-export async function callTypedV1({action,args,baseUrl,bearer,accessId,accessSecret,fetchImpl=fetch,expectedPrincipal}) {
+import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
+
+export async function callTypedV1({action,args,baseUrl,bearer,minter=null,accessId,accessSecret,fetchImpl=fetch,expectedPrincipal}) {
   // Service credentials supplied only by Worker-owned resolver, never tool args.
   if (!TYPED_V1_ACTIONS.includes(action) || !validTypedV1Args(args)) return {status:400,body:{error:'invalid_typed_request'}};
   let url;
   try {url = new URL(baseUrl);} catch {return {status:503,body:{error:'not_configured'}};}
   if (url.protocol !== 'https:' || url.pathname !== '/' || url.search || url.hash || url.username || url.password ||
-      !bearer || !accessId || !accessSecret || !/^swu-[a-z0-9-]+\[bot\]$/.test(expectedPrincipal)) return {status:503,body:{error:'not_configured'}};
+      (!bearer && typeof minter !== "function") || !accessId || !accessSecret || !/^swu-[a-z0-9-]+\[bot\]$/.test(expectedPrincipal)) return {status:503,body:{error:'not_configured'}};
+  const body = JSON.stringify(args);
+  if (!bearer) {
+    const minted = await minter({action, body});
+    if (typeof minted !== "string" || !minted) return {status:503,body:{error:'not_configured'}};
+    bearer = minted;
+  }
   const unknown = () => ({status:502,body:{error:'typed_upstream_unavailable',outcome:'unknown',retryable:false}});
   try {
     // 110s covers preflight/write/readback, each existing broker call max30s.
     const response = await fetchImpl(`${url.origin}/v1/${action}`, {method:'POST',redirect:'manual',signal:AbortSignal.timeout(110000),
-      headers:{Authorization:`Bearer ${bearer}`,'CF-Access-Client-Id':accessId,'CF-Access-Client-Secret':accessSecret,'Content-Type':'application/json'},body:JSON.stringify(args)});
+      headers:{Authorization:`Bearer ${bearer}`,'CF-Access-Client-Id':accessId,'CF-Access-Client-Secret':accessSecret,'Content-Type':'application/json'},body});
     if (!response.body) return unknown();
     const reader = response.body.getReader(); const chunks=[]; let bytes=0;
     for (;;) {const {done,value}=await reader.read(); if(done) break; bytes+=value.byteLength;
@@ -64,7 +72,10 @@ export async function callTypedV1({action,args,baseUrl,bearer,accessId,accessSec
     if (!validTypedV1Receipt(action,args,parsed) || parsed.principal !== expectedPrincipal) return unknown();
     // Secrets must never reflect even from a compromised/misconfigured upstream.
     const encoded = JSON.stringify(parsed);
-    if ([bearer,accessId,accessSecret].some(secret => encoded.includes(secret))) return unknown();
+    // Request-scoped echo guard:  this call's exact credential (bearer or
+    // just-minted assertion) plus the Access pair, with the assertion family
+    // pattern as the fallback for any other live assertion.
+    if ([bearer,accessId,accessSecret].some(secret => encoded.includes(secret)) || ASSERTION_FAMILY_RE.test(encoded)) return unknown();
     return {status:200,body:parsed};
   } catch {return unknown();}
 }

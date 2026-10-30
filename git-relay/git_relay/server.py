@@ -22,6 +22,7 @@ or returned.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -258,15 +259,15 @@ class Relay:
 
             self.typed_gateway = TypedGateway(policy, client, app_minter, audit, self.outcomes)
 
-    def handle(self, token: str, action: str, args: dict) -> tuple[int, dict]:
+    def handle(self, token: str, action: str, args: dict, proof: dict | None = None) -> tuple[int, dict]:
         # A separate audited gateway charges policy once and keeps disarm
         # receipts fresh.  Default-off; no generic write-replay path is used.
         if self.typed_gateway is not None:
             from .typed_gateway import ACTIONS
 
             if action in ACTIONS:
-                return self.typed_gateway.handle(token, action, args)
-        seat = self.policy.authenticate(token)
+                return self.typed_gateway.handle(token, action, args, proof=proof)
+        seat = self.policy.authenticate(token, proof)
         if seat is None:
             return 401, {"error": "unauthenticated"}
         # The action string comes from the URL path:  a credential-shaped one
@@ -846,7 +847,11 @@ def make_handler(relay: Relay):
             if not isinstance(args, dict):
                 self._send(400, {"error": "body must be a JSON object"})
                 return
-            status, obj = relay.handle(token, action, args)
+            # The request binding for assertion credentials:  the action and
+            # the SHA-256 of the exact raw body bytes (git_relay/assertion.py).
+            # Bearer and static tokens ignore the proof.
+            proof = {"action": action, "body_sha256": hashlib.sha256(raw).hexdigest()}
+            status, obj = relay.handle(token, action, args, proof=proof)
             self._send(status, obj)
 
     return Handler
@@ -1052,6 +1057,59 @@ def _build_shared_verifier():
         raise SystemExit(f"git-relay config: {exc}") from exc
 
 
+def _build_assertion_verifier():
+    """The hosted-OAuth assertion verifier, or None when not configured.
+
+    Set GIT_RELAY_OAUTH_ASSERT=1 to accept Worker-minted per-call assertions
+    (git_relay/assertion.py) for seats flagged oauth_assert in the seat
+    policy.  GIT_RELAY_ASSERT_VERIFY_URL is the Worker's signed
+    /internal/gr-assert-verify route (https, required when the switch is on).
+    The channel key is the SAME bearer verify key as the shared-bearer route
+    (GIT_RELAY_VERIFY_KEY_NAME, default GR_BEARER_VERIFY_KEY, from the same
+    /tools source):  the relay holds no mint-capable material - the mint key
+    lives only in the Worker-only /gr-front folder.  A configured switch with
+    an unreadable or short key is a startup error, never silent
+    unauthenticated operation.
+    """
+    if os.environ.get("GIT_RELAY_OAUTH_ASSERT", "").strip() != "1":
+        return None
+    verify_url = os.environ.get("GIT_RELAY_ASSERT_VERIFY_URL", "").strip()
+    if not verify_url:
+        raise SystemExit("git-relay config: GIT_RELAY_OAUTH_ASSERT=1 needs GIT_RELAY_ASSERT_VERIFY_URL")
+    if not shutil.which("fleet-secrets"):
+        raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
+    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .assertion import GrAssertionVerifier
+
+    raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
+    try:
+        return GrAssertionVerifier(
+            url=verify_url,
+            key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
+            # Same source binding rules as the bearer verify key (see
+            # _build_shared_verifier):  the App credential file's scope covers
+            # /tools;  GIT_RELAY_TOOLS_CREDENTIAL_FILE is the future split.
+            key_source=FleetSecretsSource(
+                path=(raw_path or "/tools").strip(),
+                credential_file=(
+                    _credential_file_for(
+                        "the /tools verify-key source",
+                        "GIT_RELAY_TOOLS_CREDENTIAL_FILE",
+                        "",
+                    )
+                    if os.environ.get("GIT_RELAY_TOOLS_CREDENTIAL_FILE") is not None
+                    else _credential_file_for(
+                        "the App-credentials source",
+                        "GIT_RELAY_APPS_CREDENTIAL_FILE",
+                        "git-relay-apps-token",
+                    )
+                ),
+            ),
+        )
+    except (AppTokenError, ValueError) as exc:
+        raise SystemExit(f"git-relay config: {exc}") from exc
+
+
 def from_env() -> Relay:
     try:
         policy = SeatPolicy(
@@ -1060,6 +1118,7 @@ def from_env() -> Relay:
                 os.environ.get("GIT_RELAY_RATE_PER_HOUR", str(DEFAULT_RATE_PER_HOUR))
             ),
             verifier=_build_shared_verifier(),
+            assertion_verifier=_build_assertion_verifier(),
             write_rate_per_hour=int(
                 os.environ.get("GIT_RELAY_WRITE_RATE_PER_HOUR", str(DEFAULT_WRITE_RATE_PER_HOUR))
             ),

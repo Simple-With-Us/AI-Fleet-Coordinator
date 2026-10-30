@@ -26,8 +26,8 @@ class TypedGateway:
             # Reservation stays held when durability cannot be confirmed.
             return False
 
-    def handle(self, token, action, args):
-        seat = self.policy.authenticate(token)
+    def handle(self, token, action, args, proof=None):
+        seat = self.policy.authenticate(token, proof)
         if seat is None:
             return 401, {"error": "unauthenticated"}
         key = None
