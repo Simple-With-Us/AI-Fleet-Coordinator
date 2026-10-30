@@ -20,10 +20,11 @@ async function idle(letters) {
   }
 }
 
-function harness({ sessions = {}, answers = {}, failUpdates = 0, settleMs = 0 } = {}) {
+function harness({ sessions = {}, answers = {}, failUpdates = 0, settleMs = 0, maxChats } = {}) {
   const calls = [];
   const writes = [];
   const reads = [];
+  const logs = [];
   let failures = failUpdates;
   let clock = 1_000_000;
   const api = {
@@ -46,13 +47,14 @@ function harness({ sessions = {}, answers = {}, failUpdates = 0, settleMs = 0 } 
     const answer = answers[payload.event];
     return typeof answer === "function" ? answer(payload) : answer === undefined ? {} : answer;
   };
-  const letters = createLetters({ api, run, now: () => clock, settleMs });
+  const letters = createLetters({ api, run, now: () => clock, settleMs, maxChats, log: (kind, fields) => logs.push([kind, fields]) });
   return {
     letters,
     sessions,
     calls,
     writes,
     reads,
+    logs,
     advance: (ms) => {
       clock += ms;
     },
@@ -664,6 +666,44 @@ test("a copy whose directory has gone away does not take the engine down with it
   await disposeLive();
   await disposeDead();
   assert.deepEqual(live.updates, [{ sessionID: "ses_b", title: "AJ: New Chat" }]); // the second handle answered
+});
+
+// ---- the log, and the chats it remembers ------------------------------------------------------------------------
+
+test("the log carries the length of a title and never the title (a title comes from a prompt)", async () => {
+  const h = harness({ answers: { start: { label: "AA", title: "AA: New Chat" } } });
+  h.emit("session.created", { sessionID: "ses_a" });
+  await idle(h.letters);
+  h.rename("ses_a", "Hand over the PRIVATE-WORDS-IN-A-TITLE soon");
+  await idle(h.letters);
+  const kinds = h.logs.map(([kind]) => kind);
+  assert.ok(kinds.includes("title"), "the plugin's own title is logged");
+  assert.ok(kinds.includes("renamed"), "a rename is logged");
+  assert.ok(!JSON.stringify(h.logs).includes("PRIVATE-WORDS-IN-A-TITLE"));
+  assert.equal(h.logs.find(([kind]) => kind === "renamed")[1].chars, "Hand over the PRIVATE-WORDS-IN-A-TITLE soon".length);
+});
+
+test("chats past the bound are forgotten, the longest unused first, and a chat with work queued is kept", async () => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const h = harness({
+    maxChats: 3,
+    sessions: { ses_1: { id: "ses_1" } }, // a chat that OpenCode can be asked about, as a forgotten one is when it is heard from
+    answers: { start: (payload) => (payload.session_id === "ses_slow" ? gate.then(() => ({})) : {}) },
+  });
+  h.emit("session.created", { sessionID: "ses_slow" }, 1);
+  await sleep(20); // its hook is running, held at the gate
+  for (const sid of ["ses_1", "ses_2", "ses_3", "ses_4"]) {
+    h.emit("session.created", { sessionID: sid }, 1);
+    await sleep(20);
+  }
+  assert.deepEqual([...h.letters.sessions.keys()], ["ses_slow", "ses_3", "ses_4"]);
+  // A forgotten chat that is heard from again is started again (the registry takes a start of a known chat as a resume).
+  h.emit("session.updated", { sessionID: "ses_1" });
+  release();
+  await idle(h.letters);
+  assert.equal(h.calls.filter((c) => c.event === "start" && c.session_id === "ses_1").length, 2);
+  assert.ok(h.letters.sessions.size <= 3 + 1, "only a chat with work queued may stand over the bound");
 });
 
 // ---- the plugin as OpenCode loads it -----------------------------------------------------------------------

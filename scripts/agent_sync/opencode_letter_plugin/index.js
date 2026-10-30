@@ -82,6 +82,7 @@ const SETTLE_MS = 1500; // a new chat waits this long for its first prompt, or f
 const DISPOSE_MS = 4000; // the most a shutting-down OpenCode is made to wait for hooks still running
 const PROMPT_CHARS = 4096; // the hook looks at no more than this much of a prompt
 const SEEN_EVENTS = 64; // durable events remembered for each chat, to drop the copies the other plugin copies are told
+const MAX_CHATS = 2000; // chats remembered at once;  past it the longest unused ones with no work queued are forgotten
 const MAX_HOOKS = 3;
 const MAX_OUTPUT = 64 * 1024;
 const MAX_LINEAGE = 6; // parents above a chat that are registered first
@@ -212,8 +213,8 @@ function sessionOf(event) {
 // The engine, with the OpenCode side (`api`) and the hook (`run`) handed in so a test can fake both.
 //   api.get(sid)            the session, or throws
 //   api.update(sid, title)  writes the title, or throws
-export function createLetters({ api, run, now = Date.now, log = () => {}, settleMs = SETTLE_MS }) {
-  const sessions = new Map();
+export function createLetters({ api, run, now = Date.now, log = () => {}, settleMs = SETTLE_MS, maxChats = MAX_CHATS }) {
+  const sessions = new Map(); // least recently used first: stateOf moves the chat it is asked about to the end
   const gone = new Set(); // chats deleted while this plugin was running
   let running = 0;
   const waiting = [];
@@ -245,11 +246,25 @@ export function createLetters({ api, run, now = Date.now, log = () => {}, settle
     }
   }
 
+  // The service lives as long as OpenCode does, so the chats it remembers are bounded:  past `maxChats` the ones used
+  // longest ago are forgotten, apart from a chat with work queued.  A forgotten chat that is heard from again is started
+  // again, and a start of a chat the registry already has is a resume.
+  function forget(keep) {
+    for (const [id, old] of sessions) {
+      if (sessions.size <= maxChats) return;
+      if (old !== keep && old.pending === 0) sessions.delete(id);
+    }
+  }
+
   function stateOf(sid) {
     let st = sessions.get(sid);
-    if (!st) {
+    if (st) {
+      sessions.delete(sid);
+      sessions.set(sid, st);
+    } else {
       st = {
         chain: Promise.resolve(),
+        pending: 0, // tasks queued or running in `chain`
         started: false, // the engine knows this chat (the hook has been told, or the first prompt will tell it)
         off: false, // the chat takes no letter (a launcher's, a sweep's: see optedOut)
         hold: 0, // no start of this chat is tried before this time (Infinity: not until it is unarchived or prompted)
@@ -267,6 +282,7 @@ export function createLetters({ api, run, now = Date.now, log = () => {}, settle
         nextAt: 0, // the next prompt that is sent to the hook, apart from the first
       };
       sessions.set(sid, st);
+      forget(st);
     }
     return st;
   }
@@ -274,7 +290,13 @@ export function createLetters({ api, run, now = Date.now, log = () => {}, settle
   // One queue per chat: its events are handled in the order they came, and a chat's slow hook holds up nothing else.
   function enqueue(sid, task) {
     const st = stateOf(sid);
-    st.chain = st.chain.then(task).catch((err) => log("task.error", { session: sid, error: String(err).slice(0, 120) }));
+    st.pending++;
+    st.chain = st.chain
+      .then(task)
+      .catch((err) => log("task.error", { session: sid, error: String(err).slice(0, 120) }))
+      .finally(() => {
+        st.pending--;
+      });
     return st.chain;
   }
 
@@ -319,7 +341,7 @@ export function createLetters({ api, run, now = Date.now, log = () => {}, settle
       st.title = title;
       st.want = "";
       st.retryAt = 0;
-      log("title", { session: sid, title });
+      log("title", { session: sid, chars: title.length }); // never the title: it comes from a prompt, and the hook scrubs it
     } catch (err) {
       st.retryAt = now() + RETRY_TITLE_MS;
       log("title.error", { session: sid, error: String(err).slice(0, 120) });
@@ -490,7 +512,7 @@ export function createLetters({ api, run, now = Date.now, log = () => {}, settle
     } catch {
       title = hint;
     }
-    log("renamed", { session: sid, title, ours: title === st.title });
+    log("renamed", { session: sid, chars: title.length, ours: title === st.title });
     if (title === st.title) return; // the plugin's own title coming back, or no change
     st.title = title;
     if (!title) return;
