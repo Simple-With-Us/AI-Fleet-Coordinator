@@ -1017,5 +1017,22 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
+# --- seat remote defaults (host helper, optional) ---
+def _seat_defaults(command):
+    """Run the host's seat helper when the host has installed one:  it picks the declared seat's own hosted
+    route and refuses (exit 3) on any custody doubt.  Absent or untrusted (not a regular file owned by this user
+    and closed to group and other write), it does nothing and the tool behaves as before.  It holds no credential."""
+    import pwd, runpy, stat
+    try:
+        path = os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".config", "fleet-cli", "seat-remote-defaults.py")
+        info = os.lstat(path)
+    except (KeyError, OSError):
+        return
+    if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022:
+        runpy.run_path(path, init_globals={"fleet_command": command})
+# --- end seat remote defaults ---
+
+
 if __name__ == "__main__":
+    _seat_defaults("recall")
     sys.exit(main())
