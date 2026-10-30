@@ -47,6 +47,9 @@ class ReleaseTests(unittest.TestCase):
         self.home = Path(self.temp.name).resolve() / "home"
         self.home.mkdir()
         self.base = self.home / ".local/share/fleet-cli"
+        # The host installs the seat helper (host configuration, not a release file) before the wrappers.
+        (self.home / ".config/fleet-cli").mkdir(parents=True)
+        (self.home / ".config/fleet-cli/seat-remote-defaults.py").write_text("# test helper\n")
         self.bundle = make_bundle()
         # The wrapper carries the roots the host names, so the suite must not read
         # the roots of the machine it runs on:  every one of them is empty here and
@@ -288,6 +291,87 @@ class ReleaseTests(unittest.TestCase):
         # Nothing new to add:  a further update writes no wrapper.
         self.assertEqual(release.new_wrapper_plan(self.home), {})
 
+    def test_helper_wiring_is_generated_for_chat_board_and_recall_only(self):
+        helper = str(self.home / ".config/fleet-cli/seat-remote-defaults.py")
+        for name in ("simple-chat", "simple-board", "recall"):
+            text = release.wrapper(self.home, "scripts/" + name).decode()
+            line = f"import runpy\nrunpy.run_path({helper!r}, init_globals={{'fleet_command': {name!r}}})\n"
+            self.assertIn(line, text, name)
+            # the helper runs after the imports and before the release is resolved and the tool is exec'd
+            self.assertLess(text.index("from pathlib import Path"), text.index(line), name)
+            self.assertLess(text.index(line), text.index("release = Path("), name)
+        for script in (
+            "scripts/simple-notes",
+            "scripts/fleet-mode",
+            "scripts/fleet_lanes/bin/lane",
+        ):
+            self.assertNotIn("runpy", release.wrapper(self.home, script).decode(), script)
+        # the CODEX-only MCP registration passes its own seat and never reads a bearer file
+        mcp = release.wrapper(self.home, "scripts/simple-chat", ["mcp"], True).decode()
+        self.assertNotIn("runpy", mcp)
+        self.assertNotIn("seat-remote-defaults", mcp)
+        # no credential value or secret path component is generated
+        for name in ("simple-chat", "simple-board", "recall"):
+            self.assertNotIn(".secrets", release.wrapper(self.home, "scripts/" + name).decode())
+
+    def test_a_host_without_the_helper_keeps_plain_wrappers(self):
+        helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
+        helper.unlink()
+        for name in ("simple-chat", "simple-board", "recall"):
+            text = release.wrapper(self.home, "scripts/" + name).decode()
+            self.assertNotIn("runpy", text, name)
+            self.assertIn("os.execv(argv[0], argv)", text, name)
+        self.receive()  # installs without refusing
+        self.assertNotIn("runpy", (self.home / ".local/bin/recall").read_text())
+        # a symlinked helper is not trusted either
+        helper.symlink_to(self.home / "elsewhere")
+        self.assertNotIn("runpy", release.wrapper(self.home, "scripts/recall").decode())
+        helper.unlink()
+        helper.write_text("# helper\n")
+        self.assertIn("runpy", release.wrapper(self.home, "scripts/recall").decode())
+
+    def test_helper_lifecycle_wired_wrapper_fails_closed_when_the_helper_is_removed(self):
+        # Contract (see HELPER_COMMANDS):  generated with the helper -> wired;  helper removed later -> the
+        # command exits nonzero and never runs the tool (no silent plain execution).
+        marker = self.home / "ran"
+        release_dir = self.home / ".local/share/fleet-cli/current/scripts"
+        release_dir.mkdir(parents=True)
+        (release_dir / "recall").write_text(
+            f"import pathlib\npathlib.Path({str(marker)!r}).write_text('ran')\n"
+        )
+        helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
+        wrapper = self.home / ".local/bin/recall"
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_bytes(release.wrapper(self.home, "scripts/recall"))
+        self.assertIn("seat-remote-defaults.py", wrapper.read_text())
+        run = lambda: subprocess.run(
+            [sys.executable, "-I", str(wrapper)], capture_output=True, text=True
+        )
+        self.assertEqual(run().returncode, 0)
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        helper.unlink()
+        result = run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(marker.exists(), "the tool must not run without its helper")
+        self.assertNotIn(".secrets", result.stdout + result.stderr)
+
+    def test_helper_lifecycle_late_helper_needs_the_explicit_install(self):
+        # Contract:  generated without the helper -> plain;  helper provisioned later -> a routine update leaves
+        # the existing wrapper plain;  the canonical --install then wires it.
+        helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
+        helper.unlink()
+        self.receive()
+        recall = self.home / ".local/bin/recall"
+        self.assertNotIn("runpy", recall.read_text())
+        helper.write_text("# helper\n")
+        self.receive(install=False)
+        self.assertNotIn("runpy", recall.read_text())
+        self.receive(install=True)
+        self.assertIn("seat-remote-defaults.py", recall.read_text())
+        for name in ("simple-chat", "simple-board"):
+            self.assertIn("seat-remote-defaults.py", (self.home / ".local/bin" / name).read_text())
+
     def test_installed_bash_wrappers_run_their_script(self):
         # A release holding real (tiny) tools:  the wrapper must reach the script in the current release.
         bundle = make_bundle()
@@ -523,6 +607,25 @@ class ReleaseTests(unittest.TestCase):
         self.bundle["files"]["../../escape"] = next(iter(self.bundle["files"].values()))
         with self.assertRaisesRegex(release.Refused, "refused_path"):
             self.receive()
+        self.assertFalse(self.base.exists())
+
+    def test_file_count_boundary_preserves_decode_and_refusal(self):
+        # All entries are allowed and digest-valid, so count is the only boundary.
+        for number in range(release.MAX_FILES - len(self.bundle["files"])):
+            self.bundle["files"][f"scripts/agent_sync/boundary_{number}.py"] = {
+                "mode": 0o644,
+                "sha256": hashlib.sha256(b"# boundary\n").hexdigest(),
+                "data": base64.b64encode(b"# boundary\n").decode(),
+            }
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        raw = json.dumps(self.bundle).encode()
+        self.assertEqual(len(release.decode_bundle(raw)[1]), release.MAX_FILES)
+        self.bundle["files"]["scripts/agent_sync/one_too_many.py"] = next(
+            iter(self.bundle["files"].values())
+        )
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(self.bundle).encode())
         self.assertFalse(self.base.exists())
 
     def test_rejects_corrupt_content(self):

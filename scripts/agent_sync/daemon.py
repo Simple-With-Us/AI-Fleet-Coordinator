@@ -733,6 +733,11 @@ class Daemon:
         self._notes_queue_spec: tuple[Any, ...] | None = (
             None  # the principals that queue was built with
         )
+        # The Linear project webhook (AFC-565), served by the listener API under
+        # /linear/v1/:  rebuilt with the API server on every start and reload
+        # (_configure_listener_api), None while [linear_projects] is off.
+        self.linear_projects_hook: Any | None = None
+        self._linear_projects_spec: tuple[Any, ...] | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {
@@ -1047,11 +1052,93 @@ class Daemon:
         self._notes_queue_spec = spec
         return queue
 
+    def _configure_linear_projects(self) -> Any | None:
+        """The Linear project webhook (AFC-565) for the listener API to serve under
+        /linear/v1/, or None:  off unless [linear_projects] enabled is true and the
+        Coolify runtime-only variable OPERATOR_LINKIFIERS_INFISICAL_TOKEN (the single
+        bootstrap binding) is present.  A reload that leaves the token as it was keeps
+        the same hook object, so an event mid-run never races a second worker, but
+        re-reads Infisical through the stored loader so rotated values are picked up."""
+        old = getattr(self, "linear_projects_hook", None)
+        old_spec = getattr(self, "_linear_projects_spec", None)
+        self.linear_projects_hook = None
+        self._linear_projects_spec = None
+        if not getattr(self.config, "linear_projects_enabled", False):
+            return None
+        token = Z._strip_quotes(self.env.get("OPERATOR_LINKIFIERS_INFISICAL_TOKEN") or "")
+        if not token:
+            self.log.write(
+                "linear-projects-off",
+                reason="OPERATOR_LINKIFIERS_INFISICAL_TOKEN is not set",
+                hint=ENV_RESTART_HINT,
+            )
+            return None
+        self.hide_values([token])
+        if old is not None and old_spec == (token,) and getattr(old, "secrets", None) is not None:
+            # Only a hook whose secrets loaded is kept:  a failed load is retried on reload.
+            # The loader runs even when the token is unchanged, so rotated values are
+            # picked up; a failed reload clears the cache (fail-closed) and logs only
+            # the reason, never a value.
+            reload = getattr(old, "reload_secrets", None)
+            if callable(reload):
+                reload()
+            else:
+                loader = getattr(old, "_secrets_loader", None)
+                if callable(loader):
+                    try:
+                        old.secrets = dict(loader() or {})
+                    except Exception:
+                        old.secrets = None
+            fresh = getattr(old, "secrets", None)
+            if isinstance(fresh, dict) and fresh:
+                self.hide_values([v for v in fresh.values() if v])
+            self.linear_projects_hook = old
+            self._linear_projects_spec = old_spec
+            return old
+        try:
+            # Imported here, not at module load, so a missing module never stops the daemon.
+            import linear_project_linkifiers as LPL
+
+            from . import linear_projects_hook as LPH
+        except ImportError as exc:
+            self.log.write("linear-projects-error", error=type(exc).__name__)
+            return None
+
+        def loader() -> dict[str, str]:
+            return LPL.load_secrets(token)
+
+        def runner(secrets: dict[str, str]) -> dict[str, Any]:
+            self.hide_values([v for v in secrets.values() if v])
+            email = secrets.get("ZULIP_OPERATOR_EMAIL", "")
+            key = secrets.get("ZULIP_OPERATOR_API_KEY", "")
+
+            def factory() -> Any:
+                import zulip_linkifiers as ZL
+
+                return ZL.Zulip(email, key, ZL.REALM)
+
+            return LPL.reconcile(
+                secrets,
+                apply_zulip=True,
+                open_pr=True,
+                zulip_factory=factory,
+            )
+
+        try:
+            hook = LPH.LinearProjectsHook(loader, runner, clock=self.clock.time, log=self.log.write)
+        except OSError as exc:
+            self.log.write("linear-projects-error", error=type(exc).__name__)
+            return None
+        self.linear_projects_hook = hook
+        self._linear_projects_spec = (token,)
+        return hook
+
     def _configure_listener_api(self) -> None:
         """Start the optional signed read API (AFC-330) for the seats this instance holds, and with it the Operator's
-        notes queue (AFC-486) under /notes/v1/.  The server starts when either has someone to serve:  a seat with a
-        read-API key, or a notes-queue principal with a key.  A reload rebuilds the server and the queue, keeping
-        the queue object when its principals did not change (_configure_notes_queue)."""
+        notes queue (AFC-486) under /notes/v1/ and the Linear project webhook (AFC-565) under /linear/v1/.  The server
+        starts when any of them has someone to serve:  a seat with a read-API key, a notes-queue principal with a key,
+        or the projects hook.  A reload rebuilds the server, the queue and the hook, keeping the queue object when its
+        principals did not change (_configure_notes_queue) and the hook when its token did not."""
         old = self.listener_api_server
         self.listener_api_server = None
         if old is not None:
@@ -1059,18 +1146,27 @@ class Daemon:
         if not self.config.listener_api_enabled:
             self.notes_queue = None
             self._notes_queue_spec = None
+            self.linear_projects_hook = None
+            self._linear_projects_spec = None
             if self.config.notes_queue_enabled:
                 self.log.write(
                     "notes-queue-off",
                     reason="[listener_api] is off, and only the listener API serves the queue",
                 )
+            if getattr(self.config, "linear_projects_enabled", False):
+                self.log.write(
+                    "linear-projects-off",
+                    reason="[listener_api] is off, and only the listener API serves the hook",
+                )
             return
         keys = self.listener_api_keys()
         notes = self._configure_notes_queue()
-        if not keys and notes is None:
+        hook = self._configure_linear_projects()
+        if not keys and notes is None and hook is None:
             self.log.write(
                 "listener-api-deny-all",
-                reason="no seat key and no notes-queue principal, so the API server is not started",
+                reason="no seat key, no notes-queue principal and no projects hook,"
+                " so the API server is not started",
             )
             return
         if not keys:
@@ -1084,12 +1180,15 @@ class Daemon:
                 clock=self.clock.time,
                 log=self.log.write,
                 notes=notes,
+                linear_projects=hook,
             )
             server.start()
         except OSError as exc:
             self.log.write("listener-api-error", error=type(exc).__name__)
             self.notes_queue = None
             self._notes_queue_spec = None
+            self.linear_projects_hook = None
+            self._linear_projects_spec = None
             return
         self.listener_api_server = server
         host, port = server.address
@@ -1105,6 +1204,8 @@ class Daemon:
                     else "those callers get 404",
                 )
             self.log.write("notes-queue-started", **fields)
+        if hook is not None:
+            self.log.write("linear-projects-started", path="/linear/v1/projects")
 
     def _accept_outgoing_webhook(self, seat: str, bot_email: str, message_id: int) -> str:
         """Persist an authenticated webhook ID.  Message content comes only from a later REST read."""
@@ -4094,6 +4195,10 @@ class Daemon:
         "I" and "A" are valid session letters and the two English words that collide with them, so
         they count as an address only when they stand alone at the end of the message.  In a
         sentence ("@**MiniMax** I think we ship Friday") they are prose.
+
+        A pair of letters ("@**Claude** AB") is an address too:  Claude chats and MiniMax subthreads
+        hold pairs.  Any two capitals could be a word ("OK", "PR", "CI"), so a pair counts only when a
+        live session holds it, on any platform;  a pair nobody holds is prose and is never answered.
         """
         bots = (
             R.fleet_bots_by_seat(
@@ -4127,12 +4232,14 @@ class Daemon:
                     if index < 0:
                         continue
                     tail = body[index + len(mention) :]
-                    match = re.match(r"\s+([A-Z])(?![A-Za-z0-9])", tail)
+                    match = re.match(r"\s+([A-Z]{1,2})(?![A-Za-z0-9])", tail)
                     if not match:
                         continue
                     letter = match.group(1)
                     if letter in PROSE_LETTERS and tail[match.end() :].strip():
                         continue  # "I think ..." is a sentence, not an address
+                    if len(letter) == 2 and not self.live_pair(letter):
+                        continue  # "@**Claude** OK" is prose:  a pair is an address only when someone holds it
                     sender = message.get("sender_id")
                     return letter, (
                         int(sender)
@@ -4140,6 +4247,14 @@ class Daemon:
                         else None
                     )
         return "", None
+
+    def live_pair(self, letter: str) -> bool:
+        """Whether a live session on any platform holds this pair of letters.  Read-only, and never a reason to
+        fail a wake:  a registry that cannot be read holds nothing."""
+        try:
+            return bool(OR.candidates_for_letter(OR.registry_db_path(self.root, self.env), letter))
+        except (OSError, ValueError, OR.RegistryUnavailable):
+            return False
 
     def operator_candidates(self, platform: str, letter: str) -> list[dict[str, Any]]:
         """The live sessions that could hold one letter.

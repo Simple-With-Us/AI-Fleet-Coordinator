@@ -23,7 +23,11 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-MAX_FILES = 128
+# The reviewed allowlisted runtime contains 131 files. Keep the exact minimum
+# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# The 130th file is fleet_bearer.py (from main);  the 131st is claude_app_lineage.py (AFC-564, PR 1127), added for
+# that review.
+MAX_FILES = 131
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -131,6 +135,7 @@ TOOL_REQUIRED = frozenset(
         # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
         # built before it stays a valid rollback target.
         "scripts/agent_sync/secretscan.py",
+        "scripts/agent_sync/fleet_bearer.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
@@ -310,6 +315,21 @@ ENV_CODE_ROOT = "FLEET_CODE_ROOT"
 ENV_APPS_ROOT = "FLEET_APPS_ROOT"
 ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 ROOTED_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane"})
+# Tools whose wrapper runs the host's seat-scoped remote defaults before the tool starts.  The helper is
+# host configuration (never part of a release and never holding a credential value);  the wrapper only names it.
+# Lifecycle contract:  whether the helper exists is decided when the wrapper is generated.
+#   - A host without the helper keeps the plain wrapper.  Provisioning the helper later (its owner, parent
+#     custody and exact hash qualified first) takes effect only when the canonical --install regenerates the
+#     managed wrappers;  a routine update writes missing wrappers only and never rewrites an existing one.
+#   - A wrapper generated with the helper fails closed if the helper is removed later:  runpy raises before the
+#     tool is exec'd, so the command exits nonzero.  There is deliberately no runtime fallback to a plain run,
+#     because that would silently drop the seat's own route.
+HELPER_COMMANDS = {
+    "scripts/simple-chat": "simple-chat",
+    "scripts/simple-board": "simple-board",
+    "scripts/recall": "recall",
+}
+HELPER_PATH = ".config/fleet-cli/seat-remote-defaults.py"
 
 
 def expand(candidate: str, home: Path) -> Path:
@@ -402,8 +422,23 @@ for key in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT"):
     # Python tools run isolated;  the two bash tools run under bash with the caller's environment.
     interpreter = ["/bin/bash"] if script in BASH_SCRIPTS else ["/usr/bin/python3", "-I", "-B"]
     roots = root_exports(home) if script in ROOTED_SCRIPTS else ""
+    helper = ""
+    # Only a host that has installed the helper gets the lines:  a wrapper that runs a missing file would break
+    # its tool, and a host without the helper keeps the plain wrapper it has today.
+    helper_file = home / HELPER_PATH
+    if (
+        script in HELPER_COMMANDS
+        and not codex_only
+        and helper_file.is_file()
+        and not helper_file.is_symlink()
+    ):
+        helper = (
+            "import runpy\n"
+            f"runpy.run_path({str(home / HELPER_PATH)!r}, init_globals={{'fleet_command': {HELPER_COMMANDS[script]!r}}})\n"
+        )
     return (
         f"#!/usr/bin/python3 -I\n{MARKER}\nimport os, sys\nfrom pathlib import Path\n"
+        + helper
         + guard
         + f"release = Path({str(home / '.local/share/fleet-cli/current')!r}).resolve(strict=True)\n"
         + roots

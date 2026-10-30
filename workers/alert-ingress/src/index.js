@@ -59,6 +59,7 @@ import {
   STANDING_BLOCK_HEADER,
 } from "./zulip.js";
 import { renderRaw } from "./raw.js";
+import { isSevereCpu, resourceMentions } from "./resource.js";
 
 const DEFAULT_CHANNEL = "alerts";
 // The standing blocks keep DEFAULT_CHANNEL, which also names their records;
@@ -914,9 +915,14 @@ async function handleEvent(source, payload, env) {
   }
   const topic = boundedTopic(event.service);
   const now = Date.now();
-  const result = decide(prev, event, now, {
+  let result = decide(prev, event, now, {
     minOpenMs: Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS,
   });
+  // Datadog's CPU monitor already requires sustained saturation.  Do not
+  // make a severe CPU event wait through the ingress hold a second time.
+  if (result.state.phase === "pending" && isSevereCpu(event.key, result.state.severity)) {
+    result = sweep(result.state, now, { minOpenMs: 0 }) || result;
+  }
 
   result.state = advanceRevision(prev, result.state);
   const inventory = await collectStates(env, sourceName, channel, topic);
@@ -941,6 +947,7 @@ async function handleEvent(source, payload, env) {
         service: event.service,
         what: result.state.text,
         link: result.state.link,
+        mentions: resourceMentions(event.key, result.state.severity),
       },
     );
   } else if (result.action === "resolve") {
@@ -1087,6 +1094,7 @@ async function runSweep(env) {
           service,
           what: s.state.text,
           link: s.state.link,
+          mentions: resourceMentions(key, s.state.severity),
         },
       );
       await env.ALERT_STATE.put(name, JSON.stringify(s.state));

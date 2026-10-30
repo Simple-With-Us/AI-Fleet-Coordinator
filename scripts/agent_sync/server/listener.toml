@@ -23,8 +23,8 @@
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  A section changed here never reaches a live
 # volume by itself:  server/apply_live_config.py copies the JET and GB sections into /data/listener.toml, adds
-# [listener_api] and [notes_queue] only where the live file has none (it never changes one that is there), and leaves
-# [daemon] (the pins) untouched.  Never mount this file as a single file, because `daemon init` replaces it
+# [listener_api], [notes_queue] and [linear_projects] only where the live file has none (it never changes one that
+# is there), and leaves [daemon] (the pins) untouched.  Never mount this file as a single file, because `daemon init` replaces it
 # atomically.  Every seat here must be "server" in docs/protocols/agent-sync-partition.toml:  a seat is never
 # configured in both instances.
 
@@ -98,8 +98,17 @@ port = 8788
 # proxy routes /notes/v1/ to port 8788, then restart the app (a reload re-reads this file, never the keys).
 [notes_queue]
 enabled = false
-worker_seats = ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]
+worker_seats = ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "CODEX"]
 server_seats = ["CLAUDE", "CODEX"]
+
+# The Linear project webhook (AFC-565, scripts/agent_sync/linear_projects_hook.py):
+# POST /linear/v1/projects on the listener API's port above (so [listener_api] must be
+# enabled too).  Its secrets come from Infisical (project AI Fleet Coordinator, prod,
+# folder /operator-linkifiers) through the Coolify runtime-only variable
+# OPERATOR_LINKIFIERS_INFISICAL_TOKEN.  Enable after that variable is set and the
+# reverse proxy routes /linear/v1/ to port 8788, then restart the app.
+[linear_projects]
+enabled = false
 
 [seat.MA]
 instance = "server"

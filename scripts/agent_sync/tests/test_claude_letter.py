@@ -6,15 +6,19 @@ from __future__ import annotations
 import io
 import json
 import os
+import random
 import shlex
 import sqlite3
+import string
 import subprocess
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime
 from unittest import mock
 from types import SimpleNamespace
 
+from agent_sync import claude_app_lineage as AL
 from agent_sync import claude_letter as CL
 from agent_sync import operator_registry as OR
 
@@ -61,6 +65,24 @@ class Base(unittest.TestCase):
             conn.execute("UPDATE sessions SET last_seen_at = ? WHERE native_session_id = ?", (iso, sid))
         conn.close()
 
+    def ago(self, seconds: float) -> str:
+        """An ISO time this many seconds back, in the registry's own form, for last_seen_at."""
+        return datetime.fromtimestamp(time.time() - seconds, UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    def small_space(self, *pairs: str):
+        """Shrink the pair space, so reuse and eviction can be reached without 676 chats."""
+        return mock.patch.dict(OR.LETTER_SPACES, {"double": tuple(pairs)})
+
+    def app_record(self, host: str, cli: str, started_by: str = "") -> None:
+        """The desktop app's record of a chat, laid out as the app lays it out, in this test's home (the Mac's)."""
+        folder = os.path.join(AL.store_root(self.home), "acct", "org")
+        os.makedirs(folder, exist_ok=True)
+        body: dict = {"sessionId": host, "cliSessionId": cli}
+        if started_by:
+            body["spawnedFrom"] = {"sessionId": started_by}
+        with open(os.path.join(folder, host + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(body, fh)
+
 
 class TitleTests(unittest.TestCase):
     def test_title_from_prompt(self) -> None:
@@ -79,9 +101,191 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(CL.title_from_prompt("rotate %s today" % key), "Rotate Today")
         self.assertEqual(CL.clean_title("Rotate %s Today" % key), "Rotate Today")
 
+    BODY = "Q7xT2mVb9LkR4nWc8ZdY1uHf6JpS3aGeNo5E"  # fake:  36 mixed-case letters and digits
+    STRIPE = "51HxYz0123456789abcdefGH"
+    NPM = "np" + "m"  # the prefix is joined here and the token below at run time, so no token-shaped literal rests in the source
+
+    def test_a_prefixed_secret_never_reaches_a_title(self) -> None:
+        # The word split cuts at an underscore, a colon and an equals sign, which used to take the prefix the scanner
+        # keys on (ghp_, sk_live_, Bearer) off the body and leave a title that carried the whole key.
+        cases = {
+            "Use this token ghp_%s to push the branch" % self.BODY: "Use This Token to Push the Branch",
+            "rotate sk_live_%s now" % self.STRIPE: "Rotate Now",
+            "Authorization: Bearer %s" % self.BODY: "Authorization Bearer",
+            "Authorization:\nBearer %s" % self.BODY: "Authorization",
+            "export TOKEN=ghp_%s and go" % self.BODY: "Export and Go",
+            # a prefix the scanner has no pattern for:  the long mixed run is dropped on its own
+            "rotate %s now" % (self.NPM + "_" + "AbCdEf0123456789" * 2 + "AbCd"): "Rotate Now",
+        }
+        for prompt, expected in cases.items():
+            title = CL.title_from_prompt(prompt)
+            self.assertEqual(title, expected, prompt)
+            self.assertIsNone(CL.secretscan.scan(title), prompt)
+            for piece in (self.BODY, self.STRIPE, "AbCdEf01", "ghp", "Ghp", "sk_live", "Sk Live", "Npm", "npm_"):
+                self.assertNotIn(piece, title, prompt)
+
+    def test_the_words_around_a_dropped_secret_still_name_the_chat(self) -> None:
+        self.assertEqual(CL.title_from_prompt("fix the build for ghp_%s" % self.BODY), "Fix the Build")
+        self.assertEqual(CL.title_from_prompt("ghp_%s\nfix the build" % self.BODY), "Fix the Build")
+        self.assertEqual(CL.title_from_prompt("ghp_%s" % self.BODY), "")  # nothing but the key:  wait for the next prompt
+
+    def test_a_pasted_key_block_never_reaches_a_title(self) -> None:
+        # Built at run time, so no key-shaped literal rests in the source.  The last row of a block is shorter than
+        # SECRET_RUN and used to be the first line with words (a 2048-bit RSA key in PKCS#8 ends on a row of 24).
+        rng = random.Random(7)
+        alphabet = string.ascii_letters + string.digits + "+/"
+
+        def row(width: int) -> str:
+            return "".join(rng.choice(alphabet) for _ in range(width))
+
+        kind = "PRIVATE KEY"
+        rows = [row(64) for _ in range(18)] + [row(24)]
+        block = "\n".join(["-----BEGIN %s-----" % kind, *rows, "-----END %s-----" % kind])
+        cases = {
+            block: "",
+            "Here is my key:\n" + block: "Here Is My Key",
+            block + "\ninstall this on the server": "Install This on the Server",
+            block.replace("\n", "\r\n"): "",
+            "    " + block.replace("\n", "\n    "): "",
+        }
+        for prompt, expected in cases.items():
+            title = CL.title_from_prompt(prompt)
+            self.assertEqual(title, expected, prompt[:40])
+            self.assertNotIn(rows[-1][-8:], title)
+        # a header with a digit in it, which the pattern's class has to take
+        digits = "SSH2 ENCRYPTED PRIVATE KEY"
+        self.assertEqual(CL.title_from_prompt("\n".join(["-----BEGIN %s-----" % digits, *rows, "-----END %s-----" % digits])), "")
+        # a block the end of the text window cuts off has no END line;  its rows are two short words each, so only the
+        # cut to the end of the text keeps them out of the title
+        unfinished = "-----BEGIN %s-----\n" % kind + "\n".join(row(12) + " " + row(12) for _ in range(160))
+        self.assertGreater(len(unfinished), CL.PROMPT_SCAN_CHARS)
+        self.assertEqual(CL.title_from_prompt(unfinished), "")
+        # a base64 row can start with "/" and then looks like a slash command;  the key's end is still no title
+        slashed = "/" + row(63) + "\n" + row(12)
+        self.assertEqual(CL.title_from_prompt(slashed), "")
+
+    def test_only_a_private_key_block_is_cut_out_of_a_prompt(self) -> None:
+        # The scanner knows no other header, and a certificate or a public key named in a question is no secret.
+        self.assertEqual(
+            CL.title_from_prompt("Why does `-----BEGIN CERTIFICATE-----` break the importer?\nIt says invalid"),
+            "Why Does BEGIN CERTIFICATE Break the Importer",
+        )
+        self.assertNotEqual(CL.title_from_prompt("-----BEGIN PUBLIC KEY-----\nAdd this key to the config"), "")
+
+    def test_a_key_broken_over_a_line_break_leaves_no_end_in_the_title(self) -> None:
+        token = "ghp_" + self.BODY  # 40 characters
+        for end in (4, 12):
+            title = CL.title_from_prompt(token[:-end] + "\n" + token[-end:])
+            self.assertEqual(title, "", end)
+        # a key's end split over two short lines:  the second is skipped because the first was
+        self.assertEqual(CL.title_from_prompt(token[:-8] + "\n" + token[-8:-4] + "\n" + token[-4:]), "")
+        # the words that follow the end of the key still name the chat
+        self.assertEqual(CL.title_from_prompt(token[:-4] + "\n" + token[-4:] + "\nfix the build"), "Fix the Build")
+
+    def test_a_line_is_not_dropped_for_the_secret_its_neighbour_holds(self) -> None:
+        # The neighbour's "token: <path>" reads as an assigned secret and gets no title;  the line before it does not
+        # go with it.  A secret that only the join of two lines makes is still caught.
+        prompt = "Debug the refresh failure\nThe token: src/auth/refresh.ts fails on expiry\nIt returns 401 afterwards"
+        self.assertEqual(CL.title_from_prompt(prompt), "Debug the Refresh Failure")
+        self.assertEqual(CL.title_from_prompt("password:\nx7Kp2mQ9vL4nR8sT1"), "")
+        # ... in both directions:  the value on the second line makes the first a hit, and the first makes the second
+        self.assertEqual(CL.title_from_prompt("password:\n%s please" % self.RUN20), "")
+
+    RUN20 = "x7Kp2mQ9" + "vL4nR8sT1aBc"  # fake:  20 mixed letters and digits, under every length limit
+
+    def test_a_key_the_scan_window_cuts_short_leaves_nothing_in_the_title(self) -> None:
+        # A fenced paste, then a key that the window ends 20 characters into:  'ghp_' and 20 more is no secret to
+        # the scanner (it wants 36) or to SECRET_RUN (28), so the partial word has to go.
+        pasted = "```\n" + "pass\n" * 812 + "```\n"
+        self.assertEqual(len(pasted), CL.PROMPT_SCAN_CHARS - 28)
+        title = CL.title_from_prompt(pasted + "use ghp_%s to push the branch" % self.BODY)
+        self.assertEqual(title, "Use")
+        self.assertNotIn(self.BODY[:8], title)
+
+    def test_a_pasted_block_the_scan_window_ends_inside_is_not_read_as_prose(self) -> None:
+        code = "```\n" + "import os\n" * 500  # never closed within the window
+        self.assertGreater(len(code), CL.PROMPT_SCAN_CHARS)
+        self.assertEqual(CL.title_from_prompt(code), "")
+        self.assertEqual(CL.title_from_prompt("fix the build\n" + code), "Fix the Build")
+        # a stray fence in a short prompt is left alone
+        self.assertEqual(CL.title_from_prompt("how do I write ``` in markdown"), "How Do I Write in Markdown")
+        # ... and so is a mention of one in a prompt the window cuts:  a fence opens at the start of a line
+        prose = "Plain words here. " * 400
+        self.assertGreater(len(prose), CL.PROMPT_SCAN_CHARS)
+        self.assertEqual(
+            CL.title_from_prompt("Why does ``` break my markdown renderer?\n" + prose), "Why Does Break My Markdown Renderer"
+        )
+
+    def test_a_window_that_ends_on_whitespace_drops_no_word(self) -> None:
+        # The window ends inside a word only when the characters on both sides of the cut are not whitespace.
+        prompt = "Fix" + " " * (CL.PROMPT_SCAN_CHARS - 3) + "Bar"
+        self.assertEqual(prompt[CL.PROMPT_SCAN_CHARS], "B")
+        self.assertEqual(CL.title_from_prompt(prompt), "Fix")
+
+    def test_a_whole_armored_block_is_cut_out_and_what_follows_names_the_chat(self) -> None:
+        rng = random.Random(11)
+        alphabet = string.ascii_letters + string.digits + "+/"
+        rows = ["".join(rng.choice(alphabet) for _ in range(64)) for _ in range(3)] + ["".join(rng.choice(alphabet) for _ in range(20))]
+
+        def block(kind: str) -> str:
+            return "\n".join(["-----BEGIN %s-----" % kind, *rows, "-----END %s-----" % kind])
+
+        self.assertEqual(CL.title_from_prompt(block("CERTIFICATE") + "\nWhy does this fail?"), "Why Does This Fail")
+        self.assertEqual(CL.title_from_prompt(block("PGP MESSAGE") + "\ndecrypt this"), "Decrypt This")
+
+    def test_a_secret_wrapped_in_quote_or_markup_marks_never_reaches_a_title(self) -> None:
+        value = self.RUN20
+        shapes = (
+            "{'password': '%s'}" % value,  # a Python dict
+            '{\\"password\\": \\"%s\\"}' % value,  # JSON inside a JSON string
+            "“password”: “%s”" % value,  # curly quotes
+            "`password`: `%s`" % value,  # backticks
+            "**password**: %s" % value,  # bold
+        )
+        for shape in shapes:
+            self.assertEqual(CL.title_from_prompt(shape), "", shape)
+            self.assertEqual(CL.clean_title(shape), "", shape)
+        # words in quotes are no secret
+        title = CL.title_from_prompt("How do I fix the 'token' error in the login page?")
+        self.assertTrue(title.startswith("How Do I Fix the Token"), title)
+
+    def test_a_name_of_long_words_keeps_them_when_the_scanner_alone_does_not_flag_them(self) -> None:
+        # A ticket or branch name is no secret, so a name made only of such words is not blanked in the Operator's copy;
+        # a long word beside ordinary ones is still dropped, and a name the scanner knows is still empty.
+        for slug in ("afc-564-letter-gaps-review-5", "claude/fix-afc-564-letter-gaps-v2-final", "AFC-564-pair-letters-registry-2026"):
+            self.assertEqual(CL.clean_title(slug), slug)
+        self.assertEqual(CL.clean_title("Fix afc-564-letter-gaps-review-5 now"), "Fix now")
+        self.assertEqual(CL.clean_title("AbCdEfGhIjKlMnOpQrStUvWxYz012345"), "")
+
+    def test_a_json_quoted_assignment_never_reaches_a_title(self) -> None:
+        # A quote between the name and the colon keeps the scanner's assignment patterns from matching it.
+        for name in ("password", "api_key"):
+            self.assertEqual(CL.title_from_prompt('{\n  "%s": "%s"\n}' % (name, self.RUN20)), "", name)
+        self.assertEqual(CL.clean_title('"password": "%s"' % self.RUN20), "")
+
+    def test_a_long_mixed_word_in_a_name_is_kept_out_of_the_copy_the_registry_holds(self) -> None:
+        token = self.NPM + "_" + "AbCdEf0123456789" * 2 + "AbCd"
+        self.assertEqual(CL.clean_title("Publish with %s now" % token), "Publish with now")
+
+    def test_a_resumed_chats_first_prompt_is_scanned_too(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            folder = os.path.join(home, ".claude", "projects", "p")
+            os.makedirs(folder)
+            path = os.path.join(folder, "s-0001.jsonl")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "user", "message": {"content": "use ghp_%s to push" % self.BODY}}) + "\n")
+            title = CL.title_from_transcript(path, home)
+        self.assertEqual(title, "Use to Push")
+        self.assertNotIn(self.BODY, title)
+
     def test_bare_and_clean(self) -> None:
         self.assertEqual(CL.bare("B: Fix Login"), "Fix Login")
         self.assertEqual(CL.bare("Fix: Login"), "Fix: Login")
+        self.assertEqual(CL.bare("BC: Fix Login"), "Fix Login")  # a pair prefix, with no label known
+        self.assertEqual(CL.bare("BC: Fix Login", "BC"), "Fix Login")
+        self.assertEqual(CL.bare("PR: Review", "BC"), "PR: Review")  # only the chat's own label is dropped
+        self.assertEqual(CL.bare("BC: PR: Review", "BC"), "PR: Review")
+        self.assertEqual(CL.bare("BD: Fix Login", "BC"), "BD: Fix Login")  # someone else's label is not ours to drop
         long = "word " * 30
         self.assertLessEqual(len(CL.clean_title(long)), CL.TITLE_CHARS)
         self.assertEqual(CL.clean_title("a\nb"), "a b")
@@ -95,6 +299,26 @@ class TitleTests(unittest.TestCase):
         self.assertFalse(CL.in_scope({"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}))
         self.assertFalse(CL.in_scope({"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_LETTER": "0"}))
         self.assertFalse(CL.in_scope({"CLAUDE_CODE_ENTRYPOINT": "cli", "AGENT_LAUNCHER": "muster"}))
+
+    def test_a_platform_that_runs_claude_as_its_engine_takes_no_claude_letter(self) -> None:
+        # What BotFleet hands its Claude engine (the BotFleet repo's docs/launch-identity.md, and this repo's
+        # docs/protocols/zulip-fleet-guide.md, Launcher Contract):  a launcher, its seat, its own thread id, and the
+        # attach opt-out.  The first loop checks the whole set against every entrypoint;  the second checks that each
+        # of the three markers that matter is enough on its own, which is what exercises the AGENT_SYNC_ATTACH=0 line.
+        botfleet = {
+            "AGENT_LAUNCHER": "botfleet",
+            "AGENT_LAUNCH_SEAT": "BF-MONITOR",
+            "AGENT_SEAT": "BF-MONITOR",
+            "AGENT_SESSION": "bf-thread-1",
+            "AGENT_SYNC_ATTACH": "0",
+        }
+        for entry in ("cli", "claude-desktop", "sdk-cli"):
+            self.assertFalse(CL.in_scope(dict(botfleet, CLAUDE_CODE_ENTRYPOINT=entry)), entry)
+        for key in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SYNC_ATTACH"):
+            self.assertFalse(CL.in_scope({"CLAUDE_CODE_ENTRYPOINT": "cli", key: botfleet[key]}), key)
+        # The owner's own chat sets none of them.
+        self.assertTrue(CL.in_scope({"CLAUDE_CODE_ENTRYPOINT": "cli", "AGENT_SEAT": "CLAUDE"}))
+        self.assertTrue(CL.in_scope({"CLAUDE_CODE_ENTRYPOINT": "cli", "AGENT_SYNC_ATTACH": "1"}))
 
 
 class RegistrySideTests(Base):
@@ -112,27 +336,41 @@ class RegistrySideTests(Base):
 
     def test_register_resume_title_close_reopen(self) -> None:
         first = self.register("s-0001", title="First Chat")
-        self.assertEqual((first["label"], first["outcome"], first["created"]), ("A", "registered", True))
+        self.assertEqual((first["label"], first["outcome"], first["created"]), ("AA", "registered", True))
         again = self.register("s-0001")
-        self.assertEqual((again["label"], again["outcome"]), ("A", "resumed"))
+        self.assertEqual((again["label"], again["outcome"]), ("AA", "resumed"))
         code, out = self.registry("title", "--location", "server", "--session-id", "s-0001", "--title", "Renamed")
-        self.assertEqual((code, out["label"]), (0, "A"))
+        self.assertEqual((code, out["label"]), (0, "AA"))
         self.assertEqual(self.lookup("s-0001")["title"], "Renamed")
         code, out = self.registry("close", "--location", "server", "--session-id", "s-0001")
         self.assertEqual((code, out["closed"]), (0, True))
         code, out = self.registry("touch", "--location", "server", "--session-id", "s-0001")
         self.assertTrue(out["retired"])
         back = self.register("s-0001", title="Back Again")
-        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "A", 2, "A"))
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "AA", 2, "AA"))
         self.assertEqual(self.lookup("s-0001")["title"], "Back Again")
+
+    def test_new_chats_take_pairs_and_a_chat_that_holds_a_single_letter_keeps_it(self) -> None:
+        # Main chats take the doubled pairs in order (owner, Oct 29, 2026).
+        self.assertEqual([self.register("s-%04d" % i)["label"] for i in (1, 2, 3)], ["AA", "BB", "CC"])
+        # The first Claude chat was registered by hand, before pairs, and holds a single letter.
+        OR.register_session(
+            self.db, platform="claude", verified_host="server", profile_scope="default",
+            native_session_id="first-chat", seat="CLAUDE", source="claude-chat-start", issuer=OR.ISSUER_OPERATOR,
+            letter_space="single",
+        )
+        self.assertEqual(self.lookup("first-chat")["label"], "A")
+        self.registry("close", "--location", "server", "--session-id", "first-chat")
+        back = self.register("first-chat")
+        self.assertEqual((back["outcome"], back["label"], back["previous"]), ("reopened", "A", "A"))
 
     def test_reopen_prefers_the_letter_it_held(self) -> None:
         for sid in ("s-0001", "s-0002", "s-0003"):
             self.register(sid)
         for sid in ("s-0002", "s-0001"):
             self.registry("close", "--location", "server", "--session-id", sid)
-        back = self.register("s-0002")  # A is free and lower, but B is still free and was this chat's
-        self.assertEqual((back["outcome"], back["label"], back["generation"]), ("reopened", "B", 2))
+        back = self.register("s-0002")  # AA is free and lower, but BB is still free and was this chat's
+        self.assertEqual((back["outcome"], back["label"], back["generation"]), ("reopened", "BB", 2))
 
     def test_one_bad_record_does_not_stop_the_others_closing(self) -> None:
         self.register("s-0001")
@@ -140,12 +378,47 @@ class RegistrySideTests(Base):
         self.assertEqual(CL._close_records(OR, self.db, ["no-such-record", rid], "test"), 1)
         self.assertEqual(self.lookup("s-0001")["state"], "closed")
 
-    def test_reopen_takes_the_lowest_free_letter(self) -> None:
+    def test_a_freed_pair_goes_to_the_next_new_chat_and_the_old_chat_takes_the_next_one(self) -> None:
         self.register("s-0001")
         self.registry("close", "--location", "server", "--session-id", "s-0001")
-        self.assertEqual(self.register("s-0002")["label"], "A")  # A was free, so another chat holds it now
-        back = self.register("s-0001")
-        self.assertEqual((back["outcome"], back["label"], back["previous"]), ("reopened", "B", "A"))
+        # Main chats take the lowest free doubled pair, so the freed AA is the next new chat's (generation 2).
+        taken = self.register("s-0002")
+        self.assertEqual((taken["label"], taken["generation"]), ("AA", 2))
+        back = self.register("s-0001")  # AA is held now, so the returning chat takes the next doubled pair
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "BB", 1, "AA"))
+
+    def test_a_returning_chat_has_its_own_pair_back_while_it_is_free(self) -> None:
+        self.register("s-0001")
+        self.register("s-0002")
+        self.registry("close", "--location", "server", "--session-id", "s-0001")
+        back = self.register("s-0001")  # AA is free and was this chat's
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "AA", 2, "AA"))
+
+    def test_new_chats_take_the_lowest_free_pair_in_the_primary_order(self) -> None:
+        with self.small_space("AA", "BB", "CC"):
+            for sid in ("s-0001", "s-0002", "s-0003"):
+                self.register(sid)  # AA, BB, CC
+            reg = OR.SessionRegistry(self.db)
+            try:
+                for step, sid in enumerate(("s-0003", "s-0001")):  # CC frees first, AA second
+                    reg.close(self.lookup(sid)["record_id"], at="2026-10-28T00:00:0%d.000Z" % step)
+            finally:
+                reg.close_db()
+            self.assertEqual(self.register("s-0004")["label"], "AA")  # the lowest free, not the longest idle (CC)
+            self.assertEqual(self.register("s-0005")["label"], "CC")
+
+    def test_a_reopened_chat_whose_pair_went_elsewhere_gets_another_pair(self) -> None:
+        with self.small_space("AA", "BB", "CC"):
+            self.register("s-0001")  # AA
+            self.registry("close", "--location", "server", "--session-id", "s-0001")
+            self.assertEqual(self.register("s-0002")["label"], "AA")  # generation 2
+            self.assertEqual(self.register("s-0003")["label"], "BB")
+            self.assertEqual(self.register("s-0004")["label"], "CC")
+            self.set_seen("s-0003", self.ago(300))
+            back = self.register("s-0001")
+        # AA is held by s-0002 and every pair is live, so the least recently seen chat (s-0003) gives up BB.
+        self.assertEqual((back["outcome"], back["label"], back["previous"], back["evicted"]), ("reopened", "BB", "AA", 1))
+        self.assertEqual(self.lookup("s-0003")["state"], "closed")
 
     def test_sweep_closes_only_stale_claude_chats(self) -> None:
         self.register("s-0001")
@@ -156,7 +429,7 @@ class RegistrySideTests(Base):
         self.set_seen("s-0001", "2026-01-01T00:00:00.000Z")
         self.set_seen("mm-0001", "2026-01-01T00:00:00.000Z")
         out = self.register("s-0002")
-        self.assertEqual((out["swept"], out["label"]), (1, "A"))
+        self.assertEqual((out["swept"], out["label"]), (1, "AA"))  # the swept chat's AA is free and the lowest
         self.assertEqual(self.lookup("s-0001")["state"], "closed")
         reg = OR.SessionRegistry(self.db)
         try:
@@ -169,26 +442,220 @@ class RegistrySideTests(Base):
             OR.register_session(
                 self.db, platform="claude", verified_host="mac", profile_scope="default",
                 native_session_id=sid, seat="CLAUDE", source=source, issuer=OR.ISSUER_OPERATOR,
+                letter_space="single",
             )
             self.set_seen(sid, "2026-01-01T00:00:00.000Z")
-        self.assertEqual(self.register("s-0001")["swept"], 0)
-        for i in range(2, 25):  # D to Z:  with A, B and C held, these fill the alphabet
-            self.register("s-%04d" % i)
-        self.set_seen("s-0001", "2026-10-28T09:00:00.000Z")
-        out = self.register("s-0099", now=OR.datetime(2026, 10, 28, 12, tzinfo=OR.UTC).timestamp())
-        self.assertEqual((out["evicted"], out["label"]), (1, "C"))  # s-0001 held C;  A and B stay with the Operator's
+        with self.small_space("AA", "AB"):
+            # The Operator's rows hold the single letters A and B, outside the pair space.
+            self.assertEqual(self.register("s-0001")["swept"], 0)
+            self.register("s-0002")
+            self.set_seen("s-0001", self.ago(300))
+            out = self.register("s-0099")
+        # The pairs are all live:  s-0001, the least recently seen of this hook's chats, gives up AA.
+        self.assertEqual((out["evicted"], out["label"]), (1, "AA"))
         for sid in ("op-0001", "op-0002"):
             self.assertEqual(self.lookup(sid, "mac")["state"], "active")
 
     def test_full_letters_evict_the_least_recently_seen(self) -> None:
-        for i in range(26):
-            self.register("s-%04d" % i)
-            self.set_seen("s-%04d" % i, "2026-10-28T%02d:%02d:00.000Z" % (10 + i // 60, i % 60))
-        self.set_seen("s-0007", "2026-10-28T09:00:00.000Z")  # H is the oldest
-        now = OR.datetime(2026, 10, 28, 12, tzinfo=OR.UTC).timestamp()
-        out = self.register("s-0099", now=now)
-        self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, "H", 2))
-        self.assertEqual(self.lookup("s-0007")["state"], "closed")
+        with self.small_space("AA", "BB", "CC", "DD"):
+            for i in range(4):
+                self.register("s-%04d" % i)
+                self.set_seen("s-%04d" % i, self.ago(100 - i))
+            self.set_seen("s-0002", self.ago(900))  # CC is the oldest
+            out = self.register("s-0099")
+        self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, "CC", 2))
+        self.assertEqual(self.lookup("s-0002")["state"], "closed")
+
+    def test_when_the_operator_holds_every_pair_the_error_counts_the_pairs(self) -> None:
+        with self.small_space("AA"):
+            OR.register_session(
+                self.db, platform="claude", verified_host="mac", profile_scope="default",
+                native_session_id="op-0001", seat="CLAUDE", source="operator-registration",
+                issuer=OR.ISSUER_OPERATOR, letter_space="double",
+            )
+            code, out = self.registry("register", "--location", "server", "--session-id", "s-0001")
+        self.assertEqual(code, 5)  # nothing this hook manages can be evicted, so there is no room
+        self.assertEqual(out["error"], "all 1 Claude letters are in use")
+        self.assertIsNone(self.lookup("s-0001"))
+
+    def single(self, sid: str, source: str) -> dict:
+        """A Claude registration in the single space, as the hand-registered first chat has."""
+        return OR.register_session(
+            self.db, platform="claude", verified_host="server", profile_scope="default", native_session_id=sid,
+            seat="CLAUDE", source=source, issuer=OR.ISSUER_OPERATOR, letter_space="single",
+        )
+
+    def test_a_full_pair_space_never_evicts_a_chat_that_holds_a_single_letter(self) -> None:
+        with self.small_space("AA"):
+            legacy = self.single("first-chat", "claude-chat-start")  # managed, single letter A, the oldest chat
+            self.assertEqual(legacy["label"], "A")
+            self.register("s-0001")  # AA
+            self.set_seen("first-chat", self.ago(900))
+            self.set_seen("s-0001", self.ago(100))
+            out = self.register("s-0002")
+        # Closing the single-letter chat would free no pair, so the pair chat is the one that gives its pair up.
+        self.assertEqual((out["evicted"], out["label"]), (1, "AA"))
+        self.assertEqual(self.lookup("first-chat")["state"], "active")
+        self.assertEqual(self.lookup("s-0001")["state"], "closed")
+
+    def test_a_full_single_space_never_evicts_a_chat_that_holds_a_pair(self) -> None:
+        with mock.patch.dict(OR.LETTER_SPACES, {"single": ("A",), "double": ("AA", "AB")}):
+            first = self.single("first-chat", "claude-chat-start")  # A
+            self.register("s-0001")  # AA
+            self.registry("close", "--location", "server", "--session-id", "first-chat")
+            self.single("op-single", "operator-registration")  # takes A, and this hook does not manage it
+            self.set_seen("s-0001", self.ago(900))
+            back = self.register("first-chat")  # needs a single letter:  none is free, none can be freed
+        self.assertEqual(first["label"], "A")
+        self.assertEqual(back["error"], "all 1 Claude letters are in use")
+        self.assertEqual(self.lookup("s-0001")["state"], "active")
+
+    def test_a_chat_that_holds_a_single_letter_gets_a_single_letter_when_its_own_went_elsewhere(self) -> None:
+        with mock.patch.dict(OR.LETTER_SPACES, {"single": ("A", "B"), "double": ("AA", "AB")}):
+            self.single("first-chat", "claude-chat-start")  # A
+            self.registry("close", "--location", "server", "--session-id", "first-chat")
+            self.assertEqual(self.single("op-single", "operator-registration")["label"], "A")
+            back = self.register("first-chat")
+        self.assertEqual((back["outcome"], back["label"], back["previous"]), ("reopened", "B", "A"))
+
+    # ---- a chat another chat started takes the pair after its parent's (owner, Oct 29, 2026) ----
+
+    PARENT_HOST, CHILD_HOST, OTHER_HOST = "local_aaaaaaaa-0001", "local_bbbbbbbb-0002", "local_cccccccc-0003"
+
+    def parent_and_child(self) -> None:
+        """A parent chat that holds AA, and the app's records of it and of a chat it started."""
+        self.app_record(self.PARENT_HOST, "p-0001")
+        self.app_record(self.CHILD_HOST, "c-0001", started_by=self.PARENT_HOST)
+        self.app_record(self.OTHER_HOST, "c-0002", started_by=self.PARENT_HOST)
+        self.assertEqual(self.register("p-0001")["label"], "AA")
+
+    def child(self, sid: str, host: str, *extra: str) -> dict:
+        return self.registry(
+            "register", "--location", "server", "--session-id", sid, "--host-session-id=" + host, *extra
+        )[1]
+
+    def test_a_chat_the_app_started_takes_the_pair_after_its_parents(self) -> None:
+        self.parent_and_child()
+        first = self.child("c-0001", self.CHILD_HOST)
+        second = self.child("c-0002", self.OTHER_HOST)
+        self.assertEqual((first["label"], second["label"]), ("AB", "AC"))
+        self.assertEqual(self.register("n-0001")["label"], "BB")  # an unrelated chat takes the next doubled pair
+
+    def test_a_chat_without_an_app_id_is_found_by_its_session_uuid(self) -> None:
+        self.parent_and_child()
+        self.assertEqual(self.register("c-0001")["label"], "AB")
+
+    def test_a_parent_named_on_the_command_line_wins_over_the_apps_record(self) -> None:
+        self.parent_and_child()
+        self.assertEqual(self.register("n-0001")["label"], "BB")
+        out = self.child("c-0001", self.CHILD_HOST, "--parent-session-id", "n-0001")
+        self.assertEqual(out["label"], "BC")  # the pair after BB, not after AA
+
+    def test_a_parent_that_holds_no_letter_leaves_the_chat_to_the_primary_order(self) -> None:
+        self.app_record(self.PARENT_HOST, "p-0001")
+        self.app_record(self.CHILD_HOST, "c-0001", started_by=self.PARENT_HOST)
+        self.assertEqual(self.child("c-0001", self.CHILD_HOST)["label"], "AA")  # p-0001 never registered
+
+    def test_a_chat_that_holds_a_letter_is_not_looked_up_again(self) -> None:
+        self.parent_and_child()
+        self.child("c-0001", self.CHILD_HOST)
+        with mock.patch.object(AL, "lookup") as lookup:
+            again = self.child("c-0001", self.CHILD_HOST)
+        lookup.assert_not_called()
+        self.assertEqual((again["outcome"], again["label"]), ("resumed", "AB"))
+
+    def test_a_reopened_subthread_follows_its_parent_again(self) -> None:
+        self.parent_and_child()
+        first = self.child("c-0001", self.CHILD_HOST)  # AB
+        self.registry("close", "--location", "server", "--session-id", "c-0001")
+        self.assertEqual(self.child("c-0002", self.OTHER_HOST)["label"], "AB")  # its pair goes to a sibling
+        back = self.child("c-0001", self.CHILD_HOST)
+        self.assertEqual((first["label"], back["outcome"], back["label"], back["previous"]), ("AB", "reopened", "AC", "AB"))
+
+    def test_a_lookup_that_fails_never_stops_a_registration(self) -> None:
+        self.parent_and_child()
+        with mock.patch.object(AL, "lookup", side_effect=RuntimeError("the app changed its files")):
+            out = self.child("c-0001", self.CHILD_HOST)
+        self.assertEqual((out["outcome"], out["label"]), ("registered", "BB"))  # picked like any other chat
+        self.assertEqual(out["parent_lookup"], "unreadable")  # and the answer says why it has no parent
+
+    def test_the_answer_says_which_pair_a_chat_followed_and_why_it_followed_none(self) -> None:
+        self.parent_and_child()
+        followed = self.child("c-0001", self.CHILD_HOST)
+        self.assertEqual((followed["label"], followed["placed_after"]), ("AB", "AA"))
+        self.assertNotIn("parent_lookup", followed)
+        main = self.register("n-0001")  # no app record at all for this chat
+        self.assertEqual((main["label"], main["placed_after"], main["parent_lookup"]), ("BB", "", "no_record"))
+
+    def test_every_reason_for_no_parent_is_named(self) -> None:
+        cases = {}
+        self.app_record("local_aaaaaaaa-0009", "x-0000")  # the store exists, and holds no record of x-0001
+        cases["no_record"] = self.register("x-0001")["parent_lookup"]
+        self.app_record("local_aaaaaaaa-0010", "x-0002")
+        cases["not_started_by_chat"] = self.register("x-0002")["parent_lookup"]
+        self.app_record("local_aaaaaaaa-0011", "x-0003", started_by="local_deadbeef-0000")
+        cases["parent_gone"] = self.register("x-0003")["parent_lookup"]
+        self.app_record("local_aaaaaaaa-0013", "x-0005", started_by="local_aaaaaaaa-0014")
+        folder = os.path.join(AL.store_root(self.home), "acct", "org")
+        with open(os.path.join(folder, "local_aaaaaaaa-0014.json"), "w", encoding="utf-8") as fh:
+            json.dump({"sessionId": "local_aaaaaaaa-0014"}, fh)  # a parent that never started a process
+        cases["parent_never_ran"] = self.register("x-0005")["parent_lookup"]
+        with open(os.path.join(folder, "local_aaaaaaaa-0015.json"), "w", encoding="utf-8") as fh:
+            fh.write("{")
+        cases["unreadable"] = self.child("x-0006", "local_aaaaaaaa-0015")["parent_lookup"]
+        self.assertEqual(
+            cases,
+            {
+                "no_record": "no_record",
+                "not_started_by_chat": "not_started_by_chat",
+                "parent_gone": "parent_gone",
+                "parent_never_ran": "parent_never_ran",
+                "unreadable": "unreadable",
+            },
+        )
+
+    def test_a_chat_with_no_app_store_at_all_says_so(self) -> None:  # the server's own home, a Mac without the app
+        self.assertEqual(self.register("n-0001")["parent_lookup"], "no_store")
+
+    def test_the_app_id_names_this_chats_record_only_when_the_record_is_this_chats(self) -> None:
+        self.parent_and_child()  # AA holds p-0001;  c-0001's record says p-0001's chat started it
+        self.app_record("local_dddddddd-0004", "z-0001")  # a record nobody started, holding another session uuid
+        out = self.child("c-0001", "local_dddddddd-0004")  # that host id is not c-0001's:  its own record is found
+        self.assertEqual((out["label"], out["placed_after"]), ("AB", "AA"))
+        other = self.child("z-0001", "local_dddddddd-0004")  # and a chat whose record this is was not started by one
+        self.assertEqual((other["label"], other["parent_lookup"]), ("BB", "not_started_by_chat"))
+
+    def test_a_claude_started_inside_a_subthread_is_not_its_sibling(self) -> None:
+        # The nested run inherits the outer chat's app id, which names the outer chat's record and its parent.
+        self.parent_and_child()
+        nested = self.child("n-0001", self.CHILD_HOST)  # its own session uuid, the outer sub-thread's app id
+        self.assertEqual((nested["label"], nested["placed_after"], nested["parent_lookup"]), ("BB", "", "no_record"))
+        outer = self.child("c-0001", self.CHILD_HOST)  # the outer chat itself still follows its parent
+        self.assertEqual((outer["label"], outer["placed_after"]), ("AB", "AA"))
+
+    def test_the_start_after_a_clear_trusts_the_app_id_while_the_record_lags(self) -> None:
+        self.parent_and_child()
+        # /clear gave the chat a new session uuid that the app's record does not hold yet
+        out = self.child("c-9999", self.CHILD_HOST, "--after-clear")
+        self.assertEqual((out["label"], out["placed_after"]), ("AB", "AA"))
+        without = self.child("c-9998", self.CHILD_HOST)  # the same thing at an ordinary start is a nested run
+        self.assertEqual((without["label"], without["placed_after"]), ("BB", ""))
+
+    def test_a_host_id_that_is_not_an_app_id_names_no_record(self) -> None:
+        self.app_record(self.PARENT_HOST, "p-0001")
+        self.register("p-0001")
+        for number, bad in enumerate(("../../x", "local_/../..", "not-local", "")):
+            out = self.registry(
+                "register", "--location", "server", "--session-id", "n-%04d" % number, "--host-session-id=" + bad
+            )[1]
+            self.assertNotIn("error", out, bad)
+            self.assertEqual(len(out["label"]), 2, bad)  # a chat with no usable parent still gets a pair
+
+    def test_an_answer_label_is_one_or_two_capital_letters(self) -> None:
+        for label in ("", "A", "AB", "ZZ"):
+            self.assertNotIn("error", CL._answer({"label": label, "outcome": "registered"}), label)
+        for label in ("ABC", "a", "aB", "A1", "A B", "A:"):
+            self.assertIn("malformed label", CL._answer({"label": label, "outcome": "registered"})["error"], label)
 
 
 class FakeSsh:
@@ -209,6 +676,18 @@ class FakeSsh:
         out = io.StringIO()
         code = CL.registry_main(words[3:], env=self.test.env(), stdout=out)
         return SimpleNamespace(stdout=out.getvalue(), returncode=code)
+
+
+class TitlesDown(FakeSsh):
+    """A Mac that does not answer a title call until it is told to (set .down to False)."""
+
+    down = True
+
+    def __call__(self, cmd, **kwargs):
+        if self.down and shlex.split(cmd[8])[3] == "title":
+            self.calls.append(cmd)
+            raise subprocess.TimeoutExpired("ssh", 12)
+        return super().__call__(cmd, **kwargs)
 
 
 class HookTests(Base):
@@ -234,13 +713,13 @@ class HookTests(Base):
 
     def test_new_chat_gets_a_letter_then_a_title(self) -> None:
         out = self.start("s-0001")
-        self.assertEqual(out["sessionTitle"], "A: New Chat")
-        self.assertIn("Claude A", out["additionalContext"])
+        self.assertEqual(out["sessionTitle"], "AA: New Chat")
+        self.assertIn("Claude AA", out["additionalContext"])
         out = self.prompt("s-0001", "help get all PR issues addressed from review findings.",
-                          session_title="A: New Chat")
-        self.assertEqual(out["sessionTitle"], "A: Help Get All PR Issues Addressed")
+                          session_title="AA: New Chat")
+        self.assertEqual(out["sessionTitle"], "AA: Help Get All PR Issues Addressed")
         self.assertEqual(self.lookup("s-0001")["title"], "Help Get All PR Issues Addressed")
-        self.assertIsNone(self.prompt("s-0001", "next", session_title="A: Help Get All PR Issues Addressed"))
+        self.assertIsNone(self.prompt("s-0001", "next", session_title="AA: Help Get All PR Issues Addressed"))
 
     def test_mac_registers_in_process(self) -> None:
         def no_ssh(*a, **k):
@@ -248,13 +727,141 @@ class HookTests(Base):
 
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
                         env=self.env(), runner=no_ssh, platform="darwin")
-        self.assertEqual(out["sessionTitle"], "A: New Chat")
-        self.assertEqual(self.lookup("m-0001", "mac")["label"], "A")
+        self.assertEqual(out["sessionTitle"], "AA: New Chat")
+        self.assertEqual(self.lookup("m-0001", "mac")["label"], "AA")
+
+    # ---- a chat another chat started (owner, Oct 29, 2026) ----
+
+    PARENT, CHILD = "local_aaaaaaaa-0001", "local_bbbbbbbb-0002"
+
+    def begin(self, sid: str, *, host: str = "", runner=None, env: dict | None = None, **kw) -> dict | None:
+        env = env if env is not None else self.server_env(**({"CLAUDE_CODE_HOST_SESSION_ID": host} if host else {}))
+        return self.hook(
+            {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"},
+            env=env, runner=runner or FakeSsh(self), **kw,
+        )
+
+    def test_a_chat_the_app_started_is_titled_with_the_pair_after_its_parents(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+        parent = self.begin("p-0001", host=self.PARENT)
+        ssh = FakeSsh(self)
+        child = self.begin("c-0001", host=self.CHILD, runner=ssh)
+        self.assertEqual((parent["sessionTitle"], child["sessionTitle"]), ("AA: New Chat", "AB: New Chat"))
+        self.assertIn("Claude AB", child["additionalContext"])
+        self.assertIn("--host-session-id=" + self.CHILD, ssh.calls[0][8])
+
+    def test_a_chat_with_no_app_id_in_its_environment_is_still_placed_by_its_session_uuid(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+        self.begin("x-0001")  # AA, so the parent takes BB and its chat can only be placed by following it
+        self.begin("p-0001", host=self.PARENT)
+        self.assertEqual(self.begin("c-0001")["sessionTitle"], "BC: New Chat")
+
+    def test_the_app_id_travels_with_a_registration_and_with_nothing_else(self) -> None:
+        ssh = FakeSsh(self)
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        self.begin("c-0001", env=env, runner=ssh)
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "c-0001", "prompt": "fix the build",
+                   "session_title": "AA: New Chat"}, env=env, runner=ssh)
+        self.assertIn("--host-session-id=", ssh.calls[0][8])
+        self.assertEqual(len(ssh.calls), 2)
+        self.assertNotIn("--host-session-id", ssh.calls[1][8])  # the title call
+
+    def test_an_environment_value_that_is_not_an_app_id_is_not_sent(self) -> None:
+        ssh = FakeSsh(self)
+        for number, bad in enumerate(("../x", "local_a b", "local_" + "a" * 100, "")):
+            self.begin("n-%04d" % number, env=self.server_env(CLAUDE_CODE_HOST_SESSION_ID=bad), runner=ssh)
+        self.assertEqual(len(ssh.calls), 4)
+        self.assertTrue(all("--host-session-id" not in call[8] for call in ssh.calls))
+
+    def test_a_mac_chat_the_app_started_registers_after_its_parent_in_process(self) -> None:
+        def no_ssh(*a, **k):
+            raise AssertionError("the Mac never uses ssh")
+
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+        kw = dict(runner=no_ssh, platform="darwin")
+        self.begin("x-0001", env=self.env(), **kw)  # AA, so the parent takes BB
+        self.begin("p-0001", env=self.env(CLAUDE_CODE_HOST_SESSION_ID=self.PARENT), **kw)
+        out = self.begin("c-0001", env=self.env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD), **kw)
+        self.assertEqual(out["sessionTitle"], "BC: New Chat")
+        self.assertEqual(self.lookup("c-0001", "mac")["label"], "BC")
+
+    def test_a_server_hook_still_places_a_chat_when_the_mac_runtime_does_not_know_the_flag(self) -> None:
+        class OldMac(FakeSsh):
+            """A Mac whose registry side predates --host-session-id:  its parser refuses the whole call."""
+
+            def __call__(self, cmd, **kwargs):
+                if "--host-session-id" in cmd[8]:
+                    self.calls.append(cmd)
+                    out = json.dumps({"error": "bad arguments:  register --host-session-id=x"})
+                    return SimpleNamespace(stdout=out + "\n", returncode=2)
+                return super().__call__(cmd, **kwargs)
+
+        ssh = OldMac(self)
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        out = self.hook(
+            {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}, env=env, runner=ssh
+        )
+        self.assertEqual(out["sessionTitle"], "AA: New Chat")  # a pair, as a main chat, not none
+        self.assertEqual(len(ssh.calls), 2)
+        self.assertIn("--host-session-id", ssh.calls[0][8])
+        self.assertNotIn("--host-session-id", ssh.calls[1][8])
+
+    def test_a_start_after_a_clear_sends_the_flag_and_places_the_chat_after_its_parent(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)  # the record still holds the pre-clear uuid
+        self.hook(
+            {"hook_event_name": "SessionStart", "session_id": "p-0001", "source": "startup"},
+            env=self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.PARENT),
+        )
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        ssh = FakeSsh(self)
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "c-9999", "source": "clear"}, env=env, runner=ssh)
+        words = shlex.split(ssh.calls[0][8])
+        self.assertIn("--host-session-id=" + self.CHILD, words)
+        self.assertIn("--after-clear", words)
+        self.assertIn("Claude AB", out["additionalContext"])
+        # an ordinary start never sends it:  a claude started inside a chat inherits the chat's app id
+        ssh = FakeSsh(self)
+        self.hook({"hook_event_name": "SessionStart", "session_id": "c-9998", "source": "startup"}, env=env, runner=ssh)
+        self.assertNotIn("--after-clear", ssh.calls[0][8])
+
+    def test_a_mac_that_knows_the_host_flag_but_not_after_clear_is_asked_again_with_neither(self) -> None:
+        class MidMac(FakeSsh):
+            """A Mac whose registry side knows --host-session-id but not --after-clear:  its parser refuses the call."""
+
+            def __call__(self, cmd, **kwargs):
+                if "--after-clear" in cmd[8]:
+                    self.calls.append(cmd)
+                    out = json.dumps({"error": "bad arguments:  register --after-clear"})
+                    return SimpleNamespace(stdout=out + "\n", returncode=2)
+                return super().__call__(cmd, **kwargs)
+
+        ssh = MidMac(self)
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "c-9999", "source": "clear"}, env=env, runner=ssh)
+        self.assertIn("Claude AA", out["additionalContext"])  # a pair, as a main chat, not none
+        self.assertEqual(len(ssh.calls), 2)
+        self.assertIn("--after-clear", ssh.calls[0][8])
+        for flag in ("--after-clear", "--host-session-id"):
+            self.assertNotIn(flag, ssh.calls[1][8])
+
+    def test_any_other_registry_error_is_not_retried_without_the_flag(self) -> None:
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        out = self.hook(
+            {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}, env=env, runner=down
+        )
+        self.assertIn("No Operator letter yet", out["additionalContext"])
+        self.assertIn("10 minutes", out["additionalContext"])
+        self.assertEqual(len(down.calls), 1)
 
     def test_a_named_chat_keeps_its_words(self) -> None:
         out = self.start("s-0001", source="resume", session_title="Fleet PR Sweep")
-        self.assertEqual(out["sessionTitle"], "A: Fleet PR Sweep")
-        self.assertIsNone(self.prompt("s-0001", "anything", session_title="A: Fleet PR Sweep"))
+        self.assertEqual(out["sessionTitle"], "AA: Fleet PR Sweep")
+        self.assertIsNone(self.prompt("s-0001", "anything", session_title="AA: Fleet PR Sweep"))
 
     def test_resume_titles_from_the_transcript(self) -> None:
         path = os.path.join(self.home, ".claude", "projects", "s-0001.jsonl")
@@ -262,7 +869,7 @@ class HookTests(Base):
             fh.write(json.dumps({"type": "user", "isMeta": True, "message": {"content": "<local-command>"}}) + "\n")
             fh.write(json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": "rotate the infisical tokens"}]}}) + "\n")
         out = self.start("s-0001", source="resume", transcript_path=path)
-        self.assertEqual(out["sessionTitle"], "A: Rotate the Infisical Tokens")
+        self.assertEqual(out["sessionTitle"], "AA: Rotate the Infisical Tokens")
 
     def test_outside_paths_are_not_read(self) -> None:
         stray = os.path.join(self.tmp.name, "stray.jsonl")
@@ -271,15 +878,28 @@ class HookTests(Base):
         self.assertEqual(CL.title_from_transcript(stray, self.home), "")
 
     def test_clear_closes_and_reopen_checks_again(self) -> None:
-        self.start("s-0001", session_title="Old Name")
-        self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
-        self.assertEqual(self.note("s-0001")["ended"]["reason"], "clear")
-        self.start("s-0002")  # takes A, the letter /clear freed
-        out = self.start("s-0001", source="resume", session_title="A: Old Name")
-        self.assertEqual(out["sessionTitle"], "B: Old Name")
-        self.assertIn("earlier letter A went to another chat", out["additionalContext"])
+        with self.small_space("AA", "AB"):
+            self.start("s-0001", session_title="Old Name")  # AA
+            self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
+            self.assertEqual(self.lookup("s-0001")["state"], "closed")
+            self.assertEqual(self.note("s-0001")["ended"]["reason"], "clear")
+            self.start("s-0002")  # AA again:  the lowest free pair
+            self.start("s-0003")  # AB
+            self.set_seen("s-0003", self.ago(300))
+            out = self.start("s-0001", source="resume", session_title="AA: Old Name")
+        # AA is s-0002's now and every pair is live, so the least recently seen chat (s-0003) gives up AB.
+        self.assertEqual(out["sessionTitle"], "AB: Old Name")
+        self.assertIn("earlier letter AA went to another chat", out["additionalContext"])
         self.assertIn("  ", out["additionalContext"])  # rendered copy takes U+00A0 sentence gaps
+
+    def test_clear_closes_and_the_same_pair_comes_back_when_it_is_free(self) -> None:
+        self.start("s-0001", session_title="Old Name")
+        self.start("s-0002")  # BB
+        self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
+        out = self.start("s-0001", source="resume", session_title="AA: Old Name")
+        self.assertNotIn("sessionTitle", out)  # the title already reads "AA: Old Name"
+        self.assertNotIn("went to another chat", out["additionalContext"])
+        self.assertEqual(self.lookup("s-0001")["label"], "AA")
 
     def test_exit_and_resume_keep_the_letter(self) -> None:
         self.start("s-0001")
@@ -298,40 +918,607 @@ class HookTests(Base):
         self.assertEqual(self.lookup("s-0002")["state"], "active")
 
     def test_clear_start_ignores_the_inherited_name(self) -> None:
-        out = self.start("s-0001", source="clear", session_title="Z: Previous Chat")
+        out = self.start("s-0001", source="clear", session_title="ZZ: Previous Chat")
         self.assertNotIn("sessionTitle", out)  # Claude Code ignores a title from a clear start
-        out = self.prompt("s-0001", "write the tests", session_title="Z: Previous Chat")
-        self.assertEqual(out["sessionTitle"], "A: Write the Tests")
+        out = self.prompt("s-0001", "write the tests", session_title="ZZ: Previous Chat")
+        self.assertEqual(out["sessionTitle"], "AA: Write the Tests")
 
     def test_a_letter_retired_while_open_is_reissued(self) -> None:
+        with self.small_space("AA", "AB"):
+            self.start("s-0001")  # AA
+            self.prompt("s-0001", "first task", session_title="AA: New Chat")
+            reg = OR.SessionRegistry(self.db)
+            try:
+                reg.close(self.lookup("s-0001")["record_id"], source="test")
+            finally:
+                reg.close_db()
+            self.start("s-0002")  # AA:  the lowest free pair goes to another chat
+            self.start("s-0003")  # AB
+            self.set_seen("s-0003", self.ago(300))
+            later = time.time() + CL.TOUCH_SECONDS + 5
+            out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                             "session_title": "AA: First Task"}, now=later)
+        self.assertEqual(out["sessionTitle"], "AB: First Task")
+        self.assertEqual(self.lookup("s-0001")["label"], "AB")
+
+    def test_a_placeholder_is_never_taken_for_a_title(self) -> None:
         self.start("s-0001")
-        self.prompt("s-0001", "first task", session_title="A: New Chat")
+        out = self.start("s-0001", source="resume", session_title="AA: New Chat")
+        self.assertNotIn("sessionTitle", out)
+        self.assertFalse(self.note("s-0001")["titled"])
+        out = self.prompt("s-0001", "fix the build", session_title="AA: New Chat")
+        self.assertEqual(out["sessionTitle"], "AA: Fix the Build")
+
+    def test_a_bare_slash_command_waits_for_the_next_prompt(self) -> None:
+        self.start("s-0001")
+        self.assertIsNone(self.prompt("s-0001", "/review", session_title="AA: New Chat"))
+        self.assertFalse(self.note("s-0001")["titled"])
+        out = self.prompt("s-0001", "fix the login bug", session_title="AA: New Chat")
+        self.assertEqual(out["sessionTitle"], "AA: Fix the Login Bug")
+
+    # ---- renames:  the Operator's title follows the thread ----
+
+    def titled(self, sid: str = "s-0001") -> None:
+        """A chat that has its pair and its first title, "AA: Help Get All PR Issues Addressed"."""
+        self.start(sid)
+        self.prompt(sid, "help get all PR issues addressed", session_title="AA: New Chat")
+
+    def renamed(self, shown: str, *, runner=None, sid: str = "s-0001", now: float | None = None) -> dict | None:
+        return self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": "go", "session_title": shown},
+            runner=runner, now=now,
+        )
+
+    def test_a_rename_that_keeps_the_pair_reaches_the_registry(self) -> None:
+        self.titled()
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.renamed("AA: Release Notes", runner=ssh))  # the title already reads right
+        self.assertEqual(self.lookup("s-0001")["title"], "Release Notes")
+        self.assertEqual(self.note("s-0001")["title"], "Release Notes")
+        self.assertEqual(len(ssh.calls), 1)
+
+    def test_a_rename_that_drops_the_pair_gets_it_back(self) -> None:
+        self.titled()
+        out = self.renamed("Release Notes")
+        self.assertEqual(out["sessionTitle"], "AA: Release Notes")
+        self.assertEqual(self.lookup("s-0001")["title"], "Release Notes")
+
+    def test_a_name_that_opens_with_an_acronym_keeps_it(self) -> None:
+        self.titled()
+        out = self.renamed("PR: Review")
+        self.assertEqual(out["sessionTitle"], "AA: PR: Review")
+        self.assertEqual(self.lookup("s-0001")["title"], "PR: Review")
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.renamed("AA: PR: Review", runner=ssh))  # the hook's own title is not a rename
+        self.assertEqual(ssh.calls, [])
+
+    def test_the_hooks_own_title_and_the_placeholder_are_not_renames(self) -> None:
+        self.titled()
+        ssh = FakeSsh(self)
+        for shown in ("AA: Help Get All PR Issues Addressed", "AA: New Chat"):
+            self.assertIsNone(self.renamed(shown, runner=ssh), shown)
+        self.assertEqual(ssh.calls, [])
+        self.assertEqual(self.lookup("s-0001")["title"], "Help Get All PR Issues Addressed")
+
+    def test_a_rename_is_retried_when_the_registry_did_not_answer(self) -> None:
+        self.titled()
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        out = self.renamed("Release Notes", runner=down)
+        self.assertEqual(out["sessionTitle"], "AA: Release Notes")  # the pair goes back in front whatever the registry says
+        self.assertEqual(self.note("s-0001")["title"], "Help Get All PR Issues Addressed")  # not taken yet
+        self.assertEqual(self.lookup("s-0001")["title"], "Help Get All PR Issues Addressed")
+        later = time.time() + CL.RETRY_SECONDS + 5
+        self.assertIsNone(self.renamed("AA: Release Notes", now=later))  # once the wait is over it tries again, and lands
+        self.assertEqual(self.lookup("s-0001")["title"], "Release Notes")
+        self.assertEqual(self.note("s-0001")["title"], "Release Notes")
+        self.assertNotIn("rename_failed_at", self.note("s-0001"))
+
+    def test_a_name_that_starts_with_a_dash_is_a_title_not_an_option(self) -> None:
+        self.titled()
+        for name in ("-v release", "--db /tmp/other release", "-1 fix"):
+            out = self.renamed(name)
+            self.assertEqual(out["sessionTitle"], "AA: %s" % name, name)
+            self.assertEqual(self.lookup("s-0001")["title"], name, name)
+        # and over ssh the title is one shell word
+        ssh = FakeSsh(self)
+        self.renamed("--help me", runner=ssh)
+        self.assertIn("--title=", ssh.calls[-1][8])
+
+    def test_a_secret_in_a_new_name_never_reaches_the_registry(self) -> None:
+        self.titled()
+        key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped:  32 mixed-case letters and digits
+        out = self.renamed("Rotate %s Today" % key)
+        # The owner's own words stay as they wrote them;  the Operator and the note hold only the scanned copy.
+        self.assertEqual(out["sessionTitle"], "AA: Rotate %s Today" % key)
+        self.assertEqual(self.lookup("s-0001")["title"], "Rotate Today")
+        self.assertNotIn(key, json.dumps(self.note("s-0001")))
+        self.assertIsNone(self.renamed("AA: Rotate %s Today" % key))  # and it is not a rename again
+
+    def test_an_unprefixed_key_in_a_new_name_never_reaches_the_registry(self) -> None:
+        self.titled()
+        token = TitleTests.NPM + "_" + "AbCdEf0123456789" * 2 + "AbCd"  # no prefix the scanner knows
+        out = self.renamed("Publish with %s now" % token)
+        self.assertEqual(out["sessionTitle"], "AA: Publish with %s now" % token)  # the owner's words stay whole
+        self.assertEqual(self.lookup("s-0001")["title"], "Publish with now")
+        self.assertNotIn(token, json.dumps(self.note("s-0001")))
+        self.assertIsNone(self.renamed("AA: Publish with %s now" % token))  # and it is not a rename again
+
+    def test_a_rename_on_a_retired_pair_registers_again_under_the_new_words(self) -> None:
+        self.titled()
         reg = OR.SessionRegistry(self.db)
         try:
             reg.close(self.lookup("s-0001")["record_id"], source="test")
         finally:
             reg.close_db()
-        self.start("s-0002")  # A goes to another chat
+        out = self.renamed("Release Notes")
+        self.assertEqual(out["sessionTitle"], "AA: Release Notes")  # AA is free, so the reopened chat has it back
+        self.assertEqual(self.lookup("s-0001")["title"], "Release Notes")
+        self.assertEqual(self.lookup("s-0001")["state"], "active")
+
+    def test_deleting_only_the_pair_from_the_title_puts_it_back_without_the_registry(self) -> None:
+        self.titled()
+        ssh = FakeSsh(self)
+        out = self.renamed("Help Get All PR Issues Addressed", runner=ssh)  # same words, the "AA: " gone
+        self.assertEqual(out["sessionTitle"], "AA: Help Get All PR Issues Addressed")
+        self.assertEqual(ssh.calls, [])  # nothing for the Operator to learn
+        self.assertEqual(self.lookup("s-0001")["title"], "Help Get All PR Issues Addressed")
+
+    def test_a_name_cleared_down_to_the_pair_changes_nothing(self) -> None:
+        self.titled()
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.renamed("AA:", runner=ssh))
+        self.assertEqual(ssh.calls, [])
+        self.assertEqual(self.lookup("s-0001")["title"], "Help Get All PR Issues Addressed")
+        self.assertEqual(CL.bare("AA:", "AA"), "")
+        self.assertEqual(CL.bare("AA:"), "")
+
+    def test_a_long_name_is_kept_whole_and_only_the_registry_copy_is_cut(self) -> None:
+        self.titled()
+        long = "Investigate the flaky checkout integration test failures on staging and prod today"
+        self.assertGreater(len(long), CL.TITLE_CHARS)
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.renamed("AA: " + long, runner=ssh))  # the owner's own title is left alone
+        self.assertEqual(len(ssh.calls), 1)
+        stored = self.lookup("s-0001")["title"]
+        self.assertLessEqual(len(stored), CL.TITLE_CHARS)
+        self.assertTrue(long.startswith(stored))
+        self.assertIsNone(self.renamed("AA: " + long, runner=ssh))  # and it is not a rename again on the next prompt
+        self.assertEqual(len(ssh.calls), 1)
+        out = self.renamed(long, runner=ssh)  # with the pair dropped it comes back in front of the whole name
+        self.assertEqual(out["sessionTitle"], "AA: " + long)
+        self.assertEqual(len(ssh.calls), 1)
+
+    def test_a_rename_the_registry_did_not_take_waits_before_it_asks_again(self) -> None:
+        self.titled()
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        first = self.renamed("Release Notes", runner=down)
+        self.assertEqual(first["sessionTitle"], "AA: Release Notes")
+        self.assertEqual(len(down.calls), 1)
+        for _ in range(3):  # prompt after prompt:  no more ssh while it waits, and nothing to say about the title
+            self.assertIsNone(self.renamed("AA: Release Notes", runner=down))
+        self.assertEqual(len(down.calls), 1)
+        later = time.time() + CL.RETRY_SECONDS + 5
+        self.assertIsNone(self.renamed("AA: Release Notes", runner=down, now=later))
+        self.assertEqual(len(down.calls), 2)  # the wait is over
+        # A different name is not the one that failed, so it is tried at once.
+        self.renamed("AA: Another Name", runner=down, now=later + 1)
+        self.assertEqual(len(down.calls), 3)
+
+    def test_a_chat_that_took_a_new_letter_after_a_failed_start_drops_the_old_one_from_its_title(self) -> None:
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        with self.small_space("AA", "AB"):
+            self.start("s-0001", session_title="Fix Login")  # AA
+            self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
+            self.start("s-0002")  # AA again
+            self.start("s-0003")  # AB
+            self.set_seen("s-0003", self.ago(300))
+            # The resume cannot reach the registry, so the chat keeps showing "AA: Fix Login".
+            out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "resume",
+                             "session_title": "AA: Fix Login"}, runner=down)
+            self.assertIn("No Operator letter yet", out["additionalContext"])
+            later = time.time() + CL.RETRY_SECONDS + 5
+            out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                             "session_title": "AA: Fix Login"}, now=later)
+        self.assertEqual(out["sessionTitle"], "AB: Fix Login")  # not "AB: AA: Fix Login"
+        self.assertEqual(self.lookup("s-0001")["title"], "Fix Login")
+        # the start told the model there was no letter yet, so the first prompt that recovers tells it the one it holds
+        self.assertIn("Claude AB", out["additionalContext"])
+        self.assertIn("earlier letter AA went to another chat", out["additionalContext"])
+
+    def test_a_secret_in_a_name_given_before_the_first_prompt_is_not_kept_in_the_note(self) -> None:
+        key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped:  32 mixed-case letters and digits
+        self.start("s-0001", source="resume", session_title="Deploy %s now" % key)
+        self.assertNotIn(key, json.dumps(self.note("s-0001")))
+        self.assertEqual(self.lookup("s-0001")["title"], "Deploy now")
+
+    def test_the_acronym_tradeoff_is_pinned_for_a_chat_with_no_note(self) -> None:
+        # With no note there is no letter of its own to go by:  two capitals and a colon are taken for one.
+        out = self.start("s-0001", source="resume", session_title="PR: Review Sweep")
+        self.assertEqual(out["sessionTitle"], "AA: Review Sweep")
+        out = self.start("s-0002", source="resume", session_title="BC: Fix Login")  # a letter from another machine
+        self.assertEqual(out["sessionTitle"], "BB: Fix Login")
+        # With its own letter known, an acronym stays.
+        self.assertEqual(CL.own_words("PR: Review Sweep", {"label": "AA"}), "PR: Review Sweep")
+
+    def test_a_dash_name_reaches_the_registry_from_the_mac_and_on_a_first_registration(self) -> None:
+        def no_ssh(*a, **k):
+            raise AssertionError("the Mac never uses ssh")
+
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "resume",
+                         "session_title": "-v notes"}, env=self.env(), runner=no_ssh, platform="darwin")
+        self.assertEqual(out["sessionTitle"], "AA: -v notes")
+        self.assertEqual(self.lookup("m-0001", "mac")["title"], "-v notes")
+
+    def test_a_retired_pair_that_cannot_be_replaced_leaves_the_old_pair_off_the_title(self) -> None:
+        with self.small_space("AA"):
+            self.titled()
+            reg = OR.SessionRegistry(self.db)
+            try:
+                reg.close(self.lookup("s-0001")["record_id"], source="test")
+            finally:
+                reg.close_db()
+            OR.register_session(  # the only pair goes to a chat this hook does not manage
+                self.db, platform="claude", verified_host="mac", profile_scope="default", native_session_id="op-0001",
+                seat="CLAUDE", source="operator-registration", issuer=OR.ISSUER_OPERATOR, letter_space="double",
+            )
+            later = time.time() + CL.TOUCH_SECONDS + 5
+            out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                             "session_title": "AA: First Task"}, now=later)
+        self.assertEqual(out["sessionTitle"], "First Task")  # the stale pair is taken off
+        self.assertEqual(self.note("s-0001")["state"], "failed")
+        # and the model is told the letter it was given at the start is gone, so it stops announcing it
+        self.assertIn("letter AA was retired", out["additionalContext"])
+        self.assertIn("could not issue another", out["additionalContext"])
+
+    def test_a_secret_shaped_name_is_not_kept_in_the_note_after_a_retired_letter_registers_again(self) -> None:
+        key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped:  32 mixed-case letters and digits
+        self.start("s-0001")  # AA, still on the placeholder
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")  # the letter is retired while the chat is open
+        finally:
+            reg.close_db()
+        # The owner names the chat with nothing but a key, and the first prompt finds the letter retired.
+        out = self.prompt("s-0001", "go", session_title="AA: " + key)
+        note = self.note("s-0001")
+        self.assertNotIn(key, json.dumps(note))
+        self.assertEqual(CL.clean_title(key), "")  # a name that is only a key has no words left once it is scanned
+        self.assertEqual((note["state"], note["titled"], note["title"]), ("open", True, ""))
+        self.assertNotIn(key, json.dumps(self.lookup("s-0001")))
+        self.assertTrue(out is None or out.get("sessionTitle", "AA: ").startswith("AA: "))
+        ssh = FakeSsh(self)  # and the same name on later prompts is not sent again
+        self.assertIsNone(self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+             "session_title": "AA: " + key}, runner=ssh))
+        self.assertEqual(ssh.calls, [])
+
+    def registry_ops(self, ssh: FakeSsh) -> list[str]:
+        """The registry op (register, title, touch, close) of each ssh call the hook made."""
+        return [shlex.split(call[8])[3] for call in ssh.calls]
+
+    def test_a_pasted_key_in_the_first_prompt_reaches_no_title_row_or_note(self) -> None:
+        body = TitleTests.BODY
+        self.start("s-0001")
+        out = self.prompt("s-0001", "Use this token ghp_%s to push the branch" % body, session_title="AA: New Chat")
+        self.assertEqual(out["sessionTitle"], "AA: Use This Token to Push the Branch")
+        self.assertNotIn(body, json.dumps(self.note("s-0001")))
+        self.assertNotIn(body, json.dumps(self.lookup("s-0001")))
+        conn = sqlite3.connect(self.db)
+        try:
+            rows = [r[0] for r in conn.execute("SELECT payload FROM export_outbox")]
+        finally:
+            conn.close()
+        self.assertTrue(rows)
+        self.assertFalse([r for r in rows if body in r or "ghp" in r], "the key reached the sheet's feed")
+
+    def test_a_chat_with_a_long_name_is_still_marked_seen(self) -> None:
+        # A name over TITLE_CHARS is a rename on every prompt (the note holds the cut copy), and used to replace the
+        # touch, so the chat's last-seen time went stale and the 36-hour sweep closed a live chat.
+        self.titled()
+        long = "Investigate the intermittent failures of the nightly payments reconciliation job on staging"
+        self.assertGreater(len(long), CL.TITLE_CHARS)
+        self.assertIsNone(self.renamed("AA: " + long))  # the rename itself reaches the registry
+        ssh = FakeSsh(self)
+        start = time.time()
+        for step in (1, 2, 3):
+            later = start + step * (CL.TOUCH_SECONDS + 5)
+            self.assertIsNone(self.renamed("AA: " + long, runner=ssh, now=later))
+        self.assertEqual(self.registry_ops(ssh), ["touch", "touch", "touch"])
+        soon = start + 3 * (CL.TOUCH_SECONDS + 5) + 60  # and not on every prompt
+        self.assertIsNone(self.renamed("AA: " + long, runner=ssh, now=soon))
+        self.assertEqual(len(ssh.calls), 3)
+
+    def test_a_chat_whose_name_loses_a_word_to_the_scanner_is_still_marked_seen(self) -> None:
+        self.titled()
+        key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+        name = "Rotate %s Today" % key
+        self.assertNotEqual(CL.clean_title(name), name)
+        self.assertIsNone(self.renamed("AA: " + name))  # the rename is sent once
+        ssh = FakeSsh(self)
         later = time.time() + CL.TOUCH_SECONDS + 5
-        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
-                         "session_title": "A: First Task"}, now=later)
-        self.assertEqual(out["sessionTitle"], "B: First Task")
-        self.assertEqual(self.lookup("s-0001")["label"], "B")
+        self.assertIsNone(self.renamed("AA: " + name, runner=ssh, now=later))
+        self.assertEqual(self.registry_ops(ssh), ["touch"])
 
-    def test_a_placeholder_is_never_taken_for_a_title(self) -> None:
-        self.start("s-0001")
-        out = self.start("s-0001", source="resume", session_title="A: New Chat")
+    def test_a_retired_letter_that_comes_back_as_another_pair_tells_the_model(self) -> None:
+        self.titled()  # AA: Help Get All PR Issues Addressed
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")  # swept while the chat sat idle
+        finally:
+            reg.close_db()
+        self.start("s-0002")  # AA, the freed pair goes to another chat
+        self.start("s-0003")  # BB
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        out = self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+             "session_title": "AA: Help Get All PR Issues Addressed"},
+            now=later,
+        )
+        self.assertEqual(out["sessionTitle"], "CC: Help Get All PR Issues Addressed")
+        context = out["additionalContext"]
+        self.assertIn("Claude CC", context)  # the model is told the new pair, not left with AA
+        self.assertIn("earlier letter AA went to another chat", context)
+        self.assertEqual(self.note("s-0001")["label"], "CC")
+
+    def test_a_retired_letter_that_comes_back_as_the_same_pair_is_told_as_a_later_generation(self) -> None:
+        self.titled()
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        out = self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+             "session_title": "AA: Help Get All PR Issues Addressed"},
+            now=later,
+        )
+        # AA is free and was this chat's, so the title on screen is right and is left alone;  but a reused pair is the
+        # next generation, and the model is told how the chat is addressed now ("Claude AA (gen 2)").
         self.assertNotIn("sessionTitle", out)
-        self.assertFalse(self.note("s-0001")["titled"])
-        out = self.prompt("s-0001", "fix the build", session_title="A: New Chat")
-        self.assertEqual(out["sessionTitle"], "A: Fix the Build")
+        self.assertIn("Claude AA (gen 2)", out["additionalContext"])
+        self.assertNotIn("went to another chat", out["additionalContext"])
+        self.assertEqual(self.lookup("s-0001")["label"], "AA")
 
-    def test_a_bare_slash_command_waits_for_the_next_prompt(self) -> None:
+    def test_a_title_the_registry_never_took_is_not_sent_over_a_newer_one(self) -> None:
+        class TitleDown(FakeSsh):
+            """The Mac does not answer a title call."""
+
+            def __call__(self, cmd, **kwargs):
+                if shlex.split(cmd[8])[3] == "title":
+                    self.calls.append(cmd)
+                    raise subprocess.TimeoutExpired("ssh", 12)
+                return super().__call__(cmd, **kwargs)
+
         self.start("s-0001")
-        self.assertIsNone(self.prompt("s-0001", "/review", session_title="A: New Chat"))
-        self.assertFalse(self.note("s-0001")["titled"])
-        out = self.prompt("s-0001", "fix the login bug", session_title="A: New Chat")
-        self.assertEqual(out["sessionTitle"], "A: Fix the Login Bug")
+        start = time.time()
+        self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=TitleDown(self), now=start,
+        )
+        self.assertEqual(self.note("s-0001")["title_unsent"], "Fix the Login Page")
+        self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "prompt_input_exit"})
+        # Resumed under another name:  the registration carries that name to the Operator.
+        self.start("s-0001", source="resume", session_title="AA: Billing Report")
+        self.assertEqual(self.lookup("s-0001")["title"], "Billing Report")
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+             "session_title": "AA: Billing Report"}, runner=ssh, now=start + CL.RETRY_SECONDS + 5))
+        self.assertNotIn("title", self.registry_ops(ssh))  # the old title is not sent over the new one
+        self.assertNotIn("title_unsent", self.note("s-0001"))
+        self.assertEqual(self.lookup("s-0001")["title"], "Billing Report")
+
+    def test_a_retired_letter_that_comes_back_keeps_the_owners_long_name_on_screen(self) -> None:
+        self.titled()
+        long = "Investigate the intermittent failures of the nightly payments reconciliation job on staging"
+        self.assertIsNone(self.renamed("AA: " + long))  # the registry and the note hold the cut copy
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        later = time.time() + CL.TOUCH_SECONDS + 5
+        out = self.renamed("AA: " + long, now=later)
+        self.assertNotIn("sessionTitle", out)  # the whole name already on screen is not cut to the registry's copy
+        stored = self.lookup("s-0001")["title"]
+        self.assertLessEqual(len(stored), CL.TITLE_CHARS)
+        self.assertTrue(long.startswith(stored))
+
+    def test_a_first_title_the_registry_did_not_take_is_sent_again_after_the_wait(self) -> None:
+        class TitleFailsOnce(FakeSsh):
+            """The Mac does not answer the first title call (asleep, or the ssh timed out), then does."""
+
+            failed = False
+
+            def __call__(self, cmd, **kwargs):
+                if not self.failed and shlex.split(cmd[8])[3] == "title":
+                    self.failed = True
+                    self.calls.append(cmd)
+                    raise subprocess.TimeoutExpired("ssh", 12)
+                return super().__call__(cmd, **kwargs)
+
+        self.start("s-0001")  # AA: New Chat
+        ssh = TitleFailsOnce(self)
+        start = time.time()
+        out = self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=ssh, now=start,
+        )
+        self.assertEqual(out["sessionTitle"], "AA: Fix the Login Page")  # the chat shows its title
+        self.assertEqual(self.lookup("s-0001")["title"], "")  # but the Operator has none
+        self.assertEqual(self.note("s-0001")["title_unsent"], "Fix the Login Page")
+        for offset in (60, CL.RETRY_SECONDS - 60):  # not before the wait is over
+            self.assertIsNone(self.hook(
+                {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+                 "session_title": "AA: Fix the Login Page"}, runner=ssh, now=start + offset))
+        self.assertEqual(self.registry_ops(ssh), ["title"])
+        self.assertIsNone(self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+             "session_title": "AA: Fix the Login Page"}, runner=ssh, now=start + CL.RETRY_SECONDS + 5))
+        self.assertEqual(self.registry_ops(ssh), ["title", "title"])
+        self.assertEqual(self.lookup("s-0001")["title"], "Fix the Login Page")
+        self.assertNotIn("title_unsent", self.note("s-0001"))
+
+    def test_a_rename_that_is_waiting_goes_out_instead_of_the_first_title_the_registry_never_took(self) -> None:
+        self.start("s-0001")
+        ssh = TitlesDown(self)
+        start = time.time()
+        self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=ssh, now=start,
+        )
+        self.assertEqual(self.note("s-0001")["title_unsent"], "Fix the Login Page")
+        # The owner renames the chat inside the wait, and the Mac still does not answer.
+        self.renamed("AA: Billing Report", runner=ssh, now=start + 120)
+        self.assertEqual(self.note("s-0001")["rename_failed_for"], "Billing Report")
+        ssh.down = False
+        self.renamed("AA: Billing Report", runner=ssh, now=start + CL.RETRY_SECONDS + 5)
+        self.assertEqual(self.lookup("s-0001")["title"], "Billing Report")  # not the stale first title
+        note = self.note("s-0001")
+        self.assertEqual(note["title"], "Billing Report")
+        for key in ("title_unsent", "title_failed_at", "rename_failed_at", "rename_failed_for"):
+            self.assertNotIn(key, note)
+
+    def test_a_failed_retry_waits_the_full_time_before_the_next_title_call(self) -> None:
+        self.start("s-0001")
+        ssh = TitlesDown(self)
+        start = time.time()
+        self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=ssh, now=start,
+        )
+        self.renamed("AA: Billing Report", runner=ssh, now=start + 120)
+        self.renamed("AA: Billing Report", runner=ssh, now=start + CL.RETRY_SECONDS + 5)  # the retry fails as well
+        self.assertEqual(self.registry_ops(ssh), ["title", "title", "title"])
+        self.renamed("AA: Billing Report", runner=ssh, now=start + CL.RETRY_SECONDS + 125)  # 120 s after the last call
+        self.assertEqual(self.registry_ops(ssh), ["title", "title", "title"])  # still inside the wait
+
+    def test_a_rename_the_owner_took_back_is_not_sent_over_the_title_on_screen(self) -> None:
+        for retired, sid in ((False, "s-0001"), (True, "s-0002")):
+            with self.subTest(letter_retired=retired):
+                self.start(sid)
+                label = self.lookup(sid)["label"]
+                ssh = TitlesDown(self)
+                start = time.time()
+                self.hook(
+                    {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": "fix the login page",
+                     "session_title": label + ": New Chat"},
+                    runner=ssh, now=start,
+                )
+                self.renamed(label + ": Billing Report", sid=sid, runner=ssh, now=start + 120)  # fails:  the rename waits
+                self.renamed(label + ": Fix the Login Page", sid=sid, runner=ssh, now=start + 200)  # and is taken back
+                if retired:
+                    reg = OR.SessionRegistry(self.db)
+                    try:
+                        reg.close(self.lookup(sid)["record_id"], source="test")
+                    finally:
+                        reg.close_db()
+                ssh.down = False
+                out = self.renamed(label + ": Fix the Login Page", sid=sid, runner=ssh, now=start + CL.RETRY_SECONDS + 5)
+                self.assertNotIn("Billing Report", json.dumps(out))  # never the screen's title replaced by the old rename
+                self.assertEqual(self.lookup(sid)["title"], "Fix the Login Page")
+                note = self.note(sid)
+                self.assertEqual(note["title"], "Fix the Login Page")
+                self.assertNotIn("title_unsent", note)
+
+    def test_a_rename_that_cleans_to_nothing_still_counts_as_waiting_when_the_letter_is_retired(self) -> None:
+        # A name the scanner empties (a pasted key) is a memo of "" and not no memo:  the owner's name stays on screen.
+        key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped
+        self.titled()
+        start = time.time() + CL.TOUCH_SECONDS + 10
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        self.renamed("AA: " + key, runner=down, now=start)
+        self.assertEqual(self.note("s-0001")["rename_failed_for"], "")
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        out = self.renamed("AA: " + key, now=start + 60)  # inside the rename's wait:  only the touch finds the letter retired
+        self.assertNotIn("Help Get All PR", json.dumps(out))  # the old words are not put over the owner's name
+
+    def test_a_rename_to_a_ticket_name_survives_a_retired_letter(self) -> None:
+        self.titled()
+        start = time.time() + CL.TOUCH_SECONDS + 10
+        slug = "AFC-564-pair-letters-registry-2026"
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        self.renamed("AA: " + slug, runner=down, now=start)
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        out = self.renamed("AA: " + slug, now=start + 60)
+        self.assertNotIn("sessionTitle", out or {})
+        self.assertEqual(self.lookup("s-0001")["title"], slug)
+
+    def test_a_retired_letter_that_comes_back_settles_a_first_title_that_never_arrived(self) -> None:
+        self.start("s-0001")
+        ssh = TitlesDown(self)
+        start = time.time()
+        self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=ssh, now=start,
+        )
+        self.assertEqual(self.note("s-0001")["title_unsent"], "Fix the Login Page")
+        self.renamed("AA: Fix the Login Page", runner=ssh, now=start + 1700)  # the retry fails and waits again
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        ssh.down = False
+        # The retry is not due (110 s), the touch is:  it finds the letter retired and registers again with a title.
+        self.renamed("AA: Fix the Login Page", runner=ssh, now=start + 1810)
+        self.assertEqual(self.lookup("s-0001")["title"], "Fix the Login Page")
+        note = self.note("s-0001")
+        self.assertNotIn("title_unsent", note)
+        self.assertNotIn("title_failed_at", note)
+
+    def test_a_retired_letter_that_comes_back_keeps_a_rename_the_registry_has_not_taken_yet(self) -> None:
+        self.titled()  # "AA: Help Get All PR Issues Addressed"
+        start = time.time() + CL.TOUCH_SECONDS + 10  # by then the chat is due a touch
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        self.renamed("AA: Release Plan Q4", runner=down, now=start)  # the Mac does not answer:  the rename waits
+        self.assertEqual(self.note("s-0001")["rename_failed_for"], "Release Plan Q4")
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")  # the letter is retired behind the chat's back
+        finally:
+            reg.close_db()
+        # Still inside the rename's wait, so no title call:  the touch finds the letter retired and registers again.
+        self.renamed("AA: Release Plan Q4", now=start + 60)
+        self.assertEqual(self.lookup("s-0001")["title"], "Release Plan Q4")  # not the old words the registry held
+        note = self.note("s-0001")
+        self.assertEqual(note["title"], "Release Plan Q4")
+        self.assertNotIn("rename_failed_for", note)
+        self.assertNotIn("rename_failed_at", note)
+
+    # ---- a platform that runs Claude as its engine asks for its own letter ----
+
+    def test_a_botfleet_turn_takes_no_claude_letter_and_touches_nothing(self) -> None:
+        botfleet = dict(
+            AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-MONITOR", AGENT_SEAT="BF-MONITOR",
+            AGENT_SESSION="bf-thread-1", AGENT_SYNC_ATTACH="0",
+        )
+        ssh = FakeSsh(self)
+        events = (
+            {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build"},
+            {"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "other"},
+        )
+        for env in (botfleet, {"AGENT_SYNC_ATTACH": "0"}, {"AGENT_LAUNCHER": "opencode"}):
+            for payload in events:
+                self.assertIsNone(self.hook(payload, env=self.server_env(**env), runner=ssh), (env, payload))
+        self.assertEqual(ssh.calls, [])
+        self.assertIsNone(self.lookup("s-0001"))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "CLAUDE")))
 
     def test_the_remote_must_be_named_and_plain(self) -> None:
         payload = {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}
@@ -344,7 +1531,7 @@ class HookTests(Base):
 
     def test_a_malformed_answer_is_refused(self) -> None:
         def bad(cmd, **kwargs):
-            return SimpleNamespace(stdout='{"outcome": "registered", "label": "AA", "generation": 1}\n', returncode=0)
+            return SimpleNamespace(stdout='{"outcome": "registered", "label": "AAA", "generation": 1}\n', returncode=0)
 
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=bad)
         self.assertIn("malformed label", out["additionalContext"])
@@ -362,7 +1549,7 @@ class HookTests(Base):
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "compact"}, runner=ssh)
         self.assertEqual(ssh.calls, [])
         self.assertNotIn("sessionTitle", out)
-        self.assertIn("Claude A", out["additionalContext"])
+        self.assertIn("Claude AA", out["additionalContext"])
 
     def test_unreachable_registry_never_blocks_and_retries_later(self) -> None:
         down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
@@ -374,7 +1561,7 @@ class HookTests(Base):
         later = time.time() + CL.RETRY_SECONDS + 5
         out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build"},
                         now=later)
-        self.assertEqual(out["sessionTitle"], "A: Fix the Build")
+        self.assertEqual(out["sessionTitle"], "AA: Fix the Build")
 
     def test_out_of_scope_and_unknown_hosts(self) -> None:
         payload = {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}

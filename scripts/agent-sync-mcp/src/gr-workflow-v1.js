@@ -28,6 +28,42 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_issue_events:['Read bounded issue event metadata only; no actor, content, label details or full history claim. Nullable ID/time/commit means unavailable. PR issue endpoints may return PR events.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_issue_timeline:['Read bounded issue timeline metadata only, not complete comments/reviews/history or source bodies. Pagination required; has_more is conservative.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_pr_commits_page:['Bounded PR commit graph, explicit 250-commit API history cap; no complete-history or atomic snapshot claim.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA,page:{type:'integer',minimum:1,maximum:250},per_page:PER_PAGE})],
+ wf_pr_review_get:['Exact submitted-review identity/state/commit metadata, not current-head approval verdict. Head observed before/after, not atomic.',obj(['repo','number','review_id','expected_head_sha'],{repo:REPO,number:INT,review_id:INT,expected_head_sha:SHA})],
+ wf_release_latest:['Get GitHub latest published non-prerelease identity/tag metadata, not semantic-version ordering.',obj(['repo'],{repo:REPO})],
+ wf_release_by_tag:['Exact release tag lookup identity/flags; no release notes or secrets.',obj(['repo','tag'],{repo:REPO,tag:REF})],
+ wf_commit_comment_create:['Create a whole-commit comment, not inline path comments; exact SHA verified. Notification/write requires separate authority.',obj(['repo','sha','body'],{repo:REPO,sha:SHA,body:{type:'string',minLength:1,maxLength:32768}})],
+ wf_commit_comment_update:['Update an exact commit comment with prior-body SHA256 check; pre-read is not atomic.',obj(['repo','sha','comment_id','expected_body_sha256','body'],{repo:REPO,sha:SHA,comment_id:INT,expected_body_sha256:{type:'string',pattern:'^[0-9a-f]{64}$'},body:{type:'string',minLength:1,maxLength:32768}})],
+ wf_commit_comment_delete:['Delete an exact commit comment after prior-body SHA256 check; pre-read is not atomic. Separate operation authority required.',obj(['repo','sha','comment_id','expected_body_sha256'],{repo:REPO,sha:SHA,comment_id:INT,expected_body_sha256:{type:'string',pattern:'^[0-9a-f]{64}$'}})],
+ wf_repo_variables:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_repo_variable_get:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'}})],
+ wf_repo_variable_create:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name', 'value'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'},value:{type:'string',maxLength:8192}})],
+ wf_repo_variable_update:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name', 'value'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'},value:{type:'string',maxLength:8192}})],
+ wf_repo_variable_delete:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'}})],
+ wf_workflow_get:['Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL.',obj(["repo", "workflow_id"],{repo:REPO,workflow_id:INT})],
+ wf_artifact_get:['Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL.',obj(["repo", "artifact_id"],{repo:REPO,artifact_id:INT})],
+ wf_artifacts_page:['Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL.',obj(["repo"],{repo:REPO,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_caches_page:['Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL.',obj(["repo"],{repo:REPO,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_cache_usage:['Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL.',obj(["repo"],{repo:REPO,})],
+ wf_run_attempt_get:['Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL.',obj(["repo", "run_id", "head_sha", "run_attempt"],{repo:REPO,run_id:INT,head_sha:SHA,run_attempt:{type:'integer',minimum:1,maximum:1000000}})],
+ wf_run_attempt_jobs:['Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL.',obj(["repo", "run_id", "head_sha", "run_attempt"],{repo:REPO,run_id:INT,head_sha:SHA,run_attempt:{type:'integer',minimum:1,maximum:1000000},page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_run_pending_deployments:['Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL.',obj(["repo", "run_id", "head_sha", "run_attempt"],{repo:REPO,run_id:INT,head_sha:SHA,run_attempt:{type:'integer',minimum:1,maximum:1000000}})],
+
+ wf_job_get:['Exact run/head/attempt correlated job_get metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority.',obj(['repo', 'job_id', 'run_id', 'head_sha', 'run_attempt'],{repo:REPO,job_id:INT,run_id:INT,head_sha:SHA,run_attempt:{type:'integer',minimum:1,maximum:1000000}})],
+ wf_job_rerun:['Exact run/head/attempt correlated job_rerun metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority.',obj(['repo', 'job_id', 'run_id', 'head_sha', 'run_attempt'],{repo:REPO,job_id:INT,run_id:INT,head_sha:SHA,run_attempt:{type:'integer',minimum:1,maximum:1000000}})],
+ wf_run_rerun_all:['Exact run/head/attempt correlated run_rerun_all metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority.',obj(['repo', 'run_id', 'head_sha', 'run_attempt'],{repo:REPO,run_id:INT,head_sha:SHA,run_attempt:{type:'integer',minimum:1,maximum:1000000}})],
+ wf_run_force_cancel:['Exact run/head/attempt correlated run_force_cancel metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority.',obj(['repo', 'run_id', 'head_sha', 'run_attempt'],{repo:REPO,run_id:INT,head_sha:SHA,run_attempt:{type:'integer',minimum:1,maximum:1000000}})],
+ wf_run_logs_delete:['Exact run/head/attempt correlated run_logs_delete metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority.',obj(['repo', 'run_id', 'head_sha', 'run_attempt'],{repo:REPO,run_id:INT,head_sha:SHA,run_attempt:{type:'integer',minimum:1,maximum:1000000}})],
+ wf_review_requests_add:['Request individual and team reviews; sends notifications. Exact PR/head pre-read and bounded identity receipt, not atomic. No submitted-review dismissal; separate operation authority still required.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA,reviewers:{type:'array',minItems:0,maxItems:50,items:{type:'string',pattern:'^[A-Za-z0-9_-]{1,100}(?:\\[bot\\])?$'}},team_reviewers:{type:'array',minItems:0,maxItems:50,items:{type:'string',pattern:'^[A-Za-z0-9_-]{1,100}$'}}})],
+ wf_review_requests_remove:['Cancel pending individual or team review requests, not submitted reviews. Exact PR/head pre-read and bounded identity receipt, not atomic. No submitted-review dismissal; separate operation authority still required.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA,reviewers:{type:'array',minItems:0,maxItems:50,items:{type:'string',pattern:'^[A-Za-z0-9_-]{1,100}(?:\\[bot\\])?$'}},team_reviewers:{type:'array',minItems:0,maxItems:50,items:{type:'string',pattern:'^[A-Za-z0-9_-]{1,100}$'}}})],
+ wf_review_requests_rerequest:['Rerequest individual and team reviews; sends notifications. Exact PR/head pre-read and bounded identity receipt, not atomic. No submitted-review dismissal; separate operation authority still required.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA,reviewers:{type:'array',minItems:0,maxItems:50,items:{type:'string',pattern:'^[A-Za-z0-9_-]{1,100}(?:\\[bot\\])?$'}},team_reviewers:{type:'array',minItems:0,maxItems:50,items:{type:'string',pattern:'^[A-Za-z0-9_-]{1,100}$'}}})],
+ wf_commit_comments_page:['Read a bounded page of untrusted commit comments at an exact SHA; no snapshot or full-history claim.',obj(['repo','sha'],{repo:REPO,sha:SHA,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_commit_comment_get:['Read one untrusted commit comment correlated with its ID and exact commit SHA.',obj(['repo','sha','comment_id'],{repo:REPO,sha:SHA,comment_id:INT})],
+ wf_pr_requested_reviewers:['Read requested reviewer identity metadata, not completed reviews or approval. Head observed before/after; not atomic.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA})],
+ wf_repo_tags:['Read bounded tag name/commit SHA metadata, not annotated tag contents or a complete ref history.  Pagination required.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_repo_languages:['Read bounded repository language-byte counts; not file counts, contributors, or a live code audit.',obj(['repo'],{repo:REPO})],
  wf_git_tree_create:['Create unattached tree from base tree and up to20 text files; no workflow paths/ref changes.',obj(['repo','base_tree','files'],{repo:REPO,base_tree:SHA,files:{type:'array',minItems:1,maxItems:20,items:obj(['path','text','mode'],{path:PATH,text:{type:'string',maxLength:40000},mode:{type:'string',enum:['100644','100755']}})}})],
  wf_git_commit_create:['Create unattached commit with exact tree and one/two parents. No arbitrary author/signature/ref changes.',obj(['repo','tree_sha','parents','message'],{repo:REPO,tree_sha:SHA,parents:{type:'array',minItems:1,maxItems:2,items:SHA},message:{type:'string',minLength:1,maxLength:32768}})],
  wf_pr_list_page:['Read bounded created-ascending PR metadata page. Mutable list, not snapshot/full inventory; head means same-owner branch only.',obj(['repo'],{repo:REPO,state:{type:'string',enum:['open','closed','all']},head:REF,base:REF,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
@@ -57,8 +93,11 @@ const SPECS = {
  wf_git_blob_create:['Create unattached bounded UTF-8 blob; no ref or tree changes.',obj(['repo','text'],{repo:REPO,text:{type:'string',maxLength:40000}})],
  wf_git_commit_get:['Read bounded Git commit object, not full REST commit diff.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
  wf_git_tree_get:['Read nonrecursive tree with at most100 entries; larger trees refused.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
+
+
   wf_commit_statuses: ['Read commit statuses, not check runs. Requires statuses:read in the seat ceiling.',obj(['repo','sha'],{repo:REPO,sha:SHA,per_page:PER_PAGE})],
   wf_commit_status_create: ['Create a commit status only under separate owner authority; never fabricate a CI result or bypass a gate. Requires statuses:write in the seat ceiling.',obj(['repo','sha','state','context','description'],{repo:REPO,sha:SHA,state:{type:'string',enum:['error','failure','pending','success']},context:{type:'string',minLength:1,maxLength:255,pattern:'^swu-[a-z0-9-]+/report$'},description:{type:'string',minLength:1,maxLength:140}})],
+
  wf_file_rename:['Rename exact regular blob on non-default branch, absent destination, no workflow paths. Bounded trees; no force and no automatic replay.',obj(['repo','source_path','destination_path','branch','message','expected_head_sha','prior_sha'],{repo:REPO,source_path:PATH,destination_path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},expected_head_sha:SHA,prior_sha:SHA})],
   wf_review_thread_resolve: ['Resolve a review thread only after addressing its finding; never a review-gate bypass. Membership is checked against the repository PR first 100 threads.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
   wf_review_thread_unresolve: ['Unresolve a repository PR review thread after bounded membership validation.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
@@ -88,6 +127,7 @@ const SPECS = {
  wf_environments:['Read bounded environment metadata, not full protection rules or reviewers; null means unknown/notreturned, not unprotected.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_environment_get:['Read exact environment metadata and protection-type summary; no environment creation, deletion, approval or policy changes.',obj(['repo','name'],{repo:REPO,name:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}$'}})],
  wf_file_delete:['Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
+
 
   wf_issue_list: ['List issues (not pull requests).', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE})],
   wf_issue_get: ['Read issue summary.', obj(['repo','number'], {repo:REPO,number:INT})],
@@ -168,7 +208,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent', 'wf_issue_subissues', 'wf_issue_blocked_by', 'wf_issue_blocking', 'wf_commit_statuses', 'wf_git_blob_get', 'wf_git_commit_get', 'wf_git_tree_get', 'wf_release_asset_download', 'wf_job_log', 'wf_run_logs', 'wf_artifact_download', 'wf_milestones', 'wf_milestone_get', 'wf_deployments', 'wf_deployment_get', 'wf_deployment_statuses', 'wf_environments', 'wf_environment_get', 'wf_release_list', 'wf_release_get', 'wf_tag_get', 'wf_review_threads', 'wf_issue_list', 'wf_issue_get', 'wf_pr_get', 'wf_pr_reviews', 'wf_pr_comments', 'wf_issue_comments', 'wf_commit_get', 'wf_compare', 'wf_branch_get', 'wf_repo_get', 'wf_labels', 'wf_workflows', 'wf_run_get', 'wf_run_artifacts', 'wf_release_assets', 'wf_release_asset_get', 'wf_pr_list', 'wf_pr_files', 'wf_file_get', 'wf_tree', 'wf_branches', 'wf_commits', 'wf_code_search', 'wf_runs', 'wf_run_jobs', 'wf_checks', 'wf_merge_queue_entry']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -214,6 +254,7 @@ const relationCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{
 // Free text an action persists on GitHub.  A credential shape in any of it is
 // refused before network, and the refusal never echoes the value.
 const CREDENTIAL_TEXT_FIELDS = Object.freeze({
+  wf_commit_comment_create:['body'],wf_commit_comment_update:['body'],
   wf_issue_create:['title','body'], wf_issue_update:['title','body'],
   wf_file_delete:['message'], wf_file_rename:['message'], wf_review_dismiss:['message'],
   wf_commit_status_create:['context','description'],
@@ -224,6 +265,7 @@ const textCredentialFree = (action, args) => (CREDENTIAL_TEXT_FIELDS[action] ?? 
 );
 const gitSha=z.string().regex(/^[0-9a-f]{40}$/);
 const utfBytes=(limit,nonblank=false)=>z.string().refine(v=>(!nonblank||v.trim()!=='')&&new TextEncoder().encode(v).length<=limit);
+
 function gitSchema(schema){
  if(schema.type==='object')return z.object(Object.fromEntries(Object.entries(schema.properties).map(([k,v])=>[k,schema.required.includes(k)?gitSchema(v):gitSchema(v).optional()]))).strict();
  if(schema.type==='array')return z.array(gitSchema(schema.items)).min(schema.minItems).max(schema.maxItems);
@@ -269,8 +311,10 @@ export function parseWfV1Args(action,args){
 // reads a raw caller object.
 export const validWfV1Args = (action, args) => parseWfV1Args(action, args) !== null;
 // Per-action checks.  Only parseWfV1Args calls this, and only with Zod-parsed data.
+const reviewRequestArgsOk=(action,args)=>!['wf_review_requests_add','wf_review_requests_remove','wf_review_requests_rerequest'].includes(action)||
+ ((args.reviewers?.length??0)+(args.team_reviewers?.length??0)>0&&['reviewers','team_reviewers'].every(k=>{const rows=args[k]??[];return new Set(rows.map(v=>v.toLowerCase())).size===rows.length&&rows.every(v=>!metadataCredential.test(v));}));
 const parsedArgsOk = (action, args) => typeof action==='string' && boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)}) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-(action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' && action !== 'wf_review_update' && action !== 'wf_review_comment_reply' || reviewBodyOk(args)) && textCredentialFree(action,args) && (action !== 'wf_label_update' || ['name','new_name','description'].every(k=>typeof args[k]==='string' && !/[\uD800-\uDFFF]/u.test(args[k]) && (k==='description'||args[k].trim()!=='' && !args[k].includes('%') && !args[k].split('/').some(s=>s==='.'||s==='..')) && new TextEncoder().encode(args[k]).length<=100 && !/[\x00-\x1f\x7f]/.test(args[k]) && !/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|\bst\.[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----)/.test(args[k]))) && (action !== 'wf_labels_add' || args.labels.every(x=>x.trim()!=='' && !x.split('/').some(s=>s==='.'||s==='..') && !relationCredential.test(x)) && new Set(args.labels.map(x=>x.toLowerCase())).size===args.labels.length) && (!['wf_file_delete','wf_file_rename'].includes(action) || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768)&& (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140))) && (!['wf_milestone_create','wf_milestone_update'].includes(action) || typeof args.title === 'string' && args.title.trim() !== '' && new TextEncoder().encode(args.title).length <= 1024 && reviewBodyOk({body:args.description}))&& (!['wf_check_create','wf_check_update'].includes(action) || (args.status === 'completed') === (args.conclusion !== 'none') && ['name','title','summary'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= ({name:100,title:255,summary:32768}[k]))) && (action !== 'wf_review_dismiss' || reviewBodyOk({body:args.message})) && (action !== 'wf_commit_status_create' || ['context','description'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k === 'context' ? 255 : 140))) && gitArgsOk(action,args);
+(action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' && action !== 'wf_review_update' && action !== 'wf_review_comment_reply' || reviewBodyOk(args)) && textCredentialFree(action,args) && (action !== 'wf_label_update' || ['name','new_name','description'].every(k=>typeof args[k]==='string' && !/[\uD800-\uDFFF]/u.test(args[k]) && (k==='description'||args[k].trim()!=='' && !args[k].includes('%') && !args[k].split('/').some(s=>s==='.'||s==='..')) && new TextEncoder().encode(args[k]).length<=100 && !/[\x00-\x1f\x7f]/.test(args[k]) && !/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|\bst\.[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----)/.test(args[k]))) && (action !== 'wf_labels_add' || args.labels.every(x=>x.trim()!=='' && !x.split('/').some(s=>s==='.'||s==='..') && !relationCredential.test(x)) && new Set(args.labels.map(x=>x.toLowerCase())).size===args.labels.length) && (!['wf_file_delete','wf_file_rename'].includes(action) || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768)&& (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140))) && (!['wf_milestone_create','wf_milestone_update'].includes(action) || typeof args.title === 'string' && args.title.trim() !== '' && new TextEncoder().encode(args.title).length <= 1024 && reviewBodyOk({body:args.description}))&& (!['wf_check_create','wf_check_update'].includes(action) || (args.status === 'completed') === (args.conclusion !== 'none') && ['name','title','summary'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= ({name:100,title:255,summary:32768}[k]))) && (action !== 'wf_review_dismiss' || reviewBodyOk({body:args.message})) && (action !== 'wf_commit_status_create' || ['context','description'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k === 'context' ? 255 : 140))) && gitArgsOk(action,args) && (!['wf_repo_variable_create','wf_repo_variable_update'].includes(action) || typeof args.value === 'string' && new TextEncoder().encode(args.value).length<=8192) && reviewRequestArgsOk(action,args);
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
@@ -351,6 +395,7 @@ const RESPONSE_KEYS = {
   wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
   wf_merge_guarded: ['merged','sha'],
 };
+const credentialPattern=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/;
 const shaValue=z.string().regex(/^[0-9a-f]{40}$/),positive=z.number().int().positive();
 let jsonValueUnion=null;
 const jsonValue=z.lazy(()=>jsonValueUnion??=z.union([z.string(),z.number().finite(),z.boolean(),z.null(),z.array(jsonValue),z.record(z.string(),jsonValue)]));
@@ -398,9 +443,11 @@ const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED',
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
 const commitStatus=z.object({id:positive,state:z.enum(['error','failure','pending','success']),context:z.string().min(1).refine(v=>v.trim()!==''&&new TextEncoder().encode(v).length<=255),description:z.string().refine(v=>new TextEncoder().encode(v).length<=140).nullable(),created_at:z.string().max(100).nullable()}).strict();
 const commitStatusResponses={wf_commit_statuses:z.object({statuses:z.array(commitStatus).max(50),complete:z.boolean()}).strict(),wf_commit_status_create:z.object({status:commitStatus}).strict()};
-const relationIssue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>new TextEncoder().encode(v).length<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).nullable()}).strict();
+const relationIssue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>new TextEncoder().encode(v).length<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).refine(v=>!credentialPattern.test(v)).nullable()}).strict();
 const relationParent=z.object({issue:relationIssue}).strict();
 const relationPage=z.object({issues:z.array(relationIssue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
+const historyEvent=z.object({id:positive.nullable(),event:z.string().regex(/^[a-z][a-z_-]{0,79}$/),created_at:z.string().max(100).nullable(),commit_id:shaValue.nullable()}).strict();
+const historyResponses={wf_issue_events:z.object({events:z.array(historyEvent.refine(v=>v.id!==null)).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict(),wf_issue_timeline:z.object({events:z.array(historyEvent).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()};
 const dependencyResult=(blocking)=>z.object({completed:z.literal(true),number:positive,blocker_number:positive,blocking:z.literal(blocking)}).strict();
 const relationResponses={wf_issue_dependency_add:dependencyResult(true),wf_issue_dependency_remove:dependencyResult(false)};
 const checkRunMetadata=z.object({id:z.number().int().positive(),head_sha:shaValue,name:z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=255&&!v.includes('\0')&&!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),status:z.enum(['queued','in_progress','completed','waiting','requested','pending']),conclusion:z.enum(['action_required','cancelled','failure','neutral','success','skipped','stale','timed_out','startup_failure']).nullable(),app_id:z.number().int().positive()}).strict().refine(v=>(v.status==='completed')===(v.conclusion!==null));
@@ -436,9 +483,93 @@ const prListObservedRef=z.string().min(1).max(200).refine(v=>!/[\x00-\x20\x7f~^:
 const prListRow=z.object({number:positive,state:z.enum(['open','closed']),draft:z.boolean(),head_ref:prListObservedRef,head_sha:shaValue,base_ref:prListObservedRef,base_sha:shaValue}).strict();
 const prListPage=z.object({pulls:z.array(prListRow).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean(),snapshot:z.literal(false)}).strict();
 const renameReceipt=z.object({source_path:z.string().min(1).max(1024),destination_path:z.string().min(1).max(1024),branch:z.string().min(1).max(200),commit:z.string().regex(/^[0-9a-f]{40}$/),blob_sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict();
+
+const metadataCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/;
+const metadataText=max=>z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=max&&!/[\u0000-\u001f\u007f\uD800-\uDFFF]/u.test(v)&&!metadataCredential.test(v));
+const metadataLanguages=z.object({languages:z.array(z.object({name:metadataText(100),bytes:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)}).strict()).max(100)}).strict();
+const metadataTags=z.object({tags:z.array(z.object({name:metadataText(1024),sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict()).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
+const contextAuthor=z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),login:z.string().regex(/^[A-Za-z0-9_-]{1,100}(?:\[bot\])?$/).refine(v=>!metadataCredential.test(v)),type:z.enum(['User','Bot','Organization'])}).strict();
+const contextComment=z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),commit_id:shaValue,author:contextAuthor,body:z.string().refine(v=>!v.includes('\0')&&!/[\uD800-\uDFFF]/u.test(v)&&new TextEncoder().encode(v).length<=32768&&!metadataCredential.test(v)),body_withheld:z.boolean()}).strict().refine(v=>!v.body_withheld||v.body==='<withheld: credential-shaped text>');
+const contextCommentsPage=z.object({sha:shaValue,comments:z.array(contextComment).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean(),snapshot:z.literal(false)}).strict();
+const contextCommentGet=z.object({comment:contextComment}).strict();
+const requestedReviewers=z.object({number:z.number().int().positive(),head_sha:shaValue,users:z.array(contextAuthor).max(100),teams:z.array(z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),slug:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).refine(v=>!metadataCredential.test(v))}).strict()).max(100),snapshot:z.literal(false)}).strict();
 export function validWfV1Response(action, body, args) {
  if(typeof action!=="string")return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(action.startsWith('wf_repo_variable')){
+  const name=z.string().regex(/^[A-Z_][A-Z0-9_]{0,99}$/), variable=z.object({name,value:z.string().refine(v=>new TextEncoder().encode(v).length<=8192),created_at:z.string().max(100),updated_at:z.string().max(100)}).strict();
+  const ok=(action==='wf_repo_variables'?z.object({variables:z.array(variable).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000)}).strict():action==='wf_repo_variable_get'?z.object({variable}).strict():z.object({completed:z.literal(true),name}).strict()).safeParse(body).success;
+  if(!ok||!args)return ok;
+  if(action==='wf_repo_variables')return body.page===(args.page??1)&&body.variables.length<=(args.per_page??30);
+  if(action==='wf_repo_variable_get')return body.variable.name===args.name;
+  return body.name===args.name;
+ }
+
+ const inventoryActions=['wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments'];
+ if(inventoryActions.includes(action)){
+  const uint=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), id=uint.min(1);
+  const artifact=z.object({id,name:metadataText(255),size_in_bytes:uint,expired:z.boolean(),run_id:id.nullable(),head_sha:shaValue.nullable()}).strict().refine(v=>(v.run_id===null)===(v.head_sha===null));
+  const cache=z.object({id,key:metadataText(512),ref:metadataText(1024),size_in_bytes:uint}).strict();
+  const state=z.object({id,run_id:id,head_sha:shaValue,run_attempt:uint.min(1).max(1000000),status:z.enum(['queued','in_progress','completed','waiting','requested','pending']),conclusion:z.enum(runPageConclusions).nullable()}).strict().refine(v=>(v.status==='completed')===(v.conclusion!==null));
+  const pageFields={total:uint,page:uint.min(1).max(1000),has_more:z.boolean(),snapshot:z.literal(false)};
+  const identity={run_id:id,head_sha:shaValue,run_attempt:uint.min(1).max(1000000)};
+  const env=z.object({id,name:metadataText(100),wait_timer:uint,current_user_can_approve:z.boolean()}).strict();
+  const schemas={wf_workflow_get:z.object({workflow:z.object({id,path:metadataText(1024),state:z.enum(['active','deleted','disabled_fork','disabled_inactivity','disabled_manually'])}).strict()}).strict(),wf_artifact_get:z.object({artifact}).strict(),wf_artifacts_page:z.object({artifacts:z.array(artifact).max(50),...pageFields}).strict(),wf_caches_page:z.object({caches:z.array(cache).max(50),...pageFields}).strict(),wf_cache_usage:z.object({repo:z.string(),active_caches_size_in_bytes:uint,active_caches_count:uint}).strict(),wf_run_attempt_get:z.object({run:state}).strict(),wf_run_attempt_jobs:z.object({jobs:z.array(state).max(50),...pageFields,...identity}).strict(),wf_run_pending_deployments:z.object({environments:z.array(env).max(100),...identity,snapshot:z.literal(false)}).strict()};
+  if(!schemas[action].safeParse(body).success||new TextEncoder().encode(JSON.stringify(body)).length>262144)return false;
+  const list=body.artifacts??body.caches??body.jobs??body.environments;
+  if(list&&new Set(list.map(v=>v.id)).size!==list.length)return false;
+  if(body.total!==undefined&&body.total<(list?.length??0))return false;
+  if(action==='wf_run_attempt_get'&&body.run.id!==body.run.run_id)return false;
+  if(action==='wf_run_attempt_jobs'&&!body.jobs.every(v=>v.run_id===body.run_id&&v.head_sha===body.head_sha&&v.run_attempt===body.run_attempt))return false;
+  if(!args)return true;
+  if(action==='wf_workflow_get')return body.workflow.id===args.workflow_id;
+  if(action==='wf_artifact_get')return body.artifact.id===args.artifact_id;
+  if(action==='wf_cache_usage')return body.repo===args.repo;
+  if(body.page!==undefined&&(body.page!==(args.page??1)||list.length>(args.per_page??30)||body.has_more!==(list.length===(args.per_page??30))))return false;
+  const v=body.run??body;
+  return !action.startsWith('wf_run_')||v.run_id===args.run_id&&v.head_sha===args.head_sha&&v.run_attempt===args.run_attempt;
+ }
+ if(['wf_review_requests_add','wf_review_requests_remove','wf_review_requests_rerequest'].includes(action)){
+  const login=z.string().regex(/^[A-Za-z0-9_-]{1,100}(?:\[bot\])?$/).refine(v=>!metadataCredential.test(v));
+  const team=z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).refine(v=>!metadataCredential.test(v));
+  const receipt=z.object({number:positive,head_sha:shaValue,operation:z.literal(action.slice('wf_review_requests_'.length)),reviewers:z.array(login).max(50),team_reviewers:z.array(team).max(50),atomic:z.literal(false)}).strict();
+  if(!receipt.safeParse(body).success||body.reviewers.length+body.team_reviewers.length===0||new Set(body.reviewers.map(v=>v.toLowerCase())).size!==body.reviewers.length||new Set(body.team_reviewers.map(v=>v.toLowerCase())).size!==body.team_reviewers.length)return false;
+  return !args||body.number===args.number&&body.head_sha===args.expected_head_sha&&JSON.stringify(body.reviewers)===JSON.stringify(args.reviewers??[])&&JSON.stringify(body.team_reviewers)===JSON.stringify(args.team_reviewers??[]);
+ }
+ if(['wf_job_get','wf_job_rerun','wf_run_rerun_all','wf_run_force_cancel','wf_run_logs_delete'].includes(action)){
+  const identity={job_id:positive.nullable(),run_id:positive,head_sha:shaValue,run_attempt:z.number().int().min(1).max(1000000),status:z.enum(['queued','in_progress','completed','waiting','requested','pending']),conclusion:z.enum(runPageConclusions).nullable()};
+  const op={wf_job_rerun:'job_rerun',wf_run_rerun_all:'rerun_all',wf_run_force_cancel:'force_cancel',wf_run_logs_delete:'logs_delete'}[action];
+  const schema=action==='wf_job_get'?z.object({job:z.object(identity).strict()}).strict():z.object({...identity,requested:z.literal(op),completed:z.literal(false),atomic:z.literal(false)}).strict();
+  if(!schema.safeParse(body).success)return false;const v=body.job??body;
+  if((v.status==='completed')!==(v.conclusion!==null)||action.startsWith('wf_job_')!==(v.job_id!==null))return false;
+  return !args||v.run_id===args.run_id&&v.head_sha===args.head_sha&&v.run_attempt===args.run_attempt&&v.job_id===(args.job_id??null);
+ }
+ if(['wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers'].includes(action)){
+  if(new TextEncoder().encode(JSON.stringify(body)).length>262144)return false;
+  if(action==='wf_commit_comment_get')return contextCommentGet.safeParse(body).success&&(!args||body.comment.id===args.comment_id&&body.comment.commit_id===args.sha);
+  if(action==='wf_commit_comments_page')return contextCommentsPage.safeParse(body).success&&new Set(body.comments.map(c=>c.id)).size===body.comments.length&&body.comments.every(c=>c.commit_id===body.sha)&&(!args||body.sha===args.sha&&body.page===(args.page??1)&&body.comments.length<=(args.per_page??30)&&body.has_more===(body.comments.length===(args.per_page??30)));
+  return requestedReviewers.safeParse(body).success&&new Set(body.users.map(u=>u.id)).size===body.users.length&&new Set(body.users.map(u=>u.login.toLowerCase())).size===body.users.length&&new Set(body.teams.map(t=>t.id)).size===body.teams.length&&new Set(body.teams.map(t=>t.slug.toLowerCase())).size===body.teams.length&&(!args||body.number===args.number&&body.head_sha===args.expected_head_sha);
+ }
+ if(['wf_commit_comment_create','wf_commit_comment_update','wf_commit_comment_delete'].includes(action)){
+  if(action==='wf_commit_comment_delete')return z.object({comment_id:positive,sha:shaValue,deleted:z.literal(true),atomic:z.literal(false)}).strict().safeParse(body).success&&(!args||body.comment_id===args.comment_id&&body.sha===args.sha);
+  const schema=action==='wf_commit_comment_update'?z.object({comment:contextComment,atomic:z.literal(false)}).strict():contextCommentGet;
+  return schema.safeParse(body).success&&!body.comment.body_withheld&&(!args||body.comment.commit_id===args.sha&&body.comment.body===args.body&&(action==='wf_commit_comment_create'||body.comment.id===args.comment_id));
+ }
+ if(action==='wf_pr_commits_page'){
+  const schema=z.object({number:positive,head_sha:shaValue,commits:z.array(z.object({sha:shaValue,parents:z.array(shaValue).max(16)}).strict()).max(50),page:z.number().int().min(1).max(250),has_more:z.boolean(),history_cap:z.literal(250),history_complete:z.literal(false),snapshot:z.literal(false)}).strict();
+  if(!schema.safeParse(body).success||new Set(body.commits.map(v=>v.sha)).size!==body.commits.length)return false;
+  return !args||body.number===args.number&&body.head_sha===args.expected_head_sha&&body.page===(args.page??1)&&(body.page-1)*(args.per_page??30)<250&&body.commits.length<=Math.min(args.per_page??30,250-(body.page-1)*(args.per_page??30))&&body.has_more===(body.commits.length===(args.per_page??30)&&body.page*(args.per_page??30)<250);
+ }
+ if(action==='wf_pr_review_get')return z.object({number:positive,head_sha:shaValue,review:z.object({id:positive,state:z.enum(['PENDING','COMMENTED','APPROVED','CHANGES_REQUESTED','DISMISSED']),commit_id:shaValue.nullable()}).strict(),snapshot:z.literal(false)}).strict().safeParse(body).success&&(!args||body.number===args.number&&body.head_sha===args.expected_head_sha&&body.review.id===args.review_id);
+ if(action==='wf_release_latest'||action==='wf_release_by_tag'){
+  const schema=z.object({release:z.object({id:positive,tag_name:metadataText(200).refine(v=>!/[\x00-\x20\x7f]/.test(v)),draft:z.boolean(),prerelease:z.boolean()}).strict()}).strict();
+  return schema.safeParse(body).success&&(action==='wf_release_latest'?!body.release.draft&&!body.release.prerelease:!args||body.release.tag_name===args.tag);
+ }
+ if(action==='wf_repo_tags'||action==='wf_repo_languages'){
+  if(action==='wf_repo_languages')return metadataLanguages.safeParse(body).success;
+  return metadataTags.safeParse(body).success && (!args || body.page===(args.page??1)&&body.tags.length<=(args.per_page??30)&&body.has_more===(body.tags.length===(args.per_page??30)));
+ }
+
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));
  if(action==='wf_check_runs_page')return checkRunsPage.safeParse(body).success && body.checks.every(x=>x.head_sha===body.head_sha&&x.name===body.check_name) && (!args || body.head_sha===args.head_sha && body.check_name===args.check_name && body.page===(args.page??1) && body.checks.length<=(args.per_page??30) && body.has_more===(body.checks.length===(args.per_page??30)));
  if(action==='wf_check_run_get')return checkRunGet.safeParse(body).success && (!args || body.check.id===args.check_run_id&&body.check.head_sha===args.head_sha);
@@ -477,12 +608,16 @@ export function validWfV1Response(action, body, args) {
  if(action==='wf_pr_get'){
   const credential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|st\.[A-Za-z0-9]{20,})/;
   for(const key of ['title','body']){const v=body?.pull?.[key];if(v!=null&&(typeof v!=='string'||credential.test(v)))return false;}
+
  }
  if(commitStatusResponses[action])return commitStatusResponses[action].safeParse(body).success;
+
  if(action==='wf_file_rename')return renameReceipt.safeParse(body).success && (!args || body.source_path===args.source_path && body.destination_path===args.destination_path && body.branch===args.branch && body.blob_sha===args.prior_sha);
  if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;
+ if(historyResponses[action])return historyResponses[action].safeParse(body).success && (!args || body.page===(args.page??1)&&body.events.length<=(args.per_page??30)&&body.has_more===(body.events.length===(args.per_page??30)));
+
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));
  if(relationResponses[action])return relationResponses[action].safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>v.repo===args.repo));
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;

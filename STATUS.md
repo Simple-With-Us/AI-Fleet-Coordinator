@@ -8,7 +8,7 @@ Rollout: `docs/rollouts/2026-10-26-afc554-housekeeper-owner-record.md`.
 
 ## 2026-10-25 MM — the sentence-gap rule, restated with the one chat-pane exception
 
-Between sentences the gap is a real U+00A0 plus a normal space on every surface, with two exceptions:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Notes body takes the narrow no-break space (AFC-552).  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
+Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
 
 ## 2026-10-23 CODEX — WhatsApp Wake Bridge Implementation (AFC-477)
 

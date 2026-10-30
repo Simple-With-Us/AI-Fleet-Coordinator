@@ -3,6 +3,8 @@
 *
 !scripts/simple-chat
 !scripts/agent_sync/
+!scripts/linear_project_linkifiers.py
+!scripts/zulip_linkifiers.py
 !docs/protocols/agent-sync-partition.toml
 !fleet-apps.json
 scripts/agent_sync/tests/

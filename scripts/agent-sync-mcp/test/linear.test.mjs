@@ -17,7 +17,7 @@ import { testEnv } from "./helpers.mjs";
 import {
   LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId,
   neutralizeLinearMentions, linearGraphqlErrorMeta, mapLinearError, linearCommentCreateInput, M_COMMENT,
-  LINEAR_SECRETS, LINEAR_SEATS,
+  LINEAR_SECRETS, LINEAR_SEATS, OWN_APP_LINEAR_PREFIXES,
 } from "../src/linear.js";
 
 const config = loadConfig(testEnv());
@@ -278,7 +278,7 @@ test("a seat whose Linear tools are off is told so in the instructions", () => {
   for (const seat of ["GROK-WEB", "CURSOR", "JET", "ECHO", "WISE", "CLAUDE"]) {
     assert.match(hostedInstructions(seat), /BEGIN_UNTRUSTED_LINEAR and END_UNTRUSTED_LINEAR/, seat);
   }
-  assert.equal(hostedInstructions("MA").includes("UNTRUSTED_LINEAR"), false);
+  assert.equal(hostedInstructions("BF-BUILDER").includes("UNTRUSTED_LINEAR"), false);
 });
 
 // ---------------------------------------------------------------- routing
@@ -380,18 +380,19 @@ test("with the write switch off every Linear write is refused and no mutation is
 });
 
 test("a seat not on LINEAR_SEATS is refused at run time, even with a client, naming the seat and sending nothing", async () => {
-  // MA has no Linear app and is not enabled:  the requireLinear gate answers before any mint.
-  const { tools, fake } = harness({ seat: "MA" });
+  // BF-BUILDER is retired and not enabled:  the requireLinear gate answers before any mint.
+  const { tools, fake } = harness({ seat: "BF-BUILDER" });
   for (const [name, args] of [["linear_whoami", {}], ["linear_list", {}], ["linear_show", { id: "AFC-1" }], ["linear_file", { title: "x" }], ["linear_comment", { id: "AFC-1", body: "hello" }]]) {
     const error = toolError(await tools.call(name, args), "not_configured");
-    assert.match(error.message, /not enabled for MA/);
+    assert.match(error.message, /not enabled for BF-BUILDER/);
   }
   assert.equal(fake.requests.length, 0);
 });
 
 test("every hosted seat with a Linear pair is enabled;  credentials nobody installed answer not_configured and send nothing", async () => {
   // Since 2026-10-16 every seat in LINEAR_SECRETS is on LINEAR_SEATS (owner).
-  for (const seat of Object.keys(LINEAR_SECRETS)) assert.ok(LINEAR_SEATS.includes(seat), `${seat} has a pair but is not enabled`);
+  // Own-app seats with prepared names (OWN_APP_LINEAR_PREFIXES) stay off until a change gives them a grounded app name.
+  for (const seat of Object.keys(LINEAR_SECRETS)) assert.ok(LINEAR_SEATS.includes(seat) || Object.hasOwn(OWN_APP_LINEAR_PREFIXES, seat), `${seat} has a pair but is neither enabled nor a prepared own-app seat`);
   // The other half of the answer:  credentials nobody installed say the same.
   const bare = harness({ credentials: false });
   toolError(await bare.tools.call("linear_whoami", {}), "not_configured");
@@ -801,4 +802,246 @@ test("a logger that throws during the early mint still leaves the cached token i
   await ageCachedToken(gate, clock, 29 * 24);
   gate.idemBegin = async () => { throw new TypeError("boom"); };
   assert.equal(await client.token(), first);
+});
+
+// ---------------------------------------------------------------- own-app seats: fail-closed viewer proof, reads included
+
+test("an own-app seat checks the viewer before its first READ, and a wrong app is refused before any data call", async () => {
+  for (const wrong of [{ id: "u1", name: "Codex", app: true }, { id: "u3", name: "Clutch", app: false }]) {
+    const { tools, fake } = harness({ seat: "CLUTCH", viewer: wrong });
+    toolError(await tools.call("linear_list", {}), "not_authorized");
+    const graphql = fake.requests.filter((r) => r.kind !== "mint");
+    assert.ok(graphql.length <= 1, `only the viewer query may have run for ${wrong.name}/${wrong.app}`);
+  }
+});
+
+test("an own-app seat's read works when Linear names its own grounded app, once per request", async () => {
+  const { tools, fake } = harness({ seat: "CLUTCH", viewer: { id: "u-clutch", name: "Clutch", app: true } });
+  ok(await tools.call("linear_list", {}), "linear_list");
+  const before = fake.requests.length;
+  ok(await tools.call("linear_list", {}), "linear_list");
+  const second = fake.requests.length - before;
+  assert.ok(second >= 1, "the second read still runs");
+});
+
+test("the viewer gate for reads is own-app only: the original seats read without a viewer query", async () => {
+  const { tools, fake } = harness({ seat: "GROK-WEB", viewer: { id: "u-other", name: "Someone Else", app: true } });
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.ok(fake.requests.length >= 1);
+});
+
+test("appNameOk: an own-app seat accepts only its grounded app name, never the bare tag or another seat's app", async () => {
+  const L = await import("../src/linear.js");
+  assert.ok(L.isOwnAppSeat("CLUTCH") && L.isOwnAppSeat("BF-COMPILER") && !L.isOwnAppSeat("CODEX") && !L.isOwnAppSeat("JET-CHAT"));
+  assert.ok(L.appNameOk("Clutch", "CLUTCH") && !L.appNameOk("clutch ", "CLUTCH"));
+  assert.ok(L.appNameOk("clutch", "CLUTCH"), "case-insensitive match of the grounded name itself");
+  assert.ok(!L.appNameOk("CLUTCH-X", "CLUTCH"));
+  assert.ok(!L.appNameOk("FX", "FX"), "bare tag is not the grounded name FX.sh");
+  assert.ok(L.appNameOk("FX.sh", "FX"));
+  assert.ok(!L.appNameOk("Codex", "CLUTCH") && !L.appNameOk("Clutch", "CODEX"));
+  // BF names equal their tags case-insensitively, so the bare-tag refusal is moot for them;  only cross-seat names are refused.
+  assert.ok(L.appNameOk("BF-Engineer", "BF-ENGINEER") && L.appNameOk("BF-Trader", "BF-TRADER") && !L.appNameOk("BF-Trader", "BF-ENGINEER"));
+  assert.ok(L.appNameOk("CODEX", "CODEX"), "an original seat keeps its tag");
+});
+
+test("an enabled own-app seat with an empty token cache mints its own token once with its qualified scope, then reads", async () => {
+  const { tools, fake, gate } = harness({ seat: "BF-COMPILER", viewer: { id: "u-comp", name: "BF-Compiler", app: true } });
+  assert.equal(await gate.linearTokenGet(), null, "cache starts empty");
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1);
+  assert.ok((await gate.linearTokenGet())?.access_token);
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1, "second call reuses the cache");
+});
+
+test("BF-ENGINEER and BF-TRADER are held back: not enabled, no credential read, no mint, no provider call", async () => {
+  const L = await import("../src/linear.js");
+  const { _resetInfisicalForTests } = await import("../src/infisical.js");
+  for (const seat of ["BF-ENGINEER", "BF-TRADER"]) {
+    assert.ok(!L.LINEAR_SEATS.includes(seat), `${seat} is not enabled`);
+    assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && L.seatAppNames(seat).length > 0, `${seat} keeps its prepared names`);
+    for (const mode of ["off", "fallback", "required"]) {
+      _resetInfisicalForTests();
+      const names = L.LINEAR_SECRETS[seat];
+      const env = { INFISICAL_MODE: mode, [names.clientId]: "id-held", [names.clientSecret]: "sec-held" };
+      assert.equal(await L.resolveLinearPair(env, seat), null, `${seat} reads no credential in ${mode} mode`);
+    }
+    const { tools, fake, gate } = harness({ seat, viewer: { id: "u-held", name: L.seatAppNames(seat)[0], app: true } });
+    for (const [name, args] of [["linear_list", {}], ["linear_claim", { id: "AFC-1" }], ["linear_status", { id: "AFC-1", status: "open" }]]) {
+      toolError(await tools.call(name, args), "not_configured");
+    }
+    assert.equal(fake.mints().length, 0, `${seat} made no mint`);
+    assert.equal(fake.calls().length, 0, `${seat} made no provider call`);
+    assert.equal(await gate.linearTokenGet(), null, `${seat} cached nothing`);
+  }
+});
+
+test("MA mints once with its own installed scope (not the standard four), then reuses the token; BF-ENGINEER keeps the standard scope", async () => {
+  const L = await import("../src/linear.js");
+  const own = "comments:create,issues:create,read,write";
+  assert.deepEqual([...L.MINT_SCOPE_PENDING], []);
+  assert.equal(L.mintScopeFor("MA"), own);
+  assert.notEqual(L.mintScopeFor("MA"), L.LINEAR_SCOPE);
+  assert.ok(!own.includes("assignable") && !own.includes("mentionable"), "no scope beyond the installed one");
+  assert.equal(L.mintScopeFor("BF-ENGINEER"), L.LINEAR_SCOPE);
+  const { tools, fake, gate } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
+  assert.equal(await gate.linearTokenGet(), null);
+  ok(await tools.call("linear_list", {}), "linear_list");
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1);
+  assert.equal(new URLSearchParams(fake.mints()[0].raw).get("scope"), own);
+});
+
+const viewerQueries = (fake) => fake.calls().filter((c) => /viewer/i.test(String(c.body?.query ?? ""))).length;
+
+test("one request proves the viewer once: a write checks no second time and the write is still attributed to the proven app", async () => {
+  const { tools, fake } = harness({ seat: "BF-COMPILER", viewer: { id: "u-comp", name: "BF-Compiler", app: true } });
+  fake.addIssue({ id: "issue-1", identifier: "AFC-1", team: "AFC" });
+  ok(await tools.call("linear_comment", { id: "AFC-1", body: "hello" }), "linear_comment");
+  assert.equal(viewerQueries(fake), 1, "one viewer query for the whole request");
+  assert.equal(fake.mutations().length, 1, "the write went through");
+});
+
+test("a refused viewer proof is never kept: the next call proves the viewer again", async () => {
+  const { tools, fake } = harness({ seat: "BF-COMPILER", viewer: { id: "u-x", name: "Someone Else", app: true } });
+  fake.addIssue({ id: "issue-1", identifier: "AFC-1", team: "AFC" });
+  toolError(await tools.call("linear_comment", { id: "AFC-1", body: "hello" }), "not_authorized");
+  assert.equal(viewerQueries(fake), 1);
+  fake.viewer.name = "BF-Compiler";
+  ok(await tools.call("linear_comment", { id: "AFC-1", body: "hello" }), "linear_comment");
+  assert.equal(viewerQueries(fake), 2, "the refusal was not replayed from a stored rejection");
+  assert.equal(fake.mutations().length, 1);
+});
+
+test("a proof belongs to its client: a different client on the same request is proven again", async () => {
+  const { tools, fake } = harness({ seat: "BF-COMPILER", viewer: { id: "u-comp", name: "BF-Compiler", app: true } });
+  const first = await tools.confirmedViewer();
+  assert.equal(await tools.confirmedViewer(), first);
+  assert.equal(viewerQueries(fake), 1);
+  const other = new LinearClient({ seat: "BF-COMPILER", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate: tools.gate, fetch: fake.fetch, now: () => Date.parse("2026-10-09T10:00:00Z") });
+  tools.linear = other;
+  await tools.confirmedViewer();
+  assert.equal(viewerQueries(fake), 2, "a swapped client is not covered by the earlier proof");
+});
+
+test("a seat with no resolved pair gets no client, whether the pair is null, empty or half there", async () => {
+  const L = await import("../src/linear.js");
+  const gate = memoryGate({ now: Date.now() });
+  const f = async () => ({});
+  for (const pair of [null, undefined, {}, { clientId: "", clientSecret: "" }, { clientId: "id", clientSecret: "" }, { clientId: "", clientSecret: "sec" }]) {
+    assert.equal(L.linearClientFromPair(pair, "BF-ENGINEER", { gate, fetch: f }), null, JSON.stringify(pair));
+  }
+});
+
+test("MA mints with its own scope but a wrong viewer is refused after the mint, with the token kept", async () => {
+  const { tools, fake, gate } = harness({ seat: "MA", viewer: { id: "u-x", name: "Someone Else", app: true } });
+  toolError(await tools.call("linear_list", {}), "not_authorized");
+  assert.equal(fake.mints().length, 1);
+  assert.equal(fake.calls().filter((c) => !/viewer/i.test(String(c.body?.query ?? ""))).length, 0, "no data call after the refused viewer check");
+  assert.ok((await gate.linearTokenGet())?.access_token);
+});
+
+
+test("a wrong viewer name after a first mint refuses, keeps the cached token, and a corrected name reads without a second mint", async () => {
+  const { tools, fake, gate } = harness({ seat: "BF-COMPILER", viewer: { id: "u-comp", name: "Compiler Display", app: true } });
+  toolError(await tools.call("linear_list", {}), "not_authorized");
+  assert.equal(fake.mints().length, 1);
+  assert.ok((await gate.linearTokenGet())?.access_token, "the token survives the refused viewer check");
+  fake.viewer.name = "BF-Compiler"; // the name correction a code change would make
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1, "no second mint for a name fix");
+});
+
+async function maHarness() {
+  const h = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
+  h.fake.addLabel("claimed:MA");
+  h.fake.addLabel("seat:MA");
+  h.fake.issued.push("tok-ma");
+  const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  await h.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
+  return h;
+}
+
+test("MA claims by label only: no delegateId sent, and the result says no delegate was set", async () => {
+  const { tools, fake } = await maHarness();
+  fake.addIssue({ id: "issue-401", identifier: "AFC-401", team: "AFC" });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-401" }), "linear_claim");
+  assert.equal(claimed.label, "claimed:MA");
+  assert.equal(claimed.delegate, null, "no delegate was set, so none is reported");
+  assert.ok(!Object.hasOwn(fake.mutations()[0].body.variables.input, "delegateId"));
+  assert.equal(fake.mints().length, 0);
+});
+
+test("MA claim without its claim label says the app cannot delegate, not that the viewer id is missing", async () => {
+  const { tools, fake } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
+  const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
+  fake.issued.push("tok-ma");
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  await tools.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
+  fake.addIssue({ id: "issue-402", identifier: "AFC-402", team: "AFC" });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-402" }), "invalid_argument");
+  assert.match(error.message, /cannot be an issue delegate/);
+  assert.doesNotMatch(error.message, /viewer id missing/);
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("MA claim still refuses an issue another seat's app already holds", async () => {
+  const { tools, fake } = await maHarness();
+  fake.addIssue({ id: "issue-403", identifier: "AFC-403", team: "AFC", delegate: { id: "u-other", name: "Claude", app: true } });
+  toolError(await tools.call("linear_claim", { id: "AFC-403" }), "claim_held");
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("MA status release works when no app delegate is set, and is refused before any change when one is", async () => {
+  const { tools, fake } = await maHarness();
+  fake.addIssue({ id: "issue-404", identifier: "AFC-404", team: "AFC", labels: ["claimed:MA"] });
+  const released = ok(await tools.call("linear_status", { id: "AFC-404", status: "open" }), "linear_status");
+  assert.equal(released.status, "open");
+  const input = fake.mutations()[0].body.variables.input;
+  assert.ok(!Object.hasOwn(input, "delegateId"));
+  const before = fake.mutations().length;
+  fake.addIssue({ id: "issue-405", identifier: "AFC-405", team: "AFC", labels: ["claimed:MA"], delegate: { id: "u-other", name: "Claude", app: true } });
+  const error = toolError(await tools.call("linear_status", { id: "AFC-405", status: "open" }), "not_authorized");
+  assert.match(error.message, /nothing was changed/);
+  assert.equal(fake.mutations().length, before, "no mutation on the refused release");
+  // A closing status never touches a delegate, so it still works for MA.
+  ok(await tools.call("linear_status", { id: "AFC-405", status: "completed" }), "linear_status");
+});
+
+test("a seat that can delegate still clears an app delegate on release (unchanged)", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-406", identifier: "AFC-406", team: "AFC", labels: ["claimed:GROK-WEB"], delegate: { id: "u-other", name: "Claude", app: true } });
+  ok(await tools.call("linear_status", { id: "AFC-406", status: "open" }), "linear_status");
+  assert.equal(fake.mutations()[0].body.variables.input.delegateId, null);
+});
+
+test("a non-canonical spelling of a parked or scoped seat refuses to mint, without mapping to that seat", async () => {
+  const L = await import("../src/linear.js");
+  assert.equal(L.mintScopeFor("MA"), "comments:create,issues:create,read,write");
+  assert.equal(L.mintScopeFor("BF_TRADER"), null);
+  assert.equal(L.mintScopeFor("bf_trader"), null);
+  assert.equal(L.mintScopeFor("BF-TRADER"), "read,write,app:assignable");
+  assert.equal(L.seatTagForSeat("BF_TRADER"), "BF_TRADER", "no alias or credential mapping was added");
+  assert.deepEqual([...L.LINEAR_NO_DELEGATE_SEATS], ["MA"]);
+});
+
+test("MA spellings: every alias that reaches MA is treated as MA (label-only, no delegate); underscore spellings reach nothing", async () => {
+  const L = await import("../src/linear.js");
+  for (const spelling of ["MA", "ma", "Muse-Assist", "ROB", "ROB-MUSE", "rob-muse"]) {
+    assert.equal(L.seatTagForSeat(spelling), "MA", spelling);
+    assert.ok(L.LINEAR_NO_DELEGATE_SEATS.includes(L.seatTagForSeat(spelling)), `${spelling} is no-delegate`);
+  }
+  for (const spelling of ["M_A", "MA_", "MUSE_ASSIST", "ROB_MUSE", "rob_muse"]) {
+    assert.equal(L.seatTagForSeat(spelling), spelling.toUpperCase(), `${spelling} is not mapped to a seat`);
+    assert.ok(!L.LINEAR_SEATS.includes(spelling), `${spelling} is not an enabled seat`);
+    assert.ok(!L.LINEAR_SEATS.includes(L.seatTagForSeat(spelling)), `${spelling} does not canonicalize to an enabled seat`);
+    assert.equal(await L.resolveLinearPair({ INFISICAL_MODE: "off" }, spelling), null, `${spelling} resolves no credentials`);
+    assert.equal(L.mintScopeFor(spelling), L.LINEAR_SCOPE, `${spelling} has no pair, so this scope is never used`);
+    const { tools, fake } = harness({ seat: spelling });
+    for (const [name, args] of [["linear_claim", { id: "AFC-1" }], ["linear_status", { id: "AFC-1", status: "open" }], ["linear_list", {}]]) {
+      toolError(await tools.call(name, args), "not_configured");
+    }
+    assert.equal(fake.requests.length, 0, `${spelling}: nothing was sent to Linear`);
+  }
 });

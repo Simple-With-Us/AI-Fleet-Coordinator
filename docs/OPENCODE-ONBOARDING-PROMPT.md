@@ -121,9 +121,8 @@ SECRETS
 WRITING FOR THE OWNER
 - Between sentences, a real U+00A0 plus a normal space in everything a human reads:  chat, commits, PR bodies, Zulip,
   Notes, docs, UI copy.  Never two plain ASCII spaces (owner ruling 2026-10-23; see the sentence-gap skill), and never
-  the `&nbsp;` entity except in the two exceptions:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the
-  MiniMax Code pane) take the entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a
-  normal space (AFC-552).  Title Case headings
+  the `&nbsp;` entity except in the one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the
+  MiniMax Code pane) take the entity plus a normal space.  Title Case headings
   and buttons;  sentence case values.  Tell the owner times in 12-hour form with am or pm, no zone abbreviation.
 - Plans, reviews, handoffs and completion notes also go to Apple Notes folder Coding:
   ~/apps/apple-notes-coding.sh "[TEAM_KEY, OpenCode] short topic" "body" (--update to revise in place).
