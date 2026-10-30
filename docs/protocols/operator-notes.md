@@ -108,7 +108,7 @@ port = 8788
 
 [notes_queue]
 enabled = true
-worker_seats = ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]
+worker_seats = ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "CODEX"]
 server_seats = ["CLAUDE", "CODEX"]
 ```
 
