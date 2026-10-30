@@ -631,9 +631,12 @@ backoff.  `MAC_PROCESS_WATCH_RESTART=0` is log-only.
 
 | Process / Helper | Schedule And Purpose |
 |---|---|
-| usage-monitor-telemetry-hub | Always-on server container; staged inactive pending Usage-Monitor PR #1845 review and merge. |
-| Collector Sentry bridge | Existing four CLI collector schedules; independent durable delivery inside existing invocations, with no additional daemon. |
+| usage-monitor-telemetry-hub | Always-on server container; active; source ef3e139d; program node /app/scripts/telemetry-hub/start-with-infisical.mjs; restart unless-stopped; logs Docker stdout/stderr; generated canary receipts and restart persistence verified after Usage-Monitor PR #1845 review and merge. |
+| Collector Sentry bridge | Staged pending cleanup verification and collector installation; delivery will use the existing four CLI collector schedules; independent durable delivery inside existing invocations, with no additional daemon. |
 | scripts/prune-collector-sentry-outbox.mjs | On-demand only; bounded receipt pruning requires a verified checkpoint and preserves pending or quarantined records. |
 | scripts/retry-collector-sentry-outbox.mjs | On-demand only; retries explicitly selected quarantined records after correction. |
+| botfleet-session-collector.mjs | Staged source helper; on-demand dry-run only; program node scripts/botfleet-session-collector.mjs; stdout count logs; scheduled jobs are not installed. |
+| UM-1646 Sentry Receipt Audit | Task-scoped on-demand helper; approved Mac Python read route; stdout aggregate receipt counts only; no scheduler. |
+
 
 Private runtime routing and credentials remain in the private operations inventory and Infisical.
