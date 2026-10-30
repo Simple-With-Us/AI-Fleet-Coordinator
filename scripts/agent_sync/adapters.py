@@ -1364,12 +1364,10 @@ def provider_quota(
     }
 
 
-def quota_block(provider: str, now: float | None = None, path: str | None = None) -> str | None:
-    """Why this wake must not start, or None.  Only a fresh, positive exhaustion reading blocks;
-    everything else returns None so a quota source that is down never silences the fleet."""
+def _quota_verdict(provider: str, state: Mapping[str, Any]) -> str | None:
+    """The gate's verdict on a quota reading that is already in hand:  why a wake must not start, or None."""
     if (provider or "").strip().casefold() in QUOTA_NEVER_CAP_PROVIDERS:
         return None  # muse runs on the MiniMax subscription the daemon's user already pays for
-    state = provider_quota(provider, now, path)
     if state["known"] and state["exhausted"]:
         reset = state.get("reset_at")
         return "%s quota is exhausted%s" % (
@@ -1377,6 +1375,33 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
             (" until %s" % clean_banner(str(reset), 40)) if reset else "",
         )
     return None
+
+
+def quota_block(provider: str, now: float | None = None, path: str | None = None) -> str | None:
+    """Why this wake must not start, or None.  Only a fresh, positive exhaustion reading blocks;
+    everything else returns None so a quota source that is down never silences the fleet."""
+    if (provider or "").strip().casefold() in QUOTA_NEVER_CAP_PROVIDERS:
+        return None  # an uncapped provider never needs the file read
+    return _quota_verdict(provider, provider_quota(provider, now, path))
+
+
+def quota_red_from_state(provider: str, state: Mapping[str, Any]) -> str | None:
+    """The status page's RED line for a seat whose wake the quota gate stops, or None, from a reading already taken.
+
+    It is the gate's own verdict (`_quota_verdict`, the one `quota_block` uses), so the two can never disagree:  a
+    provider the gate never caps (muse, minimax) shows no RED however its quota reads, because for those the reading
+    is information and no wake is stopped.  The status used to raise RED on the reading alone and showed "wakes are
+    not running" for a muse seat whose wakes the gate was letting through.  The caller reads the file once and passes
+    the same state here that it reports, so the line and the reported quota cannot diverge."""
+    blocked = _quota_verdict(provider, state)
+    return "wakes are not running: the %s" % blocked if blocked else None
+
+
+def quota_red(provider: str, now: float | None = None, path: str | None = None) -> str | None:
+    """`quota_red_from_state` for a caller that has no reading yet."""
+    if (provider or "").strip().casefold() in QUOTA_NEVER_CAP_PROVIDERS:
+        return None
+    return quota_red_from_state(provider, provider_quota(provider, now, path))
 
 
 # --------------------------------------------------------------------------------------------
