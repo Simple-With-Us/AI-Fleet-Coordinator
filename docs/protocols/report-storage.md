@@ -37,6 +37,8 @@ The collection is owner-only because it can include private repositories.  It i
 
 The collector also stages proposed `docs/reports/README.md` files for publication from owned lanes.  It does not commit, push or merge those proposals, change an integration tree, install a schedule, or register a background process.
 
+Refreshes preflight every repository before writing and hold an exclusive library lock through recovery and commit.  A private write-ahead journal preserves before-images so an interrupted update can be recovered on the next apply; recovery refuses independently edited output.  Check mode never writes or recovers a pending transaction.  Public index proposals omit credential-adjacent operational reports while the owner-only collection retains their tracked source documents.
+
 Private audit documents are excluded by default.  The owner-only central collection may include the verified private Fleet-OPS audit directory only with the explicit `--private-docs-repo Simple-With-Us/Fleet-OPS` option.  That choice is recorded in the private manifest and must be supplied again on later refreshes.  It never adds private audit paths to the public index proposals or permits environment, key or credential files.
 
 On servers where the lane guard protects the whole Code root, creating or refreshing `Code/Docs` requires an owner-approved narrow placement exception.  Do not disable the guard or use another tool route to bypass its refusal.  Keep a complete preview in the owned lane until placement is authorized.

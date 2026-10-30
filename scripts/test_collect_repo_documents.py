@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -188,13 +189,23 @@ class CollectorTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertFalse(preview.exists())
 
+        self.output.mkdir(mode=0o700)
+        self.output.chmod(0o700)
+        collector.collect(self.code, self.output, check_only=True)
+        self.assertFalse((self.output / collector.COLLECTION_LOCK_FILE).exists())
+        self.output.rmdir()
+
         collector.collect(self.code, self.output)
+        lock_file = self.output / collector.COLLECTION_LOCK_FILE
+        self.assertEqual(stat.S_IMODE(lock_file.stat().st_mode), 0o600)
+        lock_inode = lock_file.stat().st_ino
         (self.output / "private").mkdir()
         (self.output / "private").chmod(0o700)
         private = self.output / "private" / "notes.txt"
         private.write_text("owner content")
         private.chmod(0o600)
         self.assertEqual(collector.collect(self.code, self.output), [])
+        self.assertEqual(lock_file.stat().st_ino, lock_inode)
         self.assertEqual(private.read_text(), "owner content")
         self.assertNotIn("owner content", (self.output / "README.md").read_text())
 
@@ -205,6 +216,241 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(
             collector.preview_report_indexes([collector._repo_info(repo.path)], preview), []
         )
+
+    def test_second_process_cannot_recover_a_live_writer_transaction(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/guide.md", "guide")
+        repo.commit_published()
+
+        with collector._collection_lock(self.output, exclusive=True):
+            transaction = collector._CollectionTransaction(self.output)
+            active_output = self.output / "ExampleRepo/documents/docs/active.md"
+            transaction.write(active_output, b"first writer output", None)
+            journal = self.output / collector.COLLECTION_TRANSACTION_DIR / "journal.jsonl"
+            active_journal = journal.read_bytes()
+
+            second = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--code-root",
+                    str(self.code),
+                    "--output-root",
+                    str(self.output),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertNotEqual(second.returncode, 0)
+            self.assertIn("Another collection writer holds the library lock", second.stderr)
+            self.assertTrue(active_output.is_file())
+            self.assertEqual(active_output.read_bytes(), b"first writer output")
+            self.assertEqual(journal.read_bytes(), active_journal)
+
+            transaction.rollback()
+            self.assertFalse(active_output.exists())
+
+    def test_empty_versioned_report_uses_explicit_document_presence_check(self) -> None:
+        repo = self.make_repo()
+        repo.write("src/main.py", "print('not a human document')")
+        commit = repo.commit_published()
+
+        collector.collect(self.code, self.output)
+
+        report = self.output / "ExampleRepo/reports" / commit / "README.md"
+        self.assertIn("- No eligible tracked documents were found.", report.read_text())
+
+    def test_later_repository_preflight_failure_writes_nothing_and_can_rerun(self) -> None:
+        first = self.make_repo(folder="A-Repo", name="A-Repo")
+        first.write("docs/first.md", "first")
+        first.commit_published()
+        second = self.make_repo(folder="B-Repo", name="B-Repo")
+        second.write("docs/second.md", "second")
+        second.commit_published()
+
+        collision = self.output / "B-Repo/documents/docs/second.md"
+        collision.parent.mkdir(parents=True)
+        self.output.chmod(0o700)
+        (self.output / "B-Repo").chmod(0o700)
+        (self.output / "B-Repo/documents").chmod(0o700)
+        (self.output / "B-Repo/documents/docs").chmod(0o700)
+        collision.write_text("owner content")
+        collision.chmod(0o600)
+
+        with self.assertRaisesRegex(collector.CollectionError, "not collector-owned"):
+            collector.collect(self.code, self.output)
+        self.assertFalse((self.output / "A-Repo/documents/docs/first.md").exists())
+        self.assertFalse((self.output / collector.COLLECTION_TRANSACTION_DIR).exists())
+        self.assertEqual(collision.read_text(), "owner content")
+
+        collision.unlink()
+        collector.collect(self.code, self.output)
+        self.assertEqual(
+            (self.output / "A-Repo/documents/docs/first.md").read_text(), "first"
+        )
+        self.assertEqual(
+            (self.output / "B-Repo/documents/docs/second.md").read_text(), "second"
+        )
+
+    def test_interrupted_multi_file_collection_recovers_without_manual_cleanup(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/guide.md", "guide v1")
+        repo.write("docs/reports/report.md", "report v1")
+        repo.commit_published()
+        collector.collect(self.code, self.output)
+        private_dir = self.output / "private"
+        private_dir.mkdir(mode=0o700)
+        private_dir.chmod(0o700)
+        private_file = private_dir / "owner-note.md"
+        private_file.write_text("preserve")
+        private_file.chmod(0o600)
+
+        repo.write("docs/guide.md", "guide v2")
+        repo.write("docs/new.md", "new document")
+        repo.write("docs/reports/report.md", "report v2")
+        second_commit = repo.commit_published()
+
+        original_write = collector._atomic_write
+        interrupted = False
+
+        def interrupt_after_document(path: Path, data: bytes, boundary: Path) -> None:
+            nonlocal interrupted
+            original_write(path, data, boundary)
+            if not interrupted and path == self.output / "ExampleRepo/documents/docs/new.md":
+                interrupted = True
+                raise KeyboardInterrupt("injected process interruption")
+
+        with patch.object(collector, "_atomic_write", side_effect=interrupt_after_document):
+            with self.assertRaises(KeyboardInterrupt):
+                collector.collect(self.code, self.output)
+
+        transaction_dir = self.output / collector.COLLECTION_TRANSACTION_DIR
+        journal = transaction_dir / "journal.jsonl"
+        self.assertTrue(journal.is_file())
+        self.assertEqual(stat.S_IMODE(transaction_dir.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(journal.stat().st_mode), 0o600)
+        records = [json.loads(line) for line in journal.read_text().splitlines()]
+        before_images = {
+            record["target"]: record for record in records if record["kind"] == "write"
+        }
+        self.assertEqual(
+            before_images["ExampleRepo/documents/docs/guide.md"]["before_sha256"],
+            hashlib.sha256(b"guide v1").hexdigest(),
+        )
+        self.assertFalse(before_images["ExampleRepo/documents/docs/new.md"]["before_exists"])
+        journal_before_check = journal.read_bytes()
+        with self.assertRaisesRegex(collector.CollectionError, "--check will not recover"):
+            collector.collect(self.code, self.output, check_only=True)
+        self.assertEqual(journal.read_bytes(), journal_before_check)
+
+        restored_guide = False
+        original_write = collector._atomic_write
+
+        def observe_rollback(path: Path, data: bytes, boundary: Path) -> None:
+            nonlocal restored_guide
+            if path == self.output / "ExampleRepo/documents/docs/guide.md" and data == b"guide v1":
+                restored_guide = True
+            original_write(path, data, boundary)
+
+        with patch.object(collector, "_atomic_write", side_effect=observe_rollback):
+            collector.collect(self.code, self.output)
+        self.assertTrue(restored_guide)
+        self.assertFalse(transaction_dir.exists())
+        self.assertEqual(private_file.read_text(), "preserve")
+        self.assertEqual(
+            (self.output / "ExampleRepo/documents/docs/guide.md").read_text(), "guide v2"
+        )
+        self.assertEqual(
+            (self.output / "ExampleRepo/documents/docs/new.md").read_text(), "new document"
+        )
+        self.assertEqual(
+            json.loads((self.output / "ExampleRepo/manifest.json").read_text())["source_commit"],
+            second_commit,
+        )
+        self.assertTrue((self.output / "ExampleRepo/manifest.json").is_file())
+        self.assertTrue((self.output / "README.md").is_file())
+
+    def test_recovery_refuses_to_overwrite_a_post_interruption_edit(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/guide.md", "guide")
+        repo.write("docs/reports/report.md", "report")
+        repo.commit_published()
+        target = self.output / "ExampleRepo/documents/docs/guide.md"
+        original_write = collector._atomic_write
+        interrupted = False
+
+        def interrupt_after_document(path: Path, data: bytes, boundary: Path) -> None:
+            nonlocal interrupted
+            original_write(path, data, boundary)
+            if not interrupted and path == target:
+                interrupted = True
+                raise KeyboardInterrupt("injected process interruption")
+
+        with patch.object(collector, "_atomic_write", side_effect=interrupt_after_document):
+            with self.assertRaises(KeyboardInterrupt):
+                collector.collect(self.code, self.output)
+
+        target.write_text("human edit after interruption")
+        target.chmod(0o600)
+        with self.assertRaisesRegex(collector.CollectionError, "changed after interruption"):
+            collector.collect(self.code, self.output)
+        self.assertEqual(target.read_text(), "human edit after interruption")
+        self.assertTrue((self.output / collector.COLLECTION_TRANSACTION_DIR).is_dir())
+
+    def test_atomic_write_failure_rolls_back_before_a_clean_rerun(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/guide.md", "guide")
+        repo.write("docs/reports/report.md", "report")
+        repo.commit_published()
+        target = self.output / "ExampleRepo/documents/docs/guide.md"
+        original_write = collector._atomic_write
+        failed = False
+
+        def fail_after_atomic_replace(path: Path, data: bytes, boundary: Path) -> None:
+            nonlocal failed
+            original_write(path, data, boundary)
+            if not failed and path == target:
+                failed = True
+                raise OSError("injected writer failure")
+
+        with patch.object(collector, "_atomic_write", side_effect=fail_after_atomic_replace):
+            with self.assertRaisesRegex(OSError, "injected writer failure"):
+                collector.collect(self.code, self.output)
+
+        self.assertFalse(target.exists())
+        self.assertFalse((self.output / collector.COLLECTION_TRANSACTION_DIR).exists())
+        collector.collect(self.code, self.output)
+        self.assertEqual(target.read_text(), "guide")
+
+    def test_public_index_excludes_named_credential_reports_but_central_selection_keeps_them(
+        self,
+    ) -> None:
+        repo = self.make_repo()
+        excluded = (
+            "docs/audits/2026-10-01-cf-token-map.md",
+            "docs/reports/2026-10-02-private-billing-receipt-import.md",
+            "docs/reviews/extension-credential-containment.md",
+        )
+        for path in excluded:
+            repo.write(path, "operational detail")
+        repo.write("docs/reports/2026-10-03-telemetry-token-catalog.md", "public telemetry")
+        repo.write("docs/research/token-usage-pricing.md", "pricing research")
+        repo.commit_published()
+        info = collector._repo_info(repo.path)
+        tree = collector._parse_tree(info)
+
+        index = collector.reports_index(info, tree).decode()
+        for path in excluded:
+            self.assertNotIn(Path(path).stem, index)
+        self.assertIn("2026-10-03-telemetry-token-catalog", index)
+        self.assertIn("token-usage-pricing", index)
+
+        selected, _, _ = collector._select_blobs(info, tree)
+        for path in excluded:
+            self.assertIn(path, selected)
 
     def test_edited_or_deleted_generated_files_fail_closed(self) -> None:
         repo = self.make_repo()
@@ -296,6 +542,22 @@ class CollectorTests(unittest.TestCase):
             collector._validate_preview_location([info], self.code)
         with self.assertRaisesRegex(collector.CollectionError, "overlap"):
             collector._validate_preview_location([info], repo.path / ".docs-library-preview")
+
+        owned_lane = collector.RepoInfo(
+            ROOT, "Simple-With-Us", "AI-Fleet-Coordinator", "origin/main", "a" * 40
+        )
+        safe_preview = ROOT / ".docs-library-preview-safe-public"
+        collector._validate_preview_location([owned_lane], safe_preview)
+        with self.assertRaisesRegex(collector.CollectionError, "overlap"):
+            collector._validate_preview_location([owned_lane], ROOT / "other-preview")
+
+        owned_lane = collector.RepoInfo(
+            ROOT, "Simple-With-Us", "AI-Fleet-Coordinator", "origin/main", "a" * 40
+        )
+        safe_preview = ROOT / ".docs-library-preview-safe-public"
+        collector._validate_preview_location([owned_lane], safe_preview)
+        with self.assertRaisesRegex(collector.CollectionError, "overlap"):
+            collector._validate_preview_location([owned_lane], ROOT / "other-preview")
 
     def test_new_collection_directories_and_files_are_owner_only_even_with_permissive_umask(
         self,

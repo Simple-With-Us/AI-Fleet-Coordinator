@@ -91,3 +91,4 @@ Private evidence stays in private Fleet-OPS and is excluded from public indexes.
 - [2026-10-23-whatsapp-wake-bridge](../rollouts/2026-10-23-whatsapp-wake-bridge.md)
 - [2026-10-26-afc554-housekeeper-owner-record](../rollouts/2026-10-26-afc554-housekeeper-owner-record.md)
 - [2026-10-26-wise-relay-principal-guards](../rollouts/2026-10-26-wise-relay-principal-guards.md)
+- [Repository Report Library — October 30, 2026](../rollouts/2026-10-30-repository-document-library.md)
