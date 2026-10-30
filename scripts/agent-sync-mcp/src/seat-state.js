@@ -168,23 +168,46 @@ const GEO_CAP = 50;
 
 // D5 budgets, per seat.  `write` is post and reply, `react` is reactions,
 // `recall` is recall_contribute (spec 1.1;  it takes the write spacing too).
-// Owner 2026-10-19:  every bot gets 120 writes an hour and 720 a day, and Linear writes
-// have their own allowance of the same size (they no longer share Zulip's).
+// The counts are generous on purpose: routine work must not meet them.  The slot spacing (WRITE_SPACING_MS,
+// READ_SPACING_MS) and the bounded wait for a slot already throttle bursts, so the write-lane hourly count is
+// what that spacing allows (3600 s / 3 s = 1200) and the read-lane count is 3600 s / 0.5 s = 7200.  The daily
+// count is the runaway guard:  twelve hours at that hourly count, then the seat waits for the window to roll.
+// These are gateway counts of logical tool calls, not provider request counts.  Provider limits are not set
+// here and are answered by the cooldown (noteRateLimited).  Linear's documented OAuth-app limit is 5,000
+// requests an hour per app user, read and write together;  linear_read + linear_write is sized below that as a
+// heuristic only, since one tool call can make several requests.  FleetLink's own backend limits are separate.
+const WRITES_PER_HOUR = HOUR_MS / WRITE_SPACING_MS;
+const READS_PER_HOUR = HOUR_MS / READ_SPACING_MS;
 export const BUDGETS = Object.freeze({
   write: Object.freeze([
-    { windowMs: HOUR_MS, limit: 120 },
-    { windowMs: DAY_MS, limit: 720 },
+    { windowMs: HOUR_MS, limit: WRITES_PER_HOUR },
+    { windowMs: DAY_MS, limit: WRITES_PER_HOUR * 12 },
   ]),
-  react: Object.freeze([{ windowMs: HOUR_MS, limit: 60 }]),
+  react: Object.freeze([
+    { windowMs: HOUR_MS, limit: WRITES_PER_HOUR },
+    { windowMs: DAY_MS, limit: WRITES_PER_HOUR * 12 },
+  ]),
   recall: Object.freeze([
-    { windowMs: HOUR_MS, limit: 10 },
-    { windowMs: DAY_MS, limit: 40 },
+    { windowMs: HOUR_MS, limit: WRITES_PER_HOUR },
+    { windowMs: DAY_MS, limit: WRITES_PER_HOUR * 12 },
   ]),
-  read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
-  linear_write: Object.freeze([{ windowMs: HOUR_MS, limit: 120 }, { windowMs: DAY_MS, limit: 720 }]),
-  linear_read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
+  read: Object.freeze([
+    { windowMs: HOUR_MS, limit: READS_PER_HOUR },
+    { windowMs: DAY_MS, limit: READS_PER_HOUR * 12 },
+  ]),
+  linear_write: Object.freeze([
+    { windowMs: HOUR_MS, limit: WRITES_PER_HOUR },
+    { windowMs: DAY_MS, limit: WRITES_PER_HOUR * 12 },
+  ]),
+  linear_read: Object.freeze([
+    { windowMs: HOUR_MS, limit: 3000 },
+    { windowMs: DAY_MS, limit: 36000 },
+  ]),
   // FleetLink writes (AFC-328):  shares, files, upload URLs.  Own lane, read spacing.
-  fleetlink: Object.freeze([{ windowMs: HOUR_MS, limit: 60 }, { windowMs: DAY_MS, limit: 300 }]),
+  fleetlink: Object.freeze([
+    { windowMs: HOUR_MS, limit: 3600 },
+    { windowMs: DAY_MS, limit: 43200 },
+  ]),
 });
 
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -216,9 +239,10 @@ export async function reserve(store, { kind, policy }, now = Date.now()) {
   let history = ((await store.get(`budget:${kind}`)) ?? []).filter((entry) =>
     Number.isFinite(stamp(entry)) && Number.isInteger(count(entry)) && count(entry) > 0
     && stamp(entry) > now - longest && stamp(entry) <= now + MINUTE_MS);
-  // Minute buckets bound storage for large shared-seat budgets.  Round up so
+  // Minute buckets bound storage for every budget (a day holds at most 1,440 buckets however many calls were
+  // made), so raised counts cannot grow a seat's state toward the Durable Object storage limit.  Round up so
   // expiry is conservative by at most a minute, never an early extra allowance.
-  if (policy) {
+  {
     const buckets = new Map();
     for (const entry of history) {
       const minute = Math.ceil(stamp(entry) / MINUTE_MS) * MINUTE_MS;
@@ -241,12 +265,12 @@ export async function reserve(store, { kind, policy }, now = Date.now()) {
   if (waitMs > MAX_WAIT_MS) {
     return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((waitMs - MAX_WAIT_MS) / 1000)) };
   }
-  if (policy) {
+  {
     const minute = Math.ceil(now / MINUTE_MS) * MINUTE_MS;
     const bucket = history.find((entry) => stamp(entry) === minute);
     if (bucket) bucket[1]++;
     else history.push([minute, 1]);
-  } else history.push(now);
+  }
   await store.put(`last:${lane}`, slot);
   await store.put(`budget:${kind}`, history);
   return { ok: true, waitMs };

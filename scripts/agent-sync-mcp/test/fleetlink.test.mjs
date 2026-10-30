@@ -250,10 +250,16 @@ test("arguments are checked here:  unknown names and bad enums never reach Fleet
 });
 
 test("writes have their own hourly budget and do not wait behind Zulip post spacing", async () => {
-  const { tools, clock } = harness();
+  const { tools, clock, gate } = harness();
   const started = clock.now;
   for (let i = 0; i < 60; i++) assert.equal((await tools.call("fleetlink_add_file", { slug: "x", path: `f${i}.md`, markdown: "x" })).isError, undefined, `call ${i}`);
   assert.ok(clock.now - started <= 60 * 500, "write spacing should be the short FleetLink lane");
+  const hourly = S.BUDGETS.fleetlink.find((w) => w.windowMs === S.HOUR_MS).limit;
+  const minute = Math.ceil(clock.now / S.MINUTE_MS) * S.MINUTE_MS;
+  const used = await gate.store.get("budget:fleetlink");
+  const spent = used.reduce((n, e) => n + (Array.isArray(e) ? e[1] : 1), 0);
+  assert.equal(spent, 60);
+  await gate.store.put("budget:fleetlink", [[minute, hourly]]);
   const r = await tools.call("fleetlink_add_file", { slug: "x", path: "late.md", markdown: "x" });
   assert.equal(errorOf(r).code, "budget_exhausted");
   // Reads still work.

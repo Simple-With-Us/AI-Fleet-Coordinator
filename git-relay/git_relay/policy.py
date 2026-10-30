@@ -20,6 +20,13 @@ class PolicyError(ValueError):
     """A seat config or request is invalid."""
 
 
+# Per-seat calls an hour the gateway admits before it refuses.  This is a seat-token blast-radius bound, not a
+# throttle for routine work:  the repo and action allowlists are the access control, and GitHub's own
+# 429/Retry-After is already returned to the caller as a retryable refusal (server.py), so GitHub's limits remain
+# the real ceiling.  3600 is one call a second on average for a full hour.  GIT_RELAY_RATE_PER_HOUR overrides it.
+DEFAULT_RATE_PER_HOUR = 3600
+
+
 class SeatPolicy:
     """Per-seat allowlists parsed from GIT_RELAY_SEATS_JSON.
 
@@ -247,7 +254,9 @@ class SeatPolicy:
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
 
-    def __init__(self, seats_json: str, rate_per_hour: int = 120, verifier=None):
+    def __init__(
+        self, seats_json: str, rate_per_hour: int = DEFAULT_RATE_PER_HOUR, verifier=None
+    ):
         if not seats_json:
             raise PolicyError("GIT_RELAY_SEATS_JSON is empty")
         try:

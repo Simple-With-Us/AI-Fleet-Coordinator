@@ -115,6 +115,27 @@ class TestPolicy(unittest.TestCase):
         self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=4601.0))
 
 
+class TestDefaultRate(unittest.TestCase):
+    def test_default_cap_is_generous_and_still_a_rolling_hour_bound(self):
+        from git_relay.policy import DEFAULT_RATE_PER_HOUR
+
+        self.assertEqual(DEFAULT_RATE_PER_HOUR, 3600)
+        policy = SeatPolicy(SEATS_JSON)
+        repo = "example/fixture-repo"
+        for i in range(DEFAULT_RATE_PER_HOUR):
+            self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0 + i))
+        self.assertIsNotNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0 + 3599.5))
+        # the oldest call leaves the window an hour later
+        self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=1000.0 + 3600.5))
+
+    def test_the_server_default_is_the_policy_default(self):
+        import inspect
+        from git_relay import server
+
+        self.assertIn("DEFAULT_RATE_PER_HOUR", inspect.getsource(server))
+        self.assertNotIn('"120"', inspect.getsource(server))
+
+
 class TestAudit(unittest.TestCase):
     def test_rows_are_appended_and_bodies_are_hashed(self):
         with tempfile.TemporaryDirectory() as tmp:
