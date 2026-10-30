@@ -1279,6 +1279,11 @@ class QuotaGateTest(unittest.TestCase):
         self.assertIsNone(A.quota_red("muse", self.now, path))
         red = A.quota_red("Claude Code", self.now, path)  # a capped provider still does
         self.assertEqual(red, "wakes are not running: the Claude Code quota is exhausted until 2026-10-30T10:00:00Z")
+        # The status reads the file once and derives the line from that same reading, so the reported quota and the
+        # RED line cannot diverge, and an uncapped provider's file is not even needed for its verdict.
+        state = A.provider_quota("Claude Code", self.now, path)
+        self.assertEqual(A.quota_red_from_state("Claude Code", state), red)
+        self.assertIsNone(A.quota_red_from_state("MiniMax", A.provider_quota("MiniMax", self.now, path)))
 
     def test_a_stale_snapshot_never_blocks(self) -> None:
         # A quota source that is down must not silence the fleet:  an old reading is not a verdict.
