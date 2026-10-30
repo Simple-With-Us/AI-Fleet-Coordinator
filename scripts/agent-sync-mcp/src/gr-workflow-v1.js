@@ -28,6 +28,7 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_git_blob_binary_get:['Read exact Git blob as bounded base64 (32000 bytes), verified Git SHA1 and known ASCII credential-pattern scan. No range, larger blob, write or secret-free guarantee.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
  wf_issue_events:['Read bounded issue event metadata only; no actor, content, label details or full history claim. Nullable ID/time/commit means unavailable. PR issue endpoints may return PR events.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_issue_timeline:['Read bounded issue timeline metadata only, not complete comments/reviews/history or source bodies. Pagination required; has_more is conservative.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_pr_commits_page:['Bounded PR commit graph, explicit 250-commit API history cap; no complete-history or atomic snapshot claim.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA,page:{type:'integer',minimum:1,maximum:250},per_page:PER_PAGE})],
@@ -208,7 +209,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_commits_page','wf_pr_review_get','wf_release_latest','wf_release_by_tag','wf_commit_comments_page','wf_commit_comment_get','wf_pr_requested_reviewers','wf_repo_tags','wf_repo_languages','wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_merge_queue_entry','wf_job_get','wf_workflow_get','wf_artifact_get','wf_artifacts_page','wf_caches_page','wf_cache_usage','wf_run_attempt_get','wf_run_attempt_jobs','wf_run_pending_deployments','wf_repo_variables','wf_repo_variable_get','wf_issue_events','wf_issue_timeline','wf_git_blob_binary_get']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -250,6 +251,7 @@ export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=655
 // mirror that here so bad input fails before network instead of as a relay 400.
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
+const gitCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|\bst\.[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----)/;
 const relationCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|\bst\.[A-Za-z0-9]{20,})/;
 // Free text an action persists on GitHub.  A credential shape in any of it is
 // refused before network, and the refusal never echoes the value.
@@ -275,7 +277,9 @@ function gitSchema(schema){
 }
 const argSchemas=Object.fromEntries(Object.entries(SPECS).map(([a,s])=>[a,gitSchema(s[1])]));
 const gitArgsOk=(action,args)=>{
- if(action==='wf_git_blob_create')return utfBytes(40000).safeParse(args.text).success;
+ if(!action.startsWith('wf_git_'))return true;
+ if(!gitSchema(SPECS[action][1]).safeParse(args).success)return false;
+ if(action==='wf_git_blob_create')return utfBytes(40000).safeParse(args.text).success && !gitCredential.test(args.text);
  if(action==='wf_git_commit_create')return utfBytes(32768,true).safeParse(args.message).success&&new Set(args.parents).size===args.parents.length;
  if(action==='wf_git_tree_create')return args.files.reduce((n,x)=>n+new TextEncoder().encode(x.text).length,0)<=40000;
  return true;
@@ -366,6 +370,7 @@ const RESPONSE_KEYS = {
  wf_check_create:['check'],wf_check_update:['check'],
  wf_commit_statuses:['statuses','complete'],wf_commit_status_create:['status'],
  wf_review_update:['review'],wf_review_dismiss:['review'],wf_review_pending_delete:['review'],wf_review_comment_reply:['comment'],
+ wf_git_blob_binary_get:['blob'],wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
  wf_issue_parent:['issue'],wf_issue_subissues:['issues','page','has_more'],wf_issue_blocked_by:['issues','page','has_more'],wf_issue_blocking:['issues','page','has_more'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
@@ -441,6 +446,15 @@ const binaryAsset=z.object({id:positive,name:z.string().min(1).max(255),state:z.
 const binaryResponses={wf_release_asset_download:chunkSchema('asset_id'),wf_artifact_download:chunkSchema('artifact_id'),wf_run_logs:chunkSchema('run_id'),wf_job_log:chunkSchema('job_id',true),wf_release_asset_upload_binary:z.object({asset:binaryAsset}).strict(),wf_release_asset_update:z.object({asset:binaryAsset}).strict(),wf_release_asset_delete:z.object({deleted:z.literal(true),asset_id:positive}).strict()};
 const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED','APPROVED','CHANGES_REQUESTED','DISMISSED']),commit_id:shaValue.nullable(),html_url:z.string().nullable()}).strict();
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
+   const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768).refine(v=>!gitCredential.test(v))}).strict();
+const gitResponses={
+    wf_git_blob_binary_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(32000),content_b64:z.string().max(42668).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)}).strict().refine(v=>{const raw=atob(v.content_b64);return raw.length===v.size&&btoa(raw)===v.content_b64&&!gitCredential.test(raw);})}).strict(),
+
+    wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000).refine(v=>!gitCredential.test(v))}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
+    wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
+    wf_git_commit_get:z.object({commit:commitRead}).strict(),
+    wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024).refine(v=>v.length>0)}).strict()).max(100)}).strict()}).strict(),
+   };
 const commitStatus=z.object({id:positive,state:z.enum(['error','failure','pending','success']),context:z.string().min(1).refine(v=>v.trim()!==''&&new TextEncoder().encode(v).length<=255),description:z.string().refine(v=>new TextEncoder().encode(v).length<=140).nullable(),created_at:z.string().max(100).nullable()}).strict();
 const commitStatusResponses={wf_commit_statuses:z.object({statuses:z.array(commitStatus).max(50),complete:z.boolean()}).strict(),wf_commit_status_create:z.object({status:commitStatus}).strict()};
 const relationIssue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>new TextEncoder().encode(v).length<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).refine(v=>!credentialPattern.test(v)).nullable()}).strict();
@@ -494,7 +508,7 @@ const contextCommentsPage=z.object({sha:shaValue,comments:z.array(contextComment
 const contextCommentGet=z.object({comment:contextComment}).strict();
 const requestedReviewers=z.object({number:z.number().int().positive(),head_sha:shaValue,users:z.array(contextAuthor).max(100),teams:z.array(z.object({id:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),slug:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).refine(v=>!metadataCredential.test(v))}).strict()).max(100),snapshot:z.literal(false)}).strict();
 export function validWfV1Response(action, body, args) {
- if(typeof action!=="string")return false;
+ if(typeof action!=='string')return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(action.startsWith('wf_repo_variable')){
   const name=z.string().regex(/^[A-Z_][A-Z0-9_]{0,99}$/), variable=z.object({name,value:z.string().refine(v=>new TextEncoder().encode(v).length<=8192),created_at:z.string().max(100),updated_at:z.string().max(100)}).strict();
@@ -582,10 +596,12 @@ export function validWfV1Response(action, body, args) {
  if(action==='wf_labels_add')return additiveLabels.safeParse(body).success && new Set(body.added.map(x=>x.id)).size===body.added.length && new Set(body.added.map(x=>x.name.toLowerCase())).size===body.added.length && (!args || body.number===args.number && body.added.length===args.labels.length && body.added.every(x=>args.labels.some(v=>v.toLowerCase()===x.name.toLowerCase())));
  if(action==='wf_label_update')return labelUpdateReceipt.safeParse(body).success && (!args || body.label.id===args.expected_label_id && body.label.name===args.new_name && body.label.color===args.color.toLowerCase() && body.label.description===args.description);
  if(discussionPages[action]){if(!discussionPages[action].safeParse(body).success||new TextEncoder().encode(JSON.stringify(body)).length>262144)return false;const rows=body.reviews??body.comments;return new Set(rows.map(x=>x.id)).size===rows.length&&rows.reduce((n,x)=>n+new TextEncoder().encode(x.body).length,0)<=262144&&(!args||body.number===args.number&&body.head_sha===args.expected_head_sha&&body.page===(args.page??1)&&rows.length<=(args.per_page??30)&&body.has_more===(rows.length===(args.per_page??30)));}
+ if(gitResponses[action]&&!gitResponses[action].safeParse(body).success)return false;
+ if(action==='wf_git_blob_binary_get')return true;
  if(action.startsWith('wf_git_')){
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
    const schemas={
-    wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000)}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
+    wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000).refine(v=>!gitCredential.test(v))}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
     wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
     wf_git_commit_get:z.object({commit:commitRead}).strict(),
     wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024).refine(v=>v.length>0)}).strict()).max(100)}).strict()}).strict(),
