@@ -23,11 +23,12 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 134 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 136 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
-# library);  the 134th is platform_letter_codex.py (AFC-564, the Codex adapter), added for that review.
-MAX_FILES = 134
+# library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
+# platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter), added for that review.
+MAX_FILES = 136
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -92,6 +93,9 @@ EXACT = frozenset(
         "scripts/agent_sync/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
         "scripts/agent_sync/operator_sheets_export.mjs",
+        # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
+        # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
+        "scripts/agent_sync/opencode_letter_plugin/index.js",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
