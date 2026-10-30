@@ -6,6 +6,7 @@ import { resolveSecret, infisicalStats, _resetInfisicalForTests, InfisicalError 
 import { resolveLinearPair, linearClientFromPair } from "../src/linear.js";
 import { resolveFleetlinkSeatTokens, fleetlinkClientFromSecret } from "../src/fleetlink.js";
 import { LinearClient } from "../src/linear.js";
+import { memoryQuota } from "./quota-helper.mjs";
 
 // Every credential-shaped value in this file (fla_ and fls_ tokens, keys, client ids and secrets) is
 // synthetic:  built at runtime from a repeated character or a short fixed word.  None is a credential,
@@ -136,13 +137,13 @@ test("resolveLinearPair: required mode treats a missing pair as Linear-off - no 
   const env = { ...ENV, LINEAR_ECHO_CLIENT_ID: "id-legacy", LINEAR_ECHO_CLIENT_SECRET: "sec-legacy" };
   const pair = await resolveLinearPair(env, "ECHO");
   assert.deepEqual(pair, { clientId: "", clientSecret: "" }, "absent pair, not the legacy bindings");
-  assert.equal(linearClientFromPair(pair, "ECHO", { gate: {} }), null, "Linear tools answer not_configured");
+  assert.equal(linearClientFromPair(pair, "ECHO", { gate: {}, quota: memoryQuota() }), null, "Linear tools answer not_configured");
 });
 
 test("linearClientFromPair keeps the null contract without a gate or pair", async () => {
-  assert.equal(linearClientFromPair(null, "ECHO", { gate: {} }), null);
-  assert.equal(linearClientFromPair({ clientId: "", clientSecret: "s" }, "ECHO", { gate: {} }), null);
-  assert.ok(linearClientFromPair({ clientId: "i", clientSecret: "s" }, "ECHO", { gate: {} }) instanceof LinearClient);
+  assert.equal(linearClientFromPair(null, "ECHO", { gate: {}, quota: memoryQuota() }), null);
+  assert.equal(linearClientFromPair({ clientId: "", clientSecret: "s" }, "ECHO", { gate: {}, quota: memoryQuota() }), null);
+  assert.ok(linearClientFromPair({ clientId: "i", clientSecret: "s" }, "ECHO", { gate: {}, quota: memoryQuota() }) instanceof LinearClient);
 });
 
 test("optional read: required mode treats a genuine 404 as capability-off, never reads env", async () => {

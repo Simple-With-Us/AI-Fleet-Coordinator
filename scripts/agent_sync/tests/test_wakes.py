@@ -120,6 +120,33 @@ class ValidateTests(unittest.TestCase):
         self.assertIsNone(why)
         self.assertEqual(result["action"], "reply")
 
+    def test_the_strict_schema_requires_every_property_and_nothing_else_changes(self) -> None:
+        # The muse runtime sends its schema to a provider whose strict structured-output mode refuses a
+        # `required` list that leaves a property out (API error 400, every muse wake dead on arrival).  The strict
+        # variant lists every property;  the default is the shorter list the other runtimes and the validator use.
+        strict = json.loads(W.schema_text(["CLAUDE", "MM"], strict=True))
+        default = json.loads(W.schema_text(["CLAUDE", "MM"]))
+        self.assertEqual(set(strict["required"]), set(strict["properties"]))
+        self.assertEqual(set(default["required"]), {"action", "reply", "board", "owner_note", "risk"})
+        strict.pop("required")
+        default.pop("required")
+        self.assertEqual(strict, default)  # the same schema in every other respect
+        # An answer to the strict schema carries the optional keys as explicit nulls, and the validator takes it.
+        result, why = W.validate(
+            {
+                "action": "reply",
+                "reply": "hi",
+                "board": None,
+                "owner_note": None,
+                "risk": "low",
+                "route": None,
+                "chat_target": None,
+                "chat_inspect": None,
+            }
+        )
+        self.assertIsNone(why)
+        self.assertEqual(result["action"], "reply")
+
     def test_high_and_uncertain_risk_always_become_escalate(self) -> None:
         for risk in ("high", "uncertain"):
             for action, extra in (

@@ -1,5 +1,5 @@
-// The rest of Zulip for hosted seats (AFC-330):  one message, edits and deletes of the bot's own
-// messages, edit history, topic moves, resolve and unresolve, reactions, read and star flags,
+// The rest of Zulip for hosted seats (AFC-330):  one message, edits of the bot's own messages,
+// deletes as far as Zulip's realm permissions allow, edit history, topic moves, resolve and unresolve, reactions, read and star flags,
 // search, channels, users, presence, status, user groups, custom emoji, uploads, scheduled
 // messages, drafts and typing.  A port of scripts/agent_sync/zulip_ops.py and the stdio handlers
 // in scripts/agent_sync/mcp/tools.py, with the hosted rules on top:
@@ -43,6 +43,9 @@ export const FLAG_NARROW_MAX = 1000;
 export const UPLOAD_MAX_BYTES = 1024 * 1024;
 export const PRESENCE_ACTIVE_S = 140;
 export const PRESENCE_IDLE_S = 15 * 60;
+// Zulip's own text is left out (it can quote member-authored names);  zulip_ops.DELETE_REFUSED says the same.
+export const DELETE_REFUSED = (id) =>
+  `Zulip refused to delete message ${id}:  this bot has no permission to delete it, or it is past the realm's delete time limit.  The owner sets both in the realm's settings.`;
 
 // Budget kind per tool:  anything not here is a read.
 export const FULL_WRITE_KIND = Object.freeze({
@@ -127,7 +130,7 @@ export const ZULIP_FULL_METHODS = {
     const own = isInt(message.sender_id) && isInt(this.me?.user_id)
       ? message.sender_id === this.me.user_id
       : String(message.sender_email ?? "").toLowerCase() === this.email;
-    if (!own) throw new ToolError("invalid_argument", `message ${messageId} was not sent by this bot; only its own messages can be edited or deleted`);
+    if (!own) throw new ToolError("invalid_argument", `message ${messageId} was not sent by this bot; only its own messages can be edited`);
     return message;
   },
 
@@ -217,20 +220,36 @@ export const ZULIP_FULL_METHODS = {
     const message = await this.ownMessage(args.message_id);
     audit.message_id = args.message_id;
     if (isInt(message.stream_id)) audit.channel_id = message.stream_id;
-    const content = await this.tagged(text, args.session);
+    // `to` tags peers as post does, and the listener wakes a seat an edit newly tags (owner, Oct 29
+    // 2026).  The edit replaces the whole text, so the caller names again any peer it should keep.
+    const [content] = await this.compose(text, [...(args.to ?? [])], args.session);
     audit.body_len = [...content].length;
     await this.reserve("write");
     await this.zulip.patch(`messages/${args.message_id}`, { content });
     return this.writeResult({ id: args.message_id, edited: true });
   },
 
+  // Any message in a channel this seat may use:  no own-message rule and no time limit here (owner,
+  // Oct 29 2026).  Zulip's realm delete permissions decide, and its refusal comes back as the error.
   async tool_delete_message(args, audit) {
     await this.ensureSeat();
-    const message = await this.ownMessage(args.message_id);
+    const message = await this.visibleMessage(args.message_id);
     audit.message_id = args.message_id;
     if (isInt(message.stream_id)) audit.channel_id = message.stream_id;
     await this.reserve("write");
-    await this.zulip.delete(`messages/${args.message_id}`);
+    try {
+      await this.zulip.delete(`messages/${args.message_id}`);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 400) throw error;
+      // Zulip answers 400 for a refusal and for a message that is gone.  Only a message that is still
+      // there was refused (permission or the time limit);  any other 400 is Zulip's own error.
+      try {
+        await this.zulip.get(`messages/${args.message_id}`, { apply_markdown: false });
+      } catch {
+        throw error;
+      }
+      throw new ToolError("invalid_argument", DELETE_REFUSED(args.message_id));
+    }
     return this.writeResult({ id: args.message_id, deleted: true });
   },
 

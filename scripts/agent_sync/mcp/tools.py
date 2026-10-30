@@ -1800,7 +1800,12 @@ class Tools:
 
     def _tool_zulip_edit_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
         self._scan(text=args["text"])
-        body = self._tagged(self._text(args["text"]), args.get("session"))
+        text = self._text(args["text"])
+        # `to` tags peers as post does, and an edit that newly tags a seat wakes it (owner, Oct 29
+        # 2026).  The edit replaces the whole text, so name again any peer the message should keep.
+        mentions, labels = self._resolve_to(list(args.get("to") or []))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
+        body = CLI._compose(self.agent, text, labels=labels, mentions=mentions, no_tag=False)
         return self._write_result(
             self._write(lambda: OPS.edit_message(self.agent, int(args["message_id"]), body))
         )

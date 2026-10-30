@@ -29,7 +29,13 @@ from agent_sync import zulip as Z
 from agent_sync.daemon import LIVE_DIR_KEEP
 from agent_sync.tests.fake_zulip import EPOCH
 from agent_sync.tests.harness import write_rc
-from agent_sync.tests.listener_harness import BASE_CONFIG, ListenerHarness, fake_watcher, reply_output
+from agent_sync.tests.listener_harness import (
+    BASE_CONFIG,
+    OPERATOR_USER_ID,
+    ListenerHarness,
+    fake_watcher,
+    reply_output,
+)
 
 MENTION = "@**Claude** can you check the AFC cutover?"
 MUSE_MENTION = "@**MiniMax** can you check the AFC cutover?"
@@ -66,7 +72,9 @@ class DaemonHarness(ListenerHarness):
         daemon.run_jobs("CLAUDE")
 
     def bot_posts(self):
-        return [m for m in self.fake.messages if m["sender_id"] == 10]
+        """What the daemon posted: the Operator's messages.  The seat's own bot (id 10) posts nothing
+        for the daemon any more (owner ruling, Oct 30 2026), and tearDown fails a test where it does."""
+        return self.operator_posts()
 
     def seed_held(self, message_id: int = 900001) -> int:
         """One held-back record the next delivered wake should surface."""
@@ -186,16 +194,73 @@ class RoutingTests(DaemonHarness):
         self.assertEqual(L.load_lease(self.seat_paths(), "L1")["topics"][0]["topic"], "✔ old name")
         self.assertEqual(L.read_json(state)["cursors"], {L.topic_key("agent-sync", "✔ old name"): 120})
 
-    def test_a_content_only_edit_is_ignored(self) -> None:
+    def test_an_edit_with_no_new_tag_is_ignored(self) -> None:
         daemon = self.started()
         self.write_lease("L1", topics=[("agent-sync", "t")])
         mid = self.fake.add_message("Codex", "agent-sync", "t", "hello")
         self.pump_until(daemon, lambda: len(self.live_items("L1")) == 1)
-        self.fake.edit_content(mid, "@**Claude** edited in a mention")
+        self.fake.edit_content(mid, "hello again, nobody tagged")
+        self.fake.edit_content(mid, "a silenced @_**Claude** never counts")
         daemon.pump("CLAUDE", timeout=0.5)
         daemon.pump("CLAUDE", timeout=0.5)
         self.assertEqual(len(self.live_items("L1")), 1)
         self.assertEqual(self.inbox(), [])
+        self.assertEqual(self.ledger(), [])
+
+    def test_an_edit_that_tags_the_seat_wakes_it_once(self) -> None:
+        # Owner, Oct 29 2026:  "make sure edited messages wake anyone tagged".
+        daemon = self.started()
+        mid = self.fake.add_message("Codex", "agent-sync", "t", "hello")
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.inbox(), [])
+        self.fake.edit_content(mid, "@**Claude** edited in a mention")
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        rows = self.inbox()
+        self.assertEqual([(r["id"], r.get("edited")) for r in rows], [(mid, True)])
+        self.assertIn("direct", rows[0]["classes"])
+        self.assertEqual([(r["state"], r["trigger_ids"]) for r in self.ledger()], [("queued", [mid])])
+        # The mention was already there, then it is removed and added back:  no second wake.
+        self.fake.edit_content(mid, "@**Claude** edited in a mention, typo fixed")
+        self.fake.edit_content(mid, "mention taken out")
+        self.fake.edit_content(mid, "@**Claude** and back in")
+        daemon.pump("CLAUDE", timeout=0.5)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual([r["id"] for r in self.inbox()], [mid])
+        self.assertEqual(len(self.ledger()), 1)
+
+    def test_an_edit_that_tags_a_message_already_delivered_reaches_its_lease_again(self) -> None:
+        daemon = self.started()
+        self.write_lease("L1", topics=[("agent-sync", "t")])
+        mid = self.fake.add_message("Codex", "agent-sync", "t", "hello")
+        self.pump_until(daemon, lambda: len(self.live_items("L1")) == 1)
+        self.fake.edit_content(mid, MENTION)
+        self.pump_until(daemon, lambda: len(self.live_items("L1")) == 2)
+        items = self.live_items("L1")
+        self.assertEqual([i["id"] for i in items], [mid, mid])
+        self.assertTrue(items[-1]["edited"])
+        self.assertIn("direct", items[-1]["classes"])
+
+    def test_an_edit_that_adds_all_counts_like_a_new_all(self) -> None:
+        daemon = self.started()
+        mid = self.fake.add_message("Codex", "agent-sync", "t", "heads up")
+        daemon.pump("CLAUDE", timeout=0.5)
+        with mock.patch.object(daemon, "start_fanout") as fanout:
+            self.fake.edit_content(mid, "@**all** heads up")
+            self.pump_until(daemon, lambda: fanout.called)
+        self.assertEqual(fanout.call_args.args[0]["id"], mid)
+
+    def test_an_own_edit_or_a_dm_edit_wakes_nobody(self) -> None:
+        daemon = self.started()
+        own = self.fake.add_message(self.fake.me, "agent-sync", "t", "my own note")
+        dm = self.fake.add_direct_message("Codex", "a direct message", deliver=True)
+        daemon.pump("CLAUDE", timeout=0.5)
+        before = len(self.inbox())
+        self.fake.edit_content(own, "my own note for @**Claude**")
+        self.fake.edit_content(dm, "a direct message for @**Claude**")
+        daemon.pump("CLAUDE", timeout=0.5)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(len(self.inbox()), before)
+        self.assertEqual([r for r in self.ledger() if dm in r.get("trigger_ids", [])][1:], [])
 
     def test_a_muted_topic_drops_group_mentions_but_not_direct_ones(self) -> None:
         daemon = self.started()
@@ -498,7 +563,11 @@ class WakeTests(DaemonHarness):
         posts = self.bot_posts()
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0]["type"], "private")
-        self.assertEqual(sorted(r["id"] for r in posts[0]["display_recipient"]), [10, 12])
+        #  The Operator sends it (owner ruling, Oct 30 2026), so the thread is the original one plus
+        #  the Operator: the seat stays in it and the owner is in it.
+        self.assertEqual(
+            sorted(r["id"] for r in posts[0]["display_recipient"]), [10, 12, OPERATOR_USER_ID]
+        )
         self.assertTrue(posts[0]["content"].startswith("[CLAUDE·wake] re=%d" % dm))
         self.assertIn("direct message thread", self.dumps()[0]["stdin"])
         self.assertTrue(self.ledger()[0]["owner"])
@@ -1108,6 +1177,7 @@ model = "sonnet"
 provider = "Claude Code"
 """)
         daemon = self.started()
+        self.warm_operator(daemon)  # a held wake is finalized on the router thread, which never waits for a build
         now = self.clock.time()
         pending = W.Pending("q1", "CLAUDE", {"channel": "agent-sync", "topic": "t", "type": "stream"},
                             owner=False, now=now, due=now)
@@ -1118,10 +1188,13 @@ provider = "Claude Code"
         with mock.patch("agent_sync.daemon.A.provider_quota", return_value=quota):
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
-        dms = [m for m in self.fake.messages if m["type"] == "private" and m["sender_id"] == 10]
+        dms = [m for m in self.bot_posts() if m["type"] == "private"]
         self.assertEqual(len(dms), 1, "one DM per sender per window, and the call must not raise")
         #  The owner is in the conversation, so this is not a bot to bot direct message (AFC-469).
-        self.assertEqual(sorted(r["id"] for r in dms[0]["display_recipient"]), [10, 11, 12])
+        #  The Operator sends it, not the seat (owner ruling, Oct 30 2026).
+        self.assertEqual(
+            sorted(r["id"] for r in dms[0]["display_recipient"]), [11, 12, OPERATOR_USER_ID]
+        )
         self.assertIn("cannot answer right now", dms[0]["content"])
         self.assertIn("Claude Code", dms[0]["content"])
         self.assertEqual([m for m in self.bot_posts() if m["type"] == "stream"], [])
@@ -1557,12 +1630,13 @@ class MuseSeatTests(DaemonHarness):
 
 class PeerScreenTests(DaemonHarness):
     """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  low risk is
-    answered, uncertain and high risk reach the owner by Zulip DM from the seat's own bot."""
+    answered, uncertain and high risk reach the owner by Zulip DM from the Operator bot (owner ruling,
+    Oct 30 2026: the seat's own bot never carries the daemon's text)."""
 
     OWNER_ID = 12
 
     def owner_dms(self):
-        return [m for m in self.fake.messages if m["type"] == "private" and m["sender_id"] == 10
+        return [m for m in self.bot_posts() if m["type"] == "private"
                 and any(r["id"] == self.OWNER_ID for r in m["display_recipient"])]
 
     def stream_posts(self):
@@ -1668,7 +1742,7 @@ class PeerScreenTests(DaemonHarness):
 
     def test_a_failed_owner_dm_is_recorded_and_never_breaks_the_wake(self) -> None:
         daemon = self.started()
-        client = daemon.seats["CLAUDE"].client
+        client = daemon.operator_voice.client()  # the Operator sends the DM, not the seat's bot
         real_post = client.post
 
         def post(path, params=None, **kw):

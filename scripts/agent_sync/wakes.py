@@ -59,16 +59,26 @@ FINAL_STATES = (
 )
 
 
-def schema_text(seats: Iterable[str] | None = None) -> str:
+def schema_text(seats: Iterable[str] | None = None, *, strict: bool = False) -> str:
     """The schema as one compact JSON string, for `--json-schema`.  With `seats` (the live fleet tag
     set, config.fleet_tags), `route.seat` becomes an enum of them, sorted so the argv is stable;
-    without, it stays a string and the daemon's route check refuses an unknown seat anyway."""
+    without, it stays a string and the daemon's route check refuses an unknown seat anyway.
+
+    With `strict`, every property is also required.  The muse runtime sends the schema to the Meta
+    provider's strict structured-output mode, which refuses a schema whose `required` list leaves a
+    property out (API error 400, "'required' is required to be supplied and to be an array", naming the
+    first missing key), so no muse wake could start while the optional keys `route`, `chat_target` and
+    `chat_inspect` were left off the list.  The model then answers them with an explicit null, which
+    `validate` accepts as it accepts their absence.  The other runtimes keep the schema file's own, shorter
+    list (the Oct 28 reason in test_wakes: they refuse an answer that lacks a key the schema demands)."""
     with open(SCHEMA_PATH, encoding="utf-8") as fh:
         schema = json.load(fh)
     if seats is not None:
         schema["properties"]["route"]["properties"]["seat"] = {
             "enum": sorted({str(s).upper() for s in seats})
         }
+    if strict:
+        schema["required"] = list(schema["properties"])
     return json.dumps(schema, separators=(",", ":"))
 
 
@@ -270,6 +280,10 @@ class Pending:
         # A catch-up wake (daemon._catch_up):  built from a held-back record, with no trigger_ts, because
         # the record's TTL bounds its age instead of the stale rule.
         self.catch_up = False
+        # Why the daemon's last post for this wake was not made (daemon.post sets it, and clears it
+        # at the start of the next post): the Operator was unavailable, the text was refused, or the
+        # send failed.  The wake's ledger row carries it as `post_error`.
+        self.post_refusal: str | None = None
 
     def add(self, item: Mapping[str, Any], owner: bool) -> None:
         message_id = item.get("id")

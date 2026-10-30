@@ -121,11 +121,19 @@ def add_parsers(
         "replace the text of one of this bot's own messages (tagged and secret-scanned like post)",
     )
     msg_id(p, "the message to edit (this bot's own)")
+    p.add_argument(
+        "--to",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="address a user or bot like post --to (repeatable); a seat newly tagged by the edit is"
+        " woken.  The edit replaces the whole text, so name again anyone the message should keep",
+    )
     p.add_argument("--no-tag", action="store_true", help="do not prepend the [SEAT·session] tag")
     body(p)
 
-    p = add("delete", "delete one of this bot's own messages")
-    msg_id(p, "the message to delete (this bot's own)")
+    p = add("delete", "delete a message, as far as Zulip's realm delete permissions allow this bot")
+    msg_id(p, "the message to delete")
 
     p = add("history", "show the edit history of a message (every saved version, oldest first)")
     msg_id(p)
@@ -441,7 +449,9 @@ def cmd_show(agent: Any, args: argparse.Namespace) -> int:
 
 def cmd_edit(agent: Any, args: argparse.Namespace) -> int:
     text = _text(agent, args)
-    result = OPS.edit_message(agent, args.id, _tagged(agent, text, args.no_tag))
+    mentions, labels = _cli()._resolve_targets(agent, args.to, False)
+    body = _cli()._compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
+    result = OPS.edit_message(agent, args.id, body)
     return _result(agent, result, "edited id %d" % args.id)
 
 

@@ -1,5 +1,5 @@
 {
-  "//": "The reviewed git-relay seat policy (README, Policy).  seat_policy.py renders it into GIT_RELAY_SEATS_JSON and installs it on the relay host.  Every seat signs in with its own admin-minted ST-MCP bearer (auth shared) and acts as its own GitHub App, so no entry holds a token.  The App slug of each identity is the swu- App whose GitHub description names that seat;  three are not swu-<identity>:  MA is swu-rob, GROK is swu-grok-build, MM is swu-minimax.  JET-CHAT is absent:  it is a second login on Jet's bot, and one bot has one App (Q7).",
+  "//": "The reviewed git-relay seat policy (README, Policy).  seat_policy.py renders it into GIT_RELAY_SEATS_JSON and installs it on the relay host.  Every seat signs in with its own admin-minted ST-MCP bearer (auth shared) and acts as its own GitHub App, so no entry holds a token.  The App slug of each identity is the swu- App whose GitHub description names that seat;  five are not swu-<identity>:  MA is swu-rob, GROK is swu-grok-build, MM is swu-minimax, JET-CHAT is swu-jet, AMP is swu-amp-agent (swu-amp is reserved for an account).  JET-CHAT is the full Jet login on swu-jet; the original JET connection is wake-only and has no Git entry (Q7).  AMP signs in with its own bearer and acts as its own swu-amp-agent App.",
   "profiles": {
     "fleet": {
       "actions": [
@@ -69,48 +69,249 @@
         "Simple-With-Us/CodeCaps",
         "Simple-With-Us/Fleet-OPS"
       ]
+    },
+    "jet": {
+      "//": "Full Jet login preserves the fleet ceiling and repositories, adding the safe repository metadata read explicitly. Other seats are unchanged.",
+      "actions": [
+        "open_pr",
+        "edit_pr",
+        "reply_thread",
+        "comment_pr",
+        "merge_pr",
+        "workflow_dispatch",
+        "resolve_thread",
+        "wf_review_submit",
+        "wf_review_inline",
+        "wf_branch_create",
+        "wf_pr_list",
+        "wf_pr_files",
+        "wf_file_get",
+        "wf_tree",
+        "wf_branches",
+        "wf_commits",
+        "wf_code_search",
+        "wf_runs",
+        "wf_run_jobs",
+        "wf_checks",
+        "wf_update_branch",
+        "wf_run_rerun",
+        "wf_run_cancel",
+        "wf_run_approve",
+        "wf_file_put",
+        "wf_files_put",
+        "wf_merge_guarded",
+        "wf_repo_get",
+        "wf_pr_get"
+      ],
+      "mint_permissions": "fleet",
+      "repos": "fleet"
     }
   },
   "seats": [
-    {"identity": "CLAUDE", "app_slug": "swu-claude", "profile": "fleet"},
-    {"identity": "CURSOR", "app_slug": "swu-cursor", "profile": "fleet"},
-    {"identity": "ECHO", "app_slug": "swu-echo", "profile": "echo"},
-    {"identity": "GROK-WEB", "app_slug": "swu-grok-web", "profile": "fleet"},
-    {"identity": "JET", "app_slug": "swu-jet", "profile": "fleet"},
-    {"identity": "WISE", "app_slug": "swu-wise", "profile": "fleet"},
-    {"identity": "CODEX", "app_slug": "swu-codex", "profile": "fleet"},
-    {"identity": "MA", "app_slug": "swu-rob", "profile": "fleet"},
-    {"identity": "AG", "app_slug": "swu-ag", "profile": "fleet"},
-    {"identity": "CLUTCH", "app_slug": "swu-clutch", "profile": "fleet"},
-    {"identity": "FX", "app_slug": "swu-fx", "profile": "fleet"},
-    {"identity": "GROK", "app_slug": "swu-grok-build", "profile": "fleet"},
-    {"identity": "MC", "app_slug": "swu-mc", "profile": "fleet"},
-    {"identity": "MM", "app_slug": "swu-minimax", "profile": "fleet"},
-    {"identity": "OPENCODE", "app_slug": "swu-opencode", "profile": "fleet"},
-    {"identity": "BF-BUILDER", "app_slug": "swu-bf-builder", "profile": "fleet"},
-    {"identity": "BF-COMPILER", "app_slug": "swu-bf-compiler", "profile": "fleet"},
-    {"identity": "BF-DEPLOYER", "app_slug": "swu-bf-deployer", "profile": "fleet"},
-    {"identity": "BF-DESIGNER", "app_slug": "swu-bf-designer", "profile": "fleet"},
-    {"identity": "BF-DIRECTOR", "app_slug": "swu-bf-director", "profile": "fleet"},
-    {"identity": "BF-ENGINEER", "app_slug": "swu-bf-engineer", "profile": "fleet"},
-    {"identity": "BF-TRADER", "app_slug": "swu-bf-trader", "profile": "fleet"},
-    {"identity": "BF-FIXER", "app_slug": "swu-bf-fixer", "profile": "fleet"},
-    {"identity": "BF-HOUSEKEEPER", "app_slug": "swu-bf-housekeeper", "profile": "fleet"},
-    {"identity": "BF-MONITOR", "app_slug": "swu-bf-monitor", "profile": "fleet"},
-    {"identity": "BF-ORACLE", "app_slug": "swu-bf-oracle", "profile": "fleet"},
-    {"identity": "BF-PLUMBER", "app_slug": "swu-bf-plumber", "profile": "fleet"},
-    {"identity": "BF-PUBLISHER", "app_slug": "swu-bf-publisher", "profile": "fleet"},
-    {"identity": "GB-COMPILER", "app_slug": "swu-gb-compiler", "profile": "fleet"},
-    {"identity": "GB-DEPLOYER", "app_slug": "swu-gb-deployer", "profile": "fleet"},
-    {"identity": "GB-DESIGNER", "app_slug": "swu-gb-designer", "profile": "fleet"},
-    {"identity": "GB-DIRECTOR", "app_slug": "swu-gb-director", "profile": "fleet"},
-    {"identity": "GB-ENGINEER", "app_slug": "swu-gb-engineer", "profile": "fleet"},
-    {"identity": "GB-FIXER", "app_slug": "swu-gb-fixer", "profile": "fleet"},
-    {"identity": "GB-HOUSEKEEPER", "app_slug": "swu-gb-housekeeper", "profile": "fleet"},
-    {"identity": "GB-MONITOR", "app_slug": "swu-gb-monitor", "profile": "fleet"},
-    {"identity": "GB-ORACLE", "app_slug": "swu-gb-oracle", "profile": "fleet"},
-    {"identity": "GB-PLUMBER", "app_slug": "swu-gb-plumber", "profile": "fleet"},
-    {"identity": "GB-PUBLISHER", "app_slug": "swu-gb-publisher", "profile": "fleet"},
-    {"identity": "GB-TRADER", "app_slug": "swu-gb-trader", "profile": "fleet"}
+    {
+      "identity": "CLAUDE",
+      "app_slug": "swu-claude",
+      "profile": "fleet"
+    },
+    {
+      "identity": "CURSOR",
+      "app_slug": "swu-cursor",
+      "profile": "fleet"
+    },
+    {
+      "identity": "ECHO",
+      "app_slug": "swu-echo",
+      "profile": "echo"
+    },
+    {
+      "identity": "GROK-WEB",
+      "app_slug": "swu-grok-web",
+      "profile": "fleet"
+    },
+    {
+      "identity": "JET-CHAT",
+      "app_slug": "swu-jet",
+      "profile": "jet"
+    },
+    {
+      "identity": "WISE",
+      "app_slug": "swu-wise",
+      "profile": "fleet"
+    },
+    {
+      "identity": "CODEX",
+      "app_slug": "swu-codex",
+      "profile": "fleet"
+    },
+    {
+      "identity": "MA",
+      "app_slug": "swu-rob",
+      "profile": "fleet"
+    },
+    {
+      "identity": "AG",
+      "app_slug": "swu-ag",
+      "profile": "fleet"
+    },
+    {
+      "identity": "CLUTCH",
+      "app_slug": "swu-clutch",
+      "profile": "fleet"
+    },
+    {
+      "identity": "FX",
+      "app_slug": "swu-fx",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GROK",
+      "app_slug": "swu-grok-build",
+      "profile": "fleet"
+    },
+    {
+      "identity": "MC",
+      "app_slug": "swu-mc",
+      "profile": "fleet"
+    },
+    {
+      "identity": "MM",
+      "app_slug": "swu-minimax",
+      "profile": "fleet"
+    },
+    {
+      "identity": "OPENCODE",
+      "app_slug": "swu-opencode",
+      "profile": "fleet"
+    },
+    {
+      "identity": "AMP",
+      "app_slug": "swu-amp-agent",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-BUILDER",
+      "app_slug": "swu-bf-builder",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-COMPILER",
+      "app_slug": "swu-bf-compiler",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-DEPLOYER",
+      "app_slug": "swu-bf-deployer",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-DESIGNER",
+      "app_slug": "swu-bf-designer",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-DIRECTOR",
+      "app_slug": "swu-bf-director",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-ENGINEER",
+      "app_slug": "swu-bf-engineer",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-TRADER",
+      "app_slug": "swu-bf-trader",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-FIXER",
+      "app_slug": "swu-bf-fixer",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-HOUSEKEEPER",
+      "app_slug": "swu-bf-housekeeper",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-MONITOR",
+      "app_slug": "swu-bf-monitor",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-ORACLE",
+      "app_slug": "swu-bf-oracle",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-PLUMBER",
+      "app_slug": "swu-bf-plumber",
+      "profile": "fleet"
+    },
+    {
+      "identity": "BF-PUBLISHER",
+      "app_slug": "swu-bf-publisher",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-COMPILER",
+      "app_slug": "swu-gb-compiler",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-DEPLOYER",
+      "app_slug": "swu-gb-deployer",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-DESIGNER",
+      "app_slug": "swu-gb-designer",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-DIRECTOR",
+      "app_slug": "swu-gb-director",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-ENGINEER",
+      "app_slug": "swu-gb-engineer",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-FIXER",
+      "app_slug": "swu-gb-fixer",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-HOUSEKEEPER",
+      "app_slug": "swu-gb-housekeeper",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-MONITOR",
+      "app_slug": "swu-gb-monitor",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-ORACLE",
+      "app_slug": "swu-gb-oracle",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-PLUMBER",
+      "app_slug": "swu-gb-plumber",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-PUBLISHER",
+      "app_slug": "swu-gb-publisher",
+      "profile": "fleet"
+    },
+    {
+      "identity": "GB-TRADER",
+      "app_slug": "swu-gb-trader",
+      "profile": "fleet"
+    }
   ]
 }

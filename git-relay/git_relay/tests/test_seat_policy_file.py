@@ -40,11 +40,18 @@ SEATS = seat_policy.render(DOC)
 ORG = "Simple-With-Us/"
 SYNTHETIC_REPO = "example-org/example-repo"
 
-# The three Apps whose slug is not swu-<identity>, each read from the App's own GitHub
+# The five Apps whose slug is not swu-<identity>, each read from the App's own GitHub
 # description ("Bot identity for the ... agent seat").
-NOT_SWU_IDENTITY = {"MA": "swu-rob", "GROK": "swu-grok-build", "MM": "swu-minimax"}
-# Not a bearer identity of its own App:  a second login on Jet's bot (Q7).
-EXCLUDED = {"JET-CHAT"}
+NOT_SWU_IDENTITY = {
+    "MA": "swu-rob",
+    "GROK": "swu-grok-build",
+    "MM": "swu-minimax",
+    "JET-CHAT": "swu-jet",
+    "AMP": "swu-amp-agent",
+}
+# Explicit policy exclusions, documented in the deployed policy's header.
+# Original Jet is wake-only and has no GitHub App entry.
+EXCLUDED = {"JET"}
 
 
 def worker_identities() -> set[str]:
@@ -105,7 +112,33 @@ class SeatPolicyFile(unittest.TestCase):
         for slug, cfg in SEATS.items():
             self.assertEqual(policy.authenticate(bearer_for(cfg["identity"])), slug)
             self.assertEqual(policy.app_identity(slug)[0], slug)
-        self.assertIsNone(policy.authenticate(bearer_for("JET-CHAT")))
+        self.assertIsNone(policy.authenticate(bearer_for("JET")))
+
+    def test_only_full_jet_login_reaches_jet_app_even_if_old_bearer_is_verified(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertEqual(policy.authenticate(bearer_for("JET-CHAT")), "swu-jet")
+        self.assertIsNone(policy.authenticate(bearer_for("JET")))
+        self.assertEqual(SEATS["swu-jet"]["identity"], "JET-CHAT")
+        self.assertEqual(SEATS["swu-jet"]["app_slug"], "swu-jet")
+        self.assertEqual(sum(c["app_slug"] == "swu-jet" for c in SEATS.values()), 1)
+        for action in ("wf_repo_get", "wf_pr_get"):
+            self.assertIsNone(
+                policy.authorize("swu-jet", action, "Simple-With-Us/AI-Fleet-Coordinator")
+            )
+
+    def test_amp_acts_only_as_its_own_app(self):
+        self.assertNotIn(
+            "swu-amp", SEATS
+        )  # that slug is reserved for an account, no App exists under it
+        self.assertIn("AMP", worker_identities())
+        self.assertIn("AMP", DOC["//"])
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertEqual(policy.authenticate(bearer_for("AMP")), "swu-amp-agent")
+        self.assertEqual(SEATS["swu-amp-agent"]["identity"], "AMP")
+        self.assertEqual(sum(row["identity"] == "AMP" for row in SEATS.values()), 1)
+        self.assertEqual(sum(row["app_slug"] == "swu-amp-agent" for row in SEATS.values()), 1)
+        for other in ("OPENCODE", "MM", "JET"):
+            self.assertNotEqual(policy.authenticate(bearer_for(other)), "swu-amp-agent")
 
     def test_a_bearer_the_worker_does_not_confirm_reaches_no_seat(self):
         # The token shape alone names a seat;  only the Worker's answer may admit it.
@@ -167,7 +200,11 @@ class SeatPolicyFile(unittest.TestCase):
         for slug, cfg in SEATS.items():
             if slug != "swu-echo":
                 self.assertEqual(cfg["repos"], fleet["repos"], slug)
-                self.assertEqual(cfg["actions"], fleet["actions"], slug)
+                self.assertEqual(
+                    cfg["actions"],
+                    fleet["actions"] + (["wf_repo_get", "wf_pr_get"] if slug == "swu-jet" else []),
+                    slug,
+                )
                 self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
 
     def test_the_reviewed_scope_is_pinned(self):
@@ -175,7 +212,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "47592eede211e2d3")
+        self.assertEqual(seat_policy.digest(SEATS), "ce70d77c7ac74970")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))

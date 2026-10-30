@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from . import notes as N
+from . import notes_service_reader as SR
 from . import notes_wire as W
 
 KNOB = "OPERATOR_API_URL"
@@ -468,6 +469,27 @@ def operator_client(
     env: Mapping[str, str], principal: str = W.SERVER, **kwargs: Any
 ) -> OperatorClient:
     """The client for this host, or NotesError not_configured when the knob or the key is missing."""
+    if principal == W.SERVER:
+        try:
+            reader = SR.load()
+            if reader is not None:
+
+                class ServiceKeySource(KeySource):
+                    def __init__(self):
+                        self.name = W.KEY_NAMES[principal]
+
+                    def get(self):
+                        try:
+                            return reader.key()
+                        except SR.ReaderError as exc:
+                            raise N.NotesError("not_configured", str(exc)) from None
+
+                    def forget(self):
+                        reader.forget()
+
+                return OperatorClient(reader.origin, principal, ServiceKeySource(), **kwargs)
+        except SR.ReaderError as exc:
+            raise N.NotesError("not_configured", str(exc)) from None
     base = base_url(env)
     if base is None:
         raise N.NotesError(

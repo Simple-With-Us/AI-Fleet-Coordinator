@@ -145,14 +145,18 @@ cd scripts && python3 fleet_lanes/server_working_dirs.py --apply
 
 Copied on Fri, Oct 23, 2026 (2:02 PM to 2:03 PM), with the log in the volume's `apps/scratch/claude/lane-consolidation/`.  At 10:10 PM the same day the owner asked for the old folders to be deleted:  each original was checked again (no file changed since the copy, the same HEAD, refs and `git status` as its copy, no process inside it) and then removed, which freed 2.4 GB on the main disk.
 
-| Was | Now | Seat | State |
+| Was | Lane Copy | Seat | Final State |
 |---|---|---|---|
-| `~/.local/state/pr-work/bf-761` | `lanes/BotFleet/minimax-resolve-pr-761` | MiniMax | BotFleet PR 761 (open), a merge of `origin/main` stopped at 8 conflicts |
-| `~/.local/state/pr-work/um-1721` | `lanes/Usage-Monitor/minimax-resolve-pr-1721` | MiniMax | Usage-Monitor PR 1721 (open), clean and pushed |
-| `~/.local/state/pr-work/um-1723` | `lanes/Usage-Monitor/minimax-resolve-pr-1723` | MiniMax | Usage-Monitor PR 1723 (open), clean and pushed |
-| `/tmp/echo-work/d-FleetLink` | `lanes/FleetLink/echo-pin-sha` | ECHO | `echo/pin-sha`, merged as FleetLink PR 130 |
-| `/tmp/echo-work/d-AFC` | `lanes/AI-Fleet-Coordinator/echo-tmp-checkout` | ECHO | detached on a `main` commit, nothing unpushed |
-| a Claude scratchpad clone of congress-trading-shared in `/tmp` | `lanes/congress-trading-shared/claude-v2-8-1-scratch` | CLAUDE | detached at tag `v2.8.1`, nothing unpushed;  its remote URL carried a token, scrubbed in the copy |
+| `~/.local/state/pr-work/bf-761` | `lanes/BotFleet/minimax-resolve-pr-761` | MiniMax | Retired Oct 30 after PR 761 merged; unfinished merge preserved in a private recovery archive |
+| `~/.local/state/pr-work/um-1721` | `lanes/Usage-Monitor/minimax-resolve-pr-1721` | MiniMax | Retired Oct 30 after PR 1721 closed as abandoned |
+| `~/.local/state/pr-work/um-1723` | `lanes/Usage-Monitor/minimax-resolve-pr-1723` | MiniMax | Retired Oct 30 after PR 1723 closed |
+| `/tmp/echo-work/d-FleetLink` | `lanes/FleetLink/echo-pin-sha` | ECHO | Retired Oct 30 after FleetLink PR 130 merged |
+| `/tmp/echo-work/d-AFC` | `lanes/AI-Fleet-Coordinator/echo-tmp-checkout` | ECHO | Retired Oct 30; detached on a `main` commit, nothing unpushed |
+| a Claude scratchpad clone of congress-trading-shared in `/tmp` | `lanes/congress-trading-shared/claude-v2-8-1-scratch` | CLAUDE | Retired Oct 30; HEAD matches the canonical `v2.8.1` tag; owner confirmed the exposed token was rotated |
+
+The owner authorized retiring these six copies on Fri, Oct 30, 2026 (AFC-499).  Their repository state and process use were checked again before removal; the unfinished BotFleet merge was archived first.  Full clones cannot be removed by `lane retire`, which accepts only registered linked worktrees, so these copies were retired manually under that authorization.
+
+Eight additional fleet checkouts were preserved under the lanes root on the same day.  Each copy has the same HEAD, Git status and tracked-file bytes as its original, including seven uncommitted Muster files in the services checkout.  These originals remain in place; the copies are detached preservation worktrees, not new ownership claims on the peer's task.  The exact original-to-copy mapping and recovery archive location stay in the private operations record for AFC-499.
 
 Every lane that sat in `/root/apps/lanes` before the volume move is on the volume:  each `lane |` row of `~/ops-salvage/salvage-2026-10-22/MANIFEST.txt` has its folder in the volume's `apps/lanes`.  One worktree was left where it is:  a Claude desktop worktree inside the volume's `Code/AI-Fleet-Coordinator/.claude/worktrees/`, which an open desktop session still runs in.  It is a clean checkout of `main`, so it holds nothing to copy, and the app removes it when that session is archived;  `worktree.location` keeps new ones out of the integration tree.
 
@@ -224,7 +228,7 @@ Rules alone were never enough, so four layers back this one:
 
 Anything that removes a checkout (the disk janitor, `mac-auto-cleanup`, a housekeeper bot, an agent told to "clean up the lanes") follows one contract:
 
-1. **Act only on `cleaner_candidates`** from a fresh doctor report (`lane ls --cleaner-list`, or the `cleaner_candidates` array of a `--json` report).  A candidate is a registered linked worktree in a lane, review or managed location, clean, fully pushed or covered by a merged PR, with merged-PR evidence, no process using it, no git operation in progress (a half-done merge, rebase, cherry-pick, revert or bisect, or an `index.lock`), no read errors, and both its age and its idle time at least 7 days.  A full clone is never a candidate.  The v2 folders (`lanes/<Repo>/...`, `lanes/_codex/...`) are lane, review and managed locations like their predecessors, so the contract needs no change.
+1. **Act only on `cleaner_candidates`** from a fresh doctor report (`lane ls --cleaner-list`, or the `cleaner_candidates` array of a `--json` report).  A candidate is a registered linked worktree in a lane, review or managed location, clean, fully pushed or covered by a merged PR, with merged-PR evidence, no process using it, no git operation in progress (a half-done merge, rebase, cherry-pick, revert or bisect, or an `index.lock`), no read errors, and both its age and idle time at least the doctor’s effective cleaner retention (7 days by default; `--cleaner-retention-days` may set 1 to 90 days).  A full clone is never a candidate.  The v2 folders (`lanes/<Repo>/...`, `lanes/_codex/...`) are lane, review and managed locations like their predecessors, so the contract needs no change.
 2. **Never act on `SAFE-TO-REMOVE` alone.**  A lane created an hour ago with no commits yet reads `SAFE-TO-REMOVE`.  The fresh-lane rule and the candidate list rule that out, but the label says nothing about whether anyone is about to use a lane, so a cleaner never gates on it.
 3. **Check the report before trusting it:** `schema` is at least 2, `generated_at` is recent, `lsof` is `"ok"`, and `gh_repos[<owner/repo>]` is `"ok"` for the repo (a failed or skipped PR lookup means no candidates, which is the safe direction).
 4. **Remove with `git worktree remove`**, never `rm -rf`, and never anything outside the map.

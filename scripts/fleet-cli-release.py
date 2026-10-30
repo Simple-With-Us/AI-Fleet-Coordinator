@@ -23,9 +23,15 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The composed allowlisted runtime has 132 files: main131 plus storage_guard.py.
-# Keep the exact ceiling in sender and receiver; a new file needs policy review.
-MAX_FILES = 132
+# The reviewed allowlisted runtime contains 137 files. Keep the exact minimum
+# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
+# library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
+# platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
+# (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026), added for that review;
+# the 138th is agent_sync/notes_service_reader.py, which notes_client imports for the scoped service token;
+# the 139th is agent_sync/mcp/bearer_gate.py, the own-bearer check for `simple-chat mcp`.
+MAX_FILES = 139
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -90,6 +96,9 @@ EXACT = frozenset(
         "scripts/agent_sync/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
         "scripts/agent_sync/operator_sheets_export.mjs",
+        # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
+        # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
+        "scripts/agent_sync/opencode_letter_plugin/index.js",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
@@ -134,7 +143,11 @@ TOOL_REQUIRED = frozenset(
         # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
         # built before it stays a valid rollback target.
         "scripts/agent_sync/secretscan.py",
+        # Imported by notes_client: new bundles need it, older rollback targets do not.
+        "scripts/agent_sync/notes_service_reader.py",
         "scripts/agent_sync/fleet_bearer.py",
+        # New stdio bundles must carry the hard-imported own-bearer gate. Older rollback targets stay valid.
+        "scripts/agent_sync/mcp/bearer_gate.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
@@ -276,7 +289,10 @@ def smoke(release: Path, home: Path) -> None:
         ("simple_chat_mcp_help", "scripts/simple-chat", ["mcp", "--help"], 0),
         ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),
         ("simple_board_help", "scripts/simple-board", ["--help"], 0),
-        ("simple_board_missing_credentials", "scripts/simple-board", ["whoami"], 4),
+        # A usage error exits 2 before any credential is read, with or without the host's seat helper.  The
+        # earlier case ran `whoami` and expected exit 4 (missing credentials), which depended on the host:  a host that
+        # has the helper and a bearer for the smoke seat authenticates and exits 0, and every release was refused.
+        ("simple_board_usage_error", "scripts/simple-board", ["show"], 2),
         ("recall_help", "scripts/recall", ["--help"], 0),
         ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
         ("fleet_mode_block", "scripts/fleet-mode", [], 0),
@@ -467,6 +483,10 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "recall": (wrapper(home, "scripts/recall"), 0o755),
         bin_dir / "lane": (wrapper(home, "scripts/fleet_lanes/bin/lane"), 0o755),
         bin_dir / "fleet-mode": (wrapper(home, "scripts/fleet-mode"), 0o755),
+        # AFC-564: the session-letter hook and its registry side for the non-Claude platforms.  The git-update path
+        # runs the whole checkout, so the script is there once a release holds it.  The paused Mac-push bundle path
+        # would also need it in EXACT (and the doctor's SHIPPED_EXACT).
+        bin_dir / "platform-letter": (wrapper(home, "scripts/platform-letter"), 0o755),
     }
 
 

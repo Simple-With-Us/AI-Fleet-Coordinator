@@ -58,7 +58,10 @@ SMOKE_CASES = (
     ("simple_chat_mcp_help", "scripts/simple-chat", ["mcp", "--help"], 0),
     ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),
     ("simple_board_help", "scripts/simple-board", ["--help"], 0),
-    ("simple_board_missing_credentials", "scripts/simple-board", ["whoami"], 4),
+    # A usage error exits 2 before any credential is read, with or without the host's seat helper (see the same case in
+    # fleet-cli-release.py).  The earlier `whoami` case expected exit 4 and failed on a host that has the helper and a
+    # bearer for the smoke seat.
+    ("simple_board_usage_error", "scripts/simple-board", ["show"], 2),
     ("recall_help", "scripts/recall", ["--help"], 0),
     ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
     ("fleet_mode_block", "scripts/fleet-mode", [], 0),

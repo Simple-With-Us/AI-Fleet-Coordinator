@@ -126,6 +126,9 @@ export class SeatGate extends DurableObject {
     return state.reserve(this.store, options);
   }
 
+  providerQuotaReserve(options) { return state.providerQuotaReserve(this.store, options); }
+  providerQuotaNoteRateLimited(options) { return state.providerQuotaNoteRateLimited(this.store, options); }
+
   noteRateLimited(options) {
     return state.noteRateLimited(this.store, options);
   }
@@ -234,6 +237,18 @@ export class SeatGate extends DurableObject {
 
   gbBearerMismatches() {
     return state.gbBearerMismatches(this.store);
+  }
+
+  linearIdentityGet() {
+    return state.linearIdentityGet(this.store);
+  }
+
+  linearIdentitySet(entry) {
+    return state.linearIdentitySet(this.store, entry);
+  }
+
+  linearIdentityClear() {
+    return state.linearIdentityClear(this.store);
   }
 
   linearTokenClear() {

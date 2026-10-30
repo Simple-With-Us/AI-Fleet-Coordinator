@@ -45,16 +45,16 @@ held_alert_minutes = 60           # the `#alerts` held-back digest (AFC-257):  O
                                   # seat, edited in place at most once an hour (AFC-569).
                                   # Anything held back is posted, not only an eviction (owner, Oct 11 2026);
                                   # the window is what keeps that loud trigger from flooding the channel.  0 is off.
-held_alert_seat = "MA"            # whose bot carries it:  MA posts for the whole instance, so a seat that is
-                                  # itself busy never has to speak for everyone.  Optional:  unset falls back to
-                                  # the claude seat, then to the first enabled seat.  The post names no one with
-                                  # an @-mention, and #alerts is a presence topic, so it never wakes a seat.
+held_alert_seat = "MA"            # IGNORED since Oct 30 2026: the Operator bot carries the digest, never a seat's
+                                  # bot (a seat did not say it).  Still read so an old config loads.  The post
+                                  # names no one with an @-mention, and #alerts is a presence topic, so it never
+                                  # wakes a seat.
 peer_broadcast_reminder_minutes = 10   # the peer-broadcast reminder (owner, Oct 27 2026):  how long a fleet bot has to
                                        # explain its `@all` to Jay before the listener DMs him about it.  A bot
                                        # uses `@all` when Jay asks or approves, or on its own judgment in an
                                        # extremely serious situation (an ongoing targeted attack, a fleet-wide
                                        # outage of about twenty minutes);  a bot that uses it without approval DMs
-                                       # Jay why.  0 is off.  The reminder is the held-alert seat's DM, never a
+                                       # Jay why.  0 is off.  The reminder is the Operator's DM, never a
                                        # post in a channel, and it never carries the message content.
 presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "fleet"], ["builds", "gates"], ["alerts", "*"]]
 

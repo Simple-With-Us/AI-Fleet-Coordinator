@@ -331,6 +331,10 @@ class DrainWaitDetachTests(AttachHarness):
 
 
 class PostLeaseTests(AttachHarness):
+    # `simple-chat post` and `reply` here are a seat agent's own words typed through its own tool, which
+    # still go out as the seat (owner ruling, Oct 30 2026, is about text the daemon composes).
+    seat_writes_allowed = True
+
     def test_post_and_reply_lease_their_topic_and_record_the_id(self) -> None:
         self.hook("session-start", {"source": "startup"})
         env = self.env(CLAUDE_PID=str(PID))

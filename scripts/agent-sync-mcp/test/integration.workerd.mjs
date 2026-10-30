@@ -1163,8 +1163,12 @@ try {
       assert.equal(queried.json.result.isError, undefined);
       assert.match(queried.json.result.content[0].text, /BEGIN_UNTRUSTED_LINEAR nonce=[0-9a-f]{16}/);
       assert.match(queried.json.result.content[0].text, /grok-web-viewer/);
-      assert.equal(linear.calls().length, 1);
+      assert.equal(linear.calls().length, 2, "cold quota identity proof and requested query are separate provider requests");
+      assert.match(linear.calls()[0].body.query, /viewer/);
+      assert.match(linear.calls()[0].body.query, /organization/);
+      assert.match(linear.calls()[1].body.query, /AgentSyncIntegrationQuery/);
       assert.match(linear.calls()[0].authorization, /^Bearer fake-linear-token-/);
+      assert.equal(linear.calls()[0].authorization, linear.calls()[1].authorization, "proof and query use the same actual token");
 
       const mutationArgs = {
         mutation: "mutation AgentSyncIntegrationMutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success project { id name description } } }",
@@ -2162,6 +2166,28 @@ try {
     }
     infisicalFailureStatus = 503;
     infisicalUnavailable = false;
+  });
+
+  await step("shared provider quota RPC serializes concurrent reservations and persists exact-token proof", async () => {
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const name = `providerquota:linear:${"d".repeat(64)}`;
+    const quota = ns.get(ns.idFromName(name));
+    const slots = await Promise.all(Array.from({ length: 32 }, () => quota.providerQuotaReserve({ limit: 7, n: 1 })));
+    assert.equal(slots.filter(x => x.ok).length, 7, "real SQLite DO admits only seven concurrent requests");
+    assert.equal(slots.filter(x => x.code === "budget_exhausted").length, 25);
+    const same = ns.get(ns.idFromName(name));
+    assert.equal((await same.providerQuotaReserve({ limit: 7, n: 1 })).code, "budget_exhausted", "another stub shares the same bucket");
+    const other = ns.get(ns.idFromName(`providerquota:linear:${"e".repeat(64)}`));
+    assert.equal((await other.providerQuotaReserve({ limit: 7, n: 1 })).ok, true, "distinct provider user remains independent");
+    await other.providerQuotaNoteRateLimited({ retryAfterS: 60 });
+    assert.equal((await other.providerQuotaReserve({ limit: 7, n: 1 })).code, "rate_limited");
+    const seat = ns.get(ns.idFromName("CODEX"));
+    const proof = { fp: "f".repeat(32), identity: "a".repeat(64), proven_at: Date.now(), valid_until: Date.now() + 60_000 };
+    await seat.linearIdentitySet(proof);
+    const saved = await ns.get(ns.idFromName("CODEX")).linearIdentityGet();
+    assert.deepEqual({ fp: await saved.fp, identity: await saved.identity, proven_at: await saved.proven_at, valid_until: await saved.valid_until }, proof);
+    await seat.linearIdentityClear();
+    assert.equal(await seat.linearIdentityGet(), null);
   });
 
   console.log(`\n${passed} passed`);

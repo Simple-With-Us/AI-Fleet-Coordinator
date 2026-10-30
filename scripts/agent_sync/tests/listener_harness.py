@@ -15,6 +15,7 @@ import base64
 import io
 import json
 import os
+import secrets
 import stat
 import sys
 import textwrap
@@ -25,6 +26,7 @@ from unittest import mock
 from agent_sync import adapters as A
 from agent_sync import host_load as HL
 from agent_sync import live as L
+from agent_sync import zulip as Z
 from agent_sync.daemon import Daemon
 from agent_sync.tests.fake_zulip import EPOCH
 from agent_sync.tests.harness import Harness
@@ -33,6 +35,13 @@ BASE_CONFIG = {
     "owner": 12,
     "eligible": [10, 11, 13, 14, 15],
 }
+
+# The Operator service bot in the fake realm (owner ruling, Oct 30 2026: every post the daemon composes
+# goes out as the Operator, never as a seat's bot).  Its id is far from the ones the suites hand out, an
+# administrator like the live one, and owned by the fake realm's owner, so `service_identity.operator_bot`
+# accepts it exactly as it accepts the live bot.
+OPERATOR_EMAIL = "operator-bot@zulip.test"
+OPERATOR_USER_ID = 90
 
 FAKE_CLAUDE = r"""#!{python}
 import json, os, sys, time
@@ -109,6 +118,9 @@ def reply_output(text: str = "On it.  The cutover is in review.", **extra: Any) 
 
 class ListenerHarness(Harness):
     heartbeat = 0.2
+    #: A test whose seats write to the realm on purpose (it plays a peer bot over HTTP, say) sets this.
+    #: Every other listener test fails if a seat's bot wrote anything on the daemon's behalf.
+    seat_writes_allowed = False
 
     def setUp(self) -> None:
         super().setUp()
@@ -134,8 +146,24 @@ class ListenerHarness(Harness):
         self.root = str(self.state_dir)
         self.state_dir.mkdir(exist_ok=True)
         self.extra_keys: list[tuple[str, str]] = []
+        # The Operator's fake account.  `operator_available` turns the credential on and off (a vault
+        # outage), `operator_builds` counts how often the daemon asked for a client, and the key joins
+        # `extra_keys` so tearDown fails any test whose output or state files leaked it.
+        self.operator_key = secrets.token_hex(16)
+        self.operator = self.fake.add_bot(
+            OPERATOR_EMAIL, "Operator", self.operator_key, role=200, user_id=OPERATOR_USER_ID
+        )
+        self.operator_available = True
+        self.operator_builds = 0
+        self.extra_keys.append((OPERATOR_EMAIL, self.operator_key))
 
     def tearDown(self) -> None:
+        if not self.seat_writes_allowed:
+            self.assertEqual(
+                [(r.method, r.path, r.user_id) for r in self.seat_requests()],
+                [],
+                "a seat's bot wrote to the realm:  the daemon's own text goes out as the Operator",
+            )
         # Every byte written under the state dir, and everything the fake claude saw, is scanned too.
         for path in self.state_dir.rglob("*"):
             if path.is_file():
@@ -222,10 +250,79 @@ class ListenerHarness(Harness):
             )
         (self.state_dir / "listener.toml").write_text(text + seats)
 
+    def operator_client(self, owner_user_id: int) -> Z.ZulipClient:
+        """The factory the daemon builds its Operator client with (Daemon operator_client_factory).
+
+        It stands where `operator_post.default_factory` stands in production: the Operator's
+        credential from the vault.  `operator_available = False` is a vault that cannot be read."""
+        self.operator_builds += 1
+        if not self.operator_available:
+            raise Z.CredentialError("OPERATOR service: Fleet-OPS /zulip_operator: fleet-secrets timeout")
+        creds = Z.Credentials(
+            email=OPERATOR_EMAIL, key=self.operator_key, site=self.fake.url, source="test"
+        )
+        return Z.ZulipClient(creds, self.fake.url, owner_user_id=owner_user_id)
+
+    def env(self, **overrides: str | None) -> dict[str, str]:
+        """The test environment of a host that pins the Operator (the two settings `service_identity`
+        reads), so every daemon a listener test builds can speak.  A test of a host that does NOT
+        pin it passes `OPERATOR_ZULIP_USER_ID=None` and `OPERATOR_ZULIP_EMAIL=None`."""
+        pins: dict[str, str | None] = {
+            "OPERATOR_ZULIP_USER_ID": str(OPERATOR_USER_ID),
+            "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL,
+        }
+        pins.update(overrides)
+        return super().env(**pins)
+
+    def warm_operator(self, daemon: Daemon) -> None:
+        """Build the daemon's Operator client now, on this thread, as `Daemon.run` does in the background.
+
+        The router thread never waits for a build (operator_post.OperatorVoice, `wait=False`), so a test
+        that drives a tick-side post (the digest, a quota notice) has the client ready first."""
+        try:
+            daemon.operator_voice.client()
+        except Exception:  # an unavailable Operator is the test's own setup: it stays cached as a failure
+            pass
+
+    def settle_operator(self, daemon: Daemon, timeout: float = 5.0) -> None:
+        """Wait for a background build of the Operator client (started by a `wait=False` caller) to end."""
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with daemon.operator_voice._lock:
+                if daemon.operator_voice._flight is None:
+                    return
+            time.sleep(0.01)
+        raise AssertionError("the Operator client build never finished")
+
+    def operator_posts(self) -> list[dict[str, Any]]:
+        """Every message the fake realm holds that the Operator sent."""
+        return [m for m in self.fake.messages if m["sender_id"] == OPERATOR_USER_ID]
+
+    def seat_requests(self) -> list[Any]:
+        """Every message, edit or typing indicator a seat's bot (anyone but the Operator) wrote to
+        the fake realm over HTTP.
+
+        The daemon composes text on a seat's behalf only as the Operator (owner ruling, Oct 30 2026),
+        so a daemon test asserts this is empty, and `tearDown` asserts it for every test that does not
+        say its seats are writing on purpose (`seat_writes_allowed`).  Reads (users/me, events, the
+        history of a topic) and subscriptions are the seat's own business and are not counted."""
+        return [
+            r
+            for r in self.fake.requests
+            if r.user_id not in (None, OPERATOR_USER_ID)
+            and (
+                (r.method == "POST" and r.path in ("messages", "typing"))
+                or (r.method == "PATCH" and r.path.startswith("messages/"))
+            )
+        ]
+
     def daemon(self, **kw: Any) -> Daemon:
         notifier = A.Notifier(self.root, clock=self.clock.time, runner=self.banners.append)
         options: dict[str, Any] = dict(
             env=self.env(),
+            operator_client_factory=self.operator_client,
             root=self.root,
             home=str(self.home),
             clock=self.clock,

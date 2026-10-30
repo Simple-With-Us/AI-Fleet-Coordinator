@@ -27,7 +27,7 @@ def make_bundle(version="one"):
         if path.endswith(".json"):
             data = b"{}"
         if path in ("scripts/linear-board/board", "scripts/simple-board"):
-            data = b'import sys\nsys.exit(4 if "whoami" in sys.argv else 0)\n# ' + version.encode()
+            data = b'import sys\nsys.exit(2 if "show" in sys.argv else 0)\n# ' + version.encode()
         files[path] = {
             "mode": 0o644,
             "sha256": hashlib.sha256(data).hexdigest(),
@@ -75,6 +75,26 @@ class ReleaseTests(unittest.TestCase):
 
     def receive(self, bundle=None, install=True):
         return release.receive(json.dumps(bundle or self.bundle).encode(), self.home, install)
+
+    def test_notes_service_reader_required_only_for_new_bundles(self):
+        path = "scripts/agent_sync/notes_service_reader.py"
+        self.assertTrue(release.allowed_path(path))
+        self.assertIn(path, release.TOOL_REQUIRED)
+        self.assertNotIn(path, release.BASE_REQUIRED)
+        self.bundle["files"].pop(path)
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(self.bundle).encode())
+
+    def test_bearer_gate_required_only_for_new_bundles(self):
+        path = "scripts/agent_sync/mcp/bearer_gate.py"
+        self.assertTrue(release.allowed_path(path))
+        self.assertIn(path, release.TOOL_REQUIRED)
+        self.assertNotIn(path, release.BASE_REQUIRED)
+        self.bundle["files"].pop(path)
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(self.bundle).encode())
 
     def test_allowlist_excludes_operator_data_and_noncanonical_paths(self):
         for path in [
@@ -243,6 +263,26 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn(
                 "'/usr/bin/python3', '-I', '-B', str(release", (bin_dir / name).read_text()
             )
+
+    def test_platform_letter_gets_a_managed_isolated_wrapper(self):
+        # AFC-564: the session-letter hook of the non-Claude platforms runs this wrapper on the server.  It is
+        # isolated like the other Python tools, carries no lane roots, and execs the script of the current release.
+        self.receive()
+        path = self.home / ".local/bin/platform-letter"
+        text = path.read_text()
+        self.assertIn(release.MARKER, text)
+        self.assertIn("scripts/platform-letter", text)
+        self.assertIn("'/usr/bin/python3', '-I', '-B', str(release", text)
+        self.assertNotIn("FLEET_CODE_ROOT", text)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+
+    def test_a_host_without_platform_letter_gets_its_wrapper_on_the_next_update(self):
+        self.receive()
+        bin_dir = self.home / ".local/bin"
+        (bin_dir / "platform-letter").unlink()
+        result = self.receive(make_bundle("two"), install=False)
+        self.assertEqual(result["status"], "activated")
+        self.assertIn(release.MARKER, (bin_dir / "platform-letter").read_text())
 
     def test_a_routine_update_adds_new_wrappers_but_never_overwrites(self):
         # A host installed before recall, lane and fleet-mode existed gets their wrappers on the next push.

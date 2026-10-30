@@ -20,6 +20,7 @@ import string
 import subprocess
 import sys
 import uuid
+from unittest import mock
 import threading
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from agent_sync import live as L
 from agent_sync.mcp import identity_router as R
 from agent_sync.mcp import stdio as S
 from agent_sync.mcp import tools as T
+from agent_sync.tests import bearer_stub
 from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH, FAKE_CHANNEL, FAKE_OWNER_ID
 
 
@@ -43,6 +45,7 @@ def seat_bearer_locator(seat: str) -> str:
 from agent_sync.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
+BEARER_STUB_LAUNCHER = Path(__file__).resolve().parent / "fixtures" / "simple-chat-bearer-stub.py"
 FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
 # the real binary resolves its Infisical project from this env or the home file and fails closed
 # without one, so the fake is always driven with a project named.
@@ -257,6 +260,12 @@ class McpHarness(Harness):
         self.served = R.decorate(self.spec, ["CLAUDE"], "CLAUDE")
         self.extra_secrets: list[str] = []
         self.sessions: list[McpSession] = []
+        # The hosted gateway is stubbed at the bearer gate's transport only:  "ok" means it accepts the
+        # seat's own bearer;  a test sets "revoked", "unavailable" or "other-seat" to see the gate fail closed.
+        self.bearer_mode = "ok"
+        patcher = mock.patch.object(S, "_bearer_verify", bearer_stub.stub_verify(lambda: self.bearer_mode))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         # unittest runs tearDown before cleanups:  close every server first, so its stderr and any
@@ -383,10 +392,10 @@ class McpHarness(Harness):
             for r in requests
         )
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "mcp", *argv],
+            [sys.executable, str(BEARER_STUB_LAUNCHER), "mcp", *argv],
             input=data,
             capture_output=True,
-            env=env,
+            env={**env, "BEARER_STUB_MODE": self.bearer_mode},
             timeout=timeout,
         )
         stderr = proc.stderr.decode("utf-8", "replace")

@@ -13,6 +13,7 @@ import { _resetInfisicalForTests } from "../src/infisical.js";
 
 globalThis.crypto ??= webcrypto;
 const registry = z.object({
+  seatApps: z.object({ extraSeats: z.record(z.string(), z.string()) }),
   seats: z.array(z.object({
     tag: z.string(),
     zulipBotEmail: z.string().email().nullish(),
@@ -26,6 +27,16 @@ test("all active ordinary registry bots have canonical bearer identities without
   const ordinary = registry.seats.filter((r) => !r.retired && r.zulipBotEmail);
   for (const row of ordinary) assert.ok(BEARER_SEATS.includes(row.tag), row.tag);
   for (const [identity, row] of Object.entries(BEARER_ONLY_SEATS)) {
+    // AMP is hosted-bearer only. The registry's extraSeats model deliberately
+    // avoids ordinary-seat lane/listener rollout. Its exact own records and
+    // extra-seat registration are pinned below, not accepted by a wildcard.
+    if (identity === "AMP") {
+      assert.equal(registry.seatApps.extraSeats.AMP, "amp");
+      assert.deepEqual(row, { prefix: "AMP", email: "amp-bot@simplewithus.zulipchat.com" });
+      assert.ok(!registry.seats.some((r) => r.tag === "AMP"));
+      assert.ok(!KNOWN_SEATS.includes(identity));
+      continue;
+    }
     const source = ordinary.find((r) => r.tag === identity);
     assert.equal(row.email, source.zulipBotEmail);
     assert.equal(row.prefix, source.zulipFileCode.toUpperCase().replaceAll("-", "_"));
@@ -184,6 +195,38 @@ test("fallback readiness does not revive retired Builder", async () => {
     for (const mode of ["fallback", "off"]) {
       assert.equal(await resolveBearerSeatCredentials({ INFISICAL_MODE: mode }, config, "BF-BUILDER"), null);
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+    _resetInfisicalForTests();
+  }
+});
+
+
+test("Amp is a bearer-only identity that reads only its own Zulip records", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    assert.deepEqual(BEARER_ONLY_SEATS.AMP, { prefix: "AMP", email: "amp-bot@simplewithus.zulipchat.com" });
+    assert.ok(BEARER_SEATS.includes("AMP"));
+    assert.ok(!KNOWN_SEATS.includes("AMP"), "bearer inclusion must not grant OAuth hosting");
+    assert.ok(!parseSbtBearer(`sbt_amps_${"a".repeat(43)}`), "a near name is not an identity");
+    assert.equal(parseSbtBearer((await newSeatBearer("AMP")).token).identity, "AMP");
+    for (const outcome of ["valid", "other-bot-email", "missing-key"]) {
+      _resetInfisicalForTests();
+      const reads = [];
+      globalThis.fetch = async (url) => {
+        const name = decodeURIComponent(new URL(url).pathname.split("/").at(-1));
+        reads.push(name);
+        if (name.endsWith("_KEY")) return outcome === "missing-key" ? new Response("missing", { status: 404 }) : Response.json({ secret: { secretValue: "own-key" } });
+        return Response.json({ secret: { secretValue: outcome === "other-bot-email" ? "opencode-bot@simplewithus.zulipchat.com" : "amp-bot@simplewithus.zulipchat.com" } });
+      };
+      const env = { INFISICAL_MODE: "required", INFISICAL_SERVICE_TOKEN: "offline", INFISICAL_WORKSPACE_ID: "offline", OPENCODE_ZULIP_KEY: "must-not-be-used", AMP_ZULIP_KEY: "must-not-be-used" };
+      const result = await resolveBearerSeatCredentials(env, config, "AMP");
+      assert.deepEqual(result, outcome === "valid" ? { key: "own-key", email: "amp-bot@simplewithus.zulipchat.com" } : null, outcome);
+      assert.deepEqual(reads.sort(), ["AMP_ZULIP_EMAIL", "AMP_ZULIP_KEY"], outcome);
+    }
+    // The gate admits the identity by name only.
+    assert.ok(gate({ SEAT_GATE: { idFromName: (n) => n, get: (id) => id } }, "AMP"));
+    assert.throws(() => gate({ SEAT_GATE: { idFromName: (n) => n, get: (id) => id } }, "AMPX"));
   } finally {
     globalThis.fetch = originalFetch;
     _resetInfisicalForTests();

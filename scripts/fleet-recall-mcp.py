@@ -5,11 +5,19 @@ JSON-RPC 2.0, one message per line on stdin/stdout.  Logging goes to stderr only
 exactly the recall tool contract (recall_search / recall_stats / recall_contribute) from
 scripts/fleet_rag/recall_api.py, so the CLI, this server, and the seat-mcp tools agree.
 
+Own bearer:  every tools/call runs only when the seat named by the launcher (AGENT_LAUNCH_SEAT, AGENT_SEAT
+or AGENT_TAG) holds a bearer, in ~/.secrets/fleet-tools/<seat>, that the hosted gateway accepts for that
+same seat (fleet_rag/seat_auth.py).  The check repeats on every call.  recall_contribute is stored under
+that seat and a `seat` argument naming another is refused;  recall_search's `seat` stays a corpus filter
+and its log line carries the bearer's seat.  initialize and tools/list need no bearer.  The in-process
+fake corpus the process itself started with FLEET_RECALL_FAKE=1 holds no real data and is not gated.
+
 Credentials load lazily on the first tools/call, so initialize and tools/list work on a
 machine with no keys.  Set FLEET_RECALL_FAKE=1 to serve an in-process fake corpus (tests).
 
 Register (Claude Code): claude mcp add fleet-recall -- python3 /path/to/fleet-recall-mcp.py
 """
+
 from __future__ import annotations
 
 import json
@@ -19,9 +27,15 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-from fleet_rag import __version__  # noqa: E402
-from fleet_rag import contribute_guard, public_fallback, recall_api, search_log  # noqa: E402
-from fleet_rag.core import FleetRagError  # noqa: E402
+from fleet_rag import (
+    __version__,
+    contribute_guard,
+    public_fallback,
+    recall_api,
+    search_log,
+    seat_auth,
+)
+from fleet_rag.core import FleetRagError
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {"name": "fleet-recall", "version": __version__}
@@ -36,27 +50,56 @@ TOOLS = [
             "another seat has already documented.  Hybrid dense + keyword search, one hit per document "
             "(per_doc keeps the best 1..3 chunks of each), agent lessons boosted into the fusion "
             "(prefer_lessons) and cross-encoder reranked when the endpoint is configured (rerank; the "
-            "returned mode says whether it engaged).  Filter by category, app, source, seat, or recency."),
+            "returned mode says whether it engaged).  Filter by category, app, source, seat, or recency."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Natural-language question or keywords."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": recall_api.MAX_LIMIT, "default": 5},
-                "category": {"type": "string", "enum": list(recall_api.CATEGORIES),
-                             "description": "Restrict to one category."},
-                "app": {"type": "string", "description": "Lowercase app slug, e.g. fleet, socratic-trade."},
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language question or keywords.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": recall_api.MAX_LIMIT,
+                    "default": 5,
+                },
+                "category": {
+                    "type": "string",
+                    "enum": list(recall_api.CATEGORIES),
+                    "description": "Restrict to one category.",
+                },
+                "app": {
+                    "type": "string",
+                    "description": "Lowercase app slug, e.g. fleet, socratic-trade.",
+                },
                 "source": {"type": "string", "enum": list(recall_api.SOURCES)},
                 "seat": {"type": "string", "description": "Uppercase seat tag, e.g. CLAUDE, GROK."},
-                "since_days": {"type": "integer", "minimum": 1,
-                               "description": "Only content created in the last N days."},
-                "per_doc": {"type": "integer", "minimum": 1, "maximum": recall_api.PER_DOC_MAX, "default": 1,
-                            "description": "Best N chunks to return per document (default 1)."},
-                "rerank": {"type": "boolean", "default": True,
-                           "description": "Rerank the candidates with the cross-encoder when it is "
-                                          "configured; false keeps the fused order."},
-                "prefer_lessons": {"type": "boolean", "default": True,
-                                   "description": "Boost agent lessons into the fusion; false for raw "
-                                                  "document research."},
+                "since_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Only content created in the last N days.",
+                },
+                "per_doc": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": recall_api.PER_DOC_MAX,
+                    "default": 1,
+                    "description": "Best N chunks to return per document (default 1).",
+                },
+                "rerank": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Rerank the candidates with the cross-encoder when it is "
+                    "configured; false keeps the fused order.",
+                },
+                "prefer_lessons": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Boost agent lessons into the fusion; false for raw "
+                    "document research.",
+                },
             },
             "required": ["query"],
         },
@@ -65,7 +108,8 @@ TOOLS = [
         "name": "recall_stats",
         "description": (
             "Collection health and point counts by source and app.  Use it to check the corpus is "
-            "reachable before relying on recall_search, or to see which sources have been ingested."),
+            "reachable before relying on recall_search, or to see which sources have been ingested."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -77,26 +121,42 @@ TOOLS = [
             "secrets are scrubbed and the scrub kinds returned; text that still looks like a secret is "
             "refused (the gitleaks gate fails closed; 'gitleaks-unavailable' in the returned list means "
             "only the regex scrub ran).  A near-duplicate of an existing agent contribution (cosine "
-            ">= 0.92) is not stored: the result is {\"status\": \"duplicate\", \"existing\": {...}} "
-            "unless force is true.  Requires the write key and a seat (argument or AGENT_SEAT)."),
+            '>= 0.92) is not stored: the result is {"status": "duplicate", "existing": {...}} '
+            "unless force is true.  Requires the write key and your own seat's bearer: it is stored under that seat, and a `seat` naming another is refused."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "minLength": recall_api.CONTRIB_MIN,
-                         "maxLength": recall_api.CONTRIB_MAX},
+                "text": {
+                    "type": "string",
+                    "minLength": recall_api.CONTRIB_MIN,
+                    "maxLength": recall_api.CONTRIB_MAX,
+                },
                 "category": {"type": "string", "enum": list(recall_api.CONTRIB_CATEGORIES)},
                 "app": {"type": "string", "default": "fleet"},
-                "seat": {"type": "string", "description": "Uppercase seat tag; defaults to $AGENT_SEAT."},
+                "seat": {
+                    "type": "string",
+                    "description": "Uppercase seat tag;  must be your own seat (the default, from your bearer).",
+                },
                 "title": {"type": "string"},
-                "url": {"type": "string", "description": "Source link (PR, board item, doc), optional."},
-                "force": {"type": "boolean",
-                          "description": "Store even when a near-duplicate contribution already exists "
-                                         "(omit unless you mean to skip the duplicate guard)."},
+                "url": {
+                    "type": "string",
+                    "description": "Source link (PR, board item, doc), optional.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Store even when a near-duplicate contribution already exists "
+                    "(omit unless you mean to skip the duplicate guard).",
+                },
             },
             "required": ["text", "category"],
         },
     },
 ]
+
+# True only inside a process main() started with FLEET_RECALL_FAKE=1.  Importing a fake backend elsewhere
+# (tests, tools) never turns the own-bearer proof off.
+FAKE_CORPUS = False
 
 _ALLOWED_ARGS = {t["name"]: set(t["inputSchema"]["properties"]) for t in TOOLS}
 
@@ -122,6 +182,16 @@ def _bool(args: dict, key: str) -> None:
 def call_tool(name: str, args: dict) -> dict:
     if name not in _ALLOWED_ARGS:
         raise KeyError(name)
+    # Own-bearer proof first, on every call:  a revoked or replaced bearer stops the next call.  The
+    # in-process fake corpus holds no real data and is not gated.
+    if FAKE_CORPUS:
+        # Set only by main() for FLEET_RECALL_FAKE=1, and only while the in-process fake is what answers:
+        # no real corpus, provider or public service can be reached from here.
+        if not recall_api.fake_backend_installed():
+            raise FleetRagError("the fake corpus is not installed;  nothing was served")
+        verified = None
+    else:
+        verified = seat_auth.verify()
     unknown = set(args) - _ALLOWED_ARGS[name]
     if unknown:
         raise FleetRagError("unknown argument(s): " + ", ".join(sorted(unknown)))
@@ -131,24 +201,45 @@ def call_tool(name: str, args: dict) -> dict:
         _int(args, "per_doc")
         _bool(args, "rerank")
         _bool(args, "prefer_lessons")
-        caller_seat = args.get("seat") or os.environ.get("AGENT_SEAT") or os.environ.get("AGENT_TAG")
+        # The log names who asked:  the bearer's seat, never an argument.  (`seat` itself stays a corpus filter.)
+        caller_seat = (
+            verified
+            or args.get("seat")
+            or os.environ.get("AGENT_SEAT")
+            or os.environ.get("AGENT_TAG")
+        )
         # A null for an optional flag means "default", not False.
         for key in ("per_doc", "rerank", "prefer_lessons"):
             if key in args and args[key] is None:
                 del args[key]
         t0 = time.time()
         res = public_fallback.call_with_fallback(
-            "recall_search", args, lambda: recall_api.recall_search(**args))
+            "recall_search", args, lambda: recall_api.recall_search(**args)
+        )
         latency_ms = int((time.time() - t0) * 1000)
-        search_log.log_search(query=args.get("query", ""), seat=caller_seat,
-                              app=args.get("app"), hits_count=len(res.get("hits", [])),
-                              latency_ms=latency_ms, mode=res.get("mode", "mcp"))
+        search_log.log_search(
+            query=args.get("query", ""),
+            seat=caller_seat,
+            app=args.get("app"),
+            hits_count=len(res.get("hits", [])),
+            latency_ms=latency_ms,
+            mode=res.get("mode", "mcp"),
+        )
         return res
     if name == "recall_stats":
         return public_fallback.call_with_fallback("recall_stats", {}, recall_api.recall_stats)
     work = dict(args)
+    if verified:
+        claimed = work.get("seat")
+        if claimed and seat_auth.F.canonical_hint(claimed) != verified:
+            raise FleetRagError(
+                "recall_contribute is stored under your own seat (%s), not %s;  nothing was stored"
+                % (verified, str(claimed)[:40])
+            )
+        work["seat"] = verified
     return public_fallback.call_with_fallback(
-        "recall_contribute", work, lambda: contribute_with_guard(work))
+        "recall_contribute", work, lambda: contribute_with_guard(work)
+    )
 
 
 def contribute_with_guard(args: dict) -> dict:
@@ -166,7 +257,10 @@ def contribute_with_guard(args: dict) -> dict:
         raise FleetRagError("force must be a boolean")
     text = args.get("text")
     guard = None
-    in_range = isinstance(text, str) and recall_api.CONTRIB_MIN <= len(text.strip()) <= recall_api.CONTRIB_MAX
+    in_range = (
+        isinstance(text, str)
+        and recall_api.CONTRIB_MIN <= len(text.strip()) <= recall_api.CONTRIB_MAX
+    )
     if not force and in_range and public_fallback.guard_may_run():
         try:
             cfg = recall_api.get_config(need_write=False)
@@ -176,10 +270,13 @@ def contribute_with_guard(args: dict) -> dict:
                 raise
             guard = None
         if guard is not None and guard["duplicate"]:
-            return {"status": "duplicate", "existing": guard["existing"],
-                    "threshold": guard["threshold"],
-                    "message": contribute_guard.duplicate_message(guard["existing"])
-                    + " (pass force=true)"}
+            return {
+                "status": "duplicate",
+                "existing": guard["existing"],
+                "threshold": guard["threshold"],
+                "message": contribute_guard.duplicate_message(guard["existing"])
+                + " (pass force=true)",
+            }
     res = recall_api.recall_contribute(**args)
     if guard and guard["candidates"]:
         res["nearest"] = guard["candidates"][0]
@@ -211,10 +308,15 @@ def handle(msg: dict) -> dict | None:
     if method == "initialize":
         requested = params.get("protocolVersion")
         version = requested if isinstance(requested, str) and requested else PROTOCOL_VERSION
-        return ok({"protocolVersion": version, "capabilities": {"tools": {}},
-                   "serverInfo": SERVER_INFO,
-                   "instructions": "Search before re-deriving a lesson; contribute after you learn "
-                                   "something reusable."})
+        return ok(
+            {
+                "protocolVersion": version,
+                "capabilities": {"tools": {}},
+                "serverInfo": SERVER_INFO,
+                "instructions": "Search before re-deriving a lesson; contribute after you learn "
+                "something reusable.",
+            }
+        )
     if method == "ping":
         return ok({})
     if method == "tools/list":
@@ -232,8 +334,12 @@ def handle(msg: dict) -> dict | None:
             return ok({"content": [{"type": "text", "text": str(e)}], "isError": True})
         except Exception as e:  # noqa: BLE001 - keep the server alive, report the class only
             log(f"{name} failed: {type(e).__name__}")
-            return ok({"content": [{"type": "text", "text": f"{name} failed: {type(e).__name__}"}],
-                       "isError": True})
+            return ok(
+                {
+                    "content": [{"type": "text", "text": f"{name} failed: {type(e).__name__}"}],
+                    "isError": True,
+                }
+            )
         return ok({"content": [{"type": "text", "text": json.dumps(result)}], "isError": False})
     if is_notification:
         return None
@@ -250,7 +356,11 @@ def serve(stdin=None, stdout=None) -> None:
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
-            resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+            resp = {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "parse error"},
+            }
             stdout.write(json.dumps(resp) + "\n")
             stdout.flush()
             continue
@@ -258,8 +368,13 @@ def serve(stdin=None, stdout=None) -> None:
         out = []
         for m in batch:
             if not isinstance(m, dict):
-                out.append({"jsonrpc": "2.0", "id": None,
-                            "error": {"code": -32600, "message": "invalid request"}})
+                out.append(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32600, "message": "invalid request"},
+                    }
+                )
                 continue
             try:
                 resp = handle(m)
@@ -267,8 +382,11 @@ def serve(stdin=None, stdout=None) -> None:
                 log(f"internal error handling {m.get('method')!r}: {type(e).__name__}")
                 if "id" not in m:
                     continue
-                resp = {"jsonrpc": "2.0", "id": m.get("id"),
-                        "error": {"code": -32603, "message": f"internal error: {type(e).__name__}"}}
+                resp = {
+                    "jsonrpc": "2.0",
+                    "id": m.get("id"),
+                    "error": {"code": -32603, "message": f"internal error: {type(e).__name__}"},
+                }
             if resp is not None:
                 out.append(resp)
         if not out:
@@ -280,6 +398,8 @@ def serve(stdin=None, stdout=None) -> None:
 def main() -> int:
     if os.environ.get("FLEET_RECALL_FAKE") == "1":
         recall_api.install_fake_backend()
+        global FAKE_CORPUS
+        FAKE_CORPUS = True
         log("FAKE backend (FLEET_RECALL_FAKE=1)")
     try:
         serve()

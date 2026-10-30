@@ -179,6 +179,17 @@ def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
     return bool(_broadcast_tokens_visible(content_outside_code) & BROADCAST_TOKENS)
 
 
+def tags_seat(content: str, me: SeatIdentity) -> bool:
+    """Does this text tag the seat:  its own `@**Name**` (or `@**Name|id**`), or a fleet-wide `@all`,
+    `@channel` or `@stream`, outside code and quotes?  A silenced `@_**Name**` never counts.
+
+    An edit wakes a seat only when the new text tags it and the old text did not (owner, Oct 29
+    2026), so a mention that was already there never wakes it a second time."""
+    visible = outside_code(str(content or ""))
+    names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
+    return any(n in visible for n in names) or fleet_wake_mention(visible, ())
+
+
 def is_owner_topic(topic: str) -> bool:
     """True for a topic whose name starts `OWNER ` (any case), with or without Zulip's resolved check mark."""
     name = str(topic or "").strip()
@@ -288,10 +299,15 @@ class Context:
         presence: list[tuple[str, str]],
         muted: Iterable[str] = (),
         followed: Iterable[str] = (),
+        operator_user_id: int = 0,
     ) -> None:
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
         self.eligible_user_ids = set(eligible_user_ids)
+        # The pinned Operator bot's Zulip user id (0 when the host pins none).  It is not an eligible
+        # sender, but it posts a seat's route page (daemon.handle_route), and that page, and only that
+        # page, must still reach the seat it pages: see `classify`.
+        self.operator_user_id = operator_user_id
         self.is_bot = is_bot
         self.now = now
         self.stale_after = stale_after
@@ -415,6 +431,20 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     )
     c.owner_api = from_owner_account and not c.owner
     c.sender_is_bot = bool(ctx.is_bot.get(sender_id, True)) if isinstance(sender_id, int) else True
+    # The daemon's route page is posted by the OPERATOR now, not by the paging seat's bot (owner
+    # ruling, Oct 30 2026), and the Operator is not an eligible sender, so without this the page it
+    # relays would land in the target's inbox and wake no one.  The exception is exactly one shape: a
+    # message from the pinned Operator bot (its user id, known to be a bot) whose first line is a
+    # `·route` tag.  Anything else the Operator posts, its status messages and questions included,
+    # stays ineligible, and a `·route` post is no wider than the one a peer bot could already write.
+    from_operator_route = (
+        isinstance(sender_id, int)
+        and not isinstance(sender_id, bool)
+        and ctx.operator_user_id > 0
+        and sender_id == ctx.operator_user_id
+        and ctx.is_bot.get(sender_id) is True
+        and _ROUTE_TAG_RE.match(content) is not None
+    )
     c.eligible = not c.own and (
         c.owner
         or (
@@ -422,6 +452,7 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
             and sender_id in ctx.eligible_user_ids
             and not from_owner_account
         )
+        or from_operator_route
     )
     c.owner_topic = not c.dm and is_owner_topic(c.topic)
     if c.owner_topic and c.eligible and not c.owner:

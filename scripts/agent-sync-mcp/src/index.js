@@ -67,7 +67,7 @@ import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
 import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
-import { gate } from "./gate.js";
+import { gate, linearQuotaFromEnv } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
@@ -277,7 +277,7 @@ async function serveMcp(request, env, ctx) {
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
-    linear: linearClientFromPair(linearPair, seat, { gate: seatGate }),
+    linear: linearClientFromPair(linearPair, seat, { gate: seatGate, quota: linearQuotaFromEnv(env) }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
     // not_configured and every other tool works as before (AFC-328).
@@ -408,6 +408,7 @@ async function serveGbBearerMcp(request, env, token) {
       clientId: credentials.linearClientId,
       clientSecret: credentials.linearClientSecret,
       gate: identityGate,
+      quota: linearQuotaFromEnv(env),
       fetch: globalThis.fetch.bind(globalThis),
     }),
   });
@@ -488,7 +489,7 @@ async function serveSbtBearerMcp(request, env, token) {
     gate: seatGate,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromResolved(recallSecrets, env),
-    linear: linearClientFromPair(await resolveLinearPair(env, seatTagForSeat(seat)), seat, { gate: seatGate }),
+    linear: linearClientFromPair(await resolveLinearPair(env, seatTagForSeat(seat)), seat, { gate: seatGate, quota: linearQuotaFromEnv(env) }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     // Additional identities never fall back to the shared FleetLink credential.
     fleetlink: fleetlinkClientFromSecret(Object.hasOwn(ADDITIONAL_BEARER_SEATS, seat) ? "" : fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),

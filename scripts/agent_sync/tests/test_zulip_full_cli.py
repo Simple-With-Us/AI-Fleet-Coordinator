@@ -8,6 +8,7 @@ import json
 import os
 import time
 
+from agent_sync import zulip as Z
 from agent_sync import zulip_ops as OPS
 from agent_sync.tests.fake_zulip import BOT_EMAIL
 from agent_sync.tests.harness import TAG, Harness
@@ -34,16 +35,54 @@ class MessageCommandTests(Harness):
         self.assertEqual(len(versions), 2)
         self.assertIn("second words", versions[-1]["content"])
 
-    def test_edit_and_delete_refuse_another_senders_message(self) -> None:
+    def test_edit_to_tags_a_peer(self) -> None:
+        posted = json.loads(self.run_cli("post", "--topic", "t", "first", "--json").out)["id"]
+        result = self.run_cli("edit", "--id", str(posted), "--to", "CODEX", "now for you")
+        self.assertEqual(result.code, 0, result.err)
+        content = self.fake._find(posted)["content"]
+        self.assertIn("@**Codex**", content)
+        self.assertIn("now for you", content)
+
+    def test_a_delete_of_a_message_that_vanished_keeps_zulips_own_error(self) -> None:
+        # Kody, PR #1148:  only a message that is still there was refused;  any other 400 is Zulip's own.
+        class Client:
+            def __init__(self) -> None:
+                self.present = True
+
+            def get(self, path: str, params: object = None) -> dict:
+                if not self.present:
+                    raise Z.ApiError("Invalid message(s)", code="BAD_REQUEST", status=400)
+                return {"message": {"id": 7}}
+
+            def delete(self, path: str, params: object = None) -> dict:
+                self.present = False
+                raise Z.ApiError("Invalid message(s)", code="BAD_REQUEST", status=400)
+
+        agent = type("Agent", (), {"client": Client()})()
+        with self.assertRaises(Z.ApiError) as caught:
+            OPS.delete_message(agent, 7)
+        self.assertNotIsInstance(caught.exception, Z.UsageError)
+        self.assertEqual(caught.exception.msg, "Invalid message(s)")
+
+    def test_edit_refuses_another_senders_message(self) -> None:
         theirs = self.fake.add_message("Codex", "agent-sync", "t", "not yours")
         before = len(self.fake.requests_to("PATCH", "messages/%d" % theirs))
         edit = self.run_cli("edit", "--id", str(theirs), "mine now")
         self.assertEqual(edit.code, 2)
         self.assertIn("was not sent by this bot", edit.err)
-        delete = self.run_cli("delete", "--id", str(theirs))
-        self.assertEqual(delete.code, 2)
         self.assertEqual(len(self.fake.requests_to("PATCH", "messages/%d" % theirs)), before)
-        self.assertEqual(self.fake.requests_to("DELETE", "messages/%d" % theirs), [])
+
+    def test_delete_leaves_another_senders_message_to_zulips_permission(self) -> None:
+        theirs = self.fake.add_message("Codex", "agent-sync", "t", "not yours")
+        refused = self.run_cli("delete", "--id", str(theirs))
+        self.assertEqual(refused.code, 2)
+        self.assertIn("no permission to delete it", refused.err)
+        self.assertEqual(len(self.fake.requests_to("DELETE", "messages/%d" % theirs)), 1)
+        self.fake.can_delete_any.add(self.fake.me["user_id"])
+        result = self.run_cli("delete", "--id", str(theirs), "--json")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(result.out), {"id": theirs, "deleted": True})
+        self.assertFalse(any(m["id"] == theirs for m in self.fake.messages))
 
     def test_delete_own_message(self) -> None:
         posted = json.loads(self.run_cli("post", "--topic", "t", "bye", "--json").out)["id"]
