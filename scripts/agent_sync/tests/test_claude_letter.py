@@ -6,8 +6,10 @@ from __future__ import annotations
 import io
 import json
 import os
+import random
 import shlex
 import sqlite3
+import string
 import subprocess
 import tempfile
 import time
@@ -126,6 +128,49 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(CL.title_from_prompt("fix the build for ghp_%s" % self.BODY), "Fix the Build")
         self.assertEqual(CL.title_from_prompt("ghp_%s\nfix the build" % self.BODY), "Fix the Build")
         self.assertEqual(CL.title_from_prompt("ghp_%s" % self.BODY), "")  # nothing but the key:  wait for the next prompt
+
+    def test_a_pasted_key_block_never_reaches_a_title(self) -> None:
+        # Built at run time, so no key-shaped literal rests in the source.  The last row of a block is shorter than
+        # SECRET_RUN and used to be the first line with words (a 2048-bit RSA key in PKCS#8 ends on a row of 24).
+        rng = random.Random(7)
+        alphabet = string.ascii_letters + string.digits + "+/"
+
+        def row(width: int) -> str:
+            return "".join(rng.choice(alphabet) for _ in range(width))
+
+        kind = "PRIVATE KEY"
+        rows = [row(64) for _ in range(18)] + [row(24)]
+        block = "\n".join(["-----BEGIN %s-----" % kind, *rows, "-----END %s-----" % kind])
+        cases = {
+            block: "",
+            "Here is my key:\n" + block: "Here Is My Key",
+            block + "\ninstall this on the server": "Install This on the Server",
+            block.replace("\n", "\r\n"): "",
+            "    " + block.replace("\n", "\n    "): "",
+        }
+        for prompt, expected in cases.items():
+            title = CL.title_from_prompt(prompt)
+            self.assertEqual(title, expected, prompt[:40])
+            self.assertNotIn(rows[-1][-8:], title)
+        # a block the end of the text window cuts off has no END line
+        unfinished = "-----BEGIN %s-----\n" % kind + "\n".join(row(64) for _ in range(90))
+        self.assertGreater(len(unfinished), CL.PROMPT_SCAN_CHARS)
+        self.assertEqual(CL.title_from_prompt(unfinished), "")
+
+    def test_a_key_broken_over_a_line_break_leaves_no_end_in_the_title(self) -> None:
+        token = "ghp_" + self.BODY  # 40 characters
+        for end in (4, 12):
+            title = CL.title_from_prompt(token[:-end] + "\n" + token[-end:])
+            self.assertEqual(title, "", end)
+        # the words that follow the end of the key still name the chat
+        self.assertEqual(CL.title_from_prompt(token[:-4] + "\n" + token[-4:] + "\nfix the build"), "Fix the Build")
+
+    def test_a_line_is_not_dropped_for_the_secret_its_neighbour_holds(self) -> None:
+        # The neighbour's "token: <path>" reads as an assigned secret and gets no title;  the line before it does not
+        # go with it.  A secret that only the join of two lines makes is still caught.
+        prompt = "Debug the refresh failure\nThe token: src/auth/refresh.ts fails on expiry\nIt returns 401 afterwards"
+        self.assertEqual(CL.title_from_prompt(prompt), "Debug the Refresh Failure")
+        self.assertEqual(CL.title_from_prompt("password:\nx7Kp2mQ9vL4nR8sT1"), "")
 
     def test_a_resumed_chats_first_prompt_is_scanned_too(self) -> None:
         with tempfile.TemporaryDirectory() as home:
@@ -657,6 +702,45 @@ class HookTests(Base):
         self.assertIn("--host-session-id", ssh.calls[0][8])
         self.assertNotIn("--host-session-id", ssh.calls[1][8])
 
+    def test_a_start_after_a_clear_sends_the_flag_and_places_the_chat_after_its_parent(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)  # the record still holds the pre-clear uuid
+        self.hook(
+            {"hook_event_name": "SessionStart", "session_id": "p-0001", "source": "startup"},
+            env=self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.PARENT),
+        )
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        ssh = FakeSsh(self)
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "c-9999", "source": "clear"}, env=env, runner=ssh)
+        words = shlex.split(ssh.calls[0][8])
+        self.assertIn("--host-session-id=" + self.CHILD, words)
+        self.assertIn("--after-clear", words)
+        self.assertIn("Claude AB", out["additionalContext"])
+        # an ordinary start never sends it:  a claude started inside a chat inherits the chat's app id
+        ssh = FakeSsh(self)
+        self.hook({"hook_event_name": "SessionStart", "session_id": "c-9998", "source": "startup"}, env=env, runner=ssh)
+        self.assertNotIn("--after-clear", ssh.calls[0][8])
+
+    def test_a_mac_that_knows_the_host_flag_but_not_after_clear_is_asked_again_with_neither(self) -> None:
+        class MidMac(FakeSsh):
+            """A Mac whose registry side knows --host-session-id but not --after-clear:  its parser refuses the call."""
+
+            def __call__(self, cmd, **kwargs):
+                if "--after-clear" in cmd[8]:
+                    self.calls.append(cmd)
+                    out = json.dumps({"error": "bad arguments:  register --after-clear"})
+                    return SimpleNamespace(stdout=out + "\n", returncode=2)
+                return super().__call__(cmd, **kwargs)
+
+        ssh = MidMac(self)
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "c-9999", "source": "clear"}, env=env, runner=ssh)
+        self.assertIn("Claude AA", out["additionalContext"])  # a pair, as a main chat, not none
+        self.assertEqual(len(ssh.calls), 2)
+        self.assertIn("--after-clear", ssh.calls[0][8])
+        for flag in ("--after-clear", "--host-session-id"):
+            self.assertNotIn(flag, ssh.calls[1][8])
+
     def test_any_other_registry_error_is_not_retried_without_the_flag(self) -> None:
         down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
         env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
@@ -923,6 +1007,7 @@ class HookTests(Base):
         self.assertEqual(self.lookup("s-0001")["title"], "Fix Login")
         # the start told the model there was no letter yet, so the first prompt that recovers tells it the one it holds
         self.assertIn("Claude AB", out["additionalContext"])
+        self.assertIn("earlier letter AA went to another chat", out["additionalContext"])
 
     def test_a_secret_in_a_name_given_before_the_first_prompt_is_not_kept_in_the_note(self) -> None:
         key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped:  32 mixed-case letters and digits
@@ -1160,6 +1245,57 @@ class HookTests(Base):
         self.assertEqual(self.registry_ops(ssh), ["title", "title"])
         self.assertEqual(self.lookup("s-0001")["title"], "Fix the Login Page")
         self.assertNotIn("title_unsent", self.note("s-0001"))
+
+    def test_a_rename_that_is_waiting_goes_out_instead_of_the_first_title_the_registry_never_took(self) -> None:
+        class TitlesDown(FakeSsh):
+            """The Mac does not answer a title call until it is told to."""
+
+            down = True
+
+            def __call__(self, cmd, **kwargs):
+                if self.down and shlex.split(cmd[8])[3] == "title":
+                    self.calls.append(cmd)
+                    raise subprocess.TimeoutExpired("ssh", 12)
+                return super().__call__(cmd, **kwargs)
+
+        self.start("s-0001")
+        ssh = TitlesDown(self)
+        start = time.time()
+        self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=ssh, now=start,
+        )
+        self.assertEqual(self.note("s-0001")["title_unsent"], "Fix the Login Page")
+        # The owner renames the chat inside the wait, and the Mac still does not answer.
+        self.renamed("AA: Billing Report", runner=ssh, now=start + 120)
+        self.assertEqual(self.note("s-0001")["rename_failed_for"], "Billing Report")
+        ssh.down = False
+        self.renamed("AA: Billing Report", runner=ssh, now=start + CL.RETRY_SECONDS + 5)
+        self.assertEqual(self.lookup("s-0001")["title"], "Billing Report")  # not the stale first title
+        note = self.note("s-0001")
+        self.assertEqual(note["title"], "Billing Report")
+        for key in ("title_unsent", "title_failed_at", "rename_failed_at", "rename_failed_for"):
+            self.assertNotIn(key, note)
+
+    def test_a_retired_letter_that_comes_back_keeps_a_rename_the_registry_has_not_taken_yet(self) -> None:
+        self.titled()  # "AA: Help Get All PR Issues Addressed"
+        start = time.time() + CL.TOUCH_SECONDS + 10  # by then the chat is due a touch
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        self.renamed("AA: Release Plan Q4", runner=down, now=start)  # the Mac does not answer:  the rename waits
+        self.assertEqual(self.note("s-0001")["rename_failed_for"], "Release Plan Q4")
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")  # the letter is retired behind the chat's back
+        finally:
+            reg.close_db()
+        # Still inside the rename's wait, so no title call:  the touch finds the letter retired and registers again.
+        self.renamed("AA: Release Plan Q4", now=start + 60)
+        self.assertEqual(self.lookup("s-0001")["title"], "Release Plan Q4")  # not the old words the registry held
+        note = self.note("s-0001")
+        self.assertEqual(note["title"], "Release Plan Q4")
+        self.assertNotIn("rename_failed_for", note)
+        self.assertNotIn("rename_failed_at", note)
 
     # ---- a platform that runs Claude as its engine asks for its own letter ----
 

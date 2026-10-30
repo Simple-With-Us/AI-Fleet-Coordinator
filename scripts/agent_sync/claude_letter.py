@@ -147,6 +147,10 @@ PROMPT_SCAN_CHARS = 4096
 PROMPT_SCAN_WORDS = 64
 # A token of this many letters and digits mixed is taken for a key or a hash and kept out of a title.
 SECRET_RUN = 28
+# A pasted key block, BEGIN line to END line (or to the end of the text a title is looked for in).
+KEY_BLOCK = re.compile(
+    r"-----BEGIN [A-Z0-9 ]{1,40}-----.*?(?:-----END [A-Z0-9 ]{1,40}-----|\Z)", re.DOTALL
+)
 STDIN_LIMIT = 1 << 20
 TRANSCRIPT_LINES = 400
 TRANSCRIPT_BYTES = 4 << 20
@@ -319,19 +323,29 @@ def title_from_prompt(prompt: object) -> str:
     A token that looks like a secret is dropped whole before its line is split into words, so a pasted key (or the
     ghp_ in front of it) never reaches a title, the registry, the note or the sheet.  A line that still reads as a
     secret once those are gone, alone or joined with a neighbouring line ("Authorization:" then "Bearer <key>"), gives
-    no title."""
+    no title.  A pasted key block (BEGIN line to END line) is cut out whole, and a line that is a single token right
+    after a line that held a secret is skipped too:  a key broken over a line break leaves its end alone on the
+    next line, shorter than SECRET_RUN."""
     text = str(prompt or "")[:PROMPT_SCAN_CHARS]
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = KEY_BLOCK.sub(" ", text)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
-    lines = [_without_secrets(re.sub(r"^\s*/\S*", " ", raw)) for raw in text.splitlines()]
+    raw_lines = [re.sub(r"^\s*/\S*", " ", raw) for raw in text.splitlines()]
+    lines = [_without_secrets(raw) for raw in raw_lines]
+    leaked = False  # the line before held a secret, or all of one but its end
     for number, line in enumerate(lines):
         before = lines[number - 1] if number else ""
         after = lines[number + 1] if number + 1 < len(lines) else ""
-        if any(
-            secretscan.scan(joined) for joined in (line, before + " " + line, line + " " + after)
-        ):
-            continue  # what is left still reads as a secret, alone or across a line break
+        # A neighbour's own secret does not make this line one:  only a secret that the join of the two makes.
+        secret = bool(secretscan.scan(line)) or any(
+            secretscan.scan(joined) and not secretscan.scan(neighbour)
+            for joined, neighbour in ((before + " " + line, before), (line + " " + after, after))
+        )
+        tail = leaked and len(line.split()) == 1
+        leaked = secret or tail or len(line.split()) < len(raw_lines[number].split())
+        if secret or tail:
+            continue  # what is left still reads as a secret, alone or across a line break, or is a key's end
         words = []
         for scanned, match in enumerate(WORD.finditer(line)):
             if len(words) >= TITLE_WORDS or scanned >= PROMPT_SCAN_WORDS:
@@ -1040,13 +1054,18 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         note.pop("title_failed_at", None)
         unsent = ""
     if not sent and unsent and chat.now - float(note.get("title_failed_at") or 0) >= RETRY_SECONDS:
-        answer = chat.registry("title", title=unsent)
+        # A rename that is waiting for the registry is the newer title, so it goes out in place of the first one.
+        latest = str(note.get("rename_failed_for") or unsent)
+        answer = chat.registry("title", title=latest)
         sent = True
         if "error" in answer:
             note["title_failed_at"] = chat.now
+            if latest != unsent:
+                note["rename_failed_at"] = chat.now
         else:
-            note.pop("title_unsent", None)
-            note.pop("title_failed_at", None)
+            note["title"] = latest
+            for key in ("title_unsent", "title_failed_at", "rename_failed_at", "rename_failed_for"):
+                note.pop(key, None)
             note["touched_at"] = chat.now
     # Whatever the title did, a chat is marked seen on schedule when nothing was sent:  a name of more than TITLE_CHARS,
     # or one the scanner shortened, is a rename on every prompt and would otherwise never touch, so the 36-hour sweep
@@ -1062,16 +1081,27 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         # only their cut form (a name over TITLE_CHARS, or one the scanner shortened).
         kept = str(note.get("title") or "")
         words = own_words(current, note)
-        text = words if words and clean_title(words) == kept else (kept or words or PLACEHOLDER)
+        # A rename the registry has not taken yet is the owner's title, not the old words it still holds.
+        waiting = str(note.get("rename_failed_for") or "")
+        known = {kept, waiting} if waiting else {kept}
+        text = words if words and clean_title(words) in known else (kept or words or PLACEHOLDER)
         registered = chat.registry("register", title=text)
         note = _apply(chat, registered, note)
         if note["state"] == "open":
             # The note keeps the scanned, cut copy the registry holds;  the title on screen keeps the owner's words.
+            cleaned = clean_title(text)
             note.update(
                 titled=True,
-                title=clean_title(text),
+                title=cleaned,
                 placeholder="%s: %s" % (note["label"], PLACEHOLDER),
             )
+            # The registration carried this title, so a first title that never arrived, or a rename that was waiting
+            # for the registry, is settled.
+            for key in ("title_unsent", "title_failed_at"):
+                note.pop(key, None)
+            if waiting == cleaned:
+                note.pop("rename_failed_at", None)
+                note.pop("rename_failed_for", None)
             title = "%s: %s" % (note["label"], text)
             if note["label"] != held or int(note.get("generation") or 1) != held_generation:
                 # A different pair, or the same one as a later generation:  the model was told how this chat is
