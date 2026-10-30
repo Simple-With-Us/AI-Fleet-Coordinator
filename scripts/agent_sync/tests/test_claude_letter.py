@@ -152,16 +152,33 @@ class TitleTests(unittest.TestCase):
             title = CL.title_from_prompt(prompt)
             self.assertEqual(title, expected, prompt[:40])
             self.assertNotIn(rows[-1][-8:], title)
-        # a block the end of the text window cuts off has no END line
-        unfinished = "-----BEGIN %s-----\n" % kind + "\n".join(row(64) for _ in range(90))
+        # a header with a digit in it, which the pattern's class has to take
+        digits = "SSH2 ENCRYPTED PRIVATE KEY"
+        self.assertEqual(CL.title_from_prompt("\n".join(["-----BEGIN %s-----" % digits, *rows, "-----END %s-----" % digits])), "")
+        # a block the end of the text window cuts off has no END line;  its rows are two short words each, so only the
+        # cut to the end of the text keeps them out of the title
+        unfinished = "-----BEGIN %s-----\n" % kind + "\n".join(row(12) + " " + row(12) for _ in range(160))
         self.assertGreater(len(unfinished), CL.PROMPT_SCAN_CHARS)
         self.assertEqual(CL.title_from_prompt(unfinished), "")
+        # a base64 row can start with "/" and then looks like a slash command;  the key's end is still no title
+        slashed = "/" + row(63) + "\n" + row(12)
+        self.assertEqual(CL.title_from_prompt(slashed), "")
+
+    def test_only_a_private_key_block_is_cut_out_of_a_prompt(self) -> None:
+        # The scanner knows no other header, and a certificate or a public key named in a question is no secret.
+        self.assertEqual(
+            CL.title_from_prompt("Why does `-----BEGIN CERTIFICATE-----` break the importer?\nIt says invalid"),
+            "Why Does BEGIN CERTIFICATE Break the Importer",
+        )
+        self.assertNotEqual(CL.title_from_prompt("-----BEGIN PUBLIC KEY-----\nAdd this key to the config"), "")
 
     def test_a_key_broken_over_a_line_break_leaves_no_end_in_the_title(self) -> None:
         token = "ghp_" + self.BODY  # 40 characters
         for end in (4, 12):
             title = CL.title_from_prompt(token[:-end] + "\n" + token[-end:])
             self.assertEqual(title, "", end)
+        # a key's end split over two short lines:  the second is skipped because the first was
+        self.assertEqual(CL.title_from_prompt(token[:-8] + "\n" + token[-8:-4] + "\n" + token[-4:]), "")
         # the words that follow the end of the key still name the chat
         self.assertEqual(CL.title_from_prompt(token[:-4] + "\n" + token[-4:] + "\nfix the build"), "Fix the Build")
 
@@ -171,6 +188,8 @@ class TitleTests(unittest.TestCase):
         prompt = "Debug the refresh failure\nThe token: src/auth/refresh.ts fails on expiry\nIt returns 401 afterwards"
         self.assertEqual(CL.title_from_prompt(prompt), "Debug the Refresh Failure")
         self.assertEqual(CL.title_from_prompt("password:\nx7Kp2mQ9vL4nR8sT1"), "")
+        # ... in both directions:  the value on the second line makes the first a hit, and the first makes the second
+        self.assertEqual(CL.title_from_prompt("password:\n%s please" % self.RUN20), "")
 
     RUN20 = "x7Kp2mQ9" + "vL4nR8sT1aBc"  # fake:  20 mixed letters and digits, under every length limit
 
@@ -610,6 +629,18 @@ class FakeSsh:
         out = io.StringIO()
         code = CL.registry_main(words[3:], env=self.test.env(), stdout=out)
         return SimpleNamespace(stdout=out.getvalue(), returncode=code)
+
+
+class TitlesDown(FakeSsh):
+    """A Mac that does not answer a title call until it is told to (set .down to False)."""
+
+    down = True
+
+    def __call__(self, cmd, **kwargs):
+        if self.down and shlex.split(cmd[8])[3] == "title":
+            self.calls.append(cmd)
+            raise subprocess.TimeoutExpired("ssh", 12)
+        return super().__call__(cmd, **kwargs)
 
 
 class HookTests(Base):
@@ -1285,17 +1316,6 @@ class HookTests(Base):
         self.assertNotIn("title_unsent", self.note("s-0001"))
 
     def test_a_rename_that_is_waiting_goes_out_instead_of_the_first_title_the_registry_never_took(self) -> None:
-        class TitlesDown(FakeSsh):
-            """The Mac does not answer a title call until it is told to."""
-
-            down = True
-
-            def __call__(self, cmd, **kwargs):
-                if self.down and shlex.split(cmd[8])[3] == "title":
-                    self.calls.append(cmd)
-                    raise subprocess.TimeoutExpired("ssh", 12)
-                return super().__call__(cmd, **kwargs)
-
         self.start("s-0001")
         ssh = TitlesDown(self)
         start = time.time()
@@ -1315,6 +1335,73 @@ class HookTests(Base):
         self.assertEqual(note["title"], "Billing Report")
         for key in ("title_unsent", "title_failed_at", "rename_failed_at", "rename_failed_for"):
             self.assertNotIn(key, note)
+
+    def test_a_failed_retry_waits_the_full_time_before_the_next_title_call(self) -> None:
+        self.start("s-0001")
+        ssh = TitlesDown(self)
+        start = time.time()
+        self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=ssh, now=start,
+        )
+        self.renamed("AA: Billing Report", runner=ssh, now=start + 120)
+        self.renamed("AA: Billing Report", runner=ssh, now=start + CL.RETRY_SECONDS + 5)  # the retry fails as well
+        self.assertEqual(self.registry_ops(ssh), ["title", "title", "title"])
+        self.renamed("AA: Billing Report", runner=ssh, now=start + CL.RETRY_SECONDS + 125)  # 120 s after the last call
+        self.assertEqual(self.registry_ops(ssh), ["title", "title", "title"])  # still inside the wait
+
+    def test_a_rename_the_owner_took_back_is_not_sent_over_the_title_on_screen(self) -> None:
+        for retired, sid in ((False, "s-0001"), (True, "s-0002")):
+            with self.subTest(letter_retired=retired):
+                self.start(sid)
+                label = self.lookup(sid)["label"]
+                ssh = TitlesDown(self)
+                start = time.time()
+                self.hook(
+                    {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": "fix the login page",
+                     "session_title": label + ": New Chat"},
+                    runner=ssh, now=start,
+                )
+                self.renamed(label + ": Billing Report", sid=sid, runner=ssh, now=start + 120)  # fails:  the rename waits
+                self.renamed(label + ": Fix the Login Page", sid=sid, runner=ssh, now=start + 200)  # and is taken back
+                if retired:
+                    reg = OR.SessionRegistry(self.db)
+                    try:
+                        reg.close(self.lookup(sid)["record_id"], source="test")
+                    finally:
+                        reg.close_db()
+                ssh.down = False
+                out = self.renamed(label + ": Fix the Login Page", sid=sid, runner=ssh, now=start + CL.RETRY_SECONDS + 5)
+                self.assertNotIn("Billing Report", json.dumps(out))  # never the screen's title replaced by the old rename
+                self.assertEqual(self.lookup(sid)["title"], "Fix the Login Page")
+                note = self.note(sid)
+                self.assertEqual(note["title"], "Fix the Login Page")
+                self.assertNotIn("title_unsent", note)
+
+    def test_a_retired_letter_that_comes_back_settles_a_first_title_that_never_arrived(self) -> None:
+        self.start("s-0001")
+        ssh = TitlesDown(self)
+        start = time.time()
+        self.hook(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the login page",
+             "session_title": "AA: New Chat"},
+            runner=ssh, now=start,
+        )
+        self.assertEqual(self.note("s-0001")["title_unsent"], "Fix the Login Page")
+        self.renamed("AA: Fix the Login Page", runner=ssh, now=start + 1700)  # the retry fails and waits again
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        ssh.down = False
+        # The retry is not due (110 s), the touch is:  it finds the letter retired and registers again with a title.
+        self.renamed("AA: Fix the Login Page", runner=ssh, now=start + 1810)
+        self.assertEqual(self.lookup("s-0001")["title"], "Fix the Login Page")
+        note = self.note("s-0001")
+        self.assertNotIn("title_unsent", note)
+        self.assertNotIn("title_failed_at", note)
 
     def test_a_retired_letter_that_comes_back_keeps_a_rename_the_registry_has_not_taken_yet(self) -> None:
         self.titled()  # "AA: Help Get All PR Issues Addressed"

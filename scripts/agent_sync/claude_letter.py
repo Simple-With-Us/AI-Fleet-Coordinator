@@ -147,9 +147,11 @@ PROMPT_SCAN_CHARS = 4096
 PROMPT_SCAN_WORDS = 64
 # A token of this many letters and digits mixed is taken for a key or a hash and kept out of a title.
 SECRET_RUN = 28
-# A pasted key block, BEGIN line to END line (or to the end of the text a title is looked for in).
+# A pasted private key block, BEGIN line to END line (or to the end of the text a title is looked for in).  Only
+# private keys:  the scanner knows no other header, and a certificate or a public key named in a question is no secret.
+_KEY_HEADER = r"[A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*"
 KEY_BLOCK = re.compile(
-    r"-----BEGIN [A-Z0-9 ]{1,40}-----.*?(?:-----END [A-Z0-9 ]{1,40}-----|\Z)", re.DOTALL
+    r"-----BEGIN %s-----.*?(?:-----END %s-----|\Z)" % (_KEY_HEADER, _KEY_HEADER), re.DOTALL
 )
 STDIN_LIMIT = 1 << 20
 TRANSCRIPT_LINES = 400
@@ -330,7 +332,7 @@ def title_from_prompt(prompt: object) -> str:
     A token that looks like a secret is dropped whole before its line is split into words, so a pasted key (or the
     ghp_ in front of it) never reaches a title, the registry, the note or the sheet.  A line that still reads as a
     secret once those are gone, alone or joined with a neighbouring line ("Authorization:" then "Bearer <key>"), gives
-    no title.  A pasted key block (BEGIN line to END line) is cut out whole, and a line that is a single token right
+    no title.  A pasted private key block (BEGIN line to END line) is cut out whole, and a line that is a single token right
     after a line that held a secret is skipped too:  a key broken over a line break leaves its end alone on the
     next line, shorter than SECRET_RUN.  When the prompt is longer than the scan window, the word the window ends
     inside of is dropped (a key cut short passes every length check), and so is a fenced block it ends inside of."""
@@ -349,19 +351,27 @@ def title_from_prompt(prompt: object) -> str:
     text = KEY_BLOCK.sub(" ", text)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
-    raw_lines = [re.sub(r"^\s*/\S*", " ", raw) for raw in text.splitlines()]
+    original = text.splitlines()
+    raw_lines = [re.sub(r"^\s*/\S*", " ", raw) for raw in original]
     lines = [_without_secrets(raw) for raw in raw_lines]
     leaked = False  # the line before held a secret, or all of one but its end
     for number, line in enumerate(lines):
         before = lines[number - 1] if number else ""
         after = lines[number + 1] if number + 1 < len(lines) else ""
-        # A neighbour's own secret does not make this line one:  only a secret that the join of the two makes.
+        # A neighbour's own secret does not make this line one:  only a secret that the join of the two makes.  (So
+        # the line right after a "password: <value>" line is let through when it is no hit itself;  a value wrapped
+        # onto it as a single word is the case the one-word rule below covers.)
         secret = _reads_secret(line) or any(
             _reads_secret(joined) and not _reads_secret(neighbour)
             for joined, neighbour in ((before + " " + line, before), (line + " " + after, after))
         )
         tail = leaked and len(line.split()) == 1
-        leaked = secret or tail or len(line.split()) < len(raw_lines[number].split())
+        # A row of a base64 body can start with "/" and then looks like a slash command, whose word was cut above.
+        led = re.match(r"\s*(/\S*)", original[number])
+        dropped = len(line.split()) < len(raw_lines[number].split()) or bool(
+            led and _secret_like(led.group(1))
+        )
+        leaked = secret or tail or dropped
         if secret or tail:
             continue  # what is left still reads as a secret, alone or across a line break, or is a key's end
         words = []
@@ -1073,7 +1083,10 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         unsent = ""
     if not sent and unsent and chat.now - float(note.get("title_failed_at") or 0) >= RETRY_SECONDS:
         # A rename that is waiting for the registry is the newer title, so it goes out in place of the first one.
-        latest = str(note.get("rename_failed_for") or unsent)
+        # ... but only while the title on screen still holds it:  a rename the owner took back is stale, and sending it
+        # would put words the chat no longer wears in the Operator (or, with a retired letter, over the screen's title).
+        waiting = str(note.get("rename_failed_for") or "")
+        latest = waiting if waiting and clean_title(own_words(current, note)) == waiting else unsent
         answer = chat.registry("title", title=latest)
         sent = True
         if "error" in answer:
