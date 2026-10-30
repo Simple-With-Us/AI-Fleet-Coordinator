@@ -23,9 +23,9 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 131 files (including storage_guard and private service reader). Keep the exact minimum
-# ceiling in sender and receiver: a new file still needs an explicit policy review.
-MAX_FILES = 131
+# The composed allowlisted runtime has 132 files: main131 plus storage_guard.py.
+# Keep the exact ceiling in sender and receiver; a new file needs policy review.
+MAX_FILES = 132
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
