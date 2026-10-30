@@ -153,6 +153,9 @@ _KEY_HEADER = r"[A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*"
 KEY_BLOCK = re.compile(
     r"-----BEGIN %s-----.*?(?:-----END %s-----|\Z)" % (_KEY_HEADER, _KEY_HEADER), re.DOTALL
 )
+# Any other armored block that is pasted whole, BEGIN line to END line (a certificate, a public key, a PGP message):  data,
+# not a title.  One without an END line, such as a header named in a question, is left alone.
+ARMOR_BLOCK = re.compile(r"-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----", re.DOTALL)
 STDIN_LIMIT = 1 << 20
 TRANSCRIPT_LINES = 400
 TRANSCRIPT_BYTES = 4 << 20
@@ -245,7 +248,12 @@ def clean_title(text: object) -> str:
 
     A title is relayed to the registry and from there to the Fleet Reference sheet, and a first prompt can carry a
     pasted key, so every word goes through the fleet's secret scanner first;  it reports only that a word matched."""
-    words = [w for w in one_line(text).split(" ") if w and not _secret_like(w)]
+    given = [w for w in one_line(text).split(" ") if w]
+    words = [w for w in given if not _secret_like(w)]
+    if not words:
+        # Nothing but long words (a ticket or a branch name):  those the scanner alone does not flag are the title,
+        # so such a name does not blank the Operator's copy.
+        words = [w for w in given if not secretscan.scan(w)]
     line = " ".join(words)
     if _reads_secret(line):
         return ""
@@ -312,11 +320,15 @@ def _secret_like(token: str) -> bool:
     )
 
 
+# Quote and markup marks a name may be wrapped in ("password": "...", `password`: `...`, **password**: ..., curly quotes).
+_QUOTE_MARKS = str.maketrans("", "", "\"'`\\*“”‘’")
+
+
 def _reads_secret(text: str) -> bool:
     """Whether the scanner flags the text, or the text with its quote marks taken out:  in a JSON line such as
     "password": "<value>" a quote sits between the name and the colon, which the scanner's assignment patterns do
     not allow."""
-    return bool(secretscan.scan(text) or secretscan.scan(text.replace('"', "").replace("'", "")))
+    return bool(secretscan.scan(text) or secretscan.scan(text.translate(_QUOTE_MARKS)))
 
 
 def _without_secrets(line: str) -> str:
@@ -332,23 +344,24 @@ def title_from_prompt(prompt: object) -> str:
     A token that looks like a secret is dropped whole before its line is split into words, so a pasted key (or the
     ghp_ in front of it) never reaches a title, the registry, the note or the sheet.  A line that still reads as a
     secret once those are gone, alone or joined with a neighbouring line ("Authorization:" then "Bearer <key>"), gives
-    no title.  A pasted private key block (BEGIN line to END line) is cut out whole, and a line that is a single token right
+    no title.  A pasted private key block (BEGIN line to END line) is cut out whole, and so is any other armored
+    block that has its END line (a certificate, a PGP message), and a line that is a single token right
     after a line that held a secret is skipped too:  a key broken over a line break leaves its end alone on the
     next line, shorter than SECRET_RUN.  When the prompt is longer than the scan window, the word the window ends
     inside of is dropped (a key cut short passes every length check), and so is a fenced block it ends inside of."""
     whole = str(prompt or "")
     text = whole[:PROMPT_SCAN_CHARS]
     cut = len(whole) > PROMPT_SCAN_CHARS
-    if cut and not whole[PROMPT_SCAN_CHARS].isspace():
+    if cut and not whole[PROMPT_SCAN_CHARS].isspace() and not text[-1:].isspace():
         # The window ends inside a word, and a key cut short passes every length check:  the partial word is dropped.
         parts = text.rsplit(None, 1)
         text = parts[0] if len(parts) == 2 else ""
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     if cut:
-        text = re.sub(
-            r"```.*\Z", " ", text, flags=re.DOTALL
-        )  # a pasted block the window ends inside of
+        # a pasted block the window ends inside of:  a fence opens at the start of a line, a mention of it does not
+        text = re.sub(r"(?m)^[ \t]*```.*\Z", " ", text, flags=re.DOTALL)
     text = KEY_BLOCK.sub(" ", text)
+    text = ARMOR_BLOCK.sub(" ", text)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
     original = text.splitlines()
@@ -1085,8 +1098,12 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         # A rename that is waiting for the registry is the newer title, so it goes out in place of the first one.
         # ... but only while the title on screen still holds it:  a rename the owner took back is stale, and sending it
         # would put words the chat no longer wears in the Operator (or, with a retired letter, over the screen's title).
-        waiting = str(note.get("rename_failed_for") or "")
-        latest = waiting if waiting and clean_title(own_words(current, note)) == waiting else unsent
+        waiting = note.get("rename_failed_for")  # None when there is none;  "" is a name with nothing left after the scan
+        latest = (
+            waiting
+            if waiting is not None and clean_title(own_words(current, note)) == waiting
+            else unsent
+        )
         answer = chat.registry("title", title=latest)
         sent = True
         if "error" in answer:
@@ -1113,8 +1130,8 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         kept = str(note.get("title") or "")
         words = own_words(current, note)
         # A rename the registry has not taken yet is the owner's title, not the old words it still holds.
-        waiting = str(note.get("rename_failed_for") or "")
-        known = {kept, waiting} if waiting else {kept}
+        waiting = note.get("rename_failed_for")  # None when there is none
+        known = {kept} if waiting is None else {kept, waiting}
         text = words if words and clean_title(words) in known else (kept or words or PLACEHOLDER)
         registered = chat.registry("register", title=text)
         note = _apply(chat, registered, note)
@@ -1130,7 +1147,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             # for the registry, is settled.
             for key in ("title_unsent", "title_failed_at"):
                 note.pop(key, None)
-            if waiting == cleaned:
+            if waiting is not None and waiting == cleaned:
                 note.pop("rename_failed_at", None)
                 note.pop("rename_failed_for", None)
             title = "%s: %s" % (note["label"], text)

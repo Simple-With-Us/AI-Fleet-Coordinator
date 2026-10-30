@@ -209,6 +209,53 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(CL.title_from_prompt("fix the build\n" + code), "Fix the Build")
         # a stray fence in a short prompt is left alone
         self.assertEqual(CL.title_from_prompt("how do I write ``` in markdown"), "How Do I Write in Markdown")
+        # ... and so is a mention of one in a prompt the window cuts:  a fence opens at the start of a line
+        prose = "Plain words here. " * 400
+        self.assertGreater(len(prose), CL.PROMPT_SCAN_CHARS)
+        self.assertEqual(
+            CL.title_from_prompt("Why does ``` break my markdown renderer?\n" + prose), "Why Does Break My Markdown Renderer"
+        )
+
+    def test_a_window_that_ends_on_whitespace_drops_no_word(self) -> None:
+        # The window ends inside a word only when the characters on both sides of the cut are not whitespace.
+        prompt = "Fix" + " " * (CL.PROMPT_SCAN_CHARS - 3) + "Bar"
+        self.assertEqual(prompt[CL.PROMPT_SCAN_CHARS], "B")
+        self.assertEqual(CL.title_from_prompt(prompt), "Fix")
+
+    def test_a_whole_armored_block_is_cut_out_and_what_follows_names_the_chat(self) -> None:
+        rng = random.Random(11)
+        alphabet = string.ascii_letters + string.digits + "+/"
+        rows = ["".join(rng.choice(alphabet) for _ in range(64)) for _ in range(3)] + ["".join(rng.choice(alphabet) for _ in range(20))]
+
+        def block(kind: str) -> str:
+            return "\n".join(["-----BEGIN %s-----" % kind, *rows, "-----END %s-----" % kind])
+
+        self.assertEqual(CL.title_from_prompt(block("CERTIFICATE") + "\nWhy does this fail?"), "Why Does This Fail")
+        self.assertEqual(CL.title_from_prompt(block("PGP MESSAGE") + "\ndecrypt this"), "Decrypt This")
+
+    def test_a_secret_wrapped_in_quote_or_markup_marks_never_reaches_a_title(self) -> None:
+        value = self.RUN20
+        shapes = (
+            "{'password': '%s'}" % value,  # a Python dict
+            '{\\"password\\": \\"%s\\"}' % value,  # JSON inside a JSON string
+            "“password”: “%s”" % value,  # curly quotes
+            "`password`: `%s`" % value,  # backticks
+            "**password**: %s" % value,  # bold
+        )
+        for shape in shapes:
+            self.assertEqual(CL.title_from_prompt(shape), "", shape)
+            self.assertEqual(CL.clean_title(shape), "", shape)
+        # words in quotes are no secret
+        title = CL.title_from_prompt("How do I fix the 'token' error in the login page?")
+        self.assertTrue(title.startswith("How Do I Fix the Token"), title)
+
+    def test_a_name_of_long_words_keeps_them_when_the_scanner_alone_does_not_flag_them(self) -> None:
+        # A ticket or branch name is no secret, so a name made only of such words is not blanked in the Operator's copy;
+        # a long word beside ordinary ones is still dropped, and a name the scanner knows is still empty.
+        for slug in ("afc-564-letter-gaps-review-5", "claude/fix-afc-564-letter-gaps-v2-final", "AFC-564-pair-letters-registry-2026"):
+            self.assertEqual(CL.clean_title(slug), slug)
+        self.assertEqual(CL.clean_title("Fix afc-564-letter-gaps-review-5 now"), "Fix now")
+        self.assertEqual(CL.clean_title("AbCdEfGhIjKlMnOpQrStUvWxYz012345"), "")
 
     def test_a_json_quoted_assignment_never_reaches_a_title(self) -> None:
         # A quote between the name and the colon keeps the scanner's assignment patterns from matching it.
@@ -1378,6 +1425,37 @@ class HookTests(Base):
                 note = self.note(sid)
                 self.assertEqual(note["title"], "Fix the Login Page")
                 self.assertNotIn("title_unsent", note)
+
+    def test_a_rename_that_cleans_to_nothing_still_counts_as_waiting_when_the_letter_is_retired(self) -> None:
+        # A name the scanner empties (a pasted key) is a memo of "" and not no memo:  the owner's name stays on screen.
+        key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped
+        self.titled()
+        start = time.time() + CL.TOUCH_SECONDS + 10
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        self.renamed("AA: " + key, runner=down, now=start)
+        self.assertEqual(self.note("s-0001")["rename_failed_for"], "")
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        out = self.renamed("AA: " + key, now=start + 60)  # inside the rename's wait:  only the touch finds the letter retired
+        self.assertNotIn("Help Get All PR", json.dumps(out))  # the old words are not put over the owner's name
+
+    def test_a_rename_to_a_ticket_name_survives_a_retired_letter(self) -> None:
+        self.titled()
+        start = time.time() + CL.TOUCH_SECONDS + 10
+        slug = "AFC-564-pair-letters-registry-2026"
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        self.renamed("AA: " + slug, runner=down, now=start)
+        reg = OR.SessionRegistry(self.db)
+        try:
+            reg.close(self.lookup("s-0001")["record_id"], source="test")
+        finally:
+            reg.close_db()
+        out = self.renamed("AA: " + slug, now=start + 60)
+        self.assertNotIn("sessionTitle", out or {})
+        self.assertEqual(self.lookup("s-0001")["title"], slug)
 
     def test_a_retired_letter_that_comes_back_settles_a_first_title_that_never_arrived(self) -> None:
         self.start("s-0001")
