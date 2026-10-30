@@ -4,11 +4,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 import fleet_coding_memory as m
-
 
 M = m.MIB
 
@@ -39,8 +38,11 @@ def policy():
 def cg(path, usage=100 * M, high="max", low="0", maximum=4 * 1024**3):
     path.mkdir(parents=True)
     for name, value in {
-        "memory.current": usage, "memory.high": high, "memory.low": low,
-        "memory.max": maximum, "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n",
+        "memory.current": usage,
+        "memory.high": high,
+        "memory.low": low,
+        "memory.max": maximum,
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n",
     }.items():
         (path / name).write_text(str(value))
     return path.resolve()
@@ -48,14 +50,20 @@ def cg(path, usage=100 * M, high="max", low="0", maximum=4 * 1024**3):
 
 def proc(path, available=10 * 1024**3, total=32 * 1024**3, some=0.0, full=0.0):
     path.mkdir(parents=True)
-    (path / "meminfo").write_text(f"MemTotal: {total // 1024} kB\nMemAvailable: {available // 1024} kB\n")
+    (path / "meminfo").write_text(
+        f"MemTotal: {total // 1024} kB\nMemAvailable: {available // 1024} kB\n"
+    )
     (path / "pressure").mkdir()
-    (path / "pressure" / "memory").write_text(f"some avg10={some} avg60=0 avg300=0 total=0\nfull avg10={full} avg60=0 avg300=0 total=0\n")
+    (path / "pressure" / "memory").write_text(
+        f"some avg10={some} avg60=0 avg300=0 total=0\nfull avg10={full} avg60=0 avg300=0 total=0\n"
+    )
     return path
 
 
 def run_step(*args, **kwargs):
-    with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+    with mock.patch.object(
+        m, "write_control", side_effect=lambda path, value: path.write_text(value)
+    ):
         return m.step(*args, **kwargs)
 
 
@@ -89,10 +97,14 @@ class ControllerTests(unittest.TestCase):
             child = cg(parent / "session.scope", usage=400 * M)
             procroot = proc(root / "proc")
             state = {}
-            status = run_step(policy(), root, state, procroot, now=100, discovered=([parent, child], []))
+            status = run_step(
+                policy(), root, state, procroot, now=100, discovered=([parent, child], [])
+            )
             self.assertEqual(status["coding_groups"], 1)
             self.assertEqual(status["mode"], "normal")
-            self.assertEqual(int((parent / "memory.high").read_text()), status["coding_target_bytes"])
+            self.assertEqual(
+                int((parent / "memory.high").read_text()), status["coding_target_bytes"]
+            )
             self.assertEqual(status["coding_target_bytes"], 8 * 1024**3)
 
     def test_pressure_critical_and_timed_recovery_hysteresis(self):
@@ -100,15 +112,28 @@ class ControllerTests(unittest.TestCase):
             root = Path(d)
             group = cg(root / "coding", usage=500 * M)
             state = {}
-            status = run_step(policy(), root, state, proc(root / "p1", available=3 * 1024**3), 0, ([group], []))
+            status = run_step(
+                policy(), root, state, proc(root / "p1", available=3 * 1024**3), 0, ([group], [])
+            )
             self.assertEqual(status["mode"], "pressure")
             self.assertEqual(status["coding_target_bytes"], 8 * 1024**3)
-            status = run_step(policy(), root, state, proc(root / "p2", available=1024**3, full=6), 1, ([group], []))
+            status = run_step(
+                policy(),
+                root,
+                state,
+                proc(root / "p2", available=1024**3, full=6),
+                1,
+                ([group], []),
+            )
             self.assertEqual(status["mode"], "critical")
             self.assertEqual(status["coding_target_bytes"], 6 * 1024**3)
-            status = run_step(policy(), root, state, proc(root / "p3", available=9 * 1024**3), 10, ([group], []))
+            status = run_step(
+                policy(), root, state, proc(root / "p3", available=9 * 1024**3), 10, ([group], [])
+            )
             self.assertEqual(status["mode"], "critical")
-            status = run_step(policy(), root, state, proc(root / "p4", available=9 * 1024**3), 71, ([group], []))
+            status = run_step(
+                policy(), root, state, proc(root / "p4", available=9 * 1024**3), 71, ([group], [])
+            )
             self.assertEqual(status["mode"], "normal")
 
     def test_allocation_preserves_preexisting_narrower_high_and_can_later_grow(self):
@@ -127,14 +152,20 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = cg(Path(d) / "unit", high="max")
             state = {"owned": {}}
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 self.assertTrue(m.write_owned(p, "memory.high", 256 * M, state))
                 m.restore_owned(state)
             self.assertEqual((p / "memory.high").read_text(), "max")
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 m.write_owned(p, "memory.high", 256 * M, state)
             (p / "memory.high").write_text("123")
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 m.restore_owned(state)
             self.assertEqual((p / "memory.high").read_text(), "123")
 
@@ -142,13 +173,17 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = cg(Path(d) / "unit", high="max")
             state = {"owned": {}}
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 m.write_owned(p, "memory.high", 256 * M, state)
             replacement = p.with_name("replacement")
             p.rename(replacement)
             p.mkdir()
             (p / "memory.high").write_text("max")
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 m.restore_owned(state)
             self.assertEqual((p / "memory.high").read_text(), "max")
 
@@ -156,7 +191,9 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = cg(Path(d) / "unit", high="max")
             state = {"owned": {}}
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 m.write_owned(p, "memory.high", 256 * M, state)
                 (p / "memory.high").write_text("128")
                 self.assertFalse(m.write_owned(p, "memory.high", 512 * M, state))
@@ -168,8 +205,16 @@ class ControllerTests(unittest.TestCase):
             p = cg(Path(d) / "unit", high="max")
             state = {"owned": {}}
             snapshots = []
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
-                m.write_owned(p, "memory.high", 256 * M, state, persist=lambda: snapshots.append(json.loads(json.dumps(state))))
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
+                m.write_owned(
+                    p,
+                    "memory.high",
+                    256 * M,
+                    state,
+                    persist=lambda: snapshots.append(json.loads(json.dumps(state))),
+                )
             self.assertEqual(snapshots[0]["owned"][f"{p}:memory.high"]["baseline"], "max")
             self.assertIsNone(snapshots[0]["owned"][f"{p}:memory.high"]["last"])
             self.assertEqual(snapshots[0]["owned"][f"{p}:memory.high"]["pending"], str(256 * M))
@@ -177,7 +222,15 @@ class ControllerTests(unittest.TestCase):
     def test_reconcile_removes_pending_record_when_write_never_happened(self):
         with tempfile.TemporaryDirectory() as d:
             p = cg(Path(d) / "unit", high="max")
-            state = {"owned": {f"{p}:memory.high": {"inode": p.stat().st_ino, "baseline": "max", "last": str(256 * M)}}}
+            state = {
+                "owned": {
+                    f"{p}:memory.high": {
+                        "inode": p.stat().st_ino,
+                        "baseline": "max",
+                        "last": str(256 * M),
+                    }
+                }
+            }
             m.reconcile_owned(state)
             self.assertEqual(state["owned"], {})
 
@@ -189,14 +242,18 @@ class ControllerTests(unittest.TestCase):
             with mock.patch.object(m, "write_control", side_effect=OSError("write refused")):
                 self.assertFalse(m.write_owned(p, "memory.high", 256 * M, state))
             self.assertNotIn(key, state["owned"])
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 self.assertTrue(m.write_owned(p, "memory.high", 256 * M, state))
             first_record = state["owned"][key].copy()
             with mock.patch.object(m, "write_control", side_effect=OSError("write refused")):
                 self.assertFalse(m.write_owned(p, "memory.high", 512 * M, state))
             self.assertEqual(state["owned"][key], first_record)
             self.assertEqual((p / "memory.high").read_text(), str(256 * M))
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 self.assertTrue(m.write_owned(p, "memory.high", 512 * M, state))
             self.assertEqual((p / "memory.high").read_text(), str(512 * M))
 
@@ -204,9 +261,11 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = cg(Path(d) / "unit", high="max")
             state = {"owned": {}}
+
             def write_then_raise(path, value):
                 path.write_text(value)
                 raise OSError("post-write error")
+
             with mock.patch.object(m, "write_control", side_effect=write_then_raise):
                 self.assertTrue(m.write_owned(p, "memory.high", 256 * M, state))
             rec = state["owned"][f"{p}:memory.high"]
@@ -217,12 +276,16 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = cg(Path(d) / "unit", high="max")
             state = {"owned": {}}
-            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
                 m.write_owned(p, "memory.high", 256 * M, state)
             persisted = {}
+
             def snapshot():
                 nonlocal persisted
                 persisted = json.loads(json.dumps(state))
+
             with mock.patch.object(m, "write_control", side_effect=KeyboardInterrupt):
                 with self.assertRaises(KeyboardInterrupt):
                     m.write_owned(p, "memory.high", 512 * M, state, persist=snapshot)
@@ -236,22 +299,32 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             first = m.acquire_lock(Path(d))
             try:
-                with self.assertRaises(BlockingIOError): m.acquire_lock(Path(d))
-            finally: os.close(first)
+                with self.assertRaises(BlockingIOError):
+                    m.acquire_lock(Path(d))
+            finally:
+                os.close(first)
             second = m.acquire_lock(Path(d))
             os.close(second)
 
     def test_status_does_not_create_state_directory(self):
         with tempfile.TemporaryDirectory() as d:
             missing = Path(d) / "absent"
-            result = subprocess.run([sys.executable, str(Path(m.__file__)), "--status", "--state-dir", str(missing)], capture_output=True, text=True)
+            result = subprocess.run(
+                [sys.executable, str(Path(m.__file__)), "--status", "--state-dir", str(missing)],
+                capture_output=True,
+                text=True,
+            )
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(missing.exists())
             state_dir = Path(d) / "existing"
             state_dir.mkdir(mode=0o755)
             (state_dir / "state.json").write_text('{"last_status":{"mode":"normal"}}')
             (state_dir / "state.json").chmod(0o644)
-            result = subprocess.run([sys.executable, str(Path(m.__file__)), "--status", "--state-dir", str(state_dir)], capture_output=True, text=True)
+            result = subprocess.run(
+                [sys.executable, str(Path(m.__file__)), "--status", "--state-dir", str(state_dir)],
+                capture_output=True,
+                text=True,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(state_dir.stat().st_mode & 0o777, 0o755)
             self.assertEqual((state_dir / "state.json").stat().st_mode & 0o777, 0o644)
