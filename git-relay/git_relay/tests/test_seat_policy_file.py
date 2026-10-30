@@ -127,7 +127,9 @@ class SeatPolicyFile(unittest.TestCase):
             )
 
     def test_amp_acts_only_as_its_own_app(self):
-        self.assertNotIn("swu-amp", SEATS)  # that slug is reserved for an account, no App exists under it
+        self.assertNotIn(
+            "swu-amp", SEATS
+        )  # that slug is reserved for an account, no App exists under it
         self.assertIn("AMP", worker_identities())
         self.assertIn("AMP", DOC["//"])
         policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
