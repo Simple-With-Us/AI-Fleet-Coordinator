@@ -298,7 +298,9 @@ class SmokeCaseTests(unittest.TestCase):
         # helper and a bearer for the smoke seat authenticates and exits 0, and the updater then refused every
         # release.  A usage error is decided by the argument parser before any credential or helper is consulted.
         case = next(
-            c for c in U.SMOKE_CASES if c[1] == "scripts/simple-board" and c[0] != "simple_board_help"
+            c
+            for c in U.SMOKE_CASES
+            if c[1] == "scripts/simple-board" and c[0] != "simple_board_help"
         )
         self.assertEqual((case[2], case[3]), (["show"], 2))
         with tempfile.TemporaryDirectory() as home:
