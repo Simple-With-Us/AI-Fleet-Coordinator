@@ -796,7 +796,7 @@ export const NOTES_METHODS = {
     }
     if (record.state === "done" && record.action === "list") {
       const listed = listNotes(record.result);
-      if (listed) info.notes = listed.notes;
+      if (listed) Object.assign(info, listed);
     }
     if (record.result_expired === true) info.result_expired = true;
     // A finished read or list carries note text:  fenced like notes_read.  Anything else is this seat's own metadata.
