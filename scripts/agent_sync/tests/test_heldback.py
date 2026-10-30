@@ -1026,6 +1026,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
             budget="wakes_per_hour = 0", seat_extra="held_back = { catch_up = false }"
         )
         daemon = self.started()
+        self.warm_operator(daemon)  # the digest runs on the router thread, which never waits for a build
 
         def digests():
             return [
@@ -1052,14 +1053,20 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         self.assertEqual(self.banners, [], "the server has no banners:  the owner queue only")
         # The per-seat owner queue still gets its digest, and since AFC-257 something the owner can
         # actually see exists too.  The two are rate-limited on the same hour but they are not the
-        # same clock, so only the direction is pinned here:  no seat's bot says anything anywhere
-        # except the `#alerts` held-back topic, and never outside a hold.
-        posts = [m for m in self.fake.messages if m["sender_id"] == self.gb["user_id"]]
+        # same clock, so only the direction is pinned here: the Operator says nothing anywhere
+        # except the `#alerts` held-back topic, and never outside a hold, and the seat's own bot
+        # says nothing at all (owner ruling, Oct 30 2026: the digest is the Operator's).
+        posts = self.operator_posts()
         self.assertTrue(posts, "the owner is told somewhere they can see")
         self.assertEqual(
             {(m["display_recipient"], m["subject"]) for m in posts},
             {("alerts", "held-back wakes")},
-            "the seat's bot carries the instance digest to #alerts and says nothing else",
+            "the Operator carries the instance digest to #alerts and says nothing else",
+        )
+        self.assertEqual(
+            [m for m in self.fake.messages if m["sender_id"] == self.gb["user_id"]],
+            [],
+            "the seat's bot posts nothing for the daemon",
         )
 
     def test_wakes_and_status_show_what_is_held_back(self) -> None:

@@ -60,6 +60,7 @@ from . import muse_bridge_mac as MBM
 from . import notes_queue as NQ
 from . import notes_wire as NW
 from . import operator_candidates as OC
+from . import operator_post as OPV
 from . import operator_registration as OREG
 from . import operator_registration_ask as ORASK
 from . import operator_registry as OR
@@ -282,7 +283,6 @@ class SeatRunner:
         self.jobs: collections.deque[W.Pending] = collections.deque()
         self.jobs_cond = threading.Condition()
         self.running: W.Pending | None = None
-        self.last_post = -1e9
         self.ledger = W.Ledger(self.paths.wakes)
         self.crashes: dict[int, int] = {}
         self.stop = threading.Event()  # set when a reload removes the seat:  its threads exit
@@ -614,6 +614,7 @@ class Daemon:
         stdout: Any = None,
         routine_runner: A.RoutineRunner | None = None,
         partition_file: str | None = None,
+        operator_client_factory: OPV.Factory | None = None,
     ) -> None:
         self.env = dict(os.environ if env is None else env)
         self.home = home or self.env.get("HOME") or os.path.expanduser("~")
@@ -669,6 +670,32 @@ class Daemon:
             str, str
         ] = {}  # seat -> instance, from the last partition check (route checks)
         self.config = C.load(self.root, self.config_path)
+        # The Operator's voice (owner ruling, Oct 30 2026): every post the daemon itself composes,
+        # and every edit and typing indicator that goes with it, goes out as the pinned Operator bot
+        # and never as a seat's bot.  Built on first use and checked against the pinned identity;
+        # with no Operator the post is refused and logged, there is no fallback to a seat
+        # (operator_post.py).  The factory is injectable, so a test hands it a client for the fake
+        # server.
+        self.operator_voice = OPV.OperatorVoice(
+            env=self.env,
+            owner_user_id=lambda: int(self.config.owner_user_id or 0),
+            factory=operator_client_factory
+            or OPV.default_factory(
+                self.env,
+                self.home,
+                self.realm,
+                timeout=http_timeout,
+                sleep=self.clock.sleep,
+            ),
+            clock=self.clock.monotonic,
+            log=self.log.write,
+            hide=self.hide,
+        )
+        # The Operator's posts are kept POST_SPACING apart whichever thread makes them: the next free
+        # slot, taken under the lock, so two wake workers and the digest never fire together.
+        self._operator_pace_lock = threading.Lock()
+        self._operator_next_at = -1e9
+        self._operator_refused_at: dict[str, float] = {}  # site -> when its refusal was last logged
         # The seat partition:  a config that holds a seat this instance may not hold never gets a
         # queue; run() refuses to start (no flock, no thread, no register).
         self.refusal = self.partition_check(self.config)
@@ -1577,6 +1604,7 @@ class Daemon:
             presence=cfg.presence,
             muted=runner.muted,
             followed=runner.followed,
+            operator_user_id=OPV.pinned_user_id(self.env),
         )
 
     def handle_events(self, runner: SeatRunner, events: Iterable[Mapping[str, Any]]) -> None:
@@ -2494,8 +2522,12 @@ class Daemon:
         into their topic (a wake that could not run must not add traffic to the conversation that woke
         it);  it fires once per seat per window, not once per message;  and it stays silent unless the
         provider snapshot actually says exhausted, so a hold for a pin or a pause is never dressed up
-        as a quota story."""
-        if runner.fatal or runner.client is None or runner.me is None:
+        as a quota story.
+
+        The notice is the daemon's own deterministic text, so it goes out as the Operator and never as
+        the seat's bot (owner ruling, Oct 30 2026): the seat did not think or say it.  With no Operator
+        the notice is not sent and the refusal is logged; it does not fall back to the seat."""
+        if runner.fatal or runner.me is None:
             return
         if not runner.cfg.provider:
             return
@@ -2532,6 +2564,19 @@ class Daemon:
             return
         recipients = [sender] if sender == owner_id else [sender, owner_id]
         key = "quota-hold:%s:%s" % (runner.seat, sender)
+        # The Operator is checked BEFORE the once-per-window gate below spends the window: a notice
+        # that could not be sent has not told the sender anything, so the next held wake tries again.
+        # `wait=False`: a held wake is finalized on the router thread, which never waits for the
+        # Operator client to be built.  A notice that finds none ready is skipped, its window unspent.
+        try:
+            operator_id = self.operator_voice.user_id(wait=False)
+        except OPV.OperatorUnavailable as exc:
+            self._operator_refused(
+                "quota-hold", exc, seat=runner.seat, wake_id=pending.wake_id, sender_id=sender
+            )
+            return
+        if sender == operator_id:
+            return  # the Operator is not told that a seat is busy
         try:
             if not self.notifier.notify(
                 runner.seat,
@@ -2545,8 +2590,8 @@ class Daemon:
                 banners=False,
             ):
                 return  # already told this sender recently
-            result = runner.client.post(
-                "messages", {"type": "direct", "to": recipients, "content": text}
+            result = self._operator_send(
+                {"type": "direct", "to": recipients, "content": text}, wait=False
             )
             if result.get("id"):
                 self.log.write(
@@ -2555,6 +2600,7 @@ class Daemon:
                     wake_id=pending.wake_id,
                     sender_id=sender,
                     reset_at=when,
+                    posted_by=OPV.VOICE,
                 )
         except Z.AgentSyncError as exc:
             self.log.write(
@@ -2819,6 +2865,11 @@ class Daemon:
             spent = self._quota_reason(runner)
             if spent:
                 return spent
+            # The reply goes out as the Operator, so a wake that cannot be answered is not run.  This is
+            # the cheap half of the preflight (no network, no thread, safe on the router thread): it
+            # only knows a build that failed recently.  run_wake does the blocking half.
+            if self.operator_voice.known_unavailable():
+                return "operator_unavailable"
         elif runner.cfg.wake == "http":
             _, why, _ = self.routine(runner)
             if why:
@@ -2991,22 +3042,40 @@ class Daemon:
         )
 
     def _typing_signal(self, runner: SeatRunner, pending: W.Pending) -> TYPING.TypingSignal | None:
-        """The seat's typing indicator for this wake, or None when the seat has it off, the
-        seat is not connected, or the wake has no single conversation to type in."""
+        """The typing indicator for this wake, shown as the OPERATOR, or None when the seat has it off,
+        the Operator is not available, or the wake has no single conversation to type in.
+
+        "<seat> is typing" would be the seat's identity saying something the seat did not think: the
+        consultant is working, and the Operator is the one that will post what it wrote, so "Operator
+        is typing" is the true indicator (owner ruling, Oct 30 2026).  The seat's `typing_indicator`
+        switch still turns it off.  With no Operator there is no indicator at all, never the seat's.
+
+        The conversation is the one the Operator's reply will land in.  A channel wake types in the
+        trigger's topic.  A direct wake types in the original recipient set (the seat included, the
+        Operator excluded), which is where `post` sends the reply, and only when the owner is in it,
+        because a reply into a direct message without the owner is refused and an indicator for a
+        reply that cannot come would be a false promise."""
         if not runner.cfg.typing_indicator:
             return None
-        client = runner.client
-        if client is None:
+        try:
+            # Cosmetic, so it never waits for a build and never holds the run back.
+            client = self.operator_voice.client(wait=False)
+            operator_id = self.operator_voice.user_id(wait=False)
+        except OPV.OperatorUnavailable as exc:
+            self.log.write(
+                "typing-skipped", seat=runner.seat, wake_id=pending.wake_id, code=exc.code
+            )
             return None
-        me = runner.me.user_id if runner.me else None
-        params = TYPING.target(pending, me)
+        params = TYPING.target(pending, operator_id)
         if params is None:
+            return None
+        if params["type"] == "direct" and int(self.config.owner_user_id or 0) not in params["to"]:
             return None
         return TYPING.TypingSignal(
             client,
             params,
             on_error=lambda exc: self.log.write(
-                "typing-failed", seat=runner.seat, error=self.scrub(str(exc))
+                "typing-failed", seat=runner.seat, error=self.scrub(str(exc)), posted_by=OPV.VOICE
             ),
         )
 
@@ -3113,6 +3182,15 @@ class Daemon:
             return
         if binary is None:
             self._drop(runner, pending, why or "not_pinned", now)
+            return
+        # The other half of the preflight, before any budget is spent or any child exists: this runs
+        # on the seat's own wake worker, which may wait for the Operator client to be built (the router
+        # never does).  A wake whose reply could not be posted is not run at all.
+        try:
+            self.operator_voice.client()
+        except OPV.OperatorUnavailable as exc:
+            self._operator_refused("wake-preflight", exc, seat=runner.seat, wake_id=pending.wake_id)
+            self._not_run(runner, pending, "operator_unavailable", now)
             return
         try:
             history = self.history(runner, pending)
@@ -3682,6 +3760,12 @@ class Daemon:
         those credentials cannot be read, the check did not run, and the reminder says so in its
         second line instead of pretending the bot explained itself.
 
+        The reminder is the daemon's own deterministic text, so it is sent by the Operator and is
+        tagged `[OPERATOR·note]` (owner ruling, Oct 30 2026): it used to go out as the bot of a
+        seat chosen to carry alerts, a seat that never thought or said it.  With no Operator the
+        reminder is not sent, the refusal is logged, and the audit is kept for another try; it
+        never falls back to a seat's bot.
+
         Every log line carries the seat, the message id and the outcome:  never a key, an email
         or the message content."""
         message_id = broadcast.message_id
@@ -3696,8 +3780,7 @@ class Daemon:
                 error="no_owner_id",
             )
             return
-        runner = self._alert_runner()
-        alert_seat = runner.seat if runner is not None else ""
+        alert_seat = OPV.VOICE
         permalink = broadcast.permalink(self.realm)
         minutes = int(self.config.peer_broadcast_reminder_minutes)
         http = None
@@ -3757,27 +3840,19 @@ class Daemon:
                 error="secret scanner",
             )
             return
-        if runner is None or runner.client is None or runner.fatal:
-            self.log.write(
-                "peer-broadcast-all",
-                id=message_id,
-                seat=seat,
-                outcome=BAUD.REMINDER_FAILED,
-                error="no_alert_seat",
-            )
-            return
-        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
-        if wait > 0:
-            self.clock.sleep(wait)
         try:
-            result = runner.client.post(
-                "messages", {"type": "direct", "to": [owner_id], "content": text}
-            )
+            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
         except Exception as exc:  # noqa: BLE001 - a failed DM is logged and kept, never swallowed
             # The failure is classified:  a retryable one keeps the audit pending so the
             # reminder is not lost, a permanent one drops it, and a write that may have
-            # reached the server is never sent twice.
-            failure = BAUD.dm_failure_outcome(exc)
+            # reached the server is never sent twice.  An Operator that is not available has sent
+            # nothing, and its credential or the vault may be back in a couple of minutes, so it is
+            # retried like a rate limit, inside the same attempt cap.
+            if isinstance(exc, OPV.OperatorUnavailable):
+                failure = BAUD.RETRY
+                self._operator_refused("broadcast-audit", exc, seat=seat, id=message_id)
+            else:
+                failure = BAUD.dm_failure_outcome(exc)
             self.log.write(
                 "peer-broadcast-all",
                 id=message_id,
@@ -3800,8 +3875,6 @@ class Daemon:
                     error=type(exc).__name__,
                 )
             return
-        finally:
-            runner.last_post = self.clock.monotonic()
         reminder_id = result.get("id")
         self.log.write(
             "peer-broadcast-all",
@@ -3809,6 +3882,7 @@ class Daemon:
             seat=seat,
             outcome=BAUD.REMINDED,
             reminder_id=int(reminder_id) if isinstance(reminder_id, int) else None,
+            posted_by=OPV.VOICE,
         )
 
     def _owner_email(self) -> str:
@@ -5634,7 +5708,12 @@ class Daemon:
         """Carry out a validated result:  post the reply (mentions neutralized, secret-scanned,
         tagged), file the board item when allowed, and send owner notes through notify-owner.  A
         note about a peer request, or any request screened uncertain or high, is also sent to the
-        owner as a Zulip DM from the seat's own bot (`dm_owner`)."""
+        owner as a Zulip DM (`dm_owner`).
+
+        Every Zulip post here is made by the OPERATOR bot and never by the seat's own bot (owner
+        ruling, Oct 30 2026): the headless consultant wrote the words, not the seat, so the reply
+        keeps its `[SEAT·wake]` tag, which says whose wake it reports, and the Operator relays it.
+        With no Operator nothing is posted and the refusal is on the ledger row as `post_error`."""
         outcome: dict[str, Any] = {"posted_id": None, "board_uid": None, "note": False}
         trigger = pending.trigger_ids[-1] if pending.trigger_ids else 0
         reply = obj.get("reply") if obj.get("action") in ("reply", "board", "escalate") else None
@@ -5683,6 +5762,7 @@ class Daemon:
             else:
                 outcome["reply_attempted"] = True
                 outcome["posted_id"] = self.post(runner, pending, text)
+                self._note_post_outcome(outcome, pending)
         board = obj.get("board")
         if obj.get("action") == "board" and isinstance(board, dict):
             outcome.update(self.file_board(runner, pending, board, trigger))
@@ -5724,6 +5804,7 @@ class Daemon:
                 outcome["posted_id"] = self.post(
                     runner, pending, W.compose_reply(runner.seat, trigger, W.OWNER_ACK)
                 )
+                self._note_post_outcome(outcome, pending)
         # The route comes last, after the reply:  two posts, because a `·wake`-tagged post never wakes
         # anyone and the route post must wake its target.
         route = obj.get("route")
@@ -5983,7 +6064,7 @@ class Daemon:
         owner_trigger: int,
         posted: int,
     ) -> dict[str, Any]:
-        """Tell the owner who was paged and why:  a `[SEAT·note]` DM from the seat's own bot (the same
+        """Tell the owner who was paged and why: a `[SEAT·note]` DM sent by the Operator (the same
         channel as escalation notes) and the owner queue.  Never raises; a failure is recorded, because
         the route post is already out and the wake's `done` row must still be written."""
         try:
@@ -6024,7 +6105,7 @@ class Daemon:
             owner=pending.owner,
         )
         owner_id = self.config.owner_user_id
-        if owner_id <= 0 or runner.client is None or runner.fatal:
+        if owner_id <= 0 or runner.fatal:
             return {"owner_dm": None, "owner_dm_error": "owner dm skipped"}
         link = A.zulip_link(
             self.realm,
@@ -6058,21 +6139,20 @@ class Daemon:
                 reason="secret scanner",
             )
             return {"owner_dm": None, "owner_dm_error": "secret scanner"}
-        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
-        if wait > 0:
-            self.clock.sleep(wait)
         try:
-            result = runner.client.post(
-                "messages", {"type": "direct", "to": [owner_id], "content": text}
-            )
+            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
+        except OPV.OperatorUnavailable as exc:
+            self._operator_refused("route-note", exc, seat=runner.seat, wake_id=pending.wake_id)
+            return {
+                "owner_dm": None,
+                "owner_dm_error": self.scrub("operator unavailable: " + exc.reason),
+            }
         except Z.AgentSyncError as exc:
             reason_text = self.scrub(str(exc))
             self.log.write(
                 "owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason_text
             )
             return {"owner_dm": None, "owner_dm_error": reason_text}
-        finally:
-            runner.last_post = self.clock.monotonic()
         message_id = result.get("id")
         return {"owner_dm": int(message_id) if isinstance(message_id, int) else None}
 
@@ -6142,12 +6222,16 @@ class Daemon:
         risk: str | None,
         history: Iterable[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        """Send the owner a Zulip DM as the seat's own bot.  It rides on a wake that already passed
-        the seat's budgets, so it is at most one DM per wake, and it never raises:  a refusal or a
+        """Send the owner a Zulip DM from the OPERATOR bot, tagged `[SEAT·note]` with the seat whose
+        wake wrote the note (owner ruling, Oct 30 2026: it used to go out as the seat's own bot, which
+        did not think or say it).  The owner is in the conversation, so the owner-in-the-conversation
+        guard (AFC-469) passes without any exemption.  It rides on a wake that already passed the
+        seat's budgets, so it is at most one DM per wake, and it never raises: a refusal or a
         failure is logged and recorded in the ledger row, and the banner and owner queue still hold
-        the note."""
+        the note.  With no Operator the DM is not sent (`operator-post-refused`, site `owner-dm`),
+        never sent as the seat."""
         owner_id = self.config.owner_user_id
-        if owner_id <= 0 or runner.client is None or runner.fatal:
+        if owner_id <= 0 or runner.fatal:
             self.log.write(
                 "owner-dm-skipped",
                 seat=runner.seat,
@@ -6181,21 +6265,20 @@ class Daemon:
                     reason="secret scanner",
                 )
                 return {"owner_dm": None, "owner_dm_error": withheld}
-        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
-        if wait > 0:
-            self.clock.sleep(wait)
         try:
-            result = runner.client.post(
-                "messages", {"type": "direct", "to": [owner_id], "content": text}
-            )
+            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
+        except OPV.OperatorUnavailable as exc:
+            self._operator_refused("owner-dm", exc, seat=runner.seat, wake_id=pending.wake_id)
+            return {
+                "owner_dm": None,
+                "owner_dm_error": self.scrub("operator unavailable: " + exc.reason),
+            }
         except Z.AgentSyncError as exc:
             reason = self.scrub(str(exc))
             self.log.write(
                 "owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason
             )
             return {"owner_dm": None, "owner_dm_error": reason}
-        finally:
-            runner.last_post = self.clock.monotonic()
         message_id = result.get("id")
         sent: dict[str, Any] = {
             "owner_dm": int(message_id) if isinstance(message_id, int) else None
@@ -6205,37 +6288,48 @@ class Daemon:
         return sent
 
     def post(self, runner: SeatRunner, pending: W.Pending, text: str) -> int | None:
-        """A channel trigger is answered in its topic; a DM trigger only by DM to the original
-        recipient set, never in a channel.  Posts are about 3 seconds apart."""
-        assert runner.client is not None and runner.me is not None
+        """The wake's reply (and its route page), posted by the OPERATOR.
+
+        A channel trigger is answered in its topic; a DM trigger only by DM to the original
+        recipient set, never in a channel.  Posts are about 3 seconds apart.
+
+        The Operator posts, not the seat (owner ruling, Oct 30 2026): the headless consultant wrote
+        the words, and the seat's bot would say the seat thought them.  The text keeps its
+        `[SEAT·wake]` tag, which names the wake it reports and is what the loop guard reads.  A
+        direct message goes to the original recipient set, the seat included and the Operator
+        excluded (it is the sender), so the seat and everyone who was in the thread see the reply;
+        Zulip makes that one new conversation with the Operator in it, and the owner-in-the-
+        conversation guard still applies, so a thread without the owner is refused as before.
+
+        Never falls back to the seat's bot: with no Operator, or one that cannot post here (not in
+        a private channel, say), nothing is posted, the refusal is logged and `pending.post_refusal`
+        carries the reason onto the ledger row.  Returns the message id, or None."""
+        pending.post_refusal = None
         if runner.fatal:
             self.log.write(
                 "post-refused", seat=runner.seat, wake_id=pending.wake_id, reason="seat_refused"
             )
+            pending.post_refusal = "seat_refused"
             return None
-        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
-        if wait > 0:
-            self.clock.sleep(wait)
         try:
+            operator_id = self.operator_voice.user_id()
             if pending.type == "private":
                 to = [
-                    i for i in pending.recipients if isinstance(i, int) and i != runner.me.user_id
+                    i
+                    for i in pending.recipients
+                    if isinstance(i, int) and not isinstance(i, bool) and i != operator_id
                 ]
                 if not to:
                     return None
-                result = runner.client.post(
-                    "messages", {"type": "direct", "to": to, "content": text}
-                )
+                params: dict[str, Any] = {"type": "direct", "to": to, "content": text}
             else:
-                result = runner.client.post(
-                    "messages",
-                    {
-                        "type": "stream",
-                        "to": pending.channel,
-                        "topic": pending.topic,
-                        "content": text,
-                    },
-                )
+                params = {
+                    "type": "stream",
+                    "to": pending.channel,
+                    "topic": pending.topic,
+                    "content": text,
+                }
+            result = self._operator_send(params)
         except Z.DmGuardRefused as exc:
             # A wake reply into a direct message with no owner in it is refused by the
             # owner-in-the-conversation guard (AFC-469):  that thread has no owner taking part, so
@@ -6248,15 +6342,30 @@ class Daemon:
                 reason=exc.code,
                 error=self.scrub(str(exc)),
             )
+            pending.post_refusal = exc.code
+            return None
+        except (OPV.OperatorUnavailable, OPV.OperatorRefused) as exc:
+            self._operator_refused("wake-reply", exc, seat=runner.seat, wake_id=pending.wake_id)
+            pending.post_refusal = exc.code
             return None
         except Z.AgentSyncError as exc:
             self.log.write(
-                "post-failed", seat=runner.seat, wake_id=pending.wake_id, error=self.scrub(str(exc))
+                "post-failed",
+                seat=runner.seat,
+                wake_id=pending.wake_id,
+                error=self.scrub(str(exc)),
+                posted_by=OPV.VOICE,
             )
+            pending.post_refusal = "post_failed"
             return None
-        finally:
-            runner.last_post = self.clock.monotonic()
         message_id = result.get("id")
+        if pending.type == "private" and operator_id not in pending.recipients:
+            # The reply is in a NEW conversation (the Operator joined it), so the router counts it
+            # under that thread's key and the trigger thread's loop guard would never move.  Count it
+            # on the thread that woke the seat as well, so three wake replies still stop the thread.
+            self.loopguard.note(
+                pending.key, wake_reply=True, owner=False, rolling=False, now=self.clock.time()
+            )
         return int(message_id) if isinstance(message_id, int) else None
 
     def file_board(
@@ -6394,10 +6503,16 @@ class Daemon:
         (router.route checks `is_presence` before a topic can interrupt), and it names no one:  an
         alert that woke the seats it is about would be a second way to hold wakes back.
 
-        The digest is ONE standing message edited in place (AFC-569, heldalert.py):  the seat that
-        posted it edits it each window, a fresh post goes out only when that seat's bot cannot edit
-        it, and once every hold clears the message is edited to say so.  The all-clear is only ever
-        an edit, so an instance that has never held anything still says nothing."""
+        The digest is ONE standing message edited in place (AFC-569, heldalert.py): the Operator
+        posted it and edits it each window, a fresh post goes out only when Zulip refuses the edit, and
+        once every hold clears the message is edited to say so.  The all-clear is only ever an edit, so
+        an instance that has never held anything still says nothing.
+
+        The Operator carries the digest, never a seat (owner ruling, Oct 30 2026): it is the
+        daemon's own count and no seat thought or said it.  This used to be `held_alert_seat`'s bot,
+        and that setting no longer chooses a poster.  A standing message that a seat's bot posted
+        before this change cannot be edited by the Operator, and no seat's bot may touch it again, so
+        it is forgotten and the digest starts again as the Operator's own message."""
         every = float(self.config.held_alert_minutes) * 60.0
         if not HELDALERT.due(self.root, every=every, now=now):
             return
@@ -6417,27 +6532,33 @@ class Daemon:
             "counts": {s: h.get("count") for s, h in seats},
             "evicted": {s: h.get("evicted") for s, h in seats if h.get("evicted")},
         }
-        skip: str | None = None
-        if standing is not None:
-            editor = self.seats.get(standing["seat"])
-            if editor is not None and editor.client is not None and not editor.fatal:
-                outcome = self._held_alert_edit(editor, standing["message_id"], text, now, fields)
-                if outcome in ("edited", "failed"):
-                    return
-                if outcome == "gone":
-                    # Zulip refused the edit (the message is gone, or this bot may not edit it), so
-                    # nothing can bring that message back:  forget it and fall through to a fresh post.
-                    HELDALERT.drop_standing(self.root)
-                else:
-                    # That bot's key or account was refused, which can recover:  holds go out with
-                    # another seat (whose post becomes the standing one), and an all-clear keeps the
-                    # pointer for its owner.
-                    skip = editor.seat
+        if standing is not None and standing["seat"] != OPV.VOICE:
+            # Posted by a seat's bot under the old rule.  Editing it would mean using that seat's
+            # identity again, which is the thing that is over, so it is left as it is and forgotten.
+            self.log.write(
+                "held-alert-seat-message-dropped",
+                seat=standing["seat"],
+                message_id=standing["message_id"],
+            )
+            HELDALERT.drop_standing(self.root)
+            standing = None
             if not seats:
-                # An all-clear is never a fresh post.  The bot that owns the stale list is not here
-                # or was refused, so the clear waits a window for it, or for nothing at all when
-                # the message is gone.  The window is spent so this is one log line a window, not
-                # one a tick.
+                HELDALERT.note_post(self.root, now)
+                return
+        if standing is not None:
+            outcome = self._held_alert_edit(standing["message_id"], text, now, fields)
+            if outcome in ("edited", "failed", "refused", "unavailable"):
+                # `refused` is the Operator's own credential being turned away: a fresh post would be
+                # turned away too, so the window is spent (the edit did) and the digest retries next
+                # window.  `unavailable` sent nothing and spends nothing, like an unavailable post.
+                return
+            # `gone`: Zulip refused the edit (the message is gone, or may not be edited), so nothing
+            # brings that message back: forget it and fall through to a fresh post.
+            HELDALERT.drop_standing(self.root)
+            if not seats:
+                # An all-clear is never a fresh post.  The message it would have cleared is gone, so
+                # there is nothing left to correct; the window is spent so this is one log line a
+                # window, not one a tick.
                 self.log.write(
                     "held-alert-clear-skipped",
                     seat=standing["seat"],
@@ -6445,42 +6566,41 @@ class Daemon:
                 )
                 HELDALERT.note_post(self.root, now)
                 return
-        runner = self._alert_runner(skip=skip)
-        if runner is None:
-            # No seat can post (every key refused, or none configured).  Nothing was sent, so the
-            # window is NOT consumed and the digest goes out as soon as a usable key returns;  the
-            # cost of waiting is one seat scan a tick, which is nothing next to a post attempt.
-            self.log.write("held-alert-skipped", now=now, seats=fields["seats"])
-            return
-        self._pace(runner)
         try:
-            result = runner.client.post(
-                "messages",
+            # The router thread runs this: it must not wait for the Operator client to be built.
+            result = self._operator_send(
                 {
                     "type": "stream",
                     "to": HELDALERT.CHANNEL,
                     "topic": HELDALERT.TOPIC,
                     "content": text,
                 },
+                wait=False,
             )
+        except OPV.OperatorUnavailable as exc:
+            # The Operator cannot be reached (its credential, the vault, a changed pin).  Nothing was
+            # sent, so the window is NOT consumed and the digest goes out as soon as it can; the
+            # cost of waiting is one cached refusal a tick, which is nothing next to a post attempt.
+            self._operator_refused("held-alert", exc, throttle=every, seats=fields["seats"])
+            return
         except Z.AgentSyncError as exc:
             # A failed post is still an ATTEMPT, and an attempt consumes the window.  Without this the
             # held tick would retry every HELD_TICK_SECONDS for as long as the key stayed bad, which is
             # 120 attempts an hour per broken key and exactly the flood this design exists to avoid.
             # The hold itself is untouched and the digest retries next window, so the signal survives.
-            self.log.write("held-alert-failed", seat=runner.seat, error=self.scrub(str(exc)))
+            self.log.write(
+                "held-alert-failed", seat=OPV.VOICE, error=self.scrub(str(exc)), posted_by=OPV.VOICE
+            )
             HELDALERT.note_post(self.root, now)
             return
-        finally:
-            runner.last_post = self.clock.monotonic()
         HELDALERT.note_post(self.root, now)
         message_id = result.get("id")
         message_id = int(message_id) if isinstance(message_id, int) and message_id > 0 else None
         if message_id is not None:
-            HELDALERT.note_standing(self.root, runner.seat, message_id, clear=False)
+            HELDALERT.note_standing(self.root, OPV.VOICE, message_id, clear=False)
         self.log.write(
             "held-alert-posted",
-            seat=runner.seat,
+            seat=OPV.VOICE,
             channel=HELDALERT.CHANNEL,
             topic=HELDALERT.TOPIC,
             message_id=message_id,
@@ -6489,9 +6609,9 @@ class Daemon:
         )
 
     def _held_alert_edit(
-        self, runner: SeatRunner, message_id: int, text: str, now: float, fields: Mapping[str, Any]
+        self, message_id: int, text: str, now: float, fields: Mapping[str, Any]
     ) -> str:
-        """Rewrite the standing digest with the bot that posted it.  One of:
+        """Rewrite the standing digest with the Operator, which posted it.  One of:
 
         - `edited`.
         - `failed`:  a timeout, a rate limit or a gateway error, which may have landed.  The window
@@ -6499,28 +6619,36 @@ class Daemon:
           would leave two copies of the list.
         - `gone`:  400 or 404, Zulip's answer for a message that is gone or that this bot may not
           edit.  Nothing brings it back, so the caller forgets it and posts fresh.
-        - `refused`:  401 or 403, the bot's key or account was refused.  That can recover, so the
-          caller keeps the pointer for its owner and carries only this window's holds elsewhere."""
-        assert runner.client is not None
-        self._pace(runner)
+        - `refused`: 401 or 403, the Operator's key or account was refused.  That can recover, so the
+          caller keeps the pointer and tries again next window.
+        - `unavailable`: there is no Operator to edit with.  Nothing was sent and the window is not
+          spent; the pointer is kept for when it returns.  No seat's bot is tried instead."""
         try:
-            runner.client.patch("messages/%d" % message_id, {"content": text})
+            self._operator_edit(message_id, text, wait=False)  # the router thread never waits
+        except OPV.OperatorUnavailable as exc:
+            self._operator_refused(
+                "held-alert-edit",
+                exc,
+                throttle=float(self.config.held_alert_minutes) * 60.0,
+                message_id=message_id,
+            )
+            return "unavailable"
         except Z.ApiError as exc:
             status = exc.status or 0
             if status in (400, 404, 401, 403):
                 self.log.write(
                     "held-alert-edit-refused",
-                    seat=runner.seat,
+                    seat=OPV.VOICE,
                     message_id=message_id,
                     status=status,
                     error=self.scrub(str(exc)),
                 )
-                # Still an attempt:  if no other seat can post either, the next try is next window.
+                # Still an attempt: if the Operator cannot post either, the next try is next window.
                 HELDALERT.note_post(self.root, now)
                 return "gone" if status in (400, 404) else "refused"
             self.log.write(
                 "held-alert-edit-failed",
-                seat=runner.seat,
+                seat=OPV.VOICE,
                 message_id=message_id,
                 error=self.scrub(str(exc)),
             )
@@ -6529,20 +6657,18 @@ class Daemon:
         except Z.AgentSyncError as exc:
             self.log.write(
                 "held-alert-edit-failed",
-                seat=runner.seat,
+                seat=OPV.VOICE,
                 message_id=message_id,
                 error=self.scrub(str(exc)),
             )
             HELDALERT.note_post(self.root, now)
             return "failed"
-        finally:
-            runner.last_post = self.clock.monotonic()
         HELDALERT.note_post(self.root, now)
         clear = not fields.get("seats")
-        HELDALERT.note_standing(self.root, runner.seat, message_id, clear=clear)
+        HELDALERT.note_standing(self.root, OPV.VOICE, message_id, clear=clear)
         self.log.write(
             "held-alert-cleared" if clear else "held-alert-edited",
-            seat=runner.seat,
+            seat=OPV.VOICE,
             channel=HELDALERT.CHANNEL,
             topic=HELDALERT.TOPIC,
             message_id=message_id,
@@ -6550,25 +6676,91 @@ class Daemon:
         )
         return "edited"
 
-    def _pace(self, runner: SeatRunner) -> None:
-        """Keep a bot's writes about POST_SPACING apart, the spacing every post here keeps."""
-        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
+    # ---- the Operator's voice (owner ruling, Oct 30 2026) -------------------------------------
+    def _operator_pace_ready(self) -> None:
+        """Wait out the spacing before an Operator write, whichever thread makes it.
+
+        The next free slot is taken under the lock and slept for outside it, so two wake workers and
+        the digest never fire together and none of them holds the lock while it waits."""
+        with self._operator_pace_lock:
+            now = self.clock.monotonic()
+            start = max(now, self._operator_next_at)
+            self._operator_next_at = start + POST_SPACING
+        wait = start - now
         if wait > 0:
             self.clock.sleep(wait)
 
-    def _alert_runner(self, skip: str | None = None) -> SeatRunner | None:
-        """The seat whose bot carries the digest:  `held_alert_seat`, else the claude seat, else the
-        first enabled seat that has a usable key.  A seat that is fatal or not yet connected cannot
-        post (its key is refused or absent), so it is skipped rather than failing the whole digest,
-        and so is `skip`, a seat whose key Zulip just refused."""
-        wanted = self.config.held_alert_seat or self.config.claude_seat
-        order = ([self.seats[wanted]] if wanted in self.seats else []) + [
-            r for r in self.seats.values() if r.seat != wanted
-        ]
-        for runner in order:
-            if runner.client is not None and not runner.fatal and runner.seat != skip:
-                return runner
-        return None
+    def _operator_send(self, params: Mapping[str, Any], *, wait: bool = True) -> dict[str, Any]:
+        """THE choke point: every Zulip message the daemon composes itself goes out through here.
+
+        The text is secret-scanned (the keys the daemon has loaded, the Operator's included), the
+        Operator is checked before the wait so a missing one costs nothing, and the post is made by
+        the Operator's client and by no other.  Raises OperatorUnavailable (no Operator),
+        OperatorRefused (the scanner) or whatever the Zulip client raises (DmGuardRefused,
+        ApiError, NetworkError); the callers decide what each one means for their own post.
+
+        `wait=False` is for the router thread (the digest, a notice raised in a tick): it never
+        stands in a build of the client, which reads the vault and can take a minute.  With no client
+        ready it raises OperatorUnavailable (code `operator_building`) and the build goes on in the
+        background, so the post is skipped this time and tried again."""
+        found = secretscan.scan(str(params.get("content") or ""), self.hidden)
+        if found:
+            raise OPV.OperatorRefused("secret scanner: %s" % found)
+        self.operator_voice.client(wait=wait)
+        self._operator_pace_ready()
+        return self.operator_voice.post(params, wait=wait)
+
+    def _operator_edit(
+        self, message_id: int, content: str, *, wait: bool = True
+    ) -> dict[str, Any]:
+        """Edit one of the Operator's own messages, with the same scan and no other client."""
+        found = secretscan.scan(str(content or ""), self.hidden)
+        if found:
+            raise OPV.OperatorRefused("secret scanner: %s" % found)
+        self.operator_voice.client(wait=wait)
+        self._operator_pace_ready()
+        return self.operator_voice.edit(message_id, content, wait=wait)
+
+    def _operator_refused(
+        self, site: str, exc: Exception, *, throttle: float = 0.0, **fields: Any
+    ) -> None:
+        """Log that an automated post was NOT made because the Operator could not make it.
+
+        This is the whole answer to "what if the Operator cannot post": a line in the log that says
+        which post and why, and nothing in the realm.  The seat's bot is never tried instead.
+
+        `throttle` is for a post that is tried again every tick (the held-wake digest is checked
+        every 30 seconds): the same site is logged at most once per that many seconds, so an Operator
+        that stays away costs a line per window and not a line per tick.
+
+        A client that is merely still being built (`operator_building`) is not a refusal and is not
+        logged: the caller skipped this time and asks again."""
+        if getattr(exc, "code", None) == OPV.CODE_BUILDING:
+            return
+        if throttle > 0:
+            now = self.clock.monotonic()
+            last = self._operator_refused_at.get(site)
+            if last is not None and now - last < throttle:
+                return
+            self._operator_refused_at[site] = now
+        self.log.write(
+            "operator-post-refused",
+            site=site,
+            code=getattr(exc, "code", None) or type(exc).__name__,
+            reason=self.scrub(str(getattr(exc, "reason", None) or exc)),
+            **fields,
+        )
+
+    @staticmethod
+    def _note_post_outcome(outcome: dict[str, Any], pending: W.Pending) -> None:
+        """Put who posted, or why nothing was posted, on the wake's ledger row."""
+        if outcome.get("posted_id"):
+            outcome["posted_by"] = OPV.VOICE
+            outcome.pop(
+                "post_error", None
+            )  # an earlier post of this wake failed, a later one landed
+        elif pending.post_refusal:
+            outcome["post_error"] = pending.post_refusal
 
     def _catch_up(self, runner: SeatRunner, data: Mapping[str, Any], now: float) -> None:
         """One catch-up wake for a seat whose adapter runs a turn (`http` or `claude`), when its
@@ -7513,6 +7705,9 @@ class Daemon:
             errors=len(self.config.errors),
             instance=self.config.instance,
         )
+        # Build the Operator client in the background now, so the router thread's first digest or
+        # notice finds it ready instead of skipping while a build runs (operator_post.py).
+        self.operator_voice.warm()
         try:
             while not self.stop.is_set():
                 if (
