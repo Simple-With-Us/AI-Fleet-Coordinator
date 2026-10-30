@@ -256,7 +256,7 @@ def unit_cgroups(policy: dict[str, Any], root: Path, runner=subprocess.run) -> l
 
 
 def docker_groups(
-    policy: dict[str, Any], root: Path, runner=subprocess.run
+    policy: dict[str, Any], root: Path, runner=subprocess.run, proc_root: Path = Path("/proc")
 ) -> tuple[list[Path], list[Path], dict[Path, int]]:
     coding, production = [], []
     production_limits: dict[Path, int] = {}
@@ -277,27 +277,37 @@ def docker_groups(
         )
     except Exception:
         pass
-    for name in sorted(names):
+    names = sorted(names)
+    try:
+        inspected = runner(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{.Name}}|{{.State.Pid}}|{{.HostConfig.Memory}}",
+                *names,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=True,
+        )
+        rows = {}
+        for line in inspected.stdout.splitlines():
+            try:
+                name, pid, raw_limit = line.strip().lstrip("/").split("|", 2)
+                rows[name] = (int(pid), int(raw_limit))
+            except (ValueError, TypeError):
+                continue
+    except Exception:
+        rows = {}
+    for name in names:
         try:
-            r = runner(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    "{{.Name}}|{{.State.Pid}}|{{.HostConfig.Memory}}",
-                    name,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=True,
-            )
-            _, pid, raw_limit = r.stdout.strip().lstrip("/").split("|", 2)
-            limit = int(raw_limit)
-            if int(pid) <= 0:
+            pid, limit = rows[name]
+            if pid <= 0:
                 continue
             groups = []
-            for line in (Path("/proc") / pid / "cgroup").read_text().splitlines():
+            for line in (proc_root / str(pid) / "cgroup").read_text().splitlines():
                 if line.startswith("0::"):
                     groups.append(line.split("::", 1)[1])
             p = cg_path(root, groups[0]) if groups else None
@@ -593,6 +603,27 @@ def protected_lows(
     return failures
 
 
+def reset_transient_state(state: dict[str, Any]) -> None:
+    """Do not carry pressure mode or monotonic recovery timers across restarts/stops."""
+    state["mode"] = "normal"
+    state.pop("recovery_since", None)
+
+
+def production_protection_counts(
+    paths: list[Path], root: Path, limits: dict[Path, int] | None = None
+) -> tuple[int, int]:
+    parent = system_slice(root)
+    candidates = dedupe_nested(paths)
+    limits = limits or {}
+    eligible = [p for p in candidates if parent and parent in p.parents]
+    protected = sum(
+        1
+        for p in eligible
+        if max(0, limits.get(p, read_int(p / "memory.max"))) > 0
+    )
+    return protected, len(candidates) - protected
+
+
 def step(
     policy: dict[str, Any],
     root: Path,
@@ -614,6 +645,9 @@ def step(
         production_limits = discovered[2] if len(discovered) > 2 else {}
     code = dedupe_nested(code)
     mode = state.get("mode", "normal")
+    if not isinstance(mode, str) or mode not in ("normal", "pressure", "critical"):
+        mode = "normal"
+        state["mode"] = mode
     psi_active = avail < policy["reserve_bytes"]
     if avail < policy["critical_available_bytes"] or (
         psi_active and full >= policy["critical_full_avg10"]
@@ -626,7 +660,15 @@ def step(
     elif avail >= policy["recovery_available_bytes"] and (
         not psi_active or some <= policy["recovery_some_avg10"]
     ):
-        since = state.setdefault("recovery_since", now)
+        since = state.get("recovery_since")
+        if (
+            type(since) not in (int, float)
+            or not math.isfinite(since)
+            or since < 0
+            or since > now
+        ):
+            since = now
+            state["recovery_since"] = now
         if now - since >= policy["recovery_seconds"]:
             mode = "normal"
     else:
@@ -670,6 +712,9 @@ def step(
         persist,
     )
     oom_delta = oom_kill_delta(code + prod, state)
+    production_protected, production_unprotected = production_protection_counts(
+        prod, root, production_limits
+    )
     state["mode"] = mode
     state["last_status"] = {
         "mode": mode,
@@ -680,6 +725,8 @@ def step(
         "coding_target_bytes": target,
         "coding_groups": len(code),
         "production_groups": len(dedupe_nested(prod)),
+        "production_protected_groups": production_protected,
+        "production_unprotected_groups": production_unprotected,
         "oom_kill_delta": oom_delta,
         "control_write_failures": write_failures,
     }
@@ -774,6 +821,7 @@ def main() -> int:
             print("state ownership record invalid; refusing cgroup changes", file=sys.stderr)
             return 1
     reconcile_owned(state, lambda: atomic_json(state_path, state))
+    reset_transient_state(state)
     policy, stale = load_lkg(args.state_dir)
     live = [policy, stale]
     quit_flag = False
@@ -788,6 +836,7 @@ def main() -> int:
         refresh.set()
 
     signal.signal(signal.SIGTERM, onterm)
+    signal.signal(signal.SIGINT, onterm)
     signal.signal(signal.SIGHUP, onsighup)
     worker = threading.Thread(
         target=refresh_worker, args=(args.state_dir, live, refresh, stop_refresh), daemon=True
@@ -836,6 +885,7 @@ def main() -> int:
         worker.join(timeout=1)
         if quit_flag:
             restore_owned(state, lambda: atomic_json(state_path, state))
+            reset_transient_state(state)
             atomic_json(state_path, state)
         os.close(lock_fd)
     return 0

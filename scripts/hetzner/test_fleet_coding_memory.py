@@ -156,6 +156,53 @@ class PolicyTests(unittest.TestCase):
         run.assert_not_called()
 
 
+class DiscoveryTests(unittest.TestCase):
+    def test_docker_inspect_is_batched_and_bounded(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "cgroup"
+            proc_root = Path(d) / "proc"
+            names = ["botfleet-vps-shared", "congress-app-one", "scan-cpu-worker-one"]
+            output = []
+            for index, name in enumerate(names, start=101):
+                unit = f"docker-{index}.scope"
+                cg(root / "system.slice" / unit)
+                pid_dir = proc_root / str(index)
+                pid_dir.mkdir(parents=True)
+                (pid_dir / "cgroup").write_text(f"0::/system.slice/{unit}\n")
+                output.append(f"/{name}|{index}|{2 * 1024**3}\n")
+
+            calls = []
+
+            def runner(argv, **kwargs):
+                calls.append((argv, kwargs))
+                if argv[1] == "ps":
+                    return type("Result", (), {"stdout": "\n".join(names)})()
+                return type("Result", (), {"stdout": "".join(output)})()
+
+            coding, production, limits = m.docker_groups(
+                policy(), root, runner=runner, proc_root=proc_root
+            )
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1][0][1], "inspect")
+            self.assertEqual(calls[1][1]["timeout"], 8)
+            self.assertEqual(len(coding), 1)
+            self.assertEqual(len(production), 2)
+            self.assertEqual(len(limits), 2)
+
+    def test_unlimited_or_unsupported_production_groups_are_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            parent = cg(root / "system.slice")
+            protected = cg(parent / "protected", maximum=3 * 1024**3)
+            unlimited = cg(parent / "unlimited", maximum="max")
+            unsupported = cg(root / "other.slice" / "unsupported", maximum=3 * 1024**3)
+            protected_count, unprotected_count = m.production_protection_counts(
+                [protected, unlimited, unsupported], root
+            )
+            self.assertEqual(protected_count, 1)
+            self.assertEqual(unprotected_count, 2)
+
+
 class ControllerTests(unittest.TestCase):
     def test_nested_group_dedup_and_soft_budget_sum(self):
         with tempfile.TemporaryDirectory() as d:
@@ -248,6 +295,28 @@ class ControllerTests(unittest.TestCase):
             )
             self.assertEqual(status["mode"], "normal")
             self.assertEqual(status["coding_target_bytes"], 8 * 1024**3)
+
+    def test_invalid_recovery_timer_is_replaced_and_controller_recovers(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding", usage=500 * M)
+            state = {"mode": "critical", "recovery_since": "invalid"}
+            status = run_step(
+                policy(), root, state, proc(root / "p1", available=9 * 1024**3), 10, ([group], [])
+            )
+            self.assertEqual(status["mode"], "critical")
+            self.assertEqual(state["recovery_since"], 10)
+            status = run_step(
+                policy(), root, state, proc(root / "p2", available=9 * 1024**3), 71, ([group], [])
+            )
+            self.assertEqual(status["mode"], "normal")
+
+    def test_reset_transient_state_clears_stale_mode_and_timer(self):
+        state = {"mode": "critical", "recovery_since": 123.0, "owned": {}}
+        m.reset_transient_state(state)
+        self.assertEqual(state["mode"], "normal")
+        self.assertNotIn("recovery_since", state)
+        self.assertIn("owned", state)
 
     def test_allocation_preserves_preexisting_narrower_high_and_can_later_grow(self):
         with tempfile.TemporaryDirectory() as d:
