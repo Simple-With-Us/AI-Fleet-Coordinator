@@ -212,13 +212,24 @@ def dedupe_nested(paths: list[Path]) -> list[Path]:
 def allocate(target: int, paths: list[Path], state: dict[str, Any] | None = None) -> dict[Path, int]:
     paths = dedupe_nested(paths)
     if not paths: return {}
-    usage = {p: max(0, read_int(p / "memory.current")) for p in paths}
+    available: list[Path] = []
+    usage: dict[Path, int] = {}
     caps = {}
     owned = (state or {}).get("owned", {})
     for p in paths:
+        try:
+            inode = p.stat().st_ino
+            current = int((p / "memory.current").read_text().strip())
+            old_high = (p / "memory.high").read_text().strip()
+        except (OSError, ValueError):
+            continue
+        available.append(p)
+        usage[p] = max(0, current)
         rec = owned.get(f"{p}:memory.high", {})
-        old = rec.get("baseline") if rec.get("inode") == p.stat().st_ino else (p / "memory.high").read_text().strip()
+        old = rec.get("baseline") if rec.get("inode") == inode else old_high
         caps[p] = None if old == "max" else int(old)
+    paths = available
+    if not paths: return {}
     floors = {p: min(usage[p] + 32 * MIB, 128 * MIB, caps[p] if caps[p] is not None else target) for p in paths}
     if sum(floors.values()) > target:
         floors = {p: min(caps[p] if caps[p] is not None else target, target * max(1, usage[p]) // sum(max(1, x) for x in usage.values())) for p in paths}

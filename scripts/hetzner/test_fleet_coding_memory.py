@@ -207,6 +207,16 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(second[a], 200 * M)
             self.assertGreater(second[b], 3 * 1024**3)
 
+    def test_allocation_skips_disappeared_group_and_keeps_healthy_group(self):
+        with tempfile.TemporaryDirectory() as d:
+            missing = cg(Path(d) / "missing", 100 * M)
+            healthy = cg(Path(d) / "healthy", 300 * M)
+            (missing / "memory.high").unlink()
+            result = m.allocate(2 * 1024**3, [missing, healthy])
+            self.assertNotIn(missing, result)
+            self.assertIn(healthy, result)
+            self.assertGreater(result[healthy], 0)
+
     def test_restore_only_owned_unchanged_inode_and_value(self):
         with tempfile.TemporaryDirectory() as d:
             p = cg(Path(d) / "unit", high="max")
