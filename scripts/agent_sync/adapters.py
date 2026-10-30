@@ -864,10 +864,11 @@ class MuseRunner:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(contract.rstrip() + "\n\n--- BEGIN DAEMON WAKE PROMPT ---\n" + prompt)
         # The schema is written from the same source claude passes inline, so the two runtimes can
-        # never drift onto different contracts.
+        # never drift onto different contracts.  Muse's own default is the strict variant (every property
+        # required), which the provider's strict structured-output mode demands.
         fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(schema if schema is not None else schema_text())
+            fh.write(schema if schema is not None else schema_text(strict=True))
         # muse takes these three by path, and the paths are the wake dir's own private files, so
         # the argv is rebuilt here with the real paths in place of the placeholders.
         argv = [
@@ -985,7 +986,8 @@ def muse_wake_fingerprint() -> str | None:
             contract = fh.read()
         # Ensure the bytes can be consumed by MuseRunner as UTF-8 before considering them pinnable.
         contract.decode("utf-8")
-        schema = schema_text()
+        # The strict schema is the one the muse runner sends, so the pin vouches for what is sent.
+        schema = schema_text(strict=True)
     except (OSError, UnicodeError, ValueError):
         return None
     command = json.dumps(

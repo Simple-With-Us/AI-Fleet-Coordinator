@@ -3078,6 +3078,8 @@ class Daemon:
             )
         )
         schema = W.schema_text(self.fleet_tags)
+        # The muse runtime sends its schema to a strict structured-output provider, which wants every key required.
+        muse_schema = W.schema_text(self.fleet_tags, strict=True)
         # The seat says it is typing while it thinks (AFC-515).  The run is silent for its
         # whole length otherwise:  the adapter takes 30 to 50 seconds to answer and the reply
         # is posted only after it has, so the person who woke the seat watches an empty
@@ -3093,7 +3095,7 @@ class Daemon:
                 argv = A.muse_argv(binary, runner.cfg.model)
                 muse_env = A.muse_env(self.env, self.home, self.wake_path, seat=runner.seat)
                 result = self.muse_runner.run(
-                    argv, muse_env, runner.paths.wake_dir, prompt, schema=schema
+                    argv, muse_env, runner.paths.wake_dir, prompt, schema=muse_schema
                 )
             else:
                 argv = A.claude_argv(binary, runner.cfg.model, self.fleet_tags)
@@ -3162,7 +3164,11 @@ class Daemon:
                         first = result
                         inspect_prompt = self.chat_inspection_prompt(prompt, excerpt)
                         second = self.muse_runner.run(
-                            argv, muse_env, runner.paths.wake_dir, inspect_prompt, schema=schema
+                            argv,
+                            muse_env,
+                            runner.paths.wake_dir,
+                            inspect_prompt,
+                            schema=muse_schema,
                         )
                         second.secs = float(second.secs or 0) + float(first.secs or 0)
                         second.cost_usd = float(second.cost_usd or 0) + float(first.cost_usd or 0)
