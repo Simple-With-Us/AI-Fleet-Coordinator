@@ -233,6 +233,22 @@ class ControllerTests(unittest.TestCase):
             )
             self.assertEqual(status["mode"], "normal")
 
+    def test_high_global_available_memory_prevents_psi_only_throttle(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding", usage=500 * M)
+            state = {}
+            status = run_step(
+                policy(),
+                root,
+                state,
+                proc(root / "proc", available=13 * 1024**3, some=12.0, full=9.0),
+                1,
+                ([group], []),
+            )
+            self.assertEqual(status["mode"], "normal")
+            self.assertEqual(status["coding_target_bytes"], 8 * 1024**3)
+
     def test_allocation_preserves_preexisting_narrower_high_and_can_later_grow(self):
         with tempfile.TemporaryDirectory() as d:
             a = cg(Path(d) / "a", 100 * M, high=200 * M)
@@ -254,6 +270,20 @@ class ControllerTests(unittest.TestCase):
             self.assertNotIn(missing, result)
             self.assertIn(healthy, result)
             self.assertGreater(result[healthy], 0)
+
+    def test_allocation_waterfills_from_snapshot_for_uneven_service_usage(self):
+        with tempfile.TemporaryDirectory() as d:
+            groups = [
+                cg(Path(d) / "heavy", usage=10 * 1024**3),
+                cg(Path(d) / "medium", usage=1024**3),
+                cg(Path(d) / "small", usage=100 * M),
+            ]
+            current = {p: int((p / "memory.current").read_text()) for p in groups}
+            target = 15 * 1024**3
+            allocation = m.allocate(target, groups)
+            self.assertEqual(sum(allocation.values()), target)
+            for p in groups:
+                self.assertGreaterEqual(allocation[p], current[p])
 
     def test_restore_only_owned_unchanged_inode_and_value(self):
         with tempfile.TemporaryDirectory() as d:

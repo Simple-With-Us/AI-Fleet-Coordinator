@@ -366,16 +366,31 @@ def allocate(
         if not eligible:
             break
         denom = sum(weights[p] for p in eligible)
-        progressed = 0
+        round_remaining = remaining
+        shares = {}
+        remainders = {}
         for p in eligible:
             room = remaining if caps[p] is None else caps[p] - alloc[p]
-            share = max(1, remaining * weights[p] // denom)
-            give = min(room, share, remaining)
-            alloc[p] += give
-            remaining -= give
-            progressed += give
-        if not progressed:
+            numerator = round_remaining * weights[p]
+            share, remainder = divmod(numerator, denom)
+            shares[p] = min(room, share)
+            remainders[p] = remainder
+        assigned = sum(shares.values())
+        # Distribute integer residue from the same snapshot, with caps still
+        # respected.  The next round redistributes any share blocked by a cap.
+        residue = round_remaining - assigned
+        for p in sorted(eligible, key=lambda item: remainders[item], reverse=True):
+            if residue <= 0:
+                break
+            if caps[p] is None or alloc[p] + shares[p] < caps[p]:
+                shares[p] += 1
+                residue -= 1
+                assigned += 1
+        if not assigned:
             break
+        for p, share in shares.items():
+            alloc[p] += share
+        remaining -= assigned
     return alloc
 
 
@@ -599,11 +614,18 @@ def step(
         production_limits = discovered[2] if len(discovered) > 2 else {}
     code = dedupe_nested(code)
     mode = state.get("mode", "normal")
-    if avail < policy["critical_available_bytes"] or full >= policy["critical_full_avg10"]:
+    psi_active = avail < policy["reserve_bytes"]
+    if avail < policy["critical_available_bytes"] or (
+        psi_active and full >= policy["critical_full_avg10"]
+    ):
         mode = "critical"
-    elif avail < policy["pressure_available_bytes"] or some >= policy["pressure_some_avg10"]:
+    elif avail < policy["pressure_available_bytes"] or (
+        psi_active and some >= policy["pressure_some_avg10"]
+    ):
         mode = "pressure"
-    elif avail >= policy["recovery_available_bytes"] and some <= policy["recovery_some_avg10"]:
+    elif avail >= policy["recovery_available_bytes"] and (
+        not psi_active or some <= policy["recovery_some_avg10"]
+    ):
         since = state.setdefault("recovery_since", now)
         if now - since >= policy["recovery_seconds"]:
             mode = "normal"
@@ -611,7 +633,7 @@ def step(
         state.pop("recovery_since", None)
     if (
         avail < policy["pressure_available_bytes"]
-        or some >= policy["pressure_some_avg10"]
+        or (psi_active and some >= policy["pressure_some_avg10"])
         or mode == "normal"
     ):
         state.pop("recovery_since", None)
