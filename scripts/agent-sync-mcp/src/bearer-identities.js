@@ -6,6 +6,7 @@ import { resolveSecret, infisicalMode } from "./infisical.js";
 
 export const BEARER_ONLY_SEATS = Object.freeze({
   AG: Object.freeze({ prefix: "AG", email: "ag-bot@simplewithus.zulipchat.com" }),
+  AMP: Object.freeze({ prefix: "AMP", email: "amp-bot@simplewithus.zulipchat.com" }),
   CLUTCH: Object.freeze({ prefix: "CLUTCH", email: "clutch-bot@simplewithus.zulipchat.com" }),
   FX: Object.freeze({ prefix: "FX", email: "fx-bot@simplewithus.zulipchat.com" }),
   GROK: Object.freeze({ prefix: "GROK_BUILD", email: "grok-build-bot@simplewithus.zulipchat.com" }),
