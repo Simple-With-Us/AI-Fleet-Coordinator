@@ -14,6 +14,12 @@
 # FleetLink's own CLI (fleetlink) ships from the FleetLink repo and is installed by its installer;
 # nothing here installs it, and nothing here checks for it.
 #
+# ~/.local/bin/platform-letter (AFC-564, the session-letter hook and registry side for the platforms other than Claude
+# and MiniMax) is linked the same way when the checkout has scripts/platform-letter.  The server gets it from the
+# fleet-cli managed wrappers instead (scripts/fleet-cli-release.py).  The runtime sync only moves the checkout to
+# origin/main and never runs this script, so rerun it on the Mac after the merge that adds a command: until then the
+# Mac has no ~/.local/bin/platform-letter, and every server hook, which reaches the registry through it, fails.
+#
 # It touches nothing else: no pm2, no LaunchAgents, no Slack files, no credential files.
 # Credentials come from Infisical Fleet-OPS /zulip through fleet-secrets; see README.md (AFC-359).
 set -euo pipefail
@@ -52,6 +58,14 @@ for cmd in $commands; do
   if [ ! -f "$checkout/scripts/$cmd" ]; then
     echo "install.sh: $checkout/scripts/$cmd does not exist; pass the path of a checkout that has the simple-tools entry points" >&2
     exit 1
+  fi
+done
+
+# Commands added after the first install (AFC-564: platform-letter, the session-letter hook and registry side for the
+# non-Claude platforms).  They are linked when the checkout has them, so a checkout from before they existed still installs.
+for cmd in platform-letter; do
+  if [ -f "$checkout/scripts/$cmd" ]; then
+    commands="$commands $cmd"
   fi
 done
 

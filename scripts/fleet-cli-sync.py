@@ -25,9 +25,11 @@ from pathlib import Path
 
 DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-# The composed allowlisted runtime has 132 files: main131 plus storage_guard.py.
-# Keep the exact ceiling in sender and receiver; a new file needs policy review.
-MAX_FILES = 132
+# The reviewed allowlisted runtime contains 133 files. Keep the exact minimum
+# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
+# library), added for that review.
+MAX_FILES = 133
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
