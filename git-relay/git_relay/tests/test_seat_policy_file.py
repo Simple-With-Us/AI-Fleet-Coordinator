@@ -42,7 +42,12 @@ SYNTHETIC_REPO = "example-org/example-repo"
 
 # The four Apps whose slug is not swu-<identity>, each read from the App's own GitHub
 # description ("Bot identity for the ... agent seat").
-NOT_SWU_IDENTITY = {"MA": "swu-rob", "GROK": "swu-grok-build", "MM": "swu-minimax", "JET-CHAT": "swu-jet"}
+NOT_SWU_IDENTITY = {
+    "MA": "swu-rob",
+    "GROK": "swu-grok-build",
+    "MM": "swu-minimax",
+    "JET-CHAT": "swu-jet",
+}
 # Original Jet login is wake-only; only JET-CHAT reaches Jet's own App (Q7).
 EXCLUDED = {"JET"}
 
@@ -115,7 +120,9 @@ class SeatPolicyFile(unittest.TestCase):
         self.assertEqual(SEATS["swu-jet"]["app_slug"], "swu-jet")
         self.assertEqual(sum(c["app_slug"] == "swu-jet" for c in SEATS.values()), 1)
         for action in ("wf_repo_get", "wf_pr_get"):
-            self.assertIsNone(policy.authorize("swu-jet", action, "Simple-With-Us/AI-Fleet-Coordinator"))
+            self.assertIsNone(
+                policy.authorize("swu-jet", action, "Simple-With-Us/AI-Fleet-Coordinator")
+            )
 
     def test_a_bearer_the_worker_does_not_confirm_reaches_no_seat(self):
         # The token shape alone names a seat;  only the Worker's answer may admit it.
@@ -177,7 +184,11 @@ class SeatPolicyFile(unittest.TestCase):
         for slug, cfg in SEATS.items():
             if slug != "swu-echo":
                 self.assertEqual(cfg["repos"], fleet["repos"], slug)
-                self.assertEqual(cfg["actions"], fleet["actions"] + (["wf_repo_get", "wf_pr_get"] if slug == "swu-jet" else []), slug)
+                self.assertEqual(
+                    cfg["actions"],
+                    fleet["actions"] + (["wf_repo_get", "wf_pr_get"] if slug == "swu-jet" else []),
+                    slug,
+                )
                 self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
 
     def test_the_reviewed_scope_is_pinned(self):
@@ -185,7 +196,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), '8b2ca347fc0b68aa')
+        self.assertEqual(seat_policy.digest(SEATS), "8b2ca347fc0b68aa")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
