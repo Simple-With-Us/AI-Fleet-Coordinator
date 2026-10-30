@@ -5712,7 +5712,7 @@ class Daemon:
 
         Every Zulip post here is made by the OPERATOR bot and never by the seat's own bot (owner
         ruling, Oct 30 2026): the headless consultant wrote the words, not the seat, so the reply
-        keeps its `[SEAT·wake]` tag, which says whose wake it reports, and the Operator relays it.
+        keeps its `[OPERATOR·wake]` tag, and the Operator relays it.
         With no Operator nothing is posted and the refusal is on the ledger row as `post_error`."""
         outcome: dict[str, Any] = {"posted_id": None, "board_uid": None, "note": False}
         trigger = pending.trigger_ids[-1] if pending.trigger_ids else 0
@@ -5743,7 +5743,7 @@ class Daemon:
             outcome["draft_to"] = lease_id
             reply = None
         if reply:
-            text = W.compose_reply(runner.seat, trigger, reply)
+            text = W.compose_reply(trigger, reply)
             found = secretscan.scan(text, self.hidden)
             if W.loud_mention(
                 text
@@ -5802,7 +5802,7 @@ class Daemon:
             if pending.owner and not outcome["posted_id"] and not lease_id:
                 outcome["reply_attempted"] = True
                 outcome["posted_id"] = self.post(
-                    runner, pending, W.compose_reply(runner.seat, trigger, W.OWNER_ACK)
+                    runner, pending, W.compose_reply(trigger, W.OWNER_ACK)
                 )
                 self._note_post_outcome(outcome, pending)
         # The route comes last, after the reply:  two posts, because a `·wake`-tagged post never wakes
@@ -5957,7 +5957,7 @@ class Daemon:
         history: Iterable[Mapping[str, Any]],
         lease_id: str | None,
     ) -> dict[str, Any]:
-        """Check a route suggestion and, when it passes, post `[SEAT·route→TARGET]` in the trigger's
+        """Check a route suggestion and, when it passes, post `[OPERATOR·route→TARGET]` in the trigger's
         topic with one live mention (the daemon's, of the target bot), then tell the owner who was
         paged and why.  A dropped route is recorded and reaches the owner as a note."""
         seat = str(route.get("seat") or "").upper()
@@ -6064,7 +6064,7 @@ class Daemon:
         owner_trigger: int,
         posted: int,
     ) -> dict[str, Any]:
-        """Tell the owner who was paged and why: a `[SEAT·note]` DM sent by the Operator (the same
+        """Tell the owner who was paged and why: a `[OPERATOR·note]` DM sent by the Operator (the same
         channel as escalation notes) and the owner queue.  Never raises; a failure is recorded, because
         the route post is already out and the wake's `done` row must still be written."""
         try:
@@ -6121,7 +6121,8 @@ class Daemon:
         text = W.neutralize_mentions(
             "\n".join(
                 [
-                    "[%s\u00b7note] re=%d" % (runner.seat, owner_trigger),
+                    "[%s\u00b7note] re=%d" % (W.OPERATOR_TAG, owner_trigger),
+                    "Seat: %s" % runner.seat,
                     "Routed: %s (%s)" % (seat, mode),
                     "Where: %s" % where,
                     "```quote",
@@ -6167,7 +6168,7 @@ class Daemon:
         """The owner DM for an escalated request:  who asked, where, the risk, the responder's note
         and a link to the trigger.  Sender, place and link are the daemon's own fields; the note is
         model output derived from untrusted text, so it sits in a quote block with backticks and
-        mentions removed.  The tag is `[SEAT·note]`, not `·wake`, so the router never takes the DM for
+        mentions removed.  The tag is `[OPERATOR·note]`, not `·wake`, so the router never takes the DM for
         a wake reply."""
         peers = [i for i in pending.trigger_ids if i not in pending.owner_ids]
         trigger = (peers or pending.trigger_ids or [0])[-1]
@@ -6202,7 +6203,8 @@ class Daemon:
         )
         text = "\n".join(
             [
-                "[%s\u00b7note] re=%d" % (runner.seat, trigger),
+                "[%s\u00b7note] re=%d" % (W.OPERATOR_TAG, trigger),
+                "Seat: %s" % runner.seat,
                 "From: %s%s" % (name, " (bot)" if bot else ""),
                 "Where: %s" % where,
                 "Risk: %s" % (risk or "not screened"),
@@ -6222,7 +6224,7 @@ class Daemon:
         risk: str | None,
         history: Iterable[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        """Send the owner a Zulip DM from the OPERATOR bot, tagged `[SEAT·note]` with the seat whose
+        """Send the owner a Zulip DM from the OPERATOR bot, tagged `[OPERATOR·note]` with the seat whose
         wake wrote the note (owner ruling, Oct 30 2026: it used to go out as the seat's own bot, which
         did not think or say it).  The owner is in the conversation, so the owner-in-the-conversation
         guard (AFC-469) passes without any exemption.  It rides on a wake that already passed the
@@ -6295,7 +6297,7 @@ class Daemon:
 
         The Operator posts, not the seat (owner ruling, Oct 30 2026): the headless consultant wrote
         the words, and the seat's bot would say the seat thought them.  The text keeps its
-        `[SEAT·wake]` tag, which names the wake it reports and is what the loop guard reads.  A
+        `[OPERATOR·wake]` tag, which names the wake it reports (`re=`) and is what the loop guard reads.  A
         direct message goes to the original recipient set, the seat included and the Operator
         excluded (it is the sender), so the seat and everyone who was in the thread see the reply;
         Zulip makes that one new conversation with the Operator in it, and the owner-in-the-
