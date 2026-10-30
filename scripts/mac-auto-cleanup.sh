@@ -318,6 +318,8 @@ OWNER_KEYS = {"pid", "host", "acquired_at", "lock", "start"}
 # C-locale civil form for legacy local tokens; this bound keeps hostile input
 # small, and both readers apply it at the same schema check.
 OWNER_START_MAX = 128
+OWNER_ACQUIRED_AT_FS_SKEW_SEC = 2.0
+OWNER_ACQUIRED_AT_FUTURE_SKEW_SEC = 60.0
 
 
 def process_start_token(pid, *, utc=False):
@@ -377,13 +379,25 @@ def c_lstart_epoch(token):
         return None
 
 
-def owner_start_matches_current(start, current_utc, acquired_at):
+def owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
+    """Require acquired_at to agree with filesystem times and current time."""
+    skew = OWNER_ACQUIRED_AT_FS_SKEW_SEC
+    return (
+        math.isfinite(acquired_at)
+        and lock_mtime - skew <= acquired_at <= owner_mtime + skew
+        and acquired_at <= time.time() + OWNER_ACQUIRED_AT_FUTURE_SKEW_SEC
+    )
+
+
+def owner_start_matches_current(start, current_utc, acquired_at, lock_mtime, owner_mtime):
     """Return same/different, or None when token evidence is unusable."""
     if start == current_utc:
         return True
     old_epoch = c_lstart_epoch(start)
     current_epoch = c_lstart_epoch(current_utc)
     if old_epoch is None or current_epoch is None:
+        return None
+    if not owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
         return None
     if abs(old_epoch - current_epoch) > 24 * 60 * 60:
         return False
@@ -446,7 +460,9 @@ except OSError:
 current = process_start_token(pid, utc=True)
 if not current:
     sys.exit(1)                      # the start time could not be read:  the age rule decides
-same_holder = owner_start_matches_current(start, current, acquired_at)
+same_holder = owner_start_matches_current(
+    start, current, acquired_at, lock_mtime, owner_mtime
+)
 sys.exit(0 if same_holder is False else 1)
 PY
 }

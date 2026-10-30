@@ -411,6 +411,8 @@ _OWNER_KEYS = frozenset({"pid", "host", "acquired_at", "lock", "start"})
 # parse this fixed C-locale civil timestamp only to recognize legacy local
 # tokens across a timezone change; the bound also limits hostile input size.
 _OWNER_START_MAX = 128
+_OWNER_ACQUIRED_AT_FS_SKEW_SEC = 2.0
+_OWNER_ACQUIRED_AT_FUTURE_SKEW_SEC = 60.0
 
 
 def _parse_housekeeper_owner(raw: str) -> dict | None:
@@ -463,6 +465,20 @@ def _parse_housekeeper_owner(raw: str) -> dict | None:
     if not isinstance(start, str) or not start or len(start) > _OWNER_START_MAX:
         return None
     return owner
+
+
+def _owner_acquired_at_is_sane(
+    acquired_at: float, lock_mtime: float, owner_mtime: float, *, now: float | None = None
+) -> bool:
+    """Whether acquired_at agrees with the lock and owner file timestamps."""
+    if not math.isfinite(acquired_at):
+        return False
+    now = time.time() if now is None else now
+    skew = _OWNER_ACQUIRED_AT_FS_SKEW_SEC
+    return (
+        lock_mtime - skew <= acquired_at <= owner_mtime + skew
+        and acquired_at <= now + _OWNER_ACQUIRED_AT_FUTURE_SKEW_SEC
+    )
 
 
 def _read_housekeeper_owner() -> dict | None:
@@ -566,7 +582,13 @@ def _c_lstart_epoch(token: str) -> float | None:
         return None
 
 
-def _owner_start_matches_current(start: str, current_utc: str, acquired_at: float) -> bool | None:
+def _owner_start_matches_current(
+    start: str,
+    current_utc: str,
+    acquired_at: float,
+    lock_mtime: float,
+    owner_mtime: float,
+) -> bool | None:
     """Return same/different, or None when token evidence is unusable.
 
     Exact UTC tokens are decisive.  A differing, parseable token can be a
@@ -578,6 +600,8 @@ def _owner_start_matches_current(start: str, current_utc: str, acquired_at: floa
     old_epoch = _c_lstart_epoch(start)
     current_epoch = _c_lstart_epoch(current_utc)
     if old_epoch is None or current_epoch is None:
+        return None
+    if not _owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
         return None
     if abs(old_epoch - current_epoch) > 24 * 60 * 60:
         return False
@@ -651,7 +675,9 @@ def _housekeeper_owner_is_gone(lock_mtime: float) -> bool:
         # The start time could not be read:  the record cannot speak for the
         # lock, and the age rule decides.
         return False
-    same_holder = _owner_start_matches_current(owner["start"], current, owner["acquired_at"])
+    same_holder = _owner_start_matches_current(
+        owner["start"], current, owner["acquired_at"], lock_mtime, owner_mtime
+    )
     return same_holder is False
 
 

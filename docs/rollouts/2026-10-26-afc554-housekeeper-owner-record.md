@@ -21,6 +21,8 @@ Files touched:
 
 ## Decisions and trade-offs
 
+Before a legacy-token mismatch can use `acquired_at` as a cutoff, that timestamp must agree with the lock-directory and owner-file mtimes within two seconds and must not be more than 60 seconds in the future.  An out-of-range timestamp is inconclusive, so the age rule decides.
+
 Exact UTC start tokens are compared as strings.  A differing token is parsed only as the fixed English civil form emitted under `LC_ALL=C`, so it can identify a legacy local-time record after the host timezone changes.  The bounded epoch comparison plus `acquired_at` check prevents an uncertain parse or a reused pid from being treated as the same live holder.  A start time that cannot be read or parsed is treated as no evidence: the record cannot speak for the lock and the age rule decides.
 
 This is the reader-compatibility phase.  Both writers still publish local-time tokens; switch either writer to UTC only after every reader that can encounter its owner records accepts both the exact UTC form and the legacy local form.
