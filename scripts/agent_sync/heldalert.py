@@ -26,14 +26,17 @@ the first hold posts it, every later window edits it, and when every hold has cl
 once more to say so, so the topic never shows a stale list.  An all-clear is only ever an EDIT:  a
 fresh post saying nothing is held would be the noise the rule above forbids.
 
-Zulip lets only the bot that sent a message edit it, and the digest is carried by whichever seat can
-post, so the standing message is recorded as a `(seat, message_id)` pair and that seat's bot edits
-it.  When that seat cannot (it is not running here, its key is refused, or Zulip refuses the edit
-because the message is gone), the digest falls back to a fresh post by the next usable seat and that
-post becomes the standing one.  An edit that fails without a refusal (a timeout, a gateway error) is
-ambiguous rather than refused, so the pair is kept and the edit retried next window:  turning it into
-a fresh post would leave two copies of the list.  This realm has no content edit time limit, so a
-standing message never ages out of being editable.
+THE OPERATOR CARRIES THE DIGEST (owner ruling, Oct 30 2026), never a seat.  The count is the daemon's
+own and no seat thought or said it, so it is not posted under a seat's bot.  Zulip lets only the bot
+that sent a message edit it, so the standing message is recorded as a `(seat, message_id)` pair, and
+the seat there is always `OPERATOR`.  When Zulip refuses the edit because the message is gone, the
+digest falls back to a fresh post, and that post becomes the standing one.  A pair recorded by a seat
+under the old rule cannot be edited by the Operator and must not be edited by the seat, so it is
+forgotten and the digest starts again as the Operator's own message.  With no Operator nothing is
+posted or edited (the daemon logs `operator-post-refused`).  An edit that fails without a refusal (a
+timeout, a gateway error) is ambiguous rather than refused, so the pair is kept and the edit retried
+next window: turning it into a fresh post would leave two copies of the list.  This realm has no
+content edit time limit, so a standing message never ages out of being editable.
 
 The state is the timestamp (`last_post`) and that pair (`standing`), nothing else:  what to report is
 read live from each seat's `held-back.json` at post time, so a restart mid-window cannot drop a hold
@@ -42,8 +45,9 @@ and there is no copy of the per-seat state to keep in step.  The rate limit is t
 A failed post or edit is an ATTEMPT, and an attempt consumes the window, so a key that stays broken
 costs one attempt per window rather than one per held tick (120 an hour), and the digest is retried
 next window with the hold untouched either way.  The one case that does NOT consume the window is
-having no seat able to post at all:  nothing was sent, so waiting is free and the digest goes out as
-soon as a usable key returns.
+having no Operator to post with: nothing was sent, so waiting is free and the digest goes out as
+soon as the Operator can post (the daemon remembers a failed Operator build for two minutes, so the
+held tick does not pay for a vault read every 30 seconds).
 
 One thing this deliberately does NOT do:  it does not mark the entries `told` (heldback.note_digest).
 `told_seq` is what lets a record expire, and expiry deletes a hold the owner may not have read yet.

@@ -29,7 +29,13 @@ from agent_sync import zulip as Z
 from agent_sync.daemon import LIVE_DIR_KEEP
 from agent_sync.tests.fake_zulip import EPOCH
 from agent_sync.tests.harness import write_rc
-from agent_sync.tests.listener_harness import BASE_CONFIG, ListenerHarness, fake_watcher, reply_output
+from agent_sync.tests.listener_harness import (
+    BASE_CONFIG,
+    OPERATOR_USER_ID,
+    ListenerHarness,
+    fake_watcher,
+    reply_output,
+)
 
 MENTION = "@**Claude** can you check the AFC cutover?"
 MUSE_MENTION = "@**MiniMax** can you check the AFC cutover?"
@@ -66,7 +72,9 @@ class DaemonHarness(ListenerHarness):
         daemon.run_jobs("CLAUDE")
 
     def bot_posts(self):
-        return [m for m in self.fake.messages if m["sender_id"] == 10]
+        """What the daemon posted: the Operator's messages.  The seat's own bot (id 10) posts nothing
+        for the daemon any more (owner ruling, Oct 30 2026), and tearDown fails a test where it does."""
+        return self.operator_posts()
 
     def seed_held(self, message_id: int = 900001) -> int:
         """One held-back record the next delivered wake should surface."""
@@ -555,7 +563,11 @@ class WakeTests(DaemonHarness):
         posts = self.bot_posts()
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0]["type"], "private")
-        self.assertEqual(sorted(r["id"] for r in posts[0]["display_recipient"]), [10, 12])
+        #  The Operator sends it (owner ruling, Oct 30 2026), so the thread is the original one plus
+        #  the Operator: the seat stays in it and the owner is in it.
+        self.assertEqual(
+            sorted(r["id"] for r in posts[0]["display_recipient"]), [10, 12, OPERATOR_USER_ID]
+        )
         self.assertTrue(posts[0]["content"].startswith("[CLAUDE·wake] re=%d" % dm))
         self.assertIn("direct message thread", self.dumps()[0]["stdin"])
         self.assertTrue(self.ledger()[0]["owner"])
@@ -1165,6 +1177,7 @@ model = "sonnet"
 provider = "Claude Code"
 """)
         daemon = self.started()
+        self.warm_operator(daemon)  # a held wake is finalized on the router thread, which never waits for a build
         now = self.clock.time()
         pending = W.Pending("q1", "CLAUDE", {"channel": "agent-sync", "topic": "t", "type": "stream"},
                             owner=False, now=now, due=now)
@@ -1175,10 +1188,13 @@ provider = "Claude Code"
         with mock.patch("agent_sync.daemon.A.provider_quota", return_value=quota):
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
-        dms = [m for m in self.fake.messages if m["type"] == "private" and m["sender_id"] == 10]
+        dms = [m for m in self.bot_posts() if m["type"] == "private"]
         self.assertEqual(len(dms), 1, "one DM per sender per window, and the call must not raise")
         #  The owner is in the conversation, so this is not a bot to bot direct message (AFC-469).
-        self.assertEqual(sorted(r["id"] for r in dms[0]["display_recipient"]), [10, 11, 12])
+        #  The Operator sends it, not the seat (owner ruling, Oct 30 2026).
+        self.assertEqual(
+            sorted(r["id"] for r in dms[0]["display_recipient"]), [11, 12, OPERATOR_USER_ID]
+        )
         self.assertIn("cannot answer right now", dms[0]["content"])
         self.assertIn("Claude Code", dms[0]["content"])
         self.assertEqual([m for m in self.bot_posts() if m["type"] == "stream"], [])
@@ -1614,12 +1630,13 @@ class MuseSeatTests(DaemonHarness):
 
 class PeerScreenTests(DaemonHarness):
     """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  low risk is
-    answered, uncertain and high risk reach the owner by Zulip DM from the seat's own bot."""
+    answered, uncertain and high risk reach the owner by Zulip DM from the Operator bot (owner ruling,
+    Oct 30 2026: the seat's own bot never carries the daemon's text)."""
 
     OWNER_ID = 12
 
     def owner_dms(self):
-        return [m for m in self.fake.messages if m["type"] == "private" and m["sender_id"] == 10
+        return [m for m in self.bot_posts() if m["type"] == "private"
                 and any(r["id"] == self.OWNER_ID for r in m["display_recipient"])]
 
     def stream_posts(self):
@@ -1725,7 +1742,7 @@ class PeerScreenTests(DaemonHarness):
 
     def test_a_failed_owner_dm_is_recorded_and_never_breaks_the_wake(self) -> None:
         daemon = self.started()
-        client = daemon.seats["CLAUDE"].client
+        client = daemon.operator_voice.client()  # the Operator sends the DM, not the seat's bot
         real_post = client.post
 
         def post(path, params=None, **kw):

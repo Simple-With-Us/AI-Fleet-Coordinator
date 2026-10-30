@@ -18,6 +18,7 @@ from agent_sync.live import topic_key
 from agent_sync.tests.harness import write_rc
 from agent_sync.tests.test_chat_fanout import FakeCatalog, cloud
 from agent_sync.tests.fake_zulip import FAKE_OWNER_ID
+from agent_sync.tests.listener_harness import OPERATOR_USER_ID
 from agent_sync.tests.test_daemon import DaemonHarness
 
 ST_URL = "https://github.com/example-org/Socratic-Trade"
@@ -600,9 +601,9 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         message_id = self.peer_all()
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
         self.clock.advance(11 * 60)
-        runner = daemon._alert_runner()
-        self.assertIsNotNone(runner, "a seat can carry the reminder")
-        with mock.patch.object(runner.client, "post", side_effect=Z.NetworkError("no route")):
+        # The Operator carries the reminder, never a seat's bot (owner ruling, Oct 30 2026).
+        client = daemon.operator_voice.client()
+        with mock.patch.object(client, "post", side_effect=Z.NetworkError("no route")):
             daemon.tick()
             self.pump_until(
                 daemon,
@@ -636,6 +637,47 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         self.assertEqual(rows[-1].get("outcome"), "reminded")
         self.assertEqual(rows[-1].get("id"), message_id)
         self.assertNotIn("broken", json.dumps(rows[-1]), "the log never holds the content")
+
+    def test_the_reminder_is_the_operators_dm_tagged_operator_note(self) -> None:
+        """The reminder is the daemon's own text, so the Operator sends it, tagged as the Operator's
+        note, and no seat's bot does (owner ruling, Oct 30 2026)."""
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.peer_all()
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.clock.advance(11 * 60)
+        daemon.tick()
+        self.pump_until(
+            daemon,
+            lambda: any(row.get("event") == "peer-broadcast-all" for row in self.log_rows(daemon)),
+        )
+        reminders = [m for m in self.operator_posts() if m["type"] == "private"]
+        self.assertEqual(len(reminders), 1)
+        self.assertEqual(
+            sorted(r["id"] for r in reminders[0]["display_recipient"]), [OWNER, OPERATOR_USER_ID]
+        )
+        self.assertTrue(reminders[0]["content"].startswith("[OPERATOR·note] "), reminders[0]["content"])
+        self.assertEqual(self.seat_requests(), [], "no seat's bot sent it")
+        rows = [r for r in self.log_rows(daemon) if r.get("event") == "peer-broadcast-all"]
+        self.assertEqual((rows[-1].get("outcome"), rows[-1].get("posted_by")), ("reminded", "OPERATOR"))
+
+    def test_with_no_operator_the_reminder_waits_for_a_retry_and_no_seat_sends_it(self) -> None:
+        self.operator_available = False
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.peer_all()
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.clock.advance(11 * 60)
+        daemon.tick()
+        self.pump_until(
+            daemon,
+            lambda: any(row.get("event") == "operator-post-refused" for row in self.log_rows(daemon)),
+        )
+        refused = [r for r in self.log_rows(daemon) if r.get("event") == "operator-post-refused"]
+        self.assertEqual(refused[-1].get("site"), "broadcast-audit")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [], "nothing was sent by anyone")
+        self.assertIn(message_id, daemon._broadcast_audits, "an unavailable Operator keeps the audit pending")
+        self.assertEqual(self.seat_requests(), [])
 
     def test_a_human_at_all_schedules_no_audit(self) -> None:
         """The audit is for fleet bots:  a person who is not the owner is never reported."""
