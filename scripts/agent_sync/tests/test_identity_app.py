@@ -155,7 +155,7 @@ class SeatAppTests(RealRegistryCase):
                 "MA": "muse-assist", "CLUTCH": "clutch", "FX": "fx", "OPENCODE": "opencode", "GROK-BOT": "grok-bot",
                 "ECHO": "instinct", "WISE": "instinct"}
         self.assertEqual(dict(self.reg.by_seat), want)
-        self.assertEqual(dict(self.reg.extra), {"JET": "chatgpt", "JET-CHAT": "chatgpt", "OPERATOR": "operator"})
+        self.assertEqual(dict(self.reg.extra), {"AMP": "amp", "JET": "chatgpt", "JET-CHAT": "chatgpt", "OPERATOR": "operator"})
 
     def test_an_unknown_seat_is_never_a_new_app(self) -> None:
         for raw in ("MINIMAX", "MONET", "ACME", "BF-"):
