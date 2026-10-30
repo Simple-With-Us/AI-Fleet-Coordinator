@@ -348,6 +348,16 @@ class ContractTests(unittest.TestCase):
         self.ask(self.registry_of(register_session), parent="p-0001")
         self.assertEqual(seen, {"letter_space": "double"})
 
+    def test_a_registry_with_neither_issuer_nor_space_still_registers(self) -> None:
+        seen = {}
+
+        def register_session(db, *, platform, verified_host, profile_scope, native_session_id, seat, source, title):
+            seen.update(title=title)
+            return {"outcome": "registered"}
+
+        self.ask(self.registry_of(register_session), parent="p-0001")
+        self.assertEqual(seen, {"title": "T"})
+
     def test_a_pair_registry_gets_both(self) -> None:
         seen = {}
 
@@ -1423,6 +1433,19 @@ class HookTests(Base):
         self.assertEqual(self.lookup("s-0001")["label"], label)
         self.assertFalse(PL.Chat(self.spec, self.server_env(), "server", "s-0001", runner=ssh, now=0.0).write({}))
 
+    def test_the_note_is_never_written_through_a_planted_symlink(self) -> None:
+        victim = os.path.join(self.tmp.name, "victim")
+        with open(victim, "w") as fh:
+            fh.write("keep me")
+        chat = PL.Chat(self.spec, self.server_env(), "server", "s-0001", runner=None, now=0.0)
+        os.makedirs(os.path.dirname(chat.path), mode=0o700, exist_ok=True)
+        # the name the writer used to take for its temporary file, which anyone who can write the folder could guess
+        os.symlink(victim, "%s.%d.tmp" % (chat.path, os.getpid()))
+        self.assertTrue(chat.write({"state": "open"}))
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "keep me")
+        self.assertEqual(chat.read().get("state"), "open")
+
     def test_a_letter_that_arrives_on_a_later_prompt_is_announced(self) -> None:
         down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
         t0 = time.time()
@@ -1604,6 +1627,23 @@ class InstallTests(Base):
         self.assertEqual(os.stat(os.path.dirname(path)).st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(out.getvalue())["backup"], "")  # nothing to back up
+
+    def test_the_hook_file_is_never_written_through_a_planted_symlink(self) -> None:
+        victim = os.path.join(self.tmp.name, "victim")
+        with open(victim, "w") as fh:
+            fh.write("keep me")
+        fresh = os.path.join(self.tmp.name, "planted-home")
+        path = os.path.join(fresh, ".codex", "hooks.json")
+        os.makedirs(os.path.dirname(path))
+        os.symlink(victim, path + ".letter.tmp")  # the fixed name the installer used to write through
+        out = io.StringIO()
+        self.assertEqual(
+            PL.install_json_hooks(self.installer(), PL.InstallOptions("codex", "mac"), {"HOME": fresh}, out), 0
+        )
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "keep me")
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
     def test_check_and_remove_on_an_absent_file_write_nothing(self) -> None:
         self.assertEqual(self.run_install(check=True)[0], 1)

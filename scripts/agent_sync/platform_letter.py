@@ -62,6 +62,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping
@@ -569,9 +570,13 @@ def operator_register(
         seat=seat,
         source=source,
         title=title,
-        issuer=OR.ISSUER_OPERATOR,
-        letter_space=space,
     )
+    # Every optional argument is probed, so a registry that predates one of them still registers the chat with the
+    # lowest free pair instead of raising TypeError.
+    if _accepts(OR.register_session, "issuer"):
+        kwargs["issuer"] = OR.ISSUER_OPERATOR
+    if _accepts(OR.register_session, "letter_space"):
+        kwargs["letter_space"] = space
     if _accepts(OR.register_session, "letter_pick"):
         kwargs["letter_pick"] = pick
     for name in PARENT_PARAMS:
@@ -1011,10 +1016,13 @@ class Chat:
     def write(self, note: Mapping[str, Any]) -> bool:
         """Save the note; False when it cannot be saved (a state folder that is not writable).  The hook goes on
         without it, so the letter is still shown, and the next event only resumes the registration."""
-        tmp = "%s.%d.tmp" % (self.path, os.getpid())
+        tmp = ""
         try:
-            os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            folder = os.path.dirname(self.path)
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+            # An unpredictable name made with O_EXCL:  a symlink planted at a guessable temporary name can never
+            # redirect the write to another file.
+            fd, tmp = tempfile.mkstemp(dir=folder, prefix=".letter-", suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(
                     dict(
@@ -1030,10 +1038,11 @@ class Chat:
                 os.fsync(fh.fileno())
             os.replace(tmp, self.path)
         except (OSError, TypeError, ValueError):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
             return False
         return True
 
@@ -1985,9 +1994,20 @@ def install_json_hooks(
         os.remove(path)
     else:
         body = (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        tmp = path + ".letter.tmp"
-        _write_private(tmp, body, file_mode)
-        os.replace(tmp, path)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".letter-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(body)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, file_mode)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     answer = {"platform": platform, "changed": changed, "path": path, "backup": backup}
     if drop:
         answer["removed_file"] = True
