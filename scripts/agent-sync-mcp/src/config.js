@@ -189,7 +189,7 @@ export function loadConfig(env) {
   if (typeof seatsRaw !== "object" || Array.isArray(seatsRaw)) throw new Error("config: SEATS must be an object");
   const seats = {};
   // Redirect URI -> every seat that lists it.  An https redirect belongs to
-  // exactly one seat.  A loopback redirect (http://127.0.0.1:<port>/<path>)
+  // exactly one seat except the pinned JET/CODEX ChatGPT callback below. A loopback redirect (http://127.0.0.1:<port>/<path>)
   // may be listed under several seats of one native app;  /authorize then
   // picks the one seat that is armed (policy.js resolveArmedSeat).
   const redirectSeats = new Map();
@@ -207,7 +207,13 @@ export function loadConfig(env) {
       }
       const listed = redirectSeats.get(uri) ?? [];
       if (listed.includes(seat)) throw new Error(`config: ${seat} lists a redirect URI twice`);
-      if (listed.length > 0 && !isLoopbackRedirect(uri)) throw new Error("config: a redirect URI is listed under two seats (only a 127.0.0.1 loopback redirect may be shared)");
+      // ChatGPT custom connectors accept a distinct admin-created manual client
+      // for CODEX while the existing JET CIMD remains bound only to JET.
+      // Existing policy requires a seat-bound client plus exactly one armed
+      // seat at consent GET and POST. No other HTTPS callback/seat is shared.
+      const sharedChatGpt = uri === "https://chatgpt.com/connector_platform_oauth_redirect"
+        && [seat, ...listed].every((candidate) => candidate === "JET" || candidate === "CODEX");
+      if (listed.length > 0 && !isLoopbackRedirect(uri) && !sharedChatGpt) throw new Error("config: a redirect URI is listed under two seats (only loopback or the pinned JET/CODEX ChatGPT callback may be shared)");
       redirectSeats.set(uri, [...listed, seat]);
     }
     for (const id of cimdClientIds) {
