@@ -20,6 +20,7 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
   - `README.md` and `package.json` changes report drift `"info"` instead of `"changed"`.
   - `schemaVersion` stays 1;  every new key is optional, so the shipped Muster reader keeps working.
 - `scripts/systemd/fleet-server-status.service` + `.timer`:  a user unit for `jay`, the account the read-only doctor runs as (`fleet-tools-ro` authenticates as root and then executes `runuser -u jay --`), with `loginctl enable-linger jay`, every 15 minutes, `Persistent=true`, inside the 45-minute freshness window.  The separate `fleet-ops-ctl` key is the root-only control route.
+- `scripts/fleet-ops-control.py` + `scripts/fleet-ops-control.json`:  add an explicit account to each user-scoped `server.units` entry; the status timer entry uses `jay`.  The root-only forced command resolves that account's uid, home and user bus, then runs `systemctl --user` in that account's systemd user manager; it refuses if that manager is unavailable instead of falling through to root's manager.  `coolify_resource()` reads `/home/jay/.local/state/fleet-tools/server-status.json` and verifies it is a private regular file owned by `jay`, from `fleet-server-status` and fresh.  System-scoped units and the `fleet-ops-ctl` key remain root-scoped.
 - `scripts/fleet-tools-doctor.py`:
   - On the server with `--json`, the document carries `serverStatus` (the parsed `server-status.json`, only when it is valid JSON with `tool == "fleet-server-status"`, and at most 512 KiB), so the existing read-only forced-command key carries it without a new key.
   - On the Mac with `--remote` and `--write`, a valid `serverStatus` is written to `~/.local/state/fleet-tools/server-status.json` (0600, atomic, through the same `write_report` helper) and removed from the combined report.
@@ -41,7 +42,7 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
 {
   "schemaVersion": 1,
   "mac":    { "agents": [ { "label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"] } ] },
-  "server": { "units":  [ { "unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"] } ],
+  "server": { "units":  [ { "unit": "fleet-server-status.timer", "scope": "user", "account": "jay", "actions": ["start", "stop", "restart"] } ],
               "updates": [ { "name": "fleet-cli", "unit": "fleet-cli-git-update.service", "scope": "system" } ],
               "coolify": { "redeploy": true } }
 }
@@ -53,7 +54,7 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
 - Every verb takes `--plan` (prints what it would run, as JSON, and changes nothing) or `--yes` (runs it).  Without either it refuses.
 - `--json` output:  `{ "ok": bool, "verb", "target", "commands": [[argv...]], "result": "planned"|"done"|"refused"|"failed", "detail" }`.
 - Mac:  `launchctl kickstart [-k] gui/<uid>/<label>`, `launchctl bootout gui/<uid>/<label>`, and `launchctl bootstrap gui/<uid> <plist>` when the agent is not loaded.
-- Server:  `systemctl [--user] start|stop|restart <unit>` and `systemctl start <update unit>`.  `redeploy` checks the uuid against the latest `server-status.json` Coolify list, then calls Coolify's `GET /api/v1/deploy?uuid=<uuid>` with the Coolify token from `fleet-secrets` (`Fleet-OPS /coolify COOLIFY_API_TOKEN`), read into memory and never printed.  No Coolify uuid or host is committed:  the uuid comes from the live report.
+- Server:  system-scoped commands run as root; user-scoped commands run in the configured account's user manager.  `redeploy` checks the uuid against the latest `server-status.json` Coolify list, then calls Coolify's `GET /api/v1/deploy?uuid=<uuid>` with the Coolify token from `fleet-secrets` (`Fleet-OPS /coolify COOLIFY_API_TOKEN`), read into memory and never printed.  No Coolify uuid or host is committed:  the uuid comes from the live report.
 - The Mac reaches the server verbs through `ssh <alias> -- <verb ...>` over a second forced-command key (`fleet-ops-ctl`), whose forced command is `fleet-ops-control.py --from-ssh`.  That mode reads `SSH_ORIGINAL_COMMAND`, splits it with `shlex`, accepts only the `server` verbs, and re-checks the allowlist.  The key-install steps are in `docs/protocols/fleet-tool-parity.md`.
 - Every `--yes` run appends one JSON line to `~/.local/state/fleet-tools/ops-audit.jsonl` (0600):  time, host, verb, target, result.  No output from the commands themselves is recorded.
 
@@ -75,9 +76,10 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
 
 - Create the write-capable Infisical service token for the knob folder and store it in the Mac keychain as `fleet-knobs-write`.  Record it in the Infisical Service Tokens registry.
 - Install the `fleet-ops-ctl` forced-command key on the server (steps in `fleet-tool-parity.md`).
-- Load the two new LaunchAgents and enable the server timer (`systemctl --user enable --now fleet-server-status.timer`).
+- Load the two new LaunchAgents and enable lingering for `jay`; enable the server timer in `jay`'s user manager (`systemctl --user enable --now fleet-server-status.timer`).
 
 ## Tests
 
 - Python:  `python3 scripts/test_fleet_server_status.py`, `python3 scripts/test_fleet_tools_doctor.py`, `python3 scripts/test_fleet_mac_services.py`, `python3 scripts/test_fleet_ops_control.py`, `cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t .`.
+- Server control:  verify the status timer and report lookup use `jay`'s user manager and report; refuse timer operations when that manager is unavailable and refuse redeploy when the `jay`-owned report is missing or stale.
 - Swift:  new decoding fixtures and model tests in `muster/MusterTests`, run by the `muster-macos-build` CI job.
