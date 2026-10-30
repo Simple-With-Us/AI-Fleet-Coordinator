@@ -133,9 +133,7 @@ def openrouter_api_key(env, home=None, fetch=None):
     project = env.get(PROJECT_ENV, "").strip()
     if not project:
         project = Z.infisical_project_id(env, home_path)
-    where = "OpenRouter key: Fleet-OPS {} {}; no fallback".format(
-        WAKE_INFISICAL_PATH, OPENROUTER_KEY_NAME
-    )
+    where = f"OpenRouter key: Fleet-OPS {WAKE_INFISICAL_PATH} {OPENROUTER_KEY_NAME}; no fallback"
     if not Z.infisical_enabled(env):
         raise Z.CredentialError(f"cannot read {where}: AGENT_SYNC_INFISICAL turns Infisical off")
     names = (OPENROUTER_KEY_NAME,)

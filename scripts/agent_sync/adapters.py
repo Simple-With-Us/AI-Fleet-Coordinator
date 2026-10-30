@@ -2376,7 +2376,9 @@ class OpenRouterRunner:
         if too_large:
             out.error = "response too large"
             return out
-        if status is None:  # (no exception and no status cannot happen;  fail closed if it ever does)
+        if (
+            status is None
+        ):  # (no exception and no status cannot happen;  fail closed if it ever does)
             out.error = "no response"
             return out
         if not 200 <= status < 300:
@@ -2480,9 +2482,7 @@ def openrouter_pin_state(
     return state
 
 
-def openrouter_pinned(
-    paths: L.SeatPaths, model: str, role: str = OPENROUTER_ROLE_PRIMARY
-) -> bool:
+def openrouter_pinned(paths: L.SeatPaths, model: str, role: str = OPENROUTER_ROLE_PRIMARY) -> bool:
     return bool(openrouter_pin_state(paths, model, role)["pinned"])
 
 

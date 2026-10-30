@@ -2733,9 +2733,7 @@ class Daemon:
             return None, str(state["why"] or "not_pinned")
         return str(state["muse"]), None
 
-    def _pinned_openrouter(
-        self, runner: SeatRunner, role: str
-    ) -> tuple[str | None, str | None]:
+    def _pinned_openrouter(self, runner: SeatRunner, role: str) -> tuple[str | None, str | None]:
         """(the model to call, why not), for an `openrouter` primary or fallback.  The runtime has no
         binary, so the pin is on its own files (one pair per role) and vouches for the request shape:
         the endpoint, the model, the strict schema, the contract and the policy version.  Same
