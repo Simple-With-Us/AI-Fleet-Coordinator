@@ -253,6 +253,41 @@ class CollectorTests(unittest.TestCase):
             transaction.rollback()
             self.assertFalse(active_output.exists())
 
+    def test_collection_lock_symlink_fails_closed_as_collection_error(self) -> None:
+        output = self.base / "lock-symlink-output"
+        output.mkdir(mode=0o700)
+        output.chmod(0o700)
+        protected_file = self.base / "protected-lock-target"
+        protected_file.write_text("preserve")
+        protected_file.chmod(0o600)
+        (output / collector.COLLECTION_LOCK_FILE).symlink_to(protected_file)
+
+        with self.assertRaisesRegex(collector.CollectionError, "safe regular file"):
+            with collector._collection_lock(output, exclusive=True):
+                self.fail("symlinked lock must not be acquired")
+        self.assertEqual(protected_file.read_text(), "preserve")
+
+    def test_transaction_directory_creation_race_is_a_clean_collection_error(self) -> None:
+        output = self.base / "transaction-mkdir-race"
+        output.mkdir(mode=0o700)
+        output.chmod(0o700)
+        transaction_dir = output / collector.COLLECTION_TRANSACTION_DIR
+        original_mkdir = collector.os.mkdir
+
+        def create_then_report_exists(path: str | os.PathLike[str], mode: int = 0o777) -> None:
+            if Path(path) == transaction_dir:
+                original_mkdir(path, mode)
+                raise FileExistsError("raced transaction directory creation")
+            original_mkdir(path, mode)
+
+        with patch.object(collector.os, "mkdir", side_effect=create_then_report_exists):
+            with self.assertRaisesRegex(collector.CollectionError, "already pending"):
+                collector._CollectionTransaction(output)
+        self.assertTrue(transaction_dir.is_dir())
+        self.assertEqual(list(transaction_dir.iterdir()), [])
+        self.assertTrue(collector._recover_collection_transaction(output))
+        self.assertFalse(transaction_dir.exists())
+
     def test_empty_versioned_report_uses_explicit_document_presence_check(self) -> None:
         repo = self.make_repo()
         repo.write("src/main.py", "print('not a human document')")
@@ -469,14 +504,68 @@ class CollectorTests(unittest.TestCase):
         collector.collect(self.code, self.output)
         self.assertEqual(target.read_text(), "guide")
 
+    def test_transaction_journal_rejects_before_image_over_limit_without_mutation(self) -> None:
+        output = self.base / "journal-cap-output"
+        target = output / "ExampleRepo/documents/docs/large.md"
+        collector._atomic_write(target, b"x" * 1024, output)
+        transaction = collector._CollectionTransaction(output)
+        journal_before = transaction.journal.read_bytes()
+
+        with patch.object(collector, "MAX_TRANSACTION_JOURNAL_BYTES", 1024):
+            with self.assertRaisesRegex(collector.CollectionError, "64 MiB safety limit"):
+                transaction.write(target, b"replacement", hashlib.sha256(b"x" * 1024).hexdigest())
+
+        self.assertEqual(transaction.journal.read_bytes(), journal_before)
+        self.assertEqual(target.read_bytes(), b"x" * 1024)
+        transaction.rollback()
+        self.assertEqual(target.read_bytes(), b"x" * 1024)
+
+    def test_unterminated_valid_jsonl_tails_are_discarded_during_recovery(self) -> None:
+        header_only = self.base / "unterminated-header"
+        header_txn = collector._CollectionTransaction(header_only)
+        header_txn.journal.write_bytes(header_txn.journal.read_bytes().rstrip(b"\n"))
+        self.assertTrue(collector._recover_collection_transaction(header_only))
+        self.assertFalse((header_only / collector.COLLECTION_TRANSACTION_DIR).exists())
+
+        write_output = self.base / "unterminated-write"
+        target = write_output / "ExampleRepo/documents/docs/existing.md"
+        collector._atomic_write(target, b"before", write_output)
+        write_txn = collector._CollectionTransaction(write_output)
+        before = b"before"
+        write_record = {
+            "kind": "write",
+            "target": "ExampleRepo/documents/docs/existing.md",
+            "before_exists": True,
+            "before_sha256": hashlib.sha256(before).hexdigest(),
+            "before_base64": collector.base64.b64encode(before).decode("ascii"),
+            "after_sha256": hashlib.sha256(b"after").hexdigest(),
+        }
+        write_txn._append(write_record)
+        write_txn.journal.write_bytes(write_txn.journal.read_bytes().rstrip(b"\n"))
+        collector._recover_collection_transaction(write_output)
+        self.assertEqual(target.read_bytes(), before)
+
+        commit_output = self.base / "unterminated-commit"
+        commit_txn = collector._CollectionTransaction(commit_output)
+        created = commit_output / "ExampleRepo/documents/docs/new.md"
+        commit_txn.write(created, b"after", None)
+        commit_txn.journal.write_bytes(
+            commit_txn.journal.read_bytes() + collector._json_line({"kind": "commit"}).rstrip(b"\n")
+        )
+        collector._recover_collection_transaction(commit_output)
+        self.assertFalse(created.exists())
+
     def test_public_index_excludes_named_credential_reports_but_central_selection_keeps_them(
         self,
     ) -> None:
         repo = self.make_repo()
         excluded = (
             "docs/audits/2026-10-01-cf-token-map.md",
+            "docs/audits/2026-10-01-cf-token-map-backup.md",
             "docs/reports/2026-10-02-private-billing-receipt-import.md",
+            "docs/reports/2026-10-02-private-billing-receipt-import-backup.md",
             "docs/reviews/extension-credential-containment.md",
+            "docs/reviews/extension-credential-containment-followup.md",
         )
         for path in excluded:
             repo.write(path, "operational detail")

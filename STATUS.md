@@ -2,7 +2,7 @@
 
 ## 2026-10-30 CODEX — Per-Repository Document Library (AFC-580)
 
-Adds an on-demand tracked-document collector, a shared report-storage convention and per-repository report entry points.  The central layout uses `Code/Docs/<Exact-GitHub-Repo-Name>/`; existing historical paths remain canonical.  Collection previews and validation run from owned lanes, with no background job or integration-checkout edits.  Central placement is pending a narrow owner-approved lane-guard exception.
+Adds an on-demand tracked-document collector, a shared report-storage convention and per-repository report entry points.  The central layout uses `Code/Docs/<Exact-GitHub-Repo-Name>/`; existing historical paths remain canonical.  Collection previews and validation run from owned lanes, with no background job or integration-checkout edits.  The owner-approved Docs-only lane-guard exception is installed and tested; sibling Git checkouts remain protected.
 
 Rollout: `docs/rollouts/2026-10-30-repository-document-library.md`.
 

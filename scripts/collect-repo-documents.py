@@ -38,6 +38,7 @@ PUBLIC_REPORT_EXCLUSIONS = {
     "extension-credential-containment",
 }
 COLLECTION_TRANSACTION_DIR = ".collector-transaction"
+MAX_TRANSACTION_JOURNAL_BYTES = 64 * 1024 * 1024
 COLLECTION_LOCK_FILE = ".collector.lock"
 LANE_PREVIEW_ROOTS = {".docs-library-preview", ".docs-library-preview-safe-public"}
 DOCUMENT_DIRS = {
@@ -137,6 +138,8 @@ def _collection_lock(output_root: Path, *, exclusive: bool):
                 fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
             except OSError as exc:
                 raise CollectionError("Collection writer lock is not a safe regular file") from exc
+        except OSError as exc:
+            raise CollectionError("Collection writer lock is not a safe regular file") from exc
         else:
             os.fchmod(fd, 0o600)
             _fsync_directory(root)
@@ -691,7 +694,10 @@ class _CollectionTransaction:
         self.directory = self.output_root / COLLECTION_TRANSACTION_DIR
         if self.directory.exists() or self.directory.is_symlink():
             raise CollectionError("A collection transaction is already pending")
-        os.mkdir(self.directory, 0o700)
+        try:
+            os.mkdir(self.directory, 0o700)
+        except FileExistsError as exc:
+            raise CollectionError("A collection transaction is already pending") from exc
         os.chmod(self.directory, 0o700, follow_symlinks=False)
         _check_private_directory(self.directory)
         self.journal = self.directory / "journal.jsonl"
@@ -719,9 +725,12 @@ class _CollectionTransaction:
             raise CollectionError("Collection transaction journal is unavailable")
         if stat.S_IMODE(self.journal.stat(follow_symlinks=False).st_mode) != 0o600:
             raise CollectionError("Collection transaction journal must have mode 0600")
+        payload = _json_line(record)
+        journal_size = self.journal.stat(follow_symlinks=False).st_size
+        if journal_size + len(payload) > MAX_TRANSACTION_JOURNAL_BYTES:
+            raise CollectionError("Collection transaction journal exceeds the 64 MiB safety limit")
         fd = os.open(self.journal, os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW)
         try:
-            payload = _json_line(record)
             written = 0
             while written < len(payload):
                 written += os.write(fd, payload[written:])
@@ -787,17 +796,13 @@ def _transaction_records(output_root: Path, journal: Path) -> tuple[list[dict[st
         raise CollectionError("Pending collection transaction has no valid journal")
     if stat.S_IMODE(journal.stat(follow_symlinks=False).st_mode) != 0o600:
         raise CollectionError("Pending collection transaction journal must have mode 0600")
+    if journal.stat(follow_symlinks=False).st_size > MAX_TRANSACTION_JOURNAL_BYTES:
+        raise CollectionError("Pending collection transaction exceeds the 64 MiB safety limit")
     raw = journal.read_bytes()
     complete = raw.endswith(b"\n")
     chunks = raw.splitlines()
     if not complete and chunks:
-        tail = chunks.pop()
-        try:
-            parsed_tail = json.loads(tail)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            parsed_tail = None
-        if isinstance(parsed_tail, dict):
-            chunks.append(tail)
+        chunks.pop()
     records: list[dict[str, Any]] = []
     for chunk in chunks:
         try:
@@ -1079,10 +1084,7 @@ def reports_index(repo: RepoInfo, tree: dict[str, Blob]) -> bytes:
         ):
             continue
         stem = PurePosixPath(path).stem.casefold()
-        if any(
-            stem == item or stem.endswith(f"-{item}") or stem.endswith(f"_{item}")
-            for item in PUBLIC_REPORT_EXCLUSIONS
-        ):
+        if any(item in stem for item in PUBLIC_REPORT_EXCLUSIONS):
             continue
         category = next(
             (_report_category(part) for part in parts[1:-1] if _report_category(part)), None
