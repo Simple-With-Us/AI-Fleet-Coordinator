@@ -309,6 +309,25 @@ test('file write receipts require string branch and path',()=>{
  for (const bad of [{path:'x',branch:{},commit:'a'.repeat(40)},{path:2,branch:'b',commit:'a'.repeat(40)},{path:'x',branch:'',commit:'a'.repeat(40)}]) assert.equal(validWfV1Response('wf_file_put',bad),false);
  assert.equal(validWfV1Response('wf_file_put',{path:'x',branch:'b',commit:'a'.repeat(40)}),true);
 });
+test('nonsecret repo variables own bearer closed inputs UNKNOWN writes',async()=>{
+ const a={repo,name:'BUILD_MODE',value:'release'};
+ assert.ok(validWfV1Args('wf_repo_variable_create',a));assert.ok(!validWfV1Args('wf_repo_variable_create',{...a,token:'x'}));
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_repo_variable_create'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({completed:true,name:'BUILD_MODE'}));});assert.ok(!(await t.call('gr_wf_repo_variable_create',a)).isError);
+ const f=harness(async()=>{throw Error('lost');});assert.match((await f.call('gr_wf_repo_variable_create',a)).content[0].text,/unknown/i);
+ assert.ok(!validWfV1Response('wf_repo_variable_get',{variable:{name:'BUILD_MODE',value:7,created_at:'x',updated_at:'x'}}));
+});
+
+test('variable inputs are strict Zod parsed copies with UTF8 byte refinement', async()=>{
+ const a={repo,name:'BUILD_MODE',value:'é'.repeat(4096)};
+ const parsed=parseWfV1Args('wf_repo_variable_create',a);
+ assert.deepEqual(parsed,a);assert.notEqual(parsed,a);
+ for(const action of ['wf_repo_variable_create','wf_repo_variable_update']) {
+  assert.equal(parseWfV1Args(action,{...a,value:'é'.repeat(4097)}),null);
+  assert.equal(parseWfV1Args(action,{...a,extra:true}),null);
+  let calls=0;const h=harness(async()=>{calls++;throw Error('not reached');});
+  assert.ok((await h.call('gr_'+action,{...a,value:'é'.repeat(4097)})).isError);assert.equal(calls,0);
+ }
+});
 test('issue relation pages closed boundary and own bearer',async()=>{
  const a={repo,number:1,page:2,per_page:2},reply={issues:[{id:7,number:8,title:'Child',state:'open',repo}],page:2,has_more:false};
  assert.ok(validWfV1Args('wf_issue_subissues',a));assert.ok(!validWfV1Args('wf_issue_subissues',{...a,page:1001}));
@@ -794,6 +813,23 @@ test('run page observes startup_failure without treating it as successful review
  assert.equal(validWfV1Response('wf_runs_page',{...receipt,runs:[{...row,status:'queued'}]},args),false);
 });
 
+test('issue create/update provider shapes refuse before transport with parsed-copy validation',async()=>{
+ let count=0;
+ for(const prefix of ['sk-','sk-ant-','sk-proj-','sk_live_','sk_test_']) for(const field of ['title','body']) for(const action of ['wf_issue_create','wf_issue_update']){
+  const args={repo:'o/r',title:'safe issue',body:'safe body',...(action==='wf_issue_update'?{number:1}:{}),[field]:prefix+'X'.repeat(32)};
+  assert.equal(validWfV1Args(action,args),false);
+  assert.equal(parseWfV1Args(action,args),null);
+  let calls=0;const t=harness(async()=>{calls++;throw Error('must not call');});
+  assert.equal((await t.call('gr_'+action,args)).isError,true);assert.equal(calls,0);count++;
+ }
+ assert.equal(count,20);
+});
+test('safe issue arguments and existing github credential refusal remain unchanged',()=>{
+ for(const [action,args] of [['wf_issue_create',{repo:'o/r',title:'safe issue',body:'safe body'}],['wf_issue_update',{repo:'o/r',number:1,state:'closed'}]]){
+  assert.equal(validWfV1Args(action,args),true);assert.notEqual(parseWfV1Args(action,args),null);
+ }
+ assert.equal(validWfV1Args('wf_issue_create',{repo:'o/r',title:'ghp_'+'X'.repeat(32),body:'safe body'}),false);
+});
 test('label update metadata uses closed bounded args and exact correlated receipt',async()=>{
  const args={repo,name:'old/label',expected_label_id:7,new_name:'New label',color:'AaBbee',description:''};
  const receipt={label:{id:7,name:'New label',color:'aabbee',description:''}};
@@ -870,6 +906,22 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
  assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
 });
 
+test('variable receipts bind page size and exact name without Node Buffer',()=>{
+ const prior=globalThis.Buffer;globalThis.Buffer=undefined;
+ try{
+  const variable={name:'MODE',value:'release',created_at:'x',updated_at:'x'};
+  const args={repo:'o/r',page:2,per_page:1};
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable],total_count:1,page:2},args),true);
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable],total_count:1,page:1},args),false);
+  assert.equal(validWfV1Response('wf_repo_variables',{variables:[variable,variable],total_count:2,page:2},args),false);
+  for(const action of ['wf_repo_variable_get','wf_repo_variable_create','wf_repo_variable_update','wf_repo_variable_delete']){
+   const body=action.endsWith('_get')?{variable}:{completed:true,name:'MODE'};
+   assert.equal(validWfV1Response(action,body,{repo:'o/r',name:'MODE'}),true);
+   assert.equal(validWfV1Response(action,body,{repo:'o/r',name:'OTHER'}),false);
+  }
+ }finally{globalThis.Buffer=prior;}
+});
+
 test('pending user/team request capability receipts correlate and do not dismiss reviews',()=>{
  const sha='a'.repeat(40);
  for(const op of ['add','remove','rerequest']){
@@ -914,4 +966,32 @@ test('review context exact inputs, receipts and correlation',()=>{
  assert.ok(!validWfV1Response('wf_commit_comment_get',{comment:{...comment,body:'sk-'+('x'.repeat(25))}},args));
  assert.ok(validWfV1Response('wf_commit_comment_get',{comment:{...comment,body:'<withheld: credential-shaped text>',body_withheld:true}},args));
  assert.ok(WF_V1_READ_ACTIONS.includes('wf_pr_requested_reviewers'));
+});
+
+test('Actions inventory attempts: exact identities, bounded pages, secret metadata refusal',()=>{
+ const sha='a'.repeat(40),identity={run_id:4,head_sha:sha,run_attempt:2};
+ const state={id:4,...identity,status:'completed',conclusion:'success'};
+ const artifact={id:3,name:'build',size_in_bytes:9,expired:false,run_id:4,head_sha:sha};
+ const cache={id:8,key:'build-key',ref:'refs/heads/main',size_in_bytes:4};
+ const cases=[
+ ['wf_workflow_get',{repo,workflow_id:7},{workflow:{id:7,path:'ruby.yaml',state:'active'}}],
+ ['wf_artifact_get',{repo,artifact_id:3},{artifact}],
+ ['wf_artifacts_page',{repo,per_page:1},{artifacts:[artifact],total:1,page:1,has_more:true,snapshot:false}],
+ ['wf_caches_page',{repo,per_page:1},{caches:[cache],total:1,page:1,has_more:true,snapshot:false}],
+ ['wf_cache_usage',{repo},{repo,active_caches_count:1,active_caches_size_in_bytes:4}],
+ ['wf_run_attempt_get',{repo,...identity},{run:state}],
+ ['wf_run_attempt_jobs',{repo,...identity,per_page:1},{jobs:[{...state,id:8}],...identity,total:1,page:1,has_more:true,snapshot:false}],
+ ['wf_run_pending_deployments',{repo,...identity},{...identity,environments:[{id:9,name:'prod',wait_timer:10,current_user_can_approve:false}],snapshot:false}],
+ ];
+ for(const [a,args,body] of cases){
+  assert.equal(validWfV1Args(a,args),true,a);assert.equal(validWfV1Args(a,{...args,url:'no'}),false,a);
+  assert.equal(validWfV1Response(a,body,args),true,a);assert.equal(validWfV1Response(a,{...body,extra:true},args),false,a);
+  assert.equal(WF_V1_READ_ACTIONS.includes(a),true,a);
+ }
+ assert.equal(validWfV1Response('wf_artifact_get',{artifact:{...artifact,name:'ghp_'+'a'.repeat(30)}},{repo,artifact_id:3}),false);
+ assert.equal(validWfV1Response('wf_artifact_get',{artifact:{...artifact,head_sha:null}},{repo,artifact_id:3}),false);
+ assert.equal(validWfV1Response('wf_run_attempt_get',{run:{...state,id:5}},{repo,...identity}),false);
+ assert.equal(validWfV1Response('wf_run_attempt_jobs',{jobs:[{...state,id:8,run_attempt:3}],...identity,total:1,page:1,has_more:true,snapshot:false},{repo,...identity,per_page:1}),false);
+ assert.equal(validWfV1Response('wf_caches_page',{caches:[cache,cache],total:2,page:1,has_more:false,snapshot:false},{repo}),false);
+ assert.equal(validWfV1Args('wf_run_attempt_get',{repo,...identity,run_attempt:true}),false);
 });
