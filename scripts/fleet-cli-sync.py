@@ -30,8 +30,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
 # platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
-# (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026), added for that review.
-MAX_FILES = 137
+# (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026), added for that review;
+# the 138th is agent_sync/notes_service_reader.py, which notes_client imports for the scoped service token.
+MAX_FILES = 138
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
