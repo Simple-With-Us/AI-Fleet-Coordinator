@@ -981,7 +981,11 @@ async function serveAdmin(request, env, config, oauth, email) {
     // accidental resubmit of the same form is refused without changing the
     // bearer or showing it again (src/pages.js gbBearerSection).
     const mintId = Date.now().toString(16).padStart(12, "0") + newCsrf().slice(0, 20);
-    const done = new URL(request.url).searchParams.get("done");
+    const adminParams = new URL(request.url).searchParams;
+    const done = adminParams.get("done");
+    // Diagnostic inventories are opt-in, never an all-seat listing on reload.
+    const inspectGrantSeat = adminParams.get("inspect_grants");
+    const inspectClients = adminParams.get("inspect_clients") === "1";
     const generatedAt = Date.now();
     const seats = [];
     const audits = [];
@@ -1008,16 +1012,18 @@ async function serveAdmin(request, env, config, oauth, email) {
         recallConfigured,
       };
       const reads = await Promise.allSettled([
-        g.getState(), listAllGrants(oauth, seat), g.roleStatus(),
+        g.getState(), seat === inspectGrantSeat ? listAllGrants(oauth, seat) : Promise.resolve(null), g.roleStatus(),
         g.tail(40), g.callTail(100), g.errorTail(50),
       ]);
       const value = (i, fallback) => reads[i].status === "fulfilled" ? reads[i].value : fallback;
-      const grants = value(1, []);
+      const grants = value(1, null);
       seats.push({
         ...facts, ...value(0, {}), role: value(2, null),
         diagnosticsUnavailable: reads.some((r) => r.status === "rejected"),
         unavailableFields: ["state", "grants", "role", "audits", "calls", "errors"].filter((_, i) => reads[i].status === "rejected"),
-        grants: grants.map((x) => ({ client: x.metadata?.client_name ?? x.clientId, scope: x.scope ?? [], createdAt: toMs(x.createdAt) })),
+        grantsDeferred: seat !== inspectGrantSeat,
+        grantsCheckedAt: seat === inspectGrantSeat && reads[1].status === "fulfilled" ? Date.now() : null,
+        grants: (grants ?? []).map((x) => ({ client: x.metadata?.client_name ?? x.clientId, scope: x.scope ?? [], createdAt: toMs(x.createdAt) })),
       });
       for (const row of value(3, [])) {
         const { ts, event, ...detail } = row;
@@ -1029,7 +1035,16 @@ async function serveAdmin(request, env, config, oauth, email) {
     seats.sort((a, b) => config.hostedSeats.indexOf(a.seat) - config.hostedSeats.indexOf(b.seat));
     audits.sort((a, b) => b.ts - a.ts);
     calls.sort((a, b) => b.ts - a.ts);
-    const clients = (await oauth.listClients()).items ?? [];
+    let clients = [];
+    let clientsUnavailable = false;
+    let clientsCheckedAt = null;
+    if (inspectClients) {
+      try {
+        const result = await oauth.listClients();
+        clients = result.items ?? [];
+        clientsCheckedAt = Date.now();
+      } catch { clientsUnavailable = true; }
+    }
     const logGate = gate(env, GATE_LOG_NAME);
     const globalReads = await Promise.allSettled([
       logGate.refusals(30), logGate.tokenRefusals(30), logGate.diagnosticTail(50),
@@ -1078,6 +1093,9 @@ async function serveAdmin(request, env, config, oauth, email) {
         mintId,
         email,
         seats,
+        clientsDeferred: !inspectClients,
+        clientsUnavailable,
+        clientsCheckedAt,
         clients: clients.filter((c) => !isUrlShapedClientId(c.clientId)).map((c) => ({ ...c, seat: manualClientSeat(c) })),
         refusals,
         tokenRefusals,
