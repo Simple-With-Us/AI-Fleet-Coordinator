@@ -31,6 +31,7 @@ from agent_sync.mcp import tools as T
 from agent_sync.tests.fake_zulip import BOT_EMAIL
 from agent_sync.tests.harness import TAG, write_rc
 from agent_sync.tests.mcp_harness import (
+    BEARER_STUB_LAUNCHER,
     CLIENT_META,
     MODERN,
     SCRIPT,
@@ -1748,9 +1749,9 @@ class StartupTests(McpHarness):
         )
         self.assertNotIn("from a process", audit.read_text())
 
-    def test_subprocess_without_a_seat_serves_but_every_call_names_its_identity(self):
-        """AFC-331:  --as and AGENT_SEAT only set the default.  With none, the server starts, and a read
-        or a write without identity is refused with identity_required;  one that names it works."""
+    def test_subprocess_without_a_seat_serves_nothing(self):
+        """No seat means no bearer to check:  the server exits 3 before it reads a request, and it never
+        offers the identities this host holds keys for."""
         calls = [
             {"jsonrpc": "2.0", "id": 1, "method": "ping"},
             {
@@ -1773,14 +1774,35 @@ class StartupTests(McpHarness):
             },
         ]
         code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT=None), calls)
-        self.assertEqual(code, 0, stderr)
-        self.assertIn("no default identity", stderr)
-        for line in lines[1:3]:
-            self.assertEqual(
-                json.loads(line["result"]["content"][0]["text"])["code"], "identity_required"
-            )
-        self.assertEqual(lines[3]["result"]["structuredContent"]["seat"], "CLAUDE")
+        self.assertEqual((code, lines), (3, []))
+        self.assertIn("no seat named", stderr)
+        self.assertNotIn("identities allowed", stderr)
         self.assertEqual(self.fake.messages, [])
+
+    def test_subprocess_refuses_without_the_seats_own_bearer(self):
+        """The gateway's answer decides:  a refused, unreachable or other-seat bearer starts nothing."""
+        for mode, expected in (("revoked", 3), ("other-seat", 3), ("unavailable", 6)):
+            with self.subTest(mode):
+                self.bearer_mode = mode
+                code, lines, stderr = self.spawn(
+                    self.mcp_env(), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
+                )
+                self.assertEqual((code, lines), (expected, []), stderr)
+                self.assertIn("bearer", stderr)
+
+    def test_a_bearer_revoked_mid_session_stops_the_next_call(self):
+        session = self.session()
+        self.assertEqual(
+            self.assert_structured("whoami", session.call("whoami"))["seat"], "CLAUDE"
+        )
+        self.bearer_mode = "revoked"
+        result = session.call("whoami")
+        self.assertIs(result.get("isError"), True)
+        self.assertIn("nothing ran", result["content"][0]["text"])
+        self.bearer_mode = "ok"
+        self.assertEqual(
+            self.assert_structured("whoami", session.call("whoami"))["seat"], "CLAUDE"
+        )
 
     def test_subprocess_refuses_admin_and_owner_bots(self):
         for role in (200, 100):
@@ -2006,11 +2028,11 @@ class StartupTests(McpHarness):
         _nonblocking(in_r)
         _nonblocking(out_w)
         proc = subprocess.Popen(
-            [sys.executable, str(SCRIPT), "mcp"],
+            [sys.executable, str(BEARER_STUB_LAUNCHER), "mcp"],
             stdin=in_r,
             stdout=out_w,
             stderr=subprocess.PIPE,
-            env=self.mcp_env(),
+            env={**self.mcp_env(), "BEARER_STUB_MODE": "ok"},
         )
         os.close(in_r)
         os.close(out_w)

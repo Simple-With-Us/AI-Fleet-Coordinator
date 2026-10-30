@@ -56,9 +56,12 @@ class IdentityHarness(McpHarness):
                     "%s_ZULIP_SITE" % prefix: self.fake.url,
                 }
             )
-        self.expected = sorted(
+        # Every bot this host holds keys for.  A connection serves none of them but its own bearer's seat
+        # (bearer_gate.py):  the allowed set is that one seat, and the others are refused by name.
+        self.host_seats = sorted(
             {"CLAUDE", "CURSOR", "BF-PLUMBER"} | ({PERSONA, "GB-RETIRED"} & set(ENABLED))
         )
+        self.expected = ["CLAUDE"]
         # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT,
         # so every seat this suite acts as gets its own locator in the installed listener.toml.  Without
         # one a Linear write is refused before board runs.
@@ -87,7 +90,8 @@ class AllowedSetTests(IdentityHarness):
         self.assertNotIn("GB-RETIRED", ENABLED)
         for never in ("JAY", "SENTRY"):
             self.assertNotIn(never, names)
-        self.assertEqual({n for n in names if n.startswith("GB-")}, {PERSONA} & set(ENABLED))
+        # Only the bearer's own seat is served, whatever else this host holds keys for.
+        self.assertEqual({n for n in names if n.startswith("GB-")}, set())
 
     def test_the_advertised_identity_schema_is_built_for_this_connection(self):
         """Row 6:  the enum is exactly the allowed set, required on writes, absent on identities."""
@@ -128,17 +132,15 @@ class CallRuleTests(IdentityHarness):
         )
         self.assertEqual(refused["code"], "identity_required")
         self.assertEqual(self.fake.messages, [])
-        posted = self.assert_structured(
-            "zulip_post",
-            session.call("zulip_post", {"topic": "copied", "text": "hello"}, identity="CURSOR"),
+        # The connection's bearer is CLAUDE's:  a write naming another bot this host holds keys for is refused
+        # by name and nothing is posted.
+        refused = self.error(
+            session.call("zulip_post", {"topic": "copied", "text": "hello"}, identity="CURSOR")
         )
-        message = next(m for m in self.fake.messages if m["id"] == posted["id"])
-        self.assertEqual(message["sender_email"], "cursor-bot@zulip.test")
-        self.assertTrue(message["content"].startswith("[CURSOR·%s] " % TAG), message["content"])
-        who = self.assert_structured(
-            "whoami", session.call("whoami", {"identity": "cursor"})
-        )  # aliases resolve
-        self.assertEqual((who["seat"], who["email"]), ("CURSOR", "cursor-bot@zulip.test"))
+        self.assertEqual((refused["code"], refused["allowed"]), ("identity_not_allowed", ["CLAUDE"]))
+        self.assertEqual(self.fake.messages, [])
+        who = self.assert_structured("whoami", session.call("whoami", {"identity": "claude"}))
+        self.assertEqual(who["seat"], "CLAUDE")  # aliases resolve
 
     def test_a_read_without_identity_uses_the_default(self):
         """Row 5:  a read with identity omitted acts as the default;  a write with it omitted is refused."""
@@ -151,13 +153,14 @@ class CallRuleTests(IdentityHarness):
                 self.assertEqual(error["allowed"], self.expected)
         self.assertEqual(self.fake.messages, [])
 
-    def test_no_default_refuses_reads_without_identity(self):
-        session = self.session(self.mcp_env(AGENT_SEAT=None))
-        self.assertEqual(self.error(session.call("whoami"))["code"], "identity_required")
-        self.assertEqual(
-            self.assert_structured("whoami", session.call("whoami", {"identity": PERSONA}))["seat"],
-            PERSONA,
+    def test_no_default_seat_serves_nothing(self):
+        # No seat means no bearer to check:  the server does not start, and never enumerates identities.
+        code, lines, stderr = self.spawn(
+            self.mcp_env(AGENT_SEAT=None), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
         )
+        self.assertEqual((code, lines), (3, []))
+        self.assertIn("no seat named", stderr)
+        self.assertNotIn("identities allowed", stderr)
 
     def test_an_identity_outside_the_set_is_refused(self):
         session = self.session()
@@ -171,13 +174,12 @@ class CallRuleTests(IdentityHarness):
     def test_a_credential_that_is_not_the_claimed_bot_is_refused_on_first_use(self):
         # Cursor's Infisical names hold BF-PLUMBER's key:  check_bot refuses it, and nothing is posted.
         self.add_infisical_bot(
-            "CURSOR", email="bf-plumber-bot@zulip.test", key=self.keys["BF-PLUMBER"]
+            "CLAUDE", email="bf-plumber-bot@zulip.test", key=self.keys["BF-PLUMBER"]
         )
-        session = self.session()
-        error = self.error(
-            session.call("zulip_post", {"topic": "t", "text": "x"}, identity="CURSOR")
+        code, lines, stderr = self.spawn(
+            self.mcp_env(), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
         )
-        self.assertEqual(error["code"], "not_authorized")
+        self.assertEqual((code, lines), (3, []))  # refused at startup, before any request is read
         self.assertEqual(self.fake.messages, [])
 
     def test_spacing_is_per_identity(self):
@@ -185,11 +187,13 @@ class CallRuleTests(IdentityHarness):
         self.assert_structured(
             "zulip_post", session.call("zulip_post", {"topic": "a", "text": "one"})
         )
-        self.assert_structured(
-            "zulip_post",
-            session.call("zulip_post", {"topic": "a", "text": "two"}, identity="BF-PLUMBER"),
+        self.assertEqual(
+            self.error(
+                session.call("zulip_post", {"topic": "a", "text": "two"}, identity="BF-PLUMBER")
+            )["code"],
+            "identity_not_allowed",
         )
-        self.assertEqual([s for s in self.clock.sleeps if s > 0], [])  # two bots, two slots
+        self.assertEqual([s for s in self.clock.sleeps if s > 0], [])  # a refusal takes no slot
         self.assert_structured(
             "zulip_post", session.call("zulip_post", {"topic": "a", "text": "three"})
         )
@@ -199,7 +203,7 @@ class CallRuleTests(IdentityHarness):
         session = self.session()
         posted = self.assert_structured(
             "zulip_post",
-            session.call("zulip_post", {"topic": "a", "text": "body"}, identity=PERSONA),
+            session.call("zulip_post", {"topic": "a", "text": "body"}, identity="CLAUDE"),
         )
         self.error(session.call("zulip_post", {"topic": "a", "text": "body"}, identity=None))
         self.error(session.call("zulip_post", {"topic": "a", "text": "body"}, identity="SENTRY"))
@@ -214,7 +218,7 @@ class CallRuleTests(IdentityHarness):
                 for r in rows
             ],
             [
-                ("CLAUDE", PERSONA, "zulip_post", "ok", posted["id"]),
+                ("CLAUDE", "CLAUDE", "zulip_post", "ok", posted["id"]),
                 ("CLAUDE", None, "zulip_post", "identity_required", None),
                 ("CLAUDE", "SENTRY", "zulip_post", "identity_not_allowed", None),
             ],
@@ -230,14 +234,14 @@ class CallRuleTests(IdentityHarness):
 
         with mock.patch.object(T.CLI, "cmd_post", interrupted):
             with self.assertRaises(AssertionError, msg="the interrupt ends the server"):
-                session.call("zulip_post", {"topic": "a", "text": "body"}, identity=PERSONA)
+                session.call("zulip_post", {"topic": "a", "text": "body"}, identity="CLAUDE")
         rows = [
             json.loads(line)
             for line in (self.state_dir / "logs" / "identity.jsonl").read_text().splitlines()
         ]
         self.assertEqual(
             [(r["default_identity"], r["identity"], r["tool"], r["outcome"]) for r in rows],
-            [("CLAUDE", PERSONA, "zulip_post", "interrupted")],
+            [("CLAUDE", "CLAUDE", "zulip_post", "interrupted")],
         )
         self.assertNotIn("body", json.dumps(rows))
 
@@ -280,7 +284,7 @@ class CliTests(IdentityHarness):
         result = self.run_cli("identities", "--json", env=self.cli_env())
         self.assertEqual(result.code, 0, result.err)
         info = json.loads(result.out)
-        self.assertEqual([row["identity"] for row in info["identities"]], self.expected)
+        self.assertEqual([row["identity"] for row in info["identities"]], self.host_seats)
         self.assertEqual(info["default_identity"], "CLAUDE")
         pinned = self.run_cli(
             "identities",
@@ -305,7 +309,7 @@ class CliTests(IdentityHarness):
         info = json.loads(listed.out)
         self.assertEqual(info["default_identity"], "CODEX")
         self.assertEqual(
-            [row["identity"] for row in info["identities"]], sorted([*self.expected, "CODEX"])
+            [row["identity"] for row in info["identities"]], sorted([*self.host_seats, "CODEX"])
         )
         # The same exclusions as at stdio startup:  an integration bot or the owner's account never enters.
         for never in ("SENTRY", "JAY", "REALM-ADMIN"):
@@ -572,32 +576,27 @@ class EnvBackedTests(McpHarness):
 
     def test_a_host_with_only_env_backed_seats(self):
         self.drop_infisical_bot("CLAUDE")  # no Infisical credential at all
-        session = self.session(self.server_env(AGENT_SEAT=None))
+        session = self.session(self.server_env(AGENT_SEAT=None), argv=("--as", "GROK-WEB"))
         info = self.assert_structured("identities", session.call("identities"))
-        self.assertEqual([row["identity"] for row in info["identities"]], self.env_only)
-        self.assertIsNone(info["default_identity"])
+        # The bearer names GROK-WEB:  it is the only identity served, not every env-backed seat.
+        self.assertEqual([row["identity"] for row in info["identities"]], ["GROK-WEB"])
+        self.assertEqual(info["default_identity"], "GROK-WEB")
         posted = self.assert_structured(
             "zulip_post",
-            session.call("zulip_post", {"topic": "env", "text": "hi"}, identity=PERSONA),
+            session.call("zulip_post", {"topic": "env", "text": "hi"}, identity="GROK-WEB"),
         )
         message = next(m for m in self.fake.messages if m["id"] == posted["id"])
-        self.assertEqual(message["sender_email"], PERSONA_EMAIL)
-        who = self.assert_structured("whoami", session.call("whoami", {"identity": "GROK-WEB"}))
-        self.assertEqual((who["seat"], who["email"]), ("GROK-WEB", "grok-web-bot@zulip.test"))
+        self.assertEqual(message["sender_email"], "grok-web-bot@zulip.test")
+        refused = self.error(session.call("zulip_post", {"topic": "env", "text": "x"}, identity=PERSONA))
+        self.assertEqual(refused["code"], "identity_not_allowed")
 
-    def test_a_mixed_host_lists_files_and_env_seats(self):
+    def test_a_mixed_host_serves_only_the_bearers_seat(self):
         session = self.session(self.server_env())
         info = self.assert_structured("identities", session.call("identities"))
-        self.assertEqual(
-            [row["identity"] for row in info["identities"]], sorted(["CLAUDE", *self.env_only])
-        )
+        self.assertEqual([row["identity"] for row in info["identities"]], ["CLAUDE"])
         self.assertEqual(self.assert_structured("whoami", session.call("whoami"))["seat"], "CLAUDE")
-        self.assertEqual(
-            self.assert_structured("whoami", session.call("whoami", {"identity": "BF-PLUMBER"}))[
-                "seat"
-            ],
-            "BF-PLUMBER",
-        )
+        refused = self.error(session.call("whoami", {"identity": "BF-PLUMBER"}))
+        self.assertEqual(refused["code"], "identity_not_allowed")
 
     def test_as_names_an_env_backed_seat(self):
         self.drop_infisical_bot("CLAUDE")
@@ -652,15 +651,15 @@ class EnvBackedTests(McpHarness):
             self.assertIn("none is served", stderr)
         self.assertEqual(self.fake.messages, [])
 
-    def test_a_key_in_another_seats_variable_is_refused_on_first_use(self):
+    def test_a_key_in_another_seats_variable_is_refused_at_startup(self):
         self.vars["ZULIP_GROK_WEB_EMAIL"] = "bf-plumber-bot@zulip.test"
         self.vars["ZULIP_GROK_WEB_API_KEY"] = self.vars["ZULIP_BF_PLUMBER_API_KEY"]
-        session = self.session(self.server_env())
-        error = self.error(
-            session.call("zulip_post", {"topic": "t", "text": "x"}, identity="GROK-WEB")
+        code, lines, stderr = self.spawn(
+            self.server_env(AGENT_SEAT=None),
+            [{"jsonrpc": "2.0", "id": 1, "method": "ping"}],
+            argv=("--as", "GROK-WEB"),
         )
-        self.assertEqual(error["code"], "not_authorized")
-        self.assertIn("env ZULIP_GROK_WEB_API_KEY", error["message"])
+        self.assertEqual((code, lines), (3, []))
         self.assertEqual(self.fake.messages, [])
 
 

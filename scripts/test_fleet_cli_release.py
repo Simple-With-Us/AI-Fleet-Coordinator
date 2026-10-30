@@ -86,6 +86,16 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             release.decode_bundle(json.dumps(self.bundle).encode())
 
+    def test_bearer_gate_required_only_for_new_bundles(self):
+        path = "scripts/agent_sync/mcp/bearer_gate.py"
+        self.assertTrue(release.allowed_path(path))
+        self.assertIn(path, release.TOOL_REQUIRED)
+        self.assertNotIn(path, release.BASE_REQUIRED)
+        self.bundle["files"].pop(path)
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(self.bundle).encode())
+
     def test_allowlist_excludes_operator_data_and_noncanonical_paths(self):
         for path in [
             ".secrets/Linear/CODEX.env",
