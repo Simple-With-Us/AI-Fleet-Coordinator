@@ -942,7 +942,7 @@ async function handleEvent(source, payload, env) {
         service: event.service,
         what: result.state.text,
         link: result.state.link,
-        mentions: resourceMentions(event.key),
+        mentions: resourceMentions(event.key, result.state.severity),
       },
     );
   } else if (result.action === "resolve") {
@@ -1089,7 +1089,7 @@ async function runSweep(env) {
           service,
           what: s.state.text,
           link: s.state.link,
-          mentions: resourceMentions(key),
+          mentions: resourceMentions(key, s.state.severity),
         },
       );
       await env.ALERT_STATE.put(name, JSON.stringify(s.state));
