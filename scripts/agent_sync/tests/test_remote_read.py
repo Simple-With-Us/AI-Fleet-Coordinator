@@ -30,7 +30,7 @@ class RemoteRead(unittest.TestCase):
 
         def fake(url, headers, body, timeout):
             calls.append((url, headers, json.loads(body)))
-            return answer
+            return answer(calls[-1]) if callable(answer) else answer
 
         full = {"SIMPLE_CHAT_REMOTE": "1", "SIMPLE_TOOLS_BEARER": BEARER}
         full.update(env or {})
@@ -86,6 +86,78 @@ class RemoteRead(unittest.TestCase):
                 self.assertEqual((code, calls), (2, []))
                 self.assertIn("SIMPLE_CHAT_REMOTE_WRITES", err)
 
+    @staticmethod
+    def full(default, allowed=None, **over):
+        """The shape delegated-identities.js `identities` returns."""
+        rows = [{"identity": n, "zulip": "configured", "linear": "missing", "recall": "configured"}
+                for n in (allowed or [default])]
+        return {"default_identity": default, "authenticated_seat": default, "transport": "hosted",
+                "identities": rows, **over}
+
+    @staticmethod
+    def by_tool(structured, default="CODEX", identities=None):
+        def answer(call):
+            if call[2]["params"]["name"] == "identities":
+                if identities is not None:
+                    return identities
+                return reply(RemoteRead.full(default))
+            return reply(structured)
+        return answer
+
+    def test_a_write_names_only_the_identity_the_server_reports_as_the_bearers_default(self):
+        code, _, err, calls = self.run_cli(["post", "--topic", "t", "hi"], self.by_tool({"ok": True}, default="MC"),
+                                           env=self.W)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[1][2]["params"]["arguments"]["identity"], "MC")
+        # reads never ask for it and never carry one
+        code, _, _, calls = self.run_cli(["channels"], self.by_tool({"ok": True}))
+        self.assertEqual([c[2]["params"]["name"] for c in calls], ["zulip_channels"])
+        self.assertNotIn("identity", calls[0][2]["params"]["arguments"])
+
+    def test_a_write_is_not_sent_unless_the_answer_matches_the_bearers_own_seat_and_allowed_set(self):
+        full = self.full
+        bad = [
+            {}, {"default_identity": None}, full("../x"), full(5),
+            full("CODEX", authenticated_seat="CLAUDE"),          # default is not the authenticated seat
+            full("CODEX", authenticated_seat=None),
+            full("CODEX", allowed=["CLAUDE"]),                    # default missing from the allowed set
+            full("CODEX", allowed=["CODEX", "CODEX"]),            # not exactly once
+            full("CODEX", allowed=["codex"]),                     # no case or alias normalization
+            full("CODEX", identities="CODEX"),                    # wrong type
+            full("CODEX", identities=[{"identity": 7}]),
+            full("CODEX", identities=["CODEX"]),
+            {**full("CODEX"), "identities": [{"identity": "CODEX"}, "junk"]},
+            {k: v for k, v in full("CODEX").items() if k != "identities"},
+        ]
+        for answer in bad:
+            with self.subTest(answer=answer):
+                code, _, err, calls = self.run_cli(["post", "--topic", "t", "hi"],
+                                                   self.by_tool({"ok": True}, identities=reply(answer)), env=self.W)
+                self.assertEqual((code, [c[2]["params"]["name"] for c in calls]), (2, ["identities"]))
+                self.assertIn("did not match this bearer", err)
+
+    def test_a_multi_identity_connection_writes_as_its_own_default_only(self):
+        ans = reply(self.full("CODEX", allowed=["CODEX", "GB-FIXER"]))
+        code, _, err, calls = self.run_cli(["post", "--topic", "t", "hi"],
+                                           self.by_tool({"ok": True}, identities=ans), env=self.W)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[1][2]["params"]["arguments"]["identity"], "CODEX")
+
+    def test_a_server_without_identities_gets_the_write_unchanged_and_other_failures_stop_it(self):
+        old = {"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": [
+            {"type": "text", "text": json.dumps({"code": "unknown_tool"})}]}}
+        gone = (200, "application/json", json.dumps(old).encode())
+        code, _, err, calls = self.run_cli(["post", "--topic", "t", "hi"], self.by_tool({"ok": True}, identities=gone),
+                                           env=self.W)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("identity", calls[1][2]["params"]["arguments"])
+        down = (200, "application/json", json.dumps({**old, "result": {"isError": True, "content": [
+            {"type": "text", "text": json.dumps({"code": "paused"})}]}}).encode())
+        code, _, err, calls = self.run_cli(["post", "--topic", "t", "hi"], self.by_tool({"ok": True}, identities=down),
+                                           env=self.W)
+        self.assertEqual((code, len(calls)), (2, 1))
+        self.assertIn("paused", err)
+
     def test_writes_map_to_the_hosted_zulip_tools(self):
         cases = [
             (["post", "--topic", "t1", "--channel", "sandbox", "--to", "CODEX", "hello", "there"], "zulip_post",
@@ -97,9 +169,10 @@ class RemoteRead(unittest.TestCase):
         ]
         for argv, tool, args in cases:
             with self.subTest(argv=argv):
-                code, out, err, calls = self.run_cli(argv, reply({"ok": True}), env=self.W)
+                code, out, err, calls = self.run_cli(argv, self.by_tool({"ok": True}), env=self.W)
                 self.assertEqual(code, 0, err)
-                self.assertEqual(calls[0][2]["params"], {"name": tool, "arguments": args})
+                self.assertEqual([c[2]["params"]["name"] for c in calls], ["identities", tool])
+                self.assertEqual(calls[1][2]["params"], {"name": tool, "arguments": {**args, "identity": "CODEX"}})
 
     def test_a_non_ascii_digit_recipient_is_a_clean_refusal_not_a_traceback(self):
         code, _, err, calls = self.run_cli(["dm", "--to", "\u0663", "hi"], reply({}), env=self.W)

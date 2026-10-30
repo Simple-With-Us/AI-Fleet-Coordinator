@@ -619,6 +619,28 @@ def _remote_code(value) -> str:
     return value if isinstance(value, str) and value in _REMOTE_CODES else "error"
 
 
+def _remote_error_object(result: dict, sc) -> dict:
+    """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
+    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part.  A
+    structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
+    the code only when it is allow-listed, so nothing the server wrote is copied."""
+    if isinstance(sc, dict) and "code" in sc:
+        return sc
+    meta = result.get("_meta")
+    cand = meta.get("agent-sync/error") if isinstance(meta, dict) else None
+    if not isinstance(cand, dict):
+        cand = None
+        for part in result.get("content") or []:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                try:
+                    obj = json.loads(part["text"])
+                except (ValueError, RecursionError):
+                    obj = None
+                cand = obj if isinstance(obj, dict) else None
+                break
+    return cand if isinstance(cand, dict) else (sc if isinstance(sc, dict) else {})
+
+
 def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     """The tools/call result of one answer, or (None, message).  Returns (result, "") on success.  Only an
     allow-listed code and a bounded retry-after leave this function:  the server's own message text is
@@ -662,8 +684,9 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     ):
         return None, "the hosted endpoint sent a result in an unexpected shape" + unknown
     if result.get("isError"):
-        code = _remote_code((sc or {}).get("code"))
-        retry = (sc or {}).get("retry_after")
+        eo = _remote_error_object(result, sc)
+        code = _remote_code(eo.get("code"))
+        retry = eo.get("retry_after_s", eo.get("retry_after"))
         after = f", retry after {retry}s" if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400 else ""
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
         return None, f"{tool} failed on the hosted server: {code}{after}{note}"

@@ -149,6 +149,30 @@ class Parsing(unittest.TestCase):
                 self.assertIsNone(result, body)
                 self.assertTrue(err, body)
 
+    def test_the_servers_real_error_shape_has_no_structured_content_and_its_code_still_shows(self):
+        # contract.js errorResult:  isError, no structuredContent, the object in text (JSON) and in _meta.
+        secret = "ghp_" + "Z9y8X7w6V5" * 4
+        obj = {"code": "identity_required", "message": secret, "retryable": False}
+        text_only = rpc({"isError": True, "content": [{"type": "text", "text": json.dumps(obj)}]})
+        meta_only = rpc({"isError": True, "content": [{"type": "text", "text": "x"}],
+                         "_meta": {"agent-sync/error": obj}})
+        limited = rpc({"isError": True, "content": [{"type": "text", "text": json.dumps(
+            {"code": "rate_limited", "message": secret, "retry_after_s": 9})}]})
+        unknown = rpc({"isError": True, "content": [{"type": "text", "text": json.dumps(
+            {"code": "safe_looking_unknown", "message": secret})}]})
+        not_json = rpc({"isError": True, "content": [{"type": "text", "text": secret}]})
+        for ad in self.each():
+            for body, expect in ((text_only, "zulip_post failed on the hosted server: identity_required"),
+                                 (meta_only, "zulip_post failed on the hosted server: identity_required"),
+                                 (limited, "rate_limited, retry after 9s"),
+                                 (unknown, "hosted server: error"),
+                                 (not_json, "hosted server: error")):
+                result, err = ad.call("zulip_post", {}, False, answer(body))
+                self.assertIsNone(result)
+                self.assertIn(expect, err)
+                self.assertNotIn(secret, err)
+                self.assertNotIn("may or may not", err)
+
     def test_error_text_from_the_server_is_never_copied_only_an_allow_listed_code(self):
         secret = "ghp_" + "Z9y8X7w6V5" * 4
         cases = [
