@@ -27,7 +27,7 @@ def make_bundle(version="one"):
         if path.endswith(".json"):
             data = b"{}"
         if path in ("scripts/linear-board/board", "scripts/simple-board"):
-            data = b'import sys\nsys.exit(4 if "whoami" in sys.argv else 0)\n# ' + version.encode()
+            data = b'import sys\nsys.exit(2 if "show" in sys.argv else 0)\n# ' + version.encode()
         files[path] = {
             "mode": 0o644,
             "sha256": hashlib.sha256(data).hexdigest(),
