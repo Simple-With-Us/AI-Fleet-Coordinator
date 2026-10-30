@@ -915,3 +915,31 @@ test('review context exact inputs, receipts and correlation',()=>{
  assert.ok(validWfV1Response('wf_commit_comment_get',{comment:{...comment,body:'<withheld: credential-shaped text>',body_withheld:true}},args));
  assert.ok(WF_V1_READ_ACTIONS.includes('wf_pr_requested_reviewers'));
 });
+
+test('Actions inventory attempts: exact identities, bounded pages, secret metadata refusal',()=>{
+ const sha='a'.repeat(40),identity={run_id:4,head_sha:sha,run_attempt:2};
+ const state={id:4,...identity,status:'completed',conclusion:'success'};
+ const artifact={id:3,name:'build',size_in_bytes:9,expired:false,run_id:4,head_sha:sha};
+ const cache={id:8,key:'build-key',ref:'refs/heads/main',size_in_bytes:4};
+ const cases=[
+ ['wf_workflow_get',{repo,workflow_id:7},{workflow:{id:7,path:'ruby.yaml',state:'active'}}],
+ ['wf_artifact_get',{repo,artifact_id:3},{artifact}],
+ ['wf_artifacts_page',{repo,per_page:1},{artifacts:[artifact],total:1,page:1,has_more:true,snapshot:false}],
+ ['wf_caches_page',{repo,per_page:1},{caches:[cache],total:1,page:1,has_more:true,snapshot:false}],
+ ['wf_cache_usage',{repo},{repo,active_caches_count:1,active_caches_size_in_bytes:4}],
+ ['wf_run_attempt_get',{repo,...identity},{run:state}],
+ ['wf_run_attempt_jobs',{repo,...identity,per_page:1},{jobs:[{...state,id:8}],...identity,total:1,page:1,has_more:true,snapshot:false}],
+ ['wf_run_pending_deployments',{repo,...identity},{...identity,environments:[{id:9,name:'prod',wait_timer:10,current_user_can_approve:false}],snapshot:false}],
+ ];
+ for(const [a,args,body] of cases){
+  assert.equal(validWfV1Args(a,args),true,a);assert.equal(validWfV1Args(a,{...args,url:'no'}),false,a);
+  assert.equal(validWfV1Response(a,body,args),true,a);assert.equal(validWfV1Response(a,{...body,extra:true},args),false,a);
+  assert.equal(WF_V1_READ_ACTIONS.includes(a),true,a);
+ }
+ assert.equal(validWfV1Response('wf_artifact_get',{artifact:{...artifact,name:'ghp_'+'a'.repeat(30)}},{repo,artifact_id:3}),false);
+ assert.equal(validWfV1Response('wf_artifact_get',{artifact:{...artifact,head_sha:null}},{repo,artifact_id:3}),false);
+ assert.equal(validWfV1Response('wf_run_attempt_get',{run:{...state,id:5}},{repo,...identity}),false);
+ assert.equal(validWfV1Response('wf_run_attempt_jobs',{jobs:[{...state,id:8,run_attempt:3}],...identity,total:1,page:1,has_more:true,snapshot:false},{repo,...identity,per_page:1}),false);
+ assert.equal(validWfV1Response('wf_caches_page',{caches:[cache,cache],total:2,page:1,has_more:false,snapshot:false},{repo}),false);
+ assert.equal(validWfV1Args('wf_run_attempt_get',{repo,...identity,run_attempt:true}),false);
+});

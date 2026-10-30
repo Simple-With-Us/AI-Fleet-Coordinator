@@ -73,6 +73,14 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_workflow_get": ({"actions": "read"}, False),
+    "wf_artifact_get": ({"actions": "read"}, False),
+    "wf_artifacts_page": ({"actions": "read"}, False),
+    "wf_caches_page": ({"actions": "read"}, False),
+    "wf_cache_usage": ({"actions": "read"}, False),
+    "wf_run_attempt_get": ({"actions": "read"}, False),
+    "wf_run_attempt_jobs": ({"actions": "read"}, False),
+    "wf_run_pending_deployments": ({"actions": "read"}, False),
     "wf_job_get": ({"actions": "read"}, False),
     "wf_job_rerun": ({"actions": "write"}, True),
     "wf_run_rerun_all": ({"actions": "write"}, True),
@@ -4494,6 +4502,234 @@ class WorkflowVerbs:
             "run_attempt": attempt,
             "status": row["status"],
             "conclusion": row.get("conclusion"),
+        }
+
+    @staticmethod
+    def _inventory_int(row, key, low=0):
+        if (
+            not isinstance(row, dict)
+            or type(row.get(key)) is not int
+            or not low <= row[key] <= 9007199254740991
+        ):
+            raise RelayGitHubError(502, "Actions inventory integer unverifiable")
+        return row[key]
+
+    def _inventory_page(self, row, field, limit, project):
+        total = self._inventory_int(row, "total_count")
+        rows = row.get(field)
+        if not isinstance(rows, list) or len(rows) > limit or total < len(rows):
+            raise RelayGitHubError(502, "Actions inventory page unverifiable")
+        items = [project(value) for value in rows]
+        if len({value["id"] for value in items}) != len(items):
+            raise RelayGitHubError(502, "Actions inventory duplicate identity")
+        return items, total
+
+    def _artifact_inventory(self, row):
+        result = {
+            "id": self._inventory_int(row, "id", 1),
+            "name": self._metadata_name(row.get("name"), 255),
+            "size_in_bytes": self._inventory_int(row, "size_in_bytes"),
+        }
+        if type(row.get("expired")) is not bool:
+            raise RelayGitHubError(502, "artifact expiration unverifiable")
+        result["expired"] = row["expired"]
+        run = row.get("workflow_run")
+        if run is None:
+            result["run_id"], result["head_sha"] = None, None
+        else:
+            result["run_id"] = self._inventory_int(run, "id", 1)
+            sha = run.get("head_sha")
+            if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+                raise RelayGitHubError(502, "artifact run head unverifiable")
+            result["head_sha"] = sha
+        return result
+
+    def _cache_inventory(self, row):
+        return {
+            "id": self._inventory_int(row, "id", 1),
+            "key": self._metadata_name(row.get("key"), 512),
+            "ref": self._metadata_name(row.get("ref"), 1024),
+            "size_in_bytes": self._inventory_int(row, "size_in_bytes"),
+        }
+
+    def wf_workflow_get(self, repo, args):
+        _only(args, ("repo", "workflow_id"))
+        ident = _int(args, "workflow_id")
+        row = self._get(f"/repos/{repo}/actions/workflows/{ident}")
+        if self._inventory_int(row, "id", 1) != ident or row.get("state") not in (
+            "active",
+            "deleted",
+            "disabled_fork",
+            "disabled_inactivity",
+            "disabled_manually",
+        ):
+            raise RelayGitHubError(502, "workflow identity unverifiable")
+        path = self._metadata_name(row.get("path"), 1024)
+        return {"workflow": {"id": ident, "path": path, "state": row["state"]}}
+
+    def wf_artifact_get(self, repo, args):
+        _only(args, ("repo", "artifact_id"))
+        ident = _int(args, "artifact_id")
+        item = self._artifact_inventory(self._get(f"/repos/{repo}/actions/artifacts/{ident}"))
+        if item["id"] != ident:
+            raise RelayGitHubError(502, "artifact identity unverifiable")
+        return {"artifact": item}
+
+    def wf_artifacts_page(self, repo, args):
+        _only(args, ("repo", "page", "per_page"))
+        page, limit = _int(args, "page", 1, 1000) if "page" in args else 1, _page(args)
+        rows, total = self._inventory_page(
+            self._get(f"/repos/{repo}/actions/artifacts?per_page={limit}&page={page}"),
+            "artifacts",
+            limit,
+            self._artifact_inventory,
+        )
+        return self._context_size(
+            {
+                "artifacts": rows,
+                "total": total,
+                "page": page,
+                "has_more": len(rows) == limit,
+                "snapshot": False,
+            }
+        )
+
+    def wf_caches_page(self, repo, args):
+        _only(args, ("repo", "page", "per_page"))
+        page, limit = _int(args, "page", 1, 1000) if "page" in args else 1, _page(args)
+        rows, total = self._inventory_page(
+            self._get(f"/repos/{repo}/actions/caches?per_page={limit}&page={page}"),
+            "actions_caches",
+            limit,
+            self._cache_inventory,
+        )
+        return self._context_size(
+            {
+                "caches": rows,
+                "total": total,
+                "page": page,
+                "has_more": len(rows) == limit,
+                "snapshot": False,
+            }
+        )
+
+    def wf_cache_usage(self, repo, args):
+        _only(args, ("repo",))
+        row = self._get(f"/repos/{repo}/actions/cache/usage")
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("full_name"), str)
+            or row["full_name"].lower() != repo.lower()
+        ):
+            raise RelayGitHubError(502, "cache repository identity unverifiable")
+        return {
+            "repo": repo,
+            "active_caches_size_in_bytes": self._inventory_int(row, "active_caches_size_in_bytes"),
+            "active_caches_count": self._inventory_int(row, "active_caches_count"),
+        }
+
+    def _attempt_metadata(self, row, run_id, head, attempt, job=False):
+        ident = self._inventory_int(row, "id", 1)
+        if (
+            not job
+            and ident != run_id
+            or job
+            and self._inventory_int(row, "run_id", 1) != run_id
+            or row.get("head_sha") != head
+            or self._inventory_int(row, "run_attempt", 1) != attempt
+            or row.get("status")
+            not in ("queued", "in_progress", "completed", "waiting", "requested", "pending")
+            or row.get("conclusion")
+            not in (
+                None,
+                "success",
+                "failure",
+                "neutral",
+                "cancelled",
+                "skipped",
+                "timed_out",
+                "action_required",
+                "stale",
+                "startup_failure",
+            )
+            or (row["status"] == "completed") != (row.get("conclusion") is not None)
+        ):
+            raise RelayGitHubError(502, "attempt identity or state unverifiable")
+        return {
+            "id": ident,
+            "run_id": run_id,
+            "head_sha": head,
+            "run_attempt": attempt,
+            "status": row["status"],
+            "conclusion": row.get("conclusion"),
+        }
+
+    def wf_run_attempt_get(self, repo, args):
+        _only(args, ("repo", "run_id", "head_sha", "run_attempt"))
+        run, head, attempt = (
+            _int(args, "run_id"),
+            _sha(args, "head_sha"),
+            _int(args, "run_attempt", 1, 1000000),
+        )
+        row = self._get(f"/repos/{repo}/actions/runs/{run}/attempts/{attempt}")
+        return {"run": self._attempt_metadata(row, run, head, attempt)}
+
+    def wf_run_attempt_jobs(self, repo, args):
+        _only(args, ("repo", "run_id", "head_sha", "run_attempt", "page", "per_page"))
+        run, head, attempt = (
+            _int(args, "run_id"),
+            _sha(args, "head_sha"),
+            _int(args, "run_attempt", 1, 1000000),
+        )
+        page, limit = _int(args, "page", 1, 1000) if "page" in args else 1, _page(args)
+        rows, total = self._inventory_page(
+            self._get(
+                f"/repos/{repo}/actions/runs/{run}/attempts/{attempt}/jobs?per_page={limit}&page={page}"
+            ),
+            "jobs",
+            limit,
+            lambda row: self._attempt_metadata(row, run, head, attempt, True),
+        )
+        return {
+            "jobs": rows,
+            "run_id": run,
+            "head_sha": head,
+            "run_attempt": attempt,
+            "total": total,
+            "page": page,
+            "has_more": len(rows) == limit,
+            "snapshot": False,
+        }
+
+    def wf_run_pending_deployments(self, repo, args):
+        _only(args, ("repo", "run_id", "head_sha", "run_attempt"))
+        # Both observed run identities must match; the pending list is still mutable, not an atomic snapshot.
+        identity = self._actions_identity(repo, args)
+        rows = self._get(f"/repos/{repo}/actions/runs/{identity['run_id']}/pending_deployments")
+        if not isinstance(rows, list) or len(rows) > 100:
+            raise RelayGitHubError(502, "pending deployment list unverifiable")
+        result = []
+        for row in rows:
+            if not isinstance(row, dict) or type(row.get("current_user_can_approve")) is not bool:
+                raise RelayGitHubError(502, "pending approval metadata unverifiable")
+            env = row.get("environment")
+            result.append(
+                {
+                    "id": self._inventory_int(env, "id", 1),
+                    "name": self._metadata_name(env.get("name"), 100),
+                    "wait_timer": self._inventory_int(row, "wait_timer"),
+                    "current_user_can_approve": row["current_user_can_approve"],
+                }
+            )
+        if len({r["id"] for r in result}) != len(result):
+            raise RelayGitHubError(502, "pending environment duplicate")
+        self._actions_identity(repo, args)
+        return {
+            "environments": result,
+            "run_id": identity["run_id"],
+            "head_sha": identity["head_sha"],
+            "run_attempt": identity["run_attempt"],
+            "snapshot": False,
         }
 
     def wf_job_get(self, repo, args):
