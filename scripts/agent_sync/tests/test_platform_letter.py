@@ -1572,6 +1572,19 @@ class HookTests(Base):
         PL.mark_registry(env, "mac", time.time() + 900)  # cannot be written: still no error
         PL.mark_registry(env, "mac")  # nor removed
 
+    def test_the_down_mark_is_never_written_through_a_planted_symlink(self) -> None:
+        env = self.server_env()
+        victim = os.path.join(self.tmp.name, "victim")
+        Path(victim).write_text("keep me")
+        os.makedirs(os.path.dirname(self.down_file()), mode=0o700, exist_ok=True)
+        os.symlink(victim, "%s.%d.tmp" % (self.down_file(), os.getpid()))  # the name the writer used to take
+        until = time.time() + 600
+        PL.mark_registry(env, "mac", until)
+        self.assertEqual(Path(victim).read_text(), "keep me")
+        self.assertAlmostEqual(PL.registry_down_until(env, "mac"), until, places=3)
+        leftovers = [n for n in os.listdir(os.path.dirname(self.down_file())) if n.endswith(".tmp") and n != "mac"]
+        self.assertEqual([n for n in leftovers if n.startswith(".down-")], [])  # no temporary file is left behind
+
     def test_a_quiet_event_runs_and_prints_nothing(self) -> None:
         spec = make_spec(events={"SubagentStop": "prompt", "UserPromptSubmit": "prompt"},
                          quiet_events=("SubagentStop",))

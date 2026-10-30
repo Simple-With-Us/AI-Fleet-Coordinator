@@ -329,6 +329,8 @@ def _wait_for_row(env: Mapping[str, str], sid: str, seconds: float) -> Thread | 
 def codex_current_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """The thread's name as Codex shows it now.  A sub-thread has none until it gets one, so its task stands in."""
     sid = codex_session_id(payload, env)
+    if not sid:
+        return ""  # a malformed event names no thread:  do not spend the hook's time waiting for a row that cannot appear
     thread = (
         _wait_for_row(env, sid, CHILD_ROW_WAIT)
         if _event(payload) == "SubagentStart"

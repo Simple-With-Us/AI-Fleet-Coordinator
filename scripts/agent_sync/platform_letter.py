@@ -1013,12 +1013,31 @@ def mark_registry(env: Mapping[str, str], dest: str, until: float = 0.0) -> None
         if until <= 0:
             os.unlink(path)
             return
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        tmp = "%s.%d.tmp" % (path, os.getpid())
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"until": until}, fh)
-        os.replace(tmp, path)
+        folder = os.path.dirname(path)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        # An unpredictable name made with O_EXCL (a planted symlink cannot redirect the write), flushed and fsynced
+        # before the rename, then the folder is synced, so a crash leaves the old mark or the new one, never a torn file.
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".down-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"until": until}, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        try:
+            dir_fd = os.open(folder, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass  # the mark is advisory:  a folder that cannot be synced costs at most one more timeout
     except OSError:
         pass
 

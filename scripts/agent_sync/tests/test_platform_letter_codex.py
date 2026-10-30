@@ -566,6 +566,12 @@ class AccessorTests(Base):
         self.set_name(child, "AB: Pong Review")
         self.assertEqual(C.codex_current_title(sub, self.env()), "AB: Pong Review")
 
+    def test_a_subagent_event_that_names_no_thread_does_not_wait_for_a_row(self) -> None:
+        # A malformed SubagentStart used to spend the 1.5 s row wait on a thread that cannot appear.
+        with mock.patch.object(C, "_wait_for_row", side_effect=AssertionError("waited")) as waited:
+            self.assertEqual(C.codex_current_title({"hook_event_name": "SubagentStart"}, self.env()), "")
+        waited.assert_not_called()
+
     def test_a_subagent_row_that_is_written_a_moment_late_is_waited_for(self) -> None:
         chat = self.add(1)
         timer = threading.Timer(0.3, self.add_child, args=(2, chat))
