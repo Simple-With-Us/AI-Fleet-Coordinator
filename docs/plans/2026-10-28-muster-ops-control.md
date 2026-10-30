@@ -19,7 +19,7 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
   - `filesSummary`:  `{ "found": int, "limit": int, "truncated": bool }`.
   - `README.md` and `package.json` changes report drift `"info"` instead of `"changed"`.
   - `schemaVersion` stays 1;  every new key is optional, so the shipped Muster reader keeps working.
-- `scripts/systemd/fleet-server-status.service` + `.timer`:  a user unit of the account the doctor's forced command runs as (root, with `loginctl enable-linger`), every 15 minutes, `Persistent=true`, inside the 45-minute freshness window.
+- `scripts/systemd/fleet-server-status.service` + `.timer`:  a user unit for `jay`, the account the read-only doctor runs as (`fleet-tools-ro` authenticates as root and then executes `runuser -u jay --`), with `loginctl enable-linger jay`, every 15 minutes, `Persistent=true`, inside the 45-minute freshness window.  The separate `fleet-ops-ctl` key is the root-only control route.
 - `scripts/fleet-tools-doctor.py`:
   - On the server with `--json`, the document carries `serverStatus` (the parsed `server-status.json`, only when it is valid JSON with `tool == "fleet-server-status"`, and at most 512 KiB), so the existing read-only forced-command key carries it without a new key.
   - On the Mac with `--remote` and `--write`, a valid `serverStatus` is written to `~/.local/state/fleet-tools/server-status.json` (0600, atomic, through the same `write_report` helper) and removed from the combined report.
