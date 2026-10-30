@@ -411,6 +411,24 @@ test('issue relation pages closed boundary and own bearer',async()=>{
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_issue_subissues'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_wf_issue_subissues',a)).isError);
 });
 
+// Runtime-assembled synthetic credential shapes, never credentials.
+test('relations title credential rejected and closed nongit Zod before dispatch',()=>{
+ assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ghp_'+'x'.repeat(36),state:'open',repo}}),false);
+ assert.equal(validWfV1Args('wf_issue_blocking',{repo,number:1,raw:true}),false);
+});
+
+test('history metadata closed own-bearer reads and nullable absent fields',async()=>{
+ const event={id:1,event:'commented',created_at:null,commit_id:null};
+ for(const action of ['wf_issue_events','wf_issue_timeline']){
+ const args={repo,number:1,page:2,per_page:1};assert.ok(validWfV1Args(action,args));assert.ok(!validWfV1Args(action,{...args,page:1001}));assert.ok(!validWfV1Args(action,{...args,url:'https://evil.invalid'}));
+ const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(init.body),args);return new Response(JSON.stringify({events:[event],page:2,has_more:true}));});assert.ok(!(await t.call('gr_'+action,args)).isError);
+ assert.equal(validWfV1Response(action,{events:[{...event,body:'not allowed'}],page:1,has_more:false}),false);
+ }
+});
+
+test('documented hyphenated timeline kinds pass receipt boundary',()=>{
+ for(const event of ['cross-referenced','line-commented','commit-commented'])assert.ok(validWfV1Response('wf_issue_timeline',{events:[{event,id:null,created_at:null,commit_id:null}],page:1,has_more:false}));
+});
 // Synthetic runtime-assembled credential shapes below are never credentials.
 test('relations title credential rejected and closed nongit Zod before dispatch',()=>{
  assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ghp_'+'x'.repeat(36),state:'open',repo}}),false);
@@ -566,6 +584,17 @@ test('review lifecycle projected receipts use cached strict schemas and own bear
  assert.equal(validWfV1Response('wf_review_dismiss',{review}),false);
  assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
+});
+test('history endpoint-specific ID contract and preparse structural limits',async()=>{
+ const noid={id:null,event:'cross-referenced',created_at:null,commit_id:null};
+ assert.equal(validWfV1Response('wf_issue_events',{events:[noid],page:1,has_more:false}),false);
+ assert.equal(validWfV1Response('wf_issue_timeline',{events:[noid],page:1,has_more:false}),true);
+ let calls=0;const t=harness(async()=>{calls++;throw Error('must not dispatch');});
+ const args={repo,number:1};args.cycle=args;
+ assert.ok((await t.call('gr_wf_issue_events',args)).isError);assert.equal(calls,0);
+ // Runtime-only synthetic provider shapes, never credentials.
+ for(const title of ['sk-'+'x'.repeat(30),'sk-ant-'+'x'.repeat(30),'sk-proj-'+'x'.repeat(30),'sk_live_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title,state:'open',repo}},{repo}),false);
+ const prior=globalThis.Buffer;try{globalThis.Buffer=undefined;assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ok',state:'open',repo}},{repo}),true);}finally{globalThis.Buffer=prior;}
 });
 
 test('relation provider-shaped title and foreign metadata refuse without content leaks',()=>{
@@ -906,6 +935,15 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
  assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
 });
 
+test('history receipts bind requested page size and conservative has_more',()=>{
+ const row={id:1,event:'closed',created_at:null,commit_id:null};
+ for(const action of ['wf_issue_events','wf_issue_timeline']){
+  const args={repo:'o/r',number:1,page:2,per_page:1};
+  const body={events:[row],page:2,has_more:true};
+  assert.equal(validWfV1Response(action,body,args),true);
+  for(const extra of [{page:1},{events:[row,row]},{has_more:false}])assert.equal(validWfV1Response(action,{...body,...extra},args),false);
+ }
+});
 test('variable receipts bind page size and exact name without Node Buffer',()=>{
  const prior=globalThis.Buffer;globalThis.Buffer=undefined;
  try{
