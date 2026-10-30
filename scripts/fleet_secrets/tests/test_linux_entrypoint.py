@@ -303,6 +303,79 @@ class BootstrapTests(unittest.TestCase):
         ):
             self.assertEqual(entry.main(), 127)
 
+    def test_no_wrapper_identity_delegates_existing_session_policy_without_login(self):
+        for command in ("get", "get-verified", "set", "doctor"):
+            with (
+                self.subTest(command=command),
+                mock.patch.dict(
+                    os.environ,
+                    {"HOME": "/synthetic", "FLEET_SECRETS_CLI": str(self.delegate())},
+                    clear=True,
+                ),
+                mock.patch.object(entry, "private_bootstrap", return_value={}),
+                mock.patch.object(entry.core, "find_cli") as find,
+                mock.patch.object(entry.subprocess, "Popen") as login,
+                mock.patch.object(entry.sys, "argv", ["fleet-secrets", command]),
+                mock.patch.object(entry.os, "execve") as delegate,
+            ):
+                self.assertIsNone(entry.main())
+                self.assertEqual(delegate.call_args.args[1][1:], [command])
+                self.assertEqual(delegate.call_args.args[2]["HOME"], "/synthetic")
+                self.assertFalse(set(delegate.call_args.args[2]) & entry.core.AUTH_ENV_VARS)
+                find.assert_not_called()
+                login.assert_not_called()
+
+    def test_session_delegation_keeps_core_verified_read_and_write_refusals(self):
+        env = {"INFISICAL_FLEET_OPS_PROJECT_ID": "00000000-0000-4000-8000-000000000001"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(entry, "private_bootstrap", return_value={}),
+        ):
+            delegated = entry.authenticated_env()
+        with (
+            mock.patch.object(entry.core, "find_cli", return_value="/synthetic/infisical"),
+            mock.patch.object(entry.core, "auth_mode", return_value="session"),
+            mock.patch.object(entry.core, "_api_json") as api,
+        ):
+            with self.assertRaisesRegex(entry.core.SecretsError, "read-needs-machine-identity"):
+                entry.core.fetch_verified("GITHUB_TOKEN", "/cli-logins/CODEX", delegated)
+            with self.assertRaisesRegex(entry.core.SecretsError, "write-needs-machine-identity"):
+                entry.core.put_secret("CACHE_TEST", "/linear", "synthetic-value", delegated)
+            api.assert_not_called()
+
+    def test_partial_pair_does_not_downgrade_to_session_or_bootstrap(self):
+        for name, value in PAIR.items():
+            with (
+                self.subTest(name=name),
+                mock.patch.dict(os.environ, {name: value}, clear=True),
+                mock.patch.object(entry, "private_bootstrap") as bootstrap,
+                mock.patch.object(entry.subprocess, "Popen") as login,
+            ):
+                with self.assertRaises(entry.EntryError):
+                    entry.authenticated_env()
+                bootstrap.assert_not_called()
+                login.assert_not_called()
+
+    def test_unsafe_bootstrap_does_not_downgrade_to_session(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(entry, "private_bootstrap", side_effect=entry.EntryError("unsafe")),
+            mock.patch.object(entry.subprocess, "Popen") as login,
+        ):
+            with self.assertRaises(entry.EntryError):
+                entry.authenticated_env()
+            login.assert_not_called()
+
+    def test_valid_bootstrap_still_uses_existing_machine_login(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(entry, "private_bootstrap", return_value=PAIR),
+            mock.patch.object(entry.core, "find_cli", return_value="/synthetic/infisical"),
+            mock.patch.object(entry, "_login", return_value="synthetic-token") as login,
+        ):
+            self.assertEqual(entry.authenticated_env(), {"INFISICAL_TOKEN": "synthetic-token"})
+            login.assert_called_once()
+
     def test_inherited_token_is_validated_without_falling_back(self):
         with mock.patch.dict(os.environ, dict(PAIR, INFISICAL_TOKEN="invalid token"), clear=True):
             with self.assertRaises(entry.EntryError):
