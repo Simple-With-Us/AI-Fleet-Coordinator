@@ -3164,7 +3164,11 @@ class Daemon:
                         first = result
                         inspect_prompt = self.chat_inspection_prompt(prompt, excerpt)
                         second = self.muse_runner.run(
-                            argv, muse_env, runner.paths.wake_dir, inspect_prompt, schema=muse_schema
+                            argv,
+                            muse_env,
+                            runner.paths.wake_dir,
+                            inspect_prompt,
+                            schema=muse_schema,
                         )
                         second.secs = float(second.secs or 0) + float(first.secs or 0)
                         second.cost_usd = float(second.cost_usd or 0) + float(first.cost_usd or 0)
