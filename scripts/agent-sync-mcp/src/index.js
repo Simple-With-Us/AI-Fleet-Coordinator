@@ -736,6 +736,23 @@ async function wakeChannels(env, config, seat, seatGate) {
 async function serveApp(request, env, _ctx) {
   const config = loadConfig(env);
   const route = classifyPath(new URL(request.url).pathname);
+  // The provider initializes OAUTH_PROVIDER before invoking this handler.
+  if (route === "gr_assert_verify") return serveGrAssertVerify(request, env, gate, {
+    hostedSeats: config.hostedSeats,
+    eventsOnlySeats: config.eventsOnlySeats,
+    // The signed grant_ref must name a grant that still exists for the
+    // seat:  listUserGrants is the provider's own view (the same one the
+    // admin revoke and consent replacement paths maintain), filtered to
+    // live rows - the library lists expired KV rows until their TTL sweeps
+    // them (grantSummaryIsLive, src/gr-assert-verify.js).
+    grantExists: async (seat, grantRef) => {
+      for (const g of await listAllGrants(env.OAUTH_PROVIDER, seat)) {
+        if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return true;
+      }
+      return false;
+    },
+  });
+
   if (route !== "authorize" && route !== "admin") return notFound();
 
   const who = await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), config.access);
@@ -1414,21 +1431,8 @@ export default {
       return response;
     }
     if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats });
-    if (route === "gr_assert_verify") return serveGrAssertVerify(request, env, gate, {
-      hostedSeats: config.hostedSeats,
-      eventsOnlySeats: config.eventsOnlySeats,
-      // The signed grant_ref must name a grant that still exists for the
-      // seat:  listUserGrants is the provider's own view (the same one the
-      // admin revoke and consent replacement paths maintain), filtered to
-      // live rows - the library lists expired KV rows until their TTL sweeps
-      // them (grantSummaryIsLive, src/gr-assert-verify.js).
-      grantExists: async (seat, grantRef) => {
-        for (const g of await listAllGrants(env.OAUTH_PROVIDER, seat)) {
-          if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return true;
-        }
-        return false;
-      },
-    });
+    // Enter through the provider so its request-local OAuth helpers exist.
+    if (route === "gr_assert_verify") return fetchProvider(request, env, ctx);
     const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
     const sbtBearer = route === "mcp" && !gbBearer ? sbtBearerFromRequest(request) : null;
     const response = gbBearer
