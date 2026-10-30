@@ -87,12 +87,13 @@
     // ECHO and WISE (Fri, Oct 9) are two identities of the Instinct app
     // (instinct.com), each posting as its own member bot.
     // CLAUDE hosted configuration is prepared; its key and connection are pending.
-    "HOSTED_SEATS": "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE",
+    "HOSTED_SEATS": "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE",
     // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
     // whose users/me is not this bot, not a bot, or not a member is refused.
     "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_CURSOR": "cursor-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_JET": "openai-dot-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_JET_CHAT": "openai-dot-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_ECHO": "instinct-bat-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_WISE": "instinct-owl-bot@simplewithus.zulipchat.com",
     "ZULIP_CLAUDE_EMAIL": "claude-bot@simplewithus.zulipchat.com",
