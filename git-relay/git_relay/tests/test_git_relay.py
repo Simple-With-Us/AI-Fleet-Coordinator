@@ -3118,7 +3118,6 @@ class TestRateEnvironmentErrors(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "git-relay config:"):
                     server.from_env()
 
-
     def test_nonnumeric_rate_does_not_blame_a_valid_file_policy(self):
         from unittest.mock import patch
 
@@ -3128,7 +3127,9 @@ class TestRateEnvironmentErrors(unittest.TestCase):
             for rate in ("GIT_RELAY_RATE_PER_HOUR", "GIT_RELAY_WRITE_RATE_PER_HOUR"):
                 with (
                     self.subTest(binding=binding, rate=rate),
-                    patch.dict("os.environ", {binding: "/valid/policy", rate: "not-a-number"}, clear=True),
+                    patch.dict(
+                        "os.environ", {binding: "/valid/policy", rate: "not-a-number"}, clear=True
+                    ),
                     patch.object(server, "seats_json_from_env", return_value=SEATS_JSON),
                     patch.object(server, "_build_shared_verifier", return_value=None),
                 ):
