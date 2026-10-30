@@ -69,9 +69,11 @@ export async function postEvent({
   service,
   what,
   link,
+  mentions,
 }) {
   const parts = [severity, service, what];
   if (link) parts.push(link);
+  const line = parts.filter(Boolean).join("  •  ");
   const data = await zulip("/messages", {
     email,
     apiKey,
@@ -81,7 +83,8 @@ export async function postEvent({
       to: channel,
       topic,
       // Two spaces between sentences in every Zulip post (owner ruling 2026-10-08).
-      content: parts.filter(Boolean).join("  \u2022  "),
+      // Mentions go on their own line, so the event line keeps its one-line shape.
+      content: mentions ? `${line}\n${mentions}` : line,
     },
   });
   return data && data.id ? data.id : null;
