@@ -315,6 +315,13 @@ ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 ROOTED_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane"})
 # Tools whose wrapper runs the host's seat-scoped remote defaults before the tool starts.  The helper is
 # host configuration (never part of a release and never holding a credential value);  the wrapper only names it.
+# Lifecycle contract:  whether the helper exists is decided when the wrapper is generated.
+#   - A host without the helper keeps the plain wrapper.  Provisioning the helper later (its owner, parent
+#     custody and exact hash qualified first) takes effect only when the canonical --install regenerates the
+#     managed wrappers;  a routine update writes missing wrappers only and never rewrites an existing one.
+#   - A wrapper generated with the helper fails closed if the helper is removed later:  runpy raises before the
+#     tool is exec'd, so the command exits nonzero.  There is deliberately no runtime fallback to a plain run,
+#     because that would silently drop the seat's own route.
 HELPER_COMMANDS = {
     "scripts/simple-chat": "simple-chat",
     "scripts/simple-board": "simple-board",

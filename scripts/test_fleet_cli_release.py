@@ -310,6 +310,48 @@ class ReleaseTests(unittest.TestCase):
         helper.write_text("# helper\n")
         self.assertIn("runpy", release.wrapper(self.home, "scripts/recall").decode())
 
+    def test_helper_lifecycle_wired_wrapper_fails_closed_when_the_helper_is_removed(self):
+        # Contract (see HELPER_COMMANDS):  generated with the helper -> wired;  helper removed later -> the
+        # command exits nonzero and never runs the tool (no silent plain execution).
+        marker = self.home / "ran"
+        release_dir = self.home / ".local/share/fleet-cli/current/scripts"
+        release_dir.mkdir(parents=True)
+        (release_dir / "recall").write_text(
+            f"import pathlib\npathlib.Path({str(marker)!r}).write_text('ran')\n"
+        )
+        helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
+        wrapper = self.home / ".local/bin/recall"
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_bytes(release.wrapper(self.home, "scripts/recall"))
+        self.assertIn("seat-remote-defaults.py", wrapper.read_text())
+        run = lambda: subprocess.run(  # noqa: E731
+            [sys.executable, "-I", str(wrapper)], capture_output=True, text=True
+        )
+        self.assertEqual(run().returncode, 0)
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        helper.unlink()
+        result = run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(marker.exists(), "the tool must not run without its helper")
+        self.assertNotIn(".secrets", result.stdout + result.stderr)
+
+    def test_helper_lifecycle_late_helper_needs_the_explicit_install(self):
+        # Contract:  generated without the helper -> plain;  helper provisioned later -> a routine update leaves
+        # the existing wrapper plain;  the canonical --install then wires it.
+        helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
+        helper.unlink()
+        self.receive()
+        recall = self.home / ".local/bin/recall"
+        self.assertNotIn("runpy", recall.read_text())
+        helper.write_text("# helper\n")
+        self.receive(install=False)
+        self.assertNotIn("runpy", recall.read_text())
+        self.receive(install=True)
+        self.assertIn("seat-remote-defaults.py", recall.read_text())
+        for name in ("simple-chat", "simple-board"):
+            self.assertIn("seat-remote-defaults.py", (self.home / ".local/bin" / name).read_text())
+
     def test_installed_bash_wrappers_run_their_script(self):
         # A release holding real (tiny) tools:  the wrapper must reach the script in the current release.
         bundle = make_bundle()
