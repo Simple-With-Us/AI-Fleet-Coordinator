@@ -288,12 +288,8 @@ class CollectorTests(unittest.TestCase):
 
         collision.unlink()
         collector.collect(self.code, self.output)
-        self.assertEqual(
-            (self.output / "A-Repo/documents/docs/first.md").read_text(), "first"
-        )
-        self.assertEqual(
-            (self.output / "B-Repo/documents/docs/second.md").read_text(), "second"
-        )
+        self.assertEqual((self.output / "A-Repo/documents/docs/first.md").read_text(), "first")
+        self.assertEqual((self.output / "B-Repo/documents/docs/second.md").read_text(), "second")
 
     def test_interrupted_multi_file_collection_recovers_without_manual_cleanup(self) -> None:
         repo = self.make_repo()

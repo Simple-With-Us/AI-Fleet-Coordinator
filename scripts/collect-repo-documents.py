@@ -136,9 +136,7 @@ def _collection_lock(output_root: Path, *, exclusive: bool):
             try:
                 fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
             except OSError as exc:
-                raise CollectionError(
-                    "Collection writer lock is not a safe regular file"
-                ) from exc
+                raise CollectionError("Collection writer lock is not a safe regular file") from exc
         else:
             os.fchmod(fd, 0o600)
             _fsync_directory(root)
@@ -159,9 +157,7 @@ def _collection_lock(output_root: Path, *, exclusive: bool):
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-                raise CollectionError(
-                    "Collection writer lock is not an owner-owned regular file"
-                )
+                raise CollectionError("Collection writer lock is not an owner-owned regular file")
             if stat.S_IMODE(info.st_mode) != 0o600:
                 raise CollectionError("Collection writer lock must have mode 0600")
             operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
@@ -1151,7 +1147,11 @@ def _validate_preview_location(repositories: list[RepoInfo], preview_root: Path)
         if not _paths_overlap(resolved_preview, repo.path):
             continue
         # The owned lane may hold this untracked preview directory.  Other source paths stay read-only.
-        if relative is not None and relative.as_posix() in LANE_PREVIEW_ROOTS and repo.path.parent.parent.name == "lanes":
+        if (
+            relative is not None
+            and relative.as_posix() in LANE_PREVIEW_ROOTS
+            and repo.path.parent.parent.name == "lanes"
+        ):
             continue
         raise CollectionError("Index preview root must not overlap a source repository")
 
@@ -1282,7 +1282,9 @@ def collect_repository(
             previous_hash = _sha256(old)
         previous_bytes = _read_existing(path)
         if _preflight_file(path, data, previous_hash, immutable):
-            writes.append((path, data, _sha256(previous_bytes) if previous_bytes is not None else None))
+            writes.append(
+                (path, data, _sha256(previous_bytes) if previous_bytes is not None else None)
+            )
     operations = [f"write {path.relative_to(output_root)}" for path, _, _ in writes]
     if not check_only:
         for path, data, expected_before_hash in writes:
@@ -1541,7 +1543,9 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --refresh-preview requires --index-preview-root", file=sys.stderr)
         return 2
     if args.refresh_preview and Path(args.index_preview_root).name not in LANE_PREVIEW_ROOTS:
-        print("error: --refresh-preview is restricted to approved lane preview roots", file=sys.stderr)
+        print(
+            "error: --refresh-preview is restricted to approved lane preview roots", file=sys.stderr
+        )
         return 2
     code_root = Path(args.code_root).expanduser() if args.code_root else None
     output_root = (
