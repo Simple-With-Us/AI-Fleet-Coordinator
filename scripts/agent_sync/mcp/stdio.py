@@ -24,6 +24,14 @@ Those shapes were pinned against the client schemas in Claude Code 2.1.290 (the 
 how).  Capabilities are {"tools": {}}:  no listChanged, so a client never opens
 `subscriptions/listen`.
 
+Own bearer (nothing is served without it):  `run` first reads the seat's private bearer file
+(~/.secrets/fleet-tools/<seat>, mode 600, never an environment value) and has the hosted gateway confirm it
+with `whoami` for that same seat (mcp/bearer_gate.py).  That seat is then the only identity served:  no
+enumeration of the identities this host can reach and no unnamed-seat mode.  The same check runs again
+before every tools/call, so a revoked or replaced bearer stops the next call.  A missing, unsafe or
+mismatched bearer exits 3, an unreachable gateway 6.  The paragraphs below that describe enumeration,
+the allowed set and the unnamed-seat mode describe the code the gate now narrows to the one seat.
+
 Identity is per call (AFC-331, docs/protocols/per-call-identity.md;  identity_router.py).  The
 connection says who may act and each call names who is acting in its `identity` argument:  writes
 must name it, reads without it act as the default.  The default follows the CLI's precedence
@@ -67,6 +75,7 @@ from .. import zulip as Z
 # The one identity allowed to hold an administrator key (owner decision, Oct 22 2026).
 OPERATOR_SEAT = Z.OPERATOR_SEAT
 from ..state import state_root
+from . import bearer_gate as BG
 from . import identity_router as R
 from . import tools as T
 
@@ -126,8 +135,12 @@ class Server:
         *,
         scrub: Callable[[str], str] = lambda s: s,
         log: Callable[[str], None] = lambda text: None,
+        call_guard: Callable[[], str | None] | None = None,
     ) -> None:
         self.tools = tools
+        # Run before every tools/call:  returns None to proceed, else the refusal text.  `run` passes the
+        # bearer re-check, so a revoked or replaced bearer stops the very next call.
+        self.call_guard = call_guard
         self.scrub = scrub
         self.log = log
         self.instructions = INSTRUCTIONS % (tools.seat or NO_DEFAULT)
@@ -248,6 +261,13 @@ class Server:
                 return self.error(request_id, INVALID_PARAMS, "tools/call needs a tool name")
             if modern and isinstance(meta, dict) and hasattr(self.tools, "client_info"):
                 self.tools.client_info = meta.get(META_CLIENT_INFO) or self.tools.client_info
+            if self.call_guard is not None:
+                refusal = self.call_guard()
+                if refusal is not None:
+                    result = {"content": [{"type": "text", "text": refusal}], "isError": True}
+                    if modern:
+                        result = {"resultType": "complete", **result}
+                    return self.result(request_id, result)
             try:
                 result = self.tools.call(name, params.get("arguments"), meta=params.get("_meta"))
             except T.UnknownTool:
@@ -588,13 +608,18 @@ def _open_identity(
     return agent, me
 
 
+# The one place the bearer is checked;  tests replace it, nothing reads it from args or the environment.
+_bearer_verify = BG.verify
+
+
 def run(
     rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float] = time.time
 ) -> int:
     """`simple-chat mcp`.  Exit 0 at EOF; 2 for a bad seat name; 3 when the default identity, its
-    credential or its bot's role is refused; 5 or 6 when Zulip cannot confirm the default bot at
-    startup.  With no default identity (no --as, AGENT_SEAT or --default-seat), the server starts and
-    every call must name its identity (AFC-331)."""
+    credential, its own bearer or its bot's role is refused (a bearer the gateway does not accept for the
+    seat, or no seat at all, exits 3); 5 or 6 when Zulip or the gateway cannot confirm the seat at startup.
+    There is no unnamed-seat mode:  a seat is always named and its own bearer is confirmed first (see the
+    module docstring), then each call names its identity (AFC-331), which must be that seat."""
 
     def log(text: str) -> None:
         rt.err("simple-chat mcp: " + text)
@@ -616,6 +641,18 @@ def run(
             log(str(exc))
             return 2
     launcher_pinned = resolved.source == "launcher"
+    # Every start of the server, from the CLI or a direct call, needs the seat's own bearer confirmed by
+    # the hosted gateway first.  That seat is then the only identity served:  no enumeration of the
+    # identities this host can reach, no unnamed-seat mode, no seat the bearer does not name.
+    try:
+        bearer_seat = _bearer_verify(rt, args)
+    except BG.Refused as refused:
+        log(refused.message)
+        return refused.exit_code
+    if not seat or seat != bearer_seat:
+        log("the confirmed bearer names %s, not %s;  nothing is served" % (bearer_seat, seat or "no seat"))
+        return 3
+    launcher_pinned = True
     codex_thread_meta = bool(getattr(args, "codex_thread_meta", False))
     if codex_thread_meta and seat != "CODEX":
         log("--codex-thread-meta is CODEX-only")
@@ -629,7 +666,7 @@ def run(
         # The seat this connection serves came from --as or --default-seat (how a platform registers),
         # and nothing in the environment named it.  Record it as AGENT_SEAT so a credential that names
         # no seat -- FLEETLINK_TOKEN -- is read as this seat's alone, never as another identity's,
-        # since one connection may act as every seat whose key is on this host (fleetlink_tools.py).
+        # since this connection may act only as the seat its own bearer authenticated.
         env["AGENT_SEAT"] = seat
     home = _home(env, rt.home)
     if ignored:
@@ -782,7 +819,16 @@ def run(
             "serving on stdio:  no default identity, %d identit%s allowed;  every call names its identity"
             % (len(allowed), "y" if len(allowed) == 1 else "ies")
         )
-    server = Server(router, scrub=router.scrub, log=log)
+
+    def call_guard() -> str | None:
+        # The hosted gateway must still accept this seat's own bearer for every call:  a revoked, replaced
+        # or unreadable bearer refuses the call before any tool runs.  The refusal carries no bearer.
+        try:
+            return None if _bearer_verify(rt, args) == bearer_seat else "the seat's bearer no longer matches;  nothing ran"
+        except BG.Refused as refused:
+            return "bearer check failed:  %s;  nothing ran" % refused.message
+
+    server = Server(router, scrub=router.scrub, log=log, call_guard=call_guard)
     reader, writer = _protect_stdout(rt)
     try:
         return server.serve(reader, writer)

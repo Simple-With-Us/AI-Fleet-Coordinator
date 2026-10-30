@@ -5,6 +5,13 @@ JSON-RPC 2.0, one message per line on stdin/stdout.  Logging goes to stderr only
 exactly the recall tool contract (recall_search / recall_stats / recall_contribute) from
 scripts/fleet_rag/recall_api.py, so the CLI, this server, and the seat-mcp tools agree.
 
+Own bearer:  every tools/call runs only when the seat named by the launcher (AGENT_LAUNCH_SEAT, AGENT_SEAT
+or AGENT_TAG) holds a bearer, in ~/.secrets/fleet-tools/<seat>, that the hosted gateway accepts for that
+same seat (fleet_rag/seat_auth.py).  The check repeats on every call.  recall_contribute is stored under
+that seat and a `seat` argument naming another is refused;  recall_search's `seat` stays a corpus filter
+and its log line carries the bearer's seat.  initialize and tools/list need no bearer.  The in-process
+fake corpus the process itself started with FLEET_RECALL_FAKE=1 holds no real data and is not gated.
+
 Credentials load lazily on the first tools/call, so initialize and tools/list work on a
 machine with no keys.  Set FLEET_RECALL_FAKE=1 to serve an in-process fake corpus (tests).
 
@@ -20,7 +27,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 from fleet_rag import __version__  # noqa: E402
-from fleet_rag import contribute_guard, public_fallback, recall_api, search_log  # noqa: E402
+from fleet_rag import contribute_guard, public_fallback, recall_api, search_log, seat_auth  # noqa: E402
 from fleet_rag.core import FleetRagError  # noqa: E402
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -78,7 +85,7 @@ TOOLS = [
             "refused (the gitleaks gate fails closed; 'gitleaks-unavailable' in the returned list means "
             "only the regex scrub ran).  A near-duplicate of an existing agent contribution (cosine "
             ">= 0.92) is not stored: the result is {\"status\": \"duplicate\", \"existing\": {...}} "
-            "unless force is true.  Requires the write key and a seat (argument or AGENT_SEAT)."),
+            "unless force is true.  Requires the write key and your own seat's bearer: it is stored under that seat, and a `seat` naming another is refused."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -86,7 +93,7 @@ TOOLS = [
                          "maxLength": recall_api.CONTRIB_MAX},
                 "category": {"type": "string", "enum": list(recall_api.CONTRIB_CATEGORIES)},
                 "app": {"type": "string", "default": "fleet"},
-                "seat": {"type": "string", "description": "Uppercase seat tag; defaults to $AGENT_SEAT."},
+                "seat": {"type": "string", "description": "Uppercase seat tag;  must be your own seat (the default, from your bearer)."},
                 "title": {"type": "string"},
                 "url": {"type": "string", "description": "Source link (PR, board item, doc), optional."},
                 "force": {"type": "boolean",
@@ -97,6 +104,10 @@ TOOLS = [
         },
     },
 ]
+
+# True only inside a process main() started with FLEET_RECALL_FAKE=1.  Importing a fake backend elsewhere
+# (tests, tools) never turns the own-bearer proof off.
+FAKE_CORPUS = False
 
 _ALLOWED_ARGS = {t["name"]: set(t["inputSchema"]["properties"]) for t in TOOLS}
 
@@ -122,6 +133,16 @@ def _bool(args: dict, key: str) -> None:
 def call_tool(name: str, args: dict) -> dict:
     if name not in _ALLOWED_ARGS:
         raise KeyError(name)
+    # Own-bearer proof first, on every call:  a revoked or replaced bearer stops the next call.  The
+    # in-process fake corpus holds no real data and is not gated.
+    if FAKE_CORPUS:
+        # Set only by main() for FLEET_RECALL_FAKE=1, and only while the in-process fake is what answers:
+        # no real corpus, provider or public service can be reached from here.
+        if not recall_api.fake_backend_installed():
+            raise FleetRagError("the fake corpus is not installed;  nothing was served")
+        verified = None
+    else:
+        verified = seat_auth.verify()
     unknown = set(args) - _ALLOWED_ARGS[name]
     if unknown:
         raise FleetRagError("unknown argument(s): " + ", ".join(sorted(unknown)))
@@ -131,7 +152,8 @@ def call_tool(name: str, args: dict) -> dict:
         _int(args, "per_doc")
         _bool(args, "rerank")
         _bool(args, "prefer_lessons")
-        caller_seat = args.get("seat") or os.environ.get("AGENT_SEAT") or os.environ.get("AGENT_TAG")
+        # The log names who asked:  the bearer's seat, never an argument.  (`seat` itself stays a corpus filter.)
+        caller_seat = verified or args.get("seat") or os.environ.get("AGENT_SEAT") or os.environ.get("AGENT_TAG")
         # A null for an optional flag means "default", not False.
         for key in ("per_doc", "rerank", "prefer_lessons"):
             if key in args and args[key] is None:
@@ -147,6 +169,12 @@ def call_tool(name: str, args: dict) -> dict:
     if name == "recall_stats":
         return public_fallback.call_with_fallback("recall_stats", {}, recall_api.recall_stats)
     work = dict(args)
+    if verified:
+        claimed = work.get("seat")
+        if claimed and seat_auth.F.canonical_hint(claimed) != verified:
+            raise FleetRagError("recall_contribute is stored under your own seat (%s), not %s;  nothing was stored"
+                                % (verified, str(claimed)[:40]))
+        work["seat"] = verified
     return public_fallback.call_with_fallback(
         "recall_contribute", work, lambda: contribute_with_guard(work))
 
@@ -280,6 +308,8 @@ def serve(stdin=None, stdout=None) -> None:
 def main() -> int:
     if os.environ.get("FLEET_RECALL_FAKE") == "1":
         recall_api.install_fake_backend()
+        global FAKE_CORPUS
+        FAKE_CORPUS = True
         log("FAKE backend (FLEET_RECALL_FAKE=1)")
     try:
         serve()
