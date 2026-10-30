@@ -168,6 +168,13 @@ test("get, edit, history and delete:  edits own messages only, deletes as Zulip 
   fake.canDeleteAny.add(fake.me.user_id);
   assert.deepEqual(ok(await tools.call("zulip_delete_message", { message_id: theirs.id }), "zulip_delete_message"), { id: theirs.id, deleted: true });
   assert.ok(!fake.messages.some((m) => m.id === theirs.id));
+  // A message gone between the lookup and the delete is Zulip's own 400, never the permission line (Kody, PR #1148).
+  const racing = fake.addMessage("Codex", "agent-sync", "t", "about to vanish");
+  fake.failNext("DELETE", `messages/${racing.id}`, () => {
+    fake.messages = fake.messages.filter((m) => m !== racing);
+    return fake.error(400, "BAD_REQUEST");
+  });
+  assert.doesNotMatch(toolError(await tools.call("zulip_delete_message", { message_id: racing.id }), "zulip_error").message, /no permission/);
   assert.deepEqual(ok(await tools.call("zulip_delete_message", { message_id: mine }), "zulip_delete_message"), { id: mine, deleted: true });
   // A private channel's message is out of reach on every message tool, before any write.
   const hidden = fake.addMessage("Codex", "other", "secret", "private");

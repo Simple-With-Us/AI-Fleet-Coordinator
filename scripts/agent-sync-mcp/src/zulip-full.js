@@ -240,8 +240,15 @@ export const ZULIP_FULL_METHODS = {
     try {
       await this.zulip.delete(`messages/${args.message_id}`);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 400) throw new ToolError("invalid_argument", DELETE_REFUSED(args.message_id));
-      throw error;
+      if (!(error instanceof ApiError) || error.status !== 400) throw error;
+      // Zulip answers 400 for a refusal and for a message that is gone.  Only a message that is still
+      // there was refused (permission or the time limit);  any other 400 is Zulip's own error.
+      try {
+        await this.zulip.get(`messages/${args.message_id}`, { apply_markdown: false });
+      } catch {
+        throw error;
+      }
+      throw new ToolError("invalid_argument", DELETE_REFUSED(args.message_id));
     }
     return this.writeResult({ id: args.message_id, deleted: true });
   },

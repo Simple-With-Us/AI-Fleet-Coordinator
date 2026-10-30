@@ -8,6 +8,7 @@ import json
 import os
 import time
 
+from agent_sync import zulip as Z
 from agent_sync import zulip_ops as OPS
 from agent_sync.tests.fake_zulip import BOT_EMAIL
 from agent_sync.tests.harness import TAG, Harness
@@ -41,6 +42,27 @@ class MessageCommandTests(Harness):
         content = self.fake._find(posted)["content"]
         self.assertIn("@**Codex**", content)
         self.assertIn("now for you", content)
+
+    def test_a_delete_of_a_message_that_vanished_keeps_zulips_own_error(self) -> None:
+        # Kody, PR #1148:  only a message that is still there was refused;  any other 400 is Zulip's own.
+        class Client:
+            def __init__(self) -> None:
+                self.present = True
+
+            def get(self, path: str, params: object = None) -> dict:
+                if not self.present:
+                    raise Z.ApiError("Invalid message(s)", code="BAD_REQUEST", status=400)
+                return {"message": {"id": 7}}
+
+            def delete(self, path: str, params: object = None) -> dict:
+                self.present = False
+                raise Z.ApiError("Invalid message(s)", code="BAD_REQUEST", status=400)
+
+        agent = type("Agent", (), {"client": Client()})()
+        with self.assertRaises(Z.ApiError) as caught:
+            OPS.delete_message(agent, 7)
+        self.assertNotIsInstance(caught.exception, Z.UsageError)
+        self.assertEqual(caught.exception.msg, "Invalid message(s)")
 
     def test_edit_refuses_another_senders_message(self) -> None:
         theirs = self.fake.add_message("Codex", "agent-sync", "t", "not yours")

@@ -176,6 +176,12 @@ def delete_message(agent: Any, message_id: int) -> dict[str, Any]:
     except Z.ApiError as exc:
         if exc.status != 400:
             raise
+        # Zulip answers 400 for a refusal and for a message that is gone.  Only a message that is still
+        # there was refused (permission or the time limit);  any other 400 is Zulip's own error.
+        try:
+            get_message(agent, message_id)
+        except Z.ApiError:
+            raise exc from None
         raise UsageError(DELETE_REFUSED % message_id) from None
     return {"id": message_id, "deleted": True}
 
