@@ -4,7 +4,7 @@ The always-on `fleet-coding-memory.service` gives existing coding workloads a sh
 
 Normal operation lends coding workloads idle memory while retaining the configured host headroom.  Under memory pressure the combined `memory.high` targets are 8 GiB, dropping to 6 GiB during critical pressure.  Recovery requires sustained available memory and low pressure before borrowing resumes.  These thresholds throttle allocation and reclaim memory; they are not a hard aggregate cap or a guaranteed memory allocation.
 
-Production containers receive best-effort `memory.low` protection within an ancestor protection budget.  Coding roots include the configured user slice, native coding services, and shared coding containers; nested groups are counted once.  Docker scopes are rediscovered after recreation.  The controller leaves `memory.max`, swap limits and existing narrower limits intact.
+Configured production containers with finite hard limits receive best-effort `memory.low` protection within an ancestor protection budget.  Coding roots include the configured user slice, native coding services, and shared coding containers; nested groups are counted once.  Docker scopes are rediscovered after recreation.  The controller leaves `memory.max`, swap limits and existing narrower limits intact.
 
 Settings load at startup and refresh on a background thread; SIGHUP requests a refresh.  A protected last-known-good cache keeps the last valid policy during settings outages, and status marks it stale.  The dedicated settings bridge requires its own read-only service token, scoped to prod `/coding-memory`, through systemd `LoadCredential`.  Infisical root `CODING_MEMORY_READ_TOKEN` is the token source of truth; its deployed binding is `/etc/fleet-coding-memory/read-token` (root-owned, mode 0600, parent 0700).  The installer copies code and nonsecret project metadata; it does not copy credentials.  The reader validates the returned secret folder and refuses ambient or bootstrap authentication.
 
@@ -20,7 +20,7 @@ sudo python3 /usr/local/lib/fleet-coding-memory/fleet_coding_memory.py --status
 sudo systemctl is-active fleet-coding-memory.service
 ```
 
-Review the actual coding/production group counts, settings freshness, current usage, target and OOM deltas.  A process lock prevents a second daemon or `--once` run from changing the same controls.  Status is read-only.  Do not create host memory pressure merely to test the controller; focused tests exercise pressure and recovery against synthetic cgroups.
+Review the actual coding/production group counts, settings freshness, current usage, target and OOM deltas.  Status also counts production groups outside that supported protection contract.  A process lock prevents a second daemon or `--once` run from changing the same controls.  Status is read-only.  Do not create host memory pressure merely to test the controller; focused tests exercise pressure and recovery against synthetic cgroups.
 
 ## Roll Back
 
