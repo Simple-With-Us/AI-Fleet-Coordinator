@@ -165,7 +165,7 @@ test("CLUTCH canonical name and CK compatibility alias route to the live C team"
 test("CODEX has its own Linear pair, app name and deploy gate, shared with no other seat", async () => {
   const L = await import("../src/linear.js");
   assert.deepEqual({ ...L.LINEAR_SECRETS.CODEX }, { clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" });
-  assert.deepEqual({ ...L.LINEAR_INFISICAL.CODEX }, { clientId: "CODEX_LINEAR_CLIENT_ID", clientSecret: "CODEX_LINEAR_CLIENT_SECRET" });
+  assert.deepEqual({ ...L.LINEAR_INFISICAL.CODEX }, { clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" });
   assert.ok(L.LINEAR_SEATS.includes("CODEX"));
   assert.deepEqual([...L.seatAppNames("CODEX")], ["Codex"]);
   assert.ok(L.appNameOk("Codex", "CODEX"));
@@ -176,4 +176,88 @@ test("CODEX has its own Linear pair, app name and deploy gate, shared with no ot
   }
   // Same scope string as the CLI:  Linear revokes every app token when a mint asks for another one.
   assert.equal(L.LINEAR_SCOPE, "read,write,app:assignable,app:mentionable");
+});
+
+// ---- Linear coverage for the own-app seats (read-only names; activation stays a deploy gate) ----
+
+const HOST_VERIFIED_LINEAR_PREFIXES = Object.freeze({
+  JET: "LINEAR_JET", "GROK-WEB": "LINEAR_GROK_WEB", ECHO: "LINEAR_ECHO", WISE: "LINEAR_WISE",
+  CURSOR: "LINEAR_CURSOR", CLAUDE: "LINEAR_CLAUDE", CODEX: "LINEAR_CODEX",
+  MA: "LINEAR_MA", AG: "LINEAR_AG", CLUTCH: "LINEAR_CLUTCH", FX: "LINEAR_FX", GROK: "LINEAR_GROK",
+  MC: "LINEAR_MC", MM: "LINEAR_MM", OPENCODE: "LINEAR_OPENCODE",
+  "BF-COMPILER": "LINEAR_BF_COMPILER", "BF-DEPLOYER": "LINEAR_BF_DEPLOYER", "BF-DESIGNER": "LINEAR_BF_DESIGNER",
+  "BF-DIRECTOR": "LINEAR_BF_DIRECTOR", "BF-ENGINEER": "LINEAR_BF_ENGINEER", "BF-FIXER": "LINEAR_BF_FIXER",
+  "BF-HOUSEKEEPER": "LINEAR_BF_HOUSEKEEPER", "BF-MONITOR": "LINEAR_BF_MONITOR", "BF-ORACLE": "LINEAR_BF_ORACLE",
+  "BF-PLUMBER": "LINEAR_BF_PLUMBER", "BF-PUBLISHER": "LINEAR_BF_PUBLISHER", "BF-TRADER": "LINEAR_BF_TRADER",
+});
+
+test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for every seat", async () => {
+  const L = await import("../src/linear.js");
+  for (const [seat, prefix] of Object.entries(HOST_VERIFIED_LINEAR_PREFIXES)) {
+    assert.deepEqual({ ...L.LINEAR_INFISICAL[seat] }, { clientId: `${prefix}_CLIENT_ID`, clientSecret: `${prefix}_CLIENT_SECRET` }, seat);
+  }
+  assert.deepEqual({ ...L.LINEAR_INFISICAL["JET-CHAT"] }, { ...L.LINEAR_INFISICAL.JET }, "JET-CHAT keeps reading Jet's record, never a copy");
+  for (const [seat, names] of Object.entries(L.LINEAR_INFISICAL)) {
+    assert.ok(!/^[A-Z0-9_]+_LINEAR_CLIENT/.test(names.clientId), `${seat} still uses the reverse <SEAT>_LINEAR_ name`);
+  }
+});
+
+// MA: its cached token was refused (401) at check time;  BF-ENGINEER and BF-TRADER had no token to read.
+const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER"]); // prepared but not enabled until their own viewer is qualified;  the other 18 are on
+test("the 20 own-app seats have prepared names, 18 are enabled (BF-ENGINEER and BF-TRADER held back), and none share a pair", async () => {
+  const L = await import("../src/linear.js");
+  const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
+  assert.equal(own.length, 20);
+  assert.ok(!own.includes("BF-BUILDER") && !Object.hasOwn(L.LINEAR_SECRETS, "BF-BUILDER") && !L.LINEAR_SEATS.includes("BF-BUILDER"));
+  for (const seat of own) {
+    assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
+    assert.equal(L.LINEAR_SEATS.includes(seat), !HELD_BACK.includes(seat), `${seat}: enabled unless held back`);
+    assert.deepEqual({ ...L.LINEAR_SECRETS[seat] }, { ...L.LINEAR_INFISICAL[seat] }, `${seat}: Worker and Infisical names agree`);
+    assert.deepEqual({ ...L.linearSecretNames(seat) }, { ...L.LINEAR_SECRETS[seat] });
+  }
+  assert.deepEqual([...L.LINEAR_OWN_APP_ENABLED].sort(), own.filter((x) => !HELD_BACK.includes(x)).sort(), "every own-app seat but the held-back two is switched on");
+  const ids = new Map();
+  for (const [seat, names] of Object.entries(L.LINEAR_INFISICAL)) {
+    if (seat === "JET-CHAT") continue; // the one deliberate JET/JET-CHAT share, unchanged
+    assert.ok(!ids.has(names.clientId), `${seat} shares ${names.clientId} with ${ids.get(names.clientId)}`);
+    ids.set(names.clientId, seat);
+  }
+});
+
+test("a retired or unlisted seat reads no credentials in any Infisical mode; an uninstalled enabled seat stays unconfigured", async () => {
+  const L = await import("../src/linear.js");
+  const { _resetInfisicalForTests } = await import("../src/infisical.js");
+  _resetInfisicalForTests();
+  const env = { LINEAR_CLUTCH_CLIENT_ID: "id-clutch", LINEAR_CLUTCH_CLIENT_SECRET: "sec-clutch", LINEAR_BF_COMPILER_CLIENT_ID: "id-bf", LINEAR_BF_COMPILER_CLIENT_SECRET: "sec-bf" };
+  for (const seat of [...HELD_BACK, "BF-BUILDER"]) assert.equal(await L.resolveLinearPair(env, seat), null, `${seat} is not enabled`);
+  assert.equal(await L.resolveLinearPair({ INFISICAL_MODE: "off" }, "CODEX").then((p) => p.clientId), "", "an enabled seat with nothing installed still yields no client");
+});
+
+test("every enabled Linear seat has a grounded app name, so a bare seat tag is never the only viewer proof", async () => {
+  const L = await import("../src/linear.js");
+  for (const seat of L.LINEAR_SEATS) {
+    assert.ok(L.seatAppNames(seat).length > 0, `${seat} is enabled but has no SEAT_APP_NAMES entry`);
+    assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
+  }
+});
+
+test("own-app viewer names are the live Linear viewer names, accepted by their own seat only", async () => {
+  const L = await import("../src/linear.js");
+  const live = { AG: "Antigravity (AG)", CLUTCH: "Clutch", FX: "FX.sh", GROK: "Grok (Build)", MC: "Muse Code (MC)", MM: "MiniMax (MM)", OPENCODE: "OpenCode",
+    "BF-COMPILER": "BF-Compiler", "BF-DEPLOYER": "BF-Deployer", "BF-DESIGNER": "BF-Designer", "BF-DIRECTOR": "BF-Director", "BF-FIXER": "BF-Fixer",
+    "BF-HOUSEKEEPER": "BF-Housekeeper", "BF-MONITOR": "BF-Monitor", "BF-ORACLE": "BF-Oracle", "BF-PLUMBER": "BF-Plumber", "BF-PUBLISHER": "BF-Publisher",
+    "BF-ENGINEER": "BF-Engineer", "BF-TRADER": "BF-Trader" };
+  for (const [seat, name] of Object.entries(live)) {
+    assert.deepEqual([...L.seatAppNames(seat)], [name], seat);
+    assert.ok(L.appNameOk(name, seat) && L.appNameOk(name.toUpperCase(), seat), `${seat} accepts its own app`);
+    for (const other of Object.keys(L.LINEAR_SECRETS).filter((s) => s !== seat && !(seat === "JET" || s === "JET-CHAT"))) {
+      assert.ok(!L.appNameOk(name, other), `${other} must not accept ${seat}'s app name`);
+    }
+  }
+  const all = new Map();
+  for (const seat of Object.keys(L.LINEAR_SECRETS)) for (const n of L.seatAppNames(seat)) {
+    const k = n.toLowerCase();
+    if (all.has(k) && !(["JET", "JET-CHAT"].includes(seat) && ["JET", "JET-CHAT"].includes(all.get(k)))) assert.fail(`${n} belongs to both ${all.get(k)} and ${seat}`);
+    all.set(k, seat);
+  }
 });
