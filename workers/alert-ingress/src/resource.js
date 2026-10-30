@@ -1,6 +1,6 @@
 /**
  * Owner rule (Oct 29 2026):  resource alerts tag the Housekeepers and Jay, except CPU.
- * OPS-1008's Oct 30 request supersedes that exclusion for sustained severe saturation.
+ * OPS-1008's later Oct 29 request supersedes that exclusion for sustained severe saturation.
  * The confirmed CPU monitor is included below.
  *
  * The Datadog host monitors below report the server running short of something.

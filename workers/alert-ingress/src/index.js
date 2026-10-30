@@ -918,7 +918,7 @@ async function handleEvent(source, payload, env) {
   let result = decide(prev, event, now, {
     minOpenMs: Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS,
   });
-  // Datadog's CPU monitor already requires sustained saturation.  Do not
+  // Datadog's CPU monitor already requires sustained saturation.  Do not
   // make a severe CPU event wait through the ingress hold a second time.
   if (result.state.phase === "pending" && isSevereCpu(event.key, result.state.severity)) {
     result = sweep(result.state, now, { minOpenMs: 0 }) || result;
