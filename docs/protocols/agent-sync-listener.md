@@ -301,8 +301,8 @@ The owner's rule, repeated for weeks and ruled again on Oct 30 2026: anytime an 
 
 | Post | Where | Sent as |
 | --- | --- | --- |
-| The wake reply, and the fixed owner ack | the trigger's topic, or the DM thread (`Daemon.post`) | Operator, text tagged `[SEAT·wake]` |
-| The route page | the trigger's topic (`handle_route`, through `Daemon.post`) | Operator, tagged `[SEAT·route→TARGET]` |
+| The wake reply, and the fixed owner ack | the trigger's topic, or the DM thread (`Daemon.post`) | Operator, text tagged `[OPERATOR·wake]` |
+| The route page | the trigger's topic (`handle_route`, through `Daemon.post`) | Operator, tagged `[OPERATOR·route→TARGET]` |
 | The escalation note | DM to the owner (`dm_owner`) | Operator, tagged `[OPERATOR·note]` |
 | The route note | DM to the owner (`_note_route_posted`) | Operator, tagged `[OPERATOR·note]` |
 | The quota-hold notice | DM to the sender and the owner (`_tell_requester`) | Operator |
@@ -318,7 +318,7 @@ The owner's rule, repeated for weeks and ruled again on Oct 30 2026: anytime an 
 
 **No fallback.**  With no Operator (the vault cannot be read, the credential is rejected, the identity is not the pinned one, the owner is not pinned) the post is not made.  The daemon logs `operator-voice-unavailable` once per window with the reason and `operator-post-refused` for each post it dropped, with the `site`: `wake-reply`, `owner-dm`, `route-note`, `quota-hold`, `broadcast-audit`, `held-alert` or `held-alert-edit`.  A wake whose reply was dropped is a `failed` ledger row with `post_error`, and a posted one carries `posted_by = "OPERATOR"`.  An Operator that is present but cannot post in a place (it is not in a private channel, say) is the same: `post-failed` in the log and `post_error` on the row.  The seat's bot is never tried instead.
 
-**What does not change.**  The `[SEAT·wake]` tag stays on the first line, because the loop guard and the router read it (a `·wake` post never wakes anyone) and it is what tells a reader whose wake the Operator is relaying; the sender line says Operator, the tag says which seat's consultant wrote it.  A seat's own words, typed by that agent through its own tools (`simple-chat`, the MCP tools), still go out as the seat: the rule is about text the daemon composes.  `daemon probe` (a diagnostic a person runs) and the inbox delivery (subscriptions and read flags, no text) are not wake posts and are untouched.
+**What does not change.**  The `[OPERATOR·wake]` tag stays on the first line, because the loop guard and the router read it (a `·wake` post never wakes anyone); the sender line and the tag both say Operator, and the seat the wake was for is named in the ledger row and the note body, as the tag paragraph above describes.  A seat's own words, typed by that agent through its own tools (`simple-chat`, the MCP tools), still go out as the seat: the rule is about text the daemon composes.  `daemon probe` (a diagnostic a person runs) and the inbox delivery (subscriptions and read flags, no text) are not wake posts and are untouched.
 
 **Consequences worth knowing.**  A DM thread's reply is a new group conversation (the Operator joined it), so the daemon also counts that reply on the thread that woke the seat, or the loop guard of the trigger thread would never move.  The reply in a thread reaches the seat's inbox as an ordinary item from a non-eligible sender and wakes no one.  A bot that sent a message to a seat whose quota is spent gets the notice as an inbox item, no longer as a DM that wakes it.  `held_alert_seat` no longer chooses a poster: the Operator carries the digest, and a standing digest that a seat's bot posted before this change is forgotten (it cannot be edited without that seat's identity), so the digest restarts as the Operator's own message.
 
