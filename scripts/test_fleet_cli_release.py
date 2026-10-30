@@ -324,7 +324,7 @@ class ReleaseTests(unittest.TestCase):
         wrapper.parent.mkdir(parents=True, exist_ok=True)
         wrapper.write_bytes(release.wrapper(self.home, "scripts/recall"))
         self.assertIn("seat-remote-defaults.py", wrapper.read_text())
-        run = lambda: subprocess.run(  # noqa: E731
+        run = lambda: subprocess.run(
             [sys.executable, "-I", str(wrapper)], capture_output=True, text=True
         )
         self.assertEqual(run().returncode, 0)
