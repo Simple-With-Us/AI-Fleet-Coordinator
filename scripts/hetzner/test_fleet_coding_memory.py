@@ -80,6 +80,60 @@ class PolicyTests(unittest.TestCase):
             self.assertTrue(stale)
             self.assertTrue(json.loads((root / "policy-meta.json").read_text())["stale"])
 
+    def test_systemd_credential_is_root_private_regular_and_bounded(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            credential = root / "infisical-token"
+            credential.write_text(" scoped-token\n")
+            credential.chmod(0o600)
+            env = {"CREDENTIALS_DIRECTORY": str(root)}
+            self.assertEqual(m.read_systemd_token(env, expected_uid=os.geteuid()), "scoped-token")
+            with self.assertRaisesRegex(RuntimeError, "rejected"):
+                m.read_systemd_token(env, expected_uid=os.geteuid() + 1)
+            credential.chmod(0o640)
+            with self.assertRaisesRegex(RuntimeError, "rejected"):
+                m.read_systemd_token(env, expected_uid=os.geteuid())
+            credential.chmod(0o600)
+            credential.write_text("x" * 8193)
+            with self.assertRaisesRegex(RuntimeError, "rejected"):
+                m.read_systemd_token(env, expected_uid=os.geteuid())
+
+    def test_fetch_policy_scopes_auth_and_preserves_project_prod_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            cli = Path(d) / "fleet-secrets"
+            cli.write_text("#!/bin/sh\nexit 0\n")
+            cli.chmod(0o700)
+            ambient = {
+                "FLEET_SECRETS_CLI": str(cli),
+                "INFISICAL_FLEET_OPS_PROJECT_ID": "project-id",
+                "INFISICAL_ENVIRONMENT": "prod",
+                "INFISICAL_ENV": "prod",
+                "INFISICAL_TOKEN": "ambient-token",
+                "INFISICAL_CLIENT_SECRET": "ambient-secret",
+                "INFISICAL_AUTOMATION_CLIENT_SECRET": "ambient-automation-secret",
+                "INFISICAL_UNRELATED": "discard-me",
+            }
+            completed = type("Completed", (), {"stdout": json.dumps(policy())})()
+            with mock.patch.dict(os.environ, ambient, clear=True), mock.patch.object(m, "read_systemd_token", return_value="credential-token"), mock.patch.object(m.subprocess, "run", return_value=completed) as run:
+                self.assertEqual(m.fetch_policy(), policy())
+            argv = run.call_args.args[0]
+            child_env = run.call_args.kwargs["env"]
+            self.assertEqual(argv, [str(cli), "get-verified", "CODING_RAM_POLICY", "--path", "/coding-memory"])
+            self.assertNotIn("credential-token", argv)
+            self.assertEqual(child_env["INFISICAL_TOKEN"], "credential-token")
+            self.assertEqual(child_env["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-id")
+            self.assertEqual(child_env["INFISICAL_ENVIRONMENT"], "prod")
+            self.assertEqual(child_env["INFISICAL_ENV"], "prod")
+            self.assertNotIn("INFISICAL_CLIENT_SECRET", child_env)
+            self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_SECRET", child_env)
+            self.assertNotIn("INFISICAL_UNRELATED", child_env)
+
+    def test_fetch_policy_without_systemd_credential_never_invokes_cli(self):
+        with mock.patch.dict(os.environ, {"FLEET_SECRETS_CLI": "/bin/true", "INFISICAL_FLEET_OPS_PROJECT_ID": "project-id"}, clear=True), mock.patch.object(m.subprocess, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "credential unavailable"):
+                m.fetch_policy()
+        run.assert_not_called()
+
 
 class ControllerTests(unittest.TestCase):
     def test_nested_group_dedup_and_soft_budget_sum(self):
@@ -95,6 +149,35 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(int((parent / "memory.high").read_text()), status["coding_target_bytes"])
             self.assertEqual(status["coding_target_bytes"], 8 * 1024**3)
 
+    def test_status_counts_control_write_failures_without_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding")
+            with mock.patch.object(m, "write_control", side_effect=OSError("refused")):
+                status = m.step(policy(), root, {}, proc(root / "proc"), 1, ([group], []))
+            self.assertEqual(status["control_write_failures"], 1)
+            self.assertFalse(any(str(group) in str(value) for value in status.values()))
+
+    def test_oom_delta_uses_deduplicated_discovered_cgroups_and_inode(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = cg(Path(d) / "service")
+            child = cg(parent / "container")
+            state = {}
+            (parent / "memory.events").write_text("oom_kill 2\n")
+            (child / "memory.events").write_text("oom_kill 9\n")
+            self.assertEqual(m.oom_kill_delta([parent, child], state), 0)
+            (parent / "memory.events").write_text("oom_kill 5\n")
+            self.assertEqual(m.oom_kill_delta([parent, child], state), 3)
+            old_inode = parent.stat().st_ino
+            replacement = parent.with_name("previous")
+            parent.rename(replacement)
+            parent.mkdir()
+            (parent / "memory.events").write_text("oom_kill 80\n")
+            self.assertNotEqual(parent.stat().st_ino, old_inode)
+            self.assertEqual(m.oom_kill_delta([parent], state), 0)
+            (parent / "memory.events").write_text("oom_kill 82\n")
+            self.assertEqual(m.oom_kill_delta([parent], state), 2)
+
     def test_pressure_critical_and_timed_recovery_hysteresis(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -106,6 +189,7 @@ class ControllerTests(unittest.TestCase):
             status = run_step(policy(), root, state, proc(root / "p2", available=1024**3, full=6), 1, ([group], []))
             self.assertEqual(status["mode"], "critical")
             self.assertEqual(status["coding_target_bytes"], 6 * 1024**3)
+            self.assertEqual(int((group / "memory.high").read_text()), 6 * 1024**3)
             status = run_step(policy(), root, state, proc(root / "p3", available=9 * 1024**3), 10, ([group], []))
             self.assertEqual(status["mode"], "critical")
             status = run_step(policy(), root, state, proc(root / "p4", available=9 * 1024**3), 71, ([group], []))
@@ -137,6 +221,28 @@ class ControllerTests(unittest.TestCase):
             with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
                 m.restore_owned(state)
             self.assertEqual((p / "memory.high").read_text(), "123")
+
+    def test_owned_limits_are_page_aligned_and_match_kernel_normalization(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = cg(Path(d) / "unit", high="max")
+            state = {"owned": {}}
+            page = os.sysconf("SC_PAGE_SIZE")
+
+            def kernel_write(path, value):
+                requested = int(value)
+                normalized = ((requested + page - 1) // page) * page
+                path.write_text(str(normalized))
+
+            with mock.patch.object(m, "write_control", side_effect=kernel_write):
+                self.assertTrue(m.write_owned(p, "memory.high", 3 * page + 1, state))
+                self.assertTrue(m.write_owned(p, "memory.low", 7 * page + 1, state))
+
+            high_key = f"{p}:memory.high"
+            low_key = f"{p}:memory.low"
+            self.assertEqual((p / "memory.high").read_text(), str(3 * page))
+            self.assertEqual(state["owned"][high_key]["last"], str(3 * page))
+            self.assertEqual((p / "memory.low").read_text(), str(7 * page))
+            self.assertEqual(state["owned"][low_key]["last"], str(7 * page))
 
     def test_recreated_cgroup_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as d:
@@ -275,6 +381,13 @@ class ControllerTests(unittest.TestCase):
             lows = [int((p / "memory.low").read_text()) for p in groups]
             self.assertEqual(sum(lows), 18 * 1024**3)
             self.assertEqual(int((parent / "memory.low").read_text()), sum(lows))
+            reduced = {**policy(), "budget_bytes": 16 * 1024**3}
+            run_step(reduced, root, state, proc(root / "proc2"), 2, ([], groups, limits))
+            reduced_lows = [int((p / "memory.low").read_text()) for p in groups]
+            self.assertLessEqual(sum(reduced_lows), 10 * 1024**3)
+            page = os.sysconf("SC_PAGE_SIZE")
+            self.assertLessEqual(10 * 1024**3 - sum(reduced_lows), page * (len(groups) + 1))
+            self.assertEqual(int((parent / "memory.low").read_text()), sum(reduced_lows))
 
 
 if __name__ == "__main__":

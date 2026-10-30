@@ -8,6 +8,7 @@ import json
 import math
 import os
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -15,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-POLICY_CMD = ["/usr/local/lib/fleet-coding-memory/settings/linux-entrypoint.py", "get", "CODING_RAM_POLICY", "--project", "fleet-ops"]
+POLICY_CMD = ["get-verified", "CODING_RAM_POLICY", "--path", "/coding-memory"]
 POLICY_FIELDS = {
     "schema_version", "budget_bytes", "critical_budget_bytes", "reserve_bytes",
     "pressure_available_bytes", "critical_available_bytes", "recovery_available_bytes",
@@ -65,8 +66,41 @@ def atomic_json(path: Path, obj: Any) -> None:
 
 
 def fetch_policy(timeout: int = 20) -> dict[str, Any]:
-    p = subprocess.run(POLICY_CMD, capture_output=True, text=True, timeout=timeout, check=True)
+    token = read_systemd_token(os.environ)
+    cli = os.environ.get("FLEET_SECRETS_CLI", "")
+    project = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "")
+    if not cli or not Path(cli).is_absolute() or not Path(cli).is_file() or not os.access(cli, os.X_OK) or not project:
+        raise RuntimeError("scoped settings bridge metadata unavailable")
+    env = {key: value for key, value in os.environ.items() if not key.lower().startswith("infisical_")}
+    env["INFISICAL_FLEET_OPS_PROJECT_ID"] = project
+    env["INFISICAL_ENVIRONMENT"] = "prod"
+    env["INFISICAL_ENV"] = "prod"
+    env["INFISICAL_TOKEN"] = token
+    p = subprocess.run([cli, *POLICY_CMD], capture_output=True, text=True, timeout=timeout, check=True, env=env)
     return validate_policy(p.stdout)
+
+
+def read_systemd_token(env: dict[str, str], expected_uid: int = 0) -> str:
+    credentials_dir = env.get("CREDENTIALS_DIRECTORY")
+    if not credentials_dir:
+        raise RuntimeError("systemd credential unavailable")
+    path = Path(credentials_dir) / "infisical-token"
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try: fd = os.open(path, flags)
+    except OSError as exc: raise RuntimeError("systemd credential unavailable") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid or info.st_mode & 0o077 or info.st_size < 1 or info.st_size > 8192:
+            raise RuntimeError("systemd credential rejected")
+        raw = os.read(fd, 8193)
+    finally: os.close(fd)
+    if len(raw) > 8192:
+        raise RuntimeError("systemd credential rejected")
+    try: token = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc: raise RuntimeError("systemd credential rejected") from exc
+    if not token or "\x00" in token:
+        raise RuntimeError("systemd credential rejected")
+    return token
 
 
 def acquire_lock(state_dir: Path) -> int:
@@ -221,7 +255,9 @@ def write_owned(path: Path, key: str, value: int, state: dict[str, Any], persist
         if rec and rec.get("inode") == inode and current != expected:
             return False
         baseline = rec["baseline"] if rec and rec.get("inode") == inode else current
-        if key == "memory.low" and current not in ("max",) and current.isdigit(): value = max(value, int(current))
+        if key == "memory.low" and baseline not in ("max",) and baseline.isdigit(): value = max(value, int(baseline))
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        value = max(0, int(value) // page_size * page_size)
         if current == str(value):
             if rec:
                 rec["last"] = current
@@ -319,27 +355,47 @@ def restore_owned(state: dict[str, Any], persist=None) -> None:
         except (OSError, ValueError): continue
 
 
+def oom_kill_delta(paths: list[Path], state: dict[str, Any]) -> int:
+    previous = state.get("oom_counters", {})
+    current: dict[str, dict[str, int]] = {}
+    delta = 0
+    for path in dedupe_nested(paths):
+        try:
+            inode = path.stat().st_ino
+            events = dict(line.split() for line in (path / "memory.events").read_text().splitlines())
+            count = int(events.get("oom_kill", "0"))
+        except (OSError, ValueError):
+            continue
+        key = str(path)
+        old = previous.get(key)
+        if old and old.get("inode") == inode:
+            delta += max(0, count - old.get("oom_kill", count))
+        current[key] = {"inode": inode, "oom_kill": count}
+    state["oom_counters"] = current
+    return delta
+
+
 def system_slice(root: Path) -> Path | None:
     return cg_path(root, "/system.slice")
 
 
-def protected_lows(paths: list[Path], root: Path, total: int, reserve: int, budget: int, state: dict[str, Any], limits: dict[Path, int] | None = None, persist=None) -> None:
+def protected_lows(paths: list[Path], root: Path, total: int, reserve: int, budget: int, state: dict[str, Any], limits: dict[Path, int] | None = None, persist=None) -> int:
     # The supported common ancestor is system.slice; set child protection and a sufficient parent protection.
     limit = max(0, total - reserve - budget)
     candidates = dedupe_nested(paths)
     parent = system_slice(root)
-    if not parent: return
+    if not parent: return 0
     candidates = [p for p in candidates if parent in p.parents]
-    if not candidates: return
+    if not candidates: return 0
     limits = limits or {}
     sizes = {p: max(0, limits.get(p, read_int(p / "memory.max"))) for p in candidates}
     sizes = {p: n for p, n in sizes.items() if n > 0}
     total_caps = sum(sizes.values())
     scale = min(1.0, limit / total_caps) if total_caps else 0
     wanted = {p: int(n * scale) for p, n in sizes.items()}
-    base = read_int(parent / "memory.low")
-    write_owned(parent, "memory.low", max(base, sum(wanted.values())), state, persist)
-    for p, n in wanted.items(): write_owned(p, "memory.low", n, state, persist)
+    failures = int(not write_owned(parent, "memory.low", sum(wanted.values()), state, persist))
+    failures += sum(not write_owned(p, "memory.low", n, state, persist) for p, n in wanted.items())
+    return failures
 
 
 def step(policy: dict[str, Any], root: Path, state: dict[str, Any], proc: Path = Path("/proc"), now: float | None = None, discovered: tuple[Any, ...] | None = None, persist=None) -> dict[str, Any]:
@@ -368,16 +424,11 @@ def step(policy: dict[str, Any], root: Path, state: dict[str, Any], proc: Path =
     budget = policy["critical_budget_bytes"] if mode == "critical" else policy["budget_bytes"]
     target = 0 if not code else (min(total, max(budget, sum(read_int(p / "memory.current") for p in code) + avail - policy["reserve_bytes"])) if mode == "normal" else min(total, budget))
     allocations = allocate(target, code, state)
-    for p, n in allocations.items(): write_owned(p, "memory.high", n, state, persist)
-    protected_lows(prod, root, total, policy["reserve_bytes"], policy["budget_bytes"], state, production_limits, persist)
-    events = {}
-    try: events = dict(line.split() for line in (root / "memory.events").read_text().splitlines())
-    except OSError: pass
-    oom_now = int(events.get("oom_kill", 0))
-    oom_before = int(state.get("oom_kill", oom_now))
-    state["oom_kill"] = oom_now
+    write_failures = sum(not write_owned(p, "memory.high", n, state, persist) for p, n in allocations.items())
+    write_failures += protected_lows(prod, root, total, policy["reserve_bytes"], policy["budget_bytes"], state, production_limits, persist)
+    oom_delta = oom_kill_delta(code + prod, state)
     state["mode"] = mode
-    state["last_status"] = {"mode": mode, "policy_stale": bool(state.get("policy_stale", False)), "available_bytes": avail, "total_bytes": total, "coding_current_bytes": sum(read_int(p / "memory.current") for p in code), "coding_target_bytes": target, "coding_groups": len(code), "production_groups": len(dedupe_nested(prod)), "oom_kill_delta": max(0, oom_now - oom_before)}
+    state["last_status"] = {"mode": mode, "policy_stale": bool(state.get("policy_stale", False)), "available_bytes": avail, "total_bytes": total, "coding_current_bytes": sum(read_int(p / "memory.current") for p in code), "coding_target_bytes": target, "coding_groups": len(code), "production_groups": len(dedupe_nested(prod)), "oom_kill_delta": oom_delta, "control_write_failures": write_failures}
     return state["last_status"]
 
 
