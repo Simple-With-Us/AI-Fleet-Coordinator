@@ -264,6 +264,7 @@ class SeatRunner:
         self.cursor_lock = threading.Lock()
         self.cursor_flushed_at = 0.0
         self.ring = Ring()
+        self.edit_ring = Ring()  # messages an edit already woke this seat for (route_edit)
         self.users: dict[int, dict[str, Any]] = {}
         self.users_version = 0  # bumped on every change to `users`, so the fleet-bot set is cached
         self.fleet_cache: tuple[Any, set[int]] | None = None
@@ -1720,10 +1721,18 @@ class Daemon:
             return
         runner.ring.add(message_id)
         self._note_probe(runner, message)
+        self._route_retrying(runner, message, edited=False)
+        if advance_cursor:
+            runner.advance(message_id)
+
+    def _route_retrying(
+        self, runner: SeatRunner, message: Mapping[str, Any], *, edited: bool
+    ) -> None:
+        message_id = message["id"]
         done: set[Any] = set()  # side effects that completed, so a retry never repeats them
         for attempt in range(3):
             try:
-                self._route(runner, message, done)
+                self._route(runner, message, done, edited=edited)
                 break
             except Exception as exc:  # noqa: BLE001 - one bad message must not stop routing
                 runner.crashes[message_id] = runner.crashes.get(message_id, 0) + 1
@@ -1731,14 +1740,62 @@ class Daemon:
                     "route-error",
                     seat=runner.seat,
                     id=message_id,
+                    edited=edited,
                     attempt=attempt + 1,
                     error=self.scrub(type(exc).__name__ + ": " + str(exc)),
                 )
         else:
             self._append_seat_inbox(runner, [self._quarantine_item(message)])
-            self.log.write("quarantined", seat=runner.seat, id=message_id)
-        if advance_cursor:
-            runner.advance(message_id)
+            self.log.write("quarantined", seat=runner.seat, id=message_id, edited=edited)
+
+    def route_edit(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
+        """An edit that newly tags this seat routes the edited message like a new one (owner, Oct 29
+        2026:  "make sure edited messages wake anyone tagged").
+
+        Only a content edit counts, and only when the new text tags the seat (its own mention or a
+        fleet-wide `@all`) and the old text did not, so a mention that was already there, or a
+        typo fixed around it, never wakes twice.  A seat wakes at most once per message by edit
+        (`edit_ring`), so a tag removed and added again cannot be used to page it repeatedly.  The
+        message is fetched again for this seat's own flags, and it is routed with the edit's time
+        as its timestamp, so the stale rule judges when it was tagged, not when it was first posted.
+        A direct message is never re-routed:  an edit does not tag anyone there.  The same router
+        decides the rest (eligibility, the owner topic rule, leases, the inbox and the wake)."""
+        message_id = event.get("message_id")
+        if (
+            runner.me is None
+            or runner.client is None
+            or not isinstance(message_id, int)
+            or event.get("rendering_only")
+            or "content" not in event
+            or message_id in runner.edit_ring
+        ):
+            return
+        if not R.tags_seat(str(event.get("content") or ""), runner.me) or R.tags_seat(
+            str(event.get("orig_content") or ""), runner.me
+        ):
+            return
+        try:
+            fetched = runner.client.get("messages/%d" % message_id, {"apply_markdown": "false"})
+        except Z.AgentSyncError as exc:
+            self.log.write(
+                "edit-route-error",
+                seat=runner.seat,
+                id=message_id,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+            return
+        message = dict(fetched.get("message") or {})
+        if message.get("type") == "private" or not R.tags_seat(
+            str(message.get("content") or ""), runner.me
+        ):
+            return  # a DM, or edited again since:  the newer edit's own event decides
+        message["id"] = message_id
+        edited_at = event.get("edit_timestamp")
+        message["timestamp"] = (
+            edited_at if isinstance(edited_at, (int, float)) else self.clock.time()
+        )
+        runner.edit_ring.add(message_id)
+        self._route_retrying(runner, message, edited=True)
 
     def _quarantine_item(self, message: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -1805,11 +1862,18 @@ class Daemon:
         }
 
     def _route(
-        self, runner: SeatRunner, message: Mapping[str, Any], done: set[Any] | None = None
+        self,
+        runner: SeatRunner,
+        message: Mapping[str, Any],
+        done: set[Any] | None = None,
+        *,
+        edited: bool = False,
     ) -> None:
         """Route one message.  `done` is shared by route_message's retries:  each append and the
         wake offer is recorded there once it succeeds, so a retry after a partial failure resumes
-        instead of delivering a second copy."""
+        instead of delivering a second copy.  `edited` is route_edit's re-route of a message an
+        edit newly tagged this seat in:  the item says so, and the owner's pause command and a
+        registration answer, which act on a message once, are never carried out again."""
         assert runner.me is not None
         done = set() if done is None else done
         now = self.clock.time()
@@ -1847,6 +1911,7 @@ class Daemon:
             sender=message.get("sender_id"),
             classes=c.labels(),
             decision=d.describe(),
+            edited=edited,
         )
         # A marker message wakes nobody, and the owner typing `@**all**` is exactly the case
         # where the fanout would wake every seat, so the fanout checks the marker too (AFC-468).
@@ -1878,19 +1943,26 @@ class Daemon:
                 daemon=True,
             ).start()
         if (
-            c.owner
+            not edited
+            and c.owner
             and c.dm
             and str(message.get("content") or "").strip().casefold() in PAUSE_COMMANDS
         ):
             self.pause(seat=None, wakes_only=False, by="owner-dm", message_id=message["id"])
             return
-        if not c.dm and self._maybe_registration_answer(
-            message, now, channel=c.channel, topic=c.topic, done=done
+        if (
+            not edited
+            and not c.dm
+            and self._maybe_registration_answer(
+                message, now, channel=c.channel, topic=c.topic, done=done
+            )
         ):
             # A location answer is carried out here, deterministically:  it never becomes a
             # wake for the Operator's responder to interpret.
             return
         item = self.make_item(runner, message, c, d)
+        if edited:
+            item["edited"] = True
         for lease_id, klass, kind in d.lease_items:
             if ("live", lease_id) in done:
                 continue
@@ -1991,8 +2063,18 @@ class Daemon:
             L.write_json(paths.seat_inbox_meta, meta)
 
     def handle_update(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
-        """A topic rename (propagate_mode change_all) rewrites the seat's leases and CLI cursors.
-        A content-only edit is ignored and never delivered."""
+        """A content edit that newly tags this seat is routed again (route_edit, owner Oct 29 2026).
+        A topic rename (propagate_mode change_all) rewrites the seat's leases and CLI cursors.  Any
+        other content-only edit is ignored and never delivered."""
+        try:
+            self.route_edit(runner, event)
+        except Exception as exc:  # noqa: BLE001 - an edit wake must never stop the rename below
+            self.log.write(
+                "edit-route-error",
+                seat=runner.seat,
+                id=event.get("message_id"),
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
         new_topic = event.get("subject", event.get("topic"))
         old_topic = event.get("orig_subject", event.get("orig_topic"))
         stream_id = event.get("stream_id")

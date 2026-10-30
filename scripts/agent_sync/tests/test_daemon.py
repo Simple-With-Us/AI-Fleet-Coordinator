@@ -186,16 +186,73 @@ class RoutingTests(DaemonHarness):
         self.assertEqual(L.load_lease(self.seat_paths(), "L1")["topics"][0]["topic"], "✔ old name")
         self.assertEqual(L.read_json(state)["cursors"], {L.topic_key("agent-sync", "✔ old name"): 120})
 
-    def test_a_content_only_edit_is_ignored(self) -> None:
+    def test_an_edit_with_no_new_tag_is_ignored(self) -> None:
         daemon = self.started()
         self.write_lease("L1", topics=[("agent-sync", "t")])
         mid = self.fake.add_message("Codex", "agent-sync", "t", "hello")
         self.pump_until(daemon, lambda: len(self.live_items("L1")) == 1)
-        self.fake.edit_content(mid, "@**Claude** edited in a mention")
+        self.fake.edit_content(mid, "hello again, nobody tagged")
+        self.fake.edit_content(mid, "a silenced @_**Claude** never counts")
         daemon.pump("CLAUDE", timeout=0.5)
         daemon.pump("CLAUDE", timeout=0.5)
         self.assertEqual(len(self.live_items("L1")), 1)
         self.assertEqual(self.inbox(), [])
+        self.assertEqual(self.ledger(), [])
+
+    def test_an_edit_that_tags_the_seat_wakes_it_once(self) -> None:
+        # Owner, Oct 29 2026:  "make sure edited messages wake anyone tagged".
+        daemon = self.started()
+        mid = self.fake.add_message("Codex", "agent-sync", "t", "hello")
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(self.inbox(), [])
+        self.fake.edit_content(mid, "@**Claude** edited in a mention")
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        rows = self.inbox()
+        self.assertEqual([(r["id"], r.get("edited")) for r in rows], [(mid, True)])
+        self.assertIn("direct", rows[0]["classes"])
+        self.assertEqual([(r["state"], r["trigger_ids"]) for r in self.ledger()], [("queued", [mid])])
+        # The mention was already there, then it is removed and added back:  no second wake.
+        self.fake.edit_content(mid, "@**Claude** edited in a mention, typo fixed")
+        self.fake.edit_content(mid, "mention taken out")
+        self.fake.edit_content(mid, "@**Claude** and back in")
+        daemon.pump("CLAUDE", timeout=0.5)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual([r["id"] for r in self.inbox()], [mid])
+        self.assertEqual(len(self.ledger()), 1)
+
+    def test_an_edit_that_tags_a_message_already_delivered_reaches_its_lease_again(self) -> None:
+        daemon = self.started()
+        self.write_lease("L1", topics=[("agent-sync", "t")])
+        mid = self.fake.add_message("Codex", "agent-sync", "t", "hello")
+        self.pump_until(daemon, lambda: len(self.live_items("L1")) == 1)
+        self.fake.edit_content(mid, MENTION)
+        self.pump_until(daemon, lambda: len(self.live_items("L1")) == 2)
+        items = self.live_items("L1")
+        self.assertEqual([i["id"] for i in items], [mid, mid])
+        self.assertTrue(items[-1]["edited"])
+        self.assertIn("direct", items[-1]["classes"])
+
+    def test_an_edit_that_adds_all_counts_like_a_new_all(self) -> None:
+        daemon = self.started()
+        mid = self.fake.add_message("Codex", "agent-sync", "t", "heads up")
+        daemon.pump("CLAUDE", timeout=0.5)
+        with mock.patch.object(daemon, "start_fanout") as fanout:
+            self.fake.edit_content(mid, "@**all** heads up")
+            self.pump_until(daemon, lambda: fanout.called)
+        self.assertEqual(fanout.call_args.args[0]["id"], mid)
+
+    def test_an_own_edit_or_a_dm_edit_wakes_nobody(self) -> None:
+        daemon = self.started()
+        own = self.fake.add_message(self.fake.me, "agent-sync", "t", "my own note")
+        dm = self.fake.add_direct_message("Codex", "a direct message", deliver=True)
+        daemon.pump("CLAUDE", timeout=0.5)
+        before = len(self.inbox())
+        self.fake.edit_content(own, "my own note for @**Claude**")
+        self.fake.edit_content(dm, "a direct message for @**Claude**")
+        daemon.pump("CLAUDE", timeout=0.5)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertEqual(len(self.inbox()), before)
+        self.assertEqual([r for r in self.ledger() if dm in r.get("trigger_ids", [])][1:], [])
 
     def test_a_muted_topic_drops_group_mentions_but_not_direct_ones(self) -> None:
         daemon = self.started()

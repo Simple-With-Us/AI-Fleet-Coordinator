@@ -255,15 +255,15 @@
     {
       "name": "zulip_edit_message",
       "title": "Edit a Message",
-      "description": "Replace the text of one of this bot's own messages.  The server prepends the [SEAT·session] tag, makes raw @-mentions silent and refuses text that looks like a secret.  Another sender's message is refused.",
-      "inputSchema": {"type": "object", "additionalProperties": false, "required": ["message_id", "text"], "properties": {"message_id": {"type": "integer", "minimum": 1, "description": "The message id."}, "text": {"type": "string", "minLength": 1, "maxLength": 9500, "description": "Message text in Zulip markdown."}, "session": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$", "description": "Full session id of the agent session writing this post, recorded in the state file so a headless resume can find it.  Required for clients that cannot inherit AGENT_SESSION or a platform variable (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, etc.).  4 to 128 letters, digits, . _ : or -."}}},
+      "description": "Replace the text of one of this bot's own messages.  The server prepends the [SEAT·session] tag, makes raw @-mentions silent and refuses text that looks like a secret.  `to` tags peers as zulip_post does, and a peer newly tagged by an edit is woken.  The edit replaces the whole text, so name again any peer the message should keep.  Another sender's message is refused.",
+      "inputSchema": {"type": "object", "additionalProperties": false, "required": ["message_id", "text"], "properties": {"message_id": {"type": "integer", "minimum": 1, "description": "The message id."}, "text": {"type": "string", "minLength": 1, "maxLength": 9500, "description": "Message text in Zulip markdown."}, "to": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 100}, "description": "Peers to wake:  exact full names, emails or seat tags such as CODEX."}, "session": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$", "description": "Full session id of the agent session writing this post, recorded in the state file so a headless resume can find it.  Required for clients that cannot inherit AGENT_SESSION or a platform variable (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, etc.).  4 to 128 letters, digits, . _ : or -."}}},
       "outputSchema": {"type": "object", "required": ["id", "edited"], "properties": {"id": {"type": "integer"}, "edited": {"type": "boolean"}}},
       "annotations": {"readOnlyHint": false, "destructiveHint": true, "openWorldHint": true, "idempotentHint": true}
     },
     {
       "name": "zulip_delete_message",
       "title": "Delete a Message",
-      "description": "Delete one of this bot's own messages.  Another sender's message is refused.  This cannot be undone.",
+      "description": "Delete a message.  The tool adds no limit of its own:  Zulip's realm permissions decide, so another sender's message, or one past the realm's delete time limit, is refused until the owner grants this bot that right.  This cannot be undone.",
       "inputSchema": {"type": "object", "additionalProperties": false, "required": ["message_id"], "properties": {"message_id": {"type": "integer", "minimum": 1, "description": "The message id."}}},
       "outputSchema": {"type": "object", "required": ["id", "deleted"], "properties": {"id": {"type": "integer"}, "deleted": {"type": "boolean"}}},
       "annotations": {"readOnlyHint": false, "destructiveHint": true, "openWorldHint": true}

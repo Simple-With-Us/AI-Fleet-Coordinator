@@ -34,16 +34,33 @@ class MessageCommandTests(Harness):
         self.assertEqual(len(versions), 2)
         self.assertIn("second words", versions[-1]["content"])
 
-    def test_edit_and_delete_refuse_another_senders_message(self) -> None:
+    def test_edit_to_tags_a_peer(self) -> None:
+        posted = json.loads(self.run_cli("post", "--topic", "t", "first", "--json").out)["id"]
+        result = self.run_cli("edit", "--id", str(posted), "--to", "CODEX", "now for you")
+        self.assertEqual(result.code, 0, result.err)
+        content = self.fake._find(posted)["content"]
+        self.assertIn("@**Codex**", content)
+        self.assertIn("now for you", content)
+
+    def test_edit_refuses_another_senders_message(self) -> None:
         theirs = self.fake.add_message("Codex", "agent-sync", "t", "not yours")
         before = len(self.fake.requests_to("PATCH", "messages/%d" % theirs))
         edit = self.run_cli("edit", "--id", str(theirs), "mine now")
         self.assertEqual(edit.code, 2)
         self.assertIn("was not sent by this bot", edit.err)
-        delete = self.run_cli("delete", "--id", str(theirs))
-        self.assertEqual(delete.code, 2)
         self.assertEqual(len(self.fake.requests_to("PATCH", "messages/%d" % theirs)), before)
-        self.assertEqual(self.fake.requests_to("DELETE", "messages/%d" % theirs), [])
+
+    def test_delete_leaves_another_senders_message_to_zulips_permission(self) -> None:
+        theirs = self.fake.add_message("Codex", "agent-sync", "t", "not yours")
+        refused = self.run_cli("delete", "--id", str(theirs))
+        self.assertEqual(refused.code, 2)
+        self.assertIn("no permission to delete it", refused.err)
+        self.assertEqual(len(self.fake.requests_to("DELETE", "messages/%d" % theirs)), 1)
+        self.fake.can_delete_any.add(self.fake.me["user_id"])
+        result = self.run_cli("delete", "--id", str(theirs), "--json")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(result.out), {"id": theirs, "deleted": True})
+        self.assertFalse(any(m["id"] == theirs for m in self.fake.messages))
 
     def test_delete_own_message(self) -> None:
         posted = json.loads(self.run_cli("post", "--topic", "t", "bye", "--json").out)["id"]
