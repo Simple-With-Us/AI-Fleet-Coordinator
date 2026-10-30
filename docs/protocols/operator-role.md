@@ -220,6 +220,16 @@ Three concrete changes carry that:
     `wakes.py` and the adapter's `reply_prefix`, so this is two places:  the `OPERATOR` seat
     composes its own tag, and the wake-reply tag stays for a seat answering on the owner's behalf.
 
+    **Oct 30, 2026 addition.**  The Operator now also RELAYS a headless wake's reply (owner
+    ruling, Oct 30, 2026: automation that composes text for a seat never posts as the seat's bot,
+    and the owner said yes to the reply going out as the Operator in the trigger's topic).  That
+    relay keeps the `[SEAT·wake] re=<id>` tag on its first line.  It is not the Operator wearing
+    a seat's tag in its own voice: the sender line says Operator, and the tag is the label the
+    loop guard and the router read (a `·wake` post never wakes anyone) and the label that says
+    which seat's consultant wrote the text.  The Operator's own messages (its questions, its
+    status messages, the `@all` reminder, tagged `[OPERATOR·note]`) keep their own tags.  See
+    `agent-sync-listener.md`, "The Operator's voice".
+
 3.  **The pairing test decides whether the Operator speaks, and the direct message carries what
     it says.**  A message that pairs with a thread gets the Operator's own message, and that
     message travels by direct message to the seat that asked, with a link to the thread, because a

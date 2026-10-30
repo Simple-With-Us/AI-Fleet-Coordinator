@@ -184,7 +184,7 @@ const HOST_VERIFIED_LINEAR_PREFIXES = Object.freeze({
   JET: "LINEAR_JET", "GROK-WEB": "LINEAR_GROK_WEB", ECHO: "LINEAR_ECHO", WISE: "LINEAR_WISE",
   CURSOR: "LINEAR_CURSOR", CLAUDE: "LINEAR_CLAUDE", CODEX: "LINEAR_CODEX",
   MA: "LINEAR_MA", AG: "LINEAR_AG", CLUTCH: "LINEAR_CLUTCH", FX: "LINEAR_FX", GROK: "LINEAR_GROK",
-  MC: "LINEAR_MC", MM: "LINEAR_MM", OPENCODE: "LINEAR_OPENCODE",
+  MC: "LINEAR_MC", MM: "LINEAR_MM", OPENCODE: "LINEAR_OPENCODE", AMP: "LINEAR_AMP",
   "BF-COMPILER": "LINEAR_BF_COMPILER", "BF-DEPLOYER": "LINEAR_BF_DEPLOYER", "BF-DESIGNER": "LINEAR_BF_DESIGNER",
   "BF-DIRECTOR": "LINEAR_BF_DIRECTOR", "BF-ENGINEER": "LINEAR_BF_ENGINEER", "BF-FIXER": "LINEAR_BF_FIXER",
   "BF-HOUSEKEEPER": "LINEAR_BF_HOUSEKEEPER", "BF-MONITOR": "LINEAR_BF_MONITOR", "BF-ORACLE": "LINEAR_BF_ORACLE",
@@ -203,11 +203,11 @@ test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for 
 });
 
 // MA: its cached token was refused (401) at check time;  BF-ENGINEER and BF-TRADER had no token to read.
-const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER"]); // prepared but not enabled until their own viewer is qualified;  the other 18 are on
-test("the 20 own-app seats have prepared names, 18 are enabled (BF-ENGINEER and BF-TRADER held back), and none share a pair", async () => {
+const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER"]); // prepared but not enabled until their own viewer is qualified;  the other 19 are on
+test("the 21 own-app seats have prepared names, 19 are enabled (BF-ENGINEER and BF-TRADER held back), and none share a pair", async () => {
   const L = await import("../src/linear.js");
   const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
-  assert.equal(own.length, 20);
+  assert.equal(own.length, 21);
   assert.ok(!own.includes("BF-BUILDER") && !Object.hasOwn(L.LINEAR_SECRETS, "BF-BUILDER") && !L.LINEAR_SEATS.includes("BF-BUILDER"));
   for (const seat of own) {
     assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
@@ -243,7 +243,7 @@ test("every enabled Linear seat has a grounded app name, so a bare seat tag is n
 
 test("own-app viewer names are the live Linear viewer names, accepted by their own seat only", async () => {
   const L = await import("../src/linear.js");
-  const live = { AG: "Antigravity (AG)", CLUTCH: "Clutch", FX: "FX.sh", GROK: "Grok (Build)", MC: "Muse Code (MC)", MM: "MiniMax (MM)", OPENCODE: "OpenCode",
+  const live = { AG: "Antigravity (AG)", CLUTCH: "Clutch", FX: "FX.sh", GROK: "Grok (Build)", MC: "Muse Code (MC)", MM: "MiniMax (MM)", OPENCODE: "OpenCode", AMP: "Amp",
     "BF-COMPILER": "BF-Compiler", "BF-DEPLOYER": "BF-Deployer", "BF-DESIGNER": "BF-Designer", "BF-DIRECTOR": "BF-Director", "BF-FIXER": "BF-Fixer",
     "BF-HOUSEKEEPER": "BF-Housekeeper", "BF-MONITOR": "BF-Monitor", "BF-ORACLE": "BF-Oracle", "BF-PLUMBER": "BF-Plumber", "BF-PUBLISHER": "BF-Publisher",
     "BF-ENGINEER": "BF-Engineer", "BF-TRADER": "BF-Trader" };
@@ -260,4 +260,16 @@ test("own-app viewer names are the live Linear viewer names, accepted by their o
     if (all.has(k) && !(["JET", "JET-CHAT"].includes(seat) && ["JET", "JET-CHAT"].includes(all.get(k)))) assert.fail(`${n} belongs to both ${all.get(k)} and ${seat}`);
     all.set(k, seat);
   }
+});
+
+
+test("AMP is enabled on its own app only: its own pair names, the default full scope, and the grounded name", async () => {
+  const L = await import("../src/linear.js");
+  assert.ok(L.LINEAR_SEATS.includes("AMP") && L.LINEAR_OWN_APP_ENABLED.includes("AMP"));
+  assert.deepEqual({ ...L.linearSecretNames("AMP") }, { clientId: "LINEAR_AMP_CLIENT_ID", clientSecret: "LINEAR_AMP_CLIENT_SECRET" });
+  assert.deepEqual([...L.seatAppNames("AMP")], ["Amp"]);
+  assert.equal(L.mintScopeFor("AMP"), L.LINEAR_SCOPE, "the installed app grants app:assignable app:mentionable read write");
+  assert.ok(!L.LINEAR_NO_DELEGATE_SEATS.includes("AMP"), "app:assignable is installed, so AMP can be a delegate");
+  for (const other of ["OPENCODE", "MM", "JET", "CODEX"]) assert.ok(!L.appNameOk("Amp", other), `${other} must not accept Amp's app`);
+  assert.ok(L.appNameOk("Amp", "AMP") && !L.appNameOk("Opencode", "AMP"));
 });
