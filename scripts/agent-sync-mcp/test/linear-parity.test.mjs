@@ -203,8 +203,8 @@ test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for 
 });
 
 // MA: its cached token was refused (401) at check time;  BF-ENGINEER and BF-TRADER had no token to read.
-const HELD_BACK = Object.freeze([]); // all 20 are on:  a missing cache is a bootstrap state, the hosted client mints from the seat's own pair
-test("the 20 own-app seats have prepared names, all 20 are enabled, and none share a pair", async () => {
+const HELD_BACK = Object.freeze(["BF-ENGINEER", "BF-TRADER"]); // prepared but not enabled until their own viewer is qualified;  the other 18 are on
+test("the 20 own-app seats have prepared names, 18 are enabled (BF-ENGINEER and BF-TRADER held back), and none share a pair", async () => {
   const L = await import("../src/linear.js");
   const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
   assert.equal(own.length, 20);
@@ -215,7 +215,7 @@ test("the 20 own-app seats have prepared names, all 20 are enabled, and none sha
     assert.deepEqual({ ...L.LINEAR_SECRETS[seat] }, { ...L.LINEAR_INFISICAL[seat] }, `${seat}: Worker and Infisical names agree`);
     assert.deepEqual({ ...L.linearSecretNames(seat) }, { ...L.LINEAR_SECRETS[seat] });
   }
-  assert.deepEqual([...L.LINEAR_OWN_APP_ENABLED].sort(), own.filter((x) => !HELD_BACK.includes(x)).sort(), "all 20 own-app seats are switched on");
+  assert.deepEqual([...L.LINEAR_OWN_APP_ENABLED].sort(), own.filter((x) => !HELD_BACK.includes(x)).sort(), "every own-app seat but the held-back two is switched on");
   const ids = new Map();
   for (const [seat, names] of Object.entries(L.LINEAR_INFISICAL)) {
     if (seat === "JET-CHAT") continue; // the one deliberate JET/JET-CHAT share, unchanged

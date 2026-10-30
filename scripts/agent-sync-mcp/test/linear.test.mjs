@@ -845,7 +845,7 @@ test("appNameOk: an own-app seat accepts only its grounded app name, never the b
 });
 
 test("an enabled own-app seat with an empty token cache mints its own token once with its qualified scope, then reads", async () => {
-  const { tools, fake, gate } = harness({ seat: "BF-ENGINEER", viewer: { id: "u-eng", name: "BF-Engineer", app: true } });
+  const { tools, fake, gate } = harness({ seat: "BF-COMPILER", viewer: { id: "u-comp", name: "BF-Compiler", app: true } });
   assert.equal(await gate.linearTokenGet(), null, "cache starts empty");
   ok(await tools.call("linear_list", {}), "linear_list");
   assert.equal(fake.mints().length, 1);
@@ -854,15 +854,26 @@ test("an enabled own-app seat with an empty token cache mints its own token once
   assert.equal(fake.mints().length, 1, "second call reuses the cache");
 });
 
-test("BF-TRADER mints once with its minimal first-grant scope from an empty cache, then reuses it", async () => {
+test("BF-ENGINEER and BF-TRADER are held back: not enabled, no credential read, no mint, no provider call", async () => {
   const L = await import("../src/linear.js");
-  assert.equal(L.mintScopeFor("BF-TRADER"), "read,write,app:assignable");
-  assert.ok(!L.mintScopeFor("BF-TRADER").includes("mentionable"));
-  const { tools, fake } = harness({ seat: "BF-TRADER", viewer: { id: "u-trader", name: "BF-Trader", app: true } });
-  ok(await tools.call("linear_list", {}), "linear_list");
-  ok(await tools.call("linear_list", {}), "linear_list");
-  assert.equal(fake.mints().length, 1);
-  assert.equal(new URLSearchParams(fake.mints()[0].raw).get("scope"), "read,write,app:assignable");
+  const { _resetInfisicalForTests } = await import("../src/infisical.js");
+  for (const seat of ["BF-ENGINEER", "BF-TRADER"]) {
+    assert.ok(!L.LINEAR_SEATS.includes(seat), `${seat} is not enabled`);
+    assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && L.seatAppNames(seat).length > 0, `${seat} keeps its prepared names`);
+    for (const mode of ["off", "fallback", "required"]) {
+      _resetInfisicalForTests();
+      const names = L.LINEAR_SECRETS[seat];
+      const env = { INFISICAL_MODE: mode, [names.clientId]: "id-held", [names.clientSecret]: "sec-held" };
+      assert.equal(await L.resolveLinearPair(env, seat), null, `${seat} reads no credential in ${mode} mode`);
+    }
+    const { tools, fake, gate } = harness({ seat, viewer: { id: "u-held", name: L.seatAppNames(seat)[0], app: true } });
+    for (const [name, args] of [["linear_list", {}], ["linear_claim", { id: "AFC-1" }], ["linear_status", { id: "AFC-1", status: "open" }]]) {
+      toolError(await tools.call(name, args), "not_configured");
+    }
+    assert.equal(fake.mints().length, 0, `${seat} made no mint`);
+    assert.equal(fake.calls().length, 0, `${seat} made no provider call`);
+    assert.equal(await gate.linearTokenGet(), null, `${seat} cached nothing`);
+  }
 });
 
 test("MA mints once with its own installed scope (not the standard four), then reuses the token; BF-ENGINEER keeps the standard scope", async () => {
@@ -881,6 +892,47 @@ test("MA mints once with its own installed scope (not the standard four), then r
   assert.equal(new URLSearchParams(fake.mints()[0].raw).get("scope"), own);
 });
 
+const viewerQueries = (fake) => fake.calls().filter((c) => /viewer/i.test(String(c.body?.query ?? ""))).length;
+
+test("one request proves the viewer once: a write checks no second time and the write is still attributed to the proven app", async () => {
+  const { tools, fake } = harness({ seat: "BF-COMPILER", viewer: { id: "u-comp", name: "BF-Compiler", app: true } });
+  fake.addIssue({ id: "issue-1", identifier: "AFC-1", team: "AFC" });
+  ok(await tools.call("linear_comment", { id: "AFC-1", body: "hello" }), "linear_comment");
+  assert.equal(viewerQueries(fake), 1, "one viewer query for the whole request");
+  assert.equal(fake.mutations().length, 1, "the write went through");
+});
+
+test("a refused viewer proof is never kept: the next call proves the viewer again", async () => {
+  const { tools, fake } = harness({ seat: "BF-COMPILER", viewer: { id: "u-x", name: "Someone Else", app: true } });
+  fake.addIssue({ id: "issue-1", identifier: "AFC-1", team: "AFC" });
+  toolError(await tools.call("linear_comment", { id: "AFC-1", body: "hello" }), "not_authorized");
+  assert.equal(viewerQueries(fake), 1);
+  fake.viewer.name = "BF-Compiler";
+  ok(await tools.call("linear_comment", { id: "AFC-1", body: "hello" }), "linear_comment");
+  assert.equal(viewerQueries(fake), 2, "the refusal was not replayed from a stored rejection");
+  assert.equal(fake.mutations().length, 1);
+});
+
+test("a proof belongs to its client: a different client on the same request is proven again", async () => {
+  const { tools, fake } = harness({ seat: "BF-COMPILER", viewer: { id: "u-comp", name: "BF-Compiler", app: true } });
+  const first = await tools.confirmedViewer();
+  assert.equal(await tools.confirmedViewer(), first);
+  assert.equal(viewerQueries(fake), 1);
+  const other = new LinearClient({ seat: "BF-COMPILER", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, gate: tools.gate, fetch: fake.fetch, now: () => Date.parse("2026-10-09T10:00:00Z") });
+  tools.linear = other;
+  await tools.confirmedViewer();
+  assert.equal(viewerQueries(fake), 2, "a swapped client is not covered by the earlier proof");
+});
+
+test("a seat with no resolved pair gets no client, whether the pair is null, empty or half there", async () => {
+  const L = await import("../src/linear.js");
+  const gate = memoryGate({ now: Date.now() });
+  const f = async () => ({});
+  for (const pair of [null, undefined, {}, { clientId: "", clientSecret: "" }, { clientId: "id", clientSecret: "" }, { clientId: "", clientSecret: "sec" }]) {
+    assert.equal(L.linearClientFromPair(pair, "BF-ENGINEER", { gate, fetch: f }), null, JSON.stringify(pair));
+  }
+});
+
 test("MA mints with its own scope but a wrong viewer is refused after the mint, with the token kept", async () => {
   const { tools, fake, gate } = harness({ seat: "MA", viewer: { id: "u-x", name: "Someone Else", app: true } });
   toolError(await tools.call("linear_list", {}), "not_authorized");
@@ -891,11 +943,11 @@ test("MA mints with its own scope but a wrong viewer is refused after the mint, 
 
 
 test("a wrong viewer name after a first mint refuses, keeps the cached token, and a corrected name reads without a second mint", async () => {
-  const { tools, fake, gate } = harness({ seat: "BF-ENGINEER", viewer: { id: "u-eng", name: "Engineer Display", app: true } });
+  const { tools, fake, gate } = harness({ seat: "BF-COMPILER", viewer: { id: "u-comp", name: "Compiler Display", app: true } });
   toolError(await tools.call("linear_list", {}), "not_authorized");
   assert.equal(fake.mints().length, 1);
   assert.ok((await gate.linearTokenGet())?.access_token, "the token survives the refused viewer check");
-  fake.viewer.name = "BF-Engineer"; // the name correction a code change would make
+  fake.viewer.name = "BF-Compiler"; // the name correction a code change would make
   ok(await tools.call("linear_list", {}), "linear_list");
   assert.equal(fake.mints().length, 1, "no second mint for a name fix");
 });

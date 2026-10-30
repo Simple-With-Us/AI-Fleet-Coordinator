@@ -237,13 +237,14 @@ export const LINEAR_OWN_APP_ENABLED = Object.freeze([
   "BF-ORACLE",
   "BF-PLUMBER",
   "BF-PUBLISHER",
-  // MA, BF-ENGINEER and BF-TRADER: no cached token is needed to be on.  The hosted client mints
-  // each seat's own token from its own /linear pair on first use (LinearClient.token), under the
-  // seat lock and the one-mint-per-day rule.  Their names are the provider registration names
-  // for the canonical client ids (applicationInfo, 2026-10-29), and the viewer check confirms them.
+  // MA: no cached token is needed to be on.  The hosted client mints the seat's own token from its
+  // own /linear pair on first use (LinearClient.token), under the seat lock and the one-mint-per-day
+  // rule.  Its name is the provider registration name for the canonical client id (applicationInfo,
+  // 2026-10-29), and the viewer check confirms it.
   "MA",
-  "BF-ENGINEER",
-  "BF-TRADER",
+  // BF-ENGINEER and BF-TRADER are held back:  prepared pair names and grounded app names stay in the
+  // tables above, but neither seat is enabled until its own viewer is qualified, so neither reads a
+  // credential or mints.
 ]);
 // Seats whose installed app cannot be an issue delegate (no app:assignable).  linear_claim claims by the
 // claim label only for them and sends no delegateId, as the stdio board CLI does;  linear_status never clears a delegate.

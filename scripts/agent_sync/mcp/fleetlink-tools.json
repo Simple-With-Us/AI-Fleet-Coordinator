@@ -33,6 +33,12 @@
             "maxLength": 2000000,
             "description": "Markdown.  The link renders it."
           },
+          "empty": {
+            "type": "boolean"
+          },
+          "reuse": {
+            "type": "boolean"
+          },
           "filename": {
             "type": "string",
             "minLength": 1,
@@ -161,8 +167,10 @@
             "type": "string",
             "enum": [
               "mine",
+              "bots",
               "team",
-              "teams"
+              "teams",
+              "all"
             ]
           },
           "team_id": {
@@ -511,6 +519,10 @@
             "minimum": 30,
             "maximum": 1800
           },
+          "password": {
+            "type": "string",
+            "maxLength": 256
+          },
           "days": {
             "type": [
               "number",
@@ -566,8 +578,12 @@
             "description": "The share's name, as in https://fleetlink.online/<slug>."
           },
           "days": {
-            "type": "number",
-            "minimum": 0.01
+            "type": [
+              "number",
+              "string"
+            ],
+            "minimum": 0.01,
+            "pattern": "^forever$"
           }
         }
       },

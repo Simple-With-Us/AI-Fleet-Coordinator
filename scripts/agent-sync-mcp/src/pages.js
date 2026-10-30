@@ -288,18 +288,18 @@ export function gbBearerMintRefusedPage({ identity, reason = "stale" }) {
 }
 
 /** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
-export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [], infisical = null }, headers) {
+export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, clientsDeferred = false, clientsUnavailable = false, clientsCheckedAt = null, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [], infisical = null }, headers) {
   const seatRows = seats
     .map((s) => {
       const unavailable = new Set(s.unavailableFields ?? []);
       const stateUnknown = unavailable.has("state");
-      const grants = unavailable.has("grants") ? "Unknown (diagnostic read failed)" : s.grants.length
+      const grants = s.grantsDeferred ? "Not checked (load on request)" : unavailable.has("grants") ? "Unknown (diagnostic read failed)" : s.grants.length
         ? s.grants.map((g) => `${escapeHtml(g.client)} <small>(${escapeHtml(g.scope.join(" "))}, ${escapeHtml(ownerTime(g.createdAt))})</small>`).join("<br>")
         : "none";
       const armed = stateUnknown ? "Unknown" : s.armed ? `<span class="ok">Armed until ${escapeHtml(ownerTime(s.armedUntil))}</span>` : "Not armed";
       const role = unavailable.has("role") ? "Unknown (diagnostic read failed)" : s.role ? (s.role.ok ? `role ${escapeHtml(s.role.role)}, checked ${escapeHtml(ownerTime(s.role.checked_at))}` : `<span class="warn">refused:  ${escapeHtml(s.role.reason)}</span>`) : "not checked yet";
       const key = s.keyInstalled ? `Installed<br><small>${role}</small>` : `<span class="warn">Missing</span>`;
-      return `<tr><td><strong>${escapeHtml(adminSeatLabel(s.seat))}</strong></td><td>${armed}</td><td>${stateUnknown ? "Unknown" : s.paused ? "Paused" : "Live"}</td><td>${stateUnknown ? "Unknown" : escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}</td><td>${[
+      return `<tr><td><strong>${escapeHtml(adminSeatLabel(s.seat))}</strong></td><td>${armed}</td><td>${stateUnknown ? "Unknown" : s.paused ? "Paused" : "Live"}</td><td>${stateUnknown ? "Unknown" : escapeHtml(s.epoch)}</td><td>${key}</td><td>${grants}${s.grantsCheckedAt ? `<br><small>Checked ${escapeHtml(ownerTime(s.grantsCheckedAt))}; snapshot only</small>` : ""}<br><a href="/admin?inspect_grants=${encodeURIComponent(s.seat)}">Check This Seat's Grants</a></td><td>${[
         actionButton(csrf, "arm", "Arm", { seat: s.seat }),
         s.armed ? actionButton(csrf, "disarm", "Disarm", { seat: s.seat }) : "",
         stateUnknown ? "" : s.paused ? actionButton(csrf, "unpause", "Unpause", { seat: s.seat }) : actionButton(csrf, "pause", "Pause", { seat: s.seat }),
@@ -314,7 +314,7 @@ export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, 
             `<tr><td><code>${escapeHtml(c.clientId)}</code></td><td>${escapeHtml(c.clientName ?? "")}</td><td>${c.seat ? escapeHtml(adminSeatLabel(c.seat)) : `<span class="warn">none</span>`}</td><td>${escapeHtml((c.redirectUris ?? []).join(" "))}</td><td>${c.seat ? actionButton(csrf, "sync_manual_client", "Sync Redirects", { client_id: c.clientId }) : ""}</td></tr>`,
         )
         .join("")
-    : `<tr><td colspan="5">No hand-registered clients.</td></tr>`;
+    : `<tr><td colspan="5">${clientsDeferred ? "Not checked (load on request)." : clientsUnavailable ? "Unknown (diagnostic read failed)." : "No hand-registered clients."}</td></tr>`;
   const manualRows = manualSeats
     .map(
       (m) =>
@@ -378,6 +378,7 @@ export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, 
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
+<p>Grant and manual-client inventories load only when requested. Checks are snapshots, not live connection guarantees. <a href="/admin">Return To Default View</a> to reload without listing inventories.</p>
 <table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>${infisicalLine}
 ${gbBearerSection(gbBearers, csrf, mintId)}
 <h2>Hand-Registered Clients (Manual Forms)</h2>
@@ -389,6 +390,7 @@ ${gbBearerSection(gbBearers, csrf, mintId)}
   )}</p>
 ${manualRows ? `<h3>Manual seats</h3>\n<table><tr><th>Seat</th><th>Redirect URIs</th><th></th></tr>${manualRows}</table>` : ""}
 <h3>Hand-registered clients</h3>
+<p><a href="/admin?inspect_clients=1">Check Manual Clients</a>${clientsCheckedAt ? ` <small>Checked ${escapeHtml(ownerTime(clientsCheckedAt))}; snapshot only</small>` : ""}</p>
 <table><tr><th>Client ID</th><th>Name</th><th>Seat</th><th>Redirect URIs</th><th></th></tr>${clientRows}</table>
 ${statusOverview}
 ${fold("Refused Authorize Requests", `${refusals.length} logged`, `<p>${sentences("Each row is a request that passed Cloudflare Access, so the signed-in email is shown.", "Only copy a redirect URI from here if the time matches your own attempt.")}</p>
