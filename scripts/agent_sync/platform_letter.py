@@ -92,7 +92,9 @@ ENV_REMOTE = "SESSION_LETTER_REMOTE"
 ENV_REMOTE_FALLBACK = "CLAUDE_LETTER_REMOTE"
 ENV_CLOSE_ON = "SESSION_LETTER_CLOSE_ON"
 REMOTE_COMMAND = '"$HOME"/.local/bin/' + ENTRY + " registry"
-CONNECT_TIMEOUT = 4  # seconds for ssh to connect; an asleep or unreachable Mac costs this much, not more
+CONNECT_TIMEOUT = (
+    4  # seconds for ssh to connect; an asleep or unreachable Mac costs this much, not more
+)
 REMOTE_TIMEOUT = 8.0  # the whole ssh round trip, inside every hook's own timeout (15 to 20 seconds)
 
 STALE_SECONDS = 36 * 3600
@@ -180,7 +182,9 @@ def one_line(text: object) -> str:
 def tidy(text: object) -> str:
     """`one_line` without control characters or lone surrogates (a title cut mid-emoji at a UTF-16 boundary): neither
     survives an ssh command line, and a NUL is not a character a title can hold."""
-    return one_line("".join(ch for ch in one_line(text) if unicodedata.category(ch) not in ("Cc", "Cs")))
+    return one_line(
+        "".join(ch for ch in one_line(text) if unicodedata.category(ch) not in ("Cc", "Cs"))
+    )
 
 
 def from_payload(*keys: str) -> Accessor:
@@ -605,7 +609,15 @@ def _last_letter(db: str, record_id: str) -> tuple[str, bool]:
 
 
 def operator_reopen(
-    OR: Any, db: str, reg: Any, record_id: str, *, actor: str, source: str, pick: str, parent: str = ""
+    OR: Any,
+    db: str,
+    reg: Any,
+    record_id: str,
+    *,
+    actor: str,
+    source: str,
+    pick: str,
+    parent: str = "",
 ) -> tuple[str, int, str]:
     """Give a closed chat a letter again (`SessionRegistry.reopen`), with the pick and parent when it takes them.
 
@@ -620,7 +632,10 @@ def operator_reopen(
     else:
         previous, taken = _last_letter(db, record_id)
         if len(previous) == 2 and taken:
-            raise SpaceLost("the pair %s went to another chat, and this registry reopens into single letters" % previous)
+            raise SpaceLost(
+                "the pair %s went to another chat, and this registry reopens into single letters"
+                % previous
+            )
     for name in PARENT_PARAMS:
         if parent and _accepts(reg.reopen, name):
             kwargs[name] = parent
@@ -708,7 +723,9 @@ def evict_oldest(
     if not rows:
         return 0
     oldest = min(rows, key=lambda r: _iso(r["last_seen_at"]) or 0.0)
-    return _close_records(OR, db, [oldest["record_id"]], "platform-letter-evict", "every letter live")
+    return _close_records(
+        OR, db, [oldest["record_id"]], "platform-letter-evict", "every letter live"
+    )
 
 
 def _with_room(
@@ -795,7 +812,10 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
     except OR.LabelExhausted:
         return {"error": "all %s letters are in use" % args.letter_space, "swept": swept}
     except SpaceLost:
-        return {"error": "this registry cannot give a closed chat a pair letter again yet", "swept": swept}
+        return {
+            "error": "this registry cannot give a closed chat a pair letter again yet",
+            "swept": swept,
+        }
     out["swept"] = swept
     out["evicted"] = evicted
     return out
@@ -820,7 +840,9 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
             reg.mark_seen(rid)
         elif args.op == "close":
             return {
-                "closed": reg.close(rid, actor=args.seat, source=args.source, reason="session ended"),
+                "closed": reg.close(
+                    rid, actor=args.seat, source=args.source, reason="session ended"
+                ),
                 "label": rec["label"],
             }
         return {"ok": True, "label": rec["label"], "generation": rec["generation"]}
@@ -852,7 +874,9 @@ def _make_parser() -> Any:
     parser.add_argument("--source", default="")
     parser.add_argument("--parent-session-id", default="")
     parser.add_argument("--letter-space", default="double", choices=("single", "double"))
-    parser.add_argument("--letter-pick", default="auto", choices=("auto", "lowest", "oldest", "primary"))
+    parser.add_argument(
+        "--letter-pick", default="auto", choices=("auto", "lowest", "oldest", "primary")
+    )
     parser.add_argument("--db", default="", help="the registry file (default: the Operator's)")
     return parser
 
@@ -993,7 +1017,12 @@ class Chat:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(
-                    dict(note, session_id=self.session_id, platform=self.spec.platform, updated_at=self.now),
+                    dict(
+                        note,
+                        session_id=self.session_id,
+                        platform=self.spec.platform,
+                        updated_at=self.now,
+                    ),
                     fh,
                     sort_keys=True,
                 )
@@ -1082,7 +1111,9 @@ class Out:
     def __init__(self, stream: TextIO, spec: PlatformSpec, hook_event: str):
         self.stream, self.spec, self.hook_event = stream, spec, hook_event
 
-    def emit(self, event: str, *, context: str = "", title: str | None = None, label: str = "") -> None:
+    def emit(
+        self, event: str, *, context: str = "", title: str | None = None, label: str = ""
+    ) -> None:
         style = self.spec.output
         if style == "hook":
             body: dict[str, str] = {
@@ -1174,7 +1205,12 @@ def _reissued(spec: PlatformSpec, answer: Mapping[str, Any]) -> str:
 
 
 def _write_title(
-    chat: Chat, note: Mapping[str, Any], title: str, current: str, data: Mapping[str, Any], reason: str
+    chat: Chat,
+    note: Mapping[str, Any],
+    title: str,
+    current: str,
+    data: Mapping[str, Any],
+    reason: str,
 ) -> bool:
     """Ask the adapter's writer to put `title` on the chat.  A writer that raises has failed, and a hook never
     blocks a chat, so the exception is swallowed."""
@@ -1229,7 +1265,9 @@ def present(
         return title
     note["pending"] = spec.title_writer is not None
     if note["pending"]:
-        note["retry_at"] = chat.now + RETRY_SECONDS  # a writer that is down is not asked again on every prompt
+        note["retry_at"] = (
+            chat.now + RETRY_SECONDS
+        )  # a writer that is down is not asked again on every prompt
     return None
 
 
@@ -1338,7 +1376,9 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
         chat, note, title, current, data, "start", settable=source in spec.title_sources
     )
     chat.write(note)
-    out.emit("start", context=_reissued(spec, answer) + reminder(spec, note), title=shown, label=label)
+    out.emit(
+        "start", context=_reissued(spec, answer) + reminder(spec, note), title=shown, label=label
+    )
     return 0
 
 
@@ -1347,7 +1387,11 @@ def _first_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
     first prompt, else "" (a prompt with no words, such as a bare slash command, waits for the next one)."""
     placeholder = note.get("placeholder") or ""
     words = bare(current, held(note))
-    if current and current not in (placeholder, note.get("inherited") or "") and words != PLACEHOLDER:
+    if (
+        current
+        and current not in (placeholder, note.get("inherited") or "")
+        and words != PLACEHOLDER
+    ):
         return words or ""  # someone named the chat: keep their words under the letter
     return str(note.get("title") or "") or title_from_prompt(prompt)
 
@@ -1373,7 +1417,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         return 0
     current = tidy(spec.current_title(data, chat.env))
     announce = False  # the model has not been told this letter yet
-    if state != "open" or not note.get("label"):  # a note that says open with no letter is not one to trust
+    if state != "open" or not note.get(
+        "label"
+    ):  # a note that says open with no letter is not one to trust
         if state == "failed" and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
             return 0
         parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
@@ -1385,7 +1431,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         if note["state"] != "open":
             chat.write(note)
             return 0
-        announce = True  # a start that found no Operator now has one: the letter is news to the model
+        announce = (
+            True  # a start that found no Operator now has one: the letter is news to the model
+        )
     title = None
     answer: dict[str, Any] = {}
     text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
@@ -1400,7 +1448,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     else:
         words, show = _renamed(note, current)
         if words or show:
-            note["seen"] = current  # one try for each name the platform shows, never one for every prompt
+            note["seen"] = (
+                current  # one try for each name the platform shows, never one for every prompt
+            )
             if words:
                 note["title"] = words
                 answer = _push(chat, note, "title", words)
@@ -1471,7 +1521,9 @@ def on_end(chat: Chat, data: Mapping[str, Any]) -> int:
     note["ended"] = {"reason": reason, "at": chat.now}
     named = _text(chat.env.get(ENV_CLOSE_ON))
     closing: tuple[str, ...] | None = (
-        tuple(r.strip() for r in named.split(",") if r.strip()) if named else chat.spec.close_reasons
+        tuple(r.strip() for r in named.split(",") if r.strip())
+        if named
+        else chat.spec.close_reasons
     )
     if (closing is None or reason in closing) and note.get("state") == "open":
         answer = chat.registry("close")
@@ -1518,7 +1570,9 @@ def hook(
 ) -> int:
     """Run one hook event for `spec`.  Always 0: whatever goes wrong is a line of context, or nothing."""
     try:
-        return _run_hook(spec, env, stdin, stdout, runner, now, platform, transport, location_flag, remote_flag)
+        return _run_hook(
+            spec, env, stdin, stdout, runner, now, platform, transport, location_flag, remote_flag
+        )
     except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat, whatever an adapter or the host does
         try:
             (stderr or sys.stderr).write("platform-letter hook: %s\n" % type(exc).__name__)
@@ -1605,7 +1659,12 @@ def show(spec: PlatformSpec, argv: list[str], env: Mapping[str, str], stdout: Te
 def command_for(home: str, platform: str, where: str = "", remote: str = "") -> str:
     """The hook command an adapter's hook file carries: this host's own `platform-letter` by absolute path, with the
     location and the registry host as flags (a hook file has no env block to put them in)."""
-    parts = [shlex.quote(os.path.join(home, ".local", "bin", ENTRY)), "hook", "--platform", platform]
+    parts = [
+        shlex.quote(os.path.join(home, ".local", "bin", ENTRY)),
+        "hook",
+        "--platform",
+        platform,
+    ]
     if where:
         parts += ["--location", where]
     if remote:
@@ -1885,7 +1944,9 @@ def install_json_hooks(
     except ValueError as exc:
         return _emit(stdout, {"error": "%s: %s" % (path, exc)}, 2)
     platform = opts.platform
-    already = [installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []]
+    already = [
+        installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
+    ]
     inherited = next((w for w in already if w), [])
     where = opts.location or _flag(inherited, "--location")
     remote = opts.remote or _flag(inherited, "--remote")
@@ -1946,7 +2007,9 @@ def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
     parser = argparse.ArgumentParser(prog=ENTRY + " install")
     parser.add_argument("--platform", required=True)
     parser.add_argument("--location", choices=LOCATIONS)
-    parser.add_argument("--remote", help="the ssh destination that holds the registry (a host off the registry)")
+    parser.add_argument(
+        "--remote", help="the ssh destination that holds the registry (a host off the registry)"
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--remove", action="store_true")
@@ -2046,7 +2109,12 @@ def main(
         spec = load_spec(flags.get("platform", ""))
         if spec is None:
             return _emit(stdout, {"error": "no adapter for the platform"}, 2)
-        return show(spec, ["--session-id", flags["session-id"]] if "session-id" in flags else [], env, stdout)
+        return show(
+            spec,
+            ["--session-id", flags["session-id"]] if "session-id" in flags else [],
+            env,
+            stdout,
+        )
     if argv[0] == "install":
         return install_main(argv[1:], env, stdout)
     stderr.write(USAGE)
