@@ -1471,6 +1471,226 @@ class HookTests(Base):
         self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0002", "prompt": "x"},
                                     spec=spec, now=t0 + PL.RETRY_SECONDS + 9))
 
+    def down_file(self, dest: str = "mac") -> str:
+        return os.path.join(self.state, PL.HOST_DOWN_DIR, dest)
+
+    def test_a_silent_registry_host_is_asked_once_for_all_the_chats(self) -> None:
+        # A chat that starts many sub-threads in a row must not pay the ssh timeout for each of them.
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", 12))
+        t0 = time.time()
+        for n in range(1, 5):
+            out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-%04d" % n, "source": "startup"},
+                            runner=down, now=t0 + n)
+            self.assertIn("No Operator letter yet", out["additionalContext"])
+            self.assertEqual(self.note("s-%04d" % n)["state"], "failed")
+        self.assertEqual(len(down.calls), 1)
+        self.assertGreater(PL.registry_down_until(self.server_env(), "mac"), t0 + 4)
+        self.assertEqual(os.stat(self.down_file()).st_mode & 0o777, 0o600)
+        # After the wait the host is asked again, by whichever chat comes first, and its answer clears the mark.
+        later = t0 + PL.RETRY_SECONDS + 5
+        ssh = FakeSsh(self)
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0003", "prompt": "fix the build"},
+                        runner=ssh, now=later)
+        self.assertEqual(ssh.ops()[0], "register")
+        self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: Fix the Build$")
+        self.assertFalse(os.path.exists(self.down_file()))
+
+    def test_a_mark_holds_every_hop_of_a_chat_until_it_runs_out(self) -> None:
+        self.start("s-0001")
+        label = self.label("s-0001")
+        title = "%s: New Chat" % label
+        t0 = time.time()
+        PL.mark_registry(self.server_env(), "mac", t0 + 100)
+        ssh = FakeSsh(self)
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix the build",
+                   "session_title": title}, runner=ssh, now=t0 + 10)
+        self.assertEqual(ssh.calls, [])  # the title waits in the note, and the chat is still titled
+        self.assertEqual(self.note("s-0001")["unsent"], "Fix the Build")
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "more",
+                   "session_title": "%s: Fix the Build" % label}, runner=ssh, now=t0 + PL.RETRY_SECONDS + 20)
+        self.assertEqual(ssh.ops(), ["title"])
+        self.assertFalse(os.path.exists(self.down_file()))
+
+    def test_a_host_that_answers_with_an_error_is_not_a_silent_host(self) -> None:
+        def refuses(cmd, **kwargs):
+            refuses.calls += 1
+            return SimpleNamespace(stdout=json.dumps({"error": "no Operator registry on this host"}), returncode=3)
+
+        refuses.calls = 0
+        for n in (1, 2):
+            out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-%04d" % n, "source": "startup"},
+                            runner=refuses)
+            self.assertIn("no Operator registry", out["additionalContext"])
+        self.assertEqual(refuses.calls, 2)  # it answered, so the next chat asks it too
+        self.assertFalse(os.path.exists(self.down_file()))
+
+    def test_a_host_with_no_command_is_silent_too(self) -> None:
+        calls = []
+
+        def missing(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(stdout="", returncode=127)
+
+        for n in (1, 2, 3):
+            self.hook({"hook_event_name": "SessionStart", "session_id": "s-%04d" % n, "source": "startup"},
+                      runner=missing)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_mark_further_off_than_any_wait_holds_nothing(self) -> None:
+        t0 = time.time()
+        PL.mark_registry(self.server_env(), "mac", t0 + 10 * PL.RETRY_SECONDS)  # the clock moved back since
+        ssh = FakeSsh(self)
+        self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=ssh, now=t0)
+        self.assertEqual(ssh.ops(), ["register"])
+        self.assertFalse(os.path.exists(self.down_file()))  # and its answer cleared the stale mark
+
+    def test_the_mark_is_per_registry_host_and_the_mac_has_none(self) -> None:
+        PL.mark_registry(self.server_env(), "mac", time.time() + 600)
+        ssh = FakeSsh(self)
+        env = self.env(SESSION_LETTER_LOCATION="server", SESSION_LETTER_REMOTE="elsewhere")
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, env=env,
+                        runner=lambda cmd, **kw: SimpleNamespace(stdout="", returncode=255))
+        self.assertIn("exit 255 with no result", out["additionalContext"])  # another host: asked, and found silent
+        self.assertTrue(os.path.exists(self.down_file("elsewhere")))
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0002", "source": "startup"},
+                        env=self.env(), runner=ssh, platform="darwin")
+        self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")  # the Mac registers in process
+        self.assertEqual(ssh.calls, [])
+
+    def test_a_mark_that_cannot_be_read_or_written_is_no_mark_and_no_error(self) -> None:
+        env = self.server_env()
+        PL.mark_registry(env, "mac", time.time() + 600)
+        for body in ("not json", '["until"]', '{"until": "soon"}', "{}"):
+            Path(self.down_file()).write_text(body)
+            self.assertEqual(PL.registry_down_until(env, "mac"), 0.0, body)
+        self.assertEqual(PL.registry_down_until(env, "never-marked"), 0.0)
+        if os.geteuid() == 0:
+            return  # a folder cannot be made unwritable to root
+        folder = os.path.dirname(self.down_file())
+        os.chmod(folder, 0o500)
+        self.addCleanup(os.chmod, folder, 0o700)
+        PL.mark_registry(env, "mac", time.time() + 900)  # cannot be written: still no error
+        PL.mark_registry(env, "mac")  # nor removed
+
+    def test_the_down_mark_is_never_written_through_a_planted_symlink(self) -> None:
+        env = self.server_env()
+        victim = os.path.join(self.tmp.name, "victim")
+        Path(victim).write_text("keep me")
+        os.makedirs(os.path.dirname(self.down_file()), mode=0o700, exist_ok=True)
+        os.symlink(victim, "%s.%d.tmp" % (self.down_file(), os.getpid()))  # the name the writer used to take
+        until = time.time() + 600
+        PL.mark_registry(env, "mac", until)
+        self.assertEqual(Path(victim).read_text(), "keep me")
+        self.assertAlmostEqual(PL.registry_down_until(env, "mac"), until, places=3)
+        leftovers = [n for n in os.listdir(os.path.dirname(self.down_file())) if n.endswith(".tmp") and n != "mac"]
+        self.assertEqual([n for n in leftovers if n.startswith(".down-")], [])  # no temporary file is left behind
+
+    def test_a_quiet_event_runs_and_prints_nothing(self) -> None:
+        spec = make_spec(events={"SubagentStop": "prompt", "UserPromptSubmit": "prompt"},
+                         quiet_events=("SubagentStop",))
+        out = self.hook({"hook_event_name": "SubagentStop", "session_id": "s-0001", "prompt": "go"}, spec=spec)
+        self.assertIsNone(out)
+        self.assertRegex(self.lookup("s-0001")["label"], PAIR)  # the chat was registered all the same
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0002", "prompt": "go"}, spec=spec)
+        self.assertIn("additionalContext", out)  # and an event that is not quiet still speaks
+
+    def parent_spec(self, **over) -> PL.PlatformSpec:
+        """A platform whose payload names the chat's parent in `parent`, and that can look a parent up by its id."""
+        families = {"c-0001": "p-0001", "c-0002": "c-0001", "loop-a": "loop-b", "loop-b": "loop-a", "q-child": "q-0001"}
+        return make_spec(
+            parent_id=lambda payload, env: payload.get("parent") or families.get(payload.get("session_id"), ""),
+            kind=lambda payload, env: "subagent" if payload.get("parent") else "chat",
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid},
+            title_in_output=True,
+            **over,
+        )
+
+    def child_start(self, sid: str, parent: str, spec: PL.PlatformSpec, **kw) -> dict | None:
+        return self.hook({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup", "parent": parent},
+                         spec=spec, **kw)
+
+    def test_a_parent_that_is_not_registered_is_registered_before_its_sub_thread(self) -> None:
+        spec = self.parent_spec()
+        ssh = FakeSsh(self)
+        self.child_start("c-0001", "p-0001", spec, runner=ssh)
+        self.assertEqual(ssh.ops(), ["register", "register"])  # the parent's, then the child's
+        parent, child = self.label("p-0001"), self.label("c-0001")
+        self.assertRegex(parent, PAIR)
+        self.assertLess(parent, child)  # the parent has the earlier pair, whatever the registry's rule
+        if PL._accepts(OR.register_session, "parent_session_id"):
+            self.assertEqual(parent[0], child[0])  # and the child sits in its row
+        note = self.note("p-0001")
+        self.assertEqual((note["state"], note["titled"], note["announce"]), ("open", False, True))
+        self.assertEqual(self.lookup("p-0001")["state"], "active")
+
+    def test_the_parents_own_prompt_titles_it_and_tells_the_model_its_letter(self) -> None:
+        spec = self.parent_spec()
+        self.child_start("c-0001", "p-0001", spec)
+        label = self.label("p-0001")
+        out = self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "p-0001", "prompt": "fix the build"},
+                        spec=spec)
+        self.assertEqual(out["sessionTitle"], "%s: Fix the Build" % label)
+        self.assertIn('"@**Codex** %s"' % label, out["additionalContext"])
+        self.assertNotIn("announce", self.note("p-0001"))
+        self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "p-0001", "prompt": "more",
+                                     "session_title": "%s: Fix the Build" % label}, spec=spec))
+
+    def test_a_parent_that_is_registered_costs_no_hop_and_a_failed_one_is_tried_again(self) -> None:
+        spec = self.parent_spec()
+        self.hook({"hook_event_name": "SessionStart", "session_id": "p-0001", "source": "startup"}, spec=spec)
+        ssh = FakeSsh(self)
+        self.child_start("c-0001", "p-0001", spec, runner=ssh)
+        self.assertEqual(ssh.ops(), ["register"])  # only the child
+        # A parent whose own registration was refused a moment ago (not a silent host: the registry answered) is not
+        # waited for: the sub-thread would otherwise take a main pair ahead of it.
+        t0 = time.time()
+
+        def refuses(cmd, **kwargs):
+            return SimpleNamespace(stdout=json.dumps({"error": "no Operator registry on this host"}), returncode=3)
+
+        self.hook({"hook_event_name": "SessionStart", "session_id": "q-0001", "source": "startup"}, spec=spec,
+                  runner=refuses, now=t0)
+        self.assertEqual(self.note("q-0001")["state"], "failed")
+        self.child_start("q-child", "q-0001", spec, now=t0 + 5)
+        self.assertEqual(self.note("q-0001")["state"], "open")
+        self.assertLess(self.label("q-0001"), self.label("q-child"))
+
+    def test_grandparents_are_registered_first_and_a_loop_ends(self) -> None:
+        spec = self.parent_spec()
+        ssh = FakeSsh(self)
+        self.child_start("c-0002", "c-0001", spec, runner=ssh)  # c-0001 is itself a child of p-0001
+        self.assertEqual(ssh.ops(), ["register", "register", "register"])
+        labels = [self.label(sid) for sid in ("p-0001", "c-0001", "c-0002")]
+        self.assertEqual(labels, sorted(labels))
+        self.assertEqual(len(set(labels)), 3)
+        ssh = FakeSsh(self)
+        self.child_start("loop-c", "loop-a", spec, runner=ssh)  # loop-a and loop-b each name the other
+        self.assertLessEqual(len(ssh.calls), PL.PARENT_DEPTH + 1)
+        self.assertRegex(self.label("loop-c"), PAIR)
+
+    def test_a_spec_that_cannot_look_a_parent_up_leaves_it_alone(self) -> None:
+        spec = self.parent_spec()
+        spec = make_spec(parent_id=spec.parent_id, kind=spec.kind, title_in_output=True)
+        ssh = FakeSsh(self)
+        self.child_start("c-0001", "p-0001", spec, runner=ssh)
+        self.assertEqual(ssh.ops(), ["register"])
+        self.assertIsNone(self.lookup("p-0001"))
+
+    def test_a_parent_that_is_no_chat_or_has_another_seat_is_left_alone(self) -> None:
+        spec = self.parent_spec()
+        headless = make_spec(
+            parent_id=spec.parent_id, chat_payload=spec.chat_payload, title_in_output=True,
+            kind=lambda payload, env: "subagent" if payload.get("parent") else "headless",
+        )
+        self.child_start("c-0001", "p-0001", headless)
+        self.assertIsNone(self.lookup("p-0001"))
+        self.assertRegex(self.label("c-0001"), PAIR)
+        PL.Chat(spec, self.server_env(), "server", "m-0001", runner=FakeSsh(self), now=0.0).write(
+            {"state": "mismatch", "label": ""}
+        )
+        self.child_start("c-0003", "m-0001", spec)
+        self.assertIsNone(self.lookup("m-0001"))  # a chat held by another seat is not registered by this one
+
     def test_show_reads_the_note_without_a_network(self) -> None:
         self.start("s-0001")
         out = io.StringIO()
