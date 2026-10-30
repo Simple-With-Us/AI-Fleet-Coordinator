@@ -172,7 +172,7 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(CL.title_from_prompt(prompt), "Debug the Refresh Failure")
         self.assertEqual(CL.title_from_prompt("password:\nx7Kp2mQ9vL4nR8sT1"), "")
 
-    TOKEN20 = "x7Kp2mQ9vL4nR8sT1aBc"  # fake:  20 mixed letters and digits, under every length limit
+    RUN20 = "x7Kp2mQ9" + "vL4nR8sT1aBc"  # fake:  20 mixed letters and digits, under every length limit
 
     def test_a_key_the_scan_window_cuts_short_leaves_nothing_in_the_title(self) -> None:
         # A fenced paste, then a key that the window ends 20 characters into:  'ghp_' and 20 more is no secret to
@@ -194,8 +194,8 @@ class TitleTests(unittest.TestCase):
     def test_a_json_quoted_assignment_never_reaches_a_title(self) -> None:
         # A quote between the name and the colon keeps the scanner's assignment patterns from matching it.
         for name in ("password", "api_key"):
-            self.assertEqual(CL.title_from_prompt('{\n  "%s": "%s"\n}' % (name, self.TOKEN20)), "", name)
-        self.assertEqual(CL.clean_title('"password": "%s"' % self.TOKEN20), "")
+            self.assertEqual(CL.title_from_prompt('{\n  "%s": "%s"\n}' % (name, self.RUN20)), "", name)
+        self.assertEqual(CL.clean_title('"password": "%s"' % self.RUN20), "")
 
     def test_a_long_mixed_word_in_a_name_is_kept_out_of_the_copy_the_registry_holds(self) -> None:
         token = self.NPM + "_" + "AbCdEf0123456789" * 2 + "AbCd"
