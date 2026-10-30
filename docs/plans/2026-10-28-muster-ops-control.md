@@ -76,7 +76,7 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
 
 - Create the write-capable Infisical service token for the knob folder and store it in the Mac keychain as `fleet-knobs-write`.  Record it in the Infisical Service Tokens registry.
 - Install the `fleet-ops-ctl` forced-command key on the server (steps in `fleet-tool-parity.md`).
-- Load the two new LaunchAgents and enable lingering for `jay`; enable the server timer in `jay`'s user manager (`systemctl --user enable --now fleet-server-status.timer`).
+- From the Mac, load the two new LaunchAgents.  From the root server shell, enable lingering for `jay` with `loginctl enable-linger jay`, then enable the timer as `jay` (`runuser -u jay -- systemctl --user enable --now fleet-server-status.timer`).
 
 ## Tests
 
