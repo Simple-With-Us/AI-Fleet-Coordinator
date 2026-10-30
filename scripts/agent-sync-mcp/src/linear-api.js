@@ -173,7 +173,7 @@ export async function apiMutation(tools, args, audit) {
   const client = tools.requireLinearWrites();
   const prepared = prepareGraphql(args.mutation, args.variables, "mutation");
   tools.scanLinear({ mutation: prepared.query, variables: JSON.stringify(prepared.variables) });
-  await tools.linearCall(() => client.confirmViewer());
+  await tools.linearCall(() => tools.confirmedViewer());
   await protectLabels(tools, prepared);
   tagInputs(tools, prepared, args.session);
   const digest = await sha256Hex(stableJson({ query: prepared.query, variables: prepared.variables }));

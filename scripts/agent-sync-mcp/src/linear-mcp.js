@@ -135,7 +135,7 @@ export async function callLinearMcp(tools, name, args, audit) {
     if (result.isError) throw new ToolError("upstream_error", upstreamReason(tools, result));
     return renderResult(tools, name, normalizeResult(tools, result), { max_chars });
   }
-  await tools.linearCall(() => client.confirmViewer());
+  await tools.linearCall(() => tools.confirmedViewer());
   for (const field of ["body", "description"]) {
     if (typeof nativeArgs[field] === "string" && nativeArgs[field]) nativeArgs[field] = tools.linearBody(nativeArgs[field], session);
   }
