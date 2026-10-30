@@ -22,6 +22,7 @@ BOT_IDENTITIES = (
     "MC",
     "MM",
     "OPENCODE",
+    "AMP",
     "BF-BUILDER",
     "BF-COMPILER",
     "BF-DEPLOYER",

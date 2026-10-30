@@ -40,17 +40,18 @@ SEATS = seat_policy.render(DOC)
 ORG = "Simple-With-Us/"
 SYNTHETIC_REPO = "example-org/example-repo"
 
-# The four Apps whose slug is not swu-<identity>, each read from the App's own GitHub
+# The five Apps whose slug is not swu-<identity>, each read from the App's own GitHub
 # description ("Bot identity for the ... agent seat").
 NOT_SWU_IDENTITY = {
     "MA": "swu-rob",
     "GROK": "swu-grok-build",
     "MM": "swu-minimax",
     "JET-CHAT": "swu-jet",
+    "AMP": "swu-amp-agent",
 }
 # Explicit policy exclusions, documented in the deployed policy's header.
-# Original Jet is wake-only. AMP is hosted-bearer only with no GitHub App.
-EXCLUDED = {"JET", "AMP"}
+# Original Jet is wake-only and has no GitHub App entry.
+EXCLUDED = {"JET"}
 
 
 def worker_identities() -> set[str]:
@@ -125,13 +126,17 @@ class SeatPolicyFile(unittest.TestCase):
                 policy.authorize("swu-jet", action, "Simple-With-Us/AI-Fleet-Coordinator")
             )
 
-    def test_amp_hosted_login_has_no_git_app_or_relay_access(self):
+    def test_amp_acts_only_as_its_own_app(self):
+        self.assertNotIn("swu-amp", SEATS)  # that slug is reserved for an account, no App exists under it
         self.assertIn("AMP", worker_identities())
         self.assertIn("AMP", DOC["//"])
         policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
-        self.assertIsNone(policy.authenticate(bearer_for("AMP")))
-        self.assertNotIn("swu-amp", SEATS)
-        self.assertFalse(any(row["identity"] == "AMP" for row in SEATS.values()))
+        self.assertEqual(policy.authenticate(bearer_for("AMP")), "swu-amp-agent")
+        self.assertEqual(SEATS["swu-amp-agent"]["identity"], "AMP")
+        self.assertEqual(sum(row["identity"] == "AMP" for row in SEATS.values()), 1)
+        self.assertEqual(sum(row["app_slug"] == "swu-amp-agent" for row in SEATS.values()), 1)
+        for other in ("OPENCODE", "MM", "JET"):
+            self.assertNotEqual(policy.authenticate(bearer_for(other)), "swu-amp-agent")
 
     def test_a_bearer_the_worker_does_not_confirm_reaches_no_seat(self):
         # The token shape alone names a seat;  only the Worker's answer may admit it.
@@ -205,7 +210,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "8b2ca347fc0b68aa")
+        self.assertEqual(seat_policy.digest(SEATS), "ce70d77c7ac74970")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
