@@ -115,7 +115,7 @@ export async function resolveGrVerifyKey(env) {
  * factory and `resolveKey` to the Infisical-only resolver;  both are
  * injectable for tests.
  */
-export async function serveGrBearerVerify(request, env, gates, { resolveKey = resolveGrVerifyKey } = {}) {
+export async function serveGrBearerVerify(request, env, gates, { resolveKey = resolveGrVerifyKey, eventsOnlySeats = [] } = {}) {
   const key = await resolveKey(env);
   if (request.method !== "POST") return jsonResponse({ ok: false, reason: "method_not_allowed" }, 405);
   const declared = Number(request.headers.get("content-length") ?? "0");
@@ -141,6 +141,11 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
   }
   const state = await identityGate.getState();
   if (state.paused) return jsonResponse({ ok: false, reason: "paused" }, 200);
+  // A wake-only (events-only) seat's bearer stays minted but verifies refused
+  // here, so GR-MCP fails closed to 401 while the seat carries no tools.  The
+  // refusal follows the same reviewed EVENTS_ONLY_SEATS var as the /mcp tool
+  // surface;  lifting the var restores access without a re-mint.
+  if (eventsOnlySeats.includes(identity)) return jsonResponse({ ok: false, reason: "events_only" }, 200);
   const status = await identityGate.gbBearerStatus();
   return jsonResponse({ ok: true, identity, expires_at: status.expires_at ?? 0 }, 200);
 }

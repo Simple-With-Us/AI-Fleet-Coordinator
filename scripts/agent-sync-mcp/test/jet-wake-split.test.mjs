@@ -120,7 +120,7 @@ test("the key installer provisions JET-CHAT from Jet's Infisical entry with the 
 });
 
 test("the events-only flip is a config var:  absent means no restriction, an unknown seat fails closed", () => {
-  assert.deepEqual([...loadConfig(wranglerConfig().vars).eventsOnlySeats], [], "production default: no seat restricted while staging");
+  assert.deepEqual([...loadConfig(wranglerConfig().vars).eventsOnlySeats], ["JET"], "original Jet is wake-only after Jet Chat verified live");
   assert.deepEqual([...loadConfig(testEnv({ EVENTS_ONLY_SEATS: "JET" })).eventsOnlySeats], ["JET"], "the cutover flip is one reviewed var line");
   assert.throws(() => loadConfig(testEnv({ EVENTS_ONLY_SEATS: "NOPE" })), /unknown events-only seat/, "never widen to an unknown seat");
 });

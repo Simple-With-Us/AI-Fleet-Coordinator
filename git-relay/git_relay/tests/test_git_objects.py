@@ -117,3 +117,104 @@ class Objects(unittest.TestCase):
                 self.handle(Client(value), "wf_git_commit_get").run(
                     "wf_git_commit_get", {"repo": REPO, "sha": SHA}
                 )
+
+    def test_least_permission_each_git_action_and_fixed_surrogate_refusal(self):
+        from .test_workflow_verbs import Minter
+
+        for action in (
+            "wf_git_blob_get",
+            "wf_git_blob_binary_get",
+            "wf_git_commit_get",
+            "wf_git_tree_get",
+            "wf_git_blob_create",
+        ):
+            m = Minter()
+            WorkflowVerbs.for_action(Client(), Policy(), m, "swu-wise", action, REPO)
+            self.assertEqual(
+                m.calls[0][2],
+                {"contents": "write" if action.endswith("create") else "read", "metadata": "read"},
+            )
+        c = Client()
+        with self.assertRaises(Refused) as e:
+            self.handle(c, "wf_git_blob_create").run(
+                "wf_git_blob_create", {"repo": REPO, "text": "\ud800"}
+            )
+        self.assertEqual(str(e.exception), "invalid blob text")
+        self.assertFalse(c.calls)
+
+    def test_commit_message_secret_refusal_and_fips_content_address_flag(self):
+        from unittest.mock import patch
+
+        # Synthetic runtime-only shape, never a credential.
+        row = {"sha": SHA, "tree": {"sha": SHA}, "parents": [], "message": "ghp_" + "x" * 36}
+        with self.assertRaises(Refused):
+            self.handle(Client(row), "wf_git_commit_get").run(
+                "wf_git_commit_get", {"repo": REPO, "sha": SHA}
+            )
+        real = hashlib.sha1
+
+        def fips(data, *, usedforsecurity=True):
+            self.assertFalse(usedforsecurity)
+            return real(data, usedforsecurity=False)
+
+        with patch("git_relay.workflow_verbs.hashlib.sha1", fips):
+            raw = b"hi"
+            sha = real(b"blob 2\0hi", usedforsecurity=False).hexdigest()
+            self.handle(Client({"sha": sha}), "wf_git_blob_create").run(
+                "wf_git_blob_create", {"repo": REPO, "text": "hi"}
+            )
+
+    def test_real_relay_blob_write_unknown_persisted_restart_no_second_dispatch(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from git_relay.audit import AuditLog
+        from git_relay.outcomes import OutcomeStore
+        from git_relay.policy import SeatPolicy
+        from git_relay.server import Relay
+
+        # Synthetic runtime-only seat token, never a credential.
+        token = "x" * 32
+        cfg = json.dumps(
+            {
+                "swu-wise": {
+                    "token": token,
+                    "app_slug": "swu-wise",
+                    "mint_permissions": {"contents": "write", "metadata": "read"},
+                    "actions": ["wf_git_blob_create"],
+                    "repos": [REPO],
+                }
+            }
+        )
+
+        class Mint:
+            def token_for(self, *args):
+                return "synthetic-own", 0
+
+        class Lost(Client):
+            def _call(self, *args, **kw):
+                self.calls.append(args)
+                raise RelayGitHubError(502, "lost")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "outcomes.json")
+            client = Lost()
+
+            def make():
+                return Relay(
+                    SeatPolicy(cfg),
+                    client,
+                    AuditLog(str(Path(tmp) / "audit.jsonl")),
+                    app_minter=Mint(),
+                    outcomes=OutcomeStore(path),
+                    workflow_verbs_enabled=True,
+                )
+
+            args = {"repo": REPO, "text": "hello"}
+            status, body = make().handle(token, "wf_git_blob_create", args)
+            self.assertEqual(status, 502)
+            self.assertEqual(body["outcome"], "unknown")
+            self.assertFalse(body["retryable"])
+            self.assertEqual(make().handle(token, "wf_git_blob_create", args)[0], 409)
+            self.assertEqual(len(client.calls), 1)
