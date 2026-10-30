@@ -385,8 +385,16 @@ class SeatPolicyOauthAssertRender(unittest.TestCase):
 
 class HostedOAuthReviewedPolicyTests(unittest.TestCase):
     def test_full_hosted_oauth_flags_only(self):
-        import pathlib, json
-        data = json.loads((pathlib.Path(__file__).resolve().parents[2] / "deploy" / "seat-policy.json").read_text())
+        import json
+        import pathlib
+
+        data = json.loads(
+            (
+                pathlib.Path(__file__).resolve().parents[2] / "deploy" / "seat-policy.json"
+            ).read_text()
+        )
         flagged = {row["identity"] for row in data["seats"] if row.get("oauth_assert")}
-        self.assertEqual(flagged, {"CLAUDE", "CODEX", "CURSOR", "ECHO", "GROK-WEB", "JET-CHAT", "WISE"})
+        self.assertEqual(
+            flagged, {"CLAUDE", "CODEX", "CURSOR", "ECHO", "GROK-WEB", "JET-CHAT", "WISE"}
+        )
         self.assertNotIn("JET", flagged)

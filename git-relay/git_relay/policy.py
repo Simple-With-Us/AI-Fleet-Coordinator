@@ -427,7 +427,9 @@ class SeatPolicy:
             # bearer pre-check below).  A valid assertion always names its
             # flagged seat, so this can never false-refuse one.
             if not any(
-                cfg["auth"] == "shared" and cfg["oauth_assert"] and cfg["identity"] == named_assertion
+                cfg["auth"] == "shared"
+                and cfg["oauth_assert"]
+                and cfg["identity"] == named_assertion
                 for cfg in self._seats.values()
             ):
                 return None

@@ -352,7 +352,16 @@ class PolicyAssertionTest(unittest.TestCase):
         token, claims = mint(seat="ECHO")
         v = verifier()
         policy = SeatPolicy(
-            json.dumps({"swu-codex": {"auth": "shared", "identity": SEAT, "oauth_assert": True, **SEAT_CFG}}),
+            json.dumps(
+                {
+                    "swu-codex": {
+                        "auth": "shared",
+                        "identity": SEAT,
+                        "oauth_assert": True,
+                        **SEAT_CFG,
+                    }
+                }
+            ),
             assertion_verifier=v,
         )
         self.assertIsNone(policy.authenticate(token, proof(claims)))
@@ -364,7 +373,16 @@ class PolicyAssertionTest(unittest.TestCase):
         token, claims = mint()
         v = verifier()
         policy = SeatPolicy(
-            json.dumps({"swu-codex": {"auth": "shared", "identity": SEAT, "oauth_assert": True, **SEAT_CFG}}),
+            json.dumps(
+                {
+                    "swu-codex": {
+                        "auth": "shared",
+                        "identity": SEAT,
+                        "oauth_assert": True,
+                        **SEAT_CFG,
+                    }
+                }
+            ),
             assertion_verifier=v,
         )
         self.assertEqual(policy.authenticate(token, proof(claims)), "swu-codex")
