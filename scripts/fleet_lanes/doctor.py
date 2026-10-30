@@ -146,15 +146,46 @@ from typing import Callable, Iterable, Mapping, Sequence
 from . import layout as L
 
 __all__ = [
-    "SCHEMA", "CommandRefused", "CmdResult", "run_cmd", "check_allowed",
-    "redact_url", "redact_text", "parse_owner_repo",
-    "WorktreeRecord", "parse_worktree_porcelain", "count_status", "split_ignored", "IGNORED_LIST_CAP",
-    "PrMatch", "match_pr", "make_gh_fetcher", "make_gh_body_fetcher", "add_draft_bodies", "make_lsof_reader",
-    "parse_lsof", "GIT_OP_FILES", "git_ops_in_progress", "parse_status_entries", "dirty_times",
-    "parse_keep_marker", "KEEP_ABSENT",
-    "ScanSpec", "scan_plan", "find_git_dirs",
-    "Checkout", "assess", "FRESH_DAYS", "TOOL_CACHE_SAFETY", "has_merged_evidence", "cleaner_age_floor",
-    "is_cleaner_candidate", "cleaner_candidates", "build_report", "render_text", "main",
+    "FRESH_DAYS",
+    "GIT_OP_FILES",
+    "IGNORED_LIST_CAP",
+    "KEEP_ABSENT",
+    "SCHEMA",
+    "TOOL_CACHE_SAFETY",
+    "Checkout",
+    "CmdResult",
+    "CommandRefused",
+    "PrMatch",
+    "ScanSpec",
+    "WorktreeRecord",
+    "add_draft_bodies",
+    "assess",
+    "build_report",
+    "check_allowed",
+    "cleaner_age_floor",
+    "cleaner_candidates",
+    "count_status",
+    "dirty_times",
+    "find_git_dirs",
+    "git_ops_in_progress",
+    "has_merged_evidence",
+    "is_cleaner_candidate",
+    "main",
+    "make_gh_body_fetcher",
+    "make_gh_fetcher",
+    "make_lsof_reader",
+    "match_pr",
+    "parse_keep_marker",
+    "parse_lsof",
+    "parse_owner_repo",
+    "parse_status_entries",
+    "parse_worktree_porcelain",
+    "redact_text",
+    "redact_url",
+    "render_text",
+    "run_cmd",
+    "scan_plan",
+    "split_ignored",
 ]
 
 SCHEMA = 2
@@ -404,7 +435,7 @@ def redact_text(text: str) -> str:
         lambda m: m.group(0) if m.group("user") == "git" else f"REDACTED@{m.group('host')}:", out)
 
 
-_GITHUB_REMOTE = re.compile(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", re.I)
+_GITHUB_REMOTE = re.compile(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", re.IGNORECASE)
 
 
 def parse_owner_repo(url: str | None) -> str | None:
@@ -451,7 +482,7 @@ def parse_worktree_porcelain(text: str) -> list[WorktreeRecord]:
         elif key == "HEAD":
             cur["head"] = value
         elif key == "branch":
-            cur["branch"] = value[len("refs/heads/"):] if value.startswith("refs/heads/") else value
+            cur["branch"] = value.removeprefix("refs/heads/")
         elif key == "detached":
             cur["detached"] = True
         elif key == "bare":
@@ -490,7 +521,7 @@ KEEP_MARKER = ".janitor-keep"  # has its own reason in assess, so it is not "ign
 KEEP_ABSENT = {"present": False, "valid": False, "reason": None, "by": None, "set_on": None, "expires": None,
                "expired": False, "board": None, "problem": None}
 IGNORED_LIST_CAP = 50
-_QUOTED_ESCAPE = re.compile(r"\\([0-7]{3}|.)", re.S)
+_QUOTED_ESCAPE = re.compile(r"\\([0-7]{3}|.)", re.DOTALL)
 _SIMPLE_ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, '"': 34, "\\": 92}
 
 
@@ -562,7 +593,7 @@ GH_FIELDS = "number,state,headRefName,headRefOid,mergedAt,closedAt,isDraft,label
 # small extra call (`make_gh_body_fetcher`) that only runs for an open draft without the label.
 AUTOPUSH_LABEL = "fleet-autopush"
 AUTOPUSH_MARKER = "<!-- fleet-autopush:auto-draft v1 -->"
-_AUTOPUSH_TRAILER = re.compile(r"^Fleet-Autopush:[ \t]*v1[ \t]*$", re.M)
+_AUTOPUSH_TRAILER = re.compile(r"^Fleet-Autopush:[ \t]*v1[ \t]*$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -897,7 +928,7 @@ _LANE_LIKE = frozenset(str(c) for c in (*_LANE_CLASSES, L.LocationClass.REVIEW, 
 # Plugin and marketplace caches that tools keep as git clones.  They are not working copies.
 _TOOL_CACHE = re.compile(
     r"(/plugins/(cache|marketplaces|managed)(/|$)|/installed-plugins(/|$)|/marketplace-cache(/|$)"
-    r"|/\.tmp/marketplaces(/|$)|/\.codex/memories(/|$)|/antigravity-cli/brain(/|$))", re.I)
+    r"|/\.tmp/marketplaces(/|$)|/\.codex/memories(/|$)|/antigravity-cli/brain(/|$))", re.IGNORECASE)
 
 
 @dataclass
@@ -1256,7 +1287,7 @@ def _layout_facts(path: str) -> tuple[str, str | None, str | None]:
     if os.path.isdir(dot):
         return "FULL-CLONE", dot, path
     text = _read_text(dot)
-    m = re.match(r"gitdir:\s*(.+?)\s*$", text or "", re.S)
+    m = re.match(r"gitdir:\s*(.+?)\s*$", text or "", re.DOTALL)
     if not m:
         return "ORPHAN", None, None
     admin = m.group(1)
@@ -1767,9 +1798,7 @@ def assess(co: Checkout, pr: PrMatch, active_reasons: Sequence[str], *, fresh_da
     # except an unattended auto-draft:  the draft holds what the auto-commit saved, not what has changed since.
     unpushed_at_risk = ((co.unpushed or 0) > 0 and not covered) or \
         (other_branch_commits > 0 and not co.registered_worktrees)
-    if co.safety != "NEEDS-REVIEW" or not (dirty or unpushed_at_risk):
-        co.dropped_ball = False
-    elif pr.state == "OPEN" and not unattended:
+    if co.safety != "NEEDS-REVIEW" or not (dirty or unpushed_at_risk) or pr.state == "OPEN" and not unattended:
         co.dropped_ball = False
     elif pr.state == "UNKNOWN":
         co.dropped_ball = None  # cannot assert "no open PR"
