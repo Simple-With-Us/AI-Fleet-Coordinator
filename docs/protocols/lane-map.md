@@ -156,15 +156,7 @@ Copied on Fri, Oct 23, 2026 (2:02 PM to 2:03 PM), with the log in the volume's `
 
 The owner authorized retiring these six copies on Fri, Oct 30, 2026 (AFC-499).  Their repository state and process use were checked again before removal; the unfinished BotFleet merge was archived first.  Full clones cannot be removed by `lane retire`, which accepts only registered linked worktrees, so these copies were retired manually under that authorization.
 
-Five additional registered worktrees were preserved under the lanes root on the same day.  Each copy has the same HEAD, Git status and tracked-file bytes as its original, including seven uncommitted Muster files in the services checkout.  These originals remain in place; the copies are detached preservation worktrees, not new ownership claims on the peer's task.
-
-| Original | Preservation Copy Under The Lanes Root |
-|---|---|
-| `/tmp/afc-main` | `AI-Fleet-Coordinator/codex-afc499-preserve-tmp-main` |
-| `/tmp/fops-main2` | `Fleet-OPS/codex-afc499-preserve-tmp-main` |
-| `Code/_bfwork/afc-mac-registry-mirror` | `AI-Fleet-Coordinator/codex-afc499-preserve-mm-registry` |
-| `Code/_bfwork/afc-muster-fleet-services` | `AI-Fleet-Coordinator/codex-afc499-preserve-mm-services` |
-| `Code/.lanes/fleetops-move` | `Fleet-OPS/codex-afc499-preserve-move` |
+Five additional registered worktrees were preserved under the lanes root on the same day.  Each copy has the same HEAD, Git status and tracked-file bytes as its original, including seven uncommitted Muster files in the services checkout.  These originals remain in place; the copies are detached preservation worktrees, not new ownership claims on the peer's task.  The exact original-to-copy mapping and recovery archive location stay in the private operations record for AFC-499.
 
 Every lane that sat in `/root/apps/lanes` before the volume move is on the volume:  each `lane |` row of `~/ops-salvage/salvage-2026-10-22/MANIFEST.txt` has its folder in the volume's `apps/lanes`.  One worktree was left where it is:  a Claude desktop worktree inside the volume's `Code/AI-Fleet-Coordinator/.claude/worktrees/`, which an open desktop session still runs in.  It is a clean checkout of `main`, so it holds nothing to copy, and the app removes it when that session is archived;  `worktree.location` keeps new ones out of the integration tree.
 
