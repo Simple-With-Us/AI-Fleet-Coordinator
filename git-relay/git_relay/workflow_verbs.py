@@ -1328,24 +1328,28 @@ class WorkflowVerbs:
     @staticmethod
     def _variable_value(args):
         value = args.get("value")
-        if (
-            not isinstance(value, str)
-            or len(value.encode("utf-8")) > 8192
-            or "\x00" in value
-            or find_secret(value)
-        ):
+        try:
+            length = len(value.encode("utf-8")) if isinstance(value, str) else None
+        except UnicodeEncodeError:
+            raise Refused("invalid or secret variable value; this is not a secrets API") from None
+        if not isinstance(value, str) or length > 8192 or "\x00" in value or find_secret(value):
             raise Refused("invalid or secret variable value; this is not a secrets API")
         return value
 
     @staticmethod
     def _variable_receipt(data, name=None):
+        value = data.get("value") if isinstance(data, dict) else None
+        try:
+            length = len(value.encode("utf-8")) if isinstance(value, str) else None
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "variable receipt unverifiable") from None
         if (
             not isinstance(data, dict)
             or not isinstance(data.get("name"), str)
             or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,99}", data["name"])
             or (name is not None and data["name"] != name)
             or not isinstance(data.get("value"), str)
-            or len(data["value"].encode("utf-8")) > 8192
+            or length > 8192
             or any(
                 not isinstance(data.get(k), str) or len(data[k]) > 100
                 for k in ("created_at", "updated_at")
