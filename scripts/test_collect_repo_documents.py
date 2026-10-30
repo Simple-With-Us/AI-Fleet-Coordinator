@@ -3,8 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import subprocess
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,7 +12,6 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "collect-repo-documents.py"
@@ -35,7 +34,9 @@ def git(path: Path, *args: str) -> str:
 
 
 class RepositoryFixture:
-    def __init__(self, code_root: Path, folder: str, repo_name: str, owner: str = "simple-with-us") -> None:
+    def __init__(
+        self, code_root: Path, folder: str, repo_name: str, owner: str = "simple-with-us"
+    ) -> None:
         self.path = code_root / folder
         self.path.mkdir(parents=True)
         git(self.path, "init", "--quiet", "--initial-branch=main")
@@ -68,18 +69,25 @@ class CollectorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def make_repo(self, folder: str = "ExampleRepo", name: str = "ExampleRepo", owner: str = "simple-with-us") -> RepositoryFixture:
+    def make_repo(
+        self, folder: str = "ExampleRepo", name: str = "ExampleRepo", owner: str = "simple-with-us"
+    ) -> RepositoryFixture:
         return RepositoryFixture(self.code, folder, name, owner)
 
     def test_collection_uses_published_default_ref_and_only_tracked_human_docs(self) -> None:
         repo = self.make_repo()
         repo.write("README.md", "# Published README\n")
-        repo.write("docs/guide.md", "Published docs.\n\n[runbook](runbooks/on-call.md) [chart](assets/chart.png) [escape](../../outside.md) [private](private/evidence.jsonl) [malformed](http://[broken)\n")
+        repo.write(
+            "docs/guide.md",
+            "Published docs.\n\n[runbook](runbooks/on-call.md) [chart](assets/chart.png) [escape](../../outside.md) [private](private/evidence.jsonl) [malformed](http://[broken)\n",
+        )
         repo.write("docs/runbooks/on-call.md", "Operational runbook.\n")
         repo.write("docs/assets/chart.png", b"png fixture")
         repo.write("docs/rollouts/rollout.txt", "Rollout report.\n")
         repo.write("docs/reports/evidence.jsonl", '{"result":"verified"}\n')
-        repo.write("docs/reports/receipt.md", "[evidence](evidence.jsonl) [missing](missing.jsonl)\n")
+        repo.write(
+            "docs/reports/receipt.md", "[evidence](evidence.jsonl) [missing](missing.jsonl)\n"
+        )
         repo.write("docs/.secrets/internal.md", "must not copy")
         repo.write(".env.production", "must not copy")
         repo.write("src/README.md", "not a root README or docs path")
@@ -99,10 +107,18 @@ class CollectorTests(unittest.TestCase):
         ops = collector.collect(self.code, self.output, check_only=False)
         mirror = self.output / "ExampleRepo"
         self.assertTrue(any("reports/" in op for op in ops))
-        self.assertEqual((mirror / "documents/docs/guide.md").read_text(), "Published docs.\n\n[runbook](runbooks/on-call.md) [chart](assets/chart.png) [escape](../../outside.md) [private](private/evidence.jsonl) [malformed](http://[broken)\n")
-        self.assertEqual((mirror / "documents/docs/runbooks/on-call.md").read_text(), "Operational runbook.\n")
+        self.assertEqual(
+            (mirror / "documents/docs/guide.md").read_text(),
+            "Published docs.\n\n[runbook](runbooks/on-call.md) [chart](assets/chart.png) [escape](../../outside.md) [private](private/evidence.jsonl) [malformed](http://[broken)\n",
+        )
+        self.assertEqual(
+            (mirror / "documents/docs/runbooks/on-call.md").read_text(), "Operational runbook.\n"
+        )
         self.assertEqual((mirror / "documents/docs/assets/chart.png").read_bytes(), b"png fixture")
-        self.assertEqual((mirror / "documents/docs/reports/evidence.jsonl").read_text(), '{"result":"verified"}\n')
+        self.assertEqual(
+            (mirror / "documents/docs/reports/evidence.jsonl").read_text(),
+            '{"result":"verified"}\n',
+        )
         self.assertFalse((mirror / "documents/docs/link.md").exists())
         self.assertFalse((mirror / "documents/docs/.secrets/internal.md").exists())
         self.assertFalse((mirror / "documents/.env.production").exists())
@@ -121,23 +137,31 @@ class CollectorTests(unittest.TestCase):
             {"source_path": "docs/reports/receipt.md", "target_path": "docs/reports/missing.jsonl"},
             manifest["missing_local_links"],
         )
-        self.assertFalse(any("private" in item["target_path"] for item in manifest["missing_local_links"]))
+        self.assertFalse(
+            any("private" in item["target_path"] for item in manifest["missing_local_links"])
+        )
         self.assertIn("Missing linked files", (mirror / "README.md").read_text())
         index = (self.output / "README.md").read_text()
         self.assertIn("ExampleRepo/README.md", index)
         self.assertNotIn("private", index)
 
-    def test_duplicate_checkout_prefers_exact_repo_folder_and_ambiguous_names_are_skipped(self) -> None:
+    def test_duplicate_checkout_prefers_exact_repo_folder_and_ambiguous_names_are_skipped(
+        self,
+    ) -> None:
         alias = self.make_repo(folder="work-copy", name="ExactRepo")
         alias.write("README.md", "alias")
         alias.commit_published()
         exact = self.make_repo(folder="ExactRepo", name="ExactRepo")
         exact.write("README.md", "exact")
         exact.commit_published()
-        collision = self.make_repo(folder="DifferentOwnerCopy", name="Collision", owner="other-owner")
+        collision = self.make_repo(
+            folder="DifferentOwnerCopy", name="Collision", owner="other-owner"
+        )
         collision.write("README.md", "one")
         collision.commit_published()
-        other_collision = self.make_repo(folder="AnotherCollision", name="Collision", owner="another-owner")
+        other_collision = self.make_repo(
+            folder="AnotherCollision", name="Collision", owner="another-owner"
+        )
         other_collision.write("README.md", "two")
         other_collision.commit_published()
 
@@ -156,7 +180,9 @@ class CollectorTests(unittest.TestCase):
         preview = self.base / "preview"
 
         planned = collector.collect(self.code, self.output, check_only=True)
-        preview_plan = collector.preview_report_indexes([collector._repo_info(repo.path)], preview, check_only=True)
+        preview_plan = collector.preview_report_indexes(
+            [collector._repo_info(repo.path)], preview, check_only=True
+        )
         self.assertTrue(planned)
         self.assertTrue(preview_plan)
         self.assertFalse(self.output.exists())
@@ -176,7 +202,9 @@ class CollectorTests(unittest.TestCase):
         index = preview / "ExampleRepo/docs/reports/README.md"
         self.assertTrue(index.is_file())
         self.assertIn("[report](report.md)", index.read_text())
-        self.assertEqual(collector.preview_report_indexes([collector._repo_info(repo.path)], preview), [])
+        self.assertEqual(
+            collector.preview_report_indexes([collector._repo_info(repo.path)], preview), []
+        )
 
     def test_edited_or_deleted_generated_files_fail_closed(self) -> None:
         repo = self.make_repo()
@@ -259,14 +287,19 @@ class CollectorTests(unittest.TestCase):
         info = collector._repo_info(repo.path)
         self.assertIsNotNone(info)
         for output in (self.code, self.base, repo.path):
-            with self.subTest(output=output), self.assertRaisesRegex(collector.CollectionError, "overlap"):
+            with (
+                self.subTest(output=output),
+                self.assertRaisesRegex(collector.CollectionError, "overlap"),
+            ):
                 collector.collect(self.code, output)
         with self.assertRaisesRegex(collector.CollectionError, "overlap"):
             collector._validate_preview_location([info], self.code)
         with self.assertRaisesRegex(collector.CollectionError, "overlap"):
             collector._validate_preview_location([info], repo.path / ".docs-library-preview")
 
-    def test_new_collection_directories_and_files_are_owner_only_even_with_permissive_umask(self) -> None:
+    def test_new_collection_directories_and_files_are_owner_only_even_with_permissive_umask(
+        self,
+    ) -> None:
         repo = self.make_repo()
         repo.write("docs/reports/report.md", "Report")
         published = repo.commit_published()
@@ -325,7 +358,9 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn("docs/private-audits", index)
         self.assertNotIn("old content", index)
 
-    def test_private_audit_documents_require_verified_opt_in_and_stay_out_of_public_index(self) -> None:
+    def test_private_audit_documents_require_verified_opt_in_and_stay_out_of_public_index(
+        self,
+    ) -> None:
         repo = self.make_repo(name="Fleet-OPS")
         repo.write("docs/private-audits/2026-10-30-audit.md", "[evidence](evidence.jsonl)")
         repo.write("docs/private-audits/evidence.jsonl", '{"private":true}')
@@ -336,13 +371,19 @@ class CollectorTests(unittest.TestCase):
         info = collector._repo_info(repo.path)
         self.assertIsNotNone(info)
         self.assertFalse(collector._is_human_document("docs/private-audits/2026-10-30-audit.md"))
-        self.assertNotIn("private-audits", collector.reports_index(info, collector._parse_tree(info)).decode())
+        self.assertNotIn(
+            "private-audits", collector.reports_index(info, collector._parse_tree(info)).decode()
+        )
 
         output = self.base / "private-central"
         with self.assertRaisesRegex(collector.CollectionError, "verified private repository"):
-            collector.collect(self.code, output, repo_paths=[repo.path], private_docs_repo="other/Private-Repo")
+            collector.collect(
+                self.code, output, repo_paths=[repo.path], private_docs_repo="other/Private-Repo"
+            )
 
-        collector.collect(self.code, output, repo_paths=[repo.path], private_docs_repo="Simple-With-Us/Fleet-OPS")
+        collector.collect(
+            self.code, output, repo_paths=[repo.path], private_docs_repo="Simple-With-Us/Fleet-OPS"
+        )
         mirror = output / "Fleet-OPS"
         self.assertEqual(
             (mirror / "documents/docs/private-audits/2026-10-30-audit.md").read_text(),
@@ -384,7 +425,9 @@ class CollectorTests(unittest.TestCase):
         source = json.loads((preview / "ExampleRepo/source.json").read_text())
         self.assertEqual(source["source_ref"], "origin/main")
         self.assertEqual(source["source_commit"], published)
-        self.assertNotIn(source["source_commit"], (preview / "ExampleRepo/docs/reports/README.md").read_text())
+        self.assertNotIn(
+            source["source_commit"], (preview / "ExampleRepo/docs/reports/README.md").read_text()
+        )
 
     def test_explicit_repo_path_mode_uses_owned_worktree_and_published_ref(self) -> None:
         repo = self.make_repo()
@@ -405,7 +448,10 @@ class CollectorTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(status, 0)
-        self.assertEqual(json.loads((preview / "ExampleRepo/source.json").read_text())["source_commit"], published)
+        self.assertEqual(
+            json.loads((preview / "ExampleRepo/source.json").read_text())["source_commit"],
+            published,
+        )
         index = (preview / "ExampleRepo/docs/reports/README.md").read_text()
         self.assertNotIn("unavailable", index)
         self.assertNotIn(published, index)

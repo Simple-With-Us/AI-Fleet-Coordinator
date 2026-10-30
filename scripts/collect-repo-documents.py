@@ -13,7 +13,6 @@ import json
 import os
 import posixpath
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -22,7 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
-
 
 SCHEMA_VERSION = 1
 VERIFIED_PRIVATE_DOC_REPOS = {"simple-with-us/fleet-ops"}
@@ -46,7 +44,20 @@ DOCUMENT_DIRS = {
     "design",
     "designs",
 }
-ROOT_DOC_PREFIXES = ("readme", "status", "plan", "contributing", "changelog", "report", "audit", "review", "overview", "rollout", "research", "design")
+ROOT_DOC_PREFIXES = (
+    "readme",
+    "status",
+    "plan",
+    "contributing",
+    "changelog",
+    "report",
+    "audit",
+    "review",
+    "overview",
+    "rollout",
+    "research",
+    "design",
+)
 SENSITIVE_DIRS = {
     ".aws",
     ".codex",
@@ -117,14 +128,15 @@ def _github_owner_repo(remote: str) -> tuple[str, str] | None:
         suffix = value.removeprefix("git@github.com:")
     else:
         parsed = urlsplit(value)
-        if parsed.scheme not in {"https", "ssh", "git"} or (parsed.hostname or "").casefold() not in {
+        if parsed.scheme not in {"https", "ssh", "git"} or (
+            parsed.hostname or ""
+        ).casefold() not in {
             "github.com",
             "www.github.com",
         }:
             return None
         suffix = parsed.path.lstrip("/")
-    if suffix.endswith(".git"):
-        suffix = suffix[:-4]
+    suffix = suffix.removesuffix(".git")
     parts = suffix.split("/")
     if len(parts) != 2 or not all(GITHUB_REPO_RE.fullmatch(part) for part in parts):
         return None
@@ -145,20 +157,33 @@ def _repo_info(path: Path) -> RepoInfo | None:
         parsed = _github_owner_repo(remote)
         if parsed is None:
             return None
-        main_commit = _run_git(path, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}", check=False).strip()
+        main_commit = _run_git(
+            path, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}", check=False
+        ).strip()
         if main_commit:
             ref = "origin/main"
             commit_bytes = main_commit
         else:
-            default_ref = os.fsdecode(_run_git(path, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False).strip())
-            if not default_ref.startswith("refs/remotes/origin/") or default_ref == "refs/remotes/origin/HEAD":
+            default_ref = os.fsdecode(
+                _run_git(
+                    path, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False
+                ).strip()
+            )
+            if (
+                not default_ref.startswith("refs/remotes/origin/")
+                or default_ref == "refs/remotes/origin/HEAD"
+            ):
                 return None
             ref = default_ref.removeprefix("refs/remotes/")
-            commit_bytes = _run_git(path, "rev-parse", "--verify", f"{default_ref}^{{commit}}", check=False).strip()
+            commit_bytes = _run_git(
+                path, "rev-parse", "--verify", f"{default_ref}^{{commit}}", check=False
+            ).strip()
         commit = os.fsdecode(commit_bytes)
         if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
             return None
-        return RepoInfo(path=resolved, owner=parsed[0], name=parsed[1], ref=ref, commit=commit.lower())
+        return RepoInfo(
+            path=resolved, owner=parsed[0], name=parsed[1], ref=ref, commit=commit.lower()
+        )
     except (CollectionError, OSError, UnicodeError):
         return None
 
@@ -170,7 +195,9 @@ def discover_repositories(
 ) -> tuple[list[RepoInfo], list[str]]:
     candidates: list[RepoInfo] = []
     if repo_paths:
-        for path in sorted({Path(item).expanduser() for item in repo_paths}, key=lambda item: str(item).casefold()):
+        for path in sorted(
+            {Path(item).expanduser() for item in repo_paths}, key=lambda item: str(item).casefold()
+        ):
             info = _repo_info(path)
             if info is not None and (requested is None or info.name == requested):
                 candidates.append(info)
@@ -240,7 +267,11 @@ def _safe_relative(value: str) -> bool:
 def _sensitive_path(relative: str, allow_private_audit: bool = False) -> bool:
     path = PurePosixPath(relative)
     parts = [part.casefold() for part in path.parts]
-    allowed_parts = {"private-audits"} if allow_private_audit and parts[:2] == ["docs", "private-audits"] else set()
+    allowed_parts = (
+        {"private-audits"}
+        if allow_private_audit and parts[:2] == ["docs", "private-audits"]
+        else set()
+    )
     if any(part in SENSITIVE_DIRS and part not in allowed_parts for part in parts):
         return True
     name = path.name.casefold()
@@ -253,7 +284,9 @@ def _sensitive_path(relative: str, allow_private_audit: bool = False) -> bool:
 
 def _is_human_document(relative: str, allow_private_audit: bool = False) -> bool:
     private_audit_path = relative.casefold().startswith("docs/private-audits/")
-    if not _safe_relative(relative) or _sensitive_path(relative, allow_private_audit=allow_private_audit):
+    if not _safe_relative(relative) or _sensitive_path(
+        relative, allow_private_audit=allow_private_audit
+    ):
         return False
     path = PurePosixPath(relative)
     suffix = Path(path.name).suffix.casefold()
@@ -275,7 +308,9 @@ def _is_human_document(relative: str, allow_private_audit: bool = False) -> bool
 
 LINK_RE = re.compile(r"!?\[[^\]]*\]\(<?([^\s)>]+)>?(?:\s+['\"].*?['\"])?\)")
 REFERENCE_RE = re.compile(r"^\s*\[[^\]]+\]:\s*<?([^\s>]+)>?", re.MULTILINE)
-RST_LINK_RE = re.compile(r"`[^`<>]+\s*<([^>]+)>`_|^\s*\.\.\s+(?:image|figure)::\s*(\S+)", re.MULTILINE)
+RST_LINK_RE = re.compile(
+    r"`[^`<>]+\s*<([^>]+)>`_|^\s*\.\.\s+(?:image|figure)::\s*(\S+)", re.MULTILINE
+)
 
 
 def _local_targets(content: bytes, source_path: str) -> set[str]:
@@ -346,10 +381,17 @@ def _select_blobs(
         content[source_path] = data
         for target in _local_targets(data, source_path):
             linked = tree.get(target)
-            private_target = include_private_audits and target.casefold().startswith("docs/private-audits/")
-            if linked is None or linked.mode not in {"100644", "100755"} or _sensitive_path(target, allow_private_audit=private_target):
+            private_target = include_private_audits and target.casefold().startswith(
+                "docs/private-audits/"
+            )
+            if (
+                linked is None
+                or linked.mode not in {"100644", "100755"}
+                or _sensitive_path(target, allow_private_audit=private_target)
+            ):
                 if (
-                    Path(target).suffix.casefold() in DOCUMENT_SUFFIXES | ASSET_SUFFIXES | LINKED_EVIDENCE_SUFFIXES
+                    Path(target).suffix.casefold()
+                    in DOCUMENT_SUFFIXES | ASSET_SUFFIXES | LINKED_EVIDENCE_SUFFIXES
                     and not _sensitive_path(target, allow_private_audit=private_target)
                 ):
                     missing.add((source_path, target))
@@ -357,7 +399,9 @@ def _select_blobs(
             suffix = Path(target).suffix.casefold()
             if suffix not in DOCUMENT_SUFFIXES | ASSET_SUFFIXES | LINKED_EVIDENCE_SUFFIXES:
                 continue
-            if suffix in DOCUMENT_SUFFIXES and not _is_human_document(target, allow_private_audit=private_target):
+            if suffix in DOCUMENT_SUFFIXES and not _is_human_document(
+                target, allow_private_audit=private_target
+            ):
                 continue
             if suffix in LINKED_EVIDENCE_SUFFIXES and not target.casefold().startswith("docs/"):
                 continue
@@ -365,8 +409,7 @@ def _select_blobs(
                 selected[target] = linked
                 pending.append(target)
     missing_links = [
-        {"source_path": source, "target_path": target}
-        for source, target in sorted(missing)
+        {"source_path": source, "target_path": target} for source, target in sorted(missing)
     ]
     return selected, content, missing_links
 
@@ -434,7 +477,9 @@ def _load_previous_manifest(path: Path, repo_name: str) -> dict[str, Any]:
     return value
 
 
-def _preflight_file(path: Path, data: bytes, previous_hash: str | None = None, immutable: bool = False) -> bool:
+def _preflight_file(
+    path: Path, data: bytes, previous_hash: str | None = None, immutable: bool = False
+) -> bool:
     old = _read_existing(path)
     if old is None:
         return True
@@ -452,7 +497,9 @@ def _check_private_directory(path: Path) -> None:
         raise CollectionError("A collection directory is not a real directory")
     mode = stat.S_IMODE(path.stat(follow_symlinks=False).st_mode)
     if mode != 0o700:
-        raise CollectionError(f"An existing collection directory must have mode 0700 (found {mode:04o}): {path}")
+        raise CollectionError(
+            f"An existing collection directory must have mode 0700 (found {mode:04o}): {path}"
+        )
 
 
 def _ensure_private_directory(path: Path, boundary: Path, create: bool) -> bool:
@@ -560,9 +607,7 @@ def _manifest_version_key(manifest: dict[str, Any]) -> str:
 
 def _repo_readme(repo: RepoInfo, manifest: dict[str, Any]) -> bytes:
     active = [
-        entry["source_path"]
-        for entry in manifest["files"].values()
-        if not entry.get("retained")
+        entry["source_path"] for entry in manifest["files"].values() if not entry.get("retained")
     ]
     lines = [
         MARKER,
@@ -575,11 +620,20 @@ def _repo_readme(repo: RepoInfo, manifest: dict[str, Any]) -> bytes:
         "## Documents",
         "",
     ]
-    lines.extend(f"- [`{_markdown_label(path)}`](documents/{_markdown_link(path)})" for path in sorted(active))
+    lines.extend(
+        f"- [`{_markdown_label(path)}`](documents/{_markdown_link(path)})"
+        for path in sorted(active)
+    )
     if not active:
         lines.append("- No eligible tracked documents were found.")
     version_key = _manifest_version_key(manifest)
-    lines.extend(["", f"Versioned report: [reports/{version_key}/README.md](reports/{version_key}/README.md)", ""])
+    lines.extend(
+        [
+            "",
+            f"Versioned report: [reports/{version_key}/README.md](reports/{version_key}/README.md)",
+            "",
+        ]
+    )
     if manifest.get("missing_local_links"):
         lines.extend(["## Missing linked files", ""])
         lines.extend(
@@ -602,7 +656,11 @@ def _version_readme(repo: RepoInfo, manifest: dict[str, Any]) -> bytes:
         "## Included paths",
         "",
     ]
-    lines.extend(f"- `{_markdown_label(entry['source_path'])}` — SHA-256 `{entry['sha256']}`" for entry in manifest["files"].values() if not entry.get("retained"))
+    lines.extend(
+        f"- `{_markdown_label(entry['source_path'])}` — SHA-256 `{entry['sha256']}`"
+        for entry in manifest["files"].values()
+        if not entry.get("retained")
+    )
     if len(lines) == 8:
         lines.append("- No eligible tracked documents were found.")
     lines.extend(["", "The corresponding current document copies are in `../../documents/`.", ""])
@@ -610,10 +668,20 @@ def _version_readme(repo: RepoInfo, manifest: dict[str, Any]) -> bytes:
 
 
 def _root_readme(repositories: list[tuple[RepoInfo, dict[str, Any]]]) -> bytes:
-    lines = [MARKER, "# Repository document library", "", "Tracked-document mirrors and immutable per-commit collection reports.", "", "## Repositories", ""]
+    lines = [
+        MARKER,
+        "# Repository document library",
+        "",
+        "Tracked-document mirrors and immutable per-commit collection reports.",
+        "",
+        "## Repositories",
+        "",
+    ]
     for repo, manifest in sorted(repositories, key=lambda item: item[0].name.casefold()):
         count = sum(1 for entry in manifest["files"].values() if not entry.get("retained"))
-        lines.append(f"- [`{repo.name}/`](./{repo.name}/README.md) — {count} documents; source `{repo.owner}/{repo.name}` at `{repo.commit[:12]}`")
+        lines.append(
+            f"- [`{repo.name}/`](./{repo.name}/README.md) — {count} documents; source `{repo.owner}/{repo.name}` at `{repo.commit[:12]}`"
+        )
     if not repositories:
         lines.append("- No matching GitHub repositories found.")
     lines.append("")
@@ -654,9 +722,14 @@ def reports_index(repo: RepoInfo, tree: dict[str, Blob]) -> bytes:
         if blob.mode not in {"100644", "100755"} or not _is_human_document(path):
             continue
         parts = PurePosixPath(path).parts
-        if parts[0].casefold() != "docs" or PurePosixPath(path).as_posix() == "docs/reports/README.md":
+        if (
+            parts[0].casefold() != "docs"
+            or PurePosixPath(path).as_posix() == "docs/reports/README.md"
+        ):
             continue
-        category = next((_report_category(part) for part in parts[1:-1] if _report_category(part)), None)
+        category = next(
+            (_report_category(part) for part in parts[1:-1] if _report_category(part)), None
+        )
         if category is None and len(parts) in {2, 3}:
             category = _report_document_kind(PurePosixPath(path).stem)
         if category is not None:
@@ -737,7 +810,9 @@ def preview_report_indexes(
                     except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
                         recognized = False
                 if not recognized:
-                    raise CollectionError("An existing report index preview differs from current source")
+                    raise CollectionError(
+                        "An existing report index preview differs from current source"
+                    )
             if old is None or (old != content and refresh):
                 operations.append(f"write {output.relative_to(preview_root.resolve())}")
                 if not check_only:
@@ -796,7 +871,9 @@ def collect_repository(
     previous = _load_previous_manifest(manifest_path, repo.name)
     previous_private_opt_in = previous.get("private_docs_opt_in")
     if previous_private_opt_in is not None and previous_private_opt_in != private_docs_opt_in:
-        raise CollectionError("An existing private-document collection requires the same explicit opt-in")
+        raise CollectionError(
+            "An existing private-document collection requires the same explicit opt-in"
+        )
     if previous:
         previous_commit = previous.get("source_commit")
         for output_path, record in previous.get("files", {}).items():
@@ -807,18 +884,25 @@ def collect_repository(
             if old_content is None or _sha256(old_content) != record.get("sha256"):
                 raise CollectionError("A generated document was changed or deleted")
         previous_version_key = _manifest_version_key(previous)
-        previous_version = _safe_output_path(repo_root, f"reports/{previous_version_key}/manifest.json")
+        previous_version = _safe_output_path(
+            repo_root, f"reports/{previous_version_key}/manifest.json"
+        )
         previous_version_bytes = _read_existing(previous_version)
         old_manifest_bytes = _read_existing(manifest_path)
         if previous_version_bytes is None or old_manifest_bytes != previous_version_bytes:
             raise CollectionError("Existing manifest differs from its immutable versioned copy")
-        previous_report_readme = _safe_output_path(repo_root, f"reports/{previous_version_key}/README.md")
+        previous_report_readme = _safe_output_path(
+            repo_root, f"reports/{previous_version_key}/README.md"
+        )
         previous_report_expected = _version_readme(
-            RepoInfo(repo.path, repo.owner, repo.name, previous["source_ref"], previous_commit), previous
+            RepoInfo(repo.path, repo.owner, repo.name, previous["source_ref"], previous_commit),
+            previous,
         )
         if _read_existing(previous_report_readme) != previous_report_expected:
             raise CollectionError("An immutable versioned report README was changed or deleted")
-    manifest = _build_manifest(repo, selected, content, previous, missing_links, private_docs_opt_in)
+    manifest = _build_manifest(
+        repo, selected, content, previous, missing_links, private_docs_opt_in
+    )
     manifest_bytes = _json_bytes(manifest)
     readme_bytes = _repo_readme(repo, manifest)
     version_manifest = _json_bytes(manifest)
@@ -827,13 +911,36 @@ def collect_repository(
     for source_path in sorted(selected):
         out_relative = f"documents/{source_path}"
         old_hash = previous.get("files", {}).get(out_relative, {}).get("sha256")
-        desired.append((_safe_output_path(repo_root, out_relative), content[source_path], old_hash, False))
+        desired.append(
+            (_safe_output_path(repo_root, out_relative), content[source_path], old_hash, False)
+        )
     desired.extend(
         [
-            (_safe_output_path(repo_root, f"reports/{_manifest_version_key(manifest)}/manifest.json"), version_manifest, None, True),
-            (_safe_output_path(repo_root, f"reports/{_manifest_version_key(manifest)}/README.md"), version_readme, None, True),
+            (
+                _safe_output_path(
+                    repo_root, f"reports/{_manifest_version_key(manifest)}/manifest.json"
+                ),
+                version_manifest,
+                None,
+                True,
+            ),
+            (
+                _safe_output_path(
+                    repo_root, f"reports/{_manifest_version_key(manifest)}/README.md"
+                ),
+                version_readme,
+                None,
+                True,
+            ),
             (_safe_output_path(repo_root, "README.md"), readme_bytes, None, False),
-            (manifest_path, manifest_bytes, _sha256(_read_existing(manifest_path)) if _read_existing(manifest_path) is not None else None, False),
+            (
+                manifest_path,
+                manifest_bytes,
+                _sha256(_read_existing(manifest_path))
+                if _read_existing(manifest_path) is not None
+                else None,
+                False,
+            ),
         ]
     )
     writes: list[tuple[Path, bytes]] = []
@@ -842,10 +949,14 @@ def collect_repository(
         # Refresh generated indexes only when their prior generated content is verifiable.
         if path == _safe_output_path(repo_root, "README.md") and previous:
             old = _read_existing(path)
-            old_repo = RepoInfo(repo.path, repo.owner, repo.name, previous["source_ref"], previous["source_commit"])
+            old_repo = RepoInfo(
+                repo.path, repo.owner, repo.name, previous["source_ref"], previous["source_commit"]
+            )
             expected_old = _repo_readme(old_repo, previous)
             if old != expected_old:
-                raise CollectionError("An existing generated repository README was changed or deleted")
+                raise CollectionError(
+                    "An existing generated repository README was changed or deleted"
+                )
             previous_hash = _sha256(old)
         if _preflight_file(path, data, previous_hash, immutable):
             writes.append((path, data))
@@ -871,11 +982,16 @@ def collect(
     if private_docs_repo is not None:
         private_repo = _github_owner_repo(f"https://github.com/{private_docs_repo}.git")
         if private_repo is None or "/" not in private_docs_repo:
-            raise CollectionError("Private-docs opt-in must be an exact GitHub owner/repository name")
+            raise CollectionError(
+                "Private-docs opt-in must be an exact GitHub owner/repository name"
+            )
         if f"{private_repo[0]}/{private_repo[1]}".casefold() not in VERIFIED_PRIVATE_DOC_REPOS:
-            raise CollectionError("Private-docs opt-in is not configured for a verified private repository")
+            raise CollectionError(
+                "Private-docs opt-in is not configured for a verified private repository"
+            )
         if not any(
-            (repo.owner.casefold(), repo.name.casefold()) == (private_repo[0].casefold(), private_repo[1].casefold())
+            (repo.owner.casefold(), repo.name.casefold())
+            == (private_repo[0].casefold(), private_repo[1].casefold())
             for repo in repositories
         ):
             raise CollectionError("Private-docs opt-in did not match a discovered repository")
@@ -901,16 +1017,29 @@ def collect(
             manifest = _load_previous_manifest(manifest_path, entry.name)
             old_version = entry / "reports" / _manifest_version_key(manifest) / "manifest.json"
             if _read_existing(old_version) != _read_existing(manifest_path):
-                raise CollectionError("An existing manifest differs from its immutable versioned copy")
+                raise CollectionError(
+                    "An existing manifest differs from its immutable versioned copy"
+                )
             old_manifests[entry.name] = manifest
     old_index_bytes = _root_readme(
         [
-            (RepoInfo(Path("."), manifest["owner_repo"].split("/", 1)[0], name, manifest["source_ref"], manifest["source_commit"]), manifest)
+            (
+                RepoInfo(
+                    Path("."),
+                    manifest["owner_repo"].split("/", 1)[0],
+                    name,
+                    manifest["source_ref"],
+                    manifest["source_commit"],
+                ),
+                manifest,
+            )
             for name, manifest in old_manifests.items()
         ]
     )
     root_index = _safe_output_path(output_root, "README.md")
-    old_index = _read_existing(root_index) if root_index.exists() or root_index.is_symlink() else None
+    old_index = (
+        _read_existing(root_index) if root_index.exists() or root_index.is_symlink() else None
+    )
     if old_index is not None and old_index != old_index_bytes:
         raise CollectionError("An existing library README was changed or is not collector-owned")
     if old_index is None and old_manifests:
@@ -920,7 +1049,8 @@ def collect(
     operations: list[str] = [f"skip duplicate or non-source candidates: {name}" for name in skipped]
     for repo in repositories:
         include_private = private_repo is not None and (
-            repo.owner.casefold(), repo.name.casefold()
+            repo.owner.casefold(),
+            repo.name.casefold(),
         ) == (private_repo[0].casefold(), private_repo[1].casefold())
         identity = f"{repo.owner}/{repo.name}" if include_private else None
         manifest, planned = collect_repository(
@@ -934,10 +1064,19 @@ def collect(
     for name, manifest in old_manifests.items():
         if name not in {repo.name for repo, _ in manifests}:
             owner = manifest["owner_repo"].split("/", 1)[0]
-            manifests.append((RepoInfo(Path("."), owner, name, manifest["source_ref"], manifest["source_commit"]), manifest))
+            manifests.append(
+                (
+                    RepoInfo(
+                        Path("."), owner, name, manifest["source_ref"], manifest["source_commit"]
+                    ),
+                    manifest,
+                )
+            )
 
     index_bytes = _root_readme(manifests)
-    if _preflight_file(root_index, index_bytes, _sha256(old_index) if old_index is not None else None):
+    if _preflight_file(
+        root_index, index_bytes, _sha256(old_index) if old_index is not None else None
+    ):
         operations.append("write README.md")
         if not check_only:
             _atomic_write(root_index, index_bytes, output_root)
@@ -946,20 +1085,51 @@ def collect(
 
 def _arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--code-root", type=Path, default=os.environ.get("FLEET_CODE_ROOT"), help="top-level repository directory (or FLEET_CODE_ROOT)")
-    parser.add_argument("--repo-path", type=Path, action="append", default=[], help="explicit repository worktree; repeat for multiple repositories")
-    parser.add_argument("--output-root", type=Path, help="library root; defaults to <code-root>/Docs")
+    parser.add_argument(
+        "--code-root",
+        type=Path,
+        default=os.environ.get("FLEET_CODE_ROOT"),
+        help="top-level repository directory (or FLEET_CODE_ROOT)",
+    )
+    parser.add_argument(
+        "--repo-path",
+        type=Path,
+        action="append",
+        default=[],
+        help="explicit repository worktree; repeat for multiple repositories",
+    )
+    parser.add_argument(
+        "--output-root", type=Path, help="library root; defaults to <code-root>/Docs"
+    )
     parser.add_argument("--repo", help="collect one exact GitHub repository name")
     parser.add_argument(
         "--private-docs-repo",
         help="explicitly include docs/private-audits for one verified private owner/repository; default excludes it",
     )
-    parser.add_argument("--index-preview-root", type=Path, help="write proposed per-repository docs/reports/README.md files under this separate preview directory")
-    parser.add_argument("--indexes-only", action="store_true", help="generate only the proposed in-repository report-index previews; requires --index-preview-root")
-    parser.add_argument("--print-indexes-json", action="store_true", help="emit proposed report-index text and source provenance to stdout without writing")
-    parser.add_argument("--refresh-preview", action="store_true", help="replace only recognized generated preview files under --index-preview-root")
+    parser.add_argument(
+        "--index-preview-root",
+        type=Path,
+        help="write proposed per-repository docs/reports/README.md files under this separate preview directory",
+    )
+    parser.add_argument(
+        "--indexes-only",
+        action="store_true",
+        help="generate only the proposed in-repository report-index previews; requires --index-preview-root",
+    )
+    parser.add_argument(
+        "--print-indexes-json",
+        action="store_true",
+        help="emit proposed report-index text and source provenance to stdout without writing",
+    )
+    parser.add_argument(
+        "--refresh-preview",
+        action="store_true",
+        help="replace only recognized generated preview files under --index-preview-root",
+    )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--check", action="store_true", help="validate and print the plan without writing")
+    mode.add_argument(
+        "--check", action="store_true", help="validate and print the plan without writing"
+    )
     mode.add_argument("--dry-run", action="store_true", help="alias for --check")
     return parser
 
@@ -973,7 +1143,10 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --indexes-only requires --index-preview-root", file=sys.stderr)
         return 2
     if args.print_indexes_json and (args.indexes_only or args.index_preview_root):
-        print("error: --print-indexes-json cannot be combined with preview-writing options", file=sys.stderr)
+        print(
+            "error: --print-indexes-json cannot be combined with preview-writing options",
+            file=sys.stderr,
+        )
         return 2
     if args.refresh_preview and not args.index_preview_root:
         print("error: --refresh-preview requires --index-preview-root", file=sys.stderr)
@@ -982,7 +1155,11 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --refresh-preview is restricted to .docs-library-preview", file=sys.stderr)
         return 2
     code_root = Path(args.code_root).expanduser() if args.code_root else None
-    output_root = Path(args.output_root).expanduser() if args.output_root else (code_root or Path.home() / "Code") / "Docs"
+    output_root = (
+        Path(args.output_root).expanduser()
+        if args.output_root
+        else (code_root or Path.home() / "Code") / "Docs"
+    )
     try:
         check_only = args.check or args.dry_run
         operations: list[str] = []
@@ -1002,11 +1179,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.indexes_only:
             if args.private_docs_repo:
-                raise CollectionError("Private-docs opt-in is only supported for the owner-only central collection")
+                raise CollectionError(
+                    "Private-docs opt-in is only supported for the owner-only central collection"
+                )
             repositories, _ = discover_repositories(code_root, args.repo, args.repo_path)
             preview_root = Path(args.index_preview_root).expanduser()
             _validate_preview_location(repositories, preview_root)
-            operations.extend(preview_report_indexes(repositories, preview_root, check_only=check_only, refresh=args.refresh_preview))
+            operations.extend(
+                preview_report_indexes(
+                    repositories, preview_root, check_only=check_only, refresh=args.refresh_preview
+                )
+            )
         else:
             operations = collect(
                 code_root,
@@ -1020,13 +1203,24 @@ def main(argv: list[str] | None = None) -> int:
                 repositories, _ = discover_repositories(code_root, args.repo, args.repo_path)
                 preview_root = Path(args.index_preview_root).expanduser()
                 _validate_preview_location(repositories, preview_root)
-                operations.extend(preview_report_indexes(repositories, preview_root, check_only=check_only, refresh=args.refresh_preview))
+                operations.extend(
+                    preview_report_indexes(
+                        repositories,
+                        preview_root,
+                        check_only=check_only,
+                        refresh=args.refresh_preview,
+                    )
+                )
     except CollectionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     for operation in operations:
         print(operation)
-    print(f"validated {len(operations)} planned operation(s)" if args.check or args.dry_run else f"completed {len(operations)} operation(s)")
+    print(
+        f"validated {len(operations)} planned operation(s)"
+        if args.check or args.dry_run
+        else f"completed {len(operations)} operation(s)"
+    )
     return 0
 
 
