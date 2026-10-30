@@ -35,7 +35,10 @@ class EntryTests(unittest.TestCase):
             self.assertLess(text.index(hook), call, hook)
         self.assertLess(call, text.index("sys.exit(main(sys.argv[1:]"))
         board, _ = snippet("simple-board")
-        self.assertLess(board.index('_seat_defaults("simple-board")'), board.index('exec(code, {"__name__": "__main__"'))
+        self.assertLess(
+            board.index('_seat_defaults("simple-board")'),
+            board.index('exec(code, {"__name__": "__main__"'),
+        )
         recall, _ = snippet("recall")
         self.assertLess(recall.index('_seat_defaults("recall")'), recall.index("sys.exit(main())"))
 
@@ -98,9 +101,25 @@ class EntryTests(unittest.TestCase):
             ("world writable", lambda: self.install(mode=0o602), 0),
             ("foreign owner", lambda: self.install(), 1),
             ("empty", lambda: self.install(source=""), 0),
-            ("second hard link", lambda: (self.install(), os.link(self.path, self.root / "other")), 0),
-            ("symlinked file", lambda: (self.install(), self.path.rename(self.conf / "real.py"), self.path.symlink_to(self.conf / "real.py")), 0),
-            ("fifo", lambda: (self.conf.mkdir(parents=True, exist_ok=True), os.mkfifo(self.path, 0o600)), 0),
+            (
+                "second hard link",
+                lambda: (self.install(), os.link(self.path, self.root / "other")),
+                0,
+            ),
+            (
+                "symlinked file",
+                lambda: (
+                    self.install(),
+                    self.path.rename(self.conf / "real.py"),
+                    self.path.symlink_to(self.conf / "real.py"),
+                ),
+                0,
+            ),
+            (
+                "fifo",
+                lambda: (self.conf.mkdir(parents=True, exist_ok=True), os.mkfifo(self.path, 0o600)),
+                0,
+            ),
         ):
             with self.subTest(label):
                 if self.root.joinpath("home").exists():
@@ -150,7 +169,12 @@ class EntryTests(unittest.TestCase):
             with self.subTest(label):
                 self.install(source=source)
                 self.assertEqual(self.run_snippet(), 3)
-                self.assertEqual(self.err, "fleet-cli: the seat helper failed\n" if label != "syntax error" else "fleet-cli: the seat helper could not be trusted\n")
+                self.assertEqual(
+                    self.err,
+                    "fleet-cli: the seat helper failed\n"
+                    if label != "syntax error"
+                    else "fleet-cli: the seat helper could not be trusted\n",
+                )
                 self.assertNotIn("secret detail", self.err)
                 self.assertNotIn(str(self.root), self.err)
 
