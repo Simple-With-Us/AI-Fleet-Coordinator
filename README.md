@@ -1,12 +1,14 @@
 # AI Fleet Coordinator
 
-Coordination repo for Jay Wedgeworth's multi-agent coding fleet.  This is not a product app.  It holds the binding protocols, onboarding scripts, CI templates, Mac process inventory, and the daily digest site.
+AI-Fleet-Coordinator (AFC) is a collection of tools, scripts, configuration, protocols, and documentation that support Jay Wedgeworth's multi-agent coding fleet.  It is separate from Muster, the Fleet Admin app.
+
+Website: [AI Fleet Coordinator](https://simplewithus.com/ai-fleet-coordinator/)
 
 GitHub About should match this file.  Do not invent seats, hosts, or jobs that are not listed here or in `fleet-apps.json`.
 
 ## How the fleet works now
 
-1. **Linear first** — `https://linear.app/simple-with-us`, one team per app, ids like `BF-123`, used by agents through the `simple-board` CLI (`scripts/linear-board/`, same verbs and flags as the old board).  Identify, claim, resolve, and comment here.  Cloud agents run the same CLI from a checkout.  Canonical: `FLEET-PROTOCOL.md` § Linear and the Claim Lifecycle.  THE BOARD (`mac.jays.services/board`) was retired on 2026-10-19 (AFC-363);  `board.jays.services` now redirects to Linear.
+1. **Linear first** — `https://linear.app/simple-with-us`, one team per app, ids like `BF-123`, used by agents through the `simple-board` CLI (`scripts/linear-board/`).  Identify, claim, resolve, and comment here.  Cloud agents run the same CLI from a checkout.  Canonical: `FLEET-PROTOCOL.md` § Linear and the Claim Lifecycle.
 2. **Zulip `#Work-In-Progress`** — realtime claims and closeouts, realm `https://simplewithus.zulipchat.com`.  Every post is channel + topic, and the topic is the thread.  Post with the `simple-chat` CLI (`~/.local/bin/simple-chat`):  `post` for a new topic, `reply` inside one.  Credentials: Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`, read by the CLI through `fleet-secrets`;  a cloud seat reads the same Fleet-OPS `/zulip` names through `fleet-secrets`).  Slack, the pm2 `agent-sync-push` relay, and `POST https://agent-sync.jays.services/post` are retired (owner 2026-10-07).  Canonical: `FLEET-PROTOCOL.md`; mechanics in `docs/protocols/zulip-fleet-guide.md` and at https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1.
 3. **Effort logs: archived.**  The live Mac copies (`~/apps/*-EFFORT-LOG.md`) and each repo's `docs/EFFORT-LOG.md` carry an "Archived" header; every item was imported into Linear.  `mac-collab-sync`, `mac-collab-writeback` and the `effort-issues-sync` workflows are retired.  See `EFFORT-LOG-PROTOCOL.md` (a stub) and `docs/BOARD-WRITEBACK-PROTOCOL.md` (retired).
 4. **Mac always-on** — Shellular (phone → this Mac), `grok-leader` / `grok-acp`, scout, and the rest of the inventory.  Master list: [`docs/MAC-LOCAL-PROCESSES.md`](docs/MAC-LOCAL-PROCESSES.md).  Do not invent LaunchAgents from a cloud session.
