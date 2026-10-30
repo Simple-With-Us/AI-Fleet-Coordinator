@@ -1182,12 +1182,24 @@ class JetPinnedReviewTest(unittest.TestCase):
 
         from agent_sync.daemon import Daemon
 
+        # The shared branch now covers every primary (the OpenRouter wake joined claude and muse) and
+        # asks `_primary_state` for the pin and the quota in one place, so a held primary and a
+        # fallback that stands in for it are decided by the same call.  The quota check must live in
+        # that shared state, after the pin, and never under muse alone.
         src = inspect.getsource(Daemon._wake_block)
-        self.assertIn('if runner.cfg.wake in ("claude", "muse"):', src)
-        # The quota check must live inside that shared branch, not only under muse.
+        self.assertIn('if runner.cfg.wake in ("claude", "muse", "openrouter"):', src)
         self.assertLess(
-            src.index('if runner.cfg.wake in ("claude", "muse"):'),
-            src.index("spent = self._quota_reason(runner)"),
+            src.index('if runner.cfg.wake in ("claude", "muse", "openrouter"):'),
+            src.index("self._primary_state(runner)"),
+        )
+        state = inspect.getsource(Daemon._primary_state)
+        self.assertLess(
+            state.index("self._pinned_claude(runner)"),
+            state.index("spent = self._quota_reason(runner)"),
+        )
+        self.assertLess(
+            state.index("self._pinned_muse(runner)"),
+            state.index("spent = self._quota_reason(runner)"),
         )
 
     def test_a_safety_refusal_is_terminal_for_every_refusal_kind(self) -> None:

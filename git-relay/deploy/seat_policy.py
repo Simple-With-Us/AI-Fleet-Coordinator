@@ -70,7 +70,7 @@ UNIT_ENV = ("PATH", "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_ENVIRONMENT")
 ENV_FILE = re.compile(r"(\S+) \(ignore_errors=(?:yes|no)\)")
 TOP_KEYS = {"//", "profiles", "seats"}
 PROFILE_KEYS = {"//", "actions", "mint_permissions", "repos"}
-SEAT_KEYS = {"identity", "app_slug", "profile"}
+SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert"}
 
 
 class PolicyFileError(ValueError):
@@ -137,6 +137,14 @@ def render(doc: dict) -> dict:
             "mint_permissions": dict(resolved["mint_permissions"]),
             "repos": list(resolved["repos"]),
         }
+        # oauth_assert is a per-seat opt-in to the Worker's hosted-OAuth
+        # assertion path (git_relay/assertion.py):  present it must be true,
+        # and it renders only when true, so the deployed JSON names exactly
+        # the seats that accept assertions.
+        if "oauth_assert" in row:
+            if row["oauth_assert"] is not True:
+                raise PolicyFileError(f"seat {identity!r}: oauth_assert must be true when present")
+            seats[slug]["oauth_assert"] = True
     if not seats:
         raise PolicyFileError("the policy names no seat")
     return seats

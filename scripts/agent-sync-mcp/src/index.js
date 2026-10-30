@@ -63,6 +63,8 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } from "./bearer-identities.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
+import { serveGrAssertVerify, grantSummaryIsLive } from "./gr-assert-verify.js";
+import { grAssertionMinter } from "./gr-assert.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
@@ -213,7 +215,7 @@ async function serveMcp(request, env, ctx) {
   const config = loadConfig(env);
   // One listing per folder beats a cold per-name burst (sentry 4364275308);
   // the listings also make later optional misses subrequest-free.
-  await Promise.all(["/zulip", "/linear", "/fleetlink", "/wake", "/tools"].map((path) => prefetchFolder(env, path)));
+  await Promise.all(["/zulip", "/linear", "/fleetlink", "/wake", "/tools", "/gr-front"].map((path) => prefetchFolder(env, path)));
   const props = ctx.props ?? {};
   const auth = ctx.auth ?? {};
   const seat = props.seat;
@@ -245,6 +247,7 @@ async function serveMcp(request, env, ctx) {
   const key = await seatKeyRead(secretNames);
   const email = config.botEmails[seat];
   const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
+  const grantRef = grantId ? await sha256Ref(grantId) : "";
   // Resolve only this verified principal's Linear pair, never unused peers.
   const linearPair = await resolveLinearPair(env, seatTagForSeat(seat));
   // FleetLink's agent secret resolves through /fleetlink (read-tools scope);
@@ -253,6 +256,29 @@ async function serveMcp(request, env, ctx) {
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [seat]);
   const recallSecrets = await resolveRecallSecrets(env);
+  const grSecrets = await resolveGrSecrets(env);
+  // OAuth Git parity:  an OAuth grant carries no bearer the relay could
+  // verify, so the Worker mints a SHORT-LIVED, PER-CALL HMAC assertion for
+  // exactly the seat the verified grant props name, bound to the call's
+  // action and the SHA-256 of its exact body, carrying the grant's scopes,
+  // epoch, phase, approval time and grant ref (src/gr-assert.js).  The relay
+  // holds no key:  it verifies by calling /internal/gr-assert-verify back,
+  // which re-runs the seat's gate check and spends the one-use jti.  The
+  // opaque access token never leaves this Worker and is never offered to the
+  // bearer verifier, and no other identity's bearer is borrowed.  A paused
+  // seat and an events-only (wake-only) seat mint nothing:  their gr_* tools
+  // keep answering not_configured, fail closed.  A seat the relay policy has
+  // not flagged oauth_assert is refused there, by the relay's own allowlist
+  // boundary.
+  // LAZY signer resolution (host review finding 4428031266):  the isolated
+  // key is NOT read while the wiring is built - an Infisical outage or a
+  // scope denial on the dedicated binding must fail only the Git call that
+  // mints, never tools/list or the non-Git routes on this connection.  The
+  // minter converts any resolution failure to null (not_configured for that
+  // call);  a paused or events-only seat gets no minter at all.
+  const grMinter = result.code === "paused" || config.eventsOnlySeats.includes(seat)
+    ? null
+    : grAssertionMinter(env, { seat, scopes, epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase, grantRef });
 
   // The listener key resolves through Infisical too (optional:  no wake key
   // means no listener tools, never a 500 - src/eavesdropper.js).
@@ -263,7 +289,7 @@ async function serveMcp(request, env, ctx) {
     seat,
     scopes,
     clientId: typeof auth.clientId === "string" ? auth.clientId : "",
-    grantRef: grantId ? await sha256Ref(grantId) : "",
+    grantRef,
     paused: result.code === "paused",
     config,
     zulip: key ? new ZulipClient({ email, key, ownerUserId: config.ownerUserId }) : null,
@@ -274,6 +300,11 @@ async function serveMcp(request, env, ctx) {
     // Null when any recall secret is missing:  the recall tools then answer
     // not_configured and every other tool works as before (spec 1.1).
     recall: recallClientFromResolved(recallSecrets, env),
+    // Null for a paused seat or an events-only seat, or while the GR front
+    // is unconfigured:  the gr_* tools then answer not_configured and every
+    // other tool works as before.  The signer key itself resolves lazily
+    // per Git call and fails only that call closed when unavailable.
+    gr: grMinter ? grClientFromResolved(grSecrets, env, { minter: grMinter }) : null,
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
@@ -1383,6 +1414,21 @@ export default {
       return response;
     }
     if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats });
+    if (route === "gr_assert_verify") return serveGrAssertVerify(request, env, gate, {
+      hostedSeats: config.hostedSeats,
+      eventsOnlySeats: config.eventsOnlySeats,
+      // The signed grant_ref must name a grant that still exists for the
+      // seat:  listUserGrants is the provider's own view (the same one the
+      // admin revoke and consent replacement paths maintain), filtered to
+      // live rows - the library lists expired KV rows until their TTL sweeps
+      // them (grantSummaryIsLive, src/gr-assert-verify.js).
+      grantExists: async (seat, grantRef) => {
+        for (const g of await listAllGrants(env.OAUTH_PROVIDER, seat)) {
+          if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return true;
+        }
+        return false;
+      },
+    });
     const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
     const sbtBearer = route === "mcp" && !gbBearer ? sbtBearerFromRequest(request) : null;
     const response = gbBearer

@@ -111,37 +111,44 @@
     {
       "identity": "CLAUDE",
       "app_slug": "swu-claude",
-      "profile": "fleet"
+      "profile": "fleet",
+      "oauth_assert": true
     },
     {
       "identity": "CURSOR",
       "app_slug": "swu-cursor",
-      "profile": "fleet"
+      "profile": "fleet",
+      "oauth_assert": true
     },
     {
       "identity": "ECHO",
       "app_slug": "swu-echo",
-      "profile": "echo"
+      "profile": "echo",
+      "oauth_assert": true
     },
     {
       "identity": "GROK-WEB",
       "app_slug": "swu-grok-web",
-      "profile": "fleet"
+      "profile": "fleet",
+      "oauth_assert": true
     },
     {
       "identity": "JET-CHAT",
       "app_slug": "swu-jet",
-      "profile": "jet"
+      "profile": "jet",
+      "oauth_assert": true
     },
     {
       "identity": "WISE",
       "app_slug": "swu-wise",
-      "profile": "fleet"
+      "profile": "fleet",
+      "oauth_assert": true
     },
     {
       "identity": "CODEX",
       "app_slug": "swu-codex",
-      "profile": "fleet"
+      "profile": "fleet",
+      "oauth_assert": true
     },
     {
       "identity": "MA",

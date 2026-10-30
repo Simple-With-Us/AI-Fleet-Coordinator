@@ -19,6 +19,16 @@ PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
 OPERATOR_INFISICAL_PATH = "/zulip_operator"
 
 
+#: The Infisical folder that holds the wake runtimes' credentials (Fleet-OPS, the same project as the
+#: Operator's own three names), and the one value the OpenRouter wake runtime reads from it.  The key
+#: is the Operator's own (owner named it, Oct 30 2026), never another app's OpenRouter key.
+WAKE_INFISICAL_PATH = "/wake"
+OPENROUTER_KEY_NAME = "OPERATOR_OPENROUTER_API_KEY"
+#: A key is one printable ASCII token:  no space, no control character, bounded.  Anything else is a
+#: broken vault entry (a pasted line, a JSON blob), refused rather than sent in a header.
+_KEY_SHAPE = re.compile(r"[\x21-\x7e]{8,512}")
+
+
 def operator_identity(env):
     from . import zulip as Z
 
@@ -98,6 +108,54 @@ def operator_credentials(env, home=None, fetch=None):
         if creds.email.casefold() != expected_email:
             raise Z.CredentialError(f"{where}: not the pinned service bot")
         return creds
+    except Z.CredentialError:
+        raise
+    except Exception as exc:  # a fetch must not leak anything through its own message
+        raise Z.CredentialError(f"{where}: {type(exc).__name__}") from None
+
+
+def openrouter_api_key(env, home=None, fetch=None):
+    """The Operator's OpenRouter key for the headless wake's HTTP runtime, as one string.
+
+    Read the way `operator_credentials` reads the Operator's own three names:  one named value from
+    Fleet-OPS (`INFISICAL_FLEET_OPS_PROJECT_ID`), folder `/wake`, through the installed fleet-secrets
+    reader, so it gets that reader's in-memory cache, its outage memory and its last-known-good
+    fallback.  No local file, no other app's OpenRouter key and no other folder.  Every failure is a
+    `CredentialError` carrying a reason token and the name of the secret, never a value, and the key
+    is returned to the caller and to nothing else:  the caller hides it from every log and scan."""
+    from . import zulip as Z
+
+    home_path = Path(home) if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
+    # The project id is the one the daemon's other Fleet-OPS reads use:  the environment variable, else
+    # the first line of ~/.agent-sync/fleet-ops-project-id (a shell that runs `test-wake --run` has the
+    # file even when it lacks the variable the LaunchAgent carries).  A malformed or missing id fails
+    # closed with a message that names both places and never echoes the value.
+    project = env.get(PROJECT_ENV, "").strip()
+    if not project:
+        project = Z.infisical_project_id(env, home_path)
+    where = f"OpenRouter key: Fleet-OPS {WAKE_INFISICAL_PATH} {OPENROUTER_KEY_NAME}; no fallback"
+    if not Z.infisical_enabled(env):
+        raise Z.CredentialError(f"cannot read {where}: AGENT_SYNC_INFISICAL turns Infisical off")
+    names = (OPENROUTER_KEY_NAME,)
+    try:
+        if fetch is not None:
+            values = fetch(names)
+        else:
+            child = dict(env)
+            child[Z.ENV_INFISICAL_PROJECT] = project  # Fleet-OPS, where /wake lives
+            try:
+                values = Z._default_infisical_fetch(names, child, home_path, WAKE_INFISICAL_PATH)
+            except Z.CredentialError as exc:  # a reason token, never a value
+                raise Z.CredentialError(f"{where}: {exc}") from None
+        value = values.get(OPENROUTER_KEY_NAME, "")
+        value = Z._strip_quotes(value) if isinstance(value, str) else ""
+        if not value:
+            raise Z.CredentialError(f"{where}: not set")
+        if re.fullmatch(r"\$\{[^}]+\}", value):
+            raise Z.CredentialError(f"{where}: unresolved reference")
+        if not _KEY_SHAPE.fullmatch(value):
+            raise Z.CredentialError(f"{where}: not a single printable token")
+        return value
     except Z.CredentialError:
         raise
     except Exception as exc:  # a fetch must not leak anything through its own message
