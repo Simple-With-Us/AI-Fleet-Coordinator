@@ -1,6 +1,7 @@
 """No real credentials or live services: the own-bearer gate for `simple-chat mcp`."""
 import argparse
 import os
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,6 +29,19 @@ class FakeClient:
 
 def factory(**kw):
     return lambda path, expected_seat=None, identity_env=None: FakeClient(path, expected_seat, identity_env, **kw)
+
+
+def private_bearer(home, seat, token, mode=0o600):
+    """`home/.secrets/fleet-tools/<seat>` created with owner-only modes at creation, never chmod-after."""
+    folder = home / ".secrets"
+    for part in (folder, folder / "fleet-tools"):
+        if part.is_symlink():
+            raise ValueError("refusing symlink: %s" % part)
+        part.mkdir(mode=0o700)
+    fd = os.open(folder / "fleet-tools" / seat, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(token)
+        os.fchmod(handle.fileno(), mode)
 
 
 def runtime(env, home="/home/x"):
@@ -90,11 +104,7 @@ class BearerGateTests(unittest.TestCase):
     def test_the_real_client_refuses_another_seats_token_in_this_seats_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            folder = home / ".secrets" / "fleet-tools"
-            folder.mkdir(parents=True)
-            folder.chmod(0o700)
-            (folder / "codex").write_text("sbt_clutch_" + "z" * 43)
-            (folder / "codex").chmod(0o600)
+            private_bearer(home, "codex", "sbt_clutch_" + "z" * 43)
             with self.assertRaises(G.Refused) as exc:
                 G.verify(runtime({}, home), args(default_seat="CODEX"))
             self.assertEqual(exc.exception.exit_code, 3)
@@ -105,11 +115,7 @@ class BearerGateTests(unittest.TestCase):
             with self.assertRaises(G.Refused) as exc:
                 G.verify(runtime({}, home), args(default_seat="CODEX"))
             self.assertEqual(exc.exception.exit_code, 3)
-            folder = home / ".secrets" / "fleet-tools"
-            folder.mkdir(parents=True)
-            folder.chmod(0o700)
-            (folder / "codex").write_text("sbt_codex_" + "z" * 43)
-            (folder / "codex").chmod(0o644)
+            private_bearer(home, "codex", "sbt_codex_" + "z" * 43, mode=0o644)
             with self.assertRaises(G.Refused):
                 G.verify(runtime({}, home), args(default_seat="CODEX"))
 
@@ -165,6 +171,48 @@ class WiringTests(unittest.TestCase):
         text = (self.ROOT / "cli.py").read_text(encoding="utf-8")
         self.assertEqual(text.count("mcp_stdio.run("), 1)
         self.assertNotIn("bearer_verified_seat", text)
+
+
+class GatewayTimeoutTests(unittest.TestCase):
+    """The real client over a fake HTTPS connection:  one slow whoami is cut off and refuses the call."""
+
+    def run_with(self, behaviour):
+        seen = []
+
+        class Conn:
+            def __init__(self, host, timeout=None):
+                seen.append(timeout)
+
+            def request(self, *a, **k):
+                if behaviour == "timeout":
+                    raise socket.timeout("slow")
+
+            def getresponse(self):
+                raise AssertionError("not reached")
+
+            def close(self):
+                pass
+
+        original = F.http.client.HTTPSConnection
+        F.http.client.HTTPSConnection = Conn
+        self.addCleanup(setattr, F.http.client, "HTTPSConnection", original)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            private_bearer(home, "codex", "sbt_codex_" + "z" * 43)
+            with self.assertRaises(G.Refused) as exc:
+                G.verify(runtime({}, home), args(default_seat="CODEX"))
+        return seen, exc.exception
+
+    def test_a_slow_gateway_refuses_within_the_bound_and_serves_nothing(self):
+        seen, refused = self.run_with("timeout")
+        self.assertEqual(seen, [G.GATEWAY_TIMEOUT_SECONDS])
+        self.assertEqual(G.GATEWAY_TIMEOUT_SECONDS, 4)
+        self.assertEqual(refused.exit_code, 6)
+
+    def test_a_double_without_the_real_transport_is_left_alone(self):
+        client = FakeClient("/x", "CODEX", {})
+        self.assertIs(G.bound(client), client)
+        self.assertFalse(hasattr(client, "_transport"))
 
 
 if __name__ == "__main__":

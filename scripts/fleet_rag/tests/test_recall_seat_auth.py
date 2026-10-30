@@ -209,8 +209,9 @@ class RealClientChecks(unittest.TestCase):
         folder = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(lambda: [p.unlink() for p in folder.glob("*")] and folder.rmdir())
         path = folder / seat
-        path.write_text("sbt_%s_%s" % (seat, "A" * 43))
-        path.chmod(0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write("sbt_%s_%s" % (seat, "A" * 43))
         return path
 
     def test_another_seat_or_a_launcher_hint_for_one_is_refused(self):
@@ -230,6 +231,37 @@ class RealClientChecks(unittest.TestCase):
         self.assertEqual(seat_auth.bearer_path(home, "BF-PLUMBER"), home / ".secrets" / "fleet-tools" / "bf-plumber")
         with self.assertRaises(seat_auth.FleetRagError):
             seat_auth.bearer_path(home, "../x")
+
+    def test_a_slow_gateway_is_cut_off_at_the_bound_and_serves_nothing(self):
+        import socket
+        seen = []
+
+        class Conn:
+            def __init__(self, host, timeout=None):
+                seen.append(timeout)
+
+            def request(self, *a, **k):
+                raise socket.timeout("slow")
+
+            def close(self):
+                pass
+
+        original = F.http.client.HTTPSConnection
+        F.http.client.HTTPSConnection = Conn
+        self.addCleanup(setattr, F.http.client, "HTTPSConnection", original)
+        home = pathlib.Path(tempfile.mkdtemp())
+        folder = home / ".secrets" / "fleet-tools"
+        self.addCleanup(lambda: (folder / "claude").unlink() or folder.rmdir() or folder.parent.rmdir() or home.rmdir())
+        (home / ".secrets").mkdir(mode=0o700)
+        folder.mkdir(mode=0o700)
+        fd = os.open(folder / "claude", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write("sbt_claude_" + "A" * 43)
+        with self.assertRaises(seat_auth.FleetRagError) as exc:
+            seat_auth.verify({"AGENT_SEAT": "CLAUDE"}, home)
+        self.assertEqual(seen, [seat_auth.GATEWAY_TIMEOUT_SECONDS])
+        self.assertIn("unavailable", str(exc.exception))
+        self.assertIn("nothing was served", str(exc.exception))
 
     def test_vendored_client_is_the_agent_sync_client_byte_for_byte(self):
         other = SCRIPTS / "agent_sync" / "fleet_bearer.py"

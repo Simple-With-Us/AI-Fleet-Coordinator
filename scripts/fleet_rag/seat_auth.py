@@ -25,8 +25,29 @@ from typing import Any
 from . import fleet_bearer as F
 from .core import FleetRagError
 
+# The per-seat bearer files the assigned stdio connectors and the fleet CLI read;  no environment or
+# other store supplies a bearer.
 BEARER_DIR = (".secrets", "fleet-tools")
 SEAT_FILE = re.compile(r"[a-z][a-z0-9-]{1,19}")
+
+
+# Longest the gateway may hold one whoami before the call is refused.  It is the HTTP connection's socket
+# timeout, so it bounds connect and each read separately, not the total time.  Nothing is cached: every
+# call still asks the gateway, and a timeout refuses the call.
+GATEWAY_TIMEOUT_SECONDS = 4
+
+
+class BoundedTransport(F.GatewayTransport):
+    def open(self, request, timeout=40):
+        return super().open(request, timeout=min(timeout, GATEWAY_TIMEOUT_SECONDS))
+
+
+def bound(client):
+    """Cap the real client's gateway timeout;  a double without the real transport is left alone."""
+    if isinstance(getattr(client, "_transport", None), F.GatewayTransport):
+        client._transport.close()
+        client._transport = BoundedTransport()
+    return client
 HINTS = ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
 
 # The client class;  tests replace it with a double for the gateway.
@@ -61,7 +82,7 @@ def verify(env: Mapping[str, str] | None = None, home: Path | None = None) -> st
         )
     path = bearer_path(home or Path.home(), seat)
     try:
-        client = client_factory(path, expected_seat=seat, identity_env=env)
+        client = bound(client_factory(path, expected_seat=seat, identity_env=env))
         who = client.rpc("tools/call", {"name": "whoami", "arguments": {}}).get("structuredContent")
     except F.FleetError as exc:
         raise FleetRagError(
