@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -168,7 +171,8 @@ class ControllerTests(unittest.TestCase):
             with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
                 m.write_owned(p, "memory.high", 256 * M, state, persist=lambda: snapshots.append(json.loads(json.dumps(state))))
             self.assertEqual(snapshots[0]["owned"][f"{p}:memory.high"]["baseline"], "max")
-            self.assertEqual(snapshots[0]["owned"][f"{p}:memory.high"]["last"], str(256 * M))
+            self.assertIsNone(snapshots[0]["owned"][f"{p}:memory.high"]["last"])
+            self.assertEqual(snapshots[0]["owned"][f"{p}:memory.high"]["pending"], str(256 * M))
 
     def test_reconcile_removes_pending_record_when_write_never_happened(self):
         with tempfile.TemporaryDirectory() as d:
@@ -176,6 +180,81 @@ class ControllerTests(unittest.TestCase):
             state = {"owned": {f"{p}:memory.high": {"inode": p.stat().st_ino, "baseline": "max", "last": str(256 * M)}}}
             m.reconcile_owned(state)
             self.assertEqual(state["owned"], {})
+
+    def test_failed_first_and_subsequent_writes_restore_previous_record_and_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = cg(Path(d) / "unit", high="max")
+            state = {"owned": {}}
+            key = f"{p}:memory.high"
+            with mock.patch.object(m, "write_control", side_effect=OSError("write refused")):
+                self.assertFalse(m.write_owned(p, "memory.high", 256 * M, state))
+            self.assertNotIn(key, state["owned"])
+            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+                self.assertTrue(m.write_owned(p, "memory.high", 256 * M, state))
+            first_record = state["owned"][key].copy()
+            with mock.patch.object(m, "write_control", side_effect=OSError("write refused")):
+                self.assertFalse(m.write_owned(p, "memory.high", 512 * M, state))
+            self.assertEqual(state["owned"][key], first_record)
+            self.assertEqual((p / "memory.high").read_text(), str(256 * M))
+            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+                self.assertTrue(m.write_owned(p, "memory.high", 512 * M, state))
+            self.assertEqual((p / "memory.high").read_text(), str(512 * M))
+
+    def test_target_landed_despite_write_exception_keeps_successful_ownership(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = cg(Path(d) / "unit", high="max")
+            state = {"owned": {}}
+            def write_then_raise(path, value):
+                path.write_text(value)
+                raise OSError("post-write error")
+            with mock.patch.object(m, "write_control", side_effect=write_then_raise):
+                self.assertTrue(m.write_owned(p, "memory.high", 256 * M, state))
+            rec = state["owned"][f"{p}:memory.high"]
+            self.assertEqual(rec["last"], str(256 * M))
+            self.assertNotIn("pending", rec)
+
+    def test_crash_reconcile_keeps_previous_owned_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = cg(Path(d) / "unit", high="max")
+            state = {"owned": {}}
+            with mock.patch.object(m, "write_control", side_effect=lambda path, value: path.write_text(value)):
+                m.write_owned(p, "memory.high", 256 * M, state)
+            persisted = {}
+            def snapshot():
+                nonlocal persisted
+                persisted = json.loads(json.dumps(state))
+            with mock.patch.object(m, "write_control", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    m.write_owned(p, "memory.high", 512 * M, state, persist=snapshot)
+            m.reconcile_owned(persisted)
+            rec = persisted["owned"][f"{p}:memory.high"]
+            self.assertEqual(rec["last"], str(256 * M))
+            self.assertNotIn("pending", rec)
+            self.assertEqual((p / "memory.high").read_text(), str(256 * M))
+
+    def test_controller_lock_is_singleton_and_released(self):
+        with tempfile.TemporaryDirectory() as d:
+            first = m.acquire_lock(Path(d))
+            try:
+                with self.assertRaises(BlockingIOError): m.acquire_lock(Path(d))
+            finally: os.close(first)
+            second = m.acquire_lock(Path(d))
+            os.close(second)
+
+    def test_status_does_not_create_state_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            missing = Path(d) / "absent"
+            result = subprocess.run([sys.executable, str(Path(m.__file__)), "--status", "--state-dir", str(missing)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(missing.exists())
+            state_dir = Path(d) / "existing"
+            state_dir.mkdir(mode=0o755)
+            (state_dir / "state.json").write_text('{"last_status":{"mode":"normal"}}')
+            (state_dir / "state.json").chmod(0o644)
+            result = subprocess.run([sys.executable, str(Path(m.__file__)), "--status", "--state-dir", str(state_dir)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(state_dir.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((state_dir / "state.json").stat().st_mode & 0o777, 0o644)
 
     def test_no_groups_is_safe(self):
         with tempfile.TemporaryDirectory() as d:

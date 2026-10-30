@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-POLICY_CMD = ["runuser", "-u", "jay", "--", "/home/jay/.local/bin/fleet-secrets", "get", "CODING_RAM_POLICY", "--project", "fleet-ops"]
+POLICY_CMD = ["/usr/local/lib/fleet-coding-memory/settings/linux-entrypoint.py", "get", "CODING_RAM_POLICY", "--project", "fleet-ops"]
 POLICY_FIELDS = {
     "schema_version", "budget_bytes", "critical_budget_bytes", "reserve_bytes",
     "pressure_available_bytes", "critical_available_bytes", "recovery_available_bytes",
@@ -66,6 +67,16 @@ def atomic_json(path: Path, obj: Any) -> None:
 def fetch_policy(timeout: int = 20) -> dict[str, Any]:
     p = subprocess.run(POLICY_CMD, capture_output=True, text=True, timeout=timeout, check=True)
     return validate_policy(p.stdout)
+
+
+def acquire_lock(state_dir: Path) -> int:
+    fd = os.open(state_dir / "controller.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
 
 
 def load_lkg(state_dir: Path, now: float | None = None) -> tuple[dict[str, Any], bool]:
@@ -198,23 +209,58 @@ def allocate(target: int, paths: list[Path], state: dict[str, Any] | None = None
 
 def write_owned(path: Path, key: str, value: int, state: dict[str, Any], persist=None) -> bool:
     f = path / key
+    record_key = f"{path}:{key}"
+    previous: dict[str, Any] | None = None
     try:
         inode = path.stat().st_ino
         current = f.read_text().strip()
         if key == "memory.low" and current == "max": return True
-        rec = state.setdefault("owned", {}).get(f"{path}:{key}")
-        if rec and rec.get("inode") == inode and current != rec.get("last"):
+        rec = state.setdefault("owned", {}).get(record_key)
+        previous = rec.copy() if rec and rec.get("inode") == inode else None
+        expected = rec.get("last") if rec and rec.get("last") is not None else rec.get("baseline") if rec else None
+        if rec and rec.get("inode") == inode and current != expected:
             return False
         baseline = rec["baseline"] if rec and rec.get("inode") == inode else current
         if key == "memory.low" and current not in ("max",) and current.isdigit(): value = max(value, int(current))
         if current == str(value):
-            if rec: rec["last"] = current
+            if rec:
+                rec["last"] = current
+                rec.pop("pending", None)
+                rec.pop("observed", None)
             return True
-        state["owned"][f"{path}:{key}"] = {"inode": inode, "baseline": baseline, "last": str(value)}
+        state["owned"][record_key] = {"inode": inode, "baseline": baseline, "last": previous.get("last") if previous else None, "pending": str(value), "observed": current}
         if persist: persist()
         write_control(f, str(value))
+        state["owned"][record_key]["last"] = str(value)
+        state["owned"][record_key].pop("pending", None)
+        state["owned"][record_key].pop("observed", None)
+        if persist: persist()
         return True
-    except (OSError, ValueError): return False
+    except Exception:
+        rec = state.get("owned", {}).get(record_key)
+        landed = False
+        if rec and rec.get("pending") is not None:
+            try: current = f.read_text().strip()
+            except OSError: current = None
+            desired, observed = rec["pending"], rec["observed"]
+            if current == desired:
+                rec["last"] = desired
+                rec.pop("pending", None)
+                rec.pop("observed", None)
+                landed = True
+            elif current == observed:
+                if previous is None: state["owned"].pop(record_key, None)
+                else: state["owned"][record_key] = previous
+            else:
+                rec.pop("pending", None)
+                rec.pop("observed", None)
+            if persist:
+                try: persist()
+                except Exception: pass
+        elif rec and rec.get("last") is not None:
+            try: landed = f.read_text().strip() == rec["last"]
+            except OSError: pass
+        return landed
 
 
 def reconcile_owned(state: dict[str, Any], persist=None) -> None:
@@ -225,7 +271,27 @@ def reconcile_owned(state: dict[str, Any], persist=None) -> None:
             pth, key = name.rsplit(":", 1)
             p = Path(pth)
             current = (p / key).read_text().strip()
-            if p.stat().st_ino != rec["inode"] or current == rec["baseline"]:
+            if p.stat().st_ino != rec["inode"]:
+                del state["owned"][name]
+                changed = True
+                continue
+            if rec.get("pending") is not None:
+                pending, observed = rec["pending"], rec["observed"]
+                if current == pending:
+                    rec["last"] = pending
+                    rec.pop("pending", None)
+                    rec.pop("observed", None)
+                elif current == observed:
+                    if rec.get("last") is None:
+                        del state["owned"][name]
+                    else:
+                        rec.pop("pending", None)
+                        rec.pop("observed", None)
+                else:
+                    rec.pop("pending", None)
+                    rec.pop("observed", None)
+                changed = True
+            elif current == rec["baseline"] and current != rec.get("last"):
                 del state["owned"][name]
                 changed = True
         except OSError:
@@ -235,6 +301,7 @@ def reconcile_owned(state: dict[str, Any], persist=None) -> None:
 
 
 def restore_owned(state: dict[str, Any], persist=None) -> None:
+    reconcile_owned(state, persist)
     for name, rec in list(state.get("owned", {}).items()):
         try:
             pth, key = name.rsplit(":", 1)
@@ -343,16 +410,20 @@ def main() -> int:
     ap.add_argument("--state-dir", type=Path, default=STATE_DIR)
     ap.add_argument("--cgroot", type=Path, default=CGROOT)
     args = ap.parse_args()
-    args.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(args.state_dir, 0o700)
     state_path = args.state_dir / "state.json"
-    if state_path.exists(): os.chmod(state_path, 0o600)
     if args.status:
         try:
             state = json.loads(state_path.read_text())
             print(json.dumps(state.get("last_status", {"mode": "unknown", "coding_groups": 0, "production_groups": 0})))
             return 0
         except Exception: print(json.dumps({"mode": "unknown", "coding_groups": 0, "production_groups": 0})); return 1
+    args.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(args.state_dir, 0o700)
+    try: lock_fd = acquire_lock(args.state_dir)
+    except BlockingIOError:
+        print("controller already running", file=sys.stderr)
+        return 2
+    if state_path.exists(): os.chmod(state_path, 0o600)
     try: state = json.loads(state_path.read_text())
     except FileNotFoundError: state = {}
     except Exception:
@@ -362,7 +433,7 @@ def main() -> int:
         print("state cache invalid; refusing cgroup changes", file=sys.stderr)
         return 1
     for name, rec in state.get("owned", {}).items():
-        if not isinstance(name, str) or not isinstance(rec, dict) or not name.endswith((":memory.high", ":memory.low")) or type(rec.get("inode")) is not int or not isinstance(rec.get("baseline"), str) or not isinstance(rec.get("last"), str):
+        if not isinstance(name, str) or not isinstance(rec, dict) or not name.endswith((":memory.high", ":memory.low")) or type(rec.get("inode")) is not int or not isinstance(rec.get("baseline"), str) or rec.get("last") is not None and not isinstance(rec.get("last"), str) or rec.get("pending") is not None and (not isinstance(rec.get("pending"), str) or not isinstance(rec.get("observed"), str)):
             print("state ownership record invalid; refusing cgroup changes", file=sys.stderr)
             return 1
     reconcile_owned(state, lambda: atomic_json(state_path, state))
@@ -408,6 +479,7 @@ def main() -> int:
         if quit_flag:
             restore_owned(state, lambda: atomic_json(state_path, state))
             atomic_json(state_path, state)
+        os.close(lock_fd)
     return 0
 
 if __name__ == "__main__": raise SystemExit(main())
