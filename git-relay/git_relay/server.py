@@ -1056,7 +1056,9 @@ def from_env() -> Relay:
     try:
         policy = SeatPolicy(
             seats_json_from_env(),
-            rate_per_hour=int(os.environ.get("GIT_RELAY_RATE_PER_HOUR", str(DEFAULT_RATE_PER_HOUR))),
+            rate_per_hour=int(
+                os.environ.get("GIT_RELAY_RATE_PER_HOUR", str(DEFAULT_RATE_PER_HOUR))
+            ),
             verifier=_build_shared_verifier(),
         )
     except PolicyError as exc:

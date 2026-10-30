@@ -254,9 +254,7 @@ class SeatPolicy:
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
 
-    def __init__(
-        self, seats_json: str, rate_per_hour: int = DEFAULT_RATE_PER_HOUR, verifier=None
-    ):
+    def __init__(self, seats_json: str, rate_per_hour: int = DEFAULT_RATE_PER_HOUR, verifier=None):
         if not seats_json:
             raise PolicyError("GIT_RELAY_SEATS_JSON is empty")
         try:

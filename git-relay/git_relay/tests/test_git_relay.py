@@ -130,6 +130,7 @@ class TestDefaultRate(unittest.TestCase):
 
     def test_the_server_default_is_the_policy_default(self):
         import inspect
+
         from git_relay import server
 
         self.assertIn("DEFAULT_RATE_PER_HOUR", inspect.getsource(server))
