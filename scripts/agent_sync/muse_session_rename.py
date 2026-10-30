@@ -296,12 +296,57 @@ def muse_ancestor(
 
 #: The `muse` options that take a value as the next word, so that value is not taken for a subcommand.
 VALUE_FLAGS = frozenset(
-    ["--agents", "--provider", "--preset", "--model", "--contributor-mode", "-c", "--config", "--reasoning-effort", "--effort", "--base-url", "--image", "--workspace", "--worktree-base", "--worktree-existing", "--approval-mode", "--permission-profile", "--approval-judge", "--sandbox-network", "--echo-delay-ms", "--prompt-file", "--output-schema", "--session-id", "--max-model-steps"]
+    [
+        "--agents",
+        "--provider",
+        "--preset",
+        "--model",
+        "--contributor-mode",
+        "-c",
+        "--config",
+        "--reasoning-effort",
+        "--effort",
+        "--base-url",
+        "--image",
+        "--workspace",
+        "--worktree-base",
+        "--worktree-existing",
+        "--approval-mode",
+        "--permission-profile",
+        "--approval-judge",
+        "--sandbox-network",
+        "--echo-delay-ms",
+        "--prompt-file",
+        "--output-schema",
+        "--session-id",
+        "--max-model-steps",
+    ]
 )
 # `acp` is not in `muse --help` (a build without it answers "not available in this build"), but the Mac runs one as a
 # host some program drives, so it is a host, never a chat.
 SUBCOMMANDS = frozenset(
-    ["resume", "exec", "config", "export", "trace", "model-profile", "skills", "voice", "plugins", "sandbox", "schema", "serve", "session-message", "mcp", "auth", "login", "logout", "usage", "init", "acp"]
+    [
+        "resume",
+        "exec",
+        "config",
+        "export",
+        "trace",
+        "model-profile",
+        "skills",
+        "voice",
+        "plugins",
+        "sandbox",
+        "schema",
+        "serve",
+        "session-message",
+        "mcp",
+        "auth",
+        "login",
+        "logout",
+        "usage",
+        "init",
+        "acp",
+    ]
 )
 WORKTREE_MODES = ("off", "create", "existing")
 
@@ -312,8 +357,14 @@ def subcommand(argv: tuple[str, ...]) -> str:
     while i < len(argv):
         word = argv[i]
         if word.startswith("-"):
-            if "=" not in word and word in VALUE_FLAGS or (
-                word in ("-w", "--worktree") and i + 1 < len(argv) and argv[i + 1] in WORKTREE_MODES
+            if (
+                "=" not in word
+                and word in VALUE_FLAGS
+                or (
+                    word in ("-w", "--worktree")
+                    and i + 1 < len(argv)
+                    and argv[i + 1] in WORKTREE_MODES
+                )
             ):
                 i += 1
             i += 1
