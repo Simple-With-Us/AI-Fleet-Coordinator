@@ -468,7 +468,9 @@ class SeatPolicy:
             return f"repo {repo!r} not allowed for this seat"
         # One authorize is one dispatch:  the quota is charged here, once, before the idempotency gate, exactly as
         # the all-calls bucket always was, so a replayed request still consumes quota.
-        return self._rate_ok(seat, now if now is not None else time.time(), write=self.is_write(action))
+        return self._rate_ok(
+            seat, now if now is not None else time.time(), write=self.is_write(action)
+        )
 
     def app_identity(self, seat: str) -> tuple[str, dict]:
         """(app_slug, mintable permission ceiling) for a seat's App actions."""

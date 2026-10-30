@@ -134,7 +134,15 @@ class TestWriteRate(unittest.TestCase):
             self.assertIn(action, SPECS, action)
             self.assertEqual(SeatPolicy.is_write(action), bool(SPECS[action][1]), action)
         self.assertFalse(SeatPolicy.is_write("mint_token"))
-        for action in ("open_pr", "merge_pr", "workflow_dispatch", "resolve_thread", "edit_pr", "reply_thread", "comment_pr"):
+        for action in (
+            "open_pr",
+            "merge_pr",
+            "workflow_dispatch",
+            "resolve_thread",
+            "edit_pr",
+            "reply_thread",
+            "comment_pr",
+        ):
             self.assertTrue(SeatPolicy.is_write(action), action)
         # registered but unwired, and unknown, names count as writes
         for action in SeatPolicy.REGISTERED_ACTIONS + ("not_a_real_action",):
@@ -151,10 +159,27 @@ class TestWriteRate(unittest.TestCase):
         self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=4602.0))
 
     def test_reads_and_mint_token_never_draw_from_the_write_bucket(self):
-        seats = json.dumps({"swu-r": {"token": "r" * 32, "actions": ["mint_token", "wf_repo_languages"], "repos": ["example/*"], "app_slug": "swu-r", "mint_permissions": {"metadata": "read"}}})
+        seats = json.dumps(
+            {
+                "swu-r": {
+                    "token": "r" * 32,
+                    "actions": ["mint_token", "wf_repo_languages"],
+                    "repos": ["example/*"],
+                    "app_slug": "swu-r",
+                    "mint_permissions": {"metadata": "read"},
+                }
+            }
+        )
         policy = SeatPolicy(seats, rate_per_hour=50, write_rate_per_hour=1)
         for i in range(40):
-            self.assertIsNone(policy.authorize("swu-r", "wf_repo_languages" if i % 2 else "mint_token", "example/x", now=100.0 + i))
+            self.assertIsNone(
+                policy.authorize(
+                    "swu-r",
+                    "wf_repo_languages" if i % 2 else "mint_token",
+                    "example/x",
+                    now=100.0 + i,
+                )
+            )
         self.assertEqual(policy._writes["swu-r"], [])
         self.assertEqual(len(policy._calls["swu-r"]), 40)
 
@@ -167,7 +192,10 @@ class TestWriteRate(unittest.TestCase):
         self.assertEqual(len(policy._calls["swu-echo"]), 1)
         policy = SeatPolicy(SEATS_JSON, rate_per_hour=1, write_rate_per_hour=5)
         self.assertIsNone(policy.authorize("swu-echo", "open_pr", repo, now=10.0))
-        self.assertEqual(policy.authorize("swu-echo", "open_pr", repo, now=11.0), "hourly rate limit reached for this seat")
+        self.assertEqual(
+            policy.authorize("swu-echo", "open_pr", repo, now=11.0),
+            "hourly rate limit reached for this seat",
+        )
         self.assertEqual(len(policy._writes["swu-echo"]), 1)
 
     def test_write_cap_must_be_positive(self):
@@ -177,7 +205,10 @@ class TestWriteRate(unittest.TestCase):
     def test_typed_disarm_treats_both_rate_denials_as_retryable_quota(self):
         from git_relay.policy import RATE_LIMIT_DENIALS
 
-        self.assertEqual(set(RATE_LIMIT_DENIALS), {"hourly rate limit reached for this seat", "hourly write limit reached for this seat"})
+        self.assertEqual(
+            set(RATE_LIMIT_DENIALS),
+            {"hourly rate limit reached for this seat", "hourly write limit reached for this seat"},
+        )
 
 
 class TestDefaultRate(unittest.TestCase):
