@@ -280,7 +280,9 @@ class CollectorTests(unittest.TestCase):
         direct_output = Path(os.path.relpath(self.base / "direct-relative-output", Path.cwd()))
         collector.collect_repository(info, direct_output)
         self.assertTrue(
-            (self.base / "direct-relative-output/ExampleRepo/documents/docs/reports/report.md").is_file()
+            (
+                self.base / "direct-relative-output/ExampleRepo/documents/docs/reports/report.md"
+            ).is_file()
         )
 
     def test_git_timeout_is_reported_as_a_distinct_collection_error(self) -> None:

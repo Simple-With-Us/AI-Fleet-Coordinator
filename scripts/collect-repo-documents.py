@@ -1167,14 +1167,11 @@ def preview_report_indexes(
                         prior = json.loads(old)
                         recognized = (
                             isinstance(prior, dict)
-                            and prior.get("generated_by")
-                            in {None, "collect-repo-documents.py"}
+                            and prior.get("generated_by") in {None, "collect-repo-documents.py"}
                             and prior.get("owner_repo") == f"{repo.owner}/{repo.name}"
                             and isinstance(prior.get("source_ref"), str)
                             and isinstance(prior.get("source_commit"), str)
-                            and re.fullmatch(
-                                r"[0-9a-f]{40,64}", prior.get("source_commit", "")
-                            )
+                            and re.fullmatch(r"[0-9a-f]{40,64}", prior.get("source_commit", ""))
                         )
                     except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
                         recognized = False
