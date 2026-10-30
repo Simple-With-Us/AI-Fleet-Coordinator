@@ -101,8 +101,12 @@ role seat (the 11 `BF-*` seats), the Worker resolves that seat's OWN Linear app 
 - `LINEAR_BF_<ROLE>_CLIENT_ID` and `LINEAR_BF_<ROLE>_CLIENT_SECRET` for a BF role seat, the seat tag
   with hyphens as underscores.
 
-It then queries `{ viewer { id name displayName url } }` through `linearClientFromPair` and derives the
-profile url key from the viewer's url's last path segment.  The map is cached in-isolate for one hour
+It then queries `{ viewer { id name displayName url } organization { urlKey } }` through
+`linearClientFromPair` and derives the profile url key from the viewer's url's last path segment.  Like every
+Linear client, the wake map's client is metered: one charge per GraphQL request, made before it is sent, against
+the app user the viewer proves (`organization.urlKey` plus `viewer.id`).  This query is the one that proves it,
+so it is charged to the shared unknown bucket and then debited to that user.  When the quota denies or cannot be
+reached, the seat stays unmapped and no request is sent.  The map is cached in-isolate for one hour
 and is built lazily, only for events that passed the signature and the cheap shape checks.
 
 A seat whose pair is missing, or whose query fails, is left OUT of the map and logged once per refresh

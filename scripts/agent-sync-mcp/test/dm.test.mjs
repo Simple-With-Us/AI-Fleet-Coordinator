@@ -435,19 +435,26 @@ test("dm_send:  a Zulip refusal is zulip_error without Zulip's text, and a gatew
 });
 
 test("dm_send counts against the seat's write budget with post:  one hourly allowance across both, and a duplicate spends none", async () => {
-  const { tools, gate, jay } = harness();
-  const half = 60; // 120 an hour across both
+  const { tools, gate, jay, clock } = harness();
+  const total = (entries) => (entries ?? []).reduce((n, e) => n + (Array.isArray(e) ? e[1] : 1), 0);
+  const hourly = S.BUDGETS.write.find((w) => w.windowMs === S.HOUR_MS).limit;
+  const half = 3;
   for (let i = 0; i < half; i++) ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: `dm ${i}` }), "zulip_dm_send");
   for (let i = 0; i < half; i++) ok(await tools.call("zulip_post", { channel: "sandbox", topic: "b", text: `post ${i}` }), "zulip_post");
-  assert.equal((await gate.store.get("budget:write")).length, 2 * half);
+  assert.equal(total(await gate.store.get("budget:write")), 2 * half, "dm and post draw on the same counter");
+  // Fill the rest of the hourly allowance but one, then one more write is allowed and the next is refused.
+  const minute = Math.ceil(clock.now / S.MINUTE_MS) * S.MINUTE_MS;
+  await gate.store.put("budget:write", [[minute, hourly - 1]]);
+  ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "the last one" }), "zulip_dm_send");
   const error = toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "one too many" }), "budget_exhausted");
   assert.match(error.reset_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   // A repeat of a sent DM is a duplicate, before the budget is touched.
-  assert.equal(ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "dm 3" }), "zulip_dm_send").duplicate, true);
+  assert.equal(ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "dm 1" }), "zulip_dm_send").duplicate, true);
+  assert.equal(total(await gate.store.get("budget:write")), hourly);
   // Reads (dm_list, dm_read) draw on the read budget, not the write one.
   ok(await tools.call("zulip_dm_list", {}), "zulip_dm_list");
-  assert.equal((await gate.store.get("budget:write")).length, 2 * half);
-  assert.equal((await gate.store.get("budget:read")).length, 1);
+  assert.equal(total(await gate.store.get("budget:write")), hourly);
+  assert.equal(total(await gate.store.get("budget:read")), 1);
 });
 
 // ---------------------------------------------------------------- inbox

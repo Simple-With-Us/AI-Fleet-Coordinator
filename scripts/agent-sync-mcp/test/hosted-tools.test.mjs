@@ -668,38 +668,34 @@ test("spacing:  writes 3 seconds apart, reads half a second, past 6 seconds rate
   assert.deepEqual(await S.reserve(store, { kind: "read" }, t), { ok: true, waitMs: 500 });
 });
 
-test("a seat policy below the default never lowers it:  Cursor's 100 an hour becomes 120", async () => {
+test("a seat policy below the default never lowers it", async () => {
   const store = S.memoryStore();
-  let t = Date.parse("2026-10-09T10:00:00Z");
+  const t = Date.parse("2026-10-09T10:00:00Z");
+  const hourly = S.BUDGETS.write.find((w) => w.windowMs === S.HOUR_MS).limit;
   const policy = { hour: 100, day: 600 };
-  for (let i = 0; i < 120; i++) {
-    assert.equal((await S.reserve(store, { kind: "write", policy }, t)).ok, true);
-    t += 3000;
-  }
-  assert.equal((await S.reserve(store, { kind: "write", policy }, t)).code, "budget_exhausted");
+  await store.put("budget:write", [[t, hourly - 1]]);
+  assert.equal((await S.reserve(store, { kind: "write", policy }, t + 1000)).ok, true);
+  assert.equal((await S.reserve(store, { kind: "write", policy }, t + 5000)).code, "budget_exhausted");
 });
 
-test("budgets (D5):  120 writes an hour, 720 a day, 60 reactions and 300 reads an hour", async () => {
+test("budgets (D5):  generous spacing-sized counts, a daily runaway guard, and Linear read+write under its app limit", async () => {
+  const limit = (kind, windowMs) => S.BUDGETS[kind].find((w) => w.windowMs === windowMs).limit;
+  const t = Date.parse("2026-10-09T10:00:00Z");
   const store = S.memoryStore();
-  let t = Date.parse("2026-10-09T10:00:00Z");
-  for (let i = 0; i < 120; i++) {
-    assert.equal((await S.reserve(store, { kind: "write" }, t)).ok, true);
-    t += 3000;
-  }
-  const out = await S.reserve(store, { kind: "write" }, t);
+  await store.put("budget:write", [[t, limit("write", S.HOUR_MS)]]);
+  const out = await S.reserve(store, { kind: "write" }, t + 1000);
   assert.equal(out.code, "budget_exhausted");
+  assert.equal(out.window, "hour");
   assert.equal(out.resetAt, "2026-10-09T11:00:00Z");
-  assert.deepEqual(S.BUDGETS.write.map((w) => w.limit), [120, 720]);
-  assert.deepEqual(S.BUDGETS.linear_write.map((w) => w.limit), [120, 720]);
-  assert.equal(S.BUDGETS.react[0].limit, 60);
-  assert.equal(S.BUDGETS.read[0].limit, 300);
-  // Across a day:  six hours of 120 is 720, and the seventh hour is refused by the day window.
+  assert.equal(limit("write", S.HOUR_MS), S.HOUR_MS / S.WRITE_SPACING_MS);
+  assert.equal(limit("linear_write", S.HOUR_MS), limit("write", S.HOUR_MS));
+  assert.equal(limit("react", S.HOUR_MS), limit("write", S.HOUR_MS));
+  assert.equal(limit("read", S.HOUR_MS), S.HOUR_MS / S.READ_SPACING_MS);
+  assert.ok(limit("linear_read", S.HOUR_MS) + limit("linear_write", S.HOUR_MS) < 5000);
+  // Across a day:  the daily count refuses through the day window even when the last hour is empty.
   const day = S.memoryStore();
-  let d = Date.parse("2026-10-09T00:00:00Z");
-  for (let h = 0; h < 6; h++) {
-    for (let i = 0; i < 120; i++) assert.equal((await S.reserve(day, { kind: "write" }, d + i * 3000)).ok, true);
-    d += S.HOUR_MS;
-  }
+  const d = Date.parse("2026-10-09T20:00:00Z");
+  await day.put("budget:write", Array.from({ length: 60 }, (_, i) => [d - 3 * S.HOUR_MS - i * S.MINUTE_MS, limit("write", S.DAY_MS) / 60]));
   const dayOut = await S.reserve(day, { kind: "write" }, d);
   assert.equal(dayOut.code, "budget_exhausted");
   assert.equal(dayOut.window, "day");
@@ -806,4 +802,28 @@ test("an audited unknown-tool name never carries a lone surrogate and stays unde
   const codes = [...err.toolName].map((ch) => ch.codePointAt(0));
   assert.ok(codes.every((c) => !(c >= 0xd800 && c <= 0xdfff)), "no lone surrogate anywhere in the audited name");
   assert.ok(new TextEncoder().encode(err.toolName).length <= 192, "64 code units cap the encoded size at 192 bytes");
+});
+
+test("a delegated call reserves on the caller's gate and the target's gate, each with the generous default", async () => {
+  const clock = { now: Date.parse("2026-10-09T10:00:00Z") };
+  const callerGate = memoryGate(clock);
+  const gate = memoryGate(clock);
+  const tools = Object.create(HostedTools.prototype);
+  Object.assign(tools, { callerGate, gate, callerSeat: "CLAUDE", seat: "CODEX", config: { cursorToolBudgets: {} }, sleep: async () => {} });
+  const total = (entries) => (entries ?? []).reduce((n, e) => n + (Array.isArray(e) ? e[1] : 1), 0);
+  const hourly = S.BUDGETS.write.find((w) => w.windowMs === S.HOUR_MS).limit;
+  await tools.reserve("write");
+  await tools.reserve("write");
+  assert.equal(total(await callerGate.store.get("budget:write")), 2);
+  assert.equal(total(await gate.store.get("budget:write")), 2);
+  // A caller whose own allowance is spent is refused without charging the target again.
+  const minute = Math.ceil(clock.now / S.MINUTE_MS) * S.MINUTE_MS;
+  await callerGate.store.put("budget:write", [[minute, hourly]]);
+  await assert.rejects(() => tools.reserve("write"), (error) => error.code === "budget_exhausted" || /budget/.test(error.message));
+  assert.equal(total(await gate.store.get("budget:write")), 2);
+  // The target's allowance is independent: a spent target refuses even a fresh caller.
+  await callerGate.store.put("budget:write", []);
+  await gate.store.put("budget:write", [[minute, hourly]]);
+  await assert.rejects(() => tools.reserve("write"), (error) => /budget/.test(error.message));
+  assert.equal(total(await callerGate.store.get("budget:write")), 1, "the caller was charged, as before this change");
 });

@@ -221,17 +221,15 @@ test("Cursor Linear allowance has independent counters and spacing from Zulip", 
   const store = S.memoryStore();
   const policy = { hour: 2000, day: 20000, spacingMs: 100 };
   const hourly = S.BUDGETS.write[0].limit;
-  for (let i = 0; i < hourly; i++) {
-    assert.equal((await S.reserve(store, { kind: "write" }, T0 + i * 3000)).ok, true);
-  }
-  const now = T0 + hourly * 3000;
+  const now = T0 + 2 * S.HOUR_MS;
+  await store.put("budget:write", Array(hourly).fill(now - 1000));
   assert.equal((await S.reserve(store, { kind: "write" }, now)).code, "budget_exhausted");
   for (let i = 0; i < 40; i++) {
     const result = await S.reserve(store, { kind: "linear_write", policy }, now);
     assert.equal(result.ok, true);
     assert.equal(result.waitMs, i * 100);
   }
-  assert.equal((await S.reserve(store, { kind: "write", policy: { hour: 200, day: 1200 } }, now)).ok, true);
+  assert.equal((await S.reserve(store, { kind: "write", policy: { hour: 2000, day: 20000 } }, now)).ok, true);
   const limited = S.memoryStore();
   await limited.put("budget:linear_write", Array(2000).fill(now));
   const exhausted = await S.reserve(limited, { kind: "linear_write", policy }, now);
@@ -247,4 +245,72 @@ test("high shared-seat limits compact history without losing counts", async () =
   const policy = { hour: 20000, day: 40000, spacingMs: 100 };
   assert.equal((await S.reserve(store, { kind: "linear_write", policy }, T0)).ok, true);
   assert.deepEqual(await store.get("budget:linear_write"), [[T0, 19001]]);
+});
+
+
+test("default budgets are generous: the spacing, not the count, is the hourly throttle", () => {
+  const perHour = (kind, windowMs) => S.BUDGETS[kind].find((w) => w.windowMs === windowMs)?.limit;
+  assert.equal(perHour("write", S.HOUR_MS), S.HOUR_MS / S.WRITE_SPACING_MS);
+  assert.equal(perHour("read", S.HOUR_MS), S.HOUR_MS / S.READ_SPACING_MS);
+  for (const kind of ["write", "react", "recall", "linear_write", "fleetlink"]) {
+    assert.ok(perHour(kind, S.HOUR_MS) >= 1200, `${kind} hourly`);
+    assert.ok(perHour(kind, S.DAY_MS) >= 14400, `${kind} daily`);
+  }
+  assert.ok(perHour("read", S.HOUR_MS) >= 7200);
+  // Linear sizing is a heuristic: its documented OAuth-app limit is 5,000 requests an hour, read and write together, and one call can make several.
+  assert.ok(perHour("linear_read", S.HOUR_MS) + perHour("linear_write", S.HOUR_MS) < 5000);
+  for (const kind of Object.keys(S.BUDGETS)) {
+    const day = perHour(kind, S.DAY_MS);
+    assert.ok(Number.isInteger(day) && day >= perHour(kind, S.HOUR_MS), `${kind} has a daily runaway guard`);
+  }
+});
+
+test("a seat working at the full write spacing for an hour is never refused", async () => {
+  const store = S.memoryStore();
+  for (let i = 0; i < 1190; i++) {
+    const r = await S.reserve(store, { kind: "write" }, T0 + i * S.WRITE_SPACING_MS);
+    assert.equal(r.ok, true, `call ${i}`);
+    assert.equal(r.waitMs, 0);
+  }
+});
+
+test("history stays bounded by minute buckets at default budgets, with no policy", async () => {
+  const store = S.memoryStore();
+  for (let i = 0; i < 1190; i++) await S.reserve(store, { kind: "write" }, T0 + i * S.WRITE_SPACING_MS);
+  const history = await store.get("budget:write");
+  assert.ok(history.length <= 61, `history entries ${history.length}`);
+  assert.equal(history.reduce((n, [, c]) => n + c, 0), 1190);
+  assert.ok(JSON.stringify(history).length < 4096);
+});
+
+test("the daily runaway guard refuses at the day count and reopens as the window rolls", async () => {
+  const store = S.memoryStore();
+  const day = S.BUDGETS.write.find((w) => w.windowMs === S.DAY_MS).limit;
+  const now = T0 + 20 * S.HOUR_MS;
+  // spread so that the hourly window is empty and only the daily window is full
+  await store.put("budget:write", Array.from({ length: 60 }, (_, i) => [now - 2 * S.HOUR_MS - i * S.MINUTE_MS, day / 60]));
+  const refused = await S.reserve(store, { kind: "write" }, now);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, "budget_exhausted");
+  assert.equal(refused.window, "day");
+  assert.equal((await S.reserve(store, { kind: "write" }, now + S.DAY_MS)).ok, true);
+});
+
+test("legacy single-stamp history is counted and converted to buckets", async () => {
+  const store = S.memoryStore();
+  await store.put("budget:read", [T0 - 1000, T0 - 2000, [T0 - 3000, 5]]);
+  assert.equal((await S.reserve(store, { kind: "read" }, T0)).ok, true);
+  const history = await store.get("budget:read");
+  assert.equal(history.reduce((n, [, c]) => n + c, 0), 8);
+});
+
+test("a seat policy still only raises a default, and the cooldown still refuses", async () => {
+  const store = S.memoryStore();
+  await store.put("budget:write", Array(1500).fill(T0 - 1000));
+  assert.equal((await S.reserve(store, { kind: "write" }, T0)).code, "budget_exhausted");
+  assert.equal((await S.reserve(store, { kind: "write", policy: { hour: 10, day: 20 } }, T0)).code, "budget_exhausted");
+  assert.equal((await S.reserve(store, { kind: "write", policy: { hour: 2000, day: 20000 } }, T0)).ok, true);
+  const cool = S.memoryStore();
+  await S.noteRateLimited(cool, { retryAfterS: 30 }, T0);
+  assert.equal((await S.reserve(cool, { kind: "read" }, T0 + 1000)).code, "rate_limited");
 });
