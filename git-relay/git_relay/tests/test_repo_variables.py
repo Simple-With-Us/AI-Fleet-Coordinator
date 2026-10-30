@@ -150,6 +150,7 @@ class Variables(unittest.TestCase):
 
     def test_lone_surrogates_fail_closed_without_upstream_write(self):
         import json
+
         from git_relay.github_client import RelayGitHubError
 
         for value in (json.loads('"\\ud800"'), json.loads('"\\udfff"'), "valid" + chr(0xD800)):
