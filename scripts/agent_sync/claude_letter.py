@@ -1098,7 +1098,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
         # A rename that is waiting for the registry is the newer title, so it goes out in place of the first one.
         # ... but only while the title on screen still holds it:  a rename the owner took back is stale, and sending it
         # would put words the chat no longer wears in the Operator (or, with a retired letter, over the screen's title).
-        waiting = note.get("rename_failed_for")  # None when there is none;  "" is a name with nothing left after the scan
+        waiting = note.get(
+            "rename_failed_for"
+        )  # None when there is none;  "" is a name with nothing left after the scan
         latest = (
             waiting
             if waiting is not None and clean_title(own_words(current, note)) == waiting
