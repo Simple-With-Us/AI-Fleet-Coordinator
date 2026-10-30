@@ -283,9 +283,9 @@ class CredentialTests(FleetLinkHarness):
         # CURSOR has no token of its own:  the generic one belongs to AGENT_SEAT=CLAUDE, so CURSOR is not configured.
         error = self.assert_tool_error(
             session.call("fleetlink_get_share", {"slug": "plan", "identity": "CURSOR"}),
-            "not_configured",
+            "identity_not_allowed",
         )
-        self.assertIn("FLEETLINK_TOKEN_CURSOR", error["message"])
+        self.assertNotIn(TOKEN_GENERIC, error["message"])
         self.assertEqual(len(self.calls()), 1)
 
     def test_a_seat_from_a_flag_binds_the_generic_token_like_one_from_the_environment(self):
@@ -303,31 +303,22 @@ class CredentialTests(FleetLinkHarness):
         self.assertEqual(call["env"]["FLEETLINK_TOKEN"], TOKEN_GENERIC)
         error = self.assert_tool_error(
             session.call("fleetlink_get_share", {"slug": "plan", "identity": "CURSOR"}),
-            "not_configured",
+            "identity_not_allowed",
         )
-        self.assertIn("FLEETLINK_TOKEN_CURSOR", error["message"])
+        self.assertNotIn(TOKEN_GENERIC, error["message"])
         self.assertEqual(len(self.calls()), 1, "CURSOR's call ran no child")
 
-    def test_each_identity_signs_in_as_its_own_bot(self):
+    def test_the_connections_seat_signs_in_as_its_own_bot(self):
         self.token_file()
         session = self.session(self.env(FLEETLINK_TOKEN_CURSOR=TOKEN_CURSOR))
-        session.call(
+        refused = session.call(
             "fleetlink_create_share", {"text": "draft", "personal": True}, identity="CURSOR"
         )
+        self.assert_tool_error(refused, "identity_not_allowed")  # another seat's token is never used
         session.call("fleetlink_list_teams")
-        first, second = self.calls()
-        self.assertEqual(
-            (first["env"]["FLEETLINK_SEAT"], first["env"].get("FLEETLINK_TOKEN")),
-            ("CURSOR", TOKEN_CURSOR),
-        )
-        self.assertEqual(
-            json.loads(next(iter(first["files"].values()))["text"]),
-            {"text": "draft", "personal": True},
-        )
-        self.assertEqual(second["env"]["FLEETLINK_SEAT"], "CLAUDE")
-        self.assertEqual(
-            second["env"]["FLEETLINK_TOKEN"], TOKEN_CLAUDE
-        )  # CLAUDE's own, from Infisical
+        [only] = self.calls()
+        self.assertEqual(only["env"]["FLEETLINK_SEAT"], "CLAUDE")
+        self.assertEqual(only["env"]["FLEETLINK_TOKEN"], TOKEN_CLAUDE)  # CLAUDE's own, from Infisical
 
     def test_fleet_secrets_is_asked_for_the_ai_fleet_coordinator_project(self):
         # The seat tokens live in AI Fleet Coordinator /fleetlink;  Fleet-OPS has no such folder.

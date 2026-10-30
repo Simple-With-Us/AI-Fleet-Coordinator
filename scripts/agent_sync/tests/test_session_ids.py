@@ -306,19 +306,24 @@ class ToolTests(TI.IdentityHarness):
     def test_another_platforms_variable_does_not_satisfy_a_seat_that_has_its_own(self):
         env = self.mcp_env(CLAUDE_CODE_SESSION_ID=None, CODEX_THREAD_ID="019a-thread-1")
         self.assert_tool_error(self.write(env=env), "session_required")
-        # CURSOR acts through this CLAUDE-launched server:  CLAUDE_CODE_SESSION_ID is not CURSOR's variable
+        # A server authenticated as CURSOR:  CLAUDE_CODE_SESSION_ID is not CURSOR's variable
         error = self.assert_tool_error(
-            self.write(identity="CURSOR", title="[AFC, Cursor] t"), "session_required"
+            self.write(
+                identity="CURSOR",
+                title="[AFC, Cursor] t",
+                env=self.mcp_env(AGENT_SEAT="CURSOR"),
+            ),
+            "session_required",
         )
         self.assertIn("CURSOR_CONVERSATION_ID", error["message"])
-        # The server's environment is CLAUDE's, so it is not lent to CURSOR even when it holds CURSOR's variable.
+        # A CLAUDE-authenticated server never acts as CURSOR, even when its environment holds CURSOR's variable.
         self.assert_tool_error(
             self.write(
                 identity="CURSOR",
                 title="[AFC, Cursor] t",
                 env=self.mcp_env(CURSOR_CONVERSATION_ID="cursor-conv-0001"),
             ),
-            "session_required",
+            "identity_not_allowed",
         )
         self.assertEqual(self.run.calls, [])
         # A server started for CURSOR (AGENT_SEAT=CURSOR) uses its own variable.
@@ -350,8 +355,9 @@ class ToolTests(TI.IdentityHarness):
     def test_an_exempt_identity_writes_without_a_session_and_no_argument_exempts_anyone_else(self):
         persona = TI.PERSONA
         env = self.mcp_env(CLAUDE_CODE_SESSION_ID=None)
+        persona_env = self.mcp_env(AGENT_SEAT=persona, CLAUDE_CODE_SESSION_ID=None)  # authenticated as the persona
         result = self.write(
-            env=env, identity=persona, title="[AFC, %s] t" % persona, request_id="persona-request-1"
+            env=persona_env, identity=persona, title="[AFC, %s] t" % persona, request_id="persona-request-1"
         )
         self.assert_structured("notes_create", result)
         self.assertEqual(self.script_sessions(), [None])
