@@ -57,7 +57,13 @@ from typing import Any
 
 SESSION_ID_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{7,63}")
 #: The parent environment variables the adapter reads, and nothing else of that environment is ever kept.
-IDENTITY_KEYS = ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER", "MUSE_LETTER", "MUSE_LETTER_HELPER")
+IDENTITY_KEYS = (
+    "AGENT_LAUNCHER",
+    "AGENT_LAUNCH_SEAT",
+    "SESSION_LETTER",
+    "MUSE_LETTER",
+    "MUSE_LETTER_HELPER",
+)
 HELPER_MARK = "MUSE_LETTER_HELPER"
 MUSE_NAME = re.compile(r"^(muse|muse-bin[0-9A-Za-z._-]*|Muse)$")
 #: How far up from the hook's parent to look for the Muse process (an `env` or `sh` wrapper may sit between).
@@ -68,16 +74,40 @@ WAIT_MAX = 7 * 86400  # a chat that is still open after a week is not waited for
 REQUEST_TIMEOUT = 20.0  # one MSP request;  the host's start-up is inside `initialize`
 ATTEMPTS = 4  # tries at the rename itself, after the lease is free
 RETRY_PAUSE = 3.0
-MAX_BUSY = 60  # "in use" answers in a row (two minutes) while the lock file says the session is free
+MAX_BUSY = (
+    60  # "in use" answers in a row (two minutes) while the lock file says the session is free
+)
 #: The `--provider` name the rename host takes for each provider id a stored session reports (`session/read` says
 #: "muse" for a session Muse's own default host started and "meta" for one a chat started; both are the meta provider).
 HOST_PROVIDERS = {"": "echo", "echo": "echo", "meta": "meta", "muse": "meta", "local": "local"}
-MODEL_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._:/@+-]{0,127}")  # a recorded model id this helper will pass to `--model`
-LETTER_PREFIX = re.compile(r"[A-Za-z]{1,2}: ")  # the letter this helper put in front of a name it wrapped
-CTL_KERN, KERN_PROCARGS2 = 1, 49  # <sys/sysctl.h>: the kernel's copy of a process's arguments and environment
+MODEL_RE = re.compile(
+    r"[0-9A-Za-z][0-9A-Za-z._:/@+-]{0,127}"
+)  # a recorded model id this helper will pass to `--model`
+LETTER_PREFIX = re.compile(
+    r"[A-Za-z]{1,2}: "
+)  # the letter this helper put in front of a name it wrapped
+CTL_KERN, KERN_PROCARGS2 = (
+    1,
+    49,
+)  # <sys/sysctl.h>: the kernel's copy of a process's arguments and environment
 RECORD_KEYS = (
-    "session_id", "name", "label", "applied", "wrapped", "cwd", "home", "exe", "xdg_data_home", "holder_pid",
-    "queued_at", "state", "attempts", "error", "worker_pid", "done_at", "result",
+    "session_id",
+    "name",
+    "label",
+    "applied",
+    "wrapped",
+    "cwd",
+    "home",
+    "exe",
+    "xdg_data_home",
+    "holder_pid",
+    "queued_at",
+    "state",
+    "attempts",
+    "error",
+    "worker_pid",
+    "done_at",
+    "result",
 )
 
 Clock = Callable[[], float]
@@ -156,7 +186,11 @@ def read_proc(
         except OSError:
             exe = argv[0] if argv else ""
         env = _identity_env(
-            [w.decode("utf-8", "replace") for w in _read_bytes(os.path.join(base, "environ")).split(b"\0") if w]
+            [
+                w.decode("utf-8", "replace")
+                for w in _read_bytes(os.path.join(base, "environ")).split(b"\0")
+                if w
+            ]
         )
         return Proc(pid, ppid, argv, exe, env)
     try:
@@ -170,8 +204,15 @@ def read_proc(
         if kernel is not None:
             path, argv, strings = kernel
             return Proc(pid, int(head), argv, exe.strip() or path, _identity_env(strings))
-        command = runner(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.strip()
-        full = runner(["ps", "eww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
+        command = runner(
+            ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+        full = runner(
+            ["ps", "eww", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     if not command:
@@ -219,8 +260,12 @@ def kernel_args(pid: int) -> tuple[str, tuple[str, ...], list[str]] | None:
         call = libc.sysctl
         call.restype = ctypes.c_int
         call.argtypes = [
-            ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
-            ctypes.c_void_p, ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p,
+            ctypes.c_size_t,
         ]
         mib = (ctypes.c_int * 3)(CTL_KERN, KERN_PROCARGS2, int(pid))
         size = ctypes.c_size_t(0)
@@ -230,7 +275,7 @@ def kernel_args(pid: int) -> tuple[str, tuple[str, ...], list[str]] | None:
         if call(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
             return None
         return parse_procargs(buf.raw[: size.value])
-    except Exception: # noqa: BLE001 - no libc symbol, no ctypes or a refusal: the caller falls back to `ps`
+    except Exception:  # noqa: BLE001 - no libc symbol, no ctypes or a refusal: the caller falls back to `ps`
         return None
 
 
@@ -251,15 +296,12 @@ def muse_ancestor(
 
 #: The `muse` options that take a value as the next word, so that value is not taken for a subcommand.
 VALUE_FLAGS = frozenset(
-    "--agents --provider --preset --model --contributor-mode -c --config --reasoning-effort --effort --base-url "
-    "--image --workspace --worktree-base --worktree-existing --approval-mode --permission-profile --approval-judge "
-    "--sandbox-network --echo-delay-ms --prompt-file --output-schema --session-id --max-model-steps".split()
+    ["--agents", "--provider", "--preset", "--model", "--contributor-mode", "-c", "--config", "--reasoning-effort", "--effort", "--base-url", "--image", "--workspace", "--worktree-base", "--worktree-existing", "--approval-mode", "--permission-profile", "--approval-judge", "--sandbox-network", "--echo-delay-ms", "--prompt-file", "--output-schema", "--session-id", "--max-model-steps"]
 )
 # `acp` is not in `muse --help` (a build without it answers "not available in this build"), but the Mac runs one as a
 # host some program drives, so it is a host, never a chat.
 SUBCOMMANDS = frozenset(
-    "resume exec config export trace model-profile skills voice plugins sandbox schema serve session-message mcp "
-    "auth login logout usage init acp".split()
+    ["resume", "exec", "config", "export", "trace", "model-profile", "skills", "voice", "plugins", "sandbox", "schema", "serve", "session-message", "mcp", "auth", "login", "logout", "usage", "init", "acp"]
 )
 WORKTREE_MODES = ("off", "create", "existing")
 
@@ -270,9 +312,9 @@ def subcommand(argv: tuple[str, ...]) -> str:
     while i < len(argv):
         word = argv[i]
         if word.startswith("-"):
-            if "=" not in word and word in VALUE_FLAGS:
-                i += 1
-            elif word in ("-w", "--worktree") and i + 1 < len(argv) and argv[i + 1] in WORKTREE_MODES:
+            if "=" not in word and word in VALUE_FLAGS or (
+                word in ("-w", "--worktree") and i + 1 < len(argv) and argv[i + 1] in WORKTREE_MODES
+            ):
                 i += 1
             i += 1
             continue
@@ -296,7 +338,9 @@ def find_session_dir(root: str, sid: str) -> str | None:
     be a path."""
     if not SESSION_ID_RE.fullmatch(sid or ""):
         return None
-    found = sorted(glob.glob(os.path.join(glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", sid)))
+    found = sorted(
+        glob.glob(os.path.join(glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", sid))
+    )
     return found[-1] if found else None
 
 
@@ -305,7 +349,9 @@ def is_subagent(root: str, sid: str) -> bool:
     <id>), never at the top level.  False for an id with a top-level folder, and for one the store does not hold."""
     if not SESSION_ID_RE.fullmatch(sid or "") or find_session_dir(root, sid) is not None:
         return False
-    nested = os.path.join(glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*", "subagent", sid)
+    nested = os.path.join(
+        glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*", "subagent", sid
+    )
     return bool(glob.glob(nested))
 
 
@@ -313,16 +359,20 @@ def lock_holder(session_dir: str) -> tuple[int | None, str]:
     """(the pid in the session's `.session.lock`, the role it names).  The holder writes `pid=`, `host=` and, for a
     serve host, `role=serve`, and empties the file when it lets go, so an empty or missing file is no holder."""
     text = _read_bytes(os.path.join(session_dir, ".session.lock"), 4096).decode("utf-8", "replace")
-    pid = re.search(r"^pid=(\d+)\s*$", text, re.M)
-    role = re.search(r"^role=(\S+)\s*$", text, re.M)
+    pid = re.search(r"^pid=(\d+)\s*$", text, re.MULTILINE)
+    role = re.search(r"^role=(\S+)\s*$", text, re.MULTILINE)
     return (int(pid.group(1)) if pid else None, role.group(1) if role else "")
 
 
-def pid_alive(pid: int, proc_root: str | None = None, runner: Callable[..., Any] = subprocess.run) -> bool:
+def pid_alive(
+    pid: int, proc_root: str | None = None, runner: Callable[..., Any] = subprocess.run
+) -> bool:
     return read_proc(pid, proc_root, runner) is not None
 
 
-def lease_held(session_dir: str | None, fallback_pid: int | None, proc_root: str | None = None) -> bool:
+def lease_held(
+    session_dir: str | None, fallback_pid: int | None, proc_root: str | None = None
+) -> bool:
     """Whether a process still holds the session.  The lock file decides;  a store this helper cannot find falls back
     to the pid the hook recorded."""
     if session_dir is not None:
@@ -340,7 +390,13 @@ def uuid7() -> str:
     """A version 7 UUID (the idempotency handle every MSP command carries)."""
     ms = int(time.time() * 1000)
     rand = uuid.uuid4().int
-    value = (ms << 80) | (0x7 << 76) | (((rand >> 64) & 0xFFF) << 64) | (0b10 << 62) | (rand & ((1 << 62) - 1))
+    value = (
+        (ms << 80)
+        | (0x7 << 76)
+        | (((rand >> 64) & 0xFFF) << 64)
+        | (0b10 << 62)
+        | (rand & ((1 << 62) - 1))
+    )
     return str(uuid.UUID(int=value))
 
 
@@ -366,7 +422,10 @@ class Refused(HostError):
     @property
     def final(self) -> bool:
         """An answer that asking again cannot change."""
-        return self.reason in FINAL_REASONS or self.kind in ("sessionNotFound", "capabilityRequired")
+        return self.reason in FINAL_REASONS or self.kind in (
+            "sessionNotFound",
+            "capabilityRequired",
+        )
 
 
 class MspHost:
@@ -437,7 +496,9 @@ class MspHost:
             if isinstance(error, dict):
                 data = error.get("data") if isinstance(error.get("data"), dict) else {}
                 raise Refused(
-                    int(error.get("code") or 0), str(data.get("kind") or ""), str(data.get("reason") or ""),
+                    int(error.get("code") or 0),
+                    str(data.get("kind") or ""),
+                    str(data.get("reason") or ""),
                     str(error.get("message") or ""),
                 )
             result = doc.get("result")
@@ -493,10 +554,17 @@ def read_stored_provider(host: Any, sid: str) -> tuple[str, str]:
     recorded = str(session.get("providerId") or "").strip().lower()
     provider = HOST_PROVIDERS.get(recorded)
     if provider is None:
-        raise Refused(0, "commandRejected", "unsupported_provider", "no host for the provider %s" % recorded[:40])
+        raise Refused(
+            0,
+            "commandRejected",
+            "unsupported_provider",
+            "no host for the provider %s" % recorded[:40],
+        )
     model = "" if provider == "echo" else str(session.get("modelId") or "").strip()
     if model and not MODEL_RE.fullmatch(model):
-        raise Refused(0, "commandRejected", "unsupported_provider", "a model id this helper will not pass on")
+        raise Refused(
+            0, "commandRejected", "unsupported_provider", "a model id this helper will not pass on"
+        )
     return provider, model
 
 
@@ -547,13 +615,20 @@ def plan_name(
 
 
 def choose_name(
-    label: str, want: str, applied: list[str], current: str, origin: str, wrapped: list[str] | tuple[str, ...] = ()
+    label: str,
+    want: str,
+    applied: list[str],
+    current: str,
+    origin: str,
+    wrapped: list[str] | tuple[str, ...] = (),
 ) -> str | None:
     """The name to ask for, or None when the session already carries it (see `plan_name`)."""
     return plan_name(label, want, applied, list(wrapped), current, origin)[0]
 
 
-def remember(applied: list[str], wrapped: list[str], name: str, hand: bool) -> tuple[list[str], list[str]]:
+def remember(
+    applied: list[str], wrapped: list[str], name: str, hand: bool
+) -> tuple[list[str], list[str]]:
     """File a name this helper just set: under `wrapped` when it carries someone's words, else under `applied`.  A name
     is in one list only, and the newest is last."""
     low = name.lower()
@@ -564,7 +639,12 @@ def remember(applied: list[str], wrapped: list[str], name: str, hand: bool) -> t
 
 
 def rename_session(
-    host: Any, sid: str, label: str, want: str, applied: list[str], wrapped: list[str] | tuple[str, ...] = ()
+    host: Any,
+    sid: str,
+    label: str,
+    want: str,
+    applied: list[str],
+    wrapped: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Resume the stored session on `host`, read its name, rename it when it needs it, and leave.  Raises Refused
     (`in_use` while a chat still holds it) and HostError;  returns {"name": the name it carries now, "set": whether
@@ -579,7 +659,9 @@ def rename_session(
         target, hand = plan_name(label, want, applied, list(wrapped), current, origin)
         if target is None:
             return {"name": current, "set": False, "hand": False}
-        settled = host.request("session/rename", {"commandId": uuid7(), "sessionId": sid, "name": target})
+        settled = host.request(
+            "session/rename", {"commandId": uuid7(), "sessionId": sid, "name": target}
+        )
         return {"name": str(settled.get("name") or target.lower()), "set": True, "hand": hand}
     finally:
         try:
@@ -627,13 +709,21 @@ def worker_alive(rec: Mapping[str, Any], proc_root: str | None = None) -> bool:
     """Whether the helper named in the record is still running (and is a helper, not a reused pid)."""
     pid = int(rec.get("worker_pid") or 0)
     proc = read_proc(pid, proc_root) if pid else None
-    return proc is not None and any(os.path.basename(w) == os.path.basename(__file__) for w in proc.argv)
+    return proc is not None and any(
+        os.path.basename(w) == os.path.basename(__file__) for w in proc.argv
+    )
 
 
-def start_worker(spool: str, home: str, base: Mapping[str, str], popen: Callable[..., Any] = subprocess.Popen) -> int:
+def start_worker(
+    spool: str, home: str, base: Mapping[str, str], popen: Callable[..., Any] = subprocess.Popen
+) -> int:
     """Start the helper detached (its own session, no inherited pipes, so the hook that starts it can exit and Muse
     does not wait on it).  Returns its pid, or 0 when it could not be started."""
-    env = {"HOME": home, "PATH": str(base.get("PATH") or "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8"}
+    env = {
+        "HOME": home,
+        "PATH": str(base.get("PATH") or "/usr/local/bin:/usr/bin:/bin"),
+        "LANG": "C.UTF-8",
+    }
     if base.get("AGENT_SYNC_STATE_DIR"):
         env["AGENT_SYNC_STATE_DIR"] = str(base["AGENT_SYNC_STATE_DIR"])
     try:
@@ -717,7 +807,11 @@ def run_worker(
         try:
             host = make_host(rec)
             result = rename_session(
-                host, sid, str(rec.get("label") or ""), str(rec.get("name") or ""), list(rec.get("applied") or []),
+                host,
+                sid,
+                str(rec.get("label") or ""),
+                str(rec.get("name") or ""),
+                list(rec.get("applied") or []),
                 list(rec.get("wrapped") or []),
             )
         except Refused as exc:
@@ -744,9 +838,15 @@ def run_worker(
         applied, wrapped = list(latest.get("applied") or []), list(latest.get("wrapped") or [])
         if result["set"]:
             applied, wrapped = remember(applied, wrapped, result["name"], bool(result.get("hand")))
-        latest.update(applied=applied[-8:], wrapped=wrapped[-8:], result={"name": result["name"], "set": result["set"]})
+        latest.update(
+            applied=applied[-8:],
+            wrapped=wrapped[-8:],
+            result={"name": result["name"], "set": result["set"]},
+        )
         if latest.get("name") != rec.get("name"):
-            latest.update(state="waiting", worker_pid=me)  # a newer title was queued while this one was applied
+            latest.update(
+                state="waiting", worker_pid=me
+            )  # a newer title was queued while this one was applied
             write_record(spool, latest)
             continue
         write_record(spool, latest)

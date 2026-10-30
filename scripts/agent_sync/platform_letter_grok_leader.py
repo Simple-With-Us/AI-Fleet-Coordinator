@@ -203,7 +203,9 @@ def summary_of(env: Mapping[str, str], sid: str) -> dict[str, Any] | None:
     Nothing here raises: a hook never blocks a chat."""
     if not SID_RE.fullmatch(sid or ""):
         return None
-    pattern = os.path.join(glob.escape(grok_home(env)), "sessions", "*", glob.escape(sid), "summary.json")
+    pattern = os.path.join(
+        glob.escape(grok_home(env)), "sessions", "*", glob.escape(sid), "summary.json"
+    )
     for path in glob.glob(pattern):
         try:
             with open(path, "rb") as fh:
@@ -215,7 +217,7 @@ def summary_of(env: Mapping[str, str], sid: str) -> dict[str, Any] | None:
 
 
 def classify(summary: Mapping[str, Any] | None) -> str:
-    """"chat", "subagent" or "headless" for a session of the store.  A session the store does not show is headless:
+    """ "chat", "subagent" or "headless" for a session of the store.  A session the store does not show is headless:
     without its summary the hook cannot rule out a `grok -p` run, so it takes no letter, and neither does a kind this
     adapter has not seen."""
     if summary is None:
@@ -263,7 +265,9 @@ def grok_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     if switched_off(env):
         return "headless"  # paused: no chat takes part, whatever its environment says
     if _text(payload.get("subagentType")):
-        return "subagent"  # an event in a sub-agent's own session, which may not have its summary yet
+        return (
+            "subagent"  # an event in a sub-agent's own session, which may not have its summary yet
+        )
     return classify(summary_of(env, sid))
 
 
@@ -334,7 +338,11 @@ class Rpc:
     ):
         self.deadline, self.buf, self.seq = deadline, b"", 0
         self.proc = popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=dict(env)
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=dict(env),
         )
 
     def __enter__(self) -> Rpc:
@@ -344,7 +352,10 @@ class Rpc:
                 {
                     "protocolVersion": 1,
                     "clientInfo": {"name": "platform-letter", "version": "1"},
-                    "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
+                    "clientCapabilities": {
+                        "fs": {"readTextFile": False, "writeTextFile": False},
+                        "terminal": False,
+                    },
                 },
             )
         except BaseException:
@@ -442,7 +453,10 @@ def listening(path: str) -> bool:
     try:
         probe.connect(path)
         return True
-    except (OSError, ValueError):  # ValueError: a path with a NUL, or one too long for the socket address
+    except (
+        OSError,
+        ValueError,
+    ):  # ValueError: a path with a NUL, or one too long for the socket address
         return False
     finally:
         probe.close()
@@ -459,9 +473,7 @@ def leader_socket(env: Mapping[str, str]) -> str:
 def client_env(env: Mapping[str, str]) -> dict[str, str]:
     """The environment of the rename client: the hook's own, without what marks the process as a hook of a chat."""
     return {
-        k: v
-        for k, v in env.items()
-        if k not in SCRUB_NAMES and not k.startswith(SCRUB_PREFIXES)
+        k: v for k, v in env.items() if k not in SCRUB_NAMES and not k.startswith(SCRUB_PREFIXES)
     }
 
 
@@ -491,7 +503,10 @@ def rename_session(
     deadline = time.monotonic() + RPC_SECONDS
     try:
         with Rpc(argv, client_env(env), deadline, popen=popen) as rpc:
-            return rpc.call(RENAME_METHOD, {"sessionId": session_id, "title": title}).get("success") is True
+            return (
+                rpc.call(RENAME_METHOD, {"sessionId": session_id, "title": title}).get("success")
+                is True
+            )
     except (RpcError, OSError, ValueError):
         return False
 
@@ -576,13 +591,15 @@ def host_warnings(env: Mapping[str, str]) -> list[str]:
     found = []
     if switched_off(env):
         found.append(
-            "paused: %s exists, so no chat takes a letter until it is deleted" % os.path.join(grok_home(env), OFF_FILE)
+            "paused: %s exists, so no chat takes a letter until it is deleted"
+            % os.path.join(grok_home(env), OFF_FILE)
         )
     if imports_claude_hooks(env):
         found.append(
             "Grok imports the hooks of ~/.claude/settings.json ([compat.claude] hooks is not false in %s): a Grok run "
             "that inherits CLAUDE_CODE_ENTRYPOINT would also register as a Claude chat once the Claude letter hook is "
-            "installed; set hooks = false under [compat.claude]" % os.path.join(grok_home(env), CONFIG_FILE)
+            "installed; set hooks = false under [compat.claude]"
+            % os.path.join(grok_home(env), CONFIG_FILE)
         )
     return found
 
@@ -594,15 +611,24 @@ def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> 
     one where the program the hooks run is not there.  The answer of an install or a check carries that program, whether
     it is ready (a check that finds it missing exits 1), and the `host_warnings`."""
     if opts.location == "server" or opts.remote:
-        return _emit(stdout, {"error": "Grok runs on the Mac only; there is nothing to install on a server"}, 2)
+        return _emit(
+            stdout,
+            {"error": "Grok runs on the Mac only; there is nothing to install on a server"},
+            2,
+        )
     home = grok_home(env)
     if not (opts.check or opts.remove or os.path.isdir(home)):
-        return _emit(stdout, {"error": "no Grok home at %s: Grok has not run on this host" % home}, 2)
+        return _emit(
+            stdout, {"error": "no Grok home at %s: Grok has not run on this host" % home}, 2
+        )
     program, ready = program_path(env), program_ready(env)
     if not (opts.check or opts.remove or ready):
         return _emit(
             stdout,
-            {"error": "%s is not an executable file: run scripts/agent_sync/install.sh, which links it" % program},
+            {
+                "error": "%s is not an executable file: run scripts/agent_sync/install.sh, which links it"
+                % program
+            },
             2,
         )
     buf = io.StringIO()

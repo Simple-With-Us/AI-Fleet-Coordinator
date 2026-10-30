@@ -82,7 +82,9 @@ HOOK_TIMEOUTS = {"SessionStart": 20, "PreInvocation": 15}
 STORE_WAIT = 0.5  # seconds to wait for a locked summaries database before reading nothing
 PS = "/bin/ps"
 PS_WAIT = 2.0
-PROCESS_HOPS = 4  # how far up from the hook the `agy` process is looked for (the hook runs under `sh -c`)
+PROCESS_HOPS = (
+    4  # how far up from the hook the `agy` process is looked for (the hook runs under `sh -c`)
+)
 AGY_NAMES = ("agy",)
 
 # Fields that only the events this adapter ignores carry: PostInvocation, Stop and the tool events.
@@ -125,7 +127,9 @@ def normalize(data: Mapping[str, Any]) -> dict[str, Any] | None:
         event = "PreInvocation"
     else:
         event = "SessionStart"
-    return dict(data, hook_event_name=event, session_id=cid, prompt=_text(data.get("lastUserInput")))
+    return dict(
+        data, hook_event_name=event, session_id=cid, prompt=_text(data.get("lastUserInput"))
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -179,13 +183,15 @@ def one_shot(words: list[str]) -> bool:
         if name in PRINT_FLAGS:
             printing = True
         elif name == "--input-format":
-            streaming = (value if eq else (words[i + 1] if i + 1 < len(words) else "")) == "stream-json"
+            streaming = (
+                value if eq else (words[i + 1] if i + 1 < len(words) else "")
+            ) == "stream-json"
         i += 1
     return printing and not streaming
 
 
 def antigravity_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
-    """"headless" for a one-shot `agy -p` run (and the sub-agents inside it), "subagent" for a conversation another
+    """ "headless" for a one-shot `agy -p` run (and the sub-agents inside it), "subagent" for a conversation another
     one started, else "chat".  A host where no process can be read counts as a chat."""
     if one_shot(agy_arguments()):
         return "headless"
@@ -236,7 +242,9 @@ SPEC = PL.PlatformSpec(
     seat=SEAT,
     source=SOURCE,
     display=DISPLAY,
-    session_id=PL.either(PL.from_payload("session_id", "conversationId"), PL.from_env(ENV_CONVERSATION)),
+    session_id=PL.either(
+        PL.from_payload("session_id", "conversationId"), PL.from_env(ENV_CONVERSATION)
+    ),
     parent_id=PL.from_payload("parentConversationId"),
     kind=antigravity_kind,
     current_title=stored_title,
@@ -272,13 +280,16 @@ def message_for(body: Mapping[str, Any], env: Mapping[str, str], sid: str) -> st
     if not (label and mark):
         return context
     gen = _note(env, sid).get("generation") or 1
-    ref = "%s %s%s" % (DISPLAY, label, " (gen %d)" % gen if isinstance(gen, int) and gen > 1 else "")
+    ref = "%s %s%s" % (
+        DISPLAY,
+        label,
+        " (gen %d)" % gen if isinstance(gen, int) and gen > 1 else "",
+    )
     # Rendered copy: a sentence gap is U+00A0 plus a space.
     return (
         '%sOperator session letter: %s, on the Mac.  This chat is addressed as "@**%s** %s".  Antigravity gives a '
-        'hook no way to set a chat\'s title, so the title does not carry the letter; a name the owner gives this '
-        'chat should start with "%s: ".'
-        % (head, ref, DISPLAY, label, label)
+        "hook no way to set a chat's title, so the title does not carry the letter; a name the owner gives this "
+        'chat should start with "%s: ".' % (head, ref, DISPLAY, label, label)
     )
 
 
@@ -372,7 +383,9 @@ def _save(path: str, doc: Mapping[str, Any]) -> str:
     mode = os.stat(path).st_mode & 0o777
     backup = PL._backup(path)
     tmp = path + ".letter.tmp"
-    PL._write_private(tmp, (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), mode)
+    PL._write_private(
+        tmp, (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), mode
+    )
     os.replace(tmp, path)
     return backup
 
@@ -427,7 +440,10 @@ def hook_problems(path: str) -> list[str]:
         return []
     problems = []
     if group.get("enabled") is False:
-        problems.append('the "%s" group is switched off ("enabled": false), so agy runs none of its hooks' % GROUP)
+        problems.append(
+            'the "%s" group is switched off ("enabled": false), so agy runs none of its hooks'
+            % GROUP
+        )
     used: dict[str, list[str]] = {}  # each command that is installed, with the events that run it
     for event in HOOK_TIMEOUTS:
         entries = group.get(event)

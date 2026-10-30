@@ -123,7 +123,7 @@ def muse_process() -> MR.Proc | None:
 
 
 def muse_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
-    """"chat" for an interactive Muse chat, "headless" for everything else (see the module docstring).  The hook's own
+    """ "chat" for an interactive Muse chat, "headless" for everything else (see the module docstring).  The hook's own
     environment is cleared, so the launcher marks and the opt-outs are read from the Muse process's."""
     proc = muse_process()
     if proc is None:
@@ -145,7 +145,9 @@ def muse_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 
 def _data_root(env: Mapping[str, str]) -> str:
-    return MR.data_root(str(env.get("HOME") or os.path.expanduser("~")), str(env.get("XDG_DATA_HOME") or ""))
+    return MR.data_root(
+        str(env.get("HOME") or os.path.expanduser("~")), str(env.get("XDG_DATA_HOME") or "")
+    )
 
 
 def _session_id(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
@@ -209,9 +211,16 @@ def spool_path(env: Mapping[str, str], sid: str) -> str:
 def _cli(proc: MR.Proc | None, home: str, env: Mapping[str, str]) -> str:
     """The Muse command line program the helper runs:  the executable of the chat's own Muse process when it is the
     CLI (the build that holds the session), else the user's launcher."""
-    if proc is not None and os.path.basename(proc.exe).startswith(CLI_NAMES) and os.access(proc.exe, os.X_OK):
+    if (
+        proc is not None
+        and os.path.basename(proc.exe).startswith(CLI_NAMES)
+        and os.access(proc.exe, os.X_OK)
+    ):
         return proc.exe
-    for candidate in (os.path.join(home, ".local", "bin", "muse"), shutil.which("muse", path=env.get("PATH")) or ""):
+    for candidate in (
+        os.path.join(home, ".local", "bin", "muse"),
+        shutil.which("muse", path=env.get("PATH")) or "",
+    ):
         if candidate and os.access(candidate, os.X_OK):
             return candidate
     return ""
@@ -225,7 +234,12 @@ def muse_rename(req: PL.TitleRequest) -> bool:
     path = spool_path(env, sid)
     rec = MR.read_record(path)
     applied = [str(a) for a in rec.get("applied") or []]
-    if rec.get("state") == "done" and rec.get("name") == req.title and applied and applied[-1].lower() == req.title.lower():
+    if (
+        rec.get("state") == "done"
+        and rec.get("name") == req.title
+        and applied
+        and applied[-1].lower() == req.title.lower()
+    ):
         return True  # the stored name is already this title
     proc = muse_process()
     now = time.time()
@@ -351,9 +365,15 @@ def render_manifest(argv: list[str]) -> str:
         "displayName": "Operator Session Letter",
         "version": VERSION,
         "description": "Gives each interactive Muse Code chat its Operator session letter (a pair, AA to ZZ) and "
-        "queues the session name \"letter: Title\".",
+        'queues the session name "letter: Title".',
         "compat": {"source": "native", "manifestDir": ".muse-plugin"},
-        "capabilities": {"skills": [], "commands": [], "hooks": hooks, "mcpServers": [], "reminders": []},
+        "capabilities": {
+            "skills": [],
+            "commands": [],
+            "hooks": hooks,
+            "mcpServers": [],
+            "reminders": [],
+        },
     }
     return json.dumps(doc, indent=2) + "\n"
 
@@ -370,13 +390,18 @@ def _installed_flags(path: str) -> tuple[str, str]:
 
 
 def find_muse(home: str, env: Mapping[str, str]) -> str:
-    for candidate in (shutil.which("muse", path=env.get("PATH")) or "", os.path.join(home, ".local", "bin", "muse")):
+    for candidate in (
+        shutil.which("muse", path=env.get("PATH")) or "",
+        os.path.join(home, ".local", "bin", "muse"),
+    ):
         if candidate and os.access(candidate, os.X_OK):
             return candidate
     return ""
 
 
-def muse_status(home: str, env: Mapping[str, str], runner: Callable[..., Any] | None = None) -> dict[str, Any]:
+def muse_status(
+    home: str, env: Mapping[str, str], runner: Callable[..., Any] | None = None
+) -> dict[str, Any]:
     """What Muse says about the plugin (`muse plugins inspect`, which changes nothing):  installed, and the review
     status of each hook and the folder of the copy of the bundle Muse runs (`cache`).  Run from the home folder, which
     Muse trusts, with Muse's updater off."""
@@ -392,7 +417,14 @@ def muse_status(home: str, env: Mapping[str, str], runner: Callable[..., Any] | 
         "MUSE_LOGIN": "0",
     }
     try:
-        proc = run([exe, "plugins", "inspect", PLUGIN_ID], capture_output=True, text=True, timeout=30, cwd=home, env=run_env)
+        proc = run(
+            [exe, "plugins", "inspect", PLUGIN_ID],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=home,
+            env=run_env,
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         return {"error": "muse did not answer (%s)" % type(exc).__name__}
     if proc.returncode != 0:
@@ -511,7 +543,14 @@ def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> 
         backup = _backup(path, have)
         shutil.rmtree(bundle_dir(home))
         steps = ["muse plugins remove %s" % PLUGIN_ID]
-        answer = {"platform": PLATFORM, "changed": ["bundle"], "path": path, "backup": backup, "trust": steps[0], "steps": steps}
+        answer = {
+            "platform": PLATFORM,
+            "changed": ["bundle"],
+            "path": path,
+            "backup": backup,
+            "trust": steps[0],
+            "steps": steps,
+        }
         return PL._emit(stdout, answer, 0)
     if problem:
         return PL._emit(stdout, {"error": problem}, 2)
@@ -520,7 +559,9 @@ def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> 
         answer = {"platform": PLATFORM, "changed": [], "path": path}
         steps = pending_steps(home, status, _synced(status, home, env, body))
         if steps:
-            answer.update(trust=" then ".join(steps), steps=steps)  # a step the last install named is still to be run
+            answer.update(
+                trust=" then ".join(steps), steps=steps
+            )  # a step the last install named is still to be run
         return PL._emit(stdout, answer, 0)
     backup = _backup(path, have) if have is not None else ""
     os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
@@ -531,7 +572,9 @@ def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> 
     os.replace(tmp, path)
     known = muse_status(home, env).get("installed")
     steps = [
-        "muse plugins update %s" % PLUGIN_ID if known else "muse plugins install %s --scope user" % shlex.quote(bundle_dir(home)),
+        "muse plugins update %s" % PLUGIN_ID
+        if known
+        else "muse plugins install %s --scope user" % shlex.quote(bundle_dir(home)),
         "muse plugins approve %s" % PLUGIN_ID,
     ]
     answer = {
@@ -553,7 +596,9 @@ def _backup(path: str, body: str) -> str:
     parent = os.path.dirname(os.path.dirname(os.path.dirname(path)))
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     for n in range(1000):
-        name = os.path.join(parent, "%s.bak-letter-%s%s.json" % (PLUGIN_ID, stamp, "-%d" % n if n else ""))
+        name = os.path.join(
+            parent, "%s.bak-letter-%s%s.json" % (PLUGIN_ID, stamp, "-%d" % n if n else "")
+        )
         try:
             PL._write_private(name, body.encode("utf-8"), 0o600, exclusive=True)
         except FileExistsError:
