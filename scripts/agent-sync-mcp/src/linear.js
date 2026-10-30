@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { SEAT_NAME_ALIASES } from "./identity-aliases.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
@@ -203,7 +204,7 @@ export async function resolveLinearPair(env, seat) {
 /** Sync: build a client from an already-resolved pair (same null contract as
  * linearClientFromEnv). */
 export function linearClientFromPair(pair, seat, { gate, quota, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
-  if (!pair || !pair.clientId || !pair.clientSecret || typeof fetchImpl !== "function" || !gate) return null;
+  if (!pair || !pair.clientId || !pair.clientSecret || typeof fetchImpl !== "function" || !gate || !validQuota(quota)) return null;
   return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, gate, quota, fetch: fetchImpl, now });
 }
 
@@ -903,12 +904,19 @@ export function linearClientFromEnv(env, seat, { gate, quota, fetch: fetchImpl =
   const read = (name) => (typeof env?.[name] === "string" ? env[name].trim() : "");
   const clientId = read(names.clientId);
   const clientSecret = read(names.clientSecret);
-  if (!clientId || !clientSecret || typeof fetchImpl !== "function" || !gate) return null;
+  if (!clientId || !clientSecret || typeof fetchImpl !== "function" || !gate || !validQuota(quota)) return null;
   return new LinearClient({ seat, clientId, clientSecret, gate, quota, fetch: fetchImpl, now });
 }
 
 // A proof of which Linear user a token acts as is trusted for at most a day, and never past the token's own expiry.
 export const LINEAR_IDENTITY_REPROVE_MS = 24 * 60 * 60 * 1000;
+const validQuota = (quota) => !!quota && typeof quota.reserve === "function" && typeof quota.debit === "function";
+// Provider identity data crosses a trust boundary before it selects any shared quota bucket.
+const LinearIdentityPayload = z.object({
+  viewer: z.object({ id: z.string().min(1).max(256) }).passthrough(),
+  organization: z.object({ urlKey: z.string().min(1).max(256) }).passthrough(),
+}).passthrough();
+
 
 export class LinearClient {
   constructor({ seat, clientId, clientSecret, gate, quota, fetch: fetchImpl, now = Date.now, timeoutMs = LINEAR_TIMEOUT_MS, log = null } = {}) {
@@ -973,9 +981,10 @@ export class LinearClient {
 
   /** Hash the workspace and app user id Linear returned for this token, or null when the answer lacks either. */
   async #identityOf(payload) {
-    const id = payload?.viewer?.id;
-    const workspace = payload?.organization?.urlKey;
-    if (typeof id !== "string" || !id || typeof workspace !== "string" || !workspace) return null;
+    const parsed = LinearIdentityPayload.safeParse(payload);
+    if (!parsed.success) return null;
+    const id = parsed.data.viewer.id;
+    const workspace = parsed.data.organization.urlKey;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear-quota:${workspace}:${id}`));
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
@@ -1274,6 +1283,7 @@ export class LinearClient {
     const payload = data?.data ?? {};
     if (proving) {
       const learned = await this.#identityOf(payload);
+      if (!learned) throw new LinearError("quota");
       if (learned && charged && learned !== charged) {
         // A token acts as one user for its whole life, so a proven token answering as someone else is not a
         // normal change:  nothing is trusted or debited, the proof is dropped, and this call is refused.

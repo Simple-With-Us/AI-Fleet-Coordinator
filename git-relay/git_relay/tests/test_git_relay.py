@@ -3100,3 +3100,14 @@ class TestScopedChildProjectBinding(unittest.TestCase):
         )
         with self.assertRaises(AppTokenError):
             source.verified_secret("GITHUB_TOKEN")
+
+
+class TestRateEnvironmentErrors(unittest.TestCase):
+    def test_non_numeric_rate_configuration_has_clean_config_exit(self):
+        from unittest.mock import patch
+        from git_relay import server
+
+        for name in ("GIT_RELAY_RATE_PER_HOUR", "GIT_RELAY_WRITE_RATE_PER_HOUR"):
+            with self.subTest(name=name), patch.dict("os.environ", {name: "not-a-number"}, clear=True), patch.object(server, "seats_json_from_env", return_value=SEATS_JSON), patch.object(server, "_build_shared_verifier", return_value=None):
+                with self.assertRaisesRegex(SystemExit, "git-relay config:"):
+                    server.from_env()

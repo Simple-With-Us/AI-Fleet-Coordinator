@@ -1064,7 +1064,7 @@ def from_env() -> Relay:
                 os.environ.get("GIT_RELAY_WRITE_RATE_PER_HOUR", str(DEFAULT_WRITE_RATE_PER_HOUR))
             ),
         )
-    except PolicyError as exc:
+    except (PolicyError, ValueError) as exc:
         if "GIT_RELAY_SEATS_FILE" in os.environ or "GIT_RELAY_SEATS_CREDENTIAL" in os.environ:
             raise SystemExit("git-relay config: file seat policy invalid or unreadable") from None
         raise SystemExit(f"git-relay config: {exc}") from exc

@@ -354,3 +354,24 @@ test("seat-state: the identity proof validates and clears", async () => {
   await S.linearIdentityClear(store);
   assert.equal(await S.linearIdentityGet(store), null);
 });
+
+
+test("quota: optional factories return null for a missing or incomplete meter", async () => {
+  const { linearClientFromPair, linearClientFromEnv } = await import("../src/linear.js");
+  for (const quota of [undefined, null, {}, { reserve: async () => ({ ok: true }) }]) {
+    const options = { gate: {}, fetch() {}, quota };
+    assert.equal(linearClientFromPair({ clientId: "id", clientSecret: "secret" }, "JET", options), null);
+    assert.equal(linearClientFromEnv({ LINEAR_JET_CLIENT_ID: "id", LINEAR_JET_CLIENT_SECRET: "secret" }, "JET", options), null);
+  }
+});
+
+test("quota: malformed provider identity refuses before choosing or debiting an actor", async () => {
+  for (const payload of [null, {}, { viewer: { id: 42 }, organization: { urlKey: "simple-with-us" } }, { viewer: { id: "user" }, organization: { urlKey: {} } }, { viewer: { id: "u".repeat(257) }, organization: { urlKey: "simple-with-us" } }]) {
+    const { client, linear, quota } = build();
+    linear.failNext(entry => entry.url === GRAPHQL_URL, () => linear.json(200, { data: payload }));
+    await assert.rejects(client.call(Q_TEAMS, { first: 1 }), e => e.kind === "quota");
+    assert.equal(graphqlRequests(linear).length, 1);
+    assert.deepEqual([...quota.stores.keys()], ["unknown"]);
+    assert.equal(await client.gate.linearIdentityGet(), null);
+  }
+});
