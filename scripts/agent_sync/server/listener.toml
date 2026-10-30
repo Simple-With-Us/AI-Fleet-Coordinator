@@ -98,7 +98,7 @@ port = 8788
 # proxy routes /notes/v1/ to port 8788, then restart the app (a reload re-reads this file, never the keys).
 [notes_queue]
 enabled = false
-worker_seats = ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]
+worker_seats = ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "CODEX"]
 server_seats = ["CLAUDE", "CODEX"]
 
 # The Linear project webhook (AFC-565, scripts/agent_sync/linear_projects_hook.py):
