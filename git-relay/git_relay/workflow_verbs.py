@@ -903,13 +903,21 @@ class WorkflowVerbs:
         return {k: data.get(k) for k in ("number", "state", "title", "updated_at", "html_url")}
 
     @staticmethod
-    def _issue_text(args, key, required=True):
+    def _provider_token_text(value):
+        return bool(
+            re.search(
+                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}", value
+            )
+        )
+
+    @classmethod
+    def _issue_text(cls, args, key, required=True):
         value = args.get(key)
         if value is None and not required:
             return None
         if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 32768:
             raise Refused(f"invalid {key}")
-        if find_secret(value):
+        if find_secret(value) or cls._provider_token_text(value):
             raise Refused("credential-shaped outbound text")
         return value
 
@@ -1136,7 +1144,7 @@ class WorkflowVerbs:
                 if find_secret(candidate) or re.search(
                     r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", candidate
                 ):
-                    raise Refused("relation repository contains credential pattern")
+                    raise RelayGitHubError(502, "issue relation receipt unverifiable")
                 bound = candidate
         return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
 
@@ -2531,7 +2539,7 @@ class WorkflowVerbs:
             ),
         )
         comment_id = _int(args, "comment_id")
-        body = self._text(args, "body")
+        body = self._issue_text(args, "body")
         data = self.client._call(
             "PATCH",
             f"/repos/{repo}/issues/comments/{comment_id}",
@@ -2574,7 +2582,7 @@ class WorkflowVerbs:
             ),
         )
         comment_id = _int(args, "comment_id")
-        body = self._text(args, "body")
+        body = self._issue_text(args, "body")
         data = self.client._call(
             "PATCH",
             f"/repos/{repo}/pulls/comments/{comment_id}",
@@ -3686,7 +3694,7 @@ class WorkflowVerbs:
             "page": page,
             "has_more": len(results) == limit,
         }
-        # Match server JSON escaping, not only raw UTF-8 text. Refuse whole page,
+        # Match server JSON escaping, not only raw UTF-8 text.  Refuse whole page,
         # never silently clip or drop author/review records.
         if len(json.dumps(receipt).encode("utf-8")) > 262144:
             raise Refused("PR discussion serialized page exceeds supported size")
@@ -4803,7 +4811,7 @@ class WorkflowVerbs:
                 raise Refused("invalid file")
             _only(value, ("path", "text", "mode"))
             path = _path(value)
-            if find_secret(path):
+            if find_secret(path) or self._provider_token_text(path):
                 raise Refused("credential-shaped file path refused")
             mode = _enum(value, "mode", ("100644", "100755"))
             text = value.get("text")
@@ -4813,6 +4821,7 @@ class WorkflowVerbs:
                 or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
                 or not isinstance(text, str)
                 or find_secret(text)
+                or self._provider_token_text(text)
             ):
                 raise Refused("invalid file content or path")
             try:
@@ -4851,6 +4860,7 @@ class WorkflowVerbs:
             or not isinstance(message, str)
             or not message.strip()
             or find_secret(message)
+            or self._provider_token_text(message)
         ):
             raise Refused("invalid commit input")
         try:
@@ -4923,7 +4933,7 @@ class WorkflowVerbs:
     def wf_git_blob_create(self, repo, args):
         _only(args, ("repo", "text"))
         text = args.get("text")
-        if not isinstance(text, str) or find_secret(text):
+        if not isinstance(text, str) or find_secret(text) or self._provider_token_text(text):
             raise Refused("invalid blob text")
         try:
             raw = text.encode("utf-8")
