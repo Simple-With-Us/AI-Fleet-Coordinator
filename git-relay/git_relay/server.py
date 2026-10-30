@@ -536,6 +536,7 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_issue_dependency_remove",
         "wf_issue_update",
         "wf_review_update",
+        "wf_commit_comment_update",
         "wf_check_update",
         "wf_milestone_update",
         "wf_labels_set",
