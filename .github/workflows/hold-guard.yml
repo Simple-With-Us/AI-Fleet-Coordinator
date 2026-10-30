@@ -38,7 +38,10 @@ on:
     types: [opened, labeled, unlabeled, synchronize, ready_for_review, auto_merge_enabled]
 
 permissions:
-  contents: read
+  # disablePullRequestAutoMerge requires repository content write access too.
+  # Read-only contents caused Resource not accessible by integration on armed PRs.
+  # Code still comes only from the pinned default-branch checkout below.
+  contents: write
   pull-requests: write   # disarm auto-merge
   issues: write          # re-apply labels, comment
   checks: write          # merge-gate check run
