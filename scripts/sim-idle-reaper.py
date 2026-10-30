@@ -87,7 +87,9 @@ ALERT_TIMEOUT_SEC = 60
 # disk tags @all (owner, Oct 29 2026;  docs/HOUSEKEEPER.md, Alert Tiers).  Load is never a space
 # issue, so the guard's post wakes the two Housekeepers and Jay.  The mentions ride on a second line, so
 # the #Alerts line still starts with its severity;  name|id is the exact form Zulip resolves.
-RESOURCE_MENTIONS = "@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**"
+RESOURCE_MENTIONS = (
+    "@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**"
+)
 # simple-chat exits 2 (usage) and 3 (credential) before anything is sent:  provably unsent.
 CHAT_UNSENT_EXITS = (2, 3)
 UDID_RE = re.compile(

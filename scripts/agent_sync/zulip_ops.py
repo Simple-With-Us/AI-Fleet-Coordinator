@@ -154,8 +154,7 @@ def own_message(agent: Any, message_id: int) -> dict[str, Any]:
     message = get_message(agent, message_id)
     if not is_own(agent, message):
         raise UsageError(
-            "message %d was not sent by this bot; only its own messages can be edited"
-            % message_id
+            "message %d was not sent by this bot; only its own messages can be edited" % message_id
         )
     return message
 
