@@ -1,4 +1,4 @@
-// Resource alerts tag both Housekeepers and Jay; CPU only tags classified warnings/saturation, and recovery tags nobody.
+// Resource alerts tag both Housekeepers and Jay; CPU only tags severe saturation, and recovery tags nobody.
 //
 // Run: node --test workers/alert-ingress/src/*.test.js
 
@@ -107,7 +107,7 @@ test("the CPU monitor tags only SEVERE saturation events", () => {
   assert.equal(resourceMentions(key), "");
 });
 
-test("CPU, other monitors, other vendors and look-alike ids tag nobody", () => {
+test("other monitors, other vendors and look-alike ids tag nobody", () => {
   for (const key of [
     "datadog:12345",
     "datadog:220247970",
