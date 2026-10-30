@@ -23,11 +23,11 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 132 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 133 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
-# The 130th file is fleet_bearer.py (from main);  the 131st is claude_app_lineage.py (AFC-564, PR 1127);  the 132nd is
-# platform_letter.py (AFC-564, the shared session-letter library), added for that review.
-MAX_FILES = 132
+# The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
+# library), added for that review.
+MAX_FILES = 133
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -36,6 +36,7 @@ LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inpu
 # `recall` runs from these fleet_rag modules only (its static import closure).  `recall eval` and
 # `recall ingest` import eval/ingest lazily;  they are Mac and Hetzner-box jobs and are not shipped.
 RECALL_MODULES = (
+    "storage_guard",
     "__init__",
     "contribute_guard",
     "core",
