@@ -313,6 +313,14 @@ ENV_CODE_ROOT = "FLEET_CODE_ROOT"
 ENV_APPS_ROOT = "FLEET_APPS_ROOT"
 ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 ROOTED_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane"})
+# Tools whose wrapper runs the host's seat-scoped remote defaults before the tool starts.  The helper is
+# host configuration (never part of a release and never holding a credential value);  the wrapper only names it.
+HELPER_COMMANDS = {
+    "scripts/simple-chat": "simple-chat",
+    "scripts/simple-board": "simple-board",
+    "scripts/recall": "recall",
+}
+HELPER_PATH = ".config/fleet-cli/seat-remote-defaults.py"
 
 
 def expand(candidate: str, home: Path) -> Path:
@@ -405,8 +413,18 @@ for key in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT"):
     # Python tools run isolated;  the two bash tools run under bash with the caller's environment.
     interpreter = ["/bin/bash"] if script in BASH_SCRIPTS else ["/usr/bin/python3", "-I", "-B"]
     roots = root_exports(home) if script in ROOTED_SCRIPTS else ""
+    helper = ""
+    # Only a host that has installed the helper gets the lines:  a wrapper that runs a missing file would break
+    # its tool, and a host without the helper keeps the plain wrapper it has today.
+    helper_file = home / HELPER_PATH
+    if script in HELPER_COMMANDS and not codex_only and helper_file.is_file() and not helper_file.is_symlink():
+        helper = (
+            "import runpy\n"
+            f"runpy.run_path({str(home / HELPER_PATH)!r}, init_globals={{'fleet_command': {HELPER_COMMANDS[script]!r}}})\n"
+        )
     return (
         f"#!/usr/bin/python3 -I\n{MARKER}\nimport os, sys\nfrom pathlib import Path\n"
+        + helper
         + guard
         + f"release = Path({str(home / '.local/share/fleet-cli/current')!r}).resolve(strict=True)\n"
         + roots

@@ -47,6 +47,9 @@ class ReleaseTests(unittest.TestCase):
         self.home = Path(self.temp.name).resolve() / "home"
         self.home.mkdir()
         self.base = self.home / ".local/share/fleet-cli"
+        # The host installs the seat helper (host configuration, not a release file) before the wrappers.
+        (self.home / ".config/fleet-cli").mkdir(parents=True)
+        (self.home / ".config/fleet-cli/seat-remote-defaults.py").write_text("# test helper\n")
         self.bundle = make_bundle()
         # The wrapper carries the roots the host names, so the suite must not read
         # the roots of the machine it runs on:  every one of them is empty here and
@@ -267,6 +270,43 @@ class ReleaseTests(unittest.TestCase):
         )
         # Nothing new to add:  a further update writes no wrapper.
         self.assertEqual(release.new_wrapper_plan(self.home), {})
+
+    def test_helper_wiring_is_generated_for_chat_board_and_recall_only(self):
+        helper = str(self.home / ".config/fleet-cli/seat-remote-defaults.py")
+        for name in ("simple-chat", "simple-board", "recall"):
+            text = release.wrapper(self.home, "scripts/" + name).decode()
+            line = (
+                f"import runpy\nrunpy.run_path({helper!r}, init_globals={{'fleet_command': {name!r}}})\n"
+            )
+            self.assertIn(line, text, name)
+            # the helper runs after the imports and before the release is resolved and the tool is exec'd
+            self.assertLess(text.index("from pathlib import Path"), text.index(line), name)
+            self.assertLess(text.index(line), text.index("release = Path("), name)
+        for script in ("scripts/simple-notes", "scripts/fleet-mode", "scripts/fleet_lanes/bin/lane"):
+            self.assertNotIn("runpy", release.wrapper(self.home, script).decode(), script)
+        # the CODEX-only MCP registration passes its own seat and never reads a bearer file
+        mcp = release.wrapper(self.home, "scripts/simple-chat", ["mcp"], True).decode()
+        self.assertNotIn("runpy", mcp)
+        self.assertNotIn("seat-remote-defaults", mcp)
+        # no credential value or secret path component is generated
+        for name in ("simple-chat", "simple-board", "recall"):
+            self.assertNotIn(".secrets", release.wrapper(self.home, "scripts/" + name).decode())
+
+    def test_a_host_without_the_helper_keeps_plain_wrappers(self):
+        helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
+        helper.unlink()
+        for name in ("simple-chat", "simple-board", "recall"):
+            text = release.wrapper(self.home, "scripts/" + name).decode()
+            self.assertNotIn("runpy", text, name)
+            self.assertIn("os.execv(argv[0], argv)", text, name)
+        self.receive()  # installs without refusing
+        self.assertNotIn("runpy", (self.home / ".local/bin/recall").read_text())
+        # a symlinked helper is not trusted either
+        helper.symlink_to(self.home / "elsewhere")
+        self.assertNotIn("runpy", release.wrapper(self.home, "scripts/recall").decode())
+        helper.unlink()
+        helper.write_text("# helper\n")
+        self.assertIn("runpy", release.wrapper(self.home, "scripts/recall").decode())
 
     def test_installed_bash_wrappers_run_their_script(self):
         # A release holding real (tiny) tools:  the wrapper must reach the script in the current release.
