@@ -27,6 +27,12 @@ the untrusted-content markers; the routine itself replies in Zulip with the pers
 requests, the identical body each time); a 4xx or a redirect is never retried.  The URL, its
 query string, the key and the signature are never logged.
 
+The `openrouter` runtime (a wake type and a fallback) makes one HTTPS call to OpenRouter's
+chat-completions API:  the wake contract is the system message, the daemon's prompt the user
+message, the strict wake schema the `response_format`, and nothing is offered to call.  Its key is
+the Operator's, read from Fleet-OPS `/wake` at the moment of a call, and is never logged, kept or
+put in an error.  Its pin is on the request shape, since there is no binary.
+
 Python 3.11+, standard library only.
 """
 
@@ -42,6 +48,8 @@ import queue
 import re
 import shutil
 import signal
+import socket
+import ssl
 import subprocess
 import threading
 import time
@@ -52,6 +60,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from . import live as L
+from . import service_identity as SI
 from . import zulip as Z
 from .config import MCODE_DEFAULT_MODEL, WAKE_MAX_BUDGET_USD, RoutineConfig
 from .identity import WAKE_LAUNCHER
@@ -190,6 +199,10 @@ class RunResult:
         )
         self.killed = False
         self.limited = False  # the provider refused for a quota, not an internal fault
+        # The OpenRouter runtime only:  the HTTP status of the call (None after a network failure) and
+        # the token counts the response reported (counts only, never content).
+        self.http_status: int | None = None
+        self.usage: dict[str, int] | None = None
 
     @property
     def ok(self) -> bool:
@@ -1251,7 +1264,8 @@ QUOTA_PATH = os.path.join(
 QUOTA_MAX_AGE = 15 * 60
 QUOTA_MAX_BYTES = 1024 * 1024
 QUOTA_FORMAT = "usage-monitor-local-quotas"
-QUOTA_NEVER_CAP_PROVIDERS = frozenset({"minimax", "muse"})
+# openrouter bills credits, not a subscription window, so there is no window for the gate to read.
+QUOTA_NEVER_CAP_PROVIDERS = frozenset({"minimax", "muse", "openrouter"})
 
 
 def _quota_file(path: str) -> dict[str, Any] | None:
@@ -1951,6 +1965,665 @@ def mcode_pin_candidate(
     )
     try:
         os.unlink(paths.wake_pin_candidate_mcode)
+    except OSError:
+        pass
+    return None
+
+
+# --------------------------------------------------------------------------------------------
+# OpenRouter chat completions:  the HTTP runtime, as a primary wake or as a fallback
+# --------------------------------------------------------------------------------------------
+#
+#   POST https://openrouter.ai/api/v1/chat/completions      (one call, no stream, no retry, no tools)
+#
+# The wake contract is the system message and the daemon's prompt (the untrusted-data fence, the
+# bounds and the history limits it always carries) is the user message.  `response_format` is a strict
+# json_schema built from the SAME strict schema the muse runtime sends, `provider.require_parameters`
+# keeps OpenRouter from routing to a provider that cannot honor it, and the answer goes through the same
+# parser and the same `wakes.validate` as every other runtime.  Nothing in the request offers a tool,
+# so there is nothing to contain:  the model can only return text, and the daemon decides what is posted.
+#
+# WHY IT EXISTS (owner, Oct 30 2026).  The MM seat's muse wake was dropped on every wake with
+# `pin_stale` (the binary path moved), and a seat at its subscription cap runs nothing.  An HTTP
+# runtime has no binary to pin and no login to expire, and it bills credits, not a subscription window.
+# The primary option is `wake = "openrouter"` with the Muse contributor tier (the Muse model run through
+# OpenRouter);  the fallback option is `fallback = "openrouter"` with a model that defaults to the
+# DeepSeek Flash "latest" alias.
+#
+# SECRETS.  The key is the Operator's own OpenRouter key, read from Fleet-OPS `/wake` at the moment of
+# a call (service_identity.openrouter_api_key), hidden from every log line and scan the moment it is
+# read, and sent in one `Authorization` header.  It is never an argument, a ledger field, a pin, a
+# fixture or an exception message, and no response or request body is ever put in an error:  response
+# bodies can echo the prompt, so a failure carries a fixed phrase and a status number only.
+#
+# PINS.  There is no binary, so the pin vouches for the REQUEST SHAPE:  the endpoint, the model slug,
+# the strict schema, the wake contract, the body template and the policy version below.  A change to any
+# of them makes the pin stale and the seat holds, and nothing re-pins itself.  What a pin cannot cover is
+# a "latest" alias moving the served weights upstream, which the owner accepted when he asked for it.
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_PATH = "/chat/completions"
+OPENROUTER_TITLE = "Fleet listener wake"
+# The hard overall deadline for one call, connect to last byte.  The muse run takes 30 to 50 seconds and
+# the claude run is killed at 240;  a call that has not answered in two minutes will not, and a seat's
+# serialized worker should not wait on it (a primary and a fallback together stay inside the 240).
+OPENROUTER_TIMEOUT = 120.0
+# The answer is one JSON object:  at most about 4,000 characters of strings (reply 1,500, board desc
+# 1,500, owner_note 500, title 120, route reason 200), so roughly 1,300 tokens, plus whatever the model
+# spends thinking.  4,096 leaves room for that and bounds the output price of a wake at 4,096 x $0.20 per
+# million, under a tenth of a cent.
+OPENROUTER_MAX_TOKENS = 4096
+OPENROUTER_TEMPERATURE = 0.2
+# The lowest reasoning tier the runtime accepts.  `none` does not exist on the Meta provider (the muse
+# runtime learned that with a run), so `minimal` is the floor;  `exclude` keeps the reasoning trace out
+# of the response, which is only ever read for the answer and the token counts.
+OPENROUTER_REASONING = {"effort": "minimal", "exclude": True}
+OPENROUTER_SCHEMA_NAME = "wake_result"
+OPENROUTER_RESPONSE_CAP = 256 * 1024
+OPENROUTER_KEY_RETRY_SECONDS = 120.0
+# Bump when the request's behaviour changes in a way the body template does not show, so an existing
+# pin is re-verified by a person rather than trusted under the old policy.
+OPENROUTER_WAKE_POLICY_VERSION = "openrouter-wake-v1"
+OPENROUTER_ROLE_PRIMARY = "primary"
+OPENROUTER_ROLE_FALLBACK = "fallback"
+OPENROUTER_ROLES = (OPENROUTER_ROLE_PRIMARY, OPENROUTER_ROLE_FALLBACK)
+#: The status codes OpenRouter documents, in plain words.  The phrase is fixed text, so a failure
+#: reason can never carry a response body.
+OPENROUTER_HTTP_REASONS = {
+    400: "request rejected",
+    401: "key rejected",
+    402: "credits exhausted",
+    403: "forbidden or blocked by moderation",
+    404: "no provider supports the request",
+    408: "provider timed out",
+    413: "request too large",
+    422: "request unprocessable",
+    429: "rate limited",
+    502: "provider failed",
+    503: "no provider available",
+}
+
+
+class OpenRouterUnavailable(Z.AgentSyncError):
+    """The OpenRouter key could not be read, so no call is made.  `reason` is a reason token or a
+    short sentence naming the secret, never its value."""
+
+    exit_code = 3
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class OpenRouterKey:
+    """The Operator's OpenRouter key, read from Fleet-OPS `/wake` when a call needs it.
+
+    The read itself (service_identity.openrouter_api_key) goes through the fleet-secrets reader and
+    gets its in-memory cache, its outage memory and its last-known-good fallback, so asking on every
+    wake costs one vault read per cache window.  What this adds is the two things the daemon needs
+    around it:  every value is handed to `hide` the moment it is read (so the log scrub and the secret
+    scanner cover it for the rest of the process), and a failed read is remembered for
+    `retry_seconds`, which lets the router thread ask `known_unavailable()` with no network and no
+    thread, the way it asks the Operator's voice."""
+
+    def __init__(
+        self,
+        env: Mapping[str, str],
+        home: str,
+        *,
+        hide: Callable[[Iterable[str]], None] | None = None,
+        fetch: Callable[[Sequence[str]], Mapping[str, str]] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        retry_seconds: float = OPENROUTER_KEY_RETRY_SECONDS,
+    ) -> None:
+        self._env = dict(env)
+        self._home = home
+        self._hide = hide
+        self._fetch = fetch
+        self._clock = clock
+        self._retry = float(retry_seconds)
+        self._lock = threading.Lock()
+        self._failed_until = -1e18
+        self._failure = ""
+
+    def get(self) -> str:
+        """The key, or OpenRouterUnavailable.  Never logs or returns anything but the key itself."""
+        with self._lock:
+            if self._clock() < self._failed_until:
+                raise OpenRouterUnavailable(self._failure)
+        try:
+            key = SI.openrouter_api_key(self._env, home=self._home, fetch=self._fetch)
+        except Z.CredentialError as exc:
+            reason = "the OpenRouter key is unavailable: %s" % exc
+            with self._lock:
+                self._failure = reason
+                self._failed_until = self._clock() + self._retry
+            raise OpenRouterUnavailable(reason) from None
+        with self._lock:
+            self._failure = ""
+            self._failed_until = -1e18
+        if self._hide is not None:
+            # The bare value and the header form, so neither survives into a log line or a post.
+            self._hide([key, "Bearer " + key])
+        return key
+
+    def known_unavailable(self) -> str | None:
+        """The reason the last read failed while its window is still open, else None.  State only."""
+        with self._lock:
+            return self._failure if self._clock() < self._failed_until else None
+
+
+def openrouter_url_problem(url: str) -> str | None:
+    """Why an OpenRouter base URL is refused, or None.  https only (plain http only to a loopback test
+    server), a host, no user:password part and no control character.  The production value is the
+    module constant, so this guards the one injection point a test uses."""
+    if any(ch in url for ch in "\r\n\x00\t "):
+        return "it holds whitespace or a control character"
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+        parts.port  # noqa: B018 - raises ValueError on a bad port
+    except ValueError:
+        return "it is not a valid URL"
+    if parts.scheme not in ("https", "http"):
+        return "it must be an https URL"
+    if not host:
+        return "it has no host"
+    if parts.username is not None or parts.password is not None:
+        return "it must not carry a user name or password"
+    if parts.scheme == "http" and not Z._is_loopback(host.lower()):
+        return "it must be https (plain http is accepted only for a loopback test server)"
+    return None
+
+
+def openrouter_request_body(model: str, system: str, user: str, schema: str) -> dict[str, Any]:
+    """The one request body, for the call and for the pin's fingerprint (with placeholders).
+
+    No `tools`, no `tool_choice`, no `stream` and no plugin:  the model is offered nothing to call.
+    `provider.require_parameters` makes OpenRouter refuse a provider that cannot honor the strict
+    `response_format` (or the reasoning setting) instead of quietly dropping it."""
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": OPENROUTER_SCHEMA_NAME,
+                "strict": True,
+                "schema": json.loads(schema),
+            },
+        },
+        "provider": {"require_parameters": True},
+        "temperature": OPENROUTER_TEMPERATURE,
+        "max_tokens": OPENROUTER_MAX_TOKENS,
+        "reasoning": dict(OPENROUTER_REASONING),
+        "stream": False,
+    }
+
+
+def openrouter_http_reason(status: int) -> str:
+    """A failure phrase for an HTTP status, from fixed text only (never from the body)."""
+    detail = OPENROUTER_HTTP_REASONS.get(status)
+    if detail is None:
+        if 300 <= status < 400:
+            detail = "redirects are refused"
+        elif status >= 500:
+            detail = "provider error"
+    return "HTTP %d (%s)" % (status, detail) if detail else "HTTP %d" % status
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def openrouter_answer(data: bytes) -> tuple[str | None, dict[str, int], str | None, str | None]:
+    """(the answer text, token counts, the model that served it, why there is no answer) from a 2xx body.
+
+    Only an integer count, a model id and the message text are read.  A body that is not the
+    chat-completions shape, a provider error carried in a 200, a tool call nobody offered, a refusal, an
+    answer cut off at `max_tokens` and an empty answer are each a fixed phrase, and none puts a byte of
+    the body in the reason."""
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None, {}, None, "no parseable result"
+    if not isinstance(obj, dict):
+        return None, {}, None, "no parseable result"
+    usage: dict[str, int] = {}
+    raw_usage = obj.get("usage")
+    if isinstance(raw_usage, dict):
+        for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            count = _count(raw_usage.get(name))
+            if count is not None:
+                usage[name] = count
+        details = raw_usage.get("completion_tokens_details")
+        reasoning = _count(details.get("reasoning_tokens")) if isinstance(details, dict) else None
+        if reasoning is not None:
+            usage["reasoning_tokens"] = reasoning
+    served = obj.get("model")
+    served_model = clean_banner(served, 100) if isinstance(served, str) and served else None
+    choices = obj.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        error = obj.get("error")
+        code = _count(error.get("code")) if isinstance(error, dict) else None
+        if isinstance(error, dict):
+            return (
+                None,
+                usage,
+                served_model,
+                "provider error%s" % (" (code %d)" % code if code is not None else ""),
+            )
+        return None, usage, served_model, "no parseable result"
+    choice = choices[0]
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return None, usage, served_model, "no parseable result"
+    if message.get("tool_calls") or message.get("function_call"):
+        return None, usage, served_model, "the model returned a tool call (none were offered)"
+    refusal = message.get("refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        return None, usage, served_model, "the model refused"
+    finish = choice.get("finish_reason")
+    if finish == "length":
+        return None, usage, served_model, "answer cut off at max_tokens"
+    if finish == "content_filter":
+        return None, usage, served_model, "answer blocked by a content filter"
+    if finish == "error":
+        return None, usage, served_model, "provider error mid-answer"
+    content = message.get("content")
+    if isinstance(content, list):  # content parts:  the text parts are the answer
+        content = "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    if not isinstance(content, str) or not content.strip():
+        return None, usage, served_model, "no parseable result"
+    return content, usage, served_model, None
+
+
+class OpenRouterRunner:
+    """Makes one OpenRouter call and returns a RunResult the daemon reads like any other runtime's.
+
+    One attempt:  no retry loop, because a retry on a 429 or a 5xx would spend the seat's serialized
+    worker on a provider that just said no, and the fallback is the second chance.  No proxy (the
+    standard library's http.client uses none), no redirect (a 3xx is a failure, so the key is never
+    sent anywhere but the host in the URL), and a hard overall deadline:  the socket timeout bounds
+    each step and a watchdog shuts the socket at the deadline, so a server that drips bytes cannot hold
+    the worker past it.  `base_url` is for a test's loopback server;  the daemon never passes one."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        timeout: float = OPENROUTER_TIMEOUT,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.base_url = base_url
+        self.timeout = timeout
+        self.clock = clock
+
+    def run(
+        self,
+        model: str,
+        prompt: str,
+        schema: str,
+        key: str,
+        *,
+        system: str | None = None,
+    ) -> RunResult:
+        out = RunResult()
+        if system is None:
+            try:
+                with open(CONTRACT_PATH, encoding="utf-8") as fh:
+                    system = fh.read().rstrip()
+            except (OSError, UnicodeError):
+                out.error = "wake contract unavailable"
+                return out
+        base = self.base_url if self.base_url is not None else OPENROUTER_BASE_URL
+        problem = openrouter_url_problem(base)
+        if problem:
+            out.error = "the OpenRouter URL is refused: %s" % problem
+            return out
+        try:
+            body = openrouter_request_body(model, system, prompt, schema)
+        except ValueError:
+            out.error = "the result schema is not valid JSON"
+            return out
+        payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
+        parts = urllib.parse.urlsplit(base)
+        https = parts.scheme == "https"
+        path = parts.path.rstrip("/") + OPENROUTER_PATH
+        headers = {
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json",
+            "User-Agent": Z.USER_AGENT,
+            "X-Title": OPENROUTER_TITLE,
+        }
+        started = self.clock()
+        fired = threading.Event()
+        status: int | None = None
+        data = b""
+        too_large = False
+        conn: http.client.HTTPConnection
+        if https:
+            conn = http.client.HTTPSConnection(
+                parts.hostname or "",
+                parts.port,
+                timeout=self.timeout,
+                context=ssl.create_default_context(),
+            )
+        else:
+            conn = http.client.HTTPConnection(
+                parts.hostname or "", parts.port, timeout=self.timeout
+            )
+
+        def watchdog() -> None:
+            fired.set()
+            sock = conn.sock
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+        timer = threading.Timer(self.timeout, watchdog)
+        timer.daemon = True
+        timer.start()
+        try:
+            conn.request("POST", path, body=payload, headers=headers)
+            response = conn.getresponse()
+            status = int(response.status)
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > OPENROUTER_RESPONSE_CAP:
+                    too_large = True
+                    break
+                chunks.append(chunk)
+            timer.cancel()
+            if fired.is_set():
+                # The watchdog shut the socket at the deadline.  http.client reports a connection
+                # closed under a response with a Content-Length as a short read, not an error, so the
+                # deadline is checked here rather than trusted to arrive as an exception.
+                raise TimeoutError
+            data = b"".join(chunks)
+        except Exception as exc:  # noqa: BLE001 - any failure is a reason, never a traceback with a header
+            if fired.is_set() or isinstance(exc, TimeoutError):
+                out.error = "timed out after %g seconds" % self.timeout
+                out.killed = True
+            else:
+                out.error = "network: %s" % type(exc).__name__
+        finally:
+            timer.cancel()
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            out.secs = round(self.clock() - started, 2)
+        out.http_status = status
+        out.stdout_len = len(data)
+        out.stderr_sha = hashlib.sha256(data).hexdigest()
+        if out.error is not None:
+            return out
+        if too_large:
+            out.error = "response too large"
+            return out
+        if (
+            status is None
+        ):  # (no exception and no status cannot happen;  fail closed if it ever does)
+            out.error = "no response"
+            return out
+        if not 200 <= status < 300:
+            out.error = openrouter_http_reason(status)
+            return out
+        text, usage, served_model, why = openrouter_answer(data)
+        out.usage = usage or None
+        out.models = [served_model] if served_model else []
+        if why:
+            out.error = why
+            return out
+        out.result = {"text": text}
+        out.parsed = parse_muse_result(text)
+        if out.parsed is None:
+            # A body that is not JSON at all.  It is a failed run, not an answer the validator has to
+            # explain later, so the reason is the same one a muse run gives for an unreadable result.
+            out.error = "no parseable result"
+            out.result = None
+            return out
+        out.exit = 0
+        return out
+
+
+def openrouter_wake_fingerprint(model: str, role: str = OPENROUTER_ROLE_PRIMARY) -> str | None:
+    """Fingerprint the whole request shape and the inputs the answer is validated against.
+
+    Same discipline as `muse_wake_fingerprint` and `mcode_wake_fingerprint`, for a runtime with no
+    binary:  the endpoint, the model slug, the role, the policy version, the timeout and the response
+    cap, and the request body with placeholders for the two messages (so the strict schema, the
+    temperature, `max_tokens`, `require_parameters`, the reasoning setting and the absence of any tool
+    are all in it), plus the wake contract bytes.  The base URL a test injects is NOT in it:  the pin
+    vouches for the production endpoint.  Returns None when the contract or the schema cannot be read,
+    so the pin fails closed rather than vouching for a request whose inputs could not be loaded."""
+    try:
+        with open(CONTRACT_PATH, "rb") as fh:
+            contract = fh.read()
+        contract.decode("utf-8")  # the runner sends it as UTF-8 text
+        schema = schema_text(strict=True)
+        request = openrouter_request_body(model, "<wake-contract>", "<prompt>", schema)
+    except (OSError, UnicodeError, ValueError):
+        return None
+    command = json.dumps(
+        {
+            "policy_version": OPENROUTER_WAKE_POLICY_VERSION,
+            "role": role,
+            "endpoint": OPENROUTER_BASE_URL + OPENROUTER_PATH,
+            "model": model,
+            "request": request,
+            "timeout": OPENROUTER_TIMEOUT,
+            "response_cap": OPENROUTER_RESPONSE_CAP,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(command)
+    digest.update(b"\0")
+    digest.update(contract)
+    return digest.hexdigest()
+
+
+def openrouter_pin_files(paths: L.SeatPaths, role: str) -> tuple[str, str]:
+    """(the pin file, the candidate file) for a role.  Each role has its own pair."""
+    if role == OPENROUTER_ROLE_FALLBACK:
+        return paths.wake_pin_openrouter_fallback, paths.wake_pin_candidate_openrouter_fallback
+    return paths.wake_pin_openrouter, paths.wake_pin_candidate_openrouter
+
+
+def openrouter_pin_state(
+    paths: L.SeatPaths, model: str, role: str = OPENROUTER_ROLE_PRIMARY
+) -> dict[str, Any]:
+    """Why the OpenRouter pin does or does not match the request this seat would send.
+
+    `why` is None when pinned, else `not_pinned` (nothing recorded), `pin_unverified` (a pin without a
+    fingerprint, which vouches for nothing about this request), `pin_stale` (the model, the endpoint,
+    the schema, the contract, the body template or the policy version changed under it) or
+    `pin_unreadable` (the contract or the schema could not be read, so nothing can be verified).  The
+    last is named apart because re-pinning cannot fix it.  It never self-heals:  the pin records that a
+    person read a real run's answer to the canned hostile messages."""
+    pin_file, _ = openrouter_pin_files(paths, role)
+    pin = L.read_json(pin_file)
+    recorded = pin.get("model")
+    state: dict[str, Any] = {"pinned": False, "why": None, "pinned_model": None, "model": model}
+    state["role"] = role
+    if not isinstance(recorded, str) or not recorded:
+        state["why"] = "not_pinned"
+        return state
+    state["pinned_model"] = recorded
+    recorded_fingerprint = pin.get("fingerprint")
+    if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
+        state["why"] = "pin_unverified"
+        return state
+    current = openrouter_wake_fingerprint(model, role)
+    if current is None:
+        state["why"] = "pin_unreadable"
+        return state
+    if recorded != model or recorded_fingerprint != current:
+        state["why"] = "pin_stale"
+        return state
+    state["pinned"] = True
+    return state
+
+
+def openrouter_pinned(paths: L.SeatPaths, model: str, role: str = OPENROUTER_ROLE_PRIMARY) -> bool:
+    return bool(openrouter_pin_state(paths, model, role)["pinned"])
+
+
+def openrouter_runtime_flag(role: str) -> str:
+    """The `--runtime` value that selects a role in `daemon test-wake`.  The fallback role is always
+    `fallback`, never `openrouter`, because a seat can run OpenRouter as both roles and a bare
+    `openrouter` means the primary."""
+    return "fallback" if role == OPENROUTER_ROLE_FALLBACK else "openrouter"
+
+
+#:  The remediation for a pin that no longer matches.  The runtime is named in both halves:  without it
+#:  `test-wake` resolves "auto" to the seat's wake, so a seat with wake = muse and fallback = openrouter
+#:  would re-test the PRIMARY and leave this pin stale.
+OPENROUTER_PIN_REMEDIATION = (
+    "`simple-chat daemon test-wake --seat %s --runtime %s --run`, then "
+    "`simple-chat daemon test-wake --seat %s --runtime %s --pin`"
+)
+
+#:  A pin cannot be verified at all while the contract or the schema is unreadable, so the remediation is
+#:  not a re-pin:  the same re-pin would re-read the same missing file and refuse again.
+OPENROUTER_PIN_UNREADABLE_REMEDIATION = (
+    "restore the wake contract and result schema, then run "
+    "`simple-chat daemon test-wake --seat %s --runtime %s --run` and "
+    "`simple-chat daemon test-wake --seat %s --runtime %s --pin`"
+)
+
+
+def openrouter_pin_cause(pin: Mapping[str, Any]) -> str:
+    """Why an OpenRouter pin no longer matches, in the operator's words."""
+    if pin.get("why") == "pin_unverified":
+        return (
+            "the pin predates the request fingerprint, so it verified nothing about the current "
+            "OpenRouter request"
+        )
+    if pin.get("why") == "pin_unreadable":
+        return (
+            "the wake contract or result schema could not be read, so the current OpenRouter request "
+            "cannot be verified at all (pinned %s)" % pin.get("pinned_model")
+        )
+    if pin.get("model") != pin.get("pinned_model"):
+        return "the OpenRouter model is %s (pinned %s)" % (
+            pin.get("model"),
+            pin.get("pinned_model"),
+        )
+    return "the OpenRouter request (endpoint, schema, contract or policy) changed (pinned %s)" % (
+        pin.get("pinned_model")
+    )
+
+
+def openrouter_pin_red_entry(pin: Mapping[str, Any], seat: str, role: str) -> str:
+    """The one-line red entry for a seat whose OpenRouter pin no longer matches.  The shape mirrors
+    the muse and mcode entries:  an unreadable contract is "unverifiable", and its remediation starts
+    with its own verb, so it is not prefixed by "run"."""
+    flag = openrouter_runtime_flag(role)
+    remediation = (
+        OPENROUTER_PIN_UNREADABLE_REMEDIATION % (seat, flag, seat, flag)
+        if pin["why"] == "pin_unreadable"
+        else OPENROUTER_PIN_REMEDIATION % (seat, flag, seat, flag)
+    )
+    label = "unverifiable" if pin["why"] == "pin_unreadable" else "stale"
+    verb = "" if pin["why"] == "pin_unreadable" else "run "
+    return "%s pin is %s: %s; %s%s" % (
+        "fallback" if role == OPENROUTER_ROLE_FALLBACK else "wake",
+        label,
+        openrouter_pin_cause(pin),
+        verb,
+        remediation,
+    )
+
+
+def record_openrouter_pin(
+    paths: L.SeatPaths,
+    model: str,
+    now: float,
+    role: str = OPENROUTER_ROLE_PRIMARY,
+    *,
+    fingerprint: str | None = None,
+) -> None:
+    pin_file, _ = openrouter_pin_files(paths, role)
+    L.write_json(
+        pin_file,
+        {
+            "model": model,
+            "role": role,
+            "at": now,
+            "endpoint": OPENROUTER_BASE_URL + OPENROUTER_PATH,
+            "fingerprint": fingerprint
+            if fingerprint is not None
+            else openrouter_wake_fingerprint(model, role),
+        },
+    )
+
+
+def record_openrouter_candidate(
+    paths: L.SeatPaths, model: str, now: float, role: str = OPENROUTER_ROLE_PRIMARY
+) -> None:
+    """A request that passed `test-wake --run`, waiting for a person to read the result and pin it."""
+    _, candidate_file = openrouter_pin_files(paths, role)
+    L.write_json(
+        candidate_file,
+        {
+            "model": model,
+            "role": role,
+            "at": now,
+            "fingerprint": openrouter_wake_fingerprint(model, role),
+        },
+    )
+
+
+def openrouter_pin_candidate(
+    paths: L.SeatPaths, model: str, now: float, role: str = OPENROUTER_ROLE_PRIMARY
+) -> str | None:
+    """Pin the candidate `test-wake --run` left.  None on success, else why it was not pinned."""
+    _, candidate_file = openrouter_pin_files(paths, role)
+    cand = L.read_json(candidate_file)
+    if not cand:
+        return "no passing test-wake --run to pin; run that first"
+    at = cand.get("at")
+    if not isinstance(at, (int, float)) or now - float(at) > CANDIDATE_SECONDS or now < float(at):
+        return "the last passing test-wake --run is over a day old; run it again"
+    current = openrouter_wake_fingerprint(model, role)
+    if current is None:
+        return (
+            "the wake contract or result schema is unavailable, so the OpenRouter wake cannot be "
+            "pinned; restore them, then run test-wake --run again"
+        )
+    if cand.get("model") != model:
+        return (
+            "the OpenRouter model changed since the test (%s, tested %s); run test-wake --run again"
+            % (model, cand.get("model"))
+        )
+    recorded = cand.get("fingerprint")
+    if not isinstance(recorded, str) or not recorded or recorded != current:
+        return (
+            "the OpenRouter request changed since the test (endpoint, schema, contract or policy); "
+            "run test-wake --run again"
+        )
+    record_openrouter_pin(paths, model, now, role, fingerprint=recorded)
+    try:
+        os.unlink(candidate_file)
     except OSError:
         pass
     return None
