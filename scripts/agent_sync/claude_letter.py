@@ -343,7 +343,9 @@ def title_from_prompt(prompt: object) -> str:
         text = parts[0] if len(parts) == 2 else ""
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     if cut:
-        text = re.sub(r"```.*\Z", " ", text, flags=re.DOTALL)  # a pasted block the window ends inside of
+        text = re.sub(
+            r"```.*\Z", " ", text, flags=re.DOTALL
+        )  # a pasted block the window ends inside of
     text = KEY_BLOCK.sub(" ", text)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
