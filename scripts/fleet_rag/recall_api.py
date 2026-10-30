@@ -747,6 +747,11 @@ def _fake_seed() -> list[dict]:
     return out
 
 
+def fake_backend_installed() -> bool:
+    """True while the in-process fake corpus is installed:  no real data, no network, no credentials."""
+    return isinstance(Qdrant, type) and issubclass(Qdrant, FakeQdrant)
+
+
 def install_fake_backend(seed: bool = True) -> None:
     """Point every seam at in-process fakes (no network, no credentials, no gitleaks)."""
     global \

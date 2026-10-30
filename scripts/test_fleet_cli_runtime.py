@@ -263,6 +263,8 @@ class ActualRuntime(unittest.TestCase):
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
+        self.assertEqual(self.receiver.MAX_FILES, 139)
+        self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
 
         status = self.receiver.control(self.home, "status")
         self.assertEqual(status["status"], "ready")
@@ -330,13 +332,9 @@ class ActualRuntime(unittest.TestCase):
         )
         self.assert_exit(result, 3)
         self.assertFalse(result.stdout, "unauthenticated MCP emitted protocol output")
-        # AFC-359:  no zuliprc default;  with no fleet-secrets on PATH it fails fast naming the Infisical keys.
-        self.assertTrue(
-            b"cannot read Infisical Fleet-OPS /zulip" in result.stderr
-            and b"CODEX_ZULIP_KEY" in result.stderr
-            and b"fleet-secrets is not installed" in result.stderr,
-            "missing-credential diagnostic absent",
-        )
+        # Own-bearer proof comes before provider credentials or any protocol output.
+        self.assertIn(b"CODEX's own bearer was not accepted (not_configured)", result.stderr)
+        self.assertNotIn(b"cannot read Infisical", result.stderr)
 
     @staticmethod
     def requests():

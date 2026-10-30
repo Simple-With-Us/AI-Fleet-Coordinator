@@ -120,7 +120,7 @@ class GuideToolTests(McpHarness):
         self.assertEqual(error["sections"], G.section_names(G.read_text()))
 
     def test_the_guide_needs_no_identity_and_ignores_one_that_is_given(self):
-        session = self.session(self.mcp_env(AGENT_SEAT=None))  # no default identity at all
+        session = self.session()  # the connection's own seat;  the guide never uses an identity
         self.assertEqual(
             session.call("guide", identity=None)["structuredContent"]["sections"],
             G.section_names(G.read_text()),
@@ -600,16 +600,16 @@ class RecallToolTests(FakePrograms):
         result = session.call(
             "recall_contribute",
             {"text": text, "category": "lesson", "title": "pm2"},
-            identity="CURSOR",
+            identity="CLAUDE",
         )
         data = self.assert_structured("recall_contribute", result)
         self.assertEqual(
-            (data["seat"], data["doc_id"], data["duplicate"]), ("CURSOR", "lesson:1", False)
+            (data["seat"], data["doc_id"], data["duplicate"]), ("CLAUDE", "lesson:1", False)
         )
         call = self.calls(self.recall_out)[0]
         self.assertEqual(call["stdin"], text)
         self.assertNotIn(text, " ".join(call["argv"]))
-        self.assertEqual(call["argv"][call["argv"].index("--seat") + 1], "CURSOR")
+        self.assertEqual(call["argv"][call["argv"].index("--seat") + 1], "CLAUDE")
         self.assertEqual(call["argv"][:2], ["contribute", "-"])
 
     LESSON = "Always restart pm2 with --update-env after changing the ecosystem file, or the old env stays cached."
@@ -855,8 +855,8 @@ class LinearToolTests(FakePrograms):
         self.assertEqual(self.calls(self.board_out), [])
         result = session.call(
             "linear_claim",
-            {"id": "AFC-331", "comment": "on it", "session": "cursor-chat-0001"},
-            identity="CURSOR",
+            {"id": "AFC-331", "comment": "on it", "session": "claude-chat-0001"},
+            identity="CLAUDE",
         )
         self.assertNotIn("isError", result, result)
         call = self.calls(self.board_out)[0]
@@ -864,32 +864,32 @@ class LinearToolTests(FakePrograms):
         # identity's own bearer locator and the seat variables are stripped from the child.
         self.assertEqual(
             call["bearer"],
-            seat_bearer_locator("CURSOR"),
+            seat_bearer_locator("CLAUDE"),
             "the call's own bearer locator is the seat board proves",
         )
         self.assertIsNone(call["seat"], "AGENT_SEAT must not reach board")
         self.assertIsNone(call["writes"])
         self.assertEqual(
-            call["argv"][:5], ["claim", "AFC-331", "--by", "CURSOR", "--comment=on it"]
+            call["argv"][:5], ["claim", "AFC-331", "--by", "CLAUDE", "--comment=on it"]
         )
-        self.assertEqual(call["argv"][-2:], ["--session", "cursor-chat-0001"])
+        self.assertEqual(call["argv"][-2:], ["--session", "claude-chat-0001"])
         text = result["content"][0]["text"]
         self.assertIn("BEGIN_UNTRUSTED_LINEAR nonce=", text)
-        self.assertIn("as CURSOR", text.splitlines()[0])
+        self.assertIn("as CLAUDE", text.splitlines()[0])
         self.assertFalse([k for k in call["env"] if k.startswith("ZULIP")])
 
     def test_each_call_runs_as_the_identity_it_names(self):
         session = self.session(self.env())
         session.call("linear_whoami", identity="CLAUDE")
         session.call("linear_whoami")  # no identity:  the default
-        session.call("linear_list", {"status": "open", "limit": 5}, identity="BF-PLUMBER")
+        refused = session.call("linear_list", {"status": "open", "limit": 5}, identity="BF-PLUMBER")
+        self.assert_tool_error(refused, "identity_not_allowed")  # not the bearer's seat:  no child runs
         calls = self.calls(self.board_out)
         self.assertEqual(
             [c["bearer"] for c in calls],
             [
                 seat_bearer_locator("CLAUDE"),
                 seat_bearer_locator("CLAUDE"),
-                seat_bearer_locator("BF-PLUMBER"),
             ],
             "each call runs under the bearer of the identity it names",
         )
@@ -898,8 +898,7 @@ class LinearToolTests(FakePrograms):
             self.assertNotIn("AGENT_SEAT", call["env"])
             self.assertNotIn("AGENT_LAUNCH_SEAT", call["env"])
         self.assertEqual(
-            self.calls(self.board_out)[2]["argv"],
-            ["list", "--json", "--status", "open", "--limit", "5"],
+            len(self.calls(self.board_out)), 2
         )
 
     def test_named_commands_pass_their_arguments_on_stdin_and_the_key_as_a_flag(self):
