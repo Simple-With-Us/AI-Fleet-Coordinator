@@ -536,6 +536,7 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_issue_dependency_remove",
         "wf_issue_update",
         "wf_review_update",
+        "wf_commit_comment_update",
         "wf_check_update",
         "wf_milestone_update",
         "wf_labels_set",
@@ -1059,7 +1060,7 @@ def from_env() -> Relay:
             verifier=_build_shared_verifier(),
         )
     except PolicyError as exc:
-        if "GIT_RELAY_SEATS_FILE" in os.environ:
+        if "GIT_RELAY_SEATS_FILE" in os.environ or "GIT_RELAY_SEATS_CREDENTIAL" in os.environ:
             raise SystemExit("git-relay config: file seat policy invalid or unreadable") from None
         raise SystemExit(f"git-relay config: {exc}") from exc
     client = GitHubClient(_owner_token_from_cli())

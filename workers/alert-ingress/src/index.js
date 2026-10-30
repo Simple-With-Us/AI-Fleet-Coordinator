@@ -59,6 +59,7 @@ import {
   STANDING_BLOCK_HEADER,
 } from "./zulip.js";
 import { renderRaw } from "./raw.js";
+import { resourceMentions } from "./resource.js";
 
 const DEFAULT_CHANNEL = "alerts";
 // The standing blocks keep DEFAULT_CHANNEL, which also names their records;
@@ -941,6 +942,7 @@ async function handleEvent(source, payload, env) {
         service: event.service,
         what: result.state.text,
         link: result.state.link,
+        mentions: resourceMentions(event.key),
       },
     );
   } else if (result.action === "resolve") {
@@ -1087,6 +1089,7 @@ async function runSweep(env) {
           service,
           what: s.state.text,
           link: s.state.link,
+          mentions: resourceMentions(key),
         },
       );
       await env.ALERT_STATE.put(name, JSON.stringify(s.state));

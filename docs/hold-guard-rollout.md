@@ -37,6 +37,11 @@ per-setter holds; the suffix is a display hint, never the ownership source.
 - Hold label families covered: do-not-merge[:*] (Jay's literal ask),
   do-not-automerge[:*], needs-human-merge (fleet-documented).
 
+- Disarm uses repository Actions identity with `contents: write` and
+  `pull-requests: write`.  A read-only contents token was rejected by
+  `disablePullRequestAutoMerge` on armed PRs1064/1124/1145 on2026-10-29.
+  The state readback remains the success condition; no elevated token or
+  personal credential fallback is added.
 - GITHUB_TOKEN `checks: write` permits creating a check run:
   https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
 - Checks API write is GitHub-Apps-only (OAuth/classic PAT cannot create or
