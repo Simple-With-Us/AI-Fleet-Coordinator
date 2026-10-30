@@ -1161,7 +1161,9 @@ class Chat:
         if answer is None:
             mark_registry(self.env, dest, self.now + RETRY_SECONDS)
             return {"error": "the registry host answered exit %s with no result" % proc.returncode}
-        mark_registry(self.env, dest)  # it answered: whatever an earlier chat found, the host is there
+        mark_registry(
+            self.env, dest
+        )  # it answered: whatever an earlier chat found, the host is there
         return _answer(answer)
 
 
@@ -1381,7 +1383,9 @@ def _push(chat: Chat, note: dict[str, Any], op: str, words: str = "") -> dict[st
 
 def _settled(note: Mapping[str, Any]) -> bool:
     """The note needs no registration made for it: the chat holds a letter, or another seat holds the chat."""
-    return note.get("state") == "mismatch" or (note.get("state") == "open" and bool(note.get("label")))
+    return note.get("state") == "mismatch" or (
+        note.get("state") == "open" and bool(note.get("label"))
+    )
 
 
 def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
@@ -1417,7 +1421,9 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
             return
         grand = _text(spec.parent_id(payload, chat.env)) or str(note.get("parent") or "")
         _ensure_parent(mother, grand, depth + 1)
-        note = mother.read()  # the grandparents' turn may have registered this one (a store that names a loop)
+        note = (
+            mother.read()
+        )  # the grandparents' turn may have registered this one (a store that names a loop)
         if _settled(note):
             return
         done = _apply(

@@ -105,7 +105,12 @@ STORE_WAIT = 0.5  # seconds to wait for a locked store before reading nothing
 RPC_SECONDS = 6.0  # the whole rename, both routes, inside the hook's own timeout (15 to 20 seconds)
 DAEMON_SECONDS = 2.0  # the daemon route's share: it answers in milliseconds or not at all
 CHILD_ROW_WAIT = 1.5  # a sub-agent's row is written a moment after its parent's SubagentStart
-HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "SubagentStart": 20, "SubagentStop": 15}
+HOOK_TIMEOUTS = {
+    "SessionStart": 20,
+    "UserPromptSubmit": 15,
+    "SubagentStart": 20,
+    "SubagentStop": 15,
+}
 
 CLIENT_INFO = {"name": "platform-letter", "title": "Operator Session Letters", "version": "1"}
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -191,7 +196,9 @@ def thread_row(env: Mapping[str, str], sid: str) -> Thread | None:
     if not path or not sid:
         return None
     try:
-        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=STORE_WAIT)
+        conn = sqlite3.connect(
+            Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=STORE_WAIT
+        )
     except (sqlite3.Error, OSError, ValueError):
         return None
     conn.row_factory = sqlite3.Row
@@ -244,7 +251,7 @@ def own_originator(originator: str) -> bool:
 
 
 def classify(thread: Thread | None) -> str:
-    """"chat", "subagent" or "headless" for a thread of the store.  A thread the store does not show is headless:
+    """ "chat", "subagent" or "headless" for a thread of the store.  A thread the store does not show is headless:
     without its row the hook cannot rule out a BotFleet bot or an exec run, so it takes no letter."""
     if thread is None:
         return "headless"
@@ -367,7 +374,11 @@ class Rpc:
     ):
         self.framing, self.deadline, self.buf, self.seq = framing, deadline, b"", 0
         self.proc = popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=dict(env)
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=dict(env),
         )
 
     def __enter__(self) -> Rpc:
@@ -426,7 +437,9 @@ class Rpc:
         lines = head.decode("latin-1").split("\r\n")
         if not lines[0].startswith("HTTP/1.1 101"):
             raise RpcError("the app-server refused the WebSocket upgrade")
-        headers = {k.strip().lower(): v.strip() for k, _, v in (ln.partition(":") for ln in lines[1:])}
+        headers = {
+            k.strip().lower(): v.strip() for k, _, v in (ln.partition(":") for ln in lines[1:])
+        }
         accept = base64.b64encode(hashlib.sha1(key + WS_GUID).digest()).decode()
         if headers.get("sec-websocket-accept") != accept:
             raise RpcError("the app-server answered the WebSocket upgrade wrongly")
@@ -578,7 +591,9 @@ def rename_thread(
         if left <= 0.2:
             break
         try:
-            with open_rpc(env, time.monotonic() + min(share, left), daemon=daemon, popen=popen) as rpc:
+            with open_rpc(
+                env, time.monotonic() + min(share, left), daemon=daemon, popen=popen
+            ) as rpc:
                 rpc.call("thread/name/set", {"threadId": thread_id, "name": title})
         except (RpcError, OSError, ValueError):
             continue
@@ -716,11 +731,15 @@ def install(
     if trusted is not True:
         answer["trust"] = INSTALL.trust
     if opts.check and (trusted is not True or not all(answer.get("current", {}).values())):
-        code = 1  # an install would still change the file, or the hooks are not trusted yet: not done
+        code = (
+            1  # an install would still change the file, or the hooks are not trusted yet: not done
+        )
     return _emit(stdout, answer, code)
 
 
-def trust_main(argv: list[str], env: Mapping[str, str], stdout: TextIO, *, popen: Any = subprocess.Popen) -> int:
+def trust_main(
+    argv: list[str], env: Mapping[str, str], stdout: TextIO, *, popen: Any = subprocess.Popen
+) -> int:
     """`trust [--check]`: record the trust hash of this adapter's hook entries in Codex's config.toml.
 
     Only entries whose command is this adapter's `platform-letter hook` and whose status is untrusted or modified are
@@ -742,17 +761,27 @@ def trust_main(argv: list[str], env: Mapping[str, str], stdout: TextIO, *, popen
             try:
                 backup = PL._backup(config) if os.path.isfile(config) else ""
             except OSError as exc:
-                return _emit(stdout, {"error": "config.toml could not be backed up (%s)" % type(exc).__name__}, 2)
+                return _emit(
+                    stdout,
+                    {"error": "config.toml could not be backed up (%s)" % type(exc).__name__},
+                    2,
+                )
             edits = {h["key"]: {"trusted_hash": h["currentHash"]} for h in pending}
             with open_rpc(env, time.monotonic() + 15.0, daemon=False, popen=popen) as rpc:
                 rpc.call(
                     "config/batchWrite",
-                    {"edits": [{"keyPath": "hooks.state", "mergeStrategy": "upsert", "value": edits}]},
+                    {
+                        "edits": [
+                            {"keyPath": "hooks.state", "mergeStrategy": "upsert", "value": edits}
+                        ]
+                    },
                 )
             written = sorted(edits)
             mine = [h for h in hook_states(env, popen=popen) if _ours(h, path)]
     except (RpcError, OSError, ValueError, KeyError) as exc:
-        return _emit(stdout, {"error": "the app-server could not be asked (%s)" % type(exc).__name__}, 2)
+        return _emit(
+            stdout, {"error": "the app-server could not be asked (%s)" % type(exc).__name__}, 2
+        )
     status = {h["key"]: h.get("trustStatus") for h in mine}
     answer = {"platform": PLATFORM, "path": path, "hooks": status, "written": written}
     if backup:
@@ -761,7 +790,12 @@ def trust_main(argv: list[str], env: Mapping[str, str], stdout: TextIO, *, popen
     return _emit(stdout, answer, 0 if ok else 1)
 
 
-def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None, stdout: TextIO | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    stdout: TextIO | None = None,
+) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if env is None else env
     stdout = stdout or sys.stdout
