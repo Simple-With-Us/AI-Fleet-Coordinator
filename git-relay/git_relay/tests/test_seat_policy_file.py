@@ -212,7 +212,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "ce70d77c7ac74970")
+        self.assertEqual(seat_policy.digest(SEATS), "caccceb653836c98")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -350,7 +350,7 @@ class SeatPolicyOauthAssertRender(unittest.TestCase):
             "p": {
                 "actions": ["open_pr"],
                 "mint_permissions": {"metadata": "read"},
-                "repos": ["Simple-With-Us/*"],
+                "repos": [SYNTHETIC_REPO],
             }
         },
         "seats": [
@@ -381,3 +381,12 @@ class SeatPolicyOauthAssertRender(unittest.TestCase):
                 "6c83d4e7a1b73c7c8afcc28641b50e8afe2b53ec21ed554f4c96947ca255f334"
             )
         )
+
+
+class HostedOAuthReviewedPolicyTests(unittest.TestCase):
+    def test_full_hosted_oauth_flags_only(self):
+        import pathlib, json
+        data = json.loads((pathlib.Path(__file__).resolve().parents[2] / "deploy" / "seat-policy.json").read_text())
+        flagged = {row["identity"] for row in data["seats"] if row.get("oauth_assert")}
+        self.assertEqual(flagged, {"CLAUDE", "CODEX", "CURSOR", "ECHO", "GROK-WEB", "JET-CHAT", "WISE"})
+        self.assertNotIn("JET", flagged)

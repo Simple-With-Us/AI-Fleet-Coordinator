@@ -133,6 +133,41 @@ export async function resolveGrAssertionKey(env) {
   return String(await resolveSecretIsolated(env, { name: GR_ASSERT_KEY_VAR, path: GR_ASSERT_KEY_PATH, tokenBinding: GR_ASSERT_TOKEN_BINDING }) ?? "").trim();
 }
 
+/**
+ * The per-call assertion minter for one verified OAuth seat.  LAZY:  the
+ * isolated signing key resolves only when a Git call actually mints, never
+ * when the wiring is built - an Infisical outage or a scope denial on the
+ * dedicated GR_ASSERT_INFISICAL_SERVICE_TOKEN binding must fail that Git
+ * call closed (null -> not_configured), never break tools/list or the
+ * non-Git routes on the same connection (host review finding 4428031266:
+ * eager resolution in serveMcp made every MCP method on the connection
+ * depend on the isolated token).  A resolution that throws is caught here
+ * for the same reason;  the resolver's own required-mode throw contract is
+ * unchanged for direct callers (the verify route resolves per request).
+ */
+export function grAssertionMinter(env, { seat, scopes, epoch, approvedAt, phase, grantRef }) {
+  return async ({ action, body }) => {
+    let key;
+    try {
+      key = await resolveGrAssertionKey(env);
+    } catch {
+      return null;
+    }
+    if (!key) return null;
+    return mintGrAssertion({
+      key,
+      seat,
+      action,
+      bodySha256: await sha256HexText(body),
+      scopes,
+      epoch,
+      approvedAt,
+      phase,
+      grantRef,
+    });
+  };
+}
+
 /** The claims of an assertion-shaped token, or null.  Structural checks only;
  * the signature is verified by verifyGrAssertionToken, never assumed here. */
 export function parseGrAssertion(token) {

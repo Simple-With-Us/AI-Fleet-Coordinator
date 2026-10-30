@@ -176,6 +176,28 @@ function grHarness(gr) {
   });
 }
 
+test("a local not_configured 503 keeps its provenance:  nothing was sent, never outcome_unknown", async () => {
+  // The GR client's own fail-closed answer (mint/custody unavailable) must
+  // not map to outcome_unknown - the call provably never reached the relay,
+  // let alone GitHub (host route proof:  the local 503 mapped through
+  // grCall as outcome_unknown although nothing was sent).
+  let fetches = 0;
+  const tools = grHarness(
+    new GrRelayClient({
+      baseUrl: "https://git-relay.example.test",
+      accessId: "test-access-id", accessSecret: "test-access-secret",
+      minter: async () => null,
+      fetch: async () => { fetches++; return new Response("{}", { status: 200 }); },
+    }),
+  );
+  const res = await tools.call("gr_open_pr", { repo: "a/b", base: "main", head: "f", title: "t", body: "b" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /not configured/);
+  assert.match(res.content[0].text, /Nothing was sent/);
+  assert.doesNotMatch(res.content[0].text, /outcome is unknown/);
+  assert.equal(fetches, 0);
+});
+
 test("gr_open_pr runs through the front and returns the relay's answer", async () => {
   const seen = [];
   const gr = new GrRelayClient({
@@ -364,4 +386,10 @@ test("grCall maps relay outcomes precisely and answers in the MCP result shape",
   const arrayRes = await arrayTools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "b" });
   assert.equal(arrayRes.isError, true);
   assert.match(arrayRes.content[0].text, /could not read/);
+});
+
+test("an upstream not_configured 503 never impersonates a local failure", async () => {
+  const tools = grHarness(new GrRelayClient({baseUrl:"https://git-relay.example.test", accessId:"id", accessSecret:"secret", bearer:"fixture", fetch:async()=>Response.json({error:"not_configured",localFailure:true},{status:503})}));
+  const res=await tools.call("gr_open_pr",{repo:"a/b",base:"main",head:"f",title:"t",body:"b"});
+  assert.equal(res.isError,true);assert.match(res.content[0].text,/outcome is unknown/);assert.doesNotMatch(res.content[0].text,/Nothing was sent/);
 });

@@ -415,10 +415,22 @@ class SeatPolicy:
         # request binding or the seat flag fails, or when no configured
         # oauth_assert seat claims the verified identity - it never falls
         # through to another token family.
-        if (
-            self._assertion_verifier is not None
-            and self._assertion_verifier.parse_identity(token) is not None
-        ):
+        named_assertion = (
+            self._assertion_verifier.parse_identity(token)
+            if self._assertion_verifier is not None
+            else None
+        )
+        if named_assertion is not None:
+            # Refuse locally when no configured oauth_assert seat claims the
+            # identity the token names, BEFORE the blocking remote verify:
+            # every forged shape then costs no Worker callback (mirrors the
+            # bearer pre-check below).  A valid assertion always names its
+            # flagged seat, so this can never false-refuse one.
+            if not any(
+                cfg["auth"] == "shared" and cfg["oauth_assert"] and cfg["identity"] == named_assertion
+                for cfg in self._seats.values()
+            ):
+                return None
             resolved = self._assertion_verifier.resolve(token, proof)
             if resolved is None:
                 return None

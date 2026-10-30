@@ -295,7 +295,7 @@ class ResolveTest(unittest.TestCase):
 
 SEAT_CFG = {
     "actions": ["open_pr"],
-    "repos": ["Simple-With-Us/*"],
+    "repos": ["example-org/example-repo"],
 }
 
 
@@ -328,10 +328,47 @@ class PolicyAssertionTest(unittest.TestCase):
             "app_slug": "swu-codex",
             "mint_permissions": {"contents": "read"},
             "actions": ["wf_repo_variable_get"],
-            "repos": ["Simple-With-Us/*"],
+            "repos": ["example-org/example-repo"],
         }
         token, claims = mint(action="wf_repo_variable_get", scopes=("zulip:read",))
         self.assertEqual(self.policy(cfg).authenticate(token, proof(claims)), "swu-codex")
+
+    def test_unflagged_seat_refuses_before_any_remote_call(self):
+        # The local allowlist pre-check:  no configured oauth_assert seat
+        # claims the identity the token names, so the blocking Worker
+        # callback never runs (kody 4428073278).
+        token, claims = mint()
+        v = verifier()
+        policy = SeatPolicy(
+            json.dumps({"swu-codex": {"auth": "shared", "identity": SEAT, **SEAT_CFG}}),
+            assertion_verifier=v,
+        )
+        self.assertIsNone(policy.authenticate(token, proof(claims)))
+        self.assertEqual(v._transport.calls, [])
+
+    def test_an_unclaimed_seat_name_never_reaches_the_callback(self):
+        # A forged shape naming a seat no flagged config claims is refused
+        # locally too:  only a flagged seat's assertions cost a callback.
+        token, claims = mint(seat="ECHO")
+        v = verifier()
+        policy = SeatPolicy(
+            json.dumps({"swu-codex": {"auth": "shared", "identity": SEAT, "oauth_assert": True, **SEAT_CFG}}),
+            assertion_verifier=v,
+        )
+        self.assertIsNone(policy.authenticate(token, proof(claims)))
+        self.assertEqual(v._transport.calls, [])
+
+    def test_a_flagged_seat_still_verifies_remotely(self):
+        # Control for the pre-check:  a flagged seat's assertion does reach
+        # the Worker callback exactly once.
+        token, claims = mint()
+        v = verifier()
+        policy = SeatPolicy(
+            json.dumps({"swu-codex": {"auth": "shared", "identity": SEAT, "oauth_assert": True, **SEAT_CFG}}),
+            assertion_verifier=v,
+        )
+        self.assertEqual(policy.authenticate(token, proof(claims)), "swu-codex")
+        self.assertEqual(len(v._transport.calls), 1)
 
     def test_unflagged_seat_refuses_a_valid_assertion(self):
         token, claims = mint()

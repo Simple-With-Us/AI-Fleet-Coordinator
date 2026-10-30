@@ -43,13 +43,13 @@ export async function callTypedV1({action,args,baseUrl,bearer,minter=null,access
   // Service credentials supplied only by Worker-owned resolver, never tool args.
   if (!TYPED_V1_ACTIONS.includes(action) || !validTypedV1Args(args)) return {status:400,body:{error:'invalid_typed_request'}};
   let url;
-  try {url = new URL(baseUrl);} catch {return {status:503,body:{error:'not_configured'}};}
+  try {url = new URL(baseUrl);} catch {return {status:503,body:{error:'not_configured'},localFailure:true};}
   if (url.protocol !== 'https:' || url.pathname !== '/' || url.search || url.hash || url.username || url.password ||
-      (!bearer && typeof minter !== "function") || !accessId || !accessSecret || !/^swu-[a-z0-9-]+\[bot\]$/.test(expectedPrincipal)) return {status:503,body:{error:'not_configured'}};
+      (!bearer && typeof minter !== "function") || !accessId || !accessSecret || !/^swu-[a-z0-9-]+\[bot\]$/.test(expectedPrincipal)) return {status:503,body:{error:'not_configured'},localFailure:true};
   const body = JSON.stringify(args);
   if (!bearer) {
     const minted = await minter({action, body});
-    if (typeof minted !== "string" || !minted) return {status:503,body:{error:'not_configured'}};
+    if (typeof minted !== "string" || !minted) return {status:503,body:{error:'not_configured'},localFailure:true};
     bearer = minted;
   }
   const unknown = () => ({status:502,body:{error:'typed_upstream_unavailable',outcome:'unknown',retryable:false}});

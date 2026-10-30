@@ -64,7 +64,7 @@ import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBeare
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } from "./bearer-identities.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive } from "./gr-assert-verify.js";
-import { mintGrAssertion, resolveGrAssertionKey, sha256HexText } from "./gr-assert.js";
+import { grAssertionMinter } from "./gr-assert.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
@@ -270,20 +270,15 @@ async function serveMcp(request, env, ctx) {
   // keep answering not_configured, fail closed.  A seat the relay policy has
   // not flagged oauth_assert is refused there, by the relay's own allowlist
   // boundary.
-  const grAssertionKey = result.code === "paused" || config.eventsOnlySeats.includes(seat) ? "" : await resolveGrAssertionKey(env);
-  const grMinter = grAssertionKey
-    ? async ({ action, body }) => mintGrAssertion({
-        key: grAssertionKey,
-        seat,
-        action,
-        bodySha256: await sha256HexText(body),
-        scopes,
-        epoch: props.epoch,
-        approvedAt: props.approved_at,
-        phase: props.phase,
-        grantRef,
-      })
-    : null;
+  // LAZY signer resolution (host review finding 4428031266):  the isolated
+  // key is NOT read while the wiring is built - an Infisical outage or a
+  // scope denial on the dedicated binding must fail only the Git call that
+  // mints, never tools/list or the non-Git routes on this connection.  The
+  // minter converts any resolution failure to null (not_configured for that
+  // call);  a paused or events-only seat gets no minter at all.
+  const grMinter = result.code === "paused" || config.eventsOnlySeats.includes(seat)
+    ? null
+    : grAssertionMinter(env, { seat, scopes, epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase, grantRef });
 
   // The listener key resolves through Infisical too (optional:  no wake key
   // means no listener tools, never a 500 - src/eavesdropper.js).
@@ -305,9 +300,10 @@ async function serveMcp(request, env, ctx) {
     // Null when any recall secret is missing:  the recall tools then answer
     // not_configured and every other tool works as before (spec 1.1).
     recall: recallClientFromResolved(recallSecrets, env),
-    // Null while the assertion key or the GR front is unconfigured, for a
-    // paused seat, or for an events-only seat:  the gr_* tools then answer
-    // not_configured and every other tool works as before.
+    // Null for a paused seat or an events-only seat, or while the GR front
+    // is unconfigured:  the gr_* tools then answer not_configured and every
+    // other tool works as before.  The signer key itself resolves lazily
+    // per Git call and fails only that call closed when unavailable.
     gr: grMinter ? grClientFromResolved(grSecrets, env, { minter: grMinter }) : null,
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and

@@ -160,7 +160,7 @@ export class GrRelayClient {
     const write = !WF_V1_READ_ACTIONS.includes(action);
     const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});
     const credential = await this.#credential(action, serialized);
-    if (credential === null) return {status:503,body:{error:"not_configured"}};
+    if (credential === null) return {status:503,body:{error:"not_configured"},localFailure:true};
     try {
       const response = await this.fetch(`${this.#base}/v1/${action}`, {
         method:"POST", headers:{...this.#headers, "Authorization": `Bearer ${credential}`}, body:serialized,
@@ -204,7 +204,7 @@ export class GrRelayClient {
   async call(action, args) {
     const body = JSON.stringify(args ?? {});
     const credential = await this.#credential(action, body);
-    if (credential === null) return { status: 503, body: { error: "not_configured" } };
+    if (credential === null) return { status: 503, body: { error: "not_configured" }, localFailure: true };
     let response;
     try {
       response = await this.fetch(`${this.#base}/v1/${action}`, {

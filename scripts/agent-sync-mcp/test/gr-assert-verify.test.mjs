@@ -174,6 +174,20 @@ test("a deleted provider grant refuses even when the gate row would pass", async
   assert.deepEqual(seen, [["CODEX", "0123456789ab"]]);
 });
 
+test("a transient grant-list miss does not burn the one-use jti (kody 4428074149)", async () => {
+  const token = await mint();
+  const store = await gateStore();
+  let live = false;
+  const grantExists = async () => live;
+  // The miss refuses as grant_invalid and spends NOTHING:  when the grant
+  // list answers again, the same assertion verifies - it is not a replay.
+  assert.equal((await (await call(token, { store, grantExists })).json()).reason, "grant_invalid");
+  live = true;
+  assert.equal((await (await call(token, { store, grantExists })).json()).ok, true);
+  // The spend still happened exactly once:  a third presentation is a replay.
+  assert.equal((await (await call(token, { store, grantExists })).json()).reason, "replayed");
+});
+
 test("an events-only seat and an unlisted seat refuse", async () => {
   const token = await mint();
   assert.equal((await (await call(token, { eventsOnlySeats: ["CODEX"] })).json()).reason, "events_only");

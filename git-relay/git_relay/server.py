@@ -1069,7 +1069,7 @@ def _build_assertion_verifier():
     The channel key is the SAME bearer verify key as the shared-bearer route
     (GIT_RELAY_VERIFY_KEY_NAME, default GR_BEARER_VERIFY_KEY, from the same
     /tools source):  the relay holds no mint-capable material - the mint key
-    lives only in the Worker-only /gr-front folder.  A configured switch with
+    lives in the dedicated runtime /gr-assert-signing folder.  A configured switch with
     an unreadable or short key is a startup error, never silent
     unauthenticated operation.
     """

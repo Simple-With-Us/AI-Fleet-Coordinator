@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { ASSERTION_RE, GR_ASSERT_MAX_TTL_S, GR_ASSERT_TTL_S, mintGrAssertion, parseGrAssertion, verifyGrAssertionToken, sha256HexText, resolveGrAssertionKey, GR_ASSERT_TOKEN_BINDING } from "../src/gr-assert.js";
+import { ASSERTION_RE, GR_ASSERT_MAX_TTL_S, GR_ASSERT_TTL_S, mintGrAssertion, parseGrAssertion, verifyGrAssertionToken, sha256HexText, resolveGrAssertionKey, grAssertionMinter, GR_ASSERT_TOKEN_BINDING } from "../src/gr-assert.js";
 import { _resetInfisicalForTests } from "../src/infisical.js";
 
 globalThis.crypto ??= webcrypto;
@@ -189,6 +189,49 @@ test("the sign key resolves only through the isolated /gr-assert-signing binding
     };
     assert.equal(await resolveGrAssertionKey({ ...base, [GR_ASSERT_TOKEN_BINDING]: "st-gr-assert-narrow" }), "k".repeat(48));
     assert.ok(calls.length >= 1 && calls.every((c) => !c.url.includes("secretPath=%2Fgr-front")));
+  } finally {
+    _resetInfisicalForTests();
+  }
+});
+
+// Lazy signer resolution (host review finding 4428031266):  building the
+// wiring must perform NO Infisical read, so a failing isolated token can
+// never break tools/list or the non-Git routes;  only the Git call that
+// mints fails, and it fails closed (null -> not_configured), never a throw.
+test("the minter resolves the signer lazily and fails only the Git call closed", async () => {
+  const calls = [];
+  const denied = async (url, init) => { calls.push({ url, authorization: init?.headers?.Authorization ?? "" }); return new Response("denied", { status: 403 }); };
+  globalThis.fetch = denied;
+  const env = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws-test", INFISICAL_SERVICE_TOKEN: "st-broad", [GR_ASSERT_TOKEN_BINDING]: "st-gr-assert-narrow" };
+  const props = { seat: "CODEX", scopes: ["zulip:read", "zulip:write"], epoch: 7, approvedAt: 1799999000000, phase: 2, grantRef: "0123456789ab" };
+  try {
+    _resetInfisicalForTests();
+    // Wiring construction (what serveMcp does for every request, including
+    // tools/list and non-Git calls) performs no fetch at all.
+    const minter = grAssertionMinter(env, props);
+    assert.equal(calls.length, 0);
+    // The Git call itself fails closed on a denied isolated read:  null, no
+    // throw, and the broad token is never sent.
+    assert.equal(await minter({ action: "open_pr", body: "{}" }), null);
+    assert.ok(calls.length >= 1);
+    assert.ok(calls.every((c) => c.authorization !== "Bearer st-broad"));
+    // A missing binding (required mode throws inside the resolver) is also
+    // converted to null by the minter.
+    _resetInfisicalForTests();
+    calls.length = 0;
+    assert.equal(await grAssertionMinter({ INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws-test" }, props)({ action: "open_pr", body: "{}" }), null);
+    // A working isolated binding mints a gra2_ assertion.
+    _resetInfisicalForTests();
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, authorization: init?.headers?.Authorization ?? "" });
+      if (url.includes("/api/v3/secrets/raw/GR_ASSERTION_SIGN_KEY") && url.includes("secretPath=%2Fgr-assert-signing")) {
+        return new Response(JSON.stringify({ secret: { secretValue: "k".repeat(48) } }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    };
+    const token = await grAssertionMinter(env, props)({ action: "open_pr", body: BODY });
+    assert.ok(token?.startsWith("gra2_"));
+    assert.equal(parseGrAssertion(token).claims.seat, "CODEX");
   } finally {
     _resetInfisicalForTests();
   }

@@ -145,6 +145,23 @@ export async function serveGrAssertVerify(request, env, gates, { resolveKey = re
   if (!hostedSeats.includes(claims.seat)) return jsonResponse({ ok: false, reason: "bad_seat" }, 200);
   if (eventsOnlySeats.includes(claims.seat)) return jsonResponse({ ok: false, reason: "events_only" }, 200);
   const seatGate = gates(env, claims.seat);
+  // The signed grant_ref must still name a LIVE grant of this seat - checked
+  // BEFORE the one-use jti is claimed (kody 4428074149):  a transient
+  // grant-list miss refuses as grant_invalid and stays retryable instead of
+  // burning the nonce (a retry would read as a replay) and filling the
+  // bounded jti store.  A grant deleted or revoked in the provider (admin
+  // revoke, the one-grant-per-seat replacement at consent, a
+  // refresh-mismatch takedown) or one past its expiresAt refuses here even
+  // when the gate row would still pass.  The default refuses (fail closed).
+  // KV deletion is eventually consistent - this filters dead rows;  the
+  // immediate authoritative revocation is the epoch/pause check inside the
+  // claim transaction below.  Residual race, documented:  a grant revoked in
+  // the sub-second between this check and the claim is accepted by this
+  // call;  every assertion is per-call and expires within 120 seconds, and
+  // the next call mints fresh and re-runs both checks.
+  if (!(await grantExists(claims.seat, claims.grant_ref))) {
+    return jsonResponse({ ok: false, reason: "grant_invalid" }, 200);
+  }
   // Revocation equivalence + one use in ONE Durable Object RPC
   // (src/seat-state.js claimGrAssert):  the gate check and the jti claim are
   // a single storage transaction under the object's input gate, so the two
@@ -160,16 +177,6 @@ export async function serveGrAssertVerify(request, env, gates, { resolveKey = re
       await seatGate.audit({ event: "gr_assert_refused", reason: "replayed", via: "gr-assert-verify" });
     }
     return jsonResponse({ ok: false, reason: gateResult.reason }, 200);
-  }
-  // The signed grant_ref must still name a LIVE grant of this seat:  a grant
-  // deleted or revoked in the provider (admin revoke, the one-grant-per-seat
-  // replacement at consent, a refresh-mismatch takedown) or one past its
-  // expiresAt refuses here even when the gate row would still pass.  The
-  // default refuses (fail closed).  KV deletion is eventually consistent -
-  // this filters dead rows;  the immediate authoritative revocation is the
-  // epoch/pause claim above.
-  if (!(await grantExists(claims.seat, claims.grant_ref))) {
-    return jsonResponse({ ok: false, reason: "grant_invalid" }, 200);
   }
   return jsonResponse({ ok: true, seat: claims.seat }, 200);
 }

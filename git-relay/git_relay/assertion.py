@@ -4,7 +4,7 @@ An OAuth connection to ST-MCP carries no admin-minted bearer, so there is nothin
 the relay's shared-bearer verifier could resolve.  Instead the Worker, after its
 own grant checks (seat, epoch, phase, grant age, pause) pass, mints a SHORT-LIVED,
 PER-CALL HMAC assertion and sends it as the call's bearer.  The signing key lives
-only in the Worker-only Fleet-OPS folder:  this process holds NO mint-capable
+in the dedicated Fleet-OPS /gr-assert-signing runtime folder:  this process holds NO mint-capable
 material at all, so the relay verifies by asking the Worker back over the same
 signed internal channel as the shared-bearer route (GR_BEARER_VERIFY_KEY, the
 X-Agent-Sync-Signature wake scheme - git_relay/shared_bearer.py).
