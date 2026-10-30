@@ -296,7 +296,7 @@ housekeeper_record_state() {
 # SIBLING of the canonical lock, so the second gate reads the same file.
 housekeeper_owner_is_gone() {
     python3 - "$1" <<'PY'
-import json, math, os, socket, subprocess, sys
+import calendar, json, math, os, re, socket, subprocess, sys, time
 
 lock_path = sys.argv[1]
 # The moved-aside copy is named `<lock>.stale-<pid>.<uuid>`, so the owner file
@@ -314,30 +314,29 @@ owner_path = canonical + ".owner"
 # decisions about the same lock and the same file.
 OWNER_KEYS = {"pid", "host", "acquired_at", "lock", "start"}
 
-# The longest start token this protocol accepts.  The token is opaque and is
-# never parsed, so this bound only keeps a hostile file from putting an
-# unbounded string in memory.  The watcher applies the same bound, and the
-# two readers have to apply it in the same place, or an overlong token
-# would be refused by one of them and trusted by the other.
+# The longest start token this protocol accepts.  Readers parse the fixed
+# C-locale civil form for legacy local tokens; this bound keeps hostile input
+# small, and both readers apply it at the same schema check.
 OWNER_START_MAX = 128
 
 
-def process_start_token(pid):
-    """The start time of the process a pid names, as an opaque string.
+def process_start_token(pid, *, utc=False):
+    """The start time of a pid, with UTC normalization available to readers.
 
     A pid alone does not name a process:  the kernel hands the same number to
     somebody else once the original exits, and a reused pid that is ALIVE
     looks exactly like a holder that is still running.  The start time tells
     the two apart.
 
-    The token is an opaque string, compared and never parsed, and the C
-    locale is forced so that this reader and the watcher produce the SAME
-    string for the same process.
+    Writers remain on the current local form.  Readers request UTC while
+    retaining C locale so new records have a stable cross-zone comparison.
     """
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    if utc:
+        env["TZ"] = "UTC0"
     try:
         result = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
+            ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
             capture_output=True, text=True, timeout=10, check=False, env=env,
         )
     except (OSError, subprocess.SubprocessError):
@@ -345,6 +344,54 @@ def process_start_token(pid):
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def c_lstart_epoch(token):
+    """Parse the fixed English civil timestamp emitted under LC_ALL=C."""
+    match = re.fullmatch(
+        r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun) "
+        r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+        r"( {1,2}[1-9]| [12][0-9]| 3[01]) "
+        r"([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]) ([0-9]{4})",
+        token,
+    )
+    if match is None:
+        return None
+    weekday, month_name, day_text, hour, minute, second, year = match.groups()
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    try:
+        civil = time.struct_time((
+            int(year), months.index(month_name) + 1, int(day_text),
+            int(hour), int(minute), int(second), 0, 0, 0,
+        ))
+        epoch = calendar.timegm(civil)
+        parsed = time.gmtime(epoch)
+        if (
+            parsed[:6] != civil[:6]
+            or parsed.tm_wday != weekdays.index(weekday)
+        ):
+            return None
+        return float(epoch)
+    except (ValueError, OverflowError):
+        return None
+
+
+def owner_start_matches_current(start, current_utc, acquired_at):
+    """Return same/different, or None when token evidence is unusable."""
+    if start == current_utc:
+        return True
+    old_epoch = c_lstart_epoch(start)
+    current_epoch = c_lstart_epoch(current_utc)
+    if old_epoch is None or current_epoch is None:
+        return None
+    if abs(old_epoch - current_epoch) > 24 * 60 * 60:
+        return False
+    # The old token may match this process only if it began by publication
+    # of the owner record; this rejects a later process reusing the pid.
+    if current_epoch > acquired_at:
+        return False
+    return True
 
 
 try:
@@ -396,10 +443,11 @@ except OSError:
 # The pid is ALIVE.  It is the holder only when it is the SAME process:  a
 # reused pid looks exactly like a live holder, and believing it would leave a
 # dead holder's lock in place until the whole stale window expires.
-current = process_start_token(pid)
+current = process_start_token(pid, utc=True)
 if not current:
     sys.exit(1)                      # the start time could not be read:  the age rule decides
-sys.exit(0 if current != start else 1)
+same_holder = owner_start_matches_current(start, current, acquired_at)
+sys.exit(0 if same_holder is False else 1)
 PY
 }
 

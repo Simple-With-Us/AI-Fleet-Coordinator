@@ -12,6 +12,7 @@ No credential file is read (AFC-359).  BotFleet is the primary wake.  Grok Bot i
 from __future__ import annotations
 
 import argparse
+import calendar
 import contextlib
 import ctypes
 import fcntl
@@ -406,9 +407,9 @@ def _housekeeper_guard():
 # all.
 _OWNER_KEYS = frozenset({"pid", "host", "acquired_at", "lock", "start"})
 
-# The start time of the holder's process, as the kernel reports it.  It is an
-# OPAQUE string:  it is compared and never parsed, so the only bound it needs
-# is one that keeps a hostile file from putting an unbounded string in memory.
+# The start time of the holder's process, as the kernel reports it.  Readers
+# parse this fixed C-locale civil timestamp only to recognize legacy local
+# tokens across a timezone change; the bound also limits hostile input size.
 _OWNER_START_MAX = 128
 
 
@@ -491,29 +492,30 @@ def _read_housekeeper_owner() -> dict | None:
         return None
 
 
-def _process_start_token(pid: int) -> str:
-    """The start time of the process a pid names, as an opaque string.
+def _process_start_token(pid: int, *, utc: bool = False) -> str:
+    """The C-locale start time of the process a pid names.
 
     A pid alone does not name a process:  the kernel hands the same number to
     somebody else once the original exits, and a reused pid that is ALIVE
     looks exactly like a holder that is still running.  The start time tells
     the two apart.
 
-    The token is read from the kernel through ps and kept as a string that is
-    compared and never parsed, so the format does not have to be understood
-    here.  The C locale is forced, because the writer and the reader have to
-    produce the SAME string for the same process:  a token that differed only
-    because the two processes ran under different locales would read as a
-    different process, and a live holder's lock would be taken away from it.
+    Readers compare exact UTC tokens directly and parse a differing token
+    only as the fixed English civil form emitted under LC_ALL=C.  That lets a
+    reader recognize a legacy local token after the host timezone changes.
 
     An empty token means the start time could not be read at all.  A caller
     that cannot tell the holder from a reused pid must not conclude that the
     holder is gone.
     """
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    if utc:
+        # Readers normalize to UTC.  Writers keep the existing local token
+        # until every reader in the fleet accepts both forms.
+        env["TZ"] = "UTC0"
     try:
         result = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
+            ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
             capture_output=True,
             text=True,
             timeout=10,
@@ -525,6 +527,57 @@ def _process_start_token(pid: int) -> str:
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def _c_lstart_epoch(token: str) -> float | None:
+    """Parse the fixed English civil timestamp emitted under LC_ALL=C."""
+    match = re.fullmatch(
+        r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun) "
+        r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+        r"( {1,2}[1-9]| [12][0-9]| 3[01]) "
+        r"([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9]) ([0-9]{4})",
+        token,
+    )
+    if match is None:
+        return None
+    weekday, month_name, day_text, hour, minute, second, year = match.groups()
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    try:
+        civil = time.struct_time((
+            int(year), months.index(month_name) + 1, int(day_text),
+            int(hour), int(minute), int(second), 0, 0, 0,
+        ))
+        epoch = calendar.timegm(civil)
+        parsed = time.gmtime(epoch)
+        if (
+            parsed[:6] != civil[:6]
+            or parsed.tm_wday != weekdays.index(weekday)
+        ):
+            return None
+        return float(epoch)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _owner_start_matches_current(start: str, current_utc: str, acquired_at: float) -> bool | None:
+    """Return same/different, or None when token evidence is unusable.
+
+    Exact UTC tokens are decisive.  A differing, parseable token can be a
+    pre-migration local-time token; acquired_at rules out a reused pid whose
+    new process started after this owner record was published.
+    """
+    if start == current_utc:
+        return True
+    old_epoch = _c_lstart_epoch(start)
+    current_epoch = _c_lstart_epoch(current_utc)
+    if old_epoch is None or current_epoch is None:
+        return None
+    if abs(old_epoch - current_epoch) > 24 * 60 * 60:
+        return False
+    if current_epoch > acquired_at:
+        return False
+    return True
 
 
 def _pid_alive(pid: int) -> bool:
@@ -587,12 +640,13 @@ def _housekeeper_owner_is_gone(lock_mtime: float) -> bool:
     # the kernel hands a pid to somebody else once the original exits, and a
     # reused pid looks exactly like a live holder.  Believing it would leave
     # a dead holder's lock in place until the whole stale window expires.
-    current = _process_start_token(pid)
+    current = _process_start_token(pid, utc=True)
     if not current:
         # The start time could not be read:  the record cannot speak for the
         # lock, and the age rule decides.
         return False
-    return current != owner["start"]
+    same_holder = _owner_start_matches_current(owner["start"], current, owner["acquired_at"])
+    return same_holder is False
 
 
 def _write_housekeeper_owner() -> None:
