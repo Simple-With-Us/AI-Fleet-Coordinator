@@ -4195,6 +4195,10 @@ class Daemon:
         "I" and "A" are valid session letters and the two English words that collide with them, so
         they count as an address only when they stand alone at the end of the message.  In a
         sentence ("@**MiniMax** I think we ship Friday") they are prose.
+
+        A pair of letters ("@**Claude** AB") is an address too:  Claude chats and MiniMax subthreads
+        hold pairs.  Any two capitals could be a word ("OK", "PR", "CI"), so a pair counts only when a
+        live session holds it, on any platform;  a pair nobody holds is prose and is never answered.
         """
         bots = (
             R.fleet_bots_by_seat(
@@ -4228,12 +4232,14 @@ class Daemon:
                     if index < 0:
                         continue
                     tail = body[index + len(mention) :]
-                    match = re.match(r"\s+([A-Z])(?![A-Za-z0-9])", tail)
+                    match = re.match(r"\s+([A-Z]{1,2})(?![A-Za-z0-9])", tail)
                     if not match:
                         continue
                     letter = match.group(1)
                     if letter in PROSE_LETTERS and tail[match.end() :].strip():
                         continue  # "I think ..." is a sentence, not an address
+                    if len(letter) == 2 and not self.live_pair(letter):
+                        continue  # "@**Claude** OK" is prose:  a pair is an address only when someone holds it
                     sender = message.get("sender_id")
                     return letter, (
                         int(sender)
@@ -4241,6 +4247,14 @@ class Daemon:
                         else None
                     )
         return "", None
+
+    def live_pair(self, letter: str) -> bool:
+        """Whether a live session on any platform holds this pair of letters.  Read-only, and never a reason to
+        fail a wake:  a registry that cannot be read holds nothing."""
+        try:
+            return bool(OR.candidates_for_letter(OR.registry_db_path(self.root, self.env), letter))
+        except (OSError, ValueError, OR.RegistryUnavailable):
+            return False
 
     def operator_candidates(self, platform: str, letter: str) -> list[dict[str, Any]]:
         """The live sessions that could hold one letter.

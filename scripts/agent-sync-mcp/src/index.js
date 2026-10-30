@@ -1381,7 +1381,7 @@ export default {
       await pauseOnRefreshMismatch(env, config, gated.form, response);
       return response;
     }
-    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate);
+    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats });
     const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
     const sbtBearer = route === "mcp" && !gbBearer ? sbtBearerFromRequest(request) : null;
     const response = gbBearer

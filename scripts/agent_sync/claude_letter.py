@@ -16,23 +16,61 @@ What the hook does.
 - SessionStart registers the chat, or resumes its registration, and titles it:  "<letter>: <Title>" when the chat
   already has a title (or, when resumed, a first prompt in its transcript), else "<letter>: New Chat" until its first
   prompt.  A `compact` start only reminds the model of the letter.
-- UserPromptSubmit titles a chat that is still on the placeholder from its first prompt, retries a registration that
-  failed (at most every ten minutes), and marks the chat seen at most every half hour.
+- UserPromptSubmit titles a chat that is still on the placeholder from its first prompt (a key or token in the prompt never
+  reaches the title), retries a registration or a title the registry did not take (at most every ten minutes), and marks
+  the chat seen at most every half hour, whatever the title did.  When the Operator reissues a different pair, the model is
+  told the new one as well as the title.
 - SessionEnd closes the registration when the chat is archived (reason `other`), replaced by `/clear`, or logged out,
   which frees its letter (CLOSE_REASONS).  An exit at the prompt or a `/resume` keeps the letter.
 
-How letters come back.  Main allows 26 live letters a platform and frees one only by close.  So before it registers a
-Claude chat, the registry side closes Claude registrations not seen for 36 hours (the live window of the MiniMax
-sweep), and when all 26 letters are still live it closes the least recently seen Claude chat and tries once more.
+Pair letters (owner, Oct 29, 2026).  A Claude chat takes a pair of letters (AA to ZZ, 676 of them), not one.  Measured
+over 30 days on the Mac and the server together:  121 interactive chats, 40 of them started inside one 72 hours, and
+as many as 52 holding a letter at once when a chat keeps its letter until it has been idle for 36 hours.  Twenty-six
+single letters cannot hold that.  A main chat takes the doubled pairs in order, AA, BB, CC ... ZZ, and once those 26 are
+live the pair a row's sub-thread would reach last (AZ, BA, CB ...).  A sub-thread (a chat another chat started) takes
+the first free pair after its parent's in the same row, wrapping past Z (parent CC, child CD, the next child CE;  parent
+XX: XY, XZ, XA, XB ...), never the row's own doubled pair, and takes the next main-chat pair (a doubled one, while any
+is free) when that row has no free pair or its parent has none.  Taking any other pair for a main chat is the owner's
+allowance for when every doubled pair is taken.  A chat that is reopened gets its own pair back while it is free.  A
+chat that already holds a single letter (the first Claude chat was registered by hand, before pairs) keeps it.
+
+What the Operator needs to give a pair:  the chat's session id, plus the app's id for the chat or its parent when
+another chat started it, and nothing else.  No title, seat claim or request chooses a letter.
+
+Which chat started this one.  Claude Code gives a hook no field that names a parent, so the registry side reads the
+Claude desktop app's own record of the chat (`claude_app_lineage`):  on the Mac, `claude-code-sessions/<account>/<org>/
+local_<id>.json` under ~/Library/Application Support/Claude, found by the chat's CLAUDE_CODE_HOST_SESSION_ID (the hook
+sends it with a registration as --host-session-id) or else by its session UUID.  `spawnedFrom.sessionId` names the
+parent's app id, and the parent's record holds its session UUID, which is what the registry keys on.  The record must hold this chat's own
+session UUID:  a `claude` started inside a chat inherits the chat's app id, so a record that names another chat is not
+used (the start after a `/clear`, when the app may not have written the new UUID yet, is the one case that trusts the
+id alone).  A server chat's lookup rides the ssh call that already goes to the Mac, so it adds no round trip.  A terminal `claude` chat has no
+record, a user fork is not a sub-thread, and anything unreadable (no record, a deleted parent, a changed file layout)
+means no parent is known:  the chat is picked like a main chat.  Only a chat that is being placed is looked up.
+
+Renames.  A chat that is renamed keeps its pair in front of its title, and the Operator's title follows the thread.  On
+its next prompt the hook puts the pair back if the new name dropped it (the owner's words are kept whole), and sends
+words that differ from the registry's to the Operator;  a registry that does not answer is asked again about the same
+words after ten minutes.  A chat with no local note that is resumed under a name opening with two capitals and a colon
+("PR: Review") loses those two capitals on its first start, because without its own letter to go by the hook takes
+them for one.
+
+How letters come back.  A letter is freed only by close.  So before it registers a Claude chat, the registry side
+closes Claude registrations not seen for 36 hours (the live window of the MiniMax sweep), and when every letter of the
+space is still live it closes the least recently seen Claude chat that holds a letter of that space and tries once more.
 
 A reopened chat always checks with the Operator again (owner, Oct 28, 2026), in case it needs a new letter:  a
 resumed chat registers again at its start, and a chat that finds its letter retired while it was open registers again
-on its next prompt.  A live letter comes back unchanged;  a retired one is reissued by `SessionRegistry.reopen`, the
-lowest free letter by the same rule as a first registration, and the title moves to the new letter.
+on its next prompt.  A live letter comes back unchanged;  a retired one is reissued by `SessionRegistry.reopen`:  the
+chat's own letter when it is free, else the next free pair by the rule above (after its parent's, for a sub-thread),
+and the title moves to the new letter.
 
 The hook never blocks a chat:  every failure is a line of context, or nothing, and exit 0.  Only interactive chats
 take part (the `attach` rule:  CLAUDE_CODE_ENTRYPOINT cli or claude-desktop, and no launcher), and CLAUDE_LETTER=0
-turns it off.  The location is the fleet location, never a guess:  darwin is the Mac, and any other host must say
+turns it off.  A platform that runs Claude as its engine (BotFleet, the listener's wake) is a launcher:  it sets
+AGENT_LAUNCHER, AGENT_LAUNCH_SEAT and AGENT_SYNC_ATTACH=0, takes no Claude letter, and asks the Operator for its own,
+under its own platform and session id.  AGENT_SYNC_ATTACH=0 turns this hook off for any session, as it does the attach
+hooks.  The location is the fleet location, never a guess:  darwin is the Mac, and any other host must say
 CLAUDE_LETTER_LOCATION=server (the hook installer sets it on the server, with CLAUDE_LETTER_REMOTE), so a cloud or
 unknown host takes no letter.  Titles go through the fleet's secret scanner before they are stored or relayed.
 
@@ -54,6 +92,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, TextIO
 
+from . import claude_app_lineage as AL
 from . import identity as I
 from . import live as L
 from . import secretscan
@@ -88,6 +127,8 @@ ENV_LOCATION = "CLAUDE_LETTER_LOCATION"
 # The ssh destination (a name from the host's own ssh config) that holds the registry, for a chat that is not on the
 # registry's host.  It is configuration, not source:  `letter install --remote` writes it into settings.json.
 ENV_REMOTE = "CLAUDE_LETTER_REMOTE"
+# The desktop app's own id for the chat, set on the chat's process (it is never the parent's).
+ENV_HOST_SESSION = "CLAUDE_CODE_HOST_SESSION_ID"
 REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat letter registry'
 CONNECT_TIMEOUT = (
     4  # seconds for ssh to connect;  an asleep or unreachable Mac costs this much, not more
@@ -104,11 +145,25 @@ TITLE_CHARS = 60
 # costs a bounded amount of work inside the hook's 15-second budget.
 PROMPT_SCAN_CHARS = 4096
 PROMPT_SCAN_WORDS = 64
+# A token of this many letters and digits mixed is taken for a key or a hash and kept out of a title.
+SECRET_RUN = 28
+# A pasted private key block, BEGIN line to END line (or to the end of the text a title is looked for in).  Only
+# private keys:  the scanner knows no other header, and a certificate or a public key named in a question is no secret.
+_KEY_HEADER = r"[A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*"
+KEY_BLOCK = re.compile(
+    r"-----BEGIN %s-----.*?(?:-----END %s-----|\Z)" % (_KEY_HEADER, _KEY_HEADER), re.DOTALL
+)
+# Any other armored block that is pasted whole, BEGIN line to END line (a certificate, a public key, a PGP message):  data,
+# not a title.  One without an END line, such as a header named in a question, is left alone.
+ARMOR_BLOCK = re.compile(r"-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----", re.DOTALL)
 STDIN_LIMIT = 1 << 20
 TRANSCRIPT_LINES = 400
 TRANSCRIPT_BYTES = 4 << 20
 
-LETTER_PREFIX = re.compile(r"^[A-Z]: ")
+LETTER_PREFIX = re.compile(r"^[A-Z]{1,2}: ")
+# The letter space a new Claude chat takes, and how its pair is picked (see "Pair letters" above).
+LETTER_SPACE = "double"
+LETTER_PICK = "primary"
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’+#.\-]*")
 SMALL_WORDS = frozenset(
     [
@@ -146,8 +201,15 @@ Runner = Callable[..., Any]
 
 def in_scope(env: Mapping[str, str]) -> bool:
     """Only interactive Claude Code chats take a letter:  the same surfaces `attach` serves.  A `claude -p`, SDK or
-    launcher run never does, and CLAUDE_LETTER=0 turns the hook off for any session."""
+    launcher run never does, and CLAUDE_LETTER=0 turns the hook off for any session.
+
+    A platform that runs Claude as its engine (BotFleet, the listener's wake, Muster, OpenCode) is a launcher:  it sets
+    AGENT_LAUNCHER and AGENT_LAUNCH_SEAT and AGENT_SYNC_ATTACH=0, so it is out of scope here and asks the Operator for
+    its own letter, under its own platform and its own session id (owner, Oct 29, 2026).  AGENT_SYNC_ATTACH=0 turns
+    the hook off for any session, as it does for the attach hooks."""
     if str(env.get(ENV_OFF, "")).strip() == "0" or I.launched(env):
+        return False
+    if str(env.get(I.ENV_ATTACH, "")).strip() == "0":
         return False
     return env.get("CLAUDE_CODE_ENTRYPOINT") in ENTRYPOINTS
 
@@ -186,9 +248,14 @@ def clean_title(text: object) -> str:
 
     A title is relayed to the registry and from there to the Fleet Reference sheet, and a first prompt can carry a
     pasted key, so every word goes through the fleet's secret scanner first;  it reports only that a word matched."""
-    words = [w for w in one_line(text).split(" ") if w and not secretscan.scan(w)]
+    given = [w for w in one_line(text).split(" ") if w]
+    words = [w for w in given if not _secret_like(w)]
+    if not words:
+        # Nothing but long words (a ticket or a branch name):  those the scanner alone does not flag are the title,
+        # so such a name does not blank the Operator's copy.
+        words = [w for w in given if not secretscan.scan(w)]
     line = " ".join(words)
-    if secretscan.scan(line):
+    if _reads_secret(line):
         return ""
     if len(line) <= TITLE_CHARS:
         return line
@@ -196,10 +263,31 @@ def clean_title(text: object) -> str:
     return (cut or line[:TITLE_CHARS]).rstrip(" ,;:-")
 
 
-def bare(title: object) -> str:
-    """A title without a leading letter, so "B: Fix Login" and "Fix Login" carry the same words."""
+def bare(title: object, label: str = "") -> str:
+    """A title without its leading letter, so "BC: Fix Login" and "Fix Login" carry the same words.
+
+    With the chat's own label only that label is dropped, so a title that opens with an acronym ("PR: Review") keeps
+    it;  without one, any one or two capital letters before a colon are taken for a label."""
     line = one_line(title)
+    if label:
+        if line == label + ":":
+            return ""  # the name was cleared down to the letter alone
+        prefix = "%s: " % label
+        return line.removeprefix(prefix)
+    if re.fullmatch(r"[A-Z]{1,2}:", line):
+        return ""
     return LETTER_PREFIX.sub("", line, count=1) if LETTER_PREFIX.match(line) else line
+
+
+def own_words(current: object, note: Mapping[str, Any]) -> str:
+    """The words of a title as someone wrote them, with this chat's letters dropped:  its own, and the one it held
+    before the Operator reissued it (a chat whose registration failed keeps showing the old letter until it takes a
+    new one).  The words are kept whole;  only the copy sent to the registry is cut and scanned."""
+    words = one_line(current)
+    for held in (note.get("label"), note.get("prior_label")):
+        if held:
+            words = bare(words, str(held))
+    return words
 
 
 def title_case(words: list[str]) -> str:
@@ -220,16 +308,85 @@ def title_case(words: list[str]) -> str:
     return " ".join(out)
 
 
+def _secret_like(token: str) -> bool:
+    """A whitespace-delimited token the scanner flags, or a long run of letters and digits mixed (a key or a hash the
+    scanner has no pattern for, such as an npm_ token).  The scanner keys on prefixes (ghp_, sk_live_), and the word
+    split cuts at an underscore, so a token has to be judged whole, before it is split."""
+    if secretscan.scan(token):
+        return True
+    run = token.strip(".,;:()[]{}\"'`")
+    return (
+        len(run) >= SECRET_RUN and any(c.isdigit() for c in run) and any(c.isalpha() for c in run)
+    )
+
+
+# Quote and markup marks a name may be wrapped in ("password": "...", `password`: `...`, **password**: ..., curly quotes).
+_QUOTE_MARKS = str.maketrans("", "", "\"'`\\*“”‘’")
+
+
+def _reads_secret(text: str) -> bool:
+    """Whether the scanner flags the text, or the text with its quote marks taken out:  in a JSON line such as
+    "password": "<value>" a quote sits between the name and the colon, which the scanner's assignment patterns do
+    not allow."""
+    return bool(secretscan.scan(text) or secretscan.scan(text.translate(_QUOTE_MARKS)))
+
+
+def _without_secrets(line: str) -> str:
+    """The line with every whitespace-delimited token that looks like a secret removed."""
+    return " ".join(token for token in line.split() if not _secret_like(token))
+
+
 def title_from_prompt(prompt: object) -> str:
     """A short title from a prompt's first line that has words, or "" when it has none.  Markup, code blocks, links
     and a leading slash command are dropped first, so a pasted block or "/review" does not become the title (the
-    words after a slash command still can)."""
-    text = str(prompt or "")[:PROMPT_SCAN_CHARS]
+    words after a slash command still can).
+
+    A token that looks like a secret is dropped whole before its line is split into words, so a pasted key (or the
+    ghp_ in front of it) never reaches a title, the registry, the note or the sheet.  A line that still reads as a
+    secret once those are gone, alone or joined with a neighbouring line ("Authorization:" then "Bearer <key>"), gives
+    no title.  A pasted private key block (BEGIN line to END line) is cut out whole, and so is any other armored
+    block that has its END line (a certificate, a PGP message), and a line that is a single token right
+    after a line that held a secret is skipped too:  a key broken over a line break leaves its end alone on the
+    next line, shorter than SECRET_RUN.  When the prompt is longer than the scan window, the word the window ends
+    inside of is dropped (a key cut short passes every length check), and so is a fenced block it ends inside of."""
+    whole = str(prompt or "")
+    text = whole[:PROMPT_SCAN_CHARS]
+    cut = len(whole) > PROMPT_SCAN_CHARS
+    if cut and not whole[PROMPT_SCAN_CHARS].isspace() and not text[-1:].isspace():
+        # The window ends inside a word, and a key cut short passes every length check:  the partial word is dropped.
+        parts = text.rsplit(None, 1)
+        text = parts[0] if len(parts) == 2 else ""
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    if cut:
+        # a pasted block the window ends inside of:  a fence opens at the start of a line, a mention of it does not
+        text = re.sub(r"(?m)^[ \t]*```.*\Z", " ", text, flags=re.DOTALL)
+    text = KEY_BLOCK.sub(" ", text)
+    text = ARMOR_BLOCK.sub(" ", text)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
-    for line in text.splitlines():
-        line = re.sub(r"^\s*/\S*", " ", line)
+    original = text.splitlines()
+    raw_lines = [re.sub(r"^\s*/\S*", " ", raw) for raw in original]
+    lines = [_without_secrets(raw) for raw in raw_lines]
+    leaked = False  # the line before held a secret, or all of one but its end
+    for number, line in enumerate(lines):
+        before = lines[number - 1] if number else ""
+        after = lines[number + 1] if number + 1 < len(lines) else ""
+        # A neighbour's own secret does not make this line one:  only a secret that the join of the two makes.  (So
+        # the line right after a "password: <value>" line is let through when it is no hit itself;  a value wrapped
+        # onto it as a single word is the case the one-word rule below covers.)
+        secret = _reads_secret(line) or any(
+            _reads_secret(joined) and not _reads_secret(neighbour)
+            for joined, neighbour in ((before + " " + line, before), (line + " " + after, after))
+        )
+        tail = leaked and len(line.split()) == 1
+        # A row of a base64 body can start with "/" and then looks like a slash command, whose word was cut above.
+        led = re.match(r"\s*(/\S*)", original[number])
+        dropped = len(line.split()) < len(raw_lines[number].split()) or bool(
+            led and _secret_like(led.group(1))
+        )
+        leaked = secret or tail or dropped
+        if secret or tail:
+            continue  # what is left still reads as a secret, alone or across a line break, or is a key's end
         words = []
         for scanned, match in enumerate(WORD.finditer(line)):
             if len(words) >= TITLE_WORDS or scanned >= PROMPT_SCAN_WORDS:
@@ -318,8 +475,10 @@ def _open_claude_rows(db: str) -> list[sqlite3.Row]:
     marks = ", ".join("?" for _ in MANAGED_SOURCES)
     try:
         return conn.execute(
-            "SELECT record_id, verified_host, native_session_id, last_seen_at FROM sessions"
-            " WHERE platform = ? AND closed_at IS NULL AND source IN (%s)" % marks,
+            "SELECT s.record_id, s.verified_host, s.native_session_id, s.last_seen_at, a.letter AS letter"
+            " FROM sessions s LEFT JOIN alias_assignments a"
+            " ON a.record_id = s.record_id AND a.retired_at IS NULL"
+            " WHERE s.platform = ? AND s.closed_at IS NULL AND s.source IN (%s)" % marks,
             (PLATFORM, *MANAGED_SOURCES),
         ).fetchall()
     finally:
@@ -358,10 +517,16 @@ def sweep_stale(OR: Any, db: str, keep: tuple[str, str], now: float) -> int:
     return _close_records(OR, db, stale, "claude-letter-sweep")
 
 
-def evict_oldest(OR: Any, db: str, keep: tuple[str, str]) -> int:
-    """Close the least recently seen open Claude registration, except the chat being registered."""
+def evict_oldest(OR: Any, db: str, keep: tuple[str, str], size: int = 0) -> int:
+    """Close the least recently seen open Claude registration, except the chat being registered.
+
+    With a size, only a chat that holds a letter of that length is a candidate:  closing a single-letter chat frees
+    no pair, and closing a pair frees no single letter, so it would close a chat for nothing."""
     rows = [
-        r for r in _open_claude_rows(db) if (r["verified_host"], r["native_session_id"]) != keep
+        r
+        for r in _open_claude_rows(db)
+        if (r["verified_host"], r["native_session_id"]) != keep
+        and (not size or len(r["letter"] or "") == size)
     ]
     if not rows:
         return 0
@@ -372,14 +537,42 @@ def evict_oldest(OR: Any, db: str, keep: tuple[str, str]) -> int:
 def _with_room(
     OR: Any, db: str, keep: tuple[str, str], allocate: Callable[[], Any]
 ) -> tuple[Any, int]:
-    """Run one allocation;  when every letter is live, close the least recently seen Claude chat and try once more.
-    A second LabelExhausted is the caller's to report."""
+    """Run one allocation;  when every letter of the space is live, close the least recently seen Claude chat that
+    holds a letter of that space and try once more.  A second LabelExhausted is the caller's to report."""
     try:
         return allocate(), 0
-    except OR.LabelExhausted:
-        if not evict_oldest(OR, db, keep):
+    except OR.LabelExhausted as exc:
+        size = len(next(iter(OR.LETTER_SPACES[getattr(exc, "space", "single")])))
+        if not evict_oldest(OR, db, keep, size):
             raise
         return allocate(), 1
+
+
+def _parent(OR: Any, db: str, args: Any, sid: str) -> tuple[str, str]:
+    """(the Claude Code session id of the chat that started this one, why none), as ("<id>", "") or ("", reason);  with
+    no parent the chat is picked like any other.
+
+    Named by the caller (--parent-session-id), else read from the desktop app's record of the chat (claude_app_lineage).
+    Only a chat that is being placed asks:  one with a live letter keeps it, so nothing is looked up for it and no
+    reason is given.  The lookup is a hint the chat was never owed, so nothing it can raise stops a registration."""
+    if args.parent_session_id:
+        return str(args.parent_session_id), ""
+    reg = OR.SessionRegistry(db)
+    try:
+        rec = reg.lookup(PLATFORM, args.location, SCOPE, sid)
+    finally:
+        reg.close_db()
+    if rec is not None and rec.get("state") != "closed" and rec.get("label"):
+        return "", ""
+    try:
+        return AL.lookup(
+            args.home,
+            host_session_id=args.host_session_id,
+            cli_session_id=sid,
+            allow_lag=args.after_clear,
+        )
+    except Exception:  # noqa: BLE001 - a hint, never a reason to leave a chat without a letter
+        return "", AL.UNREADABLE
 
 
 def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, Any]:
@@ -388,6 +581,7 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
     keep = (args.location, sid)
     swept = sweep_stale(OR, db, keep, now)
     title = clean_title(args.title)
+    parent, no_parent = _parent(OR, db, args, sid)
 
     def register() -> dict[str, Any]:
         return OR.register_session(
@@ -400,6 +594,9 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
             source=args.source,
             title=title,
             issuer=OR.ISSUER_OPERATOR,
+            letter_space=LETTER_SPACE,
+            letter_pick=LETTER_PICK,
+            parent_session_id=parent,
         )
 
     try:
@@ -412,7 +609,13 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                         OR,
                         db,
                         keep,
-                        lambda: reg.reopen(out["record_id"], actor=args.seat, source=args.source),
+                        lambda: reg.reopen(
+                            out["record_id"],
+                            actor=args.seat,
+                            source=args.source,
+                            pick=LETTER_PICK,
+                            parent_session_id=parent,
+                        ),
                     )
                     evicted += more
                     out.update(
@@ -430,10 +633,18 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                     )  # register keeps an existing record's old title
             finally:
                 reg.close_db()
-    except OR.LabelExhausted:
-        return {"error": "all 26 Claude letters are in use", "swept": swept}
+    except OR.LabelExhausted as exc:
+        space = getattr(exc, "space", LETTER_SPACE)
+        return {
+            "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[space]),
+            "swept": swept,
+        }
     out["swept"] = swept
     out["evicted"] = evicted
+    if no_parent and out.get("outcome") in ("registered", "reopened"):
+        out["parent_lookup"] = (
+            no_parent  # why this chat was placed as a main chat (claude_app_lineage's reasons)
+        )
     return out
 
 
@@ -476,6 +687,11 @@ def registry_main(
     parser.add_argument("--seat", default=SEAT_DEFAULT)
     parser.add_argument("--title", default="")
     parser.add_argument("--source", default=SOURCE)
+    parser.add_argument("--parent-session-id", default="")
+    parser.add_argument("--host-session-id", default="")
+    parser.add_argument(
+        "--after-clear", action="store_true"
+    )  # the app's record may not hold this session UUID yet
     try:
         with io.StringIO() as sink:
             from contextlib import redirect_stderr, redirect_stdout
@@ -484,6 +700,7 @@ def registry_main(
                 args = parser.parse_args(argv)
     except SystemExit:
         return _emit(stdout, {"error": "bad arguments:  %s" % " ".join(argv)[:200]}, 2)
+    args.home = str(env.get("HOME") or os.path.expanduser("~"))
     db = OR.registry_db_path(L.state_root(env), env)
     if not os.path.isfile(db):
         # Never create one:  a second registry would hand out letters that collide with the one the Operator keeps.
@@ -534,14 +751,14 @@ _ANSWER_TYPES = {
 
 def _answer(value: dict[str, Any] | None) -> dict[str, Any]:
     """A registry answer whose fields have the shapes the hook reads, or an error that says it did not:  every named
-    field has its type, a label is "" or one letter A-Z, and a generation is a positive whole number."""
+    field has its type, a label is "" or one or two letters A-Z, and a generation is a positive whole number."""
     if value is None:
         return {"error": "the registry gave no answer"}
     for key, kind in _ANSWER_TYPES.items():
         if key in value and not isinstance(value[key], kind):
             return {"error": "the registry answer has a malformed %s" % key}
     label = value.get("label")
-    if label and not re.fullmatch(r"[A-Z]", label):
+    if label and not re.fullmatch(r"[A-Z]{1,2}", label):
         return {"error": "the registry answer has a malformed label"}
     gen = value.get("generation")
     if gen is not None and (isinstance(gen, bool) or not isinstance(gen, int) or gen < 1):
@@ -591,7 +808,7 @@ class Chat:
 
     # ---- the registry ----------------------------------------------------------------------
 
-    def registry(self, op: str, title: str = "") -> dict[str, Any]:
+    def registry(self, op: str, title: str = "", after_clear: bool = False) -> dict[str, Any]:
         argv = [
             op,
             "--location",
@@ -602,7 +819,22 @@ class Chat:
             self.seat,
         ]
         if title:
-            argv += ["--title", clean_title(title)]
+            # One argument in the --flag=VALUE form:  a chat renamed "-v" or "--db x" must reach the registry as a
+            # title, not be read by its parser as an option.
+            argv += ["--title=" + clean_title(title)]
+        host = str(self.env.get(ENV_HOST_SESSION) or "").strip()
+        if op == "register" and AL.HOST_ID.fullmatch(host):
+            # The desktop app's id for this chat, so the registry side (which runs on the Mac, where the app's record
+            # of the chat is) can tell whether another chat started it.
+            extra = ["--host-session-id=" + host] + (["--after-clear"] if after_clear else [])
+            answer = self._call(argv + extra)
+            if not str(answer.get("error") or "").startswith("bad arguments"):
+                return answer
+            # A Mac still on a runtime from before the flag refuses the whole call:  ask again without it, so the chat
+            # still gets a pair (as a main chat) rather than none until the Mac catches up.
+        return self._call(argv)
+
+    def _call(self, argv: list[str]) -> dict[str, Any]:
         if self.location == "mac":
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
@@ -675,6 +907,9 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
         location=chat.location,
         touched_at=chat.now,
     )
+    held = str(note.get("label") or "")
+    if held and held != answer["label"]:
+        out["prior_label"] = held  # the title on screen may still carry it
     if fresh:
         out["titled"] = False
     out.pop("error", None)
@@ -707,21 +942,25 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         return 0
     # /clear starts a new chat that can carry the old chat's name;  that name is not this chat's title.
     inherited = current if source == "clear" else ""
-    text = "" if inherited else bare(current)
+    text = "" if inherited else bare(current, str(note.get("label") or ""))
     if text == PLACEHOLDER:
         text = ""  # "<letter>: New Chat" holds the place of a title;  it is not one
     if not text and source in ("resume", "fork"):
         text = title_from_transcript(data.get("transcript_path"), home)
-    answer = chat.registry("register", title=text)
+    answer = chat.registry("register", title=text, after_clear=source == "clear")
     note = _apply(
-        chat, answer, dict(note, inherited=inherited, title=text or note.get("title", ""))
+        chat,
+        answer,
+        dict(note, inherited=inherited, title=clean_title(text) or note.get("title", "")),
     )
+    note.pop("prior_label", None)  # the words above already have the earlier letter taken off
     if note["state"] == "failed":
         chat.write(note)
         _hook_out(
             stdout,
             "SessionStart",
-            context="No Operator letter yet (%s).  The next prompt tries again." % note["error"],
+            context="No Operator letter yet (%s).  A prompt after %d minutes tries again."
+            % (note["error"], RETRY_SECONDS // 60),
         )
         return 0
     if note["state"] == "mismatch":
@@ -756,13 +995,33 @@ def _first_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
     """The words for a chat's first real title:  a name someone gave it, else the title its start found, else its
     first prompt, else "" (a prompt with no words, such as a bare slash command, waits for the next one)."""
     placeholder = note.get("placeholder") or ""
-    if (
-        current
-        and current not in (placeholder, note.get("inherited") or "")
-        and bare(current) != PLACEHOLDER
-    ):
-        return bare(current)  # someone named the chat:  keep their words under the letter
+    if current and current not in (placeholder, note.get("inherited") or ""):
+        words = own_words(current, note)
+        if words and bare(words) != PLACEHOLDER:
+            return words  # someone named the chat:  keep their words, whole, under the letter
     return str(note.get("title") or "") or title_from_prompt(prompt)
+
+
+def _renamed(note: Mapping[str, Any], current: str) -> str:
+    """The words of a title someone gave this chat after the hook titled it, whole as they wrote them, or "".
+
+    The title the hook set ("<letter>: <words>"), the placeholder and an inherited `/clear` name are not renames.
+    Anything else is:  the words come out of the new title with only this chat's own letter dropped, so a name that
+    opens with an acronym ("PR: Review") keeps it.  The caller compares the cleaned words with the registry's:  words
+    that differ are sent;  words that match mean only the letter was missing, and the caller puts it back."""
+    label = str(note.get("label") or "")
+    if not note.get("titled") or not label or not current:
+        return ""
+    if current in (
+        "%s: %s" % (label, note.get("title") or ""),
+        str(note.get("placeholder") or ""),
+        str(note.get("inherited") or ""),
+    ):
+        return ""
+    words = own_words(current, note)
+    if not words or words == PLACEHOLDER:
+        return ""
+    return words
 
 
 def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
@@ -771,43 +1030,150 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     if state in ("mismatch", "closed"):
         return 0
     current = one_line(data.get("session_title"))
+    context = ""
     if state != "open":
         if state == "failed" and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
             return 0
-        note = _apply(chat, chat.registry("register", title=str(note.get("title") or "")), note)
+        recovered = chat.registry("register", title=str(note.get("title") or ""))
+        note = _apply(chat, recovered, note)
         if note["state"] != "open":
             chat.write(note)
             return 0
+        # The model was told at the start that this chat had no letter yet:  it is told the one it holds now.
+        context = _reissued(recovered) + reminder(note)
     title = None
+    answer: dict[str, Any] = {}
+    sent = False  # a registry call this prompt (a title or a touch) also marks the chat seen
     text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
     if text:
         title = "%s: %s" % (note["label"], text)
+        cleaned = clean_title(text)
         note.update(
             titled=True,
-            title=text,
+            title=cleaned,  # the note keeps the scanned, cut copy the registry holds
             placeholder=note.get("placeholder") or "%s: %s" % (note["label"], PLACEHOLDER),
         )
+        note.pop("prior_label", None)  # the title on screen has the new letter now
         answer = chat.registry("title", title=text)
-        note["touched_at"] = chat.now
-    elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
+        sent = True
+        if "error" in answer:
+            # The chat shows its title, but the Operator has none:  ask again after the wait, as a rename does.
+            note.update(title_unsent=cleaned, title_failed_at=chat.now)
+        else:
+            note["touched_at"] = chat.now
+    elif renamed := _renamed(note, current):
+        # Someone renamed the chat.  The letter goes back in front of their words, kept whole, if the new name dropped
+        # it.  Words that differ from the registry's go to the Operator, so its title follows the thread;  the note
+        # keeps the old words until the registry has taken the new ones, and a registry that did not answer is not
+        # asked again about the same words for RETRY_SECONDS.  Words that match mean only the letter was missing, and
+        # putting it back needs no registry call.
+        title = "%s: %s" % (note["label"], renamed)
+        cleaned = clean_title(renamed)
+        if cleaned != note.get("title"):
+            waiting = note.get("rename_failed_for") == cleaned and (
+                chat.now - float(note.get("rename_failed_at") or 0) < RETRY_SECONDS
+            )
+            if not waiting:
+                answer = chat.registry("title", title=renamed)
+                sent = True
+                if "error" in answer:
+                    note.update(rename_failed_at=chat.now, rename_failed_for=cleaned)
+                else:
+                    note["title"] = cleaned
+                    note.pop("rename_failed_at", None)
+                    note.pop("rename_failed_for", None)
+                    note.pop(
+                        "title_unsent", None
+                    )  # this title replaces the one that never reached the Operator
+                    note.pop("title_failed_at", None)
+                    note["touched_at"] = chat.now
+    # A title the Operator never took (the first one, when the registry did not answer) is sent again after the wait,
+    # unless a registration or a rename since has put a newer title there:  the old one is never sent over it.
+    unsent = str(note.get("title_unsent") or "")
+    if unsent and unsent != str(note.get("title") or ""):
+        note.pop("title_unsent", None)
+        note.pop("title_failed_at", None)
+        unsent = ""
+    if not sent and unsent and chat.now - float(note.get("title_failed_at") or 0) >= RETRY_SECONDS:
+        # A rename that is waiting for the registry is the newer title, so it goes out in place of the first one.
+        # ... but only while the title on screen still holds it:  a rename the owner took back is stale, and sending it
+        # would put words the chat no longer wears in the Operator (or, with a retired letter, over the screen's title).
+        waiting = note.get(
+            "rename_failed_for"
+        )  # None when there is none;  "" is a name with nothing left after the scan
+        latest = (
+            waiting
+            if waiting is not None and clean_title(own_words(current, note)) == waiting
+            else unsent
+        )
+        answer = chat.registry("title", title=latest)
+        sent = True
+        if "error" in answer:
+            note["title_failed_at"] = chat.now
+            if latest != unsent:
+                note["rename_failed_at"] = chat.now
+        else:
+            note["title"] = latest
+            for key in ("title_unsent", "title_failed_at", "rename_failed_at", "rename_failed_for"):
+                note.pop(key, None)
+            note["touched_at"] = chat.now
+    # Whatever the title did, a chat is marked seen on schedule when nothing was sent:  a name of more than TITLE_CHARS,
+    # or one the scanner shortened, is a rename on every prompt and would otherwise never touch, so the 36-hour sweep
+    # would close a live chat.  The touch is also where a retired letter is found.
+    if not sent and chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
         answer = chat.registry("touch")
         note["touched_at"] = chat.now
-    else:
-        answer = {}
     if answer.get("retired"):
         # The letter was retired while this chat was open:  check with the Operator again, in case it needs a new one.
-        text = str(note.get("title") or "") or bare(current) or PLACEHOLDER
-        note = _apply(chat, chat.registry("register", title=text), note)
+        held = str(note.get("label") or "")
+        held_generation = int(note.get("generation") or 1)
+        # The registry's copy of the title is cut and scanned;  the owner's whole words stay on screen when that copy is
+        # only their cut form (a name over TITLE_CHARS, or one the scanner shortened).
+        kept = str(note.get("title") or "")
+        words = own_words(current, note)
+        # A rename the registry has not taken yet is the owner's title, not the old words it still holds.
+        waiting = note.get("rename_failed_for")  # None when there is none
+        known = {kept} if waiting is None else {kept, waiting}
+        text = words if words and clean_title(words) in known else (kept or words or PLACEHOLDER)
+        registered = chat.registry("register", title=text)
+        note = _apply(chat, registered, note)
         if note["state"] == "open":
+            # The note keeps the scanned, cut copy the registry holds;  the title on screen keeps the owner's words.
+            cleaned = clean_title(text)
             note.update(
-                titled=True, title=text, placeholder="%s: %s" % (note["label"], PLACEHOLDER)
+                titled=True,
+                title=cleaned,
+                placeholder="%s: %s" % (note["label"], PLACEHOLDER),
             )
+            # The registration carried this title, so a first title that never arrived, or a rename that was waiting
+            # for the registry, is settled.
+            for key in ("title_unsent", "title_failed_at"):
+                note.pop(key, None)
+            if waiting is not None and waiting == cleaned:
+                note.pop("rename_failed_at", None)
+                note.pop("rename_failed_for", None)
             title = "%s: %s" % (note["label"], text)
+            if note["label"] != held or int(note.get("generation") or 1) != held_generation:
+                # A different pair, or the same one as a later generation:  the model was told how this chat is
+                # addressed at the start, so it is told how now.
+                context = _reissued(registered) + reminder(note)
         else:
-            title = bare(current) if LETTER_PREFIX.match(current) else None
+            title = bare(current, held) if held and current.startswith("%s: " % held) else None
+            if held:
+                # Retired and not replaced yet:  the model must not go on announcing a letter another chat may hold.
+                context = (
+                    "This chat's Operator letter %s was retired and the Operator could not issue another (%s).  "
+                    "It is not %s any more; a prompt after %d minutes tries again."
+                    % (held, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
+                )
     chat.write(note)
-    if title and title != current:
-        _hook_out(stdout, "UserPromptSubmit", title=title)
+    if (title and title != current) or context:
+        _hook_out(
+            stdout,
+            "UserPromptSubmit",
+            context=context,
+            title=title if title and title != current else None,
+        )
     return 0
 
 
