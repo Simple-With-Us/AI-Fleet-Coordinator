@@ -24,7 +24,7 @@ WORKER_NOTES_JS = SCRIPTS / "agent-sync-mcp" / "src" / "notes.js"
 CLI_ONLY_VERBS = {"runner"}  # the Mac runner:  the LaunchAgent runs it, no tool does
 # The options of the common parent every verb carries (cli._common_parent), and the CLI's own conveniences.
 COMMON_DESTS = {"help", "as_seat", "default_seat", "rc", "session", "json"}
-CLI_CONVENIENCES = {"no_wait", "body_file"}  # --no-wait is --wait 0;  --body-file is one more way to give the body
+CLI_CONVENIENCES = {"no_wait", "body_file", "fleet_bearer_file"}  # --no-wait is --wait 0;  --body-file is one more way to give the body
 
 # tool argument -> how its verb takes it:  ("positional", DEST) or ("option", "--flag").  `markdown` is the BODY
 # positional (or --body-file, or standard input), `session` the global --session every verb inherits.

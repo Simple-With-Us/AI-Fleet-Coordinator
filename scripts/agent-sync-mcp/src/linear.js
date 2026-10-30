@@ -39,6 +39,30 @@ export const LINEAR_RESPONSE_LIMIT = 4_000_000; // bytes
 // token with a different string revokes every token the app holds, so it is a
 // constant here and is never read from the environment (board SCOPE).
 export const LINEAR_SCOPE = "read,write,app:assignable,app:mentionable";
+// A different scope string revokes every token the app holds, so a seat mints only with a
+// scope that has been checked against that app's own grant.  A seat added to MINT_SCOPE_PENDING is
+// enabled (tools and viewer check work with any token already cached for it) but does NOT
+// mint on first use until their exact scope is qualified and given in SEAT_MINT_SCOPES
+// (seat tag -> scope string, the app's own).  The other seats use LINEAR_SCOPE.  MA and BF-TRADER have
+// their own scope strings below, and the rest use LINEAR_SCOPE.
+// Empty.  A seat listed here is enabled but mints nothing until it is removed;  MA was parked here until
+// its token replacement was approved.
+export const MINT_SCOPE_PENDING = Object.freeze([]);
+// MA: the installation's own client.scope as the provider returned it (2026-10-29), not LINEAR_SCOPE.
+// BF-TRADER: no installation exists, so this is a new first grant, set to the least the hosted tools use:
+// read and write, plus app:assignable because linear_claim/linear_status set the app as issue delegate
+// (hosted-tools.js delegateId).  No hosted tool needs app:mentionable, so it is left off.
+export const SEAT_MINT_SCOPES = Object.freeze({ "MA": "comments:create,issues:create,read,write", "BF-TRADER": "read,write,app:assignable" });
+export function mintScopeFor(seat) {
+  const tag = seatTagForSeat(seat);
+  // A non-canonical spelling of a parked or scoped seat (BF_TRADER for BF-TRADER) refuses.  It is NOT mapped to
+  // the seat: no credential lookup resolves it, so this only closes the scope fallback.
+  const hyphenated = tag.replace(/_/g, "-");
+  if (hyphenated !== tag && (MINT_SCOPE_PENDING.includes(hyphenated) || Object.hasOwn(SEAT_MINT_SCOPES, hyphenated))) return null;
+  if (MINT_SCOPE_PENDING.includes(tag)) return null;
+  if (Object.hasOwn(SEAT_MINT_SCOPES, tag)) return SEAT_MINT_SCOPES[tag];
+  return LINEAR_SCOPE;
+}
 export const LINEAR_WORKSPACE_URL_KEY = "simple-with-us";
 
 // The one key per seat, with hyphens as underscores:  an env var name cannot
@@ -49,6 +73,36 @@ export const LINEAR_WORKSPACE_URL_KEY = "simple-with-us";
 // early once it is this old, and still used while that early mint fails.  Same
 // value as REMINT_AFTER in scripts/linear-board/board (linear-parity test).
 export const LINEAR_REMINT_AFTER_S = 28 * 86_400;
+
+// An own-app seat's pair, under one prefix for both the Worker secret names and
+// the Fleet-OPS /linear Infisical names (LINEAR_<PREFIX>_CLIENT_ID / _SECRET).
+const ownAppPair = (prefix) => Object.freeze({ clientId: `LINEAR_${prefix}_CLIENT_ID`, clientSecret: `LINEAR_${prefix}_CLIENT_SECRET` });
+// Own-app seats prepared for coverage: prefix per seat tag.  BF-BUILDER is retired
+// and has no entry.  An entry names a pair and nothing else:  the seat is not
+// Linear-enabled until LINEAR_OWN_APP_ENABLED lists it (see there), and
+// resolveLinearPair reads nothing for a seat that is not enabled.
+export const OWN_APP_LINEAR_PREFIXES = Object.freeze({
+  "MA": "MA",
+  "AG": "AG",
+  "CLUTCH": "CLUTCH",
+  "FX": "FX",
+  "GROK": "GROK",
+  "MC": "MC",
+  "MM": "MM",
+  "OPENCODE": "OPENCODE",
+  "BF-COMPILER": "BF_COMPILER",
+  "BF-DEPLOYER": "BF_DEPLOYER",
+  "BF-DESIGNER": "BF_DESIGNER",
+  "BF-DIRECTOR": "BF_DIRECTOR",
+  "BF-ENGINEER": "BF_ENGINEER",
+  "BF-FIXER": "BF_FIXER",
+  "BF-HOUSEKEEPER": "BF_HOUSEKEEPER",
+  "BF-MONITOR": "BF_MONITOR",
+  "BF-ORACLE": "BF_ORACLE",
+  "BF-PLUMBER": "BF_PLUMBER",
+  "BF-PUBLISHER": "BF_PUBLISHER",
+  "BF-TRADER": "BF_TRADER",
+});
 
 export const LINEAR_SECRETS = Object.freeze({
   JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
@@ -63,6 +117,26 @@ export const LINEAR_SECRETS = Object.freeze({
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
   CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
   CODEX: Object.freeze({ clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" }),
+  "MA": ownAppPair(OWN_APP_LINEAR_PREFIXES["MA"]),
+  "AG": ownAppPair(OWN_APP_LINEAR_PREFIXES["AG"]),
+  "CLUTCH": ownAppPair(OWN_APP_LINEAR_PREFIXES["CLUTCH"]),
+  "FX": ownAppPair(OWN_APP_LINEAR_PREFIXES["FX"]),
+  "GROK": ownAppPair(OWN_APP_LINEAR_PREFIXES["GROK"]),
+  "MC": ownAppPair(OWN_APP_LINEAR_PREFIXES["MC"]),
+  "MM": ownAppPair(OWN_APP_LINEAR_PREFIXES["MM"]),
+  "OPENCODE": ownAppPair(OWN_APP_LINEAR_PREFIXES["OPENCODE"]),
+  "BF-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-COMPILER"]),
+  "BF-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DEPLOYER"]),
+  "BF-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DESIGNER"]),
+  "BF-DIRECTOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DIRECTOR"]),
+  "BF-ENGINEER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-ENGINEER"]),
+  "BF-FIXER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-FIXER"]),
+  "BF-HOUSEKEEPER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-HOUSEKEEPER"]),
+  "BF-MONITOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-MONITOR"]),
+  "BF-ORACLE": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-ORACLE"]),
+  "BF-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PLUMBER"]),
+  "BF-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PUBLISHER"]),
+  "BF-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-TRADER"]),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
@@ -71,20 +145,41 @@ export function linearSecretNames(seat) {
   return Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
 }
 
-/** The Fleet-OPS /linear Infisical names for each seat pair (Oct 22 fleet
- * decision:  the WISE seat's Worker names are LINEAR_INSTINCT_*, its
- * Infisical names WISE_LINEAR_*).  Names verified against the live folder. */
+/** The Fleet-OPS /linear Infisical names for each seat pair:  LINEAR_<SEAT>_CLIENT_ID
+ * and _CLIENT_SECRET, hyphens as underscores, checked against the live folder
+ * by a names-only read on 2026-10-29.  WISE's Infisical names are LINEAR_WISE_*,
+ * while its Worker names stay LINEAR_INSTINCT_* (LINEAR_SECRETS above). */
 export const LINEAR_INFISICAL = Object.freeze({
-  JET: Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
+  JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
   // JET-CHAT is Jet's second login on the same Linear app (LINEAR_SECRETS
   // above):  its runtime read is Jet's record, never a copy.
-  "JET-CHAT": Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
-  "GROK-WEB": Object.freeze({ clientId: "GROK_WEB_LINEAR_CLIENT_ID", clientSecret: "GROK_WEB_LINEAR_CLIENT_SECRET" }),
-  ECHO: Object.freeze({ clientId: "ECHO_LINEAR_CLIENT_ID", clientSecret: "ECHO_LINEAR_CLIENT_SECRET" }),
-  WISE: Object.freeze({ clientId: "WISE_LINEAR_CLIENT_ID", clientSecret: "WISE_LINEAR_CLIENT_SECRET" }),
-  CURSOR: Object.freeze({ clientId: "CURSOR_LINEAR_CLIENT_ID", clientSecret: "CURSOR_LINEAR_CLIENT_SECRET" }),
-  CLAUDE: Object.freeze({ clientId: "CLAUDE_LINEAR_CLIENT_ID", clientSecret: "CLAUDE_LINEAR_CLIENT_SECRET" }),
-  CODEX: Object.freeze({ clientId: "CODEX_LINEAR_CLIENT_ID", clientSecret: "CODEX_LINEAR_CLIENT_SECRET" }),
+  "JET-CHAT": Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
+  "GROK-WEB": Object.freeze({ clientId: "LINEAR_GROK_WEB_CLIENT_ID", clientSecret: "LINEAR_GROK_WEB_CLIENT_SECRET" }),
+  ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
+  WISE: Object.freeze({ clientId: "LINEAR_WISE_CLIENT_ID", clientSecret: "LINEAR_WISE_CLIENT_SECRET" }),
+  CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
+  CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
+  CODEX: Object.freeze({ clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" }),
+  "MA": ownAppPair(OWN_APP_LINEAR_PREFIXES["MA"]),
+  "AG": ownAppPair(OWN_APP_LINEAR_PREFIXES["AG"]),
+  "CLUTCH": ownAppPair(OWN_APP_LINEAR_PREFIXES["CLUTCH"]),
+  "FX": ownAppPair(OWN_APP_LINEAR_PREFIXES["FX"]),
+  "GROK": ownAppPair(OWN_APP_LINEAR_PREFIXES["GROK"]),
+  "MC": ownAppPair(OWN_APP_LINEAR_PREFIXES["MC"]),
+  "MM": ownAppPair(OWN_APP_LINEAR_PREFIXES["MM"]),
+  "OPENCODE": ownAppPair(OWN_APP_LINEAR_PREFIXES["OPENCODE"]),
+  "BF-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-COMPILER"]),
+  "BF-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DEPLOYER"]),
+  "BF-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DESIGNER"]),
+  "BF-DIRECTOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DIRECTOR"]),
+  "BF-ENGINEER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-ENGINEER"]),
+  "BF-FIXER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-FIXER"]),
+  "BF-HOUSEKEEPER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-HOUSEKEEPER"]),
+  "BF-MONITOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-MONITOR"]),
+  "BF-ORACLE": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-ORACLE"]),
+  "BF-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PLUMBER"]),
+  "BF-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PUBLISHER"]),
+  "BF-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-TRADER"]),
 });
 
 /** Async: the seat's Linear pair resolved through Infisical when INFISICAL_MODE
@@ -96,6 +191,8 @@ export async function resolveLinearPair(env, seat) {
   const names = Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
   const inf = Object.hasOwn(LINEAR_INFISICAL, canonical) ? LINEAR_INFISICAL[canonical] : null;
   if (!names || !inf) return null;
+  // A prepared seat that is not enabled reads nothing:  no Infisical request for a seat whose tools answer not_configured.
+  if (!LINEAR_SEATS.includes(canonical)) return null;
   const [clientId, clientSecret] = await Promise.all([
     resolveSecret(env, { name: inf.clientId, path: "/linear", envName: names.clientId, optional: true }),
     resolveSecret(env, { name: inf.clientSecret, path: "/linear", envName: names.clientSecret, optional: true }),
@@ -117,7 +214,42 @@ export function linearClientFromPair(pair, seat, { gate, fetch: fetchImpl = glob
 // JET, ECHO, WISE and CLAUDE joined on 2026-10-16 (owner), each pair checked
 // first with `board whoami` against its own app.  JET-CHAT carries Jet's
 // normal access (owner, Oct 23 2026), so it is enabled with the Jet app.
-export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX"]);
+// Own-app seats whose Linear tools are switched on.  A seat is added here only
+// in a change that also gives it a grounded SEAT_APP_NAMES entry from a
+// `board whoami` read of its own app (linear-parity.test.mjs enforces that),
+// because an own-app seat accepts only its grounded app name (a bare seat tag is
+// refused) and runs the viewer check before its first read or write.
+export const LINEAR_OWN_APP_ENABLED = Object.freeze([
+  "AG",
+  "CLUTCH",
+  "FX",
+  "GROK",
+  "MC",
+  "MM",
+  "OPENCODE",
+  "BF-COMPILER",
+  "BF-DEPLOYER",
+  "BF-DESIGNER",
+  "BF-DIRECTOR",
+  "BF-FIXER",
+  "BF-HOUSEKEEPER",
+  "BF-MONITOR",
+  "BF-ORACLE",
+  "BF-PLUMBER",
+  "BF-PUBLISHER",
+  // MA: no cached token is needed to be on.  The hosted client mints the seat's own token from its
+  // own /linear pair on first use (LinearClient.token), under the seat lock and the one-mint-per-day
+  // rule.  Its name is the provider registration name for the canonical client id (applicationInfo,
+  // 2026-10-29), and the viewer check confirms it.
+  "MA",
+  // BF-ENGINEER and BF-TRADER are held back:  prepared pair names and grounded app names stay in the
+  // tables above, but neither seat is enabled until its own viewer is qualified, so neither reads a
+  // credential or mints.
+]);
+// Seats whose installed app cannot be an issue delegate (no app:assignable).  linear_claim claims by the
+// claim label only for them and sends no delegateId, as the stdio board CLI does;  linear_status never clears a delegate.
+export const LINEAR_NO_DELEGATE_SEATS = Object.freeze(["MA"]);
+export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX", ...LINEAR_OWN_APP_ENABLED]);
 
 // ---------------------------------------------------------------- ported board rules
 
@@ -212,6 +344,29 @@ export const SEAT_APP_NAMES = Object.freeze({
   CURSOR: "Cursor",
   CLAUDE: "Claude",
   CODEX: "Codex",
+  // Own-app seats: the viewer name Linear returned for each seat's existing cached
+  // app token in a read-only GraphQL viewer query (2026-10-29, app:true).  A name here
+  // is grounding for the viewer check, NOT enablement (LINEAR_OWN_APP_ENABLED).
+  // MA keeps its entry above.  BF-ENGINEER and BF-TRADER: registration names read from the provider by canonical client id.
+  "AG": "Antigravity (AG)",
+  "CLUTCH": "Clutch",
+  "FX": "FX.sh",
+  "GROK": "Grok (Build)",
+  "MC": "Muse Code (MC)",
+  "MM": "MiniMax (MM)",
+  "OPENCODE": "OpenCode",
+  "BF-COMPILER": "BF-Compiler",
+  "BF-DEPLOYER": "BF-Deployer",
+  "BF-DESIGNER": "BF-Designer",
+  "BF-DIRECTOR": "BF-Director",
+  "BF-FIXER": "BF-Fixer",
+  "BF-HOUSEKEEPER": "BF-Housekeeper",
+  "BF-MONITOR": "BF-Monitor",
+  "BF-ORACLE": "BF-Oracle",
+  "BF-PLUMBER": "BF-Plumber",
+  "BF-PUBLISHER": "BF-Publisher",
+  "BF-ENGINEER": "BF-Engineer",
+  "BF-TRADER": "BF-Trader",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
@@ -236,11 +391,19 @@ export function seatAppNames(seat) {
   return app ? Object.freeze([app, ...(SEAT_APP_ALIASES[canonical] ?? [])]) : Object.freeze([]);
 }
 
-/** Whether a viewer name is one of the accepted names or the seat tag, ignoring case. */
+/** Own-app seats (OWN_APP_LINEAR_PREFIXES):  the seats whose Linear identity is proven by a grounded app name alone. */
+export function isOwnAppSeat(seat) {
+  return Object.hasOwn(OWN_APP_LINEAR_PREFIXES, seatTagForSeat(seat));
+}
+
+/** Whether a viewer name is one of the accepted names or the seat tag, ignoring case.
+ * An own-app seat accepts only its grounded app names:  a bare seat tag ("fx", "mm")
+ * is a string anyone can register as an app name, and a seat with no grounded name
+ * accepts nothing.  The original eight seats keep the tag. */
 export function appNameOk(name, seat) {
   const canonical = seatTagForSeat(seat);
   const accepted = new Set(seatAppNames(canonical).map((n) => n.toLowerCase()));
-  accepted.add(canonical.toLowerCase());
+  if (!isOwnAppSeat(canonical)) accepted.add(canonical.toLowerCase());
   return typeof name === "string" && accepted.has(name.toLowerCase());
 }
 
@@ -880,11 +1043,15 @@ export class LinearClient {
   }
 
   async #mint() {
+    const scope = mintScopeFor(this.seat);
+    if (!scope) {
+      throw new LinearError("mint", { message: `the ${this.seatLabel()} app's own token scope is not qualified yet, so this server does not mint for it` });
+    }
     const body = new URLSearchParams({
       grant_type: "client_credentials",
       client_id: this.clientId,
       client_secret: this.#clientSecret,
-      scope: LINEAR_SCOPE,
+      scope,
     }).toString();
     let response;
     try {

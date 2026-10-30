@@ -354,7 +354,7 @@ class ReaderTests(unittest.TestCase):
         now = [1800000000.0]
         reader._clock = lambda: now[0]
         self.assertEqual(reader.key(), VALUE)
-        reader._monotonic = lambda: reader._cache_started + R.KEY_CACHE_S
+        reader._monotonic = lambda: reader._cache_started + R.KEY_CACHE_S + 1.0
         reader._request = lambda path: (_ for _ in ()).throw(R.ReaderError("reader-api-failed"))
         with self.assertRaises(R.ReaderError):
             reader.key()

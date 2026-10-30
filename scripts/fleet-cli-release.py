@@ -135,6 +135,7 @@ TOOL_REQUIRED = frozenset(
         "scripts/agent_sync/secretscan.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/agent_sync/notes_service_reader.py",
+        "scripts/agent_sync/fleet_bearer.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
