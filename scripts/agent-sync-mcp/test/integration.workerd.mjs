@@ -984,8 +984,12 @@ try {
     ]);
     const statuses = [r1.status, r2.status].sort();
     assert.deepEqual(statuses, [302, 409]);
-    const admin = await (await browser("/admin")).text();
-    assert.equal((admin.match(/ChatGPT <small>/g) ?? []).length, 2, "exactly one grant each for JET and JET-CHAT");
+    // Grant inventory is now an explicit per-seat diagnostic. Keep the
+    // parallel-approval assertion authoritative for both independent seats.
+    for (const seat of ["JET", "JET-CHAT"]) {
+      const admin = await (await browser(`/admin?inspect_grants=${seat}`)).text();
+      assert.equal((admin.match(/ChatGPT <small>/g) ?? []).length, 1, `exactly one grant for ${seat}`);
+    }
   });
 
   await step("the new grant replaced the old:  old tokens get 401 and old refresh gets invalid_grant", async () => {
@@ -1070,7 +1074,9 @@ try {
 
   await step("revoke all and bump epoch kills the live grant", async () => {
     assert.equal((await adminAction("revoke", { seat: "JET" })).status, 303);
-    const admin = await (await browser("/admin")).text();
+    const revoked = await (await browser("/admin?inspect_grants=JET")).text();
+    assert.equal((revoked.match(/ChatGPT <small>/g) ?? []).length, 0);
+    const admin = await (await browser("/admin?inspect_grants=JET-CHAT")).text();
     // The JET-CHAT grant is a separate seat:  it survives a JET revoke.
     assert.equal((admin.match(/ChatGPT <small>/g) ?? []).length, 1);
   });
@@ -1225,7 +1231,7 @@ try {
 
   await step("Grok manual-form fallback:  a hand client with a blank secret field, and a foreign redirect is refused and logged", async () => {
     assert.equal((await adminAction("create_manual_client", { seat: "GROK-WEB" })).status, 303);
-    const admin = await (await browser("/admin")).text();
+    const admin = await (await browser("/admin?inspect_clients=1")).text();
     const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Grok \(manual form, GROK-WEB\)/)[1];
     grokManualClientId = clientId;
     assert.ok(admin.includes(GROK_REDIRECT), "the hand client takes the configured redirect, not a placeholder");
@@ -1302,7 +1308,7 @@ try {
     const instinctGate = ns.get(ns.idFromName("WISE"));
     assert.equal((await adminAction("create_manual_client", { seat: "ECHO" })).status, 303);
     assert.equal((await adminAction("create_manual_client", { seat: "WISE" })).status, 303);
-    const admin = await (await browser("/admin")).text();
+    const admin = await (await browser("/admin?inspect_clients=1")).text();
     const echoClient = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Echo \(manual form, ECHO\)<\/td><td>ECHO<\/td><td>http:\/\/127\.0\.0\.1:8737\/callback</)[1];
     const instinctClient = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Wise \(manual form, WISE\)<\/td><td>WISE</)[1];
     const refusalLog = async () => (await (await browser("/admin")).text()).split("Refused Authorize Requests")[1].split("Refused Token Requests")[0];
@@ -1390,7 +1396,7 @@ try {
     assert.equal(jet.status, 200);
 
     assert.equal((await adminAction("create_manual_client", { seat: "CLAUDE" })).status, 303);
-    const admin = await (await browser("/admin")).text();
+    const admin = await (await browser("/admin?inspect_clients=1")).text();
     const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Claude \(manual form, CLAUDE\)<\/td><td>CLAUDE<\/td><td>https:\/\/claude\.ai\/api\/mcp\/auth_callback</)[1];
     assert.equal((await adminAction("arm", { seat: "CLAUDE" })).status, 303);
     const who = { clientId, redirect: CLAUDE_REDIRECT };
@@ -1456,7 +1462,7 @@ try {
     await jetGate.arm({ by: "test" });
     const jetBefore = await jetGate.getState();
     assert.equal((await adminAction("create_manual_client", { seat: "CURSOR" })).status, 303);
-    const admin = await (await browser("/admin")).text();
+    const admin = await (await browser("/admin?inspect_clients=1")).text();
     const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Cursor Cloud \(manual form, CURSOR\)<\/td><td>Cursor &#38; Grok Bots<\/td>/)[1];
     assert.equal((await adminAction("arm", { seat: "CURSOR" })).status, 303);
     const c = pkce();
@@ -1576,7 +1582,7 @@ try {
     jar.clear();
     pagePolicy = null;
     assert.equal((await adminAction("create_manual_client", { seat: "CLAUDE" })).status, 303);
-    const admin = await (await browser("/admin")).text();
+    const admin = await (await browser("/admin?inspect_clients=1")).text();
     const clientId = admin.match(/<td><code>([A-Za-z0-9_-]{8,})<\/code><\/td><td>Claude \(manual form, CLAUDE\)/)[1];
     assert.equal((await adminAction("arm", { seat: "CLAUDE" })).status, 303);
     const c = pkce();

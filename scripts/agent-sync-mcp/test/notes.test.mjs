@@ -788,3 +788,15 @@ test("tool arguments are parsed by strict zod schemas even when the JSON schema 
   const keyShaped = `AKIA${"Q".repeat(16)}`;
   await assert.rejects(tools.tool_notes_log({ by_seat: keyShaped }, audit), (e) => e.code === "invalid_argument" && /looks like it contains a secret/.test(e.message) && !e.message.includes(keyShaped));
 });
+
+test("notes_status preserves list total and truncation when recovering a queued CLI list", async () => {
+  const { operator, tools } = harness();
+  await tools.call("notes_list", { request_id: "recover-list-01", wait_seconds: 0 });
+  operator.finish(operator.entry("GROK-WEB", "recover-list-01"), "done", { result: { notes: [], total: 40, truncated: true } });
+  const out = ok(await tools.call("notes_status", { request_id: "recover-list-01" }), "notes_status");
+  assert.equal(out.request_id, "recover-list-01");
+  assert.equal(out.action, "list");
+  assert.deepEqual(out.notes, []);
+  assert.equal(out.total, 40);
+  assert.equal(out.truncated, true);
+});

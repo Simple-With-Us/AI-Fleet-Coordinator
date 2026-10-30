@@ -134,6 +134,7 @@ TOOL_REQUIRED = frozenset(
         # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
         # built before it stays a valid rollback target.
         "scripts/agent_sync/secretscan.py",
+        "scripts/agent_sync/fleet_bearer.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
