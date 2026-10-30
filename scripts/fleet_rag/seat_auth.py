@@ -48,6 +48,8 @@ def bound(client):
         client._transport.close()
         client._transport = BoundedTransport()
     return client
+
+
 HINTS = ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")
 
 # The client class;  tests replace it with a double for the gateway.
