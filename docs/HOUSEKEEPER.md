@@ -44,7 +44,7 @@ Load is never a space issue, so even the simulator reaper's emergency post stays
 
 The senders today:
 
-- **The server disk guardrail** (`/usr/local/sbin/fleet-disk-guardrail.sh`, cron every 2 minutes, posts as the Operator to `#alerts` › `host-disk-guardrail`):  root, the fleet volume `/mnt/fleet-extra` and `/tmp`, plus Litestream staging and replication errors.  Mild posts tag Jay beside the Housekeepers.  The script is a host file in no repo yet;  its backup from before AFC-577 is `fleet-disk-guardrail.sh.bak-20261030-afc577` beside it.
+- **The server disk guardrail** (`/usr/local/sbin/fleet-disk-guardrail.sh`, cron every 2 minutes, posts as the Operator to `#alerts` › `host-disk-guardrail`):  root, the fleet volume (the one the host names in `FLEET_SERVER_VOLUME`) and `/tmp`, plus Litestream staging and replication errors.  Mild posts tag Jay beside the Housekeepers.  The script is a host file in no repo yet;  its backup from before AFC-577 is `fleet-disk-guardrail.sh.bak-20261030-afc577` beside it.
 - **The server storage watch** (`/root/vps-storage-watch.sh`, cron every 15 minutes, `#alerts` › `vps-storage`):  database growth only, always mild, tagging both Housekeepers and Jay.  It records free space, and the guardrail alerts on it.
 - **The simulator reaper** (`scripts/sim-idle-reaper.py`, Mac LaunchAgent, `#Alerts` › `sim-idle-reaper` as MA):  its load-guard post tags both Housekeepers and Jay on a second line, so the first line still starts with its severity.
 
