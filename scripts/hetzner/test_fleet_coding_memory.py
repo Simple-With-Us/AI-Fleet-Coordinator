@@ -161,9 +161,15 @@ class DiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / "cgroup"
             proc_root = Path(d) / "proc"
-            names = ["botfleet-vps-shared", "congress-app-one", "scan-cpu-worker-one"]
+            names = [
+                "botfleet-vps-shared",
+                "congress-app-one",
+                "scan-cpu-worker-one",
+                "congress-app-disappeared",
+            ]
+            live_names = names[:-1]
             output = []
-            for index, name in enumerate(names, start=101):
+            for index, name in enumerate(live_names, start=101):
                 unit = f"docker-{index}.scope"
                 cg(root / "system.slice" / unit)
                 pid_dir = proc_root / str(index)
@@ -177,7 +183,7 @@ class DiscoveryTests(unittest.TestCase):
                 calls.append((argv, kwargs))
                 if argv[1] == "ps":
                     return type("Result", (), {"stdout": "\n".join(names)})()
-                return type("Result", (), {"stdout": "".join(output)})()
+                return type("Result", (), {"stdout": "".join(output), "returncode": 1})()
 
             coding, production, limits = m.docker_groups(
                 policy(), root, runner=runner, proc_root=proc_root
@@ -185,6 +191,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertEqual(calls[1][0][1], "inspect")
             self.assertEqual(calls[1][1]["timeout"], 8)
+            self.assertFalse(calls[1][1]["check"])
             self.assertEqual(len(coding), 1)
             self.assertEqual(len(production), 2)
             self.assertEqual(len(limits), 2)

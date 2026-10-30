@@ -290,7 +290,7 @@ def docker_groups(
             capture_output=True,
             text=True,
             timeout=8,
-            check=True,
+            check=False,
         )
         rows = {}
         for line in inspected.stdout.splitlines():
