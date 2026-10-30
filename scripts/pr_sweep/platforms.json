@@ -69,12 +69,12 @@
       "checked": "fx --help: ask <prompt> runs one noninteractive request (approval flags UNVERIFIED)"
     },
     "opencode": {
-      "argv": ["opencode", "run", "{prompt}"],
+      "argv": ["opencode", "run", "--title", "[no-letter] pr-sweep", "{prompt}"],
       "stdin": false,
       "auto_flags": [],
       "models": {},
       "trailer": "End every commit message with your platform's usual co-author trailer, if it has one.",
-      "checked": "opencode --help: run runs OpenCode with a message (approval flags for run UNVERIFIED)"
+      "checked": "opencode --help: run runs OpenCode with a message, and --title names the session (approval flags for run UNVERIFIED).  The title's [no-letter] mark keeps a headless worker from taking an Operator session letter (scripts/agent_sync/opencode_letter_plugin)."
     }
   },
   "chat_only": {
