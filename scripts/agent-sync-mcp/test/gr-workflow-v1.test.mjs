@@ -404,6 +404,27 @@ test('comment and release lifecycle envelopes and write UNKNOWN',async()=>{
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
 
+test('bounded git object fixed own-bearer calls and unknown blob creates',async()=>{
+ for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message'}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
+  assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,url:'https://evil.invalid'}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
+ }
+ const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_wf_git_blob_create',{repo,text:'hi'});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+});
+
+test('git read contracts accept actual whitespace filenames and refuse absent write actions',()=>{
+ const tree={tree:{sha:'a'.repeat(40),truncated:false,entries:[{sha:'b'.repeat(40),type:'blob',mode:'100644',path:' '}]}};
+ assert.ok(validWfV1Response('wf_git_tree_get',tree));tree.tree.entries[0].path='';assert.equal(validWfV1Response('wf_git_tree_get',tree),false);
+ assert.equal(validWfV1Args('wf_git_commit_create',{}),false);assert.equal(validWfV1Response('wf_git_commit_create',{}),false);
+});
+
+test('bounded binary blob reads canonical base64 and decoded credential boundary',async()=>{
+ const action='wf_git_blob_binary_get',args={repo,sha:'a'.repeat(40)},blob={sha:args.sha,size:2,content_b64:'/wA='};
+ assert.ok(validWfV1Args(action,args));assert.ok(!validWfV1Args(action,{...args,url:'evil'}));assert.ok(validWfV1Response(action,{blob}));assert.equal(validWfV1Response(action,{blob:{...blob,size:1}}),false);
+ // Synthetic runtime-assembled credential shape, never a credential.
+ const raw=Buffer.from('ghp_'+'x'.repeat(36));assert.equal(validWfV1Response(action,{blob:{sha:args.sha,size:raw.length,content_b64:raw.toString('base64')}}),false);
+ const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({blob}));});assert.ok(!(await t.call('gr_'+action,args)).isError);
+});
 test('issue relation pages closed boundary and own bearer',async()=>{
  const a={repo,number:1,page:2,per_page:2},reply={issues:[{id:7,number:8,title:'Child',state:'open',repo}],page:2,has_more:false};
  assert.ok(validWfV1Args('wf_issue_subissues',a));assert.ok(!validWfV1Args('wf_issue_subissues',{...a,page:1001}));
@@ -584,6 +605,14 @@ test('review lifecycle projected receipts use cached strict schemas and own bear
  assert.equal(validWfV1Response('wf_review_dismiss',{review}),false);
  assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
+});
+test('git boundaries reject nonstring action and secret input before dispatch without Buffer',async()=>{
+ for(const action of [null,3,{},undefined])assert.equal(validWfV1Response(action,{}),false);
+ // Runtime-only synthetic shapes, never credentials.
+ let calls=0;const t=harness(async()=>{calls++;throw Error('must not dispatch');});
+ for(const text of ['ghp_'+'x'.repeat(36),'sk-proj-'+'x'.repeat(30)])assert.ok((await t.call('gr_wf_git_blob_create',{repo,text})).isError);
+ assert.equal(calls,0);
+ const prior=globalThis.Buffer;try{globalThis.Buffer=undefined;assert.equal(validWfV1Response('wf_git_blob_binary_get',{blob:{sha:'a'.repeat(40),size:2,content_b64:'aGk='}}),true);}finally{globalThis.Buffer=prior;}
 });
 test('history endpoint-specific ID contract and preparse structural limits',async()=>{
  const noid={id:null,event:'cross-referenced',created_at:null,commit_id:null};
@@ -933,6 +962,16 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
   assert.equal(validWfV1Response('wf_repo_languages',{languages:[{name,bytes:1}]}),false);
  }
  assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
+});
+
+test('Git blob and commit receipts keep credential rejection through main validators',()=>{
+ // Runtime-only synthetic scanner-shaped data, never credentials.
+ for(const text of ['ghp_'+'X'.repeat(32),'sk-'+'X'.repeat(32)]){
+  assert.equal(validWfV1Response('wf_git_blob_get',{blob:{sha:'a'.repeat(40),size:text.length,text}}),false);
+  assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:text}}),false);
+ }
+ assert.equal(validWfV1Response('wf_git_blob_get',{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}),true);
+ assert.equal(validWfV1Response('wf_git_commit_get',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'safe'}}),true);
 });
 
 test('history receipts bind requested page size and conservative has_more',()=>{

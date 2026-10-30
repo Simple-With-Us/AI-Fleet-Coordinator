@@ -73,6 +73,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_git_blob_binary_get": ({"contents": "read"}, False),
     "wf_issue_events": ({"issues": "read"}, False),
     "wf_issue_timeline": ({"issues": "read"}, False),
     "wf_pr_commits_page": ({"pull_requests": "read"}, False),
@@ -5175,6 +5176,51 @@ class WorkflowVerbs:
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
 
+    def wf_git_blob_binary_get(self, repo, args):
+        _only(args, ("repo", "sha"))
+        sha = _sha(args, "sha")
+        try:
+            value = self._get(f"/repos/{repo}/git/blobs/{sha}")
+        except RelayGitHubError as exc:
+            if exc.code == "response_too_large":
+                raise Refused("binary blob exceeds supported response size") from None
+            raise
+        if isinstance(value, dict) and type(value.get("size")) is int and value["size"] > 32000:
+            raise Refused("binary blob exceeds supported size")
+        if (
+            not isinstance(value, dict)
+            or value.get("sha") != sha
+            or value.get("encoding") != "base64"
+            or type(value.get("size")) is not int
+            or not 0 <= value["size"] <= 32000
+            or not isinstance(value.get("content"), str)
+            or len(value["content"]) > 48000
+        ):
+            raise RelayGitHubError(502, "binary blob receipt unverifiable")
+        try:
+            raw = base64.b64decode("".join(value["content"].split()), validate=True)
+        except (ValueError, binascii.Error):
+            raise RelayGitHubError(502, "binary blob encoding unverifiable") from None
+        if (
+            len(raw) != value["size"]
+            or hashlib.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+            ).hexdigest()
+            != sha
+        ):
+            raise RelayGitHubError(502, "binary blob identity unverifiable")
+        # Latin1 preserves all ASCII credential-shaped byte sequences, even in binary.
+        # This is known-pattern scanning, never a guarantee of secret-free content.
+        if find_secret(raw.decode("latin1")):
+            raise Refused("credential-shaped binary blob refused")
+        return {
+            "blob": {
+                "sha": sha,
+                "size": len(raw),
+                "content_b64": base64.b64encode(raw).decode("ascii"),
+            }
+        }
+
     def wf_git_tree_create(self, repo, args):
         _only(args, ("repo", "base_tree", "files"))
         base = _sha(args, "base_tree")
@@ -5290,7 +5336,7 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "blob receipt unsupported or unverifiable")
         try:
-            raw = base64.b64decode(value["content"].replace("\n", ""), validate=True)
+            raw = base64.b64decode("".join(value["content"].split()), validate=True)
             text = raw.decode("utf-8")
         except UnicodeError:
             raise Refused("binary blob text is not supported") from None
@@ -5298,7 +5344,10 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "blob encoding unverifiable") from None
         if (
             len(raw) != value["size"]
-            or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() != sha
+            or hashlib.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+            ).hexdigest()
+            != sha
         ):
             raise RelayGitHubError(502, "blob identity unverifiable")
         if find_secret(text):
@@ -5313,11 +5362,19 @@ class WorkflowVerbs:
             raise Refused("invalid blob text")
         try:
             raw = text.encode("utf-8")
-        except UnicodeEncodeError:
+        except UnicodeError:
             raise Refused("invalid blob text") from None
-        if len(raw) > 40000:
+        if (
+            len(raw) > 40000
+            or find_secret(text)
+            or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", text
+            )
+        ):
             raise Refused("invalid blob text")
-        sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        sha = hashlib.sha1(
+            b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+        ).hexdigest()
         result = self.client._call(
             "POST",
             f"/repos/{repo}/git/blobs",
@@ -5360,6 +5417,10 @@ class WorkflowVerbs:
             ):
                 raise RelayGitHubError(502, "git commit parent unverifiable")
             parents.append(value["sha"])
+        if find_secret(result["message"]) or re.search(
+            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}", result["message"]
+        ):
+            raise Refused("credential-shaped commit message refused")
         return {
             "commit": {
                 "sha": sha,
