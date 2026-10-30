@@ -544,16 +544,22 @@ def _c_lstart_epoch(token: str) -> float | None:
     months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
     weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     try:
-        civil = time.struct_time((
-            int(year), months.index(month_name) + 1, int(day_text),
-            int(hour), int(minute), int(second), 0, 0, 0,
-        ))
+        civil = time.struct_time(
+            (
+                int(year),
+                months.index(month_name) + 1,
+                int(day_text),
+                int(hour),
+                int(minute),
+                int(second),
+                0,
+                0,
+                0,
+            )
+        )
         epoch = calendar.timegm(civil)
         parsed = time.gmtime(epoch)
-        if (
-            parsed[:6] != civil[:6]
-            or parsed.tm_wday != weekdays.index(weekday)
-        ):
+        if parsed[:6] != civil[:6] or parsed.tm_wday != weekdays.index(weekday):
             return None
         return float(epoch)
     except (ValueError, OverflowError):
