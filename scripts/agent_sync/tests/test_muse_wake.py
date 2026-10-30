@@ -308,6 +308,47 @@ class MuseBuildResolutionTest(unittest.TestCase):
             self.assertEqual(results, [os.path.realpath(build)] * len(threads))
 
 
+class MuseRunnerSchemaTest(unittest.TestCase):
+    def _capture_schema(self, **run_kwargs) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            wake = os.path.join(tmp, "wake")
+            os.mkdir(wake, 0o700)
+            capture = os.path.join(tmp, "captured-schema")
+            executable = os.path.join(tmp, "fake-muse")
+            with open(executable, "w", encoding="utf-8") as fh:
+                fh.write("#!%s\n" % sys.executable)
+                fh.write("import json, os, sys\n")
+                fh.write("args = sys.argv[1:]\n")
+                fh.write("schema = args[args.index('--output-schema') + 1]\n")
+                fh.write("with open(os.environ['CAPTURE_SCHEMA'], 'w', encoding='utf-8') as out:\n")
+                fh.write("    out.write(open(schema, encoding='utf-8').read())\n")
+                fh.write(
+                    "print(json.dumps({'schema_version': 1, 'record_type': 'event', "
+                    "'payload_type': 'run.terminal.completed', 'payload': {'text': '{}'}}))\n"
+                )
+            os.chmod(executable, 0o700)
+            A.MuseRunner(timeout=20).run(
+                [executable, "exec", "--output-schema", A.MUSE_SCHEMA_SLOT],
+                {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CAPTURE_SCHEMA": capture},
+                wake,
+                "Daemon header (trusted):\nSeat: MM\n",
+                **run_kwargs,
+            )
+            with open(capture, encoding="utf-8") as fh:
+                return json.load(fh)
+
+    def test_a_muse_run_with_no_schema_given_sends_the_strict_one(self) -> None:
+        # The provider's strict structured-output mode refuses a `required` list that leaves a property out, so a
+        # caller that does not pass a schema (the Mac bridge once did not) must still get every property required.
+        sent = self._capture_schema()
+        self.assertEqual(set(sent["required"]), set(sent["properties"]))
+
+    def test_the_mac_muse_bridge_sends_the_strict_schema(self) -> None:
+        from agent_sync import muse_bridge_mac as MBM
+
+        self.assertNotIn("schema_text()", inspect.getsource(MBM), "a muse caller left the loose schema")
+
+
 class MuseRunnerPromptTest(unittest.TestCase):
     def test_private_prompt_file_starts_with_contract_before_supplied_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
