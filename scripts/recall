@@ -60,6 +60,7 @@ Examples:
 Exit codes: 0 ok, 1 no hits / duplicate lesson / eval below threshold / platform FAIL,
 2 usage or credential error.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -121,12 +122,22 @@ def fmt_hit(i: int, h: dict, full: bool) -> str:
 
 
 def cmd_search(a: argparse.Namespace) -> int:
-    kwargs = dict(limit=a.limit, category=a.category, app=a.app, source=a.source, seat=a.seat,
-                 since_days=a.since_days, per_doc=a.per_doc, prefer_lessons=a.prefer_lessons,
-                 rerank=a.rerank)
+    kwargs = dict(
+        limit=a.limit,
+        category=a.category,
+        app=a.app,
+        source=a.source,
+        seat=a.seat,
+        since_days=a.since_days,
+        per_doc=a.per_doc,
+        prefer_lessons=a.prefer_lessons,
+        rerank=a.rerank,
+    )
     res = public_fallback.call_with_fallback(
-        "recall_search", {**kwargs, "query": a.query},
-        lambda: recall_api.recall_search(a.query, **kwargs))
+        "recall_search",
+        {**kwargs, "query": a.query},
+        lambda: recall_api.recall_search(a.query, **kwargs),
+    )
     if a.json:
         print(json.dumps(res, indent=2))
         return 0 if res["hits"] else 1
@@ -150,7 +161,10 @@ def cmd_stats(a: argparse.Namespace) -> int:
     print(f"points     : {res['points']}")
     print(f"embedder   : {'healthy' if res['embedder_healthy'] else 'UNREACHABLE'}")
     if "searches_7d" in res:
-        seat_summary = ", ".join(f"{s}: {c}" for s, c in list(res.get("searches_by_seat_7d", {}).items())[:4]) or "none"
+        seat_summary = (
+            ", ".join(f"{s}: {c}" for s, c in list(res.get("searches_by_seat_7d", {}).items())[:4])
+            or "none"
+        )
         print(f"searches 7d: {res['searches_7d']} ({seat_summary})")
     print("by source  :")
     for k, v in res["by_source"].items():
@@ -167,7 +181,9 @@ def contribute_text(text: str | None, file: str | None, stdin=None) -> str:
     """Resolve the contribution body from the positional text, --file PATH, or stdin (-)."""
     stdin = stdin or sys.stdin
     if file is not None and text not in (None, "-"):
-        raise FleetRagError("give the text either as an argument, as --file PATH, or as - (stdin), not two of them")
+        raise FleetRagError(
+            "give the text either as an argument, as --file PATH, or as - (stdin), not two of them"
+        )
     if file is not None:
         if file == "-":
             return stdin.read()
@@ -175,7 +191,9 @@ def contribute_text(text: str | None, file: str | None, stdin=None) -> str:
             with open(file, encoding="utf-8") as fh:
                 return fh.read()
         except OSError as e:
-            raise FleetRagError(f"cannot read --file {file}: {e.strerror or type(e).__name__}") from None
+            raise FleetRagError(
+                f"cannot read --file {file}: {e.strerror or type(e).__name__}"
+            ) from None
     if text == "-":
         return stdin.read()
     if text is None:
@@ -196,24 +214,34 @@ def cmd_contribute(a: argparse.Namespace) -> int:
     kwargs = dict(text=text, category=a.category, app=a.app, seat=a.seat, title=a.title, url=a.url)
     guard = None
     in_range = recall_api.CONTRIB_MIN <= len(text.strip()) <= recall_api.CONTRIB_MAX
-    if not a.force and in_range and public_fallback.guard_may_run():  # out-of-range: let recall_contribute report it
+    if (
+        not a.force and in_range and public_fallback.guard_may_run()
+    ):  # out-of-range: let recall_contribute report it
         try:
             guard = check_duplicate(text)
         except FleetRagError as e:
             if not public_fallback.is_connection_error(e):
                 raise
-            guard = None      # Tailscale flaked mid-check: skip the guard, let contribute proceed
+            guard = None  # Tailscale flaked mid-check: skip the guard, let contribute proceed
         if guard is not None and guard["duplicate"]:
             if a.json:
-                print(json.dumps({"status": "duplicate", "existing": guard["existing"],
-                                  "threshold": guard["threshold"],
-                                  "message": contribute_guard.duplicate_message(guard["existing"])},
-                                 indent=2))
+                print(
+                    json.dumps(
+                        {
+                            "status": "duplicate",
+                            "existing": guard["existing"],
+                            "threshold": guard["threshold"],
+                            "message": contribute_guard.duplicate_message(guard["existing"]),
+                        },
+                        indent=2,
+                    )
+                )
             else:
                 print(contribute_guard.duplicate_message(guard["existing"]), file=sys.stderr)
             return 1
     res = public_fallback.call_with_fallback(
-        "recall_contribute", kwargs, lambda: recall_api.recall_contribute(**kwargs))
+        "recall_contribute", kwargs, lambda: recall_api.recall_contribute(**kwargs)
+    )
     if guard and guard["candidates"]:
         res["nearest"] = guard["candidates"][0]
     if a.json:
@@ -232,8 +260,9 @@ def cmd_contribute(a: argparse.Namespace) -> int:
 def cmd_digest(a: argparse.Namespace) -> int:
     cfg = recall_api.get_config(need_write=False)
     include_searches = getattr(a, "searches", False)
-    d = doctor.contribution_digest(recall_api.Qdrant(cfg), days=a.days, app=a.app,
-                                  include_searches=include_searches)
+    d = doctor.contribution_digest(
+        recall_api.Qdrant(cfg), days=a.days, app=a.app, include_searches=include_searches
+    )
     if a.json:
         print(json.dumps(d, indent=2))
     else:
@@ -243,6 +272,7 @@ def cmd_digest(a: argparse.Namespace) -> int:
 
 def cmd_eval(a: argparse.Namespace) -> int:
     from fleet_rag import eval as ev
+
     public_fallback.require_direct_path("eval")
     golden = a.golden or ev.GOLDEN
     # per_doc is not one of the A/B axes, so it is bound onto the search callable and applies to
@@ -264,6 +294,7 @@ def cmd_eval(a: argparse.Namespace) -> int:
 
 def cmd_ingest(a: argparse.Namespace) -> int:
     from fleet_rag import ingest as ing
+
     public_fallback.require_direct_path("ingest")
     argv: list[str] = []
     if a.fix_seeds:
@@ -292,8 +323,11 @@ def cmd_ingest(a: argparse.Namespace) -> int:
 
 def cmd_doctor(a: argparse.Namespace) -> int:
     if a.platforms:
-        blocked = (not public_fallback.using_fake_backend() and not public_fallback.local_override_active()
-                  and public_fallback.direct_path_blocked(public_fallback.tailscale_status_text()))
+        blocked = (
+            not public_fallback.using_fake_backend()
+            and not public_fallback.local_override_active()
+            and public_fallback.direct_path_blocked(public_fallback.tailscale_status_text())
+        )
         rep = doctor.platforms_report(box=a.box, direct_path_blocked=blocked)
         if a.json:
             print(json.dumps(rep, indent=2))
@@ -303,8 +337,12 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     if a.box:
         raise FleetRagError("--box only applies with --platforms")
     public_fallback.require_direct_path("doctor")
-    rep: dict = {"version": __version__, "env_keys": [k for k in core.ALL_KEYS if os.environ.get(k)],
-                 "fleet_secrets": core._fleet_secrets_bin() is not None, "gitleaks": bool(shutil.which("gitleaks"))}
+    rep: dict = {
+        "version": __version__,
+        "env_keys": [k for k in core.ALL_KEYS if os.environ.get(k)],
+        "fleet_secrets": core._fleet_secrets_bin() is not None,
+        "gitleaks": bool(shutil.which("gitleaks")),
+    }
     ok = True
     try:
         cfg = recall_api.load_config(need_write=False)
@@ -334,6 +372,7 @@ def cmd_doctor(a: argparse.Namespace) -> int:
 
     def yn(v: object) -> str:
         return "yes" if v else "NO"
+
     print(f"recall {rep['version']}")
     print(f"env keys        : {', '.join(rep['env_keys']) or '(none)'}")
     print(f"fleet-secrets   : {yn(rep['fleet_secrets'])}  (Mac credential source)")
@@ -344,19 +383,24 @@ def cmd_doctor(a: argparse.Namespace) -> int:
         print(f"key mode        : {rep['key_mode']}  (write key present: {yn(rep['write_key'])})")
         print(f"embedder        : {'healthy' if rep['embedder_healthy'] else 'UNREACHABLE'}")
         print(f"qdrant healthz  : {yn(rep['qdrant_healthz'])}")
-        print(f"collection      : {rep.get('collection')}  {rep.get('collection_status')}"
-              f"  points={rep.get('points', '?')}")
+        print(
+            f"collection      : {rep.get('collection')}  {rep.get('collection_status')}"
+            f"  points={rep.get('points', '?')}"
+        )
     print(f"gitleaks        : {yn(rep['gitleaks'])}")
     print(f"overall         : {'ok' if ok else 'PROBLEMS'}")
     return 0 if ok else 2
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="recall", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        prog="recall", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("search", help="hybrid search (default when the first arg is not a subcommand)")
+    s = sub.add_parser(
+        "search", help="hybrid search (default when the first arg is not a subcommand)"
+    )
     s.add_argument("query")
     s.add_argument("--limit", type=int, default=5)
     s.add_argument("--category")
@@ -364,63 +408,111 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--source")
     s.add_argument("--seat")
     s.add_argument("--since-days", dest="since_days", type=int)
-    s.add_argument("--per-doc", dest="per_doc", type=int, default=1,
-                   help=f"best N chunks per document, 1..{recall_api.PER_DOC_MAX} (default 1)")
-    s.add_argument("--no-rerank", dest="rerank", action="store_false",
-                   help="keep the fused order even when the cross-encoder is configured")
-    s.add_argument("--no-lessons", dest="prefer_lessons", action="store_false",
-                   help="do not boost agent lessons into the fusion (raw document research)")
+    s.add_argument(
+        "--per-doc",
+        dest="per_doc",
+        type=int,
+        default=1,
+        help=f"best N chunks per document, 1..{recall_api.PER_DOC_MAX} (default 1)",
+    )
+    s.add_argument(
+        "--no-rerank",
+        dest="rerank",
+        action="store_false",
+        help="keep the fused order even when the cross-encoder is configured",
+    )
+    s.add_argument(
+        "--no-lessons",
+        dest="prefer_lessons",
+        action="store_false",
+        help="do not boost agent lessons into the fusion (raw document research)",
+    )
     s.add_argument("--full", action="store_true", help="print whole chunks, not 300-char excerpts")
     s.add_argument("--json", action="store_true")
 
     st = sub.add_parser("stats", help="collection status and counts by source / app")
     st.add_argument("--json", action="store_true")
 
-    c = sub.add_parser("contribute", help="store a reusable lesson / preference / fact (needs write key)")
-    c.add_argument("text", nargs="?",
-                   help="the text, or - to read it from stdin (prefer --file / - for anything "
-                        "that might contain a credential)")
-    c.add_argument("--file", help="read the text from PATH (- for stdin); safest for log excerpts, "
-                                  "command lines, or config snippets that might hold a credential")
+    c = sub.add_parser(
+        "contribute", help="store a reusable lesson / preference / fact (needs write key)"
+    )
+    c.add_argument(
+        "text",
+        nargs="?",
+        help="the text, or - to read it from stdin (prefer --file / - for anything "
+        "that might contain a credential)",
+    )
+    c.add_argument(
+        "--file",
+        help="read the text from PATH (- for stdin); safest for log excerpts, "
+        "command lines, or config snippets that might hold a credential",
+    )
     c.add_argument("--category", required=True, choices=recall_api.CONTRIB_CATEGORIES)
     c.add_argument("--app", default="fleet")
     c.add_argument("--seat", default=os.environ.get("AGENT_SEAT"))
     c.add_argument("--title")
     c.add_argument("--url")
-    c.add_argument("--force", action="store_true",
-                   help="store even when a near-duplicate agent contribution exists (score >= 0.92)")
+    c.add_argument(
+        "--force",
+        action="store_true",
+        help="store even when a near-duplicate agent contribution exists (score >= 0.92)",
+    )
     c.add_argument("--json", action="store_true")
 
-    dg = sub.add_parser("digest", help="agent contributions of the last N days, by app then category")
+    dg = sub.add_parser(
+        "digest", help="agent contributions of the last N days, by app then category"
+    )
     dg.add_argument("--days", type=int, default=7)
     dg.add_argument("--app")
-    dg.add_argument("--searches", action="store_true",
-                    help="include search telemetry and search-to-contribute ratios")
+    dg.add_argument(
+        "--searches",
+        action="store_true",
+        help="include search telemetry and search-to-contribute ratios",
+    )
     dg.add_argument("--json", action="store_true")
 
     e = sub.add_parser("eval", help="score golden.jsonl: Recall@1, Recall@k, MRR")
     e.add_argument("--k", type=int, default=5)
     e.add_argument("--threshold", type=float, default=0.6)
     e.add_argument("--golden")
-    e.add_argument("--per-doc", dest="per_doc", type=int, default=1,
-                   help=f"best N chunks per document for every query, 1..{recall_api.PER_DOC_MAX}")
+    e.add_argument(
+        "--per-doc",
+        dest="per_doc",
+        type=int,
+        default=1,
+        help=f"best N chunks per document for every query, 1..{recall_api.PER_DOC_MAX}",
+    )
     e.add_argument("--no-rerank", dest="rerank", action="store_false", help="rerank=False")
-    e.add_argument("--no-lessons", dest="prefer_lessons", action="store_false", help="prefer_lessons=False")
-    e.add_argument("--compare", action="store_true",
-                   help="score lessons / rerank each on and off and print the deltas vs both-off "
-                        "(--no-rerank / --no-lessons are ignored; every configuration runs)")
+    e.add_argument(
+        "--no-lessons", dest="prefer_lessons", action="store_false", help="prefer_lessons=False"
+    )
+    e.add_argument(
+        "--compare",
+        action="store_true",
+        help="score lessons / rerank each on and off and print the deltas vs both-off "
+        "(--no-rerank / --no-lessons are ignored; every configuration runs)",
+    )
     e.add_argument("--json", action="store_true")
 
     d = sub.add_parser("doctor", help="credentials (names only), embedder, qdrant, key mode")
-    d.add_argument("--platforms", action="store_true",
-                   help="parity table: MCP registration, skills, hooks, seat-mcp, BotFleet routines, "
-                        "ingest freshness (exit 1 on any FAIL)")
-    d.add_argument("--box", action="store_true", help="with --platforms: add the Hetzner health rows via ssh")
+    d.add_argument(
+        "--platforms",
+        action="store_true",
+        help="parity table: MCP registration, skills, hooks, seat-mcp, BotFleet routines, "
+        "ingest freshness (exit 1 on any FAIL)",
+    )
+    d.add_argument(
+        "--box", action="store_true", help="with --platforms: add the Hetzner health rows via ssh"
+    )
     d.add_argument("--json", action="store_true")
 
     ingp = sub.add_parser("ingest", help="run the full source pipeline (needs write key)")
-    ingp.add_argument("--all", action="store_true", help="every source (default when --source is omitted)")
-    ingp.add_argument("--source", help="comma-separated subset: board,effort-log,doc,skill,memory,apple-note")
+    ingp.add_argument(
+        "--all", action="store_true", help="every source (default when --source is omitted)"
+    )
+    ingp.add_argument(
+        "--source", help="comma-separated subset: board,effort-log,doc,skill,memory,apple-note"
+    )
     ingp.add_argument("--fix-seeds", dest="fix_seeds", action="store_true")
     ingp.add_argument("--dry-run", dest="dry_run", action="store_true")
     ingp.add_argument("--limit", type=int)
@@ -545,7 +637,9 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
         exc.close()
         return exc.code, "", b""
     except urllib.error.URLError as exc:
-        unsent = isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError, ssl.SSLCertVerificationError))
+        unsent = isinstance(
+            exc.reason, (socket.gaierror, ConnectionRefusedError, ssl.SSLCertVerificationError)
+        )
         raise _TransportError(not unsent, "unreachable") from None
     except _TransportError:
         raise
@@ -621,7 +715,7 @@ def _remote_code(value) -> str:
 
 def _remote_error_object(result: dict, sc) -> dict:
     """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
-    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part.  A
+    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part that is a JSON object.  A
     structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
     the code only when it is allow-listed, so nothing the server wrote is copied."""
     if isinstance(sc, dict) and "code" in sc:
@@ -635,9 +729,10 @@ def _remote_error_object(result: dict, sc) -> dict:
                 try:
                     obj = json.loads(part["text"])
                 except (ValueError, RecursionError):
-                    obj = None
-                cand = obj if isinstance(obj, dict) else None
-                break
+                    continue
+                if isinstance(obj, dict):
+                    cand = obj
+                    break
     return cand if isinstance(cand, dict) else (sc if isinstance(sc, dict) else {})
 
 
@@ -670,7 +765,9 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     if "error" in msg:
         err = msg["error"]
         code = _remote_code(err.get("code")) if isinstance(err, dict) else "error"
-        return None, "the hosted endpoint refused the call" + ("" if code == "error" else f" ({code})")
+        return None, "the hosted endpoint refused the call" + (
+            "" if code == "error" else f" ({code})"
+        )
     result = msg.get("result")
     if not isinstance(result, dict):
         return None, "the hosted endpoint sent no result" + unknown
@@ -678,7 +775,10 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     sc = result.get("structuredContent")
     if (
         (content is not None and not isinstance(content, list))
-        or any(not isinstance(p, dict) or ("text" in p and not isinstance(p["text"], str)) for p in content or [])
+        or any(
+            not isinstance(p, dict) or ("text" in p and not isinstance(p["text"], str))
+            for p in content or []
+        )
         or (sc is not None and not isinstance(sc, dict))
         or not isinstance(result.get("isError", False), bool)
     ):
@@ -687,7 +787,13 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
         eo = _remote_error_object(result, sc)
         code = _remote_code(eo.get("code"))
         retry = eo.get("retry_after_s", eo.get("retry_after"))
-        after = f", retry after {retry}s" if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400 else ""
+        after = (
+            f", retry after {int(-(-retry // 1))}s"
+            if isinstance(retry, (int, float))
+            and not isinstance(retry, bool)
+            and 0 <= retry <= 86400
+            else ""
+        )
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
         return None, f"{tool} failed on the hosted server: {code}{after}{note}"
     return result, ""
@@ -695,7 +801,11 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
 
 def _remote_failure(exc: "_TransportError", write: bool) -> str:
     if write and exc.sent:
-        return "the hosted endpoint did not answer" + _REMOTE_UNKNOWN + " (no direct fallback in remote mode)"
+        return (
+            "the hosted endpoint did not answer"
+            + _REMOTE_UNKNOWN
+            + " (no direct fallback in remote mode)"
+        )
     return "the hosted endpoint could not be reached (no direct fallback in remote mode)"
 
 
@@ -736,27 +846,47 @@ def _remote_scanner():
         spec.loader.exec_module(module)
         return module
     except (OSError, ImportError, AttributeError, SyntaxError):
-        raise FleetRagError("the secret scanner is not available, so nothing was sent (remote mode has no "
-                            "unscanned route)") from None
+        raise FleetRagError(
+            "the secret scanner is not available, so nothing was sent (remote mode has no "
+            "unscanned route)"
+        ) from None
 
 
 def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     bearer = os.environ.get(REMOTE_BEARER_ENV, "").strip()
     if not bearer:
-        raise FleetRagError(f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
-                            "to direct or public credentials")
+        raise FleetRagError(
+            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
+            "to direct or public credentials"
+        )
     if not REMOTE_BEARER_RE.fullmatch(bearer):
-        raise FleetRagError(f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)")
+        raise FleetRagError(
+            f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)"
+        )
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
         raise FleetRagError(f"refused before sending: {hit}")
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": tool, "arguments": arguments}}).encode()
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        }
+    ).encode()
     try:
-        status, ctype, raw = _remote_post(REMOTE_MCP_URL, {
-            "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-            "MCP-Protocol-Version": "2025-06-18", "Authorization": "Bearer " + bearer,
-            "User-Agent": "recall-remote/1"}, body, REMOTE_TIMEOUT_S)
+        status, ctype, raw = _remote_post(
+            REMOTE_MCP_URL,
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2025-06-18",
+                "Authorization": "Bearer " + bearer,
+                "User-Agent": "recall-remote/1",
+            },
+            body,
+            REMOTE_TIMEOUT_S,
+        )
     except _TransportError as exc:
         raise FleetRagError(_remote_failure(exc, write)) from None
     if status != 200:
@@ -772,18 +902,24 @@ _ARGV: list[str] = []
 
 def remote_main(a: argparse.Namespace) -> int:
     if a.cmd not in ("search", "stats", "contribute"):
-        raise FleetRagError(f"`{a.cmd}` is not available in remote mode (SIMPLE_RECALL_REMOTE=1 supports only "
-                            "search, stats and contribute); it is not run directly either")
+        raise FleetRagError(
+            f"`{a.cmd}` is not available in remote mode (SIMPLE_RECALL_REMOTE=1 supports only "
+            "search, stats and contribute); it is not run directly either"
+        )
     if a.cmd == "contribute":
         # A write: its own switch, the hosted recall_contribute tool only, and never a seat of the caller's choosing
         # (the hosted server attributes the lesson to the bearer's seat).  The near-duplicate guard is local and
         # has no hosted equivalent, so --force is refused rather than ignored.
         if os.environ.get("SIMPLE_RECALL_REMOTE_WRITES") != "1":
-            raise FleetRagError("contribute is a write:  set SIMPLE_RECALL_REMOTE_WRITES=1 as well as "
-                                "SIMPLE_RECALL_REMOTE=1 (it is not sent directly instead)")
+            raise FleetRagError(
+                "contribute is a write:  set SIMPLE_RECALL_REMOTE_WRITES=1 as well as "
+                "SIMPLE_RECALL_REMOTE=1 (it is not sent directly instead)"
+            )
         if a.force or any(x == "--seat" or x.startswith("--seat=") for x in _ARGV):
-            raise FleetRagError("--force and --seat have no meaning in remote mode (no local duplicate guard; "
-                                "the hosted server attributes the lesson to this bearer's seat)")
+            raise FleetRagError(
+                "--force and --seat have no meaning in remote mode (no local duplicate guard; "
+                "the hosted server attributes the lesson to this bearer's seat)"
+            )
         args = {"text": contribute_text(a.text, a.file), "category": a.category, "app": a.app}
         if a.title:
             args["title"] = a.title
@@ -793,10 +929,19 @@ def remote_main(a: argparse.Namespace) -> int:
     elif a.cmd == "stats":
         result = remote_call("recall_stats", {})
     else:
-        unsupported = [flag for flag, bad in (
-            ("--source", a.source), ("--seat", a.seat), ("--since-days", a.since_days),
-            ("--per-doc", a.per_doc != 1), ("--no-rerank", not a.rerank), ("--no-lessons", not a.prefer_lessons),
-            ("--full", a.full)) if bad]
+        unsupported = [
+            flag
+            for flag, bad in (
+                ("--source", a.source),
+                ("--seat", a.seat),
+                ("--since-days", a.since_days),
+                ("--per-doc", a.per_doc != 1),
+                ("--no-rerank", not a.rerank),
+                ("--no-lessons", not a.prefer_lessons),
+                ("--full", a.full),
+            )
+            if bad
+        ]
         if unsupported:
             raise FleetRagError(f"{', '.join(unsupported)} has no hosted equivalent in remote mode")
         args = {"query": a.query, "limit": a.limit}
@@ -806,7 +951,12 @@ def remote_main(a: argparse.Namespace) -> int:
             args["category"] = a.category
         result = remote_call("recall_search", args)
     if a.json:
-        print(json.dumps({"structured": result.get("structuredContent"), "content": result.get("content")}, indent=2))
+        print(
+            json.dumps(
+                {"structured": result.get("structuredContent"), "content": result.get("content")},
+                indent=2,
+            )
+        )
         return 0
     printed = False
     for part in result.get("content") or []:
@@ -828,7 +978,7 @@ def normalize_argv(argv: list[str]) -> list[str]:
     argv = list(argv)
     if not argv:
         return argv
-    head = argv[:argv.index("--")] if "--" in argv else argv
+    head = argv[: argv.index("--")] if "--" in argv else argv
     if any(x in SUBCOMMANDS or x in ("-h", "--help") for x in head):
         return argv
     return ["search"] + argv
@@ -849,8 +999,15 @@ def main(argv: list[str] | None = None) -> int:
         except FleetRagError as e:
             print(f"recall: {e}", file=sys.stderr)
             return 2
-    handler = {"search": cmd_search, "stats": cmd_stats, "contribute": cmd_contribute,
-               "digest": cmd_digest, "eval": cmd_eval, "doctor": cmd_doctor, "ingest": cmd_ingest}[a.cmd]
+    handler = {
+        "search": cmd_search,
+        "stats": cmd_stats,
+        "contribute": cmd_contribute,
+        "digest": cmd_digest,
+        "eval": cmd_eval,
+        "doctor": cmd_doctor,
+        "ingest": cmd_ingest,
+    }[a.cmd]
     try:
         return handler(a)
     except FleetRagError as e:

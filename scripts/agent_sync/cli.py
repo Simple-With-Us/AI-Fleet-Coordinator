@@ -3082,7 +3082,8 @@ def _remote_code(value) -> str:
 
 def _remote_error_object(result: dict, sc) -> dict:
     """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
-    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part.  A
+    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part
+    that is a JSON object.  A
     structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
     the code only when it is allow-listed, so nothing the server wrote is copied."""
     if isinstance(sc, dict) and "code" in sc:
@@ -3096,9 +3097,10 @@ def _remote_error_object(result: dict, sc) -> dict:
                 try:
                     obj = json.loads(part["text"])
                 except (ValueError, RecursionError):
-                    obj = None
-                cand = obj if isinstance(obj, dict) else None
-                break
+                    continue
+                if isinstance(obj, dict):
+                    cand = obj
+                    break
     return cand if isinstance(cand, dict) else (sc if isinstance(sc, dict) else {})
 
 
@@ -3154,8 +3156,10 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
         code = _remote_code(eo.get("code"))
         retry = eo.get("retry_after_s", eo.get("retry_after"))
         after = (
-            f", retry after {retry}s"
-            if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400
+            f", retry after {int(-(-retry // 1))}s"
+            if isinstance(retry, (int, float))
+            and not isinstance(retry, bool)
+            and 0 <= retry <= 86400
             else ""
         )
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
@@ -3316,14 +3320,10 @@ def _remote_write_identity(env: Mapping[str, str]) -> str:
     """The identity a hosted write names.  The server requires every write to say which bot it acts as
     (docs/protocols/per-call-identity.md) and answers `identities` with the connection's own default, fixed by the
     bearer;  that value is named, so no seat is guessed locally and a bearer can only act as its own allowed set.
-    A server that has no `identities` tool predates per-call identity and gets the write unchanged.  Any other
-    failure, or an answer with no usable default, refuses the write before it is sent."""
-    try:
-        res = _remote_call(env, "identities", {}, write=False)
-    except RemoteError as exc:
-        if "unknown_tool" in str(exc):
-            return ""
-        raise
+    Any failure of that call, including a refusal that might mean the server has no such tool (a JSON-RPC
+    -32602 is shared by unknown tool, disabled tool and input validation), or an answer that does not match
+    this bearer's own seat and allowed set, refuses the write before it is sent."""
+    res = _remote_call(env, "identities", {}, write=False)
     info = res.get("structuredContent")
     info = info if isinstance(info, dict) else {}
     who, seat, listed = (

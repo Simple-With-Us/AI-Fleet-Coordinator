@@ -59,9 +59,11 @@ class Adapter:
                 except cli.RemoteError as exc:
                     return None, str(exc)
         err = io.StringIO()
-        with mock.patch.dict(os.environ, {"SIMPLE_TOOLS_BEARER": BEARER}), mock.patch.object(
-            module, "_remote_post", post
-        ), contextlib.redirect_stderr(err):
+        with (
+            mock.patch.dict(os.environ, {"SIMPLE_TOOLS_BEARER": BEARER}),
+            mock.patch.object(module, "_remote_post", post),
+            contextlib.redirect_stderr(err),
+        ):
             try:
                 result = module.remote_call(tool, args, write)
             except recall.FleetRagError as exc:
@@ -85,7 +87,11 @@ def rpc(result=None, *, error=None, mid=1):
     return json.dumps(msg)
 
 
-GOOD = {"structuredContent": {"seat": "CODEX"}, "isError": False, "content": [{"type": "text", "text": "ok"}]}
+GOOD = {
+    "structuredContent": {"seat": "CODEX"},
+    "isError": False,
+    "content": [{"type": "text", "text": "ok"}],
+}
 
 
 def answer(body, ctype="application/json", status=200):
@@ -119,7 +125,9 @@ class Parsing(unittest.TestCase):
 
     def test_deep_and_heavy_json_are_refused_before_use(self):
         deep = "[" * 100_000 + "]" * 100_000
-        heavy = rpc({"content": [], "structuredContent": {"v": list(range(150_000))}, "isError": False})
+        heavy = rpc(
+            {"content": [], "structuredContent": {"v": list(range(150_000))}, "isError": False}
+        )
         for ad in self.each():
             _, err = ad.call("whoami", {}, False, answer(deep))
             self.assertIn("nests too deeply", err)
@@ -154,19 +162,107 @@ class Parsing(unittest.TestCase):
         secret = "ghp_" + "Z9y8X7w6V5" * 4
         obj = {"code": "identity_required", "message": secret, "retryable": False}
         text_only = rpc({"isError": True, "content": [{"type": "text", "text": json.dumps(obj)}]})
-        meta_only = rpc({"isError": True, "content": [{"type": "text", "text": "x"}],
-                         "_meta": {"agent-sync/error": obj}})
-        limited = rpc({"isError": True, "content": [{"type": "text", "text": json.dumps(
-            {"code": "rate_limited", "message": secret, "retry_after_s": 9})}]})
-        unknown = rpc({"isError": True, "content": [{"type": "text", "text": json.dumps(
-            {"code": "safe_looking_unknown", "message": secret})}]})
+        meta_only = rpc(
+            {
+                "isError": True,
+                "content": [{"type": "text", "text": "x"}],
+                "_meta": {"agent-sync/error": obj},
+            }
+        )
+        limited = rpc(
+            {
+                "isError": True,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {"code": "rate_limited", "message": secret, "retry_after_s": 9}
+                        ),
+                    }
+                ],
+            }
+        )
+        unknown = rpc(
+            {
+                "isError": True,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps({"code": "safe_looking_unknown", "message": secret}),
+                    }
+                ],
+            }
+        )
         not_json = rpc({"isError": True, "content": [{"type": "text", "text": secret}]})
+        later = rpc(
+            {
+                "isError": True,
+                "content": [
+                    {"type": "text", "text": "not json at all"},
+                    {"type": "text", "text": "5"},
+                    {"type": "text", "text": json.dumps({"code": "paused", "message": secret})},
+                ],
+            }
+        )
+        fractional = rpc(
+            {
+                "isError": True,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps({"code": "rate_limited", "retry_after_s": 2.5}),
+                    }
+                ],
+            }
+        )
+        bad_retry = [
+            rpc(
+                {
+                    "isError": True,
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps({"code": "rate_limited", "retry_after_s": v}),
+                        }
+                    ],
+                }
+            )
+            for v in (True, -1, 86401, 86400.5, "3")
+        ]
         for ad in self.each():
-            for body, expect in ((text_only, "zulip_post failed on the hosted server: identity_required"),
-                                 (meta_only, "zulip_post failed on the hosted server: identity_required"),
-                                 (limited, "rate_limited, retry after 9s"),
-                                 (unknown, "hosted server: error"),
-                                 (not_json, "hosted server: error")):
+            for body in bad_retry:
+                _, err = ad.call("zulip_post", {}, False, answer(body))
+                self.assertNotIn("retry after", err)
+            _, err = ad.call(
+                "zulip_post",
+                {},
+                False,
+                answer(
+                    rpc(
+                        {
+                            "isError": True,
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        {"code": "rate_limited", "retry_after_s": 86400}
+                                    ),
+                                }
+                            ],
+                        }
+                    )
+                ),
+            )
+            self.assertIn("retry after 86400s", err)
+            for body, expect in (
+                (later, "failed on the hosted server: paused"),
+                (fractional, "rate_limited, retry after 3s"),
+                (text_only, "zulip_post failed on the hosted server: identity_required"),
+                (meta_only, "zulip_post failed on the hosted server: identity_required"),
+                (limited, "rate_limited, retry after 9s"),
+                (unknown, "hosted server: error"),
+                (not_json, "hosted server: error"),
+            ):
                 result, err = ad.call("zulip_post", {}, False, answer(body))
                 self.assertIsNone(result)
                 self.assertIn(expect, err)
@@ -176,14 +272,44 @@ class Parsing(unittest.TestCase):
     def test_error_text_from_the_server_is_never_copied_only_an_allow_listed_code(self):
         secret = "ghp_" + "Z9y8X7w6V5" * 4
         cases = [
-            (rpc({"isError": True, "structuredContent": {"code": "rate_limited", "message": secret, "retry_after": 7},
-                  "content": [{"type": "text", "text": secret}]}), "rate_limited, retry after 7s"),
-            (rpc({"isError": True, "structuredContent": {"code": {"x": secret}}}), "failed on the hosted server: error"),
-            (rpc({"isError": True, "structuredContent": {"code": "bad code\x1b[31m"}}), "hosted server: error"),
-            (rpc({"isError": True, "structuredContent": {"code": "x" * 200}}), "hosted server: error"),
-            (rpc({"isError": True, "structuredContent": {"code": "ghp_" + "A1b2C3d4E5" * 4}}), "hosted server: error"),
-            (rpc({"isError": True, "structuredContent": {"code": "FULLSECRET"}}), "hosted server: error"),
-            (rpc({"isError": True, "structuredContent": {"code": "safe_looking_unknown"}}), "hosted server: error"),
+            (
+                rpc(
+                    {
+                        "isError": True,
+                        "structuredContent": {
+                            "code": "rate_limited",
+                            "message": secret,
+                            "retry_after": 7,
+                        },
+                        "content": [{"type": "text", "text": secret}],
+                    }
+                ),
+                "rate_limited, retry after 7s",
+            ),
+            (
+                rpc({"isError": True, "structuredContent": {"code": {"x": secret}}}),
+                "failed on the hosted server: error",
+            ),
+            (
+                rpc({"isError": True, "structuredContent": {"code": "bad code\x1b[31m"}}),
+                "hosted server: error",
+            ),
+            (
+                rpc({"isError": True, "structuredContent": {"code": "x" * 200}}),
+                "hosted server: error",
+            ),
+            (
+                rpc({"isError": True, "structuredContent": {"code": "ghp_" + "A1b2C3d4E5" * 4}}),
+                "hosted server: error",
+            ),
+            (
+                rpc({"isError": True, "structuredContent": {"code": "FULLSECRET"}}),
+                "hosted server: error",
+            ),
+            (
+                rpc({"isError": True, "structuredContent": {"code": "safe_looking_unknown"}}),
+                "hosted server: error",
+            ),
             (rpc({"isError": True, "structuredContent": {"code": 4242}}), "hosted server: error"),
             (rpc(error={"code": -32000, "message": secret}), "refused the call"),
         ]
@@ -255,8 +381,12 @@ class SecretScan(unittest.TestCase):
                 self.assertEqual(sent, [])
 
     def test_legitimate_arguments_still_go_through(self):
-        ok = {"query": "how do I rotate a token and reset a password?", "limit": 5, "flag": True,
-              "text": "pm2 start does not re-read env; use --update-env on restart."}
+        ok = {
+            "query": "how do I rotate a token and reset a password?",
+            "limit": 5,
+            "flag": True,
+            "text": "pm2 start does not re-read env; use --update-env on restart.",
+        }
         for ad in ADAPTERS:
             with self.subTest(transport=ad.name):
                 result, err = ad.call("recall_search", ok, False, answer(rpc(GOOD)))
@@ -279,7 +409,9 @@ class SecretScan(unittest.TestCase):
                     sent.append(a)
                     return 200, "application/json", rpc(GOOD).encode()
 
-                with mock.patch("importlib.util.spec_from_file_location", side_effect=OSError("gone")):
+                with mock.patch(
+                    "importlib.util.spec_from_file_location", side_effect=OSError("gone")
+                ):
                     result, err = Adapter(name).call("recall_search", {"query": "x"}, False, post)
                 self.assertIsNone(result)
                 self.assertIn("secret scanner is not available", err)
@@ -323,13 +455,18 @@ class RealTransport(unittest.TestCase):
 
                     def do_POST(self):
                         self.send_response(307)
-                        self.send_header("Location", f"http://127.0.0.1:{target.server_port}/stolen")
+                        self.send_header(
+                            "Location", f"http://127.0.0.1:{target.server_port}/stolen"
+                        )
                         self.end_headers()
 
                 origin = _serve(Redirect)
                 try:
                     status, _, _ = ad.module._remote_post(
-                        f"http://127.0.0.1:{origin.server_port}/mcp", {"Authorization": "Bearer " + BEARER}, b"{}", 5
+                        f"http://127.0.0.1:{origin.server_port}/mcp",
+                        {"Authorization": "Bearer " + BEARER},
+                        b"{}",
+                        5,
                     )
                 finally:
                     origin.shutdown()
@@ -373,11 +510,15 @@ class RealTransport(unittest.TestCase):
                 big, drip = _serve(Big), _serve(Drip)
                 try:
                     with self.assertRaises(ad.module._TransportError) as ctx:
-                        ad.module._remote_post(f"http://127.0.0.1:{big.server_port}/", {}, b"{}", 10)
+                        ad.module._remote_post(
+                            f"http://127.0.0.1:{big.server_port}/", {}, b"{}", 10
+                        )
                     self.assertTrue(ctx.exception.sent)
                     started = time.monotonic()
                     with self.assertRaises(ad.module._TransportError):
-                        ad.module._remote_post(f"http://127.0.0.1:{drip.server_port}/", {}, b"{}", 1)
+                        ad.module._remote_post(
+                            f"http://127.0.0.1:{drip.server_port}/", {}, b"{}", 1
+                        )
                     self.assertLess(time.monotonic() - started, 1.6)
                 finally:
                     big.shutdown()
@@ -416,7 +557,9 @@ class Stall(unittest.TestCase):
                 try:
                     started = time.monotonic()
                     with self.assertRaises(ad.module._TransportError) as ctx:
-                        ad.module._remote_post(f"http://127.0.0.1:{server.server_port}/", {}, b"{}", 1)
+                        ad.module._remote_post(
+                            f"http://127.0.0.1:{server.server_port}/", {}, b"{}", 1
+                        )
                     self.assertTrue(ctx.exception.sent)
                     self.assertLess(time.monotonic() - started, 1.6)
                 finally:
@@ -462,10 +605,13 @@ class DeadlineArithmetic(unittest.TestCase):
             def open(self, *a, **k):
                 return resp
 
-        with mock.patch.object(module.urllib.request, "build_opener", return_value=Op()), mock.patch.object(
-            module.time, "monotonic", side_effect=clock
+        with (
+            mock.patch.object(module.urllib.request, "build_opener", return_value=Op()),
+            mock.patch.object(module.time, "monotonic", side_effect=clock),
         ):
-            return (post or module._remote_post)("https://agents.simplewithus.com/mcp", {}, b"{}", 1)
+            return (post or module._remote_post)(
+                "https://agents.simplewithus.com/mcp", {}, b"{}", 1
+            )
 
     def test_an_eof_that_arrives_after_the_deadline_is_a_failure_not_an_empty_success(self):
         for ad in ADAPTERS:
