@@ -275,14 +275,16 @@ class ReleaseTests(unittest.TestCase):
         helper = str(self.home / ".config/fleet-cli/seat-remote-defaults.py")
         for name in ("simple-chat", "simple-board", "recall"):
             text = release.wrapper(self.home, "scripts/" + name).decode()
-            line = (
-                f"import runpy\nrunpy.run_path({helper!r}, init_globals={{'fleet_command': {name!r}}})\n"
-            )
+            line = f"import runpy\nrunpy.run_path({helper!r}, init_globals={{'fleet_command': {name!r}}})\n"
             self.assertIn(line, text, name)
             # the helper runs after the imports and before the release is resolved and the tool is exec'd
             self.assertLess(text.index("from pathlib import Path"), text.index(line), name)
             self.assertLess(text.index(line), text.index("release = Path("), name)
-        for script in ("scripts/simple-notes", "scripts/fleet-mode", "scripts/fleet_lanes/bin/lane"):
+        for script in (
+            "scripts/simple-notes",
+            "scripts/fleet-mode",
+            "scripts/fleet_lanes/bin/lane",
+        ):
             self.assertNotIn("runpy", release.wrapper(self.home, script).decode(), script)
         # the CODEX-only MCP registration passes its own seat and never reads a bearer file
         mcp = release.wrapper(self.home, "scripts/simple-chat", ["mcp"], True).decode()

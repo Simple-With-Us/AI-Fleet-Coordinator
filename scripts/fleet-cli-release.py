@@ -417,7 +417,12 @@ for key in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT"):
     # Only a host that has installed the helper gets the lines:  a wrapper that runs a missing file would break
     # its tool, and a host without the helper keeps the plain wrapper it has today.
     helper_file = home / HELPER_PATH
-    if script in HELPER_COMMANDS and not codex_only and helper_file.is_file() and not helper_file.is_symlink():
+    if (
+        script in HELPER_COMMANDS
+        and not codex_only
+        and helper_file.is_file()
+        and not helper_file.is_symlink()
+    ):
         helper = (
             "import runpy\n"
             f"runpy.run_path({str(home / HELPER_PATH)!r}, init_globals={{'fleet_command': {HELPER_COMMANDS[script]!r}}})\n"
