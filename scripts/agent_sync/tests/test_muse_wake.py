@@ -1264,6 +1264,22 @@ class QuotaGateTest(unittest.TestCase):
         )
         self.assertIsNone(A.quota_block("MiniMax", self.now, path))
 
+    def test_the_status_red_line_follows_the_gate_and_never_shows_red_for_an_uncapped_provider(self) -> None:
+        # The status showed "wakes are not running: the MiniMax quota is exhausted" for a muse seat whose wakes the
+        # gate lets through (QUOTA_NEVER_CAP_PROVIDERS), because it read the quota file on its own.
+        path = self._write(
+            [
+                {"provider": "MiniMax", "isExhausted": True, "skip": True, "resetAt": "2026-10-30T10:00:00Z"},
+                {"provider": "Claude Code", "isExhausted": True, "skip": True, "resetAt": "2026-10-30T10:00:00Z"},
+            ]
+        )
+        self.assertTrue(A.provider_quota("MiniMax", self.now, path)["exhausted"])  # the reading is real...
+        self.assertIsNone(A.quota_block("MiniMax", self.now, path))  # ...the gate does not stop the wake...
+        self.assertIsNone(A.quota_red("MiniMax", self.now, path))  # ...so the status shows no RED
+        self.assertIsNone(A.quota_red("muse", self.now, path))
+        red = A.quota_red("Claude Code", self.now, path)  # a capped provider still does
+        self.assertEqual(red, "wakes are not running: the Claude Code quota is exhausted until 2026-10-30T10:00:00Z")
+
     def test_a_stale_snapshot_never_blocks(self) -> None:
         # A quota source that is down must not silence the fleet:  an old reading is not a verdict.
         path = self._write(

@@ -6943,14 +6943,10 @@ class Daemon:
             quota = None
             if runner.cfg.wake in ("claude", "muse"):
                 quota = A.provider_quota(runner.cfg.provider or "", now)
-                if quota["known"] and quota["exhausted"]:
-                    red.append(
-                        "wakes are not running: the %s quota is exhausted%s"
-                        % (
-                            runner.cfg.provider,
-                            (" until %s" % quota["reset_at"]) if quota.get("reset_at") else "",
-                        )
-                    )
+                # RED only when the wake gate itself would stop the wake (a muse or minimax provider is never capped).
+                quota_line = A.quota_red(runner.cfg.provider or "", now)
+                if quota_line:
+                    red.append(quota_line)
             seats[seat] = {
                 "bot": runner.cfg.bot,
                 "creds": runner.cfg.creds,

@@ -1377,6 +1377,17 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
     return None
 
 
+def quota_red(provider: str, now: float | None = None, path: str | None = None) -> str | None:
+    """The status page's RED line for a seat whose wake the quota gate stops, or None.
+
+    It is the gate's own verdict (quota_block), never a second reading of the same file:  a provider the gate
+    never caps (muse, minimax) shows no RED however its quota reads, because for those the reading is information
+    and no wake is stopped.  The status used to read the quota itself and showed "wakes are not running" for a muse
+    seat whose wakes the gate was letting through."""
+    blocked = quota_block(provider, now, path)
+    return "wakes are not running: the %s" % blocked if blocked else None
+
+
 # --------------------------------------------------------------------------------------------
 # mcode exec:  the fallback runtime (AFC-291)
 # --------------------------------------------------------------------------------------------
