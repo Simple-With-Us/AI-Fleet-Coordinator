@@ -1,11 +1,11 @@
-// Resource alerts tag both Housekeepers and Jay;  Datadog's CPU monitor and every recovery tag nobody.
+// Resource alerts tag both Housekeepers and Jay; CPU only tags severe saturation, and recovery tags nobody.
 //
 // Run: node --test workers/alert-ingress/src/*.test.js
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
-import { RESOURCE_MENTIONS, resourceMentions } from "./resource.js";
+import { isSevereCpu, RESOURCE_MENTIONS, resourceMentions } from "./resource.js";
 
 const { handleEvent, runSweep, stateKey, srcKey, svcKey, topicKey, indexPrefix } = __testing;
 
@@ -77,11 +77,11 @@ function stubZulip() {
   };
 }
 
-function seed(kv, key, service, phase) {
+function seed(kv, key, service, phase, severity = "MODERATE") {
   const old = Date.now() - 60 * 60 * 1000;
   kv.store.set(
     stateKey(key),
-    JSON.stringify({ phase, severity: "MODERATE", since: old, updated: old, text: "it is high", link: "" }),
+    JSON.stringify({ phase, severity, since: old, updated: old, text: "it is high", link: "" }),
   );
   kv.store.set(svcKey(key), JSON.stringify(service));
   kv.store.set(srcKey(key), JSON.stringify("datadog"));
@@ -99,10 +99,89 @@ test("each Datadog resource monitor tags both Housekeepers and Jay, with or with
   assert.match(RESOURCE_MENTIONS, /@\*\*Jay Wedgeworth\|1211974\*\*/);
 });
 
-test("CPU, other monitors, other vendors and look-alike ids tag nobody", () => {
+test("the CPU monitor tags only SEVERE saturation events", () => {
+  const key = "datadog:22024794:host:fleet-hetzner-nbg1";
+  assert.equal(isSevereCpu(key, "SEVERE"), true);
+  assert.equal(isSevereCpu(key, "MODERATE"), false);
+  assert.equal(isSevereCpu("datadog:220247940", "SEVERE"), false);
+  assert.equal(resourceMentions(key, "SEVERE"), RESOURCE_MENTIONS);
+  assert.equal(resourceMentions(key, "MODERATE"), "");
+  assert.equal(resourceMentions(key, "INFO"), "");
+  assert.equal(resourceMentions(key), "");
+});
+
+test("severe CPU bypasses the ingress hold, dedupes repeats, and keeps recovery quiet", async () => {
+  const kv = fakeKV();
+  const zulip = stubZulip();
+  const env = envFor(kv);
+  const warning = {
+    monitor_id: "22024794",
+    alert_type: "warning",
+    alert_transition_type: "Warning",
+    priority: "P2",
+    host: "fleet-hetzner-nbg1",
+    alert_title: "CPU is elevated",
+  };
+  const severe = {
+    monitor_id: "22024794",
+    alert_type: "error",
+    alert_transition_type: "Triggered",
+    host: "fleet-hetzner-nbg1",
+    alert_title: "CPU saturation",
+  };
+  try {
+    const held = await handleEvent("datadog", warning, env);
+    assert.equal(held.action, "hold");
+    assert.equal(zulip.events().length, 0);
+
+    const announced = await handleEvent("datadog", severe, env);
+    assert.equal(announced.action, "announce");
+    const repeated = await handleEvent("datadog", severe, env);
+    assert.equal(repeated.action, "refresh");
+
+    const recovered = await handleEvent(
+      "datadog",
+      { ...severe, alert_type: "success", alert_transition_type: "Recovered" },
+      env,
+    );
+    assert.equal(recovered.action, "resolve");
+    const events = zulip.events();
+    assert.equal(events.length, 2);
+    assert.match(events[0].form.get("content"), /^SEVERE  •  fleet-hetzner-nbg1/);
+    assert.match(events[0].form.get("content"), /@\*\*Jay Wedgeworth\|1211974\*\*/);
+    assert.match(events[1].form.get("content"), /recovered/);
+    assert.doesNotMatch(events[1].form.get("content"), /@\*\*/);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("a fresh Datadog error/Triggered CPU event announces immediately", async () => {
+  const kv = fakeKV();
+  const zulip = stubZulip();
+  try {
+    const result = await handleEvent(
+      "datadog",
+      {
+        monitor_id: "22024794",
+        alert_type: "error",
+        alert_transition_type: "Triggered",
+        host: "fleet-hetzner-nbg1",
+        alert_title: "CPU saturation",
+      },
+      envFor(kv),
+    );
+    assert.equal(result.action, "announce");
+    const [event] = zulip.events();
+    assert.match(event.form.get("content"), /^SEVERE  •  fleet-hetzner-nbg1/);
+    assert.match(event.form.get("content"), /@\*\*Jay Wedgeworth\|1211974\*\*/);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("other monitors, other vendors and look-alike ids tag nobody", () => {
   for (const key of [
-    "datadog:22024794",
-    "datadog:22024794:host:fleet-hetzner-nbg1",
     "datadog:12345",
     "datadog:220247970",
     "datadog:system load is high",
@@ -114,10 +193,10 @@ test("CPU, other monitors, other vendors and look-alike ids tag nobody", () => {
     assert.equal(resourceMentions(key), "", String(key));
 });
 
-test("a promoted resource alert puts the mentions on their own line;  a CPU alert has none", async () => {
+test("promoted resource and CPU alerts put mentions on their own line", async () => {
   const kv = fakeKV();
   seed(kv, "datadog:22024797", "load.service", "pending");
-  seed(kv, "datadog:22024794", "cpu.service", "pending");
+  seed(kv, "datadog:22024794", "cpu.service", "pending", "SEVERE");
   const zulip = stubZulip();
   try {
     const result = await runSweep(envFor(kv));
@@ -128,8 +207,10 @@ test("a promoted resource alert puts the mentions on their own line;  a CPU aler
     assert.match(line, /^MODERATE  •  load\.service  •  it is high$/);
     assert.equal(mentions, RESOURCE_MENTIONS);
     assert.deepEqual(rest, []);
-    assert.doesNotMatch(byTopic["cpu.service"].get("content"), /@\*\*/);
-    assert.doesNotMatch(byTopic["cpu.service"].get("content"), /\n/);
+    const [cpuLine, cpuMentions, ...cpuRest] = byTopic["cpu.service"].get("content").split("\n");
+    assert.match(cpuLine, /^SEVERE  •  cpu\.service  •  it is high$/);
+    assert.equal(cpuMentions, RESOURCE_MENTIONS);
+    assert.deepEqual(cpuRest, []);
   } finally {
     zulip.restore();
   }
@@ -143,6 +224,25 @@ test("a resource alert's recovery tags nobody", async () => {
     await handleEvent(
       "datadog",
       { monitor_id: "22024800", alert_type: "recovered", alert_transition: "Recovered", host: "memory.service" },
+      envFor(kv),
+    );
+    const events = zulip.events();
+    assert.equal(events.length, 1);
+    assert.match(events[0].form.get("content"), /recovered/);
+    assert.doesNotMatch(events[0].form.get("content"), /@\*\*/);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("a CPU monitor recovery stays quiet", async () => {
+  const kv = fakeKV();
+  seed(kv, "datadog:22024794", "cpu.service", "alerting");
+  const zulip = stubZulip();
+  try {
+    await handleEvent(
+      "datadog",
+      { monitor_id: "22024794", alert_type: "Recovered", alert_transition_type: "Recovered", host: "cpu.service" },
       envFor(kv),
     );
     const events = zulip.events();
