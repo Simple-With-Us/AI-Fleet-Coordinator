@@ -867,6 +867,13 @@ def build_parser(
         "6 network error, 7 verify-owner-msg did not verify.  See scripts/agent_sync/README.md.",
     )
     parser.add_argument("--version", action="version", version="%s %s" % (prog, __version__))
+    if prog == "simple-notes":
+        parser.add_argument(
+            "--fleet-bearer-file",
+            default=argparse.SUPPRESS,
+            metavar="PATH",
+            help="use this bot's existing private fleet bearer file; no direct fallback",
+        )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
     # The wrapper spans every source that registers onto `sub`, so a verb this command owns from
     # any of them survives; each source narrows its own registration further where it needs to.
@@ -3080,6 +3087,30 @@ def _remote_code(value) -> str:
     return value if isinstance(value, str) and value in _REMOTE_CODES else "error"
 
 
+def _remote_error_object(result: dict, sc) -> dict:
+    """The hosted server's error object.  The server answers a tool error with isError and NO structuredContent: the
+    object (code, retry_after_s, ...) is in `_meta["agent-sync/error"]` and, as JSON, in the first text part
+    that is a JSON object.  A
+    structuredContent that carries a code still wins.  Only the code and the retry-after are ever shown, and
+    the code only when it is allow-listed, so nothing the server wrote is copied."""
+    if isinstance(sc, dict) and "code" in sc:
+        return sc
+    meta = result.get("_meta")
+    cand = meta.get("agent-sync/error") if isinstance(meta, dict) else None
+    if not isinstance(cand, dict):
+        cand = None
+        for part in result.get("content") or []:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                try:
+                    obj = json.loads(part["text"])
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(obj, dict):
+                    cand = obj
+                    break
+    return cand if isinstance(cand, dict) else (sc if isinstance(sc, dict) else {})
+
+
 def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     """The tools/call result of one answer, or (None, message).  Returns (result, "") on success.  Only an
     allow-listed code and a bounded retry-after leave this function:  the server's own message text is
@@ -3128,11 +3159,14 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     ):
         return None, "the hosted endpoint sent a result in an unexpected shape" + unknown
     if result.get("isError"):
-        code = _remote_code((sc or {}).get("code"))
-        retry = (sc or {}).get("retry_after")
+        eo = _remote_error_object(result, sc)
+        code = _remote_code(eo.get("code"))
+        retry = eo.get("retry_after_s", eo.get("retry_after"))
         after = (
-            f", retry after {retry}s"
-            if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400
+            f", retry after {int(-(-retry // 1))}s"
+            if isinstance(retry, (int, float))
+            and not isinstance(retry, bool)
+            and 0 <= retry <= 86400
             else ""
         )
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
@@ -3286,6 +3320,46 @@ def _remote_write_args(
     return "zulip_dm_send", targs
 
 
+_REMOTE_IDENTITY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
+
+
+def _remote_write_identity(env: Mapping[str, str]) -> str:
+    """The identity a hosted write names.  The server requires every write to say which bot it acts as
+    (docs/protocols/per-call-identity.md) and answers `identities` with the connection's own default, fixed by the
+    bearer;  that value is named, so no seat is guessed locally and a bearer can only act as its own allowed set.
+    Any failure of that call, including a refusal that might mean the server has no such tool (a JSON-RPC
+    -32602 is shared by unknown tool, disabled tool and input validation), or an answer that does not match
+    this bearer's own seat and allowed set, refuses the write before it is sent."""
+    res = _remote_call(env, "identities", {}, write=False)
+    info = res.get("structuredContent")
+    info = info if isinstance(info, dict) else {}
+    who, seat, listed = (
+        info.get("default_identity"),
+        info.get("authenticated_seat"),
+        info.get("identities"),
+    )
+    names = (
+        [r.get("identity") for r in listed if isinstance(r, dict)]
+        if isinstance(listed, list)
+        else []
+    )
+    ok = (
+        isinstance(who, str)
+        and _REMOTE_IDENTITY_RE.fullmatch(who)
+        and who == seat
+        and isinstance(listed, list)
+        and len(names) == len(listed)
+        and all(isinstance(n, str) for n in names)
+        and names.count(who) == 1
+    )
+    if not ok:
+        raise RemoteError(
+            "the hosted server's identity answer did not match this bearer's own seat and allowed "
+            "set, so the write was not sent"
+        )
+    return who
+
+
 def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
     cmd = getattr(args, "command", None) or getattr(args, "cmd", None)
     try:
@@ -3335,6 +3409,10 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
                     "remote inbox cannot advance the local cursor:  pass --peek to read without it"
                 )
             tool, targs = "zulip_inbox", {"limit": args.limit}
+        if cmd in REMOTE_WRITE_VERBS:
+            who = _remote_write_identity(rt.env)
+            if who:
+                targs = {**targs, "identity": who}
         result = _remote_call(rt.env, tool, targs, write=cmd in REMOTE_WRITE_VERBS)
     except RemoteError as exc:
         print(f"{rt.prog}: {exc}", file=rt.stderr)

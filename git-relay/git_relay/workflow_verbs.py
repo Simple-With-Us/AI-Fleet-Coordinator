@@ -74,6 +74,13 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 # action -> (permissions needed, writes)
 SPECS = {
     "wf_git_blob_binary_get": ({"contents": "read"}, False),
+    "wf_pr_commits_page": ({"pull_requests": "read"}, False),
+    "wf_pr_review_get": ({"pull_requests": "read"}, False),
+    "wf_release_latest": ({"contents": "read"}, False),
+    "wf_release_by_tag": ({"contents": "read"}, False),
+    "wf_commit_comment_create": ({"contents": "write"}, True),
+    "wf_commit_comment_update": ({"contents": "write"}, True),
+    "wf_commit_comment_delete": ({"contents": "write"}, True),
     "wf_repo_variables": ({"variables": "read"}, False),
     "wf_repo_variable_get": ({"variables": "read"}, False),
     "wf_repo_variable_create": ({"variables": "write"}, True),
@@ -781,6 +788,189 @@ class WorkflowVerbs:
         if len(json.dumps(receipt).encode("utf-8")) > 262144:
             raise Refused("context receipt exceeds supported size")
         return receipt
+
+    def _comment_write_body(self, args):
+        body = args.get("body")
+        if not isinstance(body, str) or not body.strip() or "\x00" in body:
+            raise Refused("invalid comment body")
+        try:
+            size = len(body.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise Refused("invalid comment body") from None
+        if (
+            size > 32768
+            or find_secret(body)
+            or re.search(
+                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                body,
+            )
+        ):
+            raise Refused("comment body refused")
+        return body
+
+    def _comment_write_prior(self, repo, args):
+        sha, comment_id = _sha(args, "sha"), _int(args, "comment_id")
+        expected = args.get("expected_body_sha256")
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise Refused("invalid expected comment body digest")
+        try:
+            raw = self._get(f"/repos/{repo}/comments/{comment_id}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "comment pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        self._commit_comment(raw, sha, comment_id)
+        # Compare the original bytes in-host, not a possibly-withheld projection.
+        if hashlib.sha256(raw["body"].encode("utf-8")).hexdigest() != expected:
+            raise Refused("comment body changed")
+        return sha, comment_id
+
+    def wf_commit_comment_create(self, repo, args):
+        _only(args, ("repo", "sha", "body"))
+        sha, body = _sha(args, "sha"), self._comment_write_body(args)
+        try:
+            commit = self._get(f"/repos/{repo}/commits/{sha}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "commit pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if not isinstance(commit, dict) or commit.get("sha") != sha:
+            raise Refused("commit not matched")
+        raw = self.client._call(
+            "POST", f"/repos/{repo}/commits/{sha}/comments", {"body": body}, bearer=self.bearer
+        )
+        comment = self._commit_comment(raw, sha)
+        if raw["body"] != body:
+            raise RelayGitHubError(502, "created comment body unconfirmed; write may have occurred")
+        return {"comment": comment}
+
+    def wf_commit_comment_update(self, repo, args):
+        _only(args, ("repo", "sha", "comment_id", "expected_body_sha256", "body"))
+        body = self._comment_write_body(args)
+        sha, comment_id = self._comment_write_prior(repo, args)
+        raw = self.client._call(
+            "PATCH", f"/repos/{repo}/comments/{comment_id}", {"body": body}, bearer=self.bearer
+        )
+        comment = self._commit_comment(raw, sha, comment_id)
+        if raw["body"] != body:
+            raise RelayGitHubError(502, "updated comment body unconfirmed; write may have occurred")
+        return {"comment": comment, "atomic": False}
+
+    def wf_commit_comment_delete(self, repo, args):
+        _only(args, ("repo", "sha", "comment_id", "expected_body_sha256"))
+        sha, comment_id = self._comment_write_prior(repo, args)
+        self.client._call(
+            "DELETE",
+            f"/repos/{repo}/comments/{comment_id}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        return {"comment_id": comment_id, "sha": sha, "deleted": True, "atomic": False}
+
+    def wf_pr_commits_page(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha", "page", "per_page"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+        # GitHub caps this endpoint at 250 commits. Preserve explicit incompleteness.
+        page = _int(args, "page", 1, 250) if "page" in args else 1
+        limit = _page(args)
+        if (page - 1) * limit >= 250:
+            raise Refused("PR commit endpoint history cap exceeded")
+        self._pull_at_commit(repo, number, head)
+        rows = self._get(f"/repos/{repo}/pulls/{number}/commits?per_page={limit}&page={page}")
+        if not isinstance(rows, list) or len(rows) > min(limit, 250 - (page - 1) * limit):
+            raise RelayGitHubError(502, "PR commits page unverifiable")
+        commits = []
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("sha"), str)
+                or not _SHA.fullmatch(row["sha"])
+                or not isinstance(row.get("parents"), list)
+                or len(row["parents"]) > 16
+                or any(
+                    not isinstance(v, dict)
+                    or not isinstance(v.get("sha"), str)
+                    or not _SHA.fullmatch(v["sha"])
+                    for v in row["parents"]
+                )
+            ):
+                raise RelayGitHubError(502, "PR commit identity unverifiable")
+            commits.append({"sha": row["sha"], "parents": [v["sha"] for v in row["parents"]]})
+        if len({v["sha"] for v in commits}) != len(commits):
+            raise RelayGitHubError(502, "duplicate PR commits")
+        self._pull_at_commit(repo, number, head)
+        return {
+            "number": number,
+            "head_sha": head,
+            "commits": commits,
+            "page": page,
+            "has_more": len(commits) == limit and page * limit < 250,
+            "history_cap": 250,
+            "history_complete": False,
+            "snapshot": False,
+        }
+
+    def wf_pr_review_get(self, repo, args):
+        _only(args, ("repo", "number", "review_id", "expected_head_sha"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+        review_id = _int(args, "review_id")
+        self._pull_at_commit(repo, number, head)
+        row = self._get(f"/repos/{repo}/pulls/{number}/reviews/{review_id}")
+        review = self._review_summary(row, review_id)
+        commit = review.get("commit_id")
+        if commit is not None and (not isinstance(commit, str) or not _SHA.fullmatch(commit)):
+            raise RelayGitHubError(502, "review commit unverifiable")
+        self._pull_at_commit(repo, number, head)
+        # Metadata only. A historical review commit can differ from current head;
+        # this receipt is not a conclusion about current approval coverage.
+        return {
+            "number": number,
+            "head_sha": head,
+            "review": {k: review[k] for k in ("id", "state", "commit_id")},
+            "snapshot": False,
+        }
+
+    @staticmethod
+    def _release_lookup_receipt(row, tag=None):
+        if (
+            not isinstance(row, dict)
+            or type(row.get("id")) is not int
+            or not 0 < row["id"] <= 10**12
+            or not isinstance(row.get("tag_name"), str)
+            or not row["tag_name"]
+            or len(row["tag_name"]) > 200
+            or find_secret(row["tag_name"])
+            or re.search(r"[\x00-\x20\x7f]", row["tag_name"])
+            or re.search(
+                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}",
+                row["tag_name"],
+            )
+            or type(row.get("draft")) is not bool
+            or type(row.get("prerelease")) is not bool
+            or tag is not None
+            and row["tag_name"] != tag
+        ):
+            raise RelayGitHubError(502, "release lookup receipt unverifiable")
+        return {"release": {k: row[k] for k in ("id", "tag_name", "draft", "prerelease")}}
+
+    def wf_release_latest(self, repo, args):
+        _only(args, ("repo",))
+        value = self._release_lookup_receipt(self._get(f"/repos/{repo}/releases/latest"))
+        if value["release"]["draft"] or value["release"]["prerelease"]:
+            raise RelayGitHubError(502, "latest release flags unverifiable")
+        return value
+
+    def wf_release_by_tag(self, repo, args):
+        _only(args, ("repo", "tag"))
+        tag = _ref(args, "tag")
+        return self._release_lookup_receipt(
+            self._get(f"/repos/{repo}/releases/tags/{quote(tag, safe='')}"), tag
+        )
 
     def wf_commit_comments_page(self, repo, args):
         _only(args, ("repo", "sha", "page", "per_page"))

@@ -1007,6 +1007,26 @@ test('review context exact inputs, receipts and correlation',()=>{
  assert.ok(WF_V1_READ_ACTIONS.includes('wf_pr_requested_reviewers'));
 });
 
+test('commit-comment mutations correlate projected receipts and never expose a raw PR result',()=>{
+ const sha='a'.repeat(40),comment={id:7,commit_id:sha,author:{id:2,login:'bot',type:'Bot'},body:'new',body_withheld:false};
+ for(const op of ['create','update','delete']){
+  const a='wf_commit_comment_'+op,args={repo,sha,...(op==='create'?{}:{comment_id:7,expected_body_sha256:'b'.repeat(64)}),...(op==='delete'?{}:{body:'new'})};
+  const r=op==='delete'?{comment_id:7,sha,deleted:true,atomic:false}:op==='update'?{comment,atomic:false}:{comment};
+  assert.ok(validWfV1Args(a,args));assert.ok(validWfV1Response(a,r,args));assert.ok(!WF_V1_READ_ACTIONS.includes(a));
+  if(op!=='delete')for(const bad of [{...r,comment:{...comment,body:'other'}},{...r,comment:{...comment,commit_id:'c'.repeat(40)}},{...r,comment:{...comment,body_withheld:true}}])assert.equal(validWfV1Response(a,bad,args),false);
+ }
+});
+
+test('PR graph/review and release lookup reads correlate without completeness/approval claims',()=>{
+ const sha='a'.repeat(40),args={repo,number:3,expected_head_sha:sha,page:250,per_page:1};
+ const r={number:3,head_sha:sha,commits:[{sha,parents:[]}],page:250,has_more:false,history_cap:250,history_complete:false,snapshot:false};
+ assert.ok(validWfV1Response('wf_pr_commits_page',r,args));assert.ok(!validWfV1Response('wf_pr_commits_page',{...r,has_more:true},args));assert.ok(!validWfV1Response('wf_pr_commits_page',{...r,history_complete:true},args));
+ const review={number:3,head_sha:sha,review:{id:7,state:'APPROVED',commit_id:'b'.repeat(40)},snapshot:false},ra={repo,number:3,review_id:7,expected_head_sha:sha};
+ assert.ok(validWfV1Response('wf_pr_review_get',review,ra));assert.ok(!validWfV1Response('wf_pr_review_get',{...review,review:{...review.review,id:8}},ra));
+ const release={release:{id:7,tag_name:'v1',draft:false,prerelease:false}};
+ assert.ok(validWfV1Response('wf_release_latest',release,{repo}));assert.ok(!validWfV1Response('wf_release_latest',{release:{...release.release,prerelease:true}},{repo}));assert.ok(!validWfV1Response('wf_release_by_tag',release,{repo,tag:'v2'}));
+});
+
 test('Actions inventory attempts: exact identities, bounded pages, secret metadata refusal',()=>{
  const sha='a'.repeat(40),identity={run_id:4,head_sha:sha,run_attempt:2};
  const state={id:4,...identity,status:'completed',conclusion:'success'};
