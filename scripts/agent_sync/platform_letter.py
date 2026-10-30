@@ -101,6 +101,12 @@ REMOTE_TIMEOUT = 8.0  # the whole ssh round trip, inside every hook's own timeou
 STALE_SECONDS = 36 * 3600
 TOUCH_SECONDS = 1800
 RETRY_SECONDS = 600
+# A registry host that did not answer is not asked again by any chat on this host for RETRY_SECONDS: a chat that
+# starts many sub-threads in a row would otherwise pay the ssh timeout for each of them.
+HOST_DOWN_DIR = "registry-down"
+# How many generations of parents (a sub-thread's parent, that parent's parent, and so on) are registered ahead of a
+# sub-thread, a bound against a store that names a loop.
+PARENT_DEPTH = 3
 PLACEHOLDER = "New Chat"
 TITLE_WORDS = 7
 TITLE_CHARS = 60
@@ -286,6 +292,11 @@ class PlatformSpec:
     locations                  the fleet locations the platform runs on (Grok and Antigravity: only "mac"); a hook
                                on any other takes no letter
     env_off                    the variable that turns the hook off for this platform (default <PLATFORM>_LETTER)
+    quiet_events               platform events whose hook output the platform does not take (Codex's SubagentStop has
+                               no hookSpecificOutput): the hook still runs, and prints nothing for them
+    chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
+                               the library look up a chat the hook did not fire for.  A sub-thread registers after its
+                               parent, so a spec that has it registers a parent that holds no live registration first
     """
 
     platform: str
@@ -306,6 +317,8 @@ class PlatformSpec:
     title_sources: tuple[str, ...] = TITLE_SOURCES
     locations: tuple[str, ...] = LOCATIONS
     env_off: str = ""
+    quiet_events: tuple[str, ...] = ()
+    chat_payload: Callable[[str], Mapping[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if not PLATFORM_RE.fullmatch(self.platform) or self.platform in RESERVED_PLATFORMS:
@@ -978,6 +991,38 @@ def _answer(value: dict[str, Any] | None) -> dict[str, Any]:
 Transport = Callable[[list[str]], Mapping[str, Any]]
 
 
+def _down_file(env: Mapping[str, str], dest: str) -> str:
+    """Where the host remembers that `dest` did not answer.  A destination matches DEST_RE, so it is a plain file name."""
+    return os.path.join(L.state_root(env), HOST_DOWN_DIR, dest)
+
+
+def registry_down_until(env: Mapping[str, str], dest: str) -> float:
+    """The time before which no chat on this host asks `dest` again, or 0.  A file that cannot be read is no mark."""
+    try:
+        with open(_down_file(env, dest), encoding="utf-8") as fh:
+            return float(json.load(fh)["until"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return 0.0
+
+
+def mark_registry(env: Mapping[str, str], dest: str, until: float = 0.0) -> None:
+    """Remember that `dest` did not answer, until `until`; with 0, that it did.  Best effort: a state folder that is not
+    writable means every chat pays its own timeout, as before."""
+    path = _down_file(env, dest)
+    try:
+        if until <= 0:
+            os.unlink(path)
+            return
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"until": until}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 class Chat:
     """One chat, as the hook sees it: its spec, location and session id, its note, and the way to its registry.
 
@@ -1094,6 +1139,10 @@ class Chat:
         if not DEST_RE.fullmatch(dest):
             # Empty, or something ssh could read as an option: refuse it rather than run it.
             return {"error": "%s does not name an ssh destination" % ENV_REMOTE}
+        if self.now < registry_down_until(self.env, dest) <= self.now + RETRY_SECONDS:
+            # Another chat of this host found the registry host silent a moment ago: not a second timeout for this one.
+            # (A mark further off than any wait is a clock that moved, and holds nothing.)
+            return {"error": "the registry host did not answer a moment ago"}
         remote = REMOTE_COMMAND + " " + " ".join(shlex.quote(a) for a in argv)
         cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT]
         cmd += ["--", dest, remote]
@@ -1106,10 +1155,13 @@ class Chat:
                 stdin=subprocess.DEVNULL,
             )
         except (OSError, subprocess.SubprocessError) as exc:
+            mark_registry(self.env, dest, self.now + RETRY_SECONDS)
             return {"error": "the registry host did not answer (%s)" % type(exc).__name__}
         answer = _last_json(str(proc.stdout or ""))
         if answer is None:
+            mark_registry(self.env, dest, self.now + RETRY_SECONDS)
             return {"error": "the registry host answered exit %s with no result" % proc.returncode}
+        mark_registry(self.env, dest)  # it answered: whatever an earlier chat found, the host is there
         return _answer(answer)
 
 
@@ -1123,6 +1175,8 @@ class Out:
     def emit(
         self, event: str, *, context: str = "", title: str | None = None, label: str = ""
     ) -> None:
+        if self.hook_event and self.hook_event in self.spec.quiet_events:
+            return  # the platform takes no output from this event
         style = self.spec.output
         if style == "hook":
             body: dict[str, str] = {
@@ -1325,6 +1379,65 @@ def _push(chat: Chat, note: dict[str, Any], op: str, words: str = "") -> dict[st
     return answer
 
 
+def _settled(note: Mapping[str, Any]) -> bool:
+    """The note needs no registration made for it: the chat holds a letter, or another seat holds the chat."""
+    return note.get("state") == "mismatch" or (note.get("state") == "open" and bool(note.get("label")))
+
+
+def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
+    """Register a sub-thread's parent before the sub-thread, when the parent holds no live registration.
+
+    The registry gives a sub-thread the pair after its parent's only when it knows the parent; a parent it has never
+    seen (its own registration failed, or was swept) counts as no parent, and the sub-thread would take a main pair
+    ahead of it.  The parent's note says what the hook last got: open is left alone and costs no hop, anything else
+    (no note, failed, closed) is registered now, with the parent's own parent first.  The parent's title and the
+    model's reminder wait for its next prompt (`titled` is false and `announce` true).  A spec without `chat_payload`
+    does nothing here, and nothing here ever stops the sub-thread's own registration."""
+    spec = chat.spec
+    if spec.chat_payload is None or not parent or depth >= PARENT_DEPTH:
+        return
+    try:
+        sid = SI.check(parent, "the parent session id")
+        mother = Chat(
+            spec,
+            chat.env,
+            chat.location,
+            sid,
+            runner=chat.runner,
+            now=chat.now,
+            remote=chat.remote,
+            transport=chat.transport,
+            seat=chat.seat,
+        )
+        note = mother.read()
+        if _settled(note):
+            return
+        payload = spec.chat_payload(sid)
+        if _text(spec.kind(payload, chat.env)) not in ("chat", "subagent"):
+            return
+        grand = _text(spec.parent_id(payload, chat.env)) or str(note.get("parent") or "")
+        _ensure_parent(mother, grand, depth + 1)
+        note = mother.read()  # the grandparents' turn may have registered this one (a store that names a loop)
+        if _settled(note):
+            return
+        done = _apply(
+            mother,
+            mother.registry("register", title=str(note.get("title") or ""), parent=grand),
+            dict(note, parent=grand),
+        )
+        if done["state"] == "open":
+            done["announce"] = True
+        mother.write(done)
+    except Exception:  # noqa: BLE001 - the sub-thread is registered whether or not its parent could be
+        return
+
+
+def _enroll(chat: Chat, title: str, parent: str) -> dict[str, Any]:
+    """The registry's answer to registering this chat, after its parent has been (see `_ensure_parent`)."""
+    _ensure_parent(chat, parent)
+    return chat.registry("register", title=title, parent=parent)
+
+
 def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     spec = chat.spec
     source = _text(data.get("source")) or "startup"
@@ -1347,7 +1460,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     if not loose and source in ("resume", "fork"):
         loose = clean_title(spec.stored_title(data, chat.env))
     parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
-    answer = chat.registry("register", title=loose, parent=parent)
+    answer = _enroll(chat, loose, parent)
     start = dict(note, inherited=inherited, title=loose or note.get("title", ""), parent=parent)
     if inherited:
         start["seen"] = inherited  # the name the chat started with is not a rename
@@ -1357,7 +1470,8 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
         out.emit(
             "start",
             context="No Operator letter yet (%s).  "
-            "A later prompt tries again, at most every ten minutes." % note["error"],
+            "A later prompt (for a sub-agent, the end of its next turn) tries again, at most every ten minutes."
+            % note["error"],
         )
         return 0
     if note["state"] == "mismatch":
@@ -1425,7 +1539,8 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if state in ("mismatch", "closed"):
         return 0
     current = tidy(spec.current_title(data, chat.env))
-    announce = False  # the model has not been told this letter yet
+    # The model has not been told this letter yet: a letter given while this chat was a sub-thread's parent is news.
+    announce = bool(note.pop("announce", False))
     if state != "open" or not note.get(
         "label"
     ):  # a note that says open with no letter is not one to trust
@@ -1434,7 +1549,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
         note = _apply(
             chat,
-            chat.registry("register", title=str(note.get("title") or ""), parent=parent),
+            _enroll(chat, str(note.get("title") or ""), parent),
             dict(note, parent=parent),
         )
         if note["state"] != "open":
@@ -1475,7 +1590,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         if words == PLACEHOLDER:
             words = ""
         parent = str(note.get("parent") or "")
-        note = _apply(chat, chat.registry("register", title=words, parent=parent), note)
+        note = _apply(chat, _enroll(chat, words, parent), note)
         if note["state"] == "open":
             note.pop("unsent", None)
             note.update(titled=bool(words), title=words, placeholder=compose(note["label"], ""))
