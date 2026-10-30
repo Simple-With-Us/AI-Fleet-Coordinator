@@ -84,6 +84,8 @@ import {
   LINEAR_WRITE_TOOLS,
   LINEAR_SECRETS,
   LINEAR_SEATS,
+  isOwnAppSeat,
+  LINEAR_NO_DELEGATE_SEATS,
   LINEAR_MARKER_BEGIN,
   LINEAR_MARKER_END,
   TEAM_KEYS,
@@ -365,7 +367,9 @@ export class HostedTools {
     this.usersCache = usersCache;
     this.channelsCache = channelsCache;
     this.linearWorkspaceCache = linearWorkspaceCache;
-    this.linearViewerConfirmed = false;
+    // The viewer proof of one request:  the resolved viewer and the client it was proven for.  A rejection is
+    // never kept, and a different client (a swapped one) is proven again.
+    this.linearViewerProof = null;
     this.me = null;
   }
 
@@ -1526,14 +1530,29 @@ export class HostedTools {
     return client;
   }
 
+  /**
+   * The viewer proof for this request's client, once.  Only a resolved proof is kept, so a refused check
+   * is proven again on the next call and never replayed as a stored rejection.  A proof belongs to the
+   * client it was made with:  any other client is proven from scratch.
+   */
+  async confirmedViewer() {
+    const client = this.requireLinear();
+    if (this.linearViewerProof && this.linearViewerProof.client === client) return this.linearViewerProof.viewer;
+    const viewer = await client.confirmViewer();
+    this.linearViewerProof = { client, viewer };
+    return viewer;
+  }
+
   /** One Linear call, its failure as a ToolError.  Never leaks a response body. */
   async linearCall(fn, { write = false } = {}) {
     try {
-      if (this.delegatedLinear && !this.linearViewerConfirmed) {
+      if (this.delegatedLinear || isOwnAppSeat(this.seat)) {
         // Reads need attribution too:  a swapped app credential must never
-        // serve data under the selected GB identity.
-        await this.requireLinear().confirmViewer();
-        this.linearViewerConfirmed = true;
+        // serve data under the selected GB identity or an own-app seat.  The
+        // check runs once per request (this client's lifetime), before the
+        // first read or write, and fails closed.  Write paths that need the
+        // viewer again get this same proof, not a second query.
+        await this.confirmedViewer();
       }
       return await fn();
     } catch (error) {
@@ -1798,7 +1817,7 @@ export class HostedTools {
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     audit.body_len = [...input.description].length;
     // The viewer check runs before the write, never after it.
-    await this.linearCall(() => this.linear.confirmViewer());
+    await this.linearCall(() => this.confirmedViewer());
     const result = await this.linearWrite(idem, { team, title: args.title.trim() }, async () => {
       const data = await this.linearCall(() => this.linear.call(M_CREATE, { input }), { write: true });
       if (data?.issueCreate?.success !== true) throw new ToolError("linear_error", "Linear did not create the issue.");
@@ -1828,7 +1847,8 @@ export class HostedTools {
     // The viewer first:  its id is the delegate the update sets, and the held
     // check compares it against the issue's current delegate.  The human
     // assignee stays;  assigneeId is never touched.
-    const viewer = await this.linearCall(() => this.linear.confirmViewer());
+    const viewer = await this.linearCall(() => this.confirmedViewer());
+    const delegating = !LINEAR_NO_DELEGATE_SEATS.includes(seatTagForSeat(this.seat));
     const viewerId = viewer?.id || null;
     const viewerName = viewer?.name || null;
     const keys = linearLabelKeys(issue);
@@ -1855,8 +1875,10 @@ export class HostedTools {
     const added = [];
     if (claimHit) added.push(claimHit.id);
     if (seatHit) added.push(seatHit.id);
-    if (!claimHit && !viewerId) {
-      throw new ToolError("invalid_argument", `this workspace has no flat label named "${claimName}" and no Linear app user for ${seat} (viewer id missing).  Jay creates the claim labels once per seat.`);
+    if (!claimHit && !(viewerId && delegating)) {
+      throw new ToolError("invalid_argument", delegating
+        ? `this workspace has no flat label named "${claimName}" and no Linear app user for ${seat} (viewer id missing).  Jay creates the claim labels once per seat.`
+        : `this workspace has no flat label named "${claimName}".  ${seat}'s Linear app cannot be an issue delegate, so it claims by that label only.  Jay creates the claim labels once per seat.`);
     }
     const removed = [];
     for (const key of keys) {
@@ -1871,13 +1893,13 @@ export class HostedTools {
     const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "claim", body, args.session, centralDay(this.now()));
-    const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId ? { delegateId: viewerId } : {}) };
+    const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId && delegating ? { delegateId: viewerId } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, label: claimName }, async () => {
       const updated = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });
       if (updated?.issueUpdate?.success !== true) throw new ToolError("linear_error", "Linear did not set the claim.");
       const commented = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
       if (commented?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the CLAIMED comment.");
-      return { id: issue.id, identifier: issue.identifier, label: claimHit ? claimName : null, delegate: viewerName, held_by: null };
+      return { id: issue.id, identifier: issue.identifier, label: claimHit ? claimName : null, delegate: delegating ? viewerName : null, held_by: null };
     });
     return this.writeResult(result);
   }
@@ -1891,7 +1913,7 @@ export class HostedTools {
     const idem = await this.idemKey(null, ["linear_comment", this.seat, issue.id, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "comment", body, args.session, centralDay(this.now()));
-    await this.linearCall(() => this.linear.confirmViewer());
+    await this.linearCall(() => this.confirmedViewer());
     const result = await this.linearWrite(idem, { issue: issue.id }, async () => {
       // A fixed comment id, so a retry that the model repeats updates that
       // comment instead of posting a second one (board comment_id).
@@ -1913,7 +1935,7 @@ export class HostedTools {
     const workspace = await this.linearWorkspace();
     const idem = await this.idemKey(null, ["linear_status", this.seat, issue.id, args.status, args.of ?? ""]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
-    await this.linearCall(() => this.linear.confirmViewer());
+    await this.linearCall(() => this.confirmedViewer());
     if (args.status === "duplicate") {
       if (args.of === issue.identifier || args.of === issue.id) throw new ToolError("invalid_argument", "an issue cannot duplicate itself.");
       const kept = await this.linearIssue(args.of);
@@ -1946,7 +1968,13 @@ export class HostedTools {
     // seat's delegate or any other's app delegate;  a non-release, a missing
     // delegate, or a human one leaves it alone.
     const delegate = issue?.delegate ?? null;
-    const clearDelegate = releasing && !!delegate?.id && delegate.app === true;
+    const mustClear = releasing && !!delegate?.id && delegate.app === true;
+    if (mustClear && LINEAR_NO_DELEGATE_SEATS.includes(seatTagForSeat(this.seat))) {
+      // This seat's app cannot clear a delegate, and a release that leaves one behind would block the next claim.
+      // Refuse before any change rather than release halfway.
+      throw new ToolError("not_authorized", `${issue.identifier} has the app delegate ${delegate.name || "another app"}.  ${this.seat}'s Linear app cannot clear a delegate, so the release is refused and nothing was changed.  Ask a seat that can, or the owner.`);
+    }
+    const clearDelegate = mustClear;
     const input = { stateId: state.id, ...(removed.length ? { removedLabelIds: removed } : {}), ...(clearDelegate ? { delegateId: null } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, status: args.status }, async () => {
       const data = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });
