@@ -174,13 +174,20 @@ def _collection_lock(output_root: Path, *, exclusive: bool):
             os.close(fd)
 
 
-def _run_git(repo: Path, *args: str, check: bool = True) -> bytes:
+def _run_git(
+    repo: Path,
+    *args: str,
+    check: bool = True,
+    stdin_data: bytes | None = None,
+) -> bytes:
     try:
         result = subprocess.run(
             ["git", "--no-replace-objects", "-C", str(repo), *args],
+            input=stdin_data,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
+            timeout=60,
             env={
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "GIT_OPTIONAL_LOCKS": "0",
@@ -189,11 +196,48 @@ def _run_git(repo: Path, *args: str, check: bool = True) -> bytes:
                 "GIT_TERMINAL_PROMPT": "0",
             },
         )
+    except subprocess.TimeoutExpired as exc:
+        raise CollectionError("Git operation timed out after 60 seconds") from exc
     except OSError as exc:
         raise CollectionError("git could not be started") from exc
     if check and result.returncode != 0:
         raise CollectionError("Git metadata or object read failed")
     return result.stdout if result.returncode == 0 else b""
+
+
+def _read_git_blobs(repo: RepoInfo, blobs: dict[str, Blob]) -> dict[str, bytes]:
+    object_ids = list(dict.fromkeys(blob.object_id for blob in blobs.values()))
+    if not object_ids:
+        return {}
+    if any(not re.fullmatch(r"[0-9a-f]{40,64}", object_id) for object_id in object_ids):
+        raise CollectionError("Git tree contains an invalid object id")
+    output = _run_git(
+        repo.path,
+        "cat-file",
+        "--batch",
+        stdin_data=("\n".join(object_ids) + "\n").encode("ascii"),
+    )
+    contents: dict[str, bytes] = {}
+    offset = 0
+    for expected_id in object_ids:
+        header_end = output.find(b"\n", offset)
+        if header_end < 0:
+            raise CollectionError("Git object batch response is incomplete")
+        fields = output[offset:header_end].split()
+        if len(fields) != 3 or fields[0].decode("ascii", "ignore") != expected_id:
+            raise CollectionError("Git object batch response is invalid")
+        if fields[1] != b"blob" or not fields[2].isdigit():
+            raise CollectionError("Git object batch returned a non-blob object")
+        size = int(fields[2])
+        content_start = header_end + 1
+        content_end = content_start + size
+        if content_end >= len(output) or output[content_end : content_end + 1] != b"\n":
+            raise CollectionError("Git object batch response is truncated")
+        contents[expected_id] = output[content_start:content_end]
+        offset = content_end + 1
+    if offset != len(output):
+        raise CollectionError("Git object batch response has trailing data")
+    return {path: contents[blob.object_id] for path, blob in blobs.items()}
 
 
 def _github_owner_repo(remote: str) -> tuple[str, str] | None:
@@ -1024,6 +1068,7 @@ def _report_document_kind(stem: str) -> str | None:
 def reports_index(repo: RepoInfo, tree: dict[str, Blob]) -> bytes:
     eligible: dict[str, list[str]] = {}
     missing_evidence: set[tuple[str, str]] = set()
+    eligible_blobs: dict[str, Blob] = {}
     for path, blob in tree.items():
         if blob.mode not in {"100644", "100755"} or not _is_human_document(path):
             continue
@@ -1046,15 +1091,17 @@ def reports_index(repo: RepoInfo, tree: dict[str, Blob]) -> bytes:
             category = _report_document_kind(PurePosixPath(path).stem)
         if category is not None:
             eligible.setdefault(category, []).append(path)
-            source_content = _run_git(repo.path, "show", f"{repo.commit}:{path}")
-            for target in _local_targets(source_content, path):
-                if Path(target).suffix.casefold() not in LINKED_EVIDENCE_SUFFIXES:
-                    continue
-                evidence = tree.get(target)
-                if not _sensitive_path(target) and (
-                    evidence is None or evidence.mode not in {"100644", "100755"}
-                ):
-                    missing_evidence.add((path, target))
+            eligible_blobs[path] = blob
+
+    for path, source_content in _read_git_blobs(repo, eligible_blobs).items():
+        for target in _local_targets(source_content, path):
+            if Path(target).suffix.casefold() not in LINKED_EVIDENCE_SUFFIXES:
+                continue
+            evidence = tree.get(target)
+            if not _sensitive_path(target) and (
+                evidence is None or evidence.mode not in {"100644", "100755"}
+            ):
+                missing_evidence.add((path, target))
 
     lines = [
         MARKER,
@@ -1119,10 +1166,15 @@ def preview_report_indexes(
                     try:
                         prior = json.loads(old)
                         recognized = (
-                            prior.get("generated_by") in {None, "collect-repo-documents.py"}
+                            isinstance(prior, dict)
+                            and prior.get("generated_by")
+                            in {None, "collect-repo-documents.py"}
                             and prior.get("owner_repo") == f"{repo.owner}/{repo.name}"
                             and isinstance(prior.get("source_ref"), str)
-                            and re.fullmatch(r"[0-9a-f]{40,64}", prior.get("source_commit", ""))
+                            and isinstance(prior.get("source_commit"), str)
+                            and re.fullmatch(
+                                r"[0-9a-f]{40,64}", prior.get("source_commit", "")
+                            )
                         )
                     except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
                         recognized = False
@@ -1178,6 +1230,7 @@ def collect_repository(
     private_docs_opt_in: str | None = None,
     write_callback: Any | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
+    output_root = Path(os.path.abspath(output_root))
     tree = _parse_tree(repo)
     selected, content, missing_links = _select_blobs(
         repo,
@@ -1303,6 +1356,7 @@ def _collect_unlocked(
     repo_paths: list[Path] | None = None,
     private_docs_repo: str | None = None,
 ) -> list[str]:
+    output_root = Path(os.path.abspath(output_root))
     if output_root.exists() and output_root.is_symlink():
         raise CollectionError("Output root must not be a symlink")
     repositories, skipped = discover_repositories(code_root, requested, repo_paths)
@@ -1457,6 +1511,7 @@ def collect(
     repo_paths: list[Path] | None = None,
     private_docs_repo: str | None = None,
 ) -> list[str]:
+    output_root = Path(os.path.abspath(output_root))
     if output_root.exists() and output_root.is_symlink():
         raise CollectionError("Output root must not be a symlink")
     repositories, _ = discover_repositories(code_root, requested, repo_paths)

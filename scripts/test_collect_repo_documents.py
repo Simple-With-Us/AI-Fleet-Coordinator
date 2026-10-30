@@ -36,7 +36,7 @@ def git(path: Path, *args: str) -> str:
 
 class RepositoryFixture:
     def __init__(
-        self, code_root: Path, folder: str, repo_name: str, owner: str = "simple-with-us"
+        self, code_root: Path, folder: str, repo_name: str, owner: str = "fixture-owner"
     ) -> None:
         self.path = code_root / folder
         self.path.mkdir(parents=True)
@@ -71,7 +71,7 @@ class CollectorTests(unittest.TestCase):
         self.temp.cleanup()
 
     def make_repo(
-        self, folder: str = "ExampleRepo", name: str = "ExampleRepo", owner: str = "simple-with-us"
+        self, folder: str = "ExampleRepo", name: str = "ExampleRepo", owner: str = "fixture-owner"
     ) -> RepositoryFixture:
         return RepositoryFixture(self.code, folder, name, owner)
 
@@ -262,6 +262,52 @@ class CollectorTests(unittest.TestCase):
 
         report = self.output / "ExampleRepo/reports" / commit / "README.md"
         self.assertIn("- No eligible tracked documents were found.", report.read_text())
+
+    def test_relative_output_roots_work_for_check_apply_and_repository_helper(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/reports/report.md", "Report")
+        repo.commit_published()
+        info = collector._repo_info(repo.path)
+        self.assertIsNotNone(info)
+
+        relative_output = Path(os.path.relpath(self.base / "relative-output", Path.cwd()))
+        plan = collector.collect(self.code, relative_output, check_only=True)
+        self.assertTrue(plan)
+        self.assertFalse((self.base / "relative-output").exists())
+        collector.collect(self.code, relative_output)
+        self.assertTrue((self.base / "relative-output/README.md").is_file())
+
+        direct_output = Path(os.path.relpath(self.base / "direct-relative-output", Path.cwd()))
+        collector.collect_repository(info, direct_output)
+        self.assertTrue(
+            (self.base / "direct-relative-output/ExampleRepo/documents/docs/reports/report.md").is_file()
+        )
+
+    def test_git_timeout_is_reported_as_a_distinct_collection_error(self) -> None:
+        timeout = subprocess.TimeoutExpired(cmd=["git", "status"], timeout=60)
+        with patch.object(collector.subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(collector.CollectionError, "Git operation timed out"):
+                collector._run_git(self.base, "status")
+
+    def test_reports_index_reads_all_report_blobs_in_one_git_batch(self) -> None:
+        repo = self.make_repo()
+        for index in range(4):
+            repo.write(
+                f"docs/reports/2026-10-{index + 1:02d}-report-{index}.md",
+                f"[evidence](evidence-{index}.jsonl)",
+            )
+            repo.write(f"docs/reports/evidence-{index}.jsonl", f"evidence {index}")
+        repo.commit_published()
+        info = collector._repo_info(repo.path)
+        self.assertIsNotNone(info)
+        tree = collector._parse_tree(info)
+
+        with patch.object(collector, "_run_git", wraps=collector._run_git) as run_git:
+            index = collector.reports_index(info, tree).decode()
+
+        self.assertEqual(run_git.call_count, 1)
+        self.assertEqual(run_git.call_args.args[1:], ("cat-file", "--batch"))
+        self.assertNotIn("Missing linked evidence", index)
 
     def test_later_repository_preflight_failure_writes_nothing_and_can_rerun(self) -> None:
         first = self.make_repo(folder="A-Repo", name="A-Repo")
@@ -540,7 +586,7 @@ class CollectorTests(unittest.TestCase):
             collector._validate_preview_location([info], repo.path / ".docs-library-preview")
 
         owned_lane = collector.RepoInfo(
-            ROOT, "Simple-With-Us", "AI-Fleet-Coordinator", "origin/main", "a" * 40
+            ROOT, "fixture-owner", "AI-Fleet-Coordinator", "origin/main", "a" * 40
         )
         safe_preview = ROOT / ".docs-library-preview-safe-public"
         collector._validate_preview_location([owned_lane], safe_preview)
@@ -548,7 +594,7 @@ class CollectorTests(unittest.TestCase):
             collector._validate_preview_location([owned_lane], ROOT / "other-preview")
 
         owned_lane = collector.RepoInfo(
-            ROOT, "Simple-With-Us", "AI-Fleet-Coordinator", "origin/main", "a" * 40
+            ROOT, "fixture-owner", "AI-Fleet-Coordinator", "origin/main", "a" * 40
         )
         safe_preview = ROOT / ".docs-library-preview-safe-public"
         collector._validate_preview_location([owned_lane], safe_preview)
@@ -619,7 +665,7 @@ class CollectorTests(unittest.TestCase):
     def test_private_audit_documents_require_verified_opt_in_and_stay_out_of_public_index(
         self,
     ) -> None:
-        repo = self.make_repo(name="Fleet-OPS")
+        repo = self.make_repo(name="Fleet-OPS", owner="fixture-owner")
         repo.write("docs/private-audits/2026-10-30-audit.md", "[evidence](evidence.jsonl)")
         repo.write("docs/private-audits/evidence.jsonl", '{"private":true}')
         repo.write("docs/private-audits/keys/secret.md", "must not copy")
@@ -634,14 +680,21 @@ class CollectorTests(unittest.TestCase):
         )
 
         output = self.base / "private-central"
-        with self.assertRaisesRegex(collector.CollectionError, "verified private repository"):
-            collector.collect(
-                self.code, output, repo_paths=[repo.path], private_docs_repo="other/Private-Repo"
-            )
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", {"fixture-owner/fleet-ops"}):
+            with self.assertRaisesRegex(collector.CollectionError, "verified private repository"):
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="other/Private-Repo",
+                )
 
-        collector.collect(
-            self.code, output, repo_paths=[repo.path], private_docs_repo="Simple-With-Us/Fleet-OPS"
-        )
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="Fixture-Owner/Fleet-OPS",
+            )
         mirror = output / "Fleet-OPS"
         self.assertEqual(
             (mirror / "documents/docs/private-audits/2026-10-30-audit.md").read_text(),
@@ -655,7 +708,7 @@ class CollectorTests(unittest.TestCase):
         self.assertFalse((mirror / "documents/docs/private-audits/.env").exists())
         self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o700)
         manifest = json.loads((mirror / "manifest.json").read_text())
-        self.assertEqual(manifest["private_docs_opt_in"], "simple-with-us/Fleet-OPS")
+        self.assertEqual(manifest["private_docs_opt_in"], "fixture-owner/Fleet-OPS")
         with self.assertRaisesRegex(collector.CollectionError, "same explicit opt-in"):
             collector.collect(self.code, output, repo_paths=[repo.path])
 
@@ -686,6 +739,36 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn(
             source["source_commit"], (preview / "ExampleRepo/docs/reports/README.md").read_text()
         )
+
+    def test_malformed_preview_source_metadata_fails_closed(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/reports/report.md", "Report")
+        repo.commit_published()
+        info = collector._repo_info(repo.path)
+        self.assertIsNotNone(info)
+        preview = self.base / "malformed-source-preview"
+        collector.preview_report_indexes([info], preview)
+        source = preview / "ExampleRepo/source.json"
+
+        invalid_payloads = (
+            "[]",
+            json.dumps(
+                {
+                    "generated_by": "collect-repo-documents.py",
+                    "owner_repo": "fixture-owner/ExampleRepo",
+                    "source_ref": "origin/main",
+                    "source_commit": 7,
+                }
+            ),
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                source.write_text(payload)
+                with self.assertRaisesRegex(
+                    collector.CollectionError, "preview differs from current source"
+                ):
+                    collector.preview_report_indexes([info], preview, refresh=True)
+                self.assertEqual(source.read_text(), payload)
 
     def test_explicit_repo_path_mode_uses_owned_worktree_and_published_ref(self) -> None:
         repo = self.make_repo()
