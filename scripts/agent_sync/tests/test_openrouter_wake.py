@@ -15,6 +15,7 @@ import shutil
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -283,7 +284,7 @@ class RunnerCase(unittest.TestCase):
 
 
 class KeyCase(unittest.TestCase):
-    PROJECT = "11111111-2222-3333-4444-555555555555"
+    PROJECT = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fleet-ops-test-project"))
 
     def setUp(self) -> None:
         self.key = fake_key()

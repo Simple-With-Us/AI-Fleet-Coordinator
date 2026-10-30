@@ -2349,6 +2349,7 @@ class OpenRouterRunner:
                     too_large = True
                     break
                 chunks.append(chunk)
+            timer.cancel()
             if fired.is_set():
                 # The watchdog shut the socket at the deadline.  http.client reports a connection
                 # closed under a response with a Content-Length as a short read, not an error, so the
@@ -2357,7 +2358,7 @@ class OpenRouterRunner:
             data = b"".join(chunks)
         except Exception as exc:  # noqa: BLE001 - any failure is a reason, never a traceback with a header
             if fired.is_set() or isinstance(exc, TimeoutError):
-                out.error = "timed out after %d seconds" % self.timeout
+                out.error = "timed out after %g seconds" % self.timeout
                 out.killed = True
             else:
                 out.error = "network: %s" % type(exc).__name__
