@@ -280,6 +280,10 @@ class Pending:
         # A catch-up wake (daemon._catch_up):  built from a held-back record, with no trigger_ts, because
         # the record's TTL bounds its age instead of the stale rule.
         self.catch_up = False
+        # Why the daemon's last post for this wake was not made (daemon.post sets it, and clears it
+        # at the start of the next post): the Operator was unavailable, the text was refused, or the
+        # send failed.  The wake's ledger row carries it as `post_error`.
+        self.post_refusal: str | None = None
 
     def add(self, item: Mapping[str, Any], owner: bool) -> None:
         message_id = item.get("id")

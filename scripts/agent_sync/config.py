@@ -405,8 +405,9 @@ class Config:
         )
         # The `#alerts` held-back digest (AFC-257, heldalert.py).  `held_alert_minutes` is the
         # instance-wide window:  at most one post for EVERY seat, so the volume is bounded by the
-        # window rather than the fleet size.  0 turns it off.  `held_alert_seat` names the seat whose
-        # bot carries the post;  it defaults to the claude seat, then to the first enabled seat.
+        # window rather than the fleet size.  0 turns it off.  `held_alert_seat` is still parsed so an
+        # old config loads, but it no longer names anything: the Operator bot carries the post, never
+        # a seat's bot (owner ruling, Oct 30 2026; operator_post.py).
         self.held_alert_minutes = float(HELD_ALERT_DEFAULT_MINUTES)
         self.held_alert_seat: str | None = None
         # The peer-broadcast reminder (owner, Oct 27 2026).  How long a fleet bot's `@all` may go

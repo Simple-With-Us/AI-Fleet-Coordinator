@@ -1,5 +1,5 @@
 {
-  "//": "The reviewed git-relay seat policy (README, Policy).  seat_policy.py renders it into GIT_RELAY_SEATS_JSON and installs it on the relay host.  Every seat signs in with its own admin-minted ST-MCP bearer (auth shared) and acts as its own GitHub App, so no entry holds a token.  The App slug of each identity is the swu- App whose GitHub description names that seat;  four are not swu-<identity>:  MA is swu-rob, GROK is swu-grok-build, MM is swu-minimax.  JET-CHAT is the full Jet login on swu-jet; the original JET connection is wake-only and has no Git entry (Q7).  AMP is a hosted-bearer-only login with no GitHub App or relay entry; a confirmed AMP bearer is denied Git access.",
+  "//": "The reviewed git-relay seat policy (README, Policy).  seat_policy.py renders it into GIT_RELAY_SEATS_JSON and installs it on the relay host.  Every seat signs in with its own admin-minted ST-MCP bearer (auth shared) and acts as its own GitHub App, so no entry holds a token.  The App slug of each identity is the swu- App whose GitHub description names that seat;  five are not swu-<identity>:  MA is swu-rob, GROK is swu-grok-build, MM is swu-minimax, JET-CHAT is swu-jet, AMP is swu-amp-agent (swu-amp is reserved for an account).  JET-CHAT is the full Jet login on swu-jet; the original JET connection is wake-only and has no Git entry (Q7).  AMP signs in with its own bearer and acts as its own swu-amp-agent App.",
   "profiles": {
     "fleet": {
       "actions": [
@@ -181,6 +181,11 @@
     {
       "identity": "OPENCODE",
       "app_slug": "swu-opencode",
+      "profile": "fleet"
+    },
+    {
+      "identity": "AMP",
+      "app_slug": "swu-amp-agent",
       "profile": "fleet"
     },
     {
