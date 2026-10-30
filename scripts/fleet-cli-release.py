@@ -146,6 +146,8 @@ TOOL_REQUIRED = frozenset(
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/agent_sync/notes_service_reader.py",
         "scripts/agent_sync/fleet_bearer.py",
+        # New stdio bundles must carry the hard-imported own-bearer gate. Older rollback targets stay valid.
+        "scripts/agent_sync/mcp/bearer_gate.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
