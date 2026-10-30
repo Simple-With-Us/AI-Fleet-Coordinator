@@ -259,7 +259,9 @@ class Relay:
 
             self.typed_gateway = TypedGateway(policy, client, app_minter, audit, self.outcomes)
 
-    def handle(self, token: str, action: str, args: dict, proof: dict | None = None) -> tuple[int, dict]:
+    def handle(
+        self, token: str, action: str, args: dict, proof: dict | None = None
+    ) -> tuple[int, dict]:
         # A separate audited gateway charges policy once and keeps disarm
         # receipts fresh.  Default-off; no generic write-replay path is used.
         if self.typed_gateway is not None:
@@ -1075,7 +1077,9 @@ def _build_assertion_verifier():
         return None
     verify_url = os.environ.get("GIT_RELAY_ASSERT_VERIFY_URL", "").strip()
     if not verify_url:
-        raise SystemExit("git-relay config: GIT_RELAY_OAUTH_ASSERT=1 needs GIT_RELAY_ASSERT_VERIFY_URL")
+        raise SystemExit(
+            "git-relay config: GIT_RELAY_OAUTH_ASSERT=1 needs GIT_RELAY_ASSERT_VERIFY_URL"
+        )
     if not shutil.which("fleet-secrets"):
         raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
     from .app_tokens import AppTokenError, FleetSecretsSource

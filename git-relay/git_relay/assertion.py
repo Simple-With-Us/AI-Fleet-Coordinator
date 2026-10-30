@@ -108,7 +108,21 @@ def parse_claims(token: str) -> dict | None:
     # The exact key set the Worker mints:  an extra or missing key means a
     # token this Worker never produced (mirrors the Worker's own strict
     # buildClaims round-trip).
-    if set(claims) != {"v", "aud", "seat", "iat", "exp", "jti", "action", "body", "scopes", "epoch", "approved_at", "phase", "grant_ref"}:
+    if set(claims) != {
+        "v",
+        "aud",
+        "seat",
+        "iat",
+        "exp",
+        "jti",
+        "action",
+        "body",
+        "scopes",
+        "epoch",
+        "approved_at",
+        "phase",
+        "grant_ref",
+    }:
         return None
     if claims.get("v") != CONTRACT or claims.get("aud") != AUDIENCE:
         return None
@@ -118,9 +132,12 @@ def parse_claims(token: str) -> dict | None:
     iat, exp = claims.get("iat"), claims.get("exp")
     # bool is an int subclass:  JSON true/false is not a timestamp.
     if (
-        not isinstance(iat, int) or isinstance(iat, bool)
-        or not isinstance(exp, int) or isinstance(exp, bool)
-        or exp <= iat or exp - iat > MAX_TTL_S
+        not isinstance(iat, int)
+        or isinstance(iat, bool)
+        or not isinstance(exp, int)
+        or isinstance(exp, bool)
+        or exp <= iat
+        or exp - iat > MAX_TTL_S
     ):
         return None
     if not isinstance(claims.get("jti"), str) or not JTI_RE.match(claims["jti"]):
@@ -133,13 +150,17 @@ def parse_claims(token: str) -> dict | None:
     if (
         not isinstance(scopes, list)
         or len(scopes) > 8
-        or any(not isinstance(s, str) or not SCOPE_RE.match(s) or s not in KNOWN_SCOPES for s in scopes)
+        or any(
+            not isinstance(s, str) or not SCOPE_RE.match(s) or s not in KNOWN_SCOPES for s in scopes
+        )
     ):
         return None
     epoch, approved_at, phase = claims.get("epoch"), claims.get("approved_at"), claims.get("phase")
     if (
-        not isinstance(epoch, int) or isinstance(epoch, bool)
-        or not isinstance(phase, int) or isinstance(phase, bool)
+        not isinstance(epoch, int)
+        or isinstance(epoch, bool)
+        or not isinstance(phase, int)
+        or isinstance(phase, bool)
     ):
         return None
     if not isinstance(approved_at, (int, float)) or isinstance(approved_at, bool):

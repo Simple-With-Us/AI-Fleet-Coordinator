@@ -48,18 +48,36 @@ def b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def mint(key=KEY, seat=SEAT, iat=None, ttl=90, jti="0123456789abcdef",
-         action="open_pr", body_sha=BODY_SHA, scopes=("zulip:read", "zulip:write"),
-         epoch=7, approved_at=None, phase=2, grant_ref="0123456789ab"):
+def mint(
+    key=KEY,
+    seat=SEAT,
+    iat=None,
+    ttl=90,
+    jti="0123456789abcdef",
+    action="open_pr",
+    body_sha=BODY_SHA,
+    scopes=("zulip:read", "zulip:write"),
+    epoch=7,
+    approved_at=None,
+    phase=2,
+    grant_ref="0123456789ab",
+):
     """A synthetic gra2_ token, claims in the Worker's canonical key order."""
     iat = int(time.time()) if iat is None else iat
     claims = {
-        "v": "gr-assert/2", "aud": "git-relay", "seat": seat, "iat": iat,
-        "exp": iat + ttl, "jti": jti, "action": action, "body": body_sha,
+        "v": "gr-assert/2",
+        "aud": "git-relay",
+        "seat": seat,
+        "iat": iat,
+        "exp": iat + ttl,
+        "jti": jti,
+        "action": action,
+        "body": body_sha,
         "scopes": list(scopes),
         "epoch": epoch,
         "approved_at": int(time.time() * 1000) if approved_at is None else approved_at,
-        "phase": phase, "grant_ref": grant_ref,
+        "phase": phase,
+        "grant_ref": grant_ref,
     }
     payload = b64url(json.dumps(claims, separators=(",", ":")).encode())
     sig = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -118,11 +136,18 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(
             claims,
             {
-                "v": "gr-assert/2", "aud": "git-relay", "seat": "CODEX",
-                "iat": 1800000000, "exp": 1800000090, "jti": "AbCdEfGhIjKlMnOp",
-                "action": "open_pr", "body": VECTOR_BODY_SHA,
+                "v": "gr-assert/2",
+                "aud": "git-relay",
+                "seat": "CODEX",
+                "iat": 1800000000,
+                "exp": 1800000090,
+                "jti": "AbCdEfGhIjKlMnOp",
+                "action": "open_pr",
+                "body": VECTOR_BODY_SHA,
                 "scopes": ["zulip:read", "zulip:write"],
-                "epoch": 7, "approved_at": 1799999000000, "phase": 2,
+                "epoch": 7,
+                "approved_at": 1799999000000,
+                "phase": 2,
                 "grant_ref": "0123456789ab",
             },
         )
@@ -147,12 +172,18 @@ class ParseTest(unittest.TestCase):
     def test_out_of_contract_claims_and_shapes_fail_closed(self):
         good, claims = mint()
         variants = [
-            {**claims, "v": "gr-assert/1"}, {**claims, "aud": "elsewhere"},
-            {**claims, "seat": "codex"}, {**claims, "jti": "short"},
-            {**claims, "action": "Open_Pr"}, {**claims, "body": "not-hex"},
-            {**claims, "scopes": ["zulip:write", "admin"]}, {**claims, "scopes": "zulip:write"},
-            {**claims, "epoch": True}, {**claims, "phase": 1.5},
-            {**claims, "approved_at": "yesterday"}, {**claims, "grant_ref": "xyz"},
+            {**claims, "v": "gr-assert/1"},
+            {**claims, "aud": "elsewhere"},
+            {**claims, "seat": "codex"},
+            {**claims, "jti": "short"},
+            {**claims, "action": "Open_Pr"},
+            {**claims, "body": "not-hex"},
+            {**claims, "scopes": ["zulip:write", "admin"]},
+            {**claims, "scopes": "zulip:write"},
+            {**claims, "epoch": True},
+            {**claims, "phase": 1.5},
+            {**claims, "approved_at": "yesterday"},
+            {**claims, "grant_ref": "xyz"},
             {**claims, "extra": 1},
         ]
         # parse_claims tolerates an extra key?  No:  buildClaims round-trip on
@@ -162,8 +193,14 @@ class ParseTest(unittest.TestCase):
             payload = b64url(json.dumps(v, separators=(",", ":")).encode())
             sig = hmac.new(KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
             self.assertIsNone(parse_claims(f"gra2_{payload}_{sig}"), v)
-        for junk in ("", "gra2_", "gbb_fixer_" + "a" * 43, "sbt_codex_" + "a" * 43,
-                     "gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_" + "0" * 64, "not-a-token"):
+        for junk in (
+            "",
+            "gra2_",
+            "gbb_fixer_" + "a" * 43,
+            "sbt_codex_" + "a" * 43,
+            "gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_" + "0" * 64,
+            "not-a-token",
+        ):
             self.assertIsNone(parse_claims(junk))
 
     def test_a_tampered_payload_is_not_assertion_shaped(self):
@@ -208,7 +245,11 @@ class ResolveTest(unittest.TestCase):
     def test_wrong_seat_answer_and_refusal_fail_closed(self):
         token, claims = mint()
         self.assertIsNone(verifier(ok_answer(seat="ECHO")).resolve(token, proof(claims)))
-        self.assertIsNone(verifier(lambda body: (200, b'{"ok": false, "reason": "replayed"}')).resolve(token, proof(claims)))
+        self.assertIsNone(
+            verifier(lambda body: (200, b'{"ok": false, "reason": "replayed"}')).resolve(
+                token, proof(claims)
+            )
+        )
         self.assertIsNone(verifier(lambda body: (401, b"")).resolve(token, proof(claims)))
         self.assertIsNone(verifier(lambda body: (200, b"not json")).resolve(token, proof(claims)))
 
@@ -235,11 +276,15 @@ class ResolveTest(unittest.TestCase):
 
     def test_short_key_and_missing_key_are_startup_errors(self):
         with self.assertRaises(ValueError):
-            GrAssertionVerifier(url=VERIFY_URL, key_name="K", key_source=FakeKeySource({"K": "short"}))
+            GrAssertionVerifier(
+                url=VERIFY_URL, key_name="K", key_source=FakeKeySource({"K": "short"})
+            )
         with self.assertRaises(KeyError):
             GrAssertionVerifier(url=VERIFY_URL, key_name="MISSING", key_source=FakeKeySource({}))
         with self.assertRaises(ValueError):
-            GrAssertionVerifier(url="http://agents.example/x", key_name="K", key_source=FakeKeySource({"K": KEY}))
+            GrAssertionVerifier(
+                url="http://agents.example/x", key_name="K", key_source=FakeKeySource({"K": KEY})
+            )
 
     def test_expired_assertion_never_reaches_the_callback(self):
         token, claims = mint(iat=int(time.time()) - 500, ttl=90)
@@ -256,7 +301,11 @@ SEAT_CFG = {
 
 class PolicyAssertionTest(unittest.TestCase):
     def policy(self, seat_cfg=None, with_verifier=True, behavior=None):
-        cfg = seat_cfg if seat_cfg is not None else {"auth": "shared", "identity": SEAT, "oauth_assert": True, **SEAT_CFG}
+        cfg = (
+            seat_cfg
+            if seat_cfg is not None
+            else {"auth": "shared", "identity": SEAT, "oauth_assert": True, **SEAT_CFG}
+        )
         return SeatPolicy(
             json.dumps({"swu-codex": cfg}),
             assertion_verifier=verifier(behavior) if with_verifier else None,
@@ -272,9 +321,15 @@ class PolicyAssertionTest(unittest.TestCase):
         self.assertIsNone(self.policy().authenticate(token, proof(claims)))
 
     def test_a_read_action_needs_no_write_scope(self):
-        cfg = {"auth": "shared", "identity": SEAT, "oauth_assert": True,
-               "app_slug": "swu-codex", "mint_permissions": {"contents": "read"},
-               "actions": ["wf_repo_variable_get"], "repos": ["Simple-With-Us/*"]}
+        cfg = {
+            "auth": "shared",
+            "identity": SEAT,
+            "oauth_assert": True,
+            "app_slug": "swu-codex",
+            "mint_permissions": {"contents": "read"},
+            "actions": ["wf_repo_variable_get"],
+            "repos": ["Simple-With-Us/*"],
+        }
         token, claims = mint(action="wf_repo_variable_get", scopes=("zulip:read",))
         self.assertEqual(self.policy(cfg).authenticate(token, proof(claims)), "swu-codex")
 
@@ -306,14 +361,27 @@ class PolicyAssertionTest(unittest.TestCase):
             self.policy({"auth": "shared", "identity": SEAT, "oauth_assert": "yes", **SEAT_CFG})
         with self.assertRaises(PolicyError):
             # a static-token seat may not opt into assertions
-            self.policy({"auth": "token", "token": "t" * 20, "identity": SEAT, "oauth_assert": True, **SEAT_CFG})
+            self.policy(
+                {
+                    "auth": "token",
+                    "token": "t" * 20,
+                    "identity": SEAT,
+                    "oauth_assert": True,
+                    **SEAT_CFG,
+                }
+            )
 
     def test_static_and_shared_bearer_seats_still_work(self):
         policy = SeatPolicy(
             json.dumps(
                 {
                     "swu-echo": {"token": "s" * 20, **SEAT_CFG},
-                    "swu-codex": {"auth": "shared", "identity": SEAT, "oauth_assert": True, **SEAT_CFG},
+                    "swu-codex": {
+                        "auth": "shared",
+                        "identity": SEAT,
+                        "oauth_assert": True,
+                        **SEAT_CFG,
+                    },
                 }
             ),
             assertion_verifier=verifier(),
@@ -332,7 +400,11 @@ GBB_TOKEN = "gbb_fixer_" + "b" * 43
 def bearer_ok_answer(identity="CODEX", expires_in_s=3600):
     def behavior(body):
         return 200, json.dumps(
-            {"ok": True, "identity": identity, "expires_at": int((time.time() + expires_in_s) * 1000)}
+            {
+                "ok": True,
+                "identity": identity,
+                "expires_at": int((time.time() + expires_in_s) * 1000),
+            }
         ).encode()
 
     return behavior

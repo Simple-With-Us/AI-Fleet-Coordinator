@@ -415,7 +415,10 @@ class SeatPolicy:
         # request binding or the seat flag fails, or when no configured
         # oauth_assert seat claims the verified identity - it never falls
         # through to another token family.
-        if self._assertion_verifier is not None and self._assertion_verifier.parse_identity(token) is not None:
+        if (
+            self._assertion_verifier is not None
+            and self._assertion_verifier.parse_identity(token) is not None
+        ):
             resolved = self._assertion_verifier.resolve(token, proof)
             if resolved is None:
                 return None
