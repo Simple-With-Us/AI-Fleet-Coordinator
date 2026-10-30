@@ -34,13 +34,11 @@ if (
 
     sys.exit(attach_main(sys.argv[2:], command=sys.argv[1]))
 
-# `letter` (AFC-564) is the Claude Code session-letter hook and its registry side;  it is local like attach.
-if (
-    __name__ == "__main__"
-    and len(sys.argv) > 1
-    and sys.argv[1] == "letter"
-    and os.environ.get("SIMPLE_CHAT_REMOTE", "").strip() != "1"
-):
+# `letter` (AFC-564) is the Claude Code session-letter hook and its registry side.  Unlike attach it never needs the
+# hosted server (it reaches the registry on the Mac in process or over ssh), and the managed wrapper on a seat host
+# turns remote mode on for every seat, so the hook must run whether or not SIMPLE_CHAT_REMOTE is set:  skipped, it
+# would fall through to the CLI's argument parser and exit 2, which blocks the prompt.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "letter":
     from agent_sync.claude_letter import main as letter_main  # noqa: E402
 
     sys.exit(letter_main(sys.argv[2:]))

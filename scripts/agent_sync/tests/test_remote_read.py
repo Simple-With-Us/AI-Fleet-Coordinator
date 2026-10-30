@@ -344,7 +344,7 @@ class EntrypointTrap(unittest.TestCase):
 
     SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
 
-    def run_entry(self, verb, remote):
+    def run_entry(self, verb, remote, module="agent_sync.attach"):
         import os
         import subprocess
         import sys
@@ -353,13 +353,13 @@ class EntrypointTrap(unittest.TestCase):
             env = {"PATH": os.environ.get("PATH", ""), "HOME": home}
             if remote:
                 env["SIMPLE_CHAT_REMOTE"] = "1"
-            # sitecustomize-free trap:  a sentinel file is written if agent_sync.attach is imported
+            # sitecustomize-free trap:  a sentinel file is written if the verb's hook module is imported
             sentinel = Path(home) / "attach-imported"
             code = (
                 "import sys, runpy, pathlib, importlib.abc\n"
                 "class T(importlib.abc.MetaPathFinder):\n"
                 "    def find_spec(self, name, path, target=None):\n"
-                "        if name == 'agent_sync.attach':\n"
+                f"        if name == {module!r}:\n"
                 f"            pathlib.Path({str(sentinel)!r}).write_text('x')\n"
                 "            raise ImportError('trap')\n"
                 "sys.meta_path.insert(0, T())\n"
@@ -383,6 +383,14 @@ class EntrypointTrap(unittest.TestCase):
     def test_without_remote_mode_the_fast_path_is_untouched(self):
         _, _, imported = self.run_entry("attach", remote=False)
         self.assertTrue(imported)
+
+    def test_the_letter_hook_runs_in_remote_mode_too(self):
+        # A seat host's managed wrapper turns remote mode on for every seat.  The letter hook needs no hosted server,
+        # and refused here it would fall to the argument parser and exit 2, which blocks the prompt.
+        for remote in (True, False):
+            code, err, imported = self.run_entry("letter", remote=remote, module="agent_sync.claude_letter")
+            self.assertTrue(imported, "remote=%s: %s" % (remote, err))
+            self.assertNotIn("invalid choice", err)
 
 
 if __name__ == "__main__":
