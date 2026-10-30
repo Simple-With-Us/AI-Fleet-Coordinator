@@ -529,7 +529,11 @@ def step(
             mode = "normal"
     else:
         state.pop("recovery_since", None)
-    if avail < policy["pressure_available_bytes"] or some >= policy["pressure_some_avg10"] or mode == "normal":
+    if (
+        avail < policy["pressure_available_bytes"]
+        or some >= policy["pressure_some_avg10"]
+        or mode == "normal"
+    ):
         state.pop("recovery_since", None)
     budget = policy["critical_budget_bytes"] if mode == "critical" else policy["budget_bytes"]
     target = (
