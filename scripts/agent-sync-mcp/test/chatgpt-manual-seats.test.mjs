@@ -13,7 +13,7 @@ function config(extra = {}) {
 const own = { clientId: "CodeXManual123456", clientName: "Codex (manual form, CODEX)" };
 const oldJet = { clientId: CHATGPT_CLIENT, clientName: "ChatGPT" };
 
-test("only the exact JET/CODEX HTTPS callback pair can share, independent of seat order", () => {
+test("only the exact JET/JET-CHAT/CODEX HTTPS callback cohort can share, independent of seat order", () => {
   const cfg = config();
   assert.deepEqual(cfg.redirectSeats.get(CHATGPT_REDIRECT), ["JET", "CODEX"]);
   assert.equal(cfg.redirectOwner.has(CHATGPT_REDIRECT), false);
@@ -23,7 +23,7 @@ test("only the exact JET/CODEX HTTPS callback pair can share, independent of sea
   for (const uri of ["https://chatgpt.com/other", "https://chatgpt.com/connector_platform_oauth_redirect/", "https://evil.example/callback"]) {
     assert.throws(() => config({SEATS:{JET:{redirect_uris:[uri]},CODEX:{redirect_uris:[uri]}}}), /two seats/);
   }
-  for (const foreign of ["JET-CHAT", "ECHO", "WISE", "GROK-WEB"]) {
+  for (const foreign of ["ECHO", "WISE", "GROK-WEB"]) {
     assert.throws(() => config({SEATS:{JET:{redirect_uris:[CHATGPT_REDIRECT]},CODEX:{redirect_uris:[CHATGPT_REDIRECT]},[foreign]:{redirect_uris:[CHATGPT_REDIRECT]}}}), /two seats/);
   }
   assert.throws(() => config({SEATS:{JET:{redirect_uris:[CHATGPT_REDIRECT],cimd_client_ids:[CHATGPT_CLIENT]},CODEX:{redirect_uris:[CHATGPT_REDIRECT],cimd_client_ids:[CHATGPT_CLIENT]}}}), /CIMD client id.*two seats/);
@@ -50,4 +50,25 @@ test("shared HTTPS keeps exactly-one-armed and own-client boundaries", () => {
   assert.equal(postGateAuthRequest({...request,codeChallengeMethod:"plain"},cfg,"CODEX"),false);
   assert.equal(postGateAuthRequest({...request,redirectUri:"https://chatgpt.com/other"},cfg,"CODEX"),false);
   assert.equal(postGateAuthRequest({...request,scope:["unknown"]},cfg,"CODEX"),false);
+});
+
+
+test("three hosted ChatGPT seats require exactly one armed own-client seat", () => {
+  const cfg = config({ HOSTED_SEATS: "JET,JET-CHAT,CODEX", ZULIP_EMAIL_JET_CHAT: "jet-chat-bot@simplewithus.zulipchat.com", SEATS: {
+    JET: { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [CHATGPT_CLIENT] },
+    "JET-CHAT": { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] },
+    CODEX: { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] },
+  }});
+  const jetChat = { clientId: "SyntheticJetChat123", clientName: "Jet (manual form, JET-CHAT)" };
+  const pre = preGateAuthorize(authorizeParams({client_id: jetChat.clientId, redirect_uri: CHATGPT_REDIRECT}), cfg);
+  assert.equal(pre.ok, true);
+  assert.deepEqual(pre.seats, ["JET", "JET-CHAT", "CODEX"]);
+  assert.deepEqual(resolveArmedSeat(pre.seats, new Set(["JET-CHAT"])), {ok:true, seat:"JET-CHAT"});
+  assert.equal(resolveArmedSeat(pre.seats, new Set(["JET-CHAT", "CODEX"])).reason, "ambiguous_armed_seats");
+  assert.equal(clientBoundToSeat(jetChat, "JET-CHAT", CHATGPT_REDIRECT, cfg), true);
+  assert.equal(clientBoundToSeat(own, "JET-CHAT", CHATGPT_REDIRECT, cfg), false);
+  assert.equal(clientBoundToSeat(oldJet, "JET-CHAT", CHATGPT_REDIRECT, cfg), false);
+  const request = {clientId: jetChat.clientId, redirectUri: CHATGPT_REDIRECT, codeChallenge: CHALLENGE, codeChallengeMethod: "S256", resource: RESOURCE, scope: ["zulip:read"]};
+  assert.equal(postGateAuthRequest(request, cfg, "JET-CHAT"), true);
+  assert.equal(postGateAuthRequest({...request, clientId: CHATGPT_CLIENT}, cfg, "JET-CHAT"), false);
 });

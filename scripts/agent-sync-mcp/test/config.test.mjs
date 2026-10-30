@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE, PINNED_OPERATOR_USER_ID } from "../src/config.js";
+import { SHARED_CHATGPT_SEATS, loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE, PINNED_OPERATOR_USER_ID } from "../src/config.js";
 import { REALM } from "../src/zulip.js";
 import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
 
@@ -238,4 +238,46 @@ test("Cursor budget overrides reject malformed, unknown and unsafe settings", ()
   const cfg = loadConfig(setting(policy));
   assert.deepEqual(cfg.cursorToolBudgets, policy);
   assert.equal(Object.isFrozen(cfg.cursorToolBudgets.linear_write), true);
+});
+
+test("the standard ChatGPT callback may be listed by JET, JET-CHAT and CODEX only, each keeping its own client", async () => {
+  const { resolveArmedSeat, clientBoundToSeat, manualClientSeat } = await import("../src/policy.js");
+  const entry = { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] };
+  const none = { redirect_uris: [], cimd_client_ids: [] };
+  assert.deepEqual([...SHARED_CHATGPT_SEATS], ["JET", "JET-CHAT", "CODEX"]);
+  // two and all three of the cohort load, the callback has no single owner, and the order is kept
+  const two = loadConfig(testEnv({ SEATS: { JET: entry, "JET-CHAT": entry } }));
+  assert.deepEqual([...two.redirectSeats.get(CHATGPT_REDIRECT)], ["JET", "JET-CHAT"]);
+  const all = loadConfig(testEnv({ SEATS: { JET: entry, "JET-CHAT": entry, CODEX: entry } }));
+  assert.deepEqual([...all.redirectSeats.get(CHATGPT_REDIRECT)], ["JET", "JET-CHAT", "CODEX"]);
+  assert.equal(all.redirectOwner.has(CHATGPT_REDIRECT), false);
+  // JET-CHAT alone owns it when it is the only one listing it
+  assert.equal(loadConfig(testEnv({ SEATS: { JET: none, "JET-CHAT": entry } })).redirectOwner.get(CHATGPT_REDIRECT), "JET-CHAT");
+  // any seat outside the cohort sharing it is refused, with the cohort or with a cohort seat first or last
+  for (const other of ["GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "MA"]) {
+    assert.throws(() => loadConfig(testEnv({ SEATS: { JET: entry, "JET-CHAT": entry, [other]: entry } })), /two seats/, other);
+    assert.throws(() => loadConfig(testEnv({ SEATS: { [other]: entry, "JET-CHAT": entry } })), /two seats/, other);
+  }
+  // another https callback is never shared, even inside the cohort
+  const other = "https://chatgpt.com/other_redirect";
+  assert.throws(() => loadConfig(testEnv({ SEATS: { JET: { redirect_uris: [other], cimd_client_ids: [] }, "JET-CHAT": { redirect_uris: [other], cimd_client_ids: [] } } })), /two seats/);
+  // listing it twice under one seat is still refused
+  assert.throws(() => loadConfig(testEnv({ SEATS: { JET: { redirect_uris: [CHATGPT_REDIRECT, CHATGPT_REDIRECT], cimd_client_ids: [] } } })), /twice/);
+  // a CIMD client id still belongs to exactly one seat
+  const cimd = "https://example.test/client.json";
+  assert.throws(() => loadConfig(testEnv({ SEATS: { JET: { ...entry, cimd_client_ids: [cimd] }, "JET-CHAT": { ...entry, cimd_client_ids: [cimd] } } })), /CIMD client id is listed under two seats/);
+  // arming still picks exactly one listed seat among the three
+  const listed = [...all.redirectSeats.get(CHATGPT_REDIRECT)];
+  assert.deepEqual(resolveArmedSeat(listed, new Set()), { ok: false, reason: "not_armed" });
+  assert.deepEqual(resolveArmedSeat(listed, new Set(["JET-CHAT"])), { ok: true, seat: "JET-CHAT" });
+  assert.deepEqual(resolveArmedSeat(listed, new Set(["JET", "JET-CHAT"])), { ok: false, reason: "ambiguous_armed_seats" });
+  assert.deepEqual(resolveArmedSeat(listed, new Set(["CODEX", "JET-CHAT", "JET"])), { ok: false, reason: "ambiguous_armed_seats" });
+  // a manual client is bound to the seat in its tag, never to another cohort seat, and an untagged one is refused on a shared callback
+  const tagged = (seat) => ({ clientId: "synthetic-manual-client", clientName: `ChatGPT (manual form, ${seat})` });
+  assert.equal(manualClientSeat(tagged("JET-CHAT")), "JET-CHAT");
+  assert.equal(clientBoundToSeat(tagged("JET-CHAT"), "JET-CHAT", CHATGPT_REDIRECT, all), true);
+  assert.equal(clientBoundToSeat(tagged("JET-CHAT"), "JET", CHATGPT_REDIRECT, all), false);
+  assert.equal(clientBoundToSeat(tagged("JET-CHAT"), "CODEX", CHATGPT_REDIRECT, all), false);
+  assert.equal(clientBoundToSeat(tagged("CODEX"), "JET-CHAT", CHATGPT_REDIRECT, all), false);
+  assert.equal(clientBoundToSeat({ clientId: "synthetic-manual-client", clientName: "ChatGPT" }, "JET-CHAT", CHATGPT_REDIRECT, all), false);
 });
