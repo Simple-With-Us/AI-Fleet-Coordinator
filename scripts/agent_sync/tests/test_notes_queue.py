@@ -189,6 +189,19 @@ class EnqueueTests(QueueHarness):
             self.enqueue(request(identity="NOPE", title="[AFC, NOPE] t", session=SID), queue=odd), 403, "forbidden"
         )
 
+    def test_managed_config_allows_hosted_codex_without_other_seat_widening(self) -> None:
+        import tomllib
+        config = tomllib.loads((Path(__file__).resolve().parents[1] / "server" / "listener.toml").read_text())
+        seats = config["notes_queue"]["worker_seats"]
+        self.assertEqual(seats, ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "CODEX"])
+        self.assertEqual(config["notes_queue"]["server_seats"], ["CLAUDE", "CODEX"])
+        queue = self.make_queue(**{W.WORKER: (self.keys[W.WORKER], seats)})
+        own = request(identity="CODEX", title="[AFC, Codex] t", session=SID)
+        self.assert_answer(self.enqueue(own, queue=queue), 202)
+        self.assert_answer(self.status("CODEX", own["request_id"], queue=queue), 200)
+        self.assert_answer(self.enqueue(own, seat="CLAUDE", queue=queue), 400)
+        self.assert_answer(self.call("POST", "/notes/v1/runner/claim", {"wait": 0}, queue=queue), 403, "forbidden")
+
     def test_the_seat_must_be_the_requests_own_identity(self) -> None:
         self.assert_answer(self.enqueue(request(identity="JET", title="[AFC, JET] t"), seat="CLAUDE"), 400)
 
