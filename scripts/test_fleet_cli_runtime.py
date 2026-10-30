@@ -263,7 +263,7 @@ class ActualRuntime(unittest.TestCase):
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
-        self.assertEqual(self.receiver.MAX_FILES, 139)
+        self.assertEqual(self.receiver.MAX_FILES, 143)
         self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
 
         status = self.receiver.control(self.home, "status")
