@@ -45,6 +45,10 @@ def load_machine_credentials(env):
     names = (core.ENV_AUTOMATION_ID, core.ENV_AUTOMATION_SECRET)
     if not any((env.get(name) or "").strip() for name in names):
         env = private_bootstrap()
+        if not env:
+            # No wrapper-owned identity: let the plain CLI apply its existing
+            # command-specific auth policy (session reads, machine-only writes).
+            return None
     missing = [name for name in names if not (env.get(name) or "").strip()]
     if missing:
         raise EntryError("missing required environment variables: " + ", ".join(missing))
@@ -99,7 +103,10 @@ def authenticated_env():
             raise EntryError("invalid INFISICAL_TOKEN")
         env[core.ENV_TOKEN] = token
     else:
-        client_id, client_secret = load_machine_credentials(env)
+        credentials = load_machine_credentials(env)
+        if credentials is None:
+            return {key: value for key, value in env.items() if key not in core.AUTH_ENV_VARS}
+        client_id, client_secret = credentials
         cli = core.find_cli(env)
         if not cli:
             raise EntryError("infisical CLI is unavailable", 127)
