@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -9,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -211,6 +214,555 @@ class RegistryTest(unittest.TestCase):
         )
         self.assertEqual(again["label"], first["label"])
         self.assertFalse(again["created"])
+
+    # ---- the pick:  the lowest free letter, or the one unused the longest ----
+
+    def _pair(self, native, pick="lowest", parent=""):
+        return self.reg.resolve_or_register(
+            ident(
+                platform="claude",
+                native=native,
+                letter_space="double",
+                letter_pick=pick,
+                parent_session_id=parent,
+            )
+        )
+
+    def test_the_default_pick_is_the_lowest_free_letter(self):
+        a = self._pair("n-1")
+        self.reg.close(a["record_id"])
+        self.assertEqual((a["label"], self._pair("n-2")["label"]), ("AA", "AA"))
+
+    def test_the_oldest_pick_leaves_a_retired_letter_alone_while_unused_ones_remain(self):
+        a = self._pair("n-1", "oldest")
+        self.reg.close(a["record_id"])
+        self.assertEqual([self._pair(n, "oldest")["label"] for n in ("n-2", "n-3")], ["AB", "AC"])
+
+    def test_the_oldest_pick_takes_the_longest_retired_letter_once_every_letter_was_used(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "AC")}):
+            made = [self._pair("n-%d" % i, "oldest") for i in (1, 2, 3)]
+            self.assertEqual([m["label"] for m in made], ["AA", "AB", "AC"])
+            for step, index in enumerate((2, 0, 1)):  # retired in this order:  AC first, AB last
+                self.reg.close(made[index]["record_id"], at="2026-10-01T00:00:0%d.000Z" % step)
+            again = [self._pair("n-%d" % i, "oldest") for i in (4, 5, 6)]
+        self.assertEqual(
+            [(a["label"], a["generation"]) for a in again], [("AC", 2), ("AA", 2), ("AB", 2)]
+        )
+
+    def test_exhaustion_says_which_space_was_full(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"single": ("A",), "double": ("AA",)}):
+            self.reg.resolve_or_register(ident(platform="claude", native="n-1"))
+            self.reg.resolve_or_register(
+                ident(platform="claude", native="n-2", letter_space="double")
+            )
+            with self.assertRaises(R.LabelExhausted) as one:
+                self.reg.resolve_or_register(ident(platform="claude", native="n-3"))
+            with self.assertRaises(R.LabelExhausted) as two:
+                self.reg.resolve_or_register(
+                    ident(platform="claude", native="n-4", letter_space="double")
+                )
+        self.assertEqual((one.exception.space, two.exception.space), ("single", "double"))
+
+    def test_a_pick_that_is_not_known_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            R.register_session(
+                self.db,
+                platform="claude",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="native-1",
+                seat="CLAUDE",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+                letter_space="double",
+                letter_pick="random",
+            )
+        self.assertIn("letter_pick", str(caught.exception))
+
+    def test_the_register_command_answers_json_when_every_letter_is_live(self):
+        # What a platform that asks for its own letter (BotFleet, say) reads:  a code it can act on, not a traceback.
+        base = [
+            "register",
+            "--db",
+            self.db,
+            "--platform",
+            "botfleet",
+            "--location",
+            "mac",
+            "--scope",
+            "default",
+            "--seat",
+            "BF-BUILDER",
+            "--source",
+            "test",
+            "--letter-space",
+            "double",
+            "--letter-pick",
+            "oldest",
+        ]
+        out = io.StringIO()
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA",)}), contextlib.redirect_stdout(out):
+            first = R.main(base + ["--session-id", "thread-0001"])
+            second = R.main(base + ["--session-id", "thread-0002"])
+        lines = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual((first, second), (0, 2))
+        self.assertEqual(lines[0]["label"], "AA")
+        self.assertEqual(lines[1]["code"], "labels_exhausted")
+        self.assertIn("1 letters are active", lines[1]["error"])
+
+    def test_reopen_gives_a_chat_its_own_letter_back_when_it_is_free(self):
+        pair = self._pair("n-1", "oldest")
+        single = self.reg.resolve_or_register(ident(platform="claude", native="n-2"))
+        for made in (pair, single):
+            self.reg.close(made["record_id"])
+        # Both letters are free, so each chat has its own back (no allocation runs;  the space rule is tested below).
+        self.assertEqual(self.reg.reopen(pair["record_id"], pick="oldest")[0], "AA")
+        self.assertEqual(self.reg.reopen(single["record_id"], pick="oldest")[0], "A")
+
+    def test_reopen_allocates_in_the_space_of_the_letter_it_held(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB")}):
+            held = self._pair("n-1", "oldest")  # AA
+            self.reg.close(held["record_id"])
+            self._pair("n-2", "oldest")  # AB
+            self._pair("n-3", "oldest")  # AA again, generation 2
+            other = self.reg.lookup("claude", "mac-1", "simplewithus", "n-2")
+            self.reg.close(other["record_id"])  # AB is free now
+            letter, generation, previous = self.reg.reopen(held["record_id"], pick="oldest")
+        self.assertEqual((letter, previous), ("AB", "AA"))  # a pair, not a single letter
+        self.assertEqual(generation, 2)
+
+    # ---- main chats take AA, BB ... ZZ in order;  a subthread takes the pair after its parent's (owner, Oct 29) ----
+
+    def _labels(self, natives, pick="primary", parent=""):
+        return [self._pair(n, pick, parent)["label"] for n in natives]
+
+    def test_the_primary_order_is_the_doubled_pairs_then_each_rows_last_slots_first(self):
+        order = R.PRIMARY_ORDER
+        self.assertEqual((len(order), len(set(order))), (676, 676))
+        self.assertEqual(order[:3], ("AA", "BB", "CC"))
+        self.assertEqual(order[:26], tuple(a + a for a in R.LETTERS))
+        # Past the doubled pairs, the pair just before each row's letter (the last a subthread reaches) goes first.
+        self.assertEqual(order[26:29], ("AZ", "BA", "CB"))
+        # and the first slot of every row (AB, BC ... ZA) goes last.
+        self.assertEqual(
+            order[-26:], tuple(R.LETTERS[i] + R.LETTERS[(i + 1) % 26] for i in range(26))
+        )
+        self.assertEqual(sorted(order), sorted(R.LETTER_SPACES["double"]))
+
+    def test_main_chats_take_the_doubled_pairs_in_order(self):
+        self.assertEqual(self._labels(["n-1", "n-2", "n-3"]), ["AA", "BB", "CC"])
+
+    def test_a_freed_doubled_pair_is_the_next_main_chat_s(self):
+        first = self._pair("n-1", "primary")
+        self._labels(["n-2", "n-3"])  # BB, CC
+        self.reg.close(first["record_id"])
+        # Sequentially means the lowest free doubled pair, so a freed AA is taken before DD.
+        self.assertEqual(self._labels(["n-4", "n-5"]), ["AA", "DD"])
+
+    def test_main_chats_past_the_26_doubled_pairs_take_the_last_slot_of_each_row(self):
+        self.assertEqual(self._labels(["n-%d" % i for i in range(26)])[-1], "ZZ")
+        self.assertEqual(self._labels(["x-1", "x-2", "x-3"]), ["AZ", "BA", "CB"])
+
+    def test_a_pick_of_primary_in_the_single_space_is_the_lowest_letter(self):
+        labels = [
+            self.reg.resolve_or_register(ident(platform="claude", native=n, letter_pick="primary"))[
+                "label"
+            ]
+            for n in ("n-1", "n-2")
+        ]
+        self.assertEqual(labels, ["A", "B"])
+
+    def test_the_pairs_after_a_pair_follow_it_round_the_alphabet_and_skip_the_doubled_one(self):
+        # The owner's examples:  AA has AB, AC, AD ...;  XX has XY, XZ, XA, XB ...
+        self.assertEqual(R.pairs_after("AA")[:3], ("AB", "AC", "AD"))
+        self.assertEqual(R.pairs_after("AA")[-1], "AZ")
+        self.assertEqual(R.pairs_after("XX")[:4], ("XY", "XZ", "XA", "XB"))
+        self.assertEqual(R.pairs_after("XX")[-1], "XW")
+        for parent in ("AA", "XX", "ZZ"):
+            self.assertEqual(len(R.pairs_after(parent)), 25, parent)
+            self.assertNotIn(parent, R.pairs_after(parent))
+        self.assertEqual(R.pairs_after("CC")[:3], ("CD", "CE", "CF"))
+        self.assertEqual(R.pairs_after("ZZ")[:3], ("ZA", "ZB", "ZC"))
+        self.assertEqual(
+            R.pairs_after("CD")[0], "CE"
+        )  # a subthread's own subthreads go after its pair
+        self.assertEqual(R.pairs_after("XA")[:2], ("XB", "XC"))
+        self.assertNotIn(
+            "XX", R.pairs_after("XA")
+        )  # never the doubled pair, which belongs to a main chat
+        self.assertNotIn("XA", R.pairs_after("XA"))
+        self.assertEqual(
+            (R.pairs_after("Z"), R.pairs_after("ZZZ"), R.pairs_after("")), ((), (), ())
+        )
+
+    def test_a_subthread_takes_the_pair_right_after_its_parent(self):
+        self._labels(["a", "b", "c"])  # AA, BB, CC
+        self.assertEqual(self._labels(["c-1", "c-2", "c-3"], parent="c"), ["CD", "CE", "CF"])
+        # A subthread of a subthread goes after its own parent, in the same row, past the pairs already taken.
+        self.assertEqual(self._labels(["g-1"], parent="c-1"), ["CG"])
+        self.assertEqual(self._labels(["b-1"], parent="b"), ["BC"])
+        self.assertEqual(self._labels(["a-1"], parent="a"), ["AB"])
+
+    def test_a_subthread_skips_taken_pairs_and_takes_a_freed_one_again(self):
+        self._labels(["a", "b", "c"])
+        first, second = [self._pair(n, "primary", "c") for n in ("c-1", "c-2")]  # CD, CE
+        self.reg.close(first["record_id"])
+        self.assertEqual(
+            self._pair("c-3", "primary", "c")["label"], "CD"
+        )  # the first free pair after CC
+        self.assertEqual(self._pair("c-4", "primary", "c")["label"], "CF")  # CD and CE are taken
+        self.assertEqual(second["label"], "CE")
+
+    def test_a_subthread_whose_parent_has_no_free_pair_after_it_is_picked_as_a_main_chat(self):
+        self._labels(["a"])  # AA
+        row = self._labels(["a-%d" % i for i in range(25)], parent="a")  # AB ... AZ
+        self.assertEqual((row[0], row[-1]), ("AB", "AZ"))
+        # Row A is full, so the next subthread takes the next main-chat pair, then the one after it.
+        self.assertEqual(self._labels(["a-x", "a-y"], parent="a"), ["BB", "CC"])
+
+    def test_a_subthreads_pairs_wrap_past_z_back_to_a(self):
+        self._labels(["n-%d" % i for i in range(24)])  # AA ... XX
+        # The owner's example:  a subthread of XX gets XY, XZ, XA, XB.
+        self.assertEqual(
+            self._labels(["x-1", "x-2", "x-3", "x-4"], parent="n-23"), ["XY", "XZ", "XA", "XB"]
+        )
+
+    def test_a_subthread_of_the_last_doubled_pair_wraps_to_the_start_of_its_row(self):
+        self._labels(["n-%d" % i for i in range(26)])  # AA ... ZZ
+        self.assertEqual(self._labels(["z-1", "z-2"], parent="n-25"), ["ZA", "ZB"])
+
+    def test_a_subthread_never_takes_a_doubled_pair_even_when_one_is_free(self):
+        self._labels(["n-%d" % i for i in range(26)])
+        parent = self._pair("p", "primary")  # AZ, the first main chat past the doubled pairs
+        self.assertEqual(parent["label"], "AZ")
+        self.reg.close(
+            self.reg.lookup("claude", "mac-1", "simplewithus", "n-0")["record_id"]
+        )  # AA is free
+        # Past Z the row wraps to A, which would be AA, the row's doubled pair:  it is skipped for AB.
+        self.assertEqual(self._pair("p-1", "primary", "p")["label"], "AB")
+        self.assertEqual(
+            self._pair("n-new", "primary")["label"], "AA"
+        )  # and a main chat still gets it
+
+    def test_an_unknown_closed_single_or_own_parent_is_no_parent(self):
+        parent = self._pair("p", "primary")  # AA
+        self.reg.close(parent["record_id"])
+        self.assertEqual(self._pair("k-1", "primary", "p")["label"], "AA")  # a closed parent
+        self.assertEqual(self._pair("k-2", "primary", "nobody")["label"], "BB")  # an unknown one
+        single = self.reg.resolve_or_register(
+            ident(platform="claude", native="s")
+        )  # A, a single letter
+        self.assertEqual(single["label"], "A")
+        self.assertEqual(
+            self._pair("k-3", "primary", "s")["label"], "CC"
+        )  # a parent with a single letter
+        self.assertEqual(
+            self._pair("k-4", "primary", "k-4")["label"], "DD"
+        )  # a chat is not its own parent
+
+    def test_the_parent_is_found_on_any_host(self):
+        self.reg.resolve_or_register(
+            ident(
+                platform="claude",
+                native="m",
+                host="mac",
+                letter_space="double",
+                letter_pick="primary",
+            )
+        )  # AA on the Mac
+        child = self.reg.resolve_or_register(
+            ident(
+                platform="claude",
+                native="s-1",
+                host="server",
+                letter_space="double",
+                letter_pick="primary",
+                parent_session_id="m",
+            )
+        )
+        self.assertEqual(child["label"], "AB")
+
+    def test_the_register_event_names_the_parent_pair(self):
+        self._labels(["a", "b"])
+        child = self._pair("b-1", "primary", "b")
+        plain = self._pair("p-1", "primary")
+        conn = sqlite3.connect(self.db)
+        try:
+            rows = dict(
+                conn.execute(
+                    "SELECT session_record_id, details FROM events WHERE event = 'register'"
+                ).fetchall()
+            )
+        finally:
+            conn.close()
+        self.assertEqual((child["label"], rows[child["record_id"]]), ("BC", "after BB"))
+        self.assertEqual((plain["label"], rows[plain["record_id"]]), ("CC", ""))
+
+    def test_a_reopened_subthread_takes_a_pair_after_its_parent_when_its_own_is_gone(self):
+        self._labels(["a", "b", "c"])
+        child = self._pair("c-1", "primary", "c")  # CD
+        self.reg.close(child["record_id"])
+        self._pair("c-2", "primary", "c")  # CD again, taken by another chat
+        letter, _, previous = self.reg.reopen(
+            child["record_id"], pick="primary", parent_session_id="c"
+        )
+        self.assertEqual((letter, previous), ("CE", "CD"))
+
+    def test_a_reopened_main_chat_takes_the_next_doubled_pair_when_its_own_is_gone(self):
+        first = self._pair("n-1", "primary")  # AA
+        self.reg.close(first["record_id"])
+        self._labels(["n-2"])  # AA again
+        self.assertEqual(self.reg.reopen(first["record_id"], pick="primary")[0], "BB")
+
+    def _by_letter(self, native, letter, **kw):
+        return self.reg.resolve_or_register(
+            ident(
+                platform="claude",
+                native=native,
+                letter_space="double",
+                letter_pick="primary",
+                parent_letter=letter,
+                **kw,
+            )
+        )
+
+    def test_a_parent_named_by_its_letter_gets_the_pair_after_it(self):
+        self._labels(["a", "b", "c"])  # AA, BB, CC
+        first = self._by_letter("k-1", "CC")
+        second = self._by_letter("k-2", "CC")
+        self.assertEqual(
+            (first["label"], first["placed_after"], second["label"]), ("CD", "CC", "CE")
+        )
+
+    def test_a_parent_letter_that_no_live_session_holds_is_no_parent(self):
+        self._labels(["a"])  # AA
+        self.assertEqual(self._by_letter("k-1", "CC")["label"], "BB")  # nobody holds CC
+        for number, bad in enumerate(("C", "cc", "CCC", "C1", "A A", "")):
+            out = self._by_letter("j-%d" % number, bad)
+            self.assertEqual(out["placed_after"], "", bad)
+        closed = self._pair("g-1", "primary")
+        self.reg.close(closed["record_id"])
+        self.assertEqual(
+            self._by_letter("k-2", closed["label"])["placed_after"], ""
+        )  # a closed holder
+
+    def test_a_parent_letter_on_another_platform_is_not_a_parent(self):
+        self.reg.resolve_or_register(
+            ident(platform="minimax", native="mm-1", letter_space="double")
+        )  # AA there
+        self._labels(["a"])  # AA on claude too
+        self.assertEqual(self._by_letter("k-1", "AA")["label"], "AB")  # followed claude's AA
+        self.reg.close(
+            self.reg.lookup("claude", "mac-1", "simplewithus", "a")["record_id"]
+        )  # claude's AA is gone
+        out = self._by_letter(
+            "k-2", "AA"
+        )  # minimax still holds an AA, which is not this platform's
+        self.assertEqual(out["placed_after"], "")
+
+    def test_a_parent_session_id_wins_over_a_parent_letter(self):
+        self._labels(["a", "b"])  # AA, BB
+        out = self.reg.resolve_or_register(
+            ident(
+                platform="claude",
+                native="k-1",
+                letter_space="double",
+                letter_pick="primary",
+                parent_session_id="b",
+                parent_letter="AA",
+            )
+        )
+        self.assertEqual((out["label"], out["placed_after"]), ("BC", "BB"))
+
+    def test_a_parent_on_another_platform_is_not_followed_by_session_id(self):
+        self.reg.resolve_or_register(
+            ident(platform="minimax", native="shared-id", letter_space="double")
+        )  # AA
+        out = self._pair("k-1", "primary", "shared-id")
+        self.assertEqual((out["label"], out["placed_after"]), ("AA", ""))  # a main chat, not AB
+
+    def test_the_answer_says_nothing_about_a_parent_the_child_did_not_follow(self):
+        self._labels(["a"])
+        row = self._labels(["a-%d" % i for i in range(25)], parent="a")  # AB ... AZ
+        self.assertEqual(len(row), 25)
+        full = self._pair(
+            "a-x", "primary", "a"
+        )  # the row is full:  a main chat's pair, not "after AA"
+        self.assertEqual((full["label"], full["placed_after"]), ("BB", ""))
+        conn = sqlite3.connect(self.db)
+        try:
+            details = conn.execute(
+                "SELECT details FROM events WHERE session_record_id = ? AND event = 'register'",
+                (full["record_id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(details, "")
+
+    def test_a_row_cut_down_by_a_small_space_hands_out_no_pair_outside_it(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "BB")}):
+            self._labels(["a"])  # AA
+            # pairs_after("AA") runs AB ... AZ, but only AB is in this space
+            self.assertEqual(self._labels(["a-1", "a-2"], parent="a"), ["AB", "BB"])
+            with self.assertRaises(R.LabelExhausted):
+                self._pair("a-3", "primary", "a")
+
+    def test_a_padded_parent_id_finds_the_same_parent_on_every_path(self):
+        self._labels(["parent-aaaa"])  # AA
+        kid = self._pair("kid-0001", "primary", "parent-aaaa")
+        self.assertEqual(kid["label"], "AB")
+        self.reg.close(kid["record_id"])
+        self._pair("kid-0002", "primary", "parent-aaaa")  # takes AB
+        letter, _, previous = self.reg.reopen(
+            kid["record_id"], pick="primary", parent_session_id="  parent-aaaa "
+        )
+        self.assertEqual((letter, previous), ("AC", "AB"))  # after the parent, not a doubled pair
+        plain = self.reg.resolve_or_register(
+            ident(
+                platform="claude",
+                native="kid-0003",
+                letter_space="double",
+                letter_pick="primary",
+                parent_session_id=" parent-aaaa",
+            )
+        )
+        self.assertEqual(plain["label"], "AD")
+
+    def test_the_oldest_pick_still_follows_a_parent_first(self):
+        self._pair("a", "oldest")  # AA
+        self.assertEqual(self._pair("k-1", "oldest", "a")["label"], "AB")
+        self.assertEqual(
+            self._pair("k-2", "oldest")["label"], "AC"
+        )  # a chat with no parent keeps the old order
+
+    def _register(self, native, platform="claude", **kw):
+        return R.register_session(
+            self.db,
+            platform=platform,
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=native,
+            seat="CLAUDE",
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+            **kw,
+        )
+
+    def test_a_caller_that_names_no_space_gets_the_platforms(self):
+        # The Operator's own ask-and-answer path registers a chat with no space or pick.  A Claude chat it letters takes
+        # a pair, in the main-chat order, so it is not left holding a single letter that no sweep frees.
+        self.assertEqual(
+            [self._register("thread-000%d" % i)["label"] for i in (1, 2)], ["AA", "BB"]
+        )
+        # every other platform is unchanged:  a single letter, the lowest free
+        self.assertEqual(
+            [self._register("mm-000%d" % i, platform="minimax")["label"] for i in (1, 2)],
+            ["A", "B"],
+        )
+        # and a caller that does name a space is obeyed
+        self.assertEqual(self._register("thread-0003", letter_space="single")["label"], "A")
+        self.assertEqual(
+            self._register("thread-0004", letter_space="double", letter_pick="lowest")["label"],
+            "AB",
+        )
+
+    def test_the_register_command_defaults_by_platform(self):
+        base = [
+            "register",
+            "--db",
+            self.db,
+            "--location",
+            "mac",
+            "--scope",
+            "default",
+            "--seat",
+            "CLAUDE",
+            "--source",
+            "test",
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            R.main(base + ["--platform", "claude", "--session-id", "thread-0001"])
+            R.main(base + ["--platform", "codex", "--session-id", "thread-0002"])
+            R.main(
+                base
+                + [
+                    "--platform",
+                    "claude",
+                    "--session-id",
+                    "thread-0003",
+                    "--letter-space",
+                    "single",
+                ]
+            )
+        labels = [json.loads(line)["label"] for line in out.getvalue().splitlines()]
+        self.assertEqual(labels, ["AA", "A", "A"])
+
+    def test_the_register_command_takes_a_parent_letter(self):
+        base = [
+            "register",
+            "--db",
+            self.db,
+            "--platform",
+            "codex",
+            "--location",
+            "mac",
+            "--scope",
+            "default",
+            "--seat",
+            "CODEX",
+            "--source",
+            "test",
+            "--letter-space",
+            "double",
+            "--letter-pick",
+            "primary",
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            R.main(base + ["--session-id", "thread-0001"])
+            R.main(base + ["--session-id", "thread-0002", "--parent-letter", "AA"])
+            R.main(base + ["--session-id", "thread-0003", "--parent-letter", "ZZ"])
+        rows = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual([r["label"] for r in rows], ["AA", "AB", "BB"])
+        self.assertEqual([r["placed_after"] for r in rows], ["", "AA", ""])
+
+    def test_the_register_command_takes_the_parent_and_the_primary_pick(self):
+        base = [
+            "register",
+            "--db",
+            self.db,
+            "--platform",
+            "claude",
+            "--location",
+            "mac",
+            "--scope",
+            "default",
+            "--seat",
+            "CLAUDE",
+            "--source",
+            "test",
+            "--letter-space",
+            "double",
+            "--letter-pick",
+            "primary",
+        ]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            codes = [
+                R.main(base + ["--session-id", "thread-0001"]),
+                R.main(
+                    base + ["--session-id", "thread-0002", "--parent-session-id", "thread-0001"]
+                ),
+                R.main(
+                    base
+                    + ["--session-id", "thread-0003", "--parent-session-id", "not a session id!"]
+                ),
+            ]
+        labels = [json.loads(line)["label"] for line in out.getvalue().splitlines()]
+        self.assertEqual(
+            (codes, labels), ([0, 0, 0], ["AA", "AB", "BB"])
+        )  # a bad parent is no parent
 
     # ---- update_session: the title follows the thread, keyed on the session id ----
 
