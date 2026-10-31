@@ -306,3 +306,13 @@ No new ruleset, no approvals, no bypass change.  Requires an admin identity
 not currently delegated.  BotFleet/Clutch/FleetLink have no in-repo armer
 (Tailnet enumeration 2026-10-25), so this settings change is their ONLY
 hold coverage; their merge route is otherwise manual/external (unconfirmed).
+
+## Clear-PR correction (2026-10-31)
+
+Evaluate current timeline holds before disarming auto-merge. A clear PR must
+keep legitimate auto-merge armed. Active holds and evaluation errors still
+disarm before repair. The final fresh-state fence and check-run listing can
+find a new hold or read error after an initially clear evaluation; those also
+trigger disarm before the conclusion is published. Setter ownership, repair
+fences, error propagation and the documented asynchronous window stay intact.
+This does not arm or merge a PR or override CI/review requirements.

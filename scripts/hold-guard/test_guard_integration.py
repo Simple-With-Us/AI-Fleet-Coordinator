@@ -3,7 +3,7 @@
 armer_hold_check.sh) against a fake gh serving canned API responses.
 
 Covers what the canned-state evaluator tests cannot: call ordering
-(disarm before repair before check), jq-built request bodies, label names
+(evaluate before conditional disarm before repair before check), jq-built request bodies, label names
 with spaces (no word-splitting), merge_group PR mapping, multi-page event
 pagination, error fail-closed behavior, and the check-run payload shape.
 """
@@ -113,8 +113,8 @@ class GuardIntegration(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         kinds = [(" ".join(c["argv"][:3])) for c in self.calls()]
-        # order: disarm -> labels GET -> events -> label re-apply -> comment -> check
-        self.assertEqual(kinds[0], "pr merge --disable-auto")
+        # order: evaluate -> disarm -> label re-apply -> comment -> check
+        self.assertEqual(kinds[0], "api repos/Fixture-Org/Fixture-Repo/issues/3/labels")
         label_posts = [
             c
             for c in self.calls()
@@ -175,10 +175,34 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "success")
         self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
 
+    def test_clear_armed_pr_is_never_disarmed(self):
+        self.scenario({"labels": {"3": []}, "events": {"3": [[]]}, "armed": True,
+                       "fail": {"pr_merge": {"rc": 1}, "pr_view": {"rc": 1}}})
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertFalse([c for c in self.calls() if c["argv"][:1] == ["pr"]])
+        posts = [c for c in self.calls() if "POST" in c["argv"] and
+                 any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(json.loads(posts[0]["stdin"])["conclusion"], "success")
+
+    def test_hold_arriving_at_fence_disarms_before_red_publish(self):
+        hold = ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z")
+        self.scenario({"labels": {"3": []}, "events_seq": {"3": [[[]], [[hold]]]},
+                       "armed": False})
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        calls = self.calls()
+        disarm = next(i for i,c in enumerate(calls) if c["argv"][:2] == ["pr", "merge"])
+        publish = next(i for i,c in enumerate(calls) if "POST" in c["argv"] and
+                       any(a.endswith("/check-runs") for a in c["argv"]))
+        self.assertLess(disarm, publish)
+        self.assertEqual(json.loads(calls[publish]["stdin"])["conclusion"], "failure")
+
     def test_events_api_error_fails_closed_and_loud(self):
         self.scenario({"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom 500"}}})
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]]), 1)
         checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
         payload = json.loads(checks[0]["stdin"])
         self.assertEqual(payload["conclusion"], "failure")
@@ -190,10 +214,10 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 3)
 
     def test_disarm_uses_real_gh_contract(self):
-        self.scenario({"labels": {"3": []}, "events": {"3": [[]]}})
+        self._held_scenario()
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr)
-        disarm = self.calls()[0]
+        disarm = next(c for c in self.calls() if c["argv"][:2] == ["pr", "merge"])
         self.assertEqual(disarm["argv"], ["pr", "merge", "--disable-auto", "u"])
 
     def test_do_not_merge_family_enforced(self):
@@ -468,7 +492,7 @@ class GuardIntegration(unittest.TestCase):
     def test_disarm_unconfirmed_state_red_job(self):
         # armed and the disable mutation is refused; state read still says
         # armed -> critical failure (fleet contract: fail closed on state)
-        self._clear_scenario()
+        self._held_scenario()
         self.scenario(
             {
                 **json.load(open(self.scenario_path)),
@@ -490,7 +514,7 @@ class GuardIntegration(unittest.TestCase):
         # armed: the hold state may be clean, but the guard does not know that
         # auto-merge is off, so it must not publish a green gate over a pull
         # request that can still merge itself (AFC-553).
-        self._clear_scenario()
+        self._held_scenario()
         self.scenario(
             {
                 **json.load(open(self.scenario_path)),
@@ -514,7 +538,7 @@ class GuardIntegration(unittest.TestCase):
         self.assertIn("disarm", body["output"]["summary"])
 
     def test_disarm_state_unreadable_red_job(self):
-        self._clear_scenario()
+        self._held_scenario()
         self.scenario(
             {
                 **json.load(open(self.scenario_path)),
@@ -539,7 +563,7 @@ class GuardIntegration(unittest.TestCase):
         # that a merge will not run past the hold check, so the merge-gate
         # conclusion must be failure and must say so - a degraded guard
         # never publishes green.
-        self._clear_scenario()
+        self._held_scenario()
         self.scenario(
             {
                 **json.load(open(self.scenario_path)),
@@ -730,6 +754,7 @@ class GuardIntegration(unittest.TestCase):
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]]), 1)
         posts = [
             c
             for c in self.calls()
