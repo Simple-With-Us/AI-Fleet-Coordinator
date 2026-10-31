@@ -31,6 +31,17 @@ ONE_HOME = ROOT / "docs" / "fleet-skills" / "sentence-gap" / "SKILL.md"
 # The pattern a converter is written as:  a perl substitution with a sentence-end group.
 _PATTERN_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
 
+# Follow-on substitutions that run on a body that is already converted and create no
+# gap of their own, so they are not converters and carry no markup group.  Each one is
+# named exactly:  any other substitution is still counted as a converter and asserted,
+# so a gap-writer spelled some new way cannot slip past the markup-group checks.
+_NON_GAP_STEPS = frozenset(
+    {
+        # Apple Notes:  turn an existing NBSP gap into a narrow NBSP.
+        r"s/\x{a0} /\x{202f} /g",
+    }
+)
+
 # The markup group:  the characters that may sit between a sentence end and the space.
 _MARKUP_GROUP = r'((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)'
 
@@ -273,8 +284,9 @@ def run_grep(command: str) -> int:
 
 
 def patterns_in(text: str) -> list[str]:
-    """Every converter pattern a text holds, in the order it holds them."""
-    return _PATTERN_RE.findall(text)
+    """Every converter pattern a text holds, in the order it holds them.  The named
+    follow-on steps in _NON_GAP_STEPS are skipped;  every other substitution counts."""
+    return [p for p in _PATTERN_RE.findall(text) if p not in _NON_GAP_STEPS]
 
 
 def one_home_patterns() -> list[str]:
@@ -753,6 +765,26 @@ class AssertionCommandTests(unittest.TestCase):
                     pattern,
                     "%s holds a blind leftover check:  %s" % (rel, pattern),
                 )
+
+
+class PatternExtractionTests(unittest.TestCase):
+    """Only the named follow-on NBSP step is skipped;  every other substitution counts."""
+
+    def test_only_the_named_follow_on_step_is_not_a_converter(self) -> None:
+        text = (
+            "perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z])/$1\\x{a0} /g' body.txt\n"
+            "perl -CSDA -pe 's/\\x{a0} /\\x{202f} /g' body.nbsp.txt\n"
+            "perl -CSDA -pe 's/([?!.])\\s+(?=[A-Z])/$1\\x{a0} /g' body.txt\n"
+            "perl -CSDA -pe 's/ +/\\x{a0} /g' body.txt\n"
+        )
+        self.assertEqual(
+            patterns_in(text),
+            [
+                "s/(?<![0-9])([.!?]) +(?=[A-Z])/$1\\x{a0} /g",
+                "s/([?!.])\\s+(?=[A-Z])/$1\\x{a0} /g",
+                "s/ +/\\x{a0} /g",
+            ],
+        )
 
 
 class GeneratedMirrorTests(unittest.TestCase):
