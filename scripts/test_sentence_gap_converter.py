@@ -35,10 +35,12 @@ _PATTERN_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
 # gap of their own, so they are not converters and carry no markup group.  Each one is
 # named exactly:  any other substitution is still counted as a converter and asserted,
 # so a gap-writer spelled some new way cannot slip past the markup-group checks.
-_NON_GAP_STEPS = frozenset({
-    # Apple Notes:  turn an existing NBSP gap into a narrow NBSP.
-    r"s/\x{a0} /\x{202f} /g",
-})
+_NON_GAP_STEPS = frozenset(
+    {
+        # Apple Notes:  turn an existing NBSP gap into a narrow NBSP.
+        r"s/\x{a0} /\x{202f} /g",
+    }
+)
 
 # The markup group:  the characters that may sit between a sentence end and the space.
 _MARKUP_GROUP = r'((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)'
