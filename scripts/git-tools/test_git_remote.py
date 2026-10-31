@@ -649,11 +649,12 @@ class TestNativeCustodyTransport(unittest.TestCase):
             returncode=returncode,
             stdout=(json.dumps(hello) + "\n" + json.dumps(answer) + "\n").encode(),
         )
-        with mock.patch.object(git.os, "geteuid", return_value=euid), mock.patch.object(
-            git.sys, "platform", platform
-        ), mock.patch.object(git.os.path, "isfile", return_value=isfile), mock.patch.object(
-            git.subprocess, "run", return_value=proc
-        ) as run:
+        with (
+            mock.patch.object(git.os, "geteuid", return_value=euid),
+            mock.patch.object(git.sys, "platform", platform),
+            mock.patch.object(git.os.path, "isfile", return_value=isfile),
+            mock.patch.object(git.subprocess, "run", return_value=proc) as run,
+        ):
             try:
                 result = git._native_echo_post(b'{"jsonrpc":"2.0","id":1}', write)
                 return run, result, None
