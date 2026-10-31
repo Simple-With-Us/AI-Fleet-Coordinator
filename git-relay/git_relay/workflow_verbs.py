@@ -296,15 +296,16 @@ def _workflow_path(path):
 def workflow_write_paths(action, args):
     """Identify real workflow-file edits, never treat parent dirs as writable files."""
     args = args or {}
-    if action in ('wf_file_put', 'wf_file_delete'):
-        paths = [args.get('path')]
-    elif action == 'wf_file_rename':
-        paths = [args.get('source_path'), args.get('destination_path')]
-    elif action == 'wf_files_put':
-        paths = [f.get('path') for f in args.get('files', []) if isinstance(f, dict)]
+    if action in ("wf_file_put", "wf_file_delete"):
+        paths = [args.get("path")]
+    elif action == "wf_file_rename":
+        paths = [args.get("source_path"), args.get("destination_path")]
+    elif action == "wf_files_put":
+        paths = [f.get("path") for f in args.get("files", []) if isinstance(f, dict)]
     else:
         return []
-    return [p for p in paths if isinstance(p, str) and p.startswith('.github/workflows/')]
+    return [p for p in paths if isinstance(p, str) and p.startswith(".github/workflows/")]
+
 
 def _enum(args, key, allowed, default=None):
     value = args.get(key, default)
@@ -735,9 +736,9 @@ class WorkflowVerbs:
         return handle
 
     def _write_path_denied(self, path):
-        if path in ('.github', '.github/workflows'):
+        if path in (".github", ".github/workflows"):
             return True
-        return _workflow_path(path) and not getattr(self, 'workflow_write_allowed', False)
+        return _workflow_path(path) and not getattr(self, "workflow_write_allowed", False)
 
     def _get(self, path):
         return self.client._call("GET", path, None, bearer=self.bearer)

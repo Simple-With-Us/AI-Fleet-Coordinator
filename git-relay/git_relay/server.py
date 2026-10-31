@@ -663,7 +663,14 @@ def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> d
         # (and counted its quota once); for_action then only checks the App ceiling and
         # mints the least permission in SPECS.
         handle = WorkflowVerbs.for_action(
-            self.client, self.policy, self.app_minter, seat, action, repo, preauthorized=True, args=args
+            self.client,
+            self.policy,
+            self.app_minter,
+            seat,
+            action,
+            repo,
+            preauthorized=True,
+            args=args,
         )
         return handle.run(action, args)
     except Unknown:
