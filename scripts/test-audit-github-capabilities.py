@@ -46,7 +46,8 @@ class Inventory(unittest.TestCase):
         self.assertEqual(x["operations"][0]["category"], "other")
 
     def test_corrupt_prior_output_recovers(self):
-        import tempfile, pathlib
+        import pathlib
+        import tempfile
 
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d) / "inventory.json"
