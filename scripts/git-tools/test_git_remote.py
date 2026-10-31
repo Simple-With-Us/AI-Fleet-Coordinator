@@ -12,16 +12,17 @@ The transport is faked:  no network, no credentials, no custody.  The shared fle
 this repository, so a fake scanner stands in for argument-scanning tests and one test pins the fail-closed
 behavior when the real scanner file is absent.
 """
+
 import contextlib
 import importlib.machinery
 import importlib.util
 import io
 import json
 import os
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 IMPL = Path(__file__).resolve().parent / "git"
@@ -95,8 +96,17 @@ class FakeTransport:
 
     pages: list of either [tool, ...] (cursor chain generated) or ([tool, ...], nextCursor-or-None)."""
 
-    def __init__(self, pages=None, seat="CODEX", call_results=None, status=200,
-                 auth_seat=None, default_seat=None, advertised=None, sc_override=None):
+    def __init__(
+        self,
+        pages=None,
+        seat="CODEX",
+        call_results=None,
+        status=200,
+        auth_seat=None,
+        default_seat=None,
+        advertised=None,
+        sc_override=None,
+    ):
         self.pages = [DEFAULT_PAGE] if pages is None else pages
         self.seat = seat
         self.auth_seat = seat if auth_seat is None else auth_seat
@@ -144,7 +154,11 @@ class FakeTransport:
             if name == "identities":
                 advertised = self.advertised
                 if advertised is None:
-                    usable = self.auth_seat if git.SEAT_PATTERN.fullmatch(self.auth_seat or "") else self.default_seat
+                    usable = (
+                        self.auth_seat
+                        if git.SEAT_PATTERN.fullmatch(self.auth_seat or "")
+                        else self.default_seat
+                    )
                     advertised = [{"identity": usable}]
                 structured = self.sc_override or {
                     "authenticated_seat": self.auth_seat,
@@ -179,21 +193,20 @@ def run_cli(argv, *, env=None, transport=None, stdin_text="", native_post=None, 
     if scanner == "fake":
         scanner_obj = FakeScanner()
     else:
-        scanner_obj = None  # None: the real load path (fail-closed test, or the real scanner when present)
+        scanner_obj = (
+            None  # None: the real load path (fail-closed test, or the real scanner when present)
+        )
     out, err = io.StringIO(), io.StringIO()
     code = 0
-    with mock.patch.dict(os.environ, clean_env, clear=True), mock.patch.object(
-        sys, "argv", ["simple-git"] + list(argv)
-    ), mock.patch.object(sys, "stdin", io.StringIO(stdin_text)), mock.patch.object(
-        git, "_remote_post", remote_post
-    ), mock.patch.object(
-        git, "_native_echo_post", native
-    ), mock.patch.object(
-        git, "_SCANNER", scanner_obj
-    ), contextlib.redirect_stdout(
-        out
-    ), contextlib.redirect_stderr(
-        err
+    with (
+        mock.patch.dict(os.environ, clean_env, clear=True),
+        mock.patch.object(sys, "argv", ["simple-git"] + list(argv)),
+        mock.patch.object(sys, "stdin", io.StringIO(stdin_text)),
+        mock.patch.object(git, "_remote_post", remote_post),
+        mock.patch.object(git, "_native_echo_post", native),
+        mock.patch.object(git, "_SCANNER", scanner_obj),
+        contextlib.redirect_stdout(out),
+        contextlib.redirect_stderr(err),
     ):
         try:
             code = git.main(list(argv))
@@ -275,7 +288,9 @@ class TestSmokeShape(unittest.TestCase):
 
     def test_unknown_flag_rejected(self):
         code, out, err = run_cli(
-            ["list", "--seat", "CODEX"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["list", "--seat", "CODEX"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
 
@@ -290,7 +305,9 @@ class TestDiscovery(unittest.TestCase):
         self.assertEqual(t.list_requests, 1)
 
     def test_read_write_labels_come_from_the_pinned_read_set(self):
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport())
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+        )
         self.assertIn("read  gr_wf_repo_get", out)
         self.assertIn("write  gr_wf_issue_create", out)
 
@@ -310,57 +327,81 @@ class TestDiscovery(unittest.TestCase):
         self.assertNotIn("gr_wf_issue_create", out)
 
     def test_multi_page_discovery(self):
-        pages = [[make_tool("gr_wf_repo_get", READ_SCHEMA)], [make_tool("gr_wf_issue_create", WRITE_SCHEMA)]]
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages))
+        pages = [
+            [make_tool("gr_wf_repo_get", READ_SCHEMA)],
+            [make_tool("gr_wf_issue_create", WRITE_SCHEMA)],
+        ]
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages)
+        )
         self.assertEqual(code, 0)
         self.assertIn("gr_wf_issue_create", out)
 
     def test_cursor_loop_rejected(self):
-        pages = [([make_tool("gr_wf_repo_get", READ_SCHEMA)], "cursor-1"), ([make_tool("gr_wf_pr_get")], "cursor-1")]
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages))
+        pages = [
+            ([make_tool("gr_wf_repo_get", READ_SCHEMA)], "cursor-1"),
+            ([make_tool("gr_wf_pr_get")], "cursor-1"),
+        ]
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages)
+        )
         self.assertEqual(code, 1)
         self.assertIn("cursor", err)
 
     def test_paging_past_the_page_cap_rejected(self):
         pages = [[make_tool("gr_wf_p%d" % i)] for i in range(git.DISCOVERY_MAX_PAGES + 1)]
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages))
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages)
+        )
         self.assertEqual(code, 1)
         self.assertIn("paging", err)
 
     def test_tool_cap_rejected(self):
         page = [make_tool("gr_wf_a%d" % i) for i in range(3)]
         with mock.patch.object(git, "DISCOVERY_MAX_TOOLS", 2):
-            code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page]))
+            code, out, err = run_cli(
+                ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+            )
         self.assertEqual(code, 1)
         self.assertIn("too many tools", err)
 
     def test_duplicate_tool_name_rejected(self):
         page = [make_tool("gr_wf_repo_get", READ_SCHEMA), make_tool("gr_wf_repo_get", READ_SCHEMA)]
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page]))
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+        )
         self.assertEqual(code, 1)
         self.assertIn("twice", err)
 
     def test_oversized_cursor_rejected(self):
         pages = [([make_tool("gr_wf_repo_get", READ_SCHEMA)], "x" * 513)]
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages))
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport(pages)
+        )
         self.assertEqual(code, 1)
 
     def test_no_git_tools_for_this_caller_is_a_refusal(self):
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([[make_tool("notes_search")]])
+            ["list"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=FakeTransport([[make_tool("notes_search")]]),
         )
         self.assertEqual(code, 1)
         self.assertIn("no git tools", err)
 
     def test_unreadable_schema_rejected(self):
         page = [make_tool("gr_wf_repo_get", {"type": "array"})]
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page]))
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+        )
         self.assertEqual(code, 1)
         self.assertIn("unreadable schema", err)
 
     def test_oversized_description_rejected(self):
         page = [make_tool("gr_wf_repo_get", READ_SCHEMA, "d" * 4097)]
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page]))
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+        )
         self.assertEqual(code, 1)
         self.assertIn("oversized description", err)
 
@@ -373,7 +414,9 @@ class TestDiscovery(unittest.TestCase):
 
     def test_show_prints_schema(self):
         code, out, err = run_cli(
-            ["show", "gr_wf_repo_get"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+            ["show", "gr_wf_repo_get"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=FakeTransport(),
         )
         self.assertEqual(code, 0)
         self.assertIn('"owner"', out)
@@ -381,14 +424,18 @@ class TestDiscovery(unittest.TestCase):
     def test_hosted_text_is_escaped_before_display(self):
         page = [make_tool("gr_wf_repo_get", READ_SCHEMA, "safe \x1b[31m red")]
         code, out, err = run_cli(
-            ["show", "gr_wf_repo_get"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport([page])
+            ["show", "gr_wf_repo_get"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=FakeTransport([page]),
         )
         self.assertEqual(code, 0)
         self.assertNotIn("\x1b", out)
         self.assertIn("\\x1b", out)
 
     def test_listing_is_not_execution_proof_footer(self):
-        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport())
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+        )
         self.assertIn("listing is not execution proof", err)
 
 
@@ -492,7 +539,9 @@ class TestActorResolution(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_whoami_prints_the_reported_seat(self):
-        code, out, err = run_cli(["whoami"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport())
+        code, out, err = run_cli(
+            ["whoami"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+        )
         self.assertEqual(code, 0)
         self.assertIn("authenticated_seat: CODEX", out)
 
@@ -501,7 +550,9 @@ class TestNativeEcho(unittest.TestCase):
     def test_declared_other_seat_refused_before_any_rpc(self):
         native = FakeNative()
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_GIT_NATIVE_ECHO": "1", "AGENT_SEAT": "CODEX"}, native_post=native.post
+            ["list"],
+            env={"SIMPLE_GIT_NATIVE_ECHO": "1", "AGENT_SEAT": "CODEX"},
+            native_post=native.post,
         )
         self.assertEqual(code, 2)
         self.assertEqual(native.bodies, [])  # not even discovery left
@@ -526,12 +577,16 @@ class TestNativeEcho(unittest.TestCase):
         self.assertEqual(code, 0, err)
         names = [c[0] for c in native.transport.calls]
         self.assertNotIn("identities", names)  # custody proves ECHO: no probe
-        self.assertEqual(native.transport.calls[-1], ("gr_wf_repo_get", {"owner": "o", "identity": "ECHO"}))
+        self.assertEqual(
+            native.transport.calls[-1], ("gr_wf_repo_get", {"owner": "o", "identity": "ECHO"})
+        )
 
     def test_native_declared_echo_passes(self):
         native = FakeNative()
         code, out, err = run_cli(
-            ["list"], env={"SIMPLE_GIT_NATIVE_ECHO": "1", "AGENT_SEAT": "ECHO"}, native_post=native.post
+            ["list"],
+            env={"SIMPLE_GIT_NATIVE_ECHO": "1", "AGENT_SEAT": "ECHO"},
+            native_post=native.post,
         )
         self.assertEqual(code, 0, err)
 
@@ -540,7 +595,9 @@ class TestNativeEcho(unittest.TestCase):
         return {"isError": True, "content": [{"type": "text", "text": text}]}
 
     def test_native_uncertain_transport_shape_keeps_outcome_unknown(self):
-        native = FakeNative(call_results={"gr_wf_issue_create": self._error_result("outcome_unknown")})
+        native = FakeNative(
+            call_results={"gr_wf_issue_create": self._error_result("outcome_unknown")}
+        )
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
             env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
@@ -551,7 +608,9 @@ class TestNativeEcho(unittest.TestCase):
         self.assertIn("may or may not have been applied", err)
 
     def test_native_genuine_refusal_keeps_its_code_and_is_not_uncertain(self):
-        native = FakeNative(call_results={"gr_wf_issue_create": self._error_result("relay_refused")})
+        native = FakeNative(
+            call_results={"gr_wf_issue_create": self._error_result("relay_refused")}
+        )
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
             env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
@@ -664,7 +723,9 @@ class TestValidationAndScanning(unittest.TestCase):
         )
         self.assertEqual(code, 2)
         self.assertIn("exceed", err)
-        self.assertEqual([c[0] for c in t.calls], ["identities"])  # the principal probe only, no target call
+        self.assertEqual(
+            [c[0] for c in t.calls], ["identities"]
+        )  # the principal probe only, no target call
 
     def test_per_action_limit_widens_where_the_worker_does(self):
         t = FakeTransport(pages=[[make_tool("gr_wf_file_put", PUT_SCHEMA)]])
@@ -721,11 +782,13 @@ class TestOutcomes(unittest.TestCase):
     def test_5xx_on_a_write_is_uncertain(self):
         t = FakeTransport()
         inner = t.post
+
         def flaky(url, headers, body, timeout):
             req = json.loads(body.decode())
             if req["method"] == "tools/call" and req["params"]["name"] == "gr_wf_issue_create":
                 return 500, "", b""
             return inner(url, headers, body, timeout)
+
         t.post = flaky
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
@@ -746,11 +809,15 @@ class TestOutcomes(unittest.TestCase):
     def test_dead_answer_after_sending_a_write_is_uncertain(self):
         t = FakeTransport()
         inner = t.post
+
         def boom(url, headers, body, timeout):
             req = json.loads(body.decode())
             if req["method"] == "tools/call" and req["params"]["name"] == "gr_wf_issue_create":
-                raise git._TransportError(True, "deadline")  # the request left; the answer never came
+                raise git._TransportError(
+                    True, "deadline"
+                )  # the request left; the answer never came
             return inner(url, headers, body, timeout)
+
         t.post = boom
         code, out, err = run_cli(
             ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
@@ -777,7 +844,11 @@ class TestOutcomes(unittest.TestCase):
 
     def test_server_message_text_is_never_copied(self):
         t = FakeTransport()
-        evil = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "echo: SECRETINPUT"}}
+        evil = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32603, "message": "echo: SECRETINPUT"},
+        }
         raw = json.dumps(evil).encode()
         t.post = lambda url, headers, body, timeout: (200, "application/json", raw)
         code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
@@ -886,9 +957,11 @@ class TestOutcomes(unittest.TestCase):
     def test_sse_answer_parsed(self):
         t = FakeTransport()
         inner = t.post
+
         def sse(url, headers, body, timeout):
             status, ctype, raw = inner(url, headers, body, timeout)
             return status, "text/event-stream", b"data: " + raw + b"\n\n"
+
         t.post = sse
         code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 0, err)
@@ -909,7 +982,9 @@ class TestOutcomes(unittest.TestCase):
         self.assertEqual(code, 1)
 
     def test_redirects_are_never_followed(self):
-        self.assertIsNone(git._NoRedirect().redirect_request(None, None, 302, None, {}, "https://evil.example"))
+        self.assertIsNone(
+            git._NoRedirect().redirect_request(None, None, 302, None, {}, "https://evil.example")
+        )
 
     def test_result_json_shape(self):
         t = FakeTransport()
@@ -947,7 +1022,12 @@ class TestNoCallerEcho(unittest.TestCase):
 
     def test_duplicate_key_name_never_echoed(self):
         code, out, err = run_cli(
-            ["call", "gr_wf_repo_get", "--args-json", '{"' + self.SENTINEL + '":1,"' + self.SENTINEL + '":2}'],
+            [
+                "call",
+                "gr_wf_repo_get",
+                "--args-json",
+                '{"' + self.SENTINEL + '":1,"' + self.SENTINEL + '":2}',
+            ],
             env={"SIMPLE_TOOLS_BEARER": BEARER},
             transport=FakeTransport(),
         )
@@ -988,7 +1068,9 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
             ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"}, transport=t
         )
         self.assertEqual(code, 0, err)
-        self.assertEqual([c[0] for c in t.calls], ["identities"])  # the assertion probe, before discovery
+        self.assertEqual(
+            [c[0] for c in t.calls], ["identities"]
+        )  # the assertion probe, before discovery
 
     def test_list_with_mismatching_declared_seat_refused_before_discovery(self):
         t = FakeTransport(seat="ECHO")
@@ -1019,7 +1101,9 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
 
     def test_whoami_matching_declared_seat_displays(self):
         code, out, err = run_cli(
-            ["whoami"], env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"}, transport=FakeTransport()
+            ["whoami"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER, "AGENT_SEAT": "CODEX"},
+            transport=FakeTransport(),
         )
         self.assertEqual(code, 0)
         self.assertIn("authenticated_seat: CODEX", out)
@@ -1033,7 +1117,9 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
             transport=t,
         )
         self.assertEqual(code, 6)
-        self.assertEqual([c[0] for c in t.calls], ["identities"])  # main()'s assertion probe, no target call
+        self.assertEqual(
+            [c[0] for c in t.calls], ["identities"]
+        )  # main()'s assertion probe, no target call
 
     def test_call_without_identity_and_no_declaration_probes_once(self):
         t = FakeTransport()
@@ -1044,7 +1130,9 @@ class TestActorAssertionEveryVerb(unittest.TestCase):
         )
         self.assertEqual(code, 0, err)
         self.assertEqual([c[0] for c in t.calls], ["identities", "gr_new_unknown"])
-        self.assertNotIn("identity", t.calls[-1][1])  # nothing injected where the schema has no identity
+        self.assertNotIn(
+            "identity", t.calls[-1][1]
+        )  # nothing injected where the schema has no identity
 
 
 class TestPrincipalEstablishment(unittest.TestCase):
@@ -1087,7 +1175,11 @@ class TestPrincipalEstablishment(unittest.TestCase):
         self.assertIn("malformed", err)
 
     def test_present_nonnull_malformed_default_refused(self):
-        sc = {"authenticated_seat": "CODEX", "default_identity": 42, "identities": [{"identity": "CODEX"}]}
+        sc = {
+            "authenticated_seat": "CODEX",
+            "default_identity": 42,
+            "identities": [{"identity": "CODEX"}],
+        }
         t = FakeTransport(sc_override=sc)
         code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
         self.assertEqual(code, 6)
@@ -1167,7 +1259,9 @@ class TestPrincipalEstablishment(unittest.TestCase):
         self.assertIn("authenticated_seat: ECHO", out)
 
     def test_native_whoami_refuses_a_contradictory_principal(self):
-        native = FakeNative(call_results={"identities": self._native_whoami_result("ECHO", "CODEX")})
+        native = FakeNative(
+            call_results={"identities": self._native_whoami_result("ECHO", "CODEX")}
+        )
         code, out, err = run_cli(
             ["whoami"], env={"SIMPLE_GIT_NATIVE_ECHO": "1"}, native_post=native.post
         )
@@ -1175,7 +1269,9 @@ class TestPrincipalEstablishment(unittest.TestCase):
         self.assertNotIn("authenticated_seat", out)
 
     def test_native_whoami_refuses_a_non_echo_principal(self):
-        native = FakeNative(call_results={"identities": self._native_whoami_result("CODEX", "CODEX")})
+        native = FakeNative(
+            call_results={"identities": self._native_whoami_result("CODEX", "CODEX")}
+        )
         code, out, err = run_cli(
             ["whoami"], env={"SIMPLE_GIT_NATIVE_ECHO": "1"}, native_post=native.post
         )
@@ -1203,9 +1299,7 @@ class TestSchemaFailClosed(unittest.TestCase):
         self.assertIn("missing or unreadable schema", err)
 
 
-REAL_SCANNER = (
-    Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
-)
+REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
 
 
 @unittest.skipUnless(REAL_SCANNER.is_file(), "scripts/agent_sync/secretscan.py not available here")

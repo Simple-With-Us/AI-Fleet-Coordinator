@@ -8,12 +8,12 @@
 
 import hmac
 import os
-import re
-import stat
-import sys
 
 # One pinned location and owner per platform.  Nothing here is read from the environment.
 import pwd
+import re
+import stat
+import sys
 
 BEARER_OWNER_UID = 501 if sys.platform == "darwin" else 1001
 try:
@@ -97,7 +97,9 @@ def _explicit_route(command, argv):
     - recall: the same rule the tool uses itself (normalize_argv):  any word before "--" that names one of its
       subcommands selects it, and only search, stats and contribute are served remotely."""
     head = _head(argv)
-    if any(token == "-h" or token in HELP_OPTIONS or _prefix_of(token, HELP_OPTIONS) for token in head):
+    if any(
+        token == "-h" or token in HELP_OPTIONS or _prefix_of(token, HELP_OPTIONS) for token in head
+    ):
         return True
     if command == "recall":
         return any(token in RECALL_LOCAL_VERBS for token in head)
@@ -145,7 +147,7 @@ def _read_bearer(seat):
     target = os.path.normpath(BEARER_DIR)
     if not (target == anchor or target.startswith(anchor.rstrip("/") + "/")):
         raise fail
-    parts = [p for p in target[len(anchor):].split("/") if p]
+    parts = [p for p in target[len(anchor) :].split("/") if p]
     if not parts:
         raise fail
     fds = []
@@ -162,7 +164,9 @@ def _read_bearer(seat):
         name = seat.lower()
         if re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name) is None:
             raise fail
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=current)
+        fd = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=current
+        )
         fds.append(fd)
         before = os.fstat(fd)
         if (
@@ -180,8 +184,13 @@ def _read_bearer(seat):
                 break
             data += chunk
         after = os.fstat(fd)
-        stable = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_nlink) == (
-            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_nlink)
+        stable = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_nlink,
+        ) == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_nlink)
         if not stable or len(data) > MAX_BEARER_BYTES or len(data) != before.st_size:
             raise fail
         try:
@@ -221,7 +230,9 @@ def plan(command, argv, environ):
         return {}
     own = _read_bearer(seat)
     inherited = environ.get("SIMPLE_TOOLS_BEARER", "").strip()
-    if inherited and not hmac.compare_digest(inherited.encode("ascii", "replace"), own.encode("ascii")):
+    if inherited and not hmac.compare_digest(
+        inherited.encode("ascii", "replace"), own.encode("ascii")
+    ):
         raise FleetCliStop("The inherited bearer is not this seat's own")
     return {"SIMPLE_TOOLS_BEARER": own, mode: "1"}
 

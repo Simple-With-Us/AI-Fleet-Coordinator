@@ -283,7 +283,16 @@ def smoke(release: Path, home: Path) -> None:
     for path in release.rglob("*"):
         if path.is_file() and (
             path.suffix == ".py"
-            or path.name in ("board", "simple-chat", "simple-notes", "simple-board", "simple-git", "git", "recall")
+            or path.name
+            in (
+                "board",
+                "simple-chat",
+                "simple-notes",
+                "simple-board",
+                "simple-git",
+                "git",
+                "recall",
+            )
         ):
             try:
                 compile(path.read_bytes(), str(path), "exec")

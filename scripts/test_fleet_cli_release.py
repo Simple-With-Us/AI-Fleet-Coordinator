@@ -29,7 +29,9 @@ def make_bundle(version="one"):
         if path in ("scripts/linear-board/board", "scripts/simple-board"):
             data = b'import sys\nsys.exit(2 if "show" in sys.argv else 0)\n# ' + version.encode()
         if path == "scripts/simple-git":
-            data = b'import sys\nsys.exit(2 if sys.argv[1:] == ["call"] else 0)\n# ' + version.encode()
+            data = (
+                b'import sys\nsys.exit(2 if sys.argv[1:] == ["call"] else 0)\n# ' + version.encode()
+            )
         files[path] = {
             "mode": 0o644,
             "sha256": hashlib.sha256(data).hexdigest(),
@@ -1009,7 +1011,6 @@ class ShippedDataFilesTests(unittest.TestCase):
         self.assertTrue(release.allowed_path(path))
         self.assertIn(path, release.TOOL_REQUIRED)
         self.assertNotIn(path, release.BASE_REQUIRED)
-
 
     def test_git_tools_are_required_of_new_bundles_only(self):
         # The git tools CLI (entry wrapper + implementation):  a new bundle must carry both, and an

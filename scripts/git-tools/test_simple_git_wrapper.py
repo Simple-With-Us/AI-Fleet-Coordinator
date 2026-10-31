@@ -6,20 +6,20 @@ re-exec, via SIMPLE_GIT_ARGV0);  the 3.9 interpreter fallback;  the host seat-he
 (absent = optional, present-but-untrustworthy = refusal, trusted = runs with the command key);  a missing
 implementation file is a clean error.
 """
-import importlib.machinery
-import importlib.util
+
 import os
-from pathlib import Path
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-WRAPPER = HERE.parent / "simple-git"  # the installed entry point (scripts/simple-git in the repo layout)
+WRAPPER = (
+    HERE.parent / "simple-git"
+)  # the installed entry point (scripts/simple-git in the repo layout)
 
 FAKE_IMPL = (
     "import os, sys\n"
@@ -28,8 +28,14 @@ FAKE_IMPL = (
 )
 
 CLEAN_KEYS = (
-    "SIMPLE_TOOLS_BEARER", "SIMPLE_GIT_REMOTE", "SIMPLE_GIT_NATIVE_ECHO", "SIMPLE_GIT_ARGV0",
-    "AGENT_SEAT", "AGENT_TAG", "AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT",
+    "SIMPLE_TOOLS_BEARER",
+    "SIMPLE_GIT_REMOTE",
+    "SIMPLE_GIT_NATIVE_ECHO",
+    "SIMPLE_GIT_ARGV0",
+    "AGENT_SEAT",
+    "AGENT_TAG",
+    "AGENT_LAUNCHER",
+    "AGENT_LAUNCH_SEAT",
 )
 
 
@@ -49,7 +55,11 @@ def run_wrapper(tmp, script, extra_env=None):
     env.update(extra_env or {})
     return subprocess.run(
         [sys.executable, str(script)],
-        capture_output=True, text=True, env=env, timeout=30, check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=False,
     )
 
 
@@ -82,20 +92,25 @@ class TestInstalledName(unittest.TestCase):
         # across via SIMPLE_GIT_ARGV0 (the re-exec replaces argv[0] with the real script path).
         source = WRAPPER.read_text()
         sentinel = {}
+
         def fake_execv(path, argv):
             sentinel["path"] = path
             sentinel["argv"] = argv
             raise RuntimeError("execv recorded")
+
         env = {k: v for k, v in os.environ.items() if k not in CLEAN_KEYS}
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
-            sys, "version_info", (3, 9, 18)
-        ), mock.patch.object(os, "access", lambda p, m: p == "/usr/local/bin/python3"), mock.patch.object(
-            os, "execv", fake_execv
-        ), mock.patch.object(
-            sys, "argv", ["/usr/local/bin/simple-git", "list"]
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(sys, "version_info", (3, 9, 18)),
+            mock.patch.object(os, "access", lambda p, m: p == "/usr/local/bin/python3"),
+            mock.patch.object(os, "execv", fake_execv),
+            mock.patch.object(sys, "argv", ["/usr/local/bin/simple-git", "list"]),
         ):
             try:
-                exec(compile(source, str(WRAPPER), "exec"), {"__name__": "__main__", "__file__": str(WRAPPER)})
+                exec(
+                    compile(source, str(WRAPPER), "exec"),
+                    {"__name__": "__main__", "__file__": str(WRAPPER)},
+                )
             except RuntimeError:
                 pass
         self.assertEqual(sentinel.get("path"), "/usr/local/bin/python3")
@@ -103,11 +118,16 @@ class TestInstalledName(unittest.TestCase):
 
     def test_no_newer_interpreter_is_a_clean_error(self):
         source = WRAPPER.read_text()
-        with mock.patch.object(sys, "version_info", (3, 9, 18)), mock.patch.object(
-            os, "access", lambda p, m: False
-        ), mock.patch.object(sys, "argv", ["simple-git"]):
+        with (
+            mock.patch.object(sys, "version_info", (3, 9, 18)),
+            mock.patch.object(os, "access", lambda p, m: False),
+            mock.patch.object(sys, "argv", ["simple-git"]),
+        ):
             try:
-                exec(compile(source, str(WRAPPER), "exec"), {"__name__": "__main__", "__file__": str(WRAPPER)})
+                exec(
+                    compile(source, str(WRAPPER), "exec"),
+                    {"__name__": "__main__", "__file__": str(WRAPPER)},
+                )
                 self.fail("expected SystemExit")
             except SystemExit as exc:
                 self.assertEqual(exc.code, 1)
@@ -119,6 +139,7 @@ class TestHelperTrust(unittest.TestCase):
 
     def setUp(self):
         import pwd
+
         home = Path(pwd.getpwuid(os.getuid()).pw_dir)
         self.helper_dir = home / ".config" / "fleet-cli"
         self.helper = self.helper_dir / "seat-remote-defaults.py"

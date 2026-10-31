@@ -8,12 +8,13 @@ bearer file read is faked (the pinned owner and its directory exist only on the 
 
 The capture ships at testdata/seat-remote-defaults.capture.py (nonsecret host configuration); GIT_CLI_TEST_HELPER_SRC overrides it.
 """
+
 import importlib.machinery
 import importlib.util
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 CANDIDATES = [
     Path(os.environ.get("GIT_CLI_TEST_HELPER_SRC", "")),
@@ -47,9 +48,11 @@ class TestHelperPlan(unittest.TestCase):
         self.helper = importlib.util.module_from_spec(spec)
         loader.exec_module(self.helper)
         self.reads = []
+
         def fake_read_bearer(seat):
             self.reads.append(seat)
             return OWN
+
         self.helper._read_bearer = fake_read_bearer
 
     def plan(self, argv, env):
@@ -61,7 +64,9 @@ class TestHelperPlan(unittest.TestCase):
         self.assertEqual(self.reads, ["CODEX"])  # the helper lowercases inside
 
     def test_native_shortcut_reads_nothing(self):
-        changes = self.plan(["call", "gr_wf_repo_get"], {"AGENT_SEAT": "ECHO", "SIMPLE_GIT_NATIVE_ECHO": "1"})
+        changes = self.plan(
+            ["call", "gr_wf_repo_get"], {"AGENT_SEAT": "ECHO", "SIMPLE_GIT_NATIVE_ECHO": "1"}
+        )
         self.assertEqual(changes, {})
         self.assertEqual(self.reads, [])
 
