@@ -658,6 +658,22 @@ def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> d
 
     if self.app_minter is None:
         raise ServerUnavailable("app-token minting is not configured on this relay")
+    if action == "wf_installation_metadata":
+        app_slug, ceiling = self.policy.app_identity(seat)
+        if _perm_within_ceiling({"metadata": "read"}, ceiling):
+            raise PolicyDenied("seat permission ceiling insufficient")
+        if app_slug != seat:
+            raise PolicyDenied("own App required")
+        from .app_tokens import AppTokenError, InstallationReadError
+
+        try:
+            return self.app_minter.installation_metadata(app_slug, repo)
+        except InstallationReadError as exc:
+            raise RelayGitHubError(
+                exc.status, "installation metadata read failed", retry_after=exc.retry_after
+            ) from None
+        except AppTokenError:
+            raise ServerUnavailable("own installation metadata unavailable") from None
     try:
         # handle() has already run policy.authorize for this exact seat, action and repo
         # (and counted its quota once); for_action then only checks the App ceiling and
