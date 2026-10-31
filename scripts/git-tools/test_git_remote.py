@@ -682,12 +682,38 @@ class TestNativeCustodyTransport(unittest.TestCase):
         self.assertEqual(result[0], 200)
         self.assertEqual(run.call_args.args[0], ["/usr/bin/python3", "-I", self.CUSTODY])
 
-    def test_mac_refuses_for_ordinary_and_root_alike_no_fallback(self):
-        for euid in (1000, 0):
+    def test_mac_invokes_the_fixed_signed_helper_without_elevation(self):
+        for euid in (501, 0):  # owner shell and root alike:  custody is the helper's own checks
             run, result, exc = self._run_transport(euid=euid, platform="darwin")
-            self.assertIsNotNone(exc)
-            self.assertEqual(exc.code, 6)  # EXIT_AUTH
-            self.assertEqual(run.call_count, 0)
+            self.assertIsNone(exc)
+            self.assertEqual(result[0], 200)
+            self.assertEqual(
+                run.call_args.args[0],
+                ["/usr/local/libexec/assigned-echo-mcp/mac-request"],
+            )
+            kwargs = run.call_args.kwargs
+            self.assertNotIn("shell", kwargs)  # list argv, never a shell
+            self.assertEqual(kwargs["env"], {"PATH": "/usr/bin:/bin"})  # no environment, no bearer
+            self.assertEqual(kwargs["stderr"], git.subprocess.DEVNULL)
+            self.assertTrue(kwargs["input"].endswith(b'{"jsonrpc":"2.0","id":1}\n'))
+
+    def test_mac_missing_helper_refuses_before_any_spawn(self):
+        run, result, exc = self._run_transport(euid=501, platform="darwin", isfile=False)
+        self.assertIsNotNone(exc)
+        self.assertEqual(exc.code, 6)  # EXIT_AUTH
+        self.assertEqual(run.call_count, 0)
+
+    def test_mac_helper_failure_fails_closed_once_no_retry(self):
+        run, result, exc = self._run_transport(euid=501, platform="darwin", returncode=1, write=True)
+        self.assertIsNotNone(exc)
+        self.assertEqual(exc.code, 1)  # EXIT_ERROR
+        self.assertEqual(run.call_count, 1)  # exactly one attempt, never retried
+
+    def test_unknown_platform_refuses_no_fallback(self):
+        run, result, exc = self._run_transport(euid=501, platform="win32")
+        self.assertIsNotNone(exc)
+        self.assertEqual(exc.code, 6)
+        self.assertEqual(run.call_count, 0)
 
     def test_missing_custody_helper_refuses_before_any_spawn(self):
         run, result, exc = self._run_transport(euid=1000, isfile=False)

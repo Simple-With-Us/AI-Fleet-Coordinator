@@ -340,10 +340,24 @@ def _native_echo_post(body: bytes, write: bool, timeout: float = REMOTE_TIMEOUT_
     content/meta error object, and a genuine refusal with its own code (a seat mismatch is
     identity_not_allowed).  Both are read by the shared error parsing;  nothing is fabricated here and a
     genuine refusal is never reclassified or retried."""
-    # The approved custody route is Linux systemd only and absent on the Mac:  fail closed, no substitute.
-    if sys.platform != "linux" or not os.path.isfile(
-        "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"
-    ):
+    # Fixed custody transports only, never a credential export or a fallback:  Linux runs the
+    # reviewed Python custody helper;  the Mac runs the fixed signed request-owning helper, which
+    # reads its own fixed Keychain item and owns the whole HTTPS session itself - no elevation, no
+    # bearer or selector in the environment.  Any other platform fails closed.
+    if sys.platform == "linux":
+        helper_command = [
+            "/usr/bin/python3",
+            "-I",
+            "/usr/local/libexec/assigned-echo-mcp/linux-custody.py",
+        ]
+    elif sys.platform == "darwin":
+        helper_command = ["/usr/local/libexec/assigned-echo-mcp/mac-request"]
+    else:
+        die(
+            "the approved native ECHO custody route is not available on this host; there is no fallback",
+            EXIT_AUTH,
+        )
+    if not os.path.isfile(helper_command[-1]):
         die(
             "the approved native ECHO custody route is not available on this host; there is no fallback",
             EXIT_AUTH,
@@ -367,11 +381,12 @@ def _native_echo_post(body: bytes, write: bool, timeout: float = REMOTE_TIMEOUT_
         + body
         + b"\n"
     )
-    command = ["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"]
-    if os.geteuid() != 0:
+    command = list(helper_command)
+    if sys.platform == "linux" and os.geteuid() != 0:
         # Ordinary shell: the exact already-authorized custody elevation, absolute and
         # non-interactive (-n fails closed, it never prompts); no shell, no environment or
-        # alternate path, root behavior unchanged.
+        # alternate path, root behavior unchanged.  The Mac helper never elevates:  its custody
+        # is its own fixed-path, root-ownership and signature validation.
         command = ["/usr/bin/sudo", "-n"] + command
     try:
         proc = subprocess.run(

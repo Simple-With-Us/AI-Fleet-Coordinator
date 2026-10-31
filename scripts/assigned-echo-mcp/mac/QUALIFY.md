@@ -1,43 +1,54 @@
 # Mac native qualification gate
 
-Echo's single existing Mac host lane reports compile-only PASS for exact8173fbab:
-helper and isolated fixture build with -Wall -Wextra -Werror. The linker ad hoc
-ARM64 artifact has no Developer ID/TeamIdentifier. This closes the compile/ABI
-block only, not signature, ACL, storage or runtime qualification.
-That harness compiles and inspects an unsigned temporary binary only, then removes
-it. It neither signs nor installs, opens the Keychain, provisions an item or reads
-a secret. Native APIs are deprecated but supported legacy login-Keychain APIs;
-actual availability and ABI must be checked with the installed SDK.
+The request-owning Mac helper replaces the retired env-export/exec helper: the fixed
+signed binary reads its own fixed ECHO Keychain item and performs the bounded HTTPS
+session itself.  The bearer exists only in the helper's native memory;  there is no
+subprocess, no token environment and no selectors.  The CLI sends the same three
+newline-delimited JSON records (initialize id 0, initialized notification, call id 1)
+and reads the same hello + answer lines, so the ingress framing is preserved.
 
-The helper is fixed to UID501, root-owned /usr/local/libexec/assigned-echo-mcp,
-service assigned-hosted-mcp, account ECHO and UID501's explicit login Keychain.
-Its self check requires fixed path, root ownership/nonwritable code and a valid
-Developer ID signature with identifier assigned-echo-mcp and team CC8UTF7ATG.
-No user-supplied account, seat, item path, executable or password argument exists.
-The only owner mode ingress reads private stdin, refuses ANY existing item,
-creates a generic password with a trusted-app ACL containing only the fixed
-helper and clears its buffer. Runtime disables Keychain interaction, reads only
-that item and execs the fixed adapter with PATH and assigned bearer in memory.
-No security-w argument, -A, generic interpreter ACL or plaintext token file.
+Current gate status:  source and synthetic behavior only.  On the actual Mac, strict
+clang -Wall -Wextra -Werror compiles of the core, framing, transport and wrapper pass,
+and the nonsensitive fixtures pass under ASan/UBSan:  mac-fixture 42 checks,
+mac-input-fixture 22 checks, mac-transport-fixture 28 checks with an NSURLProtocol
+stub that intercepts every request so no network is reachable.  compile-only.sh
+reproduces exactly that, including the sanitizer runs.  The hard process bound is
+qualified, not assumed:  input reads and in-flight requests hold the 180s deadline,
+and alarm() caps the whole process, including a stalled stdout writer, at 195s.
+Because an inherited SIGALRM ignore disposition or blocked mask would silently
+defeat alarm(), the wrapper resets the disposition and unblocks the signal at
+entry.  The mechanism is qualified by the isolated alarm fixture
+(mac-alarm-fixture-driver.c):  a child using the exact reset/unblock/alarm
+sequence still dies with SIGALRM under inherited ignore, inherited block, and
+both.  The actual 195s production bound against a blocked stdout writer is NOT
+qualified end-to-end;  it inherits the mechanism qualification only.
+The cancel-barrier path where the terminal callback never arrives is covered by
+code review only;  this harness cannot force it deterministically.
+
+Custody contract, unchanged from the reviewed design:  fixed path
+/usr/local/libexec/assigned-echo-mcp/mac-request, UID 501, root-owned nonwritable
+code with every ancestor held open through use, self-check against anchor apple
+generic + identifier "assigned-echo-mcp-request" + team CC8UTF7ATG, fixed login
+Keychain item service assigned-hosted-mcp account ECHO, Keychain interaction
+disabled, token shape validated, buffers wiped.  Redirects are never followed;  the
+credential is never forwarded to one.
+
+Ingress preservation (SOURCE ONLY, never executed until owner approval):  the retired
+helper's owner-mode ingress contract is implemented verbatim in mac-request.m as the
+"ingress" argv mode - private stdin read, refusal of ANY existing item,
+generic-password creation with a trusted-app ACL containing only the fixed helper
+itself (SecTrustedApplicationCreateFromPath(NULL) is self), buffer cleared on every
+path.  It never serves requests.  mac-acl-fixture.c restores the reviewed synthetic
+ACL fixture source unchanged;  acl-fixture-plan.sh remains the print-only plan:
+isolated disposable nonsecret test Keychain, two distinctly signed fixture binaries,
+first binary reads, second binary plus /usr/bin/security plus a generic interpreter
+must all fail noninteractively, ACL inspected explicitly, lock/refusal verified,
+fixture Keychain deleted.  No production service, account, bearer or Keychain is
+referenced by any fixture.
 
 AFTER source review and actual owner storage/signing permission, Echo alone:
 1. Compiles, signs with the existing Developer ID Application identity using the
    exact identifier above, installs fixed root-owned code and verifies signature,
-   designated requirement, code ownership, path and adapter reviewed bytes.
-2. Uses NONSENSITIVE synthetic fixtures in an isolated test Keychain first, with
-   the same Security.framework ACL construction and separately signed test code.
-   The trusted helper must read successfully and a DIFFERENT binary, including
-   /usr/bin/security and a generic interpreter, must fail noninteractively.
-   Inspect ACL entries and ensure no allow-all/partition-list widening. Test
-   locked-Keychain refusal, wrong signature, writable path and existing-item
-   refusal. This source does not claim those results or supply an ACL bypass.
-3. If and only if native signed ACL checks pass, obtains its own authorized ECHO
-   bearer via supported private custody and sends it to fixed helper ingress on
-   stdin. No value is printed, logged, stored in JSON or placed on argv.
-4. Qualifies initialize, tools/list, own-ECHO whoami and cross-seat denial; checks
-   required families/GR and no inherited Infisical/CF secrets in the child.
-
-A root/shared-jay adversary and other broad host credentials remain outside this
-connector's isolation claim. Existing access is not revoked by this source. No
-WISE instance or cross-account custody access is included. If ACL or code identity
-cannot meet this gate, do not provision and report the native platform blocker.
+   designated requirement, code ownership and path.
+2. Runs the synthetic ACL fixtures in an isolated test Keychain first.
+3. Only then provisions the one fixed ECHO item through the preserved ingress flow.
