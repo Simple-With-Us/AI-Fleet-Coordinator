@@ -143,6 +143,22 @@ def deployed_tag(name):
     return (version.get("annotations") or {}).get("workers/tag")
 
 
+def outstanding_requests(reviews):
+    # COMMENTED does not clear a formal request. Only a later decisive review
+    # by that same reviewer supersedes its prior decision; never mutate history.
+    decisions = {}
+    if any(type(r.get("id")) is not int for r in reviews):
+        raise RuntimeError("Missing formal review sequence")
+    for review in sorted(reviews, key=lambda r: r["id"]):
+        state = review.get("state")
+        if state in ("APPROVED", "CHANGES_REQUESTED"):
+            reviewer = review.get("user", {}).get("id")
+            if reviewer is None:
+                raise RuntimeError("Missing formal reviewer identity")
+            decisions[reviewer] = state
+    return any(state == "CHANGES_REQUESTED" for state in decisions.values())
+
+
 def reviewed(sha):
     # A target-changing commit must be the merge of a real, non-draft PR.
     prs = github("/commits/" + sha + "/pulls")
@@ -155,7 +171,7 @@ def reviewed(sha):
         reviews = github("/pulls/" + number + "/reviews?per_page=100")
         if len(reviews) >= 100:
             raise RuntimeError("Review pagination needs explicit resolution")
-        if any(r.get("state") == "CHANGES_REQUESTED" for r in reviews):
+        if outstanding_requests(reviews):
             raise RuntimeError("Changes-requested review needs explicit resolution")
         qualified = [
             r

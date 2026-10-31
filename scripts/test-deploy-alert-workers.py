@@ -106,7 +106,12 @@ class Tests(unittest.TestCase):
             "merge_commit_sha": "a" * 40,
             "head": {"sha": "b" * 40},
         }
-        review = {"user": {"login": "kody-ai[bot]"}, "state": "APPROVED", "commit_id": "c" * 40}
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "APPROVED",
+            "commit_id": "c" * 40,
+        }
         with (
             patch.object(m, "github", side_effect=[[pr], [review]]),
             patch.object(m, "git", side_effect=AssertionError("No old comparison allowed")),
@@ -124,7 +129,12 @@ class Tests(unittest.TestCase):
             "merge_commit_sha": "a" * 40,
             "head": {"sha": "b" * 40},
         }
-        review = {"user": {"login": "kody-ai[bot]"}, "state": "APPROVED", "commit_id": "b" * 40}
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "APPROVED",
+            "commit_id": "b" * 40,
+        }
         response = MagicMock()
         response.__enter__.return_value.status = 200
         response.__enter__.return_value.read.return_value = json.dumps(
@@ -160,7 +170,12 @@ class Tests(unittest.TestCase):
             "merge_commit_sha": "a" * 40,
             "head": {"sha": "b" * 40},
         }
-        review = {"user": {"login": "kody-ai[bot]"}, "state": "COMMENTED", "commit_id": "b" * 40}
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": "b" * 40,
+        }
         response = MagicMock()
         response.__enter__.return_value.status = 200
         response.__enter__.return_value.read.return_value = json.dumps(
@@ -351,6 +366,18 @@ class Tests(unittest.TestCase):
     def test_changed_release_source_invalidates_receipt(self):
         with self.assertRaises(RuntimeError):
             self.check_receipt(*self.receipt_fixture(), changed="scripts/worker-targets.json")
+
+    def test_effective_request_superseded_only_by_same_reviewer_approval(self):
+        request = {"id": 1, "user": {"id": 10}, "state": "CHANGES_REQUESTED"}
+        approved = {"id": 2, "user": {"id": 10}, "state": "APPROVED"}
+        self.assertFalse(m.outstanding_requests([approved, request]))
+        self.assertTrue(m.outstanding_requests([approved, {**request, "id": 3}]))
+        self.assertTrue(m.outstanding_requests([request, {**approved, "user": {"id": 11}}]))
+        self.assertTrue(m.outstanding_requests([request, {**approved, "state": "COMMENTED"}]))
+
+    def test_missing_formal_reviewer_fails(self):
+        with self.assertRaises(RuntimeError):
+            m.outstanding_requests([{"id": 1, "state": "APPROVED"}])
 
 
 if __name__ == "__main__":
