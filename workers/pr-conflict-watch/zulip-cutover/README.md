@@ -6,4 +6,4 @@ Release configuration: this directory's wrangler.toml. `keep_vars = true` preser
 
 Offline: npm ci --ignore-scripts; node --test *.test.js. No arbitrary test alert is authorized. Verify actual delivery using an existing real conflict event and preserve dedupe.
 
-Reviewed release configuration is `slack-backport/wrangler.toml`, not the parent wrangler.toml. It targets only the existing script and KV binding. `keep_vars = true` preserves deployed vars; existing secret bindings must remain unchanged. No secret commands or new runtime resources are part of this patch.
+The release bundle must contain no Slack destination code. Bind delivery secrets additively, preserve GitHub credentials and state, and verify actual Zulip delivery before deleting obsolete Slack credentials.
