@@ -48,3 +48,7 @@ test('malformed GitHub replies cannot change state or notify Slack',async()=>{
   await Promise.all(pending);assert.equal(writes,0);
  }finally{globalThis.fetch=real;}
 });
+
+test('unhandled signed GitHub events stay ignored without repository fields',async()=>{
+ const result=await run(worker,{zen:'fixture'},'ping');assert.equal(result.status,200);assert.equal(result.body,'ignored');assert.equal(result.calls.length,0);
+});

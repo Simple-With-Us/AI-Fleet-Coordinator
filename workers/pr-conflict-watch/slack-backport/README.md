@@ -17,3 +17,5 @@ External webhook and GitHub response fields are validated with pinned zod schema
 Reviewed release configuration is `slack-backport/wrangler.toml`, not the parent wrangler.toml. It targets only the existing script and KV binding. `keep_vars = true` preserves deployed vars; existing secret bindings must remain unchanged. No secret commands or new runtime resources are part of this patch.
 
 Reviewed release configuration is `slack-backport/wrangler.toml`, not the parent wrangler.toml. It targets only the existing script and KV binding. `keep_vars = true` preserves deployed vars; existing secret bindings must remain unchanged. No secret commands or new runtime resources are part of this patch.
+
+Reviewed release configuration is `slack-backport/wrangler.toml`, not the parent wrangler.toml. It targets only the existing script and KV binding. `keep_vars = true` preserves deployed vars; existing secret bindings must remain unchanged. No secret commands or new runtime resources are part of this patch.

@@ -133,12 +133,12 @@ var index_default = {
     if (!payload || typeof payload !== "object" || Array.isArray(payload))
       return new Response("invalid payload", { status: 400 });
     const candidates = [];
+    const relevant = event === "pull_request" || event === "check_suite" || event === "check_run";
+    if (!relevant) return new Response("ignored", { status: 200 });
     const parsed = WebhookSchema.safeParse(payload);
     if (!parsed.success) return new Response("invalid payload", { status: 400 });
     payload = parsed.data;
     const name = payload.repository?.full_name;
-    const relevant = event === "pull_request" || event === "check_suite" || event === "check_run";
-    if (!relevant) return new Response("ignored", { status: 200 });
     if (typeof name !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name))
       return new Response("invalid repository", { status: 400 });
     const [owner, repo] = name.split("/");
