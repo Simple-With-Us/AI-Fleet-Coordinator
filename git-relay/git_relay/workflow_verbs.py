@@ -295,13 +295,17 @@ def _workflow_path(path):
 
 def workflow_write_paths(action, args):
     """Identify real workflow-file edits, never treat parent dirs as writable files."""
-    args = args or {}
+    if not isinstance(args, dict):
+        raise Refused("invalid workflow arguments")
     if action in ("wf_file_put", "wf_file_delete"):
         paths = [args.get("path")]
     elif action == "wf_file_rename":
         paths = [args.get("source_path"), args.get("destination_path")]
     elif action == "wf_files_put":
-        paths = [f.get("path") for f in args.get("files", []) if isinstance(f, dict)]
+        files = args.get("files")
+        if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
+            raise Refused("invalid files")
+        paths = [f.get("path") for f in files if isinstance(f, dict)]
     else:
         return []
     return [p for p in paths if isinstance(p, str) and p.startswith(".github/workflows/")]
@@ -721,7 +725,11 @@ class WorkflowVerbs:
             raise Refused("action or repository denied")
         app_slug, ceiling = policy.app_identity(seat)
         required = dict(SPECS[action][0])
-        needs_workflows = bool(workflow_write_paths(action, args))
+        # Direct callers must satisfy the same bounded syntax/secret checks as
+        # Relay.handle before any workflow-capable token is created or cached.
+        if args is not None:
+            cls.check_shape(action, args, repo)
+        needs_workflows = args is not None and bool(workflow_write_paths(action, args))
         if needs_workflows:
             required["workflows"] = "write"
         required.setdefault("metadata", "read")

@@ -7,6 +7,18 @@ from .test_workflow_verbs import CEILING, REPO, SHA, Client, Minter, Policy
 
 
 class WorkflowPermissions(unittest.TestCase):
+    def full_args(self, action, args):
+        full = {"repo": REPO, "branch": "wise/test", "message": "workflow", **args}
+        if action in ("wf_file_delete", "wf_file_rename"):
+            full.setdefault("prior_sha", SHA)
+        if action in ("wf_files_put", "wf_file_rename"):
+            full.setdefault("expected_head_sha", SHA)
+        if action == "wf_file_put":
+            full.setdefault("content_b64", "eA==")
+        if action == "wf_files_put":
+            full["files"] = [{"content_b64": "eA==", **f} for f in full["files"]]
+        return full
+
     def handle(self, action, args, ceiling=None):
         minter = Minter()
         handle = WorkflowVerbs.for_action(
@@ -16,7 +28,7 @@ class WorkflowPermissions(unittest.TestCase):
             "swu-wise",
             action,
             REPO,
-            args=args,
+            args=self.full_args(action, args),
         )
         return handle, minter
 
@@ -51,7 +63,9 @@ class WorkflowPermissions(unittest.TestCase):
                 "swu-wise",
                 "wf_files_put",
                 REPO,
-                args={"files": [{"path": ".github/workflows/ci.yml"}]},
+                args=self.full_args(
+                    "wf_files_put", {"files": [{"path": ".github/workflows/ci.yml"}]}
+                ),
             )
         self.assertEqual(minter.calls, [])
 
@@ -106,6 +120,32 @@ class WorkflowPermissions(unittest.TestCase):
                     "content_b64": base64.b64encode(("ghp_" + "A" * 40).encode()).decode(),
                 },
             )
+
+    def test_invalid_shape_secret_or_large_list_never_mints(self):
+        for args in (
+            [1],
+            {"repo": REPO, "files": [{}] * 21},
+            self.full_args(
+                "wf_file_put",
+                {
+                    "path": ".github/workflows/x.yml",
+                    "content_b64": base64.b64encode(("ghp_" + "A" * 40).encode()).decode(),
+                },
+            ),
+        ):
+            action = "wf_files_put" if isinstance(args, dict) and "files" in args else "wf_file_put"
+            minter = Minter()
+            with self.assertRaises(Refused):
+                WorkflowVerbs.for_action(
+                    Client(),
+                    Policy({**CEILING, "workflows": "write"}),
+                    minter,
+                    "swu-wise",
+                    action,
+                    REPO,
+                    args=args,
+                )
+            self.assertEqual(minter.calls, [])
 
 
 if __name__ == "__main__":
