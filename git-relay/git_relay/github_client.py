@@ -521,7 +521,7 @@ class GitHubClient:
             try:
                 actual = self._call("GET", f"/repos/{repo}/git/ref/heads/{ref}", bearer=bearer)
             except RelayGitHubError as exc:
-                if exc.status == 0 or exc.status >= 500:
+                if exc.status in (0, 408) or exc.status >= 500:
                     raise DispatchPreReadUnavailable() from None
                 raise
             if actual.get("object", {}).get("sha") != expected_head_sha:

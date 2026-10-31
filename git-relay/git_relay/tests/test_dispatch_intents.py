@@ -126,13 +126,15 @@ class DispatchIntents(unittest.TestCase):
             )
 
     def test_transient_source_read_is_safe_retry_not_unknown(self):
-        client = GitHubClient("fixture")
-        client._call = Mock(side_effect=RelayGitHubError(503, "fixture"))
-        with self.assertRaises(DispatchPreReadUnavailable):
-            client.workflow_dispatch(
-                "example/x", "ci.yml", "main", {}, "fixture", expected_head_sha="a" * 40
-            )
-        self.assertEqual(client._call.call_count, 1)
+        for status in (0, 408, 500, 503):
+            with self.subTest(status=status):
+                client = GitHubClient("fixture")
+                client._call = Mock(side_effect=RelayGitHubError(status, "fixture"))
+                with self.assertRaises(DispatchPreReadUnavailable):
+                    client.workflow_dispatch(
+                        "example/x", "ci.yml", "main", {}, "fixture", expected_head_sha="a" * 40
+                    )
+                self.assertEqual(client._call.call_count, 1)
         with tempfile.TemporaryDirectory() as tmp:
             relay = Relay(
                 SeatPolicy(APP_SEATS_JSON),
