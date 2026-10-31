@@ -1,0 +1,51 @@
+name: Deploy reviewed alert Workers
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    - cron: "17,47 * * * *"
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+concurrency:
+  group: alert-workers-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: npm ci --ignore-scripts
+        working-directory: scripts/agent-sync-mcp
+      - run: python3 scripts/test-deploy-alert-workers.py
+      - name: Load existing scoped release credential
+        env:
+          INFISICAL_PROJECT_ID: 8dae6d03-8f12-48b2-adf3-e5c1b881c8c5
+          INFISICAL_ENVIRONMENT: prod
+          INFISICAL_SECRET_PATH: /
+          INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
+          INFISICAL_REQUIRED: CLOUDFLARE_FLEET_API_TOKEN
+          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_AUTOMATION_CLIENT_ID }}
+          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_AUTOMATION_CLIENT_SECRET }}
+        run: node scripts/infisical-fetch.mjs
+      - name: Verify reviews and release exact alert targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
+        run: python3 scripts/deploy-alert-workers.py

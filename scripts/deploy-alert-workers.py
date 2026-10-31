@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
 """Release only reviewed alert Workers after successful exact-main CI."""
 
+import glob
 import importlib.util
 import json
 import os
@@ -8,6 +8,7 @@ import pathlib
 import re
 import subprocess
 import tomllib
+import urllib.error
 import urllib.request
 
 spec = importlib.util.spec_from_file_location("mapped", "scripts/deploy-mapped-worker.py")
@@ -40,7 +41,7 @@ RELEASE_PATHS = [
 
 
 def git(*args):
-    return subprocess.check_output(["git", *args], text=True).strip()
+    return subprocess.check_output(["git", *args], text=True, timeout=30).strip()
 
 
 def cutover_receipt():
@@ -83,22 +84,90 @@ def preflight_config(target, settings):
         raise RuntimeError("Route configuration is outside this code-only release")
 
 
-def github(path):
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def request_json(url, token, data=None):
     req = urllib.request.Request(
-        "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + path,
+        url,
+        data=data,
         headers={
-            "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+            "Authorization": "Bearer " + token,
             "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
             "User-Agent": m.USER_AGENT,
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as response:
+        if 300 <= response.status < 400:
+            raise RuntimeError("Redirect not allowed")
         return json.load(response)
+
+
+def github(path):
+    return request_json(
+        "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + path,
+        os.environ["GH_TOKEN"],
+    )
+
+
+def cloudflare(path):
+    body = request_json(
+        "https://api.cloudflare.com/client/v4/accounts/" + m.ACCOUNT + path,
+        os.environ["CLOUDFLARE_API_TOKEN"],
+    )
+    if not body.get("success"):
+        raise RuntimeError("Cloudflare read rejected")
+    return body["result"]
+
+
+def current_main():
+    return github("/git/ref/heads/main")["object"]["sha"]
+
+
+def deployed_tag(name):
+    deployments = cloudflare("/workers/scripts/" + name + "/deployments")["deployments"]
+    if not deployments:
+        return None
+    versions = deployments[0].get("versions", [])
+    if len(versions) != 1 or versions[0].get("percentage") != 100:
+        return None
+    version = cloudflare("/workers/scripts/" + name + "/versions/" + versions[0]["version_id"])
+    return version.get("annotations", {}).get("workers/tag")
+
+
+def review_covers(review, head):
+    commit = review.get("commit_id", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return False
+    if commit == head:
+        return True
+    # Squash merge checkouts need not contain intermediate PR commits.
+    comparison = github("/compare/" + commit + "..." + head + "?per_page=100")
+    files = comparison.get("files")
+    if (
+        not isinstance(files, list)
+        or len(files) >= 300
+        or comparison.get("status") not in ("ahead", "identical")
+    ):
+        raise RuntimeError("Incomplete or divergent review comparison")
+    protected = [t["root"] for t in TARGETS.values()]
+    return not any(
+        f["filename"] in RELEASE_PATHS
+        or any(f["filename"].startswith(root) for root in protected)
+        or f.get("previous_filename") in RELEASE_PATHS
+        or any(f.get("previous_filename", "").startswith(root) for root in protected)
+        for f in files
+    )
 
 
 def reviewed(sha):
     # A target-changing commit must be the merge of a real, non-draft PR.
     prs = github("/commits/" + sha + "/pulls")
+    if len(prs) >= 30:
+        raise RuntimeError("Incomplete commit PR association evidence")
     for pr in prs:
         if not pr.get("merged_at") or pr.get("draft") or pr.get("merge_commit_sha") != sha:
             continue
@@ -106,46 +175,37 @@ def reviewed(sha):
         reviews = github("/pulls/" + number + "/reviews?per_page=100")
         if len(reviews) >= 100:
             raise RuntimeError("Review pagination needs explicit resolution")
+        if any(r.get("state") == "CHANGES_REQUESTED" for r in reviews):
+            raise RuntimeError("Changes-requested review needs explicit resolution")
         qualified = [
             r
             for r in reviews
             if r.get("user", {}).get("login") == "kody-ai[bot]"
             and r.get("state") in ("APPROVED", "COMMENTED")
         ]
+        # COMMENTED is a completed substantive Kody review, not an issue comment.
+        # The owner permits reviewed source with findings appropriately resolved.
         # Review must cover the actual composition, not any older review on the PR.
         if not qualified:
             continue
         head = pr["head"]["sha"]
-        if not any(
-            r.get("commit_id") == head
-            or not git(
-                "diff",
-                "--name-only",
-                r["commit_id"],
-                head,
-                "--",
-                *[t["root"] for t in TARGETS.values()],
-                *RELEASE_PATHS,
-            )
-            for r in qualified
+        if not (
+            any(r.get("commit_id") == head for r in qualified)
+            or any(review_covers(r, head) for r in reversed(qualified))
         ):
             continue
         # GraphQL includes actual thread resolution, unlike review state.
         owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
         query = "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}"
-        req = urllib.request.Request(
+        body = request_json(
             "https://api.github.com/graphql",
-            data=json.dumps(
+            os.environ["GH_TOKEN"],
+            json.dumps(
                 {"query": query, "variables": {"owner": owner, "repo": repo, "number": int(number)}}
             ).encode(),
-            headers={
-                "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-                "Content-Type": "application/json",
-                "User-Agent": m.USER_AGENT,
-            },
         )
-        with urllib.request.urlopen(req, timeout=30) as response:
-            body = json.load(response)
+        if body.get("errors"):
+            raise RuntimeError("Incomplete review thread evidence")
         threads = body["data"]["repository"]["pullRequest"]["reviewThreads"]
         if threads["pageInfo"]["hasNextPage"] or any(not t["isResolved"] for t in threads["nodes"]):
             raise RuntimeError("Unresolved or incomplete review thread evidence")
@@ -155,19 +215,22 @@ def reviewed(sha):
 
 def probe(target):
     req = urllib.request.Request(target["health"], headers={"User-Agent": m.USER_AGENT})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        raw = response.read(65536)
-        if response.status != 200:
-            raise RuntimeError("Health failed")
-    if target.get("ok") and json.loads(raw).get("ok") is not True:
-        raise RuntimeError("Health not ready")
-    if target.get("text") and raw.decode().strip() != target["text"]:
-        raise RuntimeError("Invalid health response")
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as response:
+            raw = response.read(65537)
+            if response.status != 200 or len(raw) > 65536:
+                raise RuntimeError("Health failed or oversized")
+        if target.get("ok") and json.loads(raw).get("ok") is not True:
+            raise RuntimeError("Health not ready")
+        if target.get("text") and raw.decode().strip() != target["text"]:
+            raise RuntimeError("Invalid health response")
+    except (urllib.error.URLError, ValueError, UnicodeError) as exc:
+        raise RuntimeError("Health validation failed") from exc
 
 
 def main():
-    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    if m.current_main() != sha:
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=30).strip()
+    if current_main() != sha:
         print("Superseded")
         return
     runs = github(
@@ -183,10 +246,10 @@ def main():
         if name == "pr-conflict-watch" and not cutover_receipt():
             print("Awaiting first verified real Zulip delivery; skipping " + name)
             continue
-        live = m.deployed_tag(name)
-        if not live:
+        live = deployed_tag(name)
+        if not isinstance(live, str) or not re.fullmatch(r"[0-9a-f]{40}", live):
             raise RuntimeError("No exact release baseline for " + name)
-        subprocess.run(["git", "cat-file", "-e", live + "^{commit}"], check=True)
+        subprocess.run(["git", "cat-file", "-e", live + "^{commit}"], check=True, timeout=300)
         changed = subprocess.check_output(
             [
                 "git",
@@ -200,11 +263,12 @@ def main():
                 "docs/releases/pr-conflict-zulip-verified.json",
             ],
             text=True,
+            timeout=30,
         ).splitlines()
         if not changed:
             probe(target)
             continue
-        subprocess.run(["git", "merge-base", "--is-ancestor", live, sha], check=True)
+        subprocess.run(["git", "merge-base", "--is-ancestor", live, sha], check=True, timeout=300)
         if git("diff", "--name-only", live, sha, "--", target["config"]):
             raise RuntimeError("Deployment configuration change requires manual reconciliation")
         commits = subprocess.check_output(
@@ -219,14 +283,17 @@ def main():
                 "docs/releases/pr-conflict-zulip-verified.json",
             ],
             text=True,
+            timeout=30,
         ).splitlines()
         if not commits:
             raise RuntimeError("Changed source without reviewable commit evidence")
+        if len(commits) > 50:
+            raise RuntimeError("Release range exceeds bounded review limit")
         for commit in commits:
             reviewed(commit)
         # Initial cutover is manual and verified first. Automated code releases
         # cannot provision delivery credentials or reintroduce Slack.
-        settings = m.api("/workers/scripts/" + name + "/settings")
+        settings = cloudflare("/workers/scripts/" + name + "/settings")
         preflight_config(target, settings)
         if name == "pr-conflict-watch":
             names = {b["name"] for b in settings.get("bindings", [])}
@@ -241,7 +308,9 @@ def main():
             if not required <= names or "SLACK_BOT_TOKEN" in names:
                 raise RuntimeError("Verified Zulip cutover prerequisite not met")
             subprocess.run(
-                ["npm", "ci", "--ignore-scripts", "--prefix", target["root"]], check=True
+                ["npm", "ci", "--ignore-scripts", "--prefix", target["root"]],
+                check=True,
+                timeout=300,
             )
             subprocess.run(
                 [
@@ -251,14 +320,15 @@ def main():
                     target["root"] + "index.test.js",
                 ],
                 check=True,
+                timeout=300,
             )
         else:
-            subprocess.run(
-                ["node", "--test", *__import__("glob").glob(target["root"] + "src/*.test.js")],
-                check=True,
-            )
+            tests = glob.glob(target["root"] + "src/*.test.js")
+            if not tests:
+                raise RuntimeError("Missing enforced target tests")
+            subprocess.run(["node", "--test", *tests], check=True, timeout=300)
         probe(target)
-        if m.current_main() != sha:
+        if current_main() != sha:
             print("Superseded before release")
             return
         subprocess.run(
@@ -275,17 +345,18 @@ def main():
                 "reviewed main " + sha,
             ],
             check=True,
+            timeout=600,
             env={
                 **os.environ,
                 "CLOUDFLARE_ACCOUNT_ID": m.ACCOUNT,
                 "WRANGLER_SEND_METRICS": "false",
             },
         )
-        after = m.api("/workers/scripts/" + name + "/settings")
+        after = cloudflare("/workers/scripts/" + name + "/settings")
         for key in set(settings) | set(after):
             if key != "annotations" and settings.get(key) != after.get(key):
                 raise RuntimeError("Unexpected settings change: " + key)
-        if m.deployed_tag(name) != sha:
+        if deployed_tag(name) != sha:
             raise RuntimeError("Wrong version receipt")
         probe(target)
         print("Verified exact release: " + name + " " + sha)

@@ -17,17 +17,20 @@ class Tests(unittest.TestCase):
             m.reviewed("a" * 40)
 
     def test_unreviewed_merge_fails(self):
-        with patch.object(
-            m,
-            "github",
-            side_effect=[[{"number": 1, "merged_at": "now", "merge_commit_sha": "a" * 40}], []],
-        ), self.assertRaises(RuntimeError):
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[{"number": 1, "merged_at": "now", "merge_commit_sha": "a" * 40}], []],
+            ),
+            self.assertRaises(RuntimeError),
+        ):
             m.reviewed("a" * 40)
 
     def test_no_exact_main_ci_fails(self):
         with (
             patch.object(m.subprocess, "check_output", return_value="a" * 40),
-            patch.object(m.m, "current_main", return_value="a" * 40),
+            patch.object(m, "current_main", return_value="a" * 40),
             patch.object(m, "github", return_value={"workflow_runs": []}),
         ):
             with self.assertRaises(RuntimeError):
@@ -36,7 +39,7 @@ class Tests(unittest.TestCase):
     def test_superseded_does_not_release(self):
         with (
             patch.object(m.subprocess, "check_output", return_value="a" * 40),
-            patch.object(m.m, "current_main", return_value="b" * 40),
+            patch.object(m, "current_main", return_value="b" * 40),
             patch.object(m.subprocess, "run") as run,
         ):
             m.main()
@@ -70,11 +73,14 @@ class Tests(unittest.TestCase):
         self.assertIn("scripts/deploy-mapped-worker.py", m.RELEASE_PATHS)
 
     def test_changed_kv_is_blocked_before_release(self):
-        with patch.object(
-            m.pathlib.Path,
-            "read_text",
-            return_value='[[kv_namespaces]]\nbinding="PR_STATE"\nid="changed"\n',
-        ), self.assertRaises(RuntimeError):
+        with (
+            patch.object(
+                m.pathlib.Path,
+                "read_text",
+                return_value='[[kv_namespaces]]\nbinding="PR_STATE"\nid="changed"\n',
+            ),
+            self.assertRaises(RuntimeError),
+        ):
             m.preflight_config(
                 {"config": "x"},
                 {"bindings": [{"name": "PR_STATE", "namespace_id": "existing"}]},
@@ -100,10 +106,10 @@ class Tests(unittest.TestCase):
         review = {"user": {"login": "kody-ai[bot]"}, "state": "APPROVED", "commit_id": "c" * 40}
         with (
             patch.object(m, "github", side_effect=[[pr], [review]]),
-            patch.object(m, "git", return_value="scripts/deploy-alert-workers.py"),
+            patch.object(m, "review_covers", return_value=False),
+            self.assertRaises(RuntimeError),
         ):
-            with self.assertRaises(RuntimeError):
-                m.reviewed("a" * 40)
+            m.reviewed("a" * 40)
 
     def test_review_with_unresolved_thread_fails(self):
         import json
@@ -117,6 +123,7 @@ class Tests(unittest.TestCase):
         }
         review = {"user": {"login": "kody-ai[bot]"}, "state": "APPROVED", "commit_id": "b" * 40}
         response = MagicMock()
+        response.__enter__.return_value.status = 200
         response.__enter__.return_value.read.return_value = json.dumps(
             {
                 "data": {
@@ -134,8 +141,9 @@ class Tests(unittest.TestCase):
         with (
             patch.object(m, "github", side_effect=[[pr], [review]]),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
-            patch.object(m.urllib.request, "urlopen", return_value=response),
+            patch.object(m.urllib.request, "build_opener") as opener,
         ):
+            opener.return_value.open.return_value = response
             with self.assertRaises(RuntimeError):
                 m.reviewed("a" * 40)
 
@@ -151,6 +159,7 @@ class Tests(unittest.TestCase):
         }
         review = {"user": {"login": "kody-ai[bot]"}, "state": "COMMENTED", "commit_id": "b" * 40}
         response = MagicMock()
+        response.__enter__.return_value.status = 200
         response.__enter__.return_value.read.return_value = json.dumps(
             {
                 "data": {
@@ -168,8 +177,9 @@ class Tests(unittest.TestCase):
         with (
             patch.object(m, "github", side_effect=[[pr], [review]]),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
-            patch.object(m.urllib.request, "urlopen", return_value=response),
+            patch.object(m.urllib.request, "build_opener") as opener,
         ):
+            opener.return_value.open.return_value = response
             m.reviewed("a" * 40)
 
     def test_workflow_is_main_ci_and_catchup_without_broad_gate(self):
@@ -179,6 +189,63 @@ class Tests(unittest.TestCase):
         self.assertNotIn("WORKER_DEPLOY_ENABLED", text)
         self.assertNotIn("agent-sync-mcp/wrangler", text)
         self.assertIn("17,47 * * * *", text)
+
+    def test_review_compare_uses_remote_objects(self):
+        with patch.object(
+            m,
+            "github",
+            return_value={"status": "ahead", "files": [{"filename": "docs/example.md"}]},
+        ):
+            self.assertTrue(m.review_covers({"commit_id": "a" * 40}, "b" * 40))
+        with patch.object(
+            m,
+            "github",
+            return_value={
+                "status": "ahead",
+                "files": [{"filename": "scripts/deploy-alert-workers.py"}],
+            },
+        ):
+            self.assertFalse(m.review_covers({"commit_id": "a" * 40}, "b" * 40))
+
+    def test_incomplete_comparison_fails(self):
+        with patch.object(m, "github", return_value={"status": "ahead", "files": [{}] * 300}):
+            with self.assertRaises(RuntimeError):
+                m.review_covers({"commit_id": "a" * 40}, "b" * 40)
+
+    def test_numeric_receipt_not_boolean(self):
+        import json
+
+        receipt = {
+            "sender_id": 1212033,
+            "channel_id": 642233,
+            "source_sha": "a" * 40,
+            "version_id": "verified",
+            "message_id": 123,
+            "message_url": "https://simplewithus.zulipchat.com/#narrow/id/123",
+            "real_conflict_event": 1,
+        }
+        with (
+            patch.object(m.pathlib.Path, "exists", return_value=True),
+            patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
+        ):
+            with self.assertRaises(RuntimeError):
+                m.cutover_receipt()
+
+    def test_redirect_handler_refuses_forward(self):
+        self.assertIsNone(
+            m.NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://other.invalid")
+        )
+
+    def test_health_oversize_fails(self):
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = b"x" * 65537
+        with patch.object(m.urllib.request, "build_opener") as opener:
+            opener.return_value.open.return_value = response
+            with self.assertRaises(RuntimeError):
+                m.probe({"health": "https://example.invalid", "ok": True})
 
 
 if __name__ == "__main__":
