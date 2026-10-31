@@ -7,7 +7,7 @@ Owner request: broad GitHub operation support, without per-tool asks. This is no
 - Official REST specification: 1,254 operations across 46 categories at audit time.
 - Relay: 167 implemented workflow handlers, plus original PR/review/dispatch verbs.
 - Live MCP catalog: 173 GitHub tools. Exposure is not proof of per-seat permission or successful execution.
-- Complete REST endpoint inventory is in `inventory.json`; extracted relay route templates are in `relay-endpoints.json`. Exact semantic operation mapping is pending, not inferred from name similarity.
+- Complete REST endpoint inventory is in `inventory.json`; extracted relay route templates are in `relay-endpoints.json`. Exact semantic operation mapping is pending, not inferred from name similarity. `scripts/audit-github-capabilities.py` regenerates endpoint inventory and conservative direct-route candidates from an official OpenAPI snapshot. Candidate evidence is not an implemented/support claim.
 - GraphQL is a separate audit: finite supported queries and mutations must be documented rather than claiming every possible query shape is a tool.
 
 ## Work starting now
