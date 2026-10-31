@@ -574,7 +574,7 @@ class RegistrySideTests(Base):
         self.assertEqual(self.lookup("op-0001", "mac")["state"], "active")  # the Operator's own, never swept
         self.assertEqual(self.lookup("mm-0001", platform="minimax")["state"], "active")
 
-    def test_full_letters_evict_the_least_recently_seen(self) -> None:
+    def fill_the_letters_and_ask_for_one_more(self) -> None:
         pairs = ("AA", "BB", "CC")
         # Times are relative to the clock:  the registry's stale sweep reads the real clock, so fixed dates fall more
         # than 36 hours behind it and the rows are closed as stale before the least recently seen can be evicted.
@@ -592,6 +592,15 @@ class RegistrySideTests(Base):
             out = self.register("s-0099", now=now)
         self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, held, 2))
         self.assertEqual(self.lookup("s-0001")["state"], "closed")
+
+    def test_full_letters_evict_the_least_recently_seen(self) -> None:
+        self.fill_the_letters_and_ask_for_one_more()
+
+    def test_the_eviction_does_not_depend_on_the_calendar(self) -> None:
+        """The same scenario with the real clock years away from the fixture's: the test cannot go red with the date."""
+        years_on = OR.datetime(2031, 6, 1, tzinfo=OR.UTC).timestamp()
+        with mock.patch("time.time", return_value=years_on):
+            self.fill_the_letters_and_ask_for_one_more()
 
     def test_the_operators_own_chats_are_never_evicted(self) -> None:
         with mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")}):
@@ -1035,6 +1044,26 @@ class HookTests(Base):
         self.assertIn("KeyError", stderr.getvalue())
         for argv in (["hook"], ["hook", "--platform", "nosuch"], ["hook", "--bogus"], ["hook", "--platform"]):
             self.assertEqual(PL.main(argv, env=self.env(), stdin=io.StringIO("{}"), stdout=out, stderr=err), 0, argv)
+
+    def test_an_adapter_can_own_its_hook_entry(self) -> None:
+        """A platform whose payload has no event name or whose answer has a shape of its own defines `hook_main`; the
+        library entry calls it with what `hook` takes, minus the spec."""
+        seen = {}
+
+        def hook_main(env, stdin, stdout, **kwargs):
+            seen.update(kwargs, stdin=stdin.read())
+            stdout.write('{"own": true}\n')
+            return 0
+
+        module = types.ModuleType("agent_sync.platform_letter_owned")
+        module.SPEC = make_spec(platform="owned", seat="CODEX", source="owned-hook")
+        module.hook_main = hook_main
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(sys.modules, {"agent_sync.platform_letter_owned": module}):
+            code = PL.main(["hook", "--platform", "owned", "--location", "server", "--remote", "mac"],
+                           env=self.env(), stdin=io.StringIO("payload"), stdout=out, stderr=err)
+        self.assertEqual((code, out.getvalue(), seen["stdin"]), (0, '{"own": true}\n', "payload"))
+        self.assertEqual((seen["location_flag"], seen["remote_flag"]), ("server", "mac"))
 
     def test_a_session_id_that_is_not_one_is_ignored(self) -> None:
         ssh = FakeSsh(self)

@@ -13,27 +13,149 @@ on sys.path.  It is dispatched on its own, apart from simple-chat, so the hook 
 
 A hook never blocks a chat: under launchd or a GUI app `/usr/bin/env python3` can be the system Python 3.9, which
 cannot run this package.  Then the script re-runs itself with a Homebrew python3 when one exists, and a hook that
-finds none (or a checkout it cannot import) exits 0 and says nothing.  This part must stay valid Python 3.9."""
+finds none (or a checkout it cannot import) exits 0 and says nothing.  This part must stay valid Python 3.9.
+
+Some hooks fire far more often than they have work: Antigravity runs its PreInvocation hook before every model call,
+and all but the first call of a prompt need nothing done.  A platform that can tell those from the text of the
+payload alone has an entry in QUICK_ANSWERS, and the script answers `{}` for them before anything else, ahead of the
+Python 3.11 re-run and of the library import (30 ms on the Mac and 60 ms on the server, on top of a 20 ms start).
+Standard input is read for that, so a payload that is not answered here is handed on to the library as it came."""
 import os
 import sys
 
-if sys.version_info < (3, 11):
-    for candidate in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
-        if os.access(candidate, os.X_OK) and os.path.realpath(candidate) != os.path.realpath(sys.executable):
-            os.execv(candidate, [candidate, os.path.realpath(__file__)] + sys.argv[1:])
-    if sys.argv[1:2] == ["hook"]:
-        sys.exit(0)
-    sys.stderr.write("platform-letter: Python 3.11 or newer is required (found %d.%d)\n" % sys.version_info[:2])
-    sys.exit(1)
+MAX_PAYLOAD = 4 << 20  # bytes of a hook payload read for a quick answer (the library reads 1 MiB of characters)
+LATER_CALL_KEY = b'"invocationNum"'
 
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-try:
-    from agent_sync.platform_letter import main  # noqa: E402
-except Exception:  # noqa: BLE001 - a hook never blocks a chat, even from a checkout that cannot be imported
-    if sys.argv[1:2] == ["hook"]:
+def later_model_call(raw):
+    """True when the payload is an Antigravity PreInvocation for a later model call of a prompt: it has the key
+    "invocationNum" with a number above 0.  It looks at the bytes, with no JSON parser (loading one is part of
+    what this saves), and only ever says True for a payload that platform_letter_antigravity.normalize() also
+    turns away: the key must stand as a key (a quoted word in a value is skipped), and its value must start with a
+    digit other than 0.  Anything else, a first call (0), no key, or a shape it does not know, goes to the library."""
+    at = raw.find(LATER_CALL_KEY)
+    while at >= 0:
+        after = at + len(LATER_CALL_KEY)
+        rest = raw[after : after + 32].lstrip()
+        if rest[:1] == b":":
+            value = rest[1:].lstrip()[:1]
+            return value.isdigit() and value != b"0"
+        at = raw.find(LATER_CALL_KEY, after)
+    return False
+
+
+# platform -> a function from the payload bytes to True when the hook has nothing to do (the answer is `{}`).
+QUICK_ANSWERS = {"antigravity": later_model_call}
+
+
+def platform_of(words):
+    """The value of --platform in the words after `hook`, or an empty string."""
+    for i, word in enumerate(words):
+        if word == "--platform":
+            return words[i + 1] if i + 1 < len(words) else ""
+        if word.startswith("--platform="):
+            return word[len("--platform=") :]
+    return ""
+
+
+def say_nothing(raw):
+    """What a hook that cannot run prints: nothing, except where the platform reads an answer from every hook (a
+    payload was read for it) and gets an empty object."""
+    if raw is not None:
+        try:
+            sys.stdout.write("{}\n")
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def quick_answer(argv):
+    """(the payload bytes or None, True when the answer was given).  Only a hook of a platform with an entry in
+    QUICK_ANSWERS reads standard input here; every other command leaves it alone."""
+    quick = QUICK_ANSWERS.get(platform_of(argv[2:])) if argv[1:2] == ["hook"] else None
+    if quick is None:
+        return None, False
+    try:
+        raw = sys.stdin.buffer.read(MAX_PAYLOAD)
+    except Exception:  # noqa: BLE001 - no stdin, a closed one or an unreadable one is an empty payload
+        raw = b""  # which the library takes as nothing too
+    try:
+        skip = quick(raw)
+    except Exception:  # noqa: BLE001 - a hook never blocks a chat
+        skip = False
+    if skip:
+        say_nothing(raw)
+        return raw, True
+    return raw, False
+
+
+def run_again_under(candidate, raw):
+    """Replace this process with this script under `candidate`.  A payload already read from standard input is fed to
+    the new process through a pipe by a forked child (it can be larger than a pipe holds), so the new process reads it
+    as it would have read the original stream."""
+    args = [candidate, os.path.realpath(__file__)] + sys.argv[1:]
+    if raw is None:
+        os.execv(candidate, args)
+    read_end, write_end = os.pipe()
+    if os.fork() == 0:
+        status = 0
+        try:
+            os.close(read_end)
+            view = memoryview(raw)
+            while view:
+                view = view[os.write(write_end, view) :]
+        except Exception:  # noqa: BLE001 - the reader went away, or the pipe broke: nothing more to feed
+            status = 1
+        os._exit(status)
+    os.close(write_end)
+    os.dup2(read_end, 0)
+    os.close(read_end)
+    os.execv(candidate, args)
+
+
+def start():
+    raw, answered = quick_answer(sys.argv)
+    if answered:
         sys.exit(0)
-    raise
+
+    if sys.version_info < (3, 11):
+        for candidate in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+            if os.access(candidate, os.X_OK) and os.path.realpath(candidate) != os.path.realpath(sys.executable):
+                try:
+                    run_again_under(candidate, raw)
+                except Exception:  # noqa: BLE001 - a hook never blocks a chat, and a payload read is gone with it
+                    if sys.argv[1:2] == ["hook"]:
+                        say_nothing(raw)
+                        sys.exit(0)
+                    raise
+        if sys.argv[1:2] == ["hook"]:
+            say_nothing(raw)
+            sys.exit(0)
+        sys.stderr.write("platform-letter: Python 3.11 or newer is required (found %d.%d)\n" % sys.version_info[:2])
+        sys.exit(1)
+
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+    if raw is not None:
+        import io
+
+        # The payload was read for the quick answer, so the library gets it from here, decoded as the stream would be.
+        sys.stdin = io.TextIOWrapper(
+            io.BytesIO(raw),
+            encoding=getattr(sys.stdin, "encoding", None) or "utf-8",
+            errors=getattr(sys.stdin, "errors", None) or "strict",
+        )
+
+    try:
+        from agent_sync.platform_letter import main  # noqa: E402
+    except Exception:  # noqa: BLE001 - a hook never blocks a chat, even from a checkout that cannot be imported
+        if sys.argv[1:2] == ["hook"]:
+            say_nothing(raw)
+            sys.exit(0)
+        raise
+
+    sys.exit(main(sys.argv[1:]))
+
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    start()
