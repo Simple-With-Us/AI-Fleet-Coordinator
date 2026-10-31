@@ -327,9 +327,9 @@ class TestUserBearerInput(unittest.TestCase):
             mock.patch.object(git, "_prompt_terminal_available", lambda: True),
             mock.patch.object(git.getpass, "getpass", side_effect=KeyboardInterrupt),
             contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as ctx,
         ):
-            with self.assertRaises(SystemExit) as ctx:
-                git.remote_bearer()
+            git.remote_bearer()
         self.assertEqual(ctx.exception.code, 130)
 
     def test_piped_args_json_still_prompts_without_consuming_the_json(self):
@@ -376,7 +376,8 @@ class TestUserBearerInput(unittest.TestCase):
         # traceback and never a prompt attempt.
         with (
             mock.patch.dict(os.environ, {}, clear=True),
-            mock.patch.object(git.sys, "stdin", None),self.assertRaises(SystemExit) as ctx
+            mock.patch.object(git.sys, "stdin", None),
+            self.assertRaises(SystemExit) as ctx,
         ):
             git.remote_bearer()
         self.assertEqual(ctx.exception.code, 4)
