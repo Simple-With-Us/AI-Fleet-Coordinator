@@ -309,6 +309,7 @@ case "$*" in
     # them: the step's own jq pass does the marker/request reduction, so
     # the tests exercise the real filter rather than a pre-reduced answer.
     case "$GH_FAKE_MODE" in
+      multiline_request) printf '%s\n' '{"created_at": "2026-10-30T13:00:00Z", "user": {"type": "User"}, "body": "Please review.\\n@kody start-review"}' ;;
       request_after_review|mixed_history|old_run_started_before_request|appr_request_then_ack)
         printf '%s\n' '{"created_at":"2026-10-30T13:00:00Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
       request_before_review|request_then_ack_only)
@@ -360,10 +361,14 @@ case "$*" in
   *pulls/1/reviews*)
     case "$GH_FAKE_MODE" in
       reviews_api_fails) echo "gh: api down" >&2; exit 1 ;;
-      eff_commented_current|kody_success_open_findings|request_after_review|request_before_review|threads_api_fails|threads_next_page|requests_api_fails|ack_skipped|check_failed|request_then_ack_only|fractional_request_order|fractional_request_older)
+      multiline_request|eff_commented_current|kody_success_open_findings|request_after_review|request_before_review|threads_api_fails|threads_next_page|requests_api_fails|ack_skipped|check_failed|request_then_ack_only|fractional_request_order|fractional_request_older)
         printf '%s\n' '[{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"COMMENTED","submitted_at":"2026-10-30T12:00:00Z"}]' ;;
       old_run_started_before_request|neutral_not_receipt|forged_name_other_app|queued_new_run_old_success)
         printf '%s\n' '[{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"COMMENTED","submitted_at":"2026-10-30T12:00:00Z"}]' ;;
+      appr_reverse_dismissed)
+        printf '%s\n' '[{"id":2,"user":{"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"DISMISSED"}]' '[{"id":1,"user":{"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"APPROVED"}]' ;;
+      appr_reverse_approved)
+        printf '%s\n' '[{"id":2,"user":{"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"APPROVED"}]' '[{"id":1,"user":{"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"CHANGES_REQUESTED"}]' ;;
       appr_request_then_ack)
         printf '%s\n' '[{"id":1,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"APPROVED","submitted_at":"2026-10-30T12:00:00Z"},{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"COMMENTED","submitted_at":"2026-10-30T13:05:00Z"}]' ;;
       appr_fractional)
@@ -691,7 +696,8 @@ class ClassifyEffectiveReviewGate(unittest.TestCase):
 
     def test_a_review_request_newer_than_the_review_blocks(self):
         self.assertIn(
-            "no completed full-review receipt", self.run_effective("request_after_review")
+            "no completed full-review receipt",
+            self.run_effective("request_after_review"),
         )
 
     def test_a_review_request_older_than_the_review_does_not_block(self):
@@ -758,18 +764,24 @@ class ClassifyEffectiveReviewGate(unittest.TestCase):
         reason = self.run_effective("request_then_ack_only")
         self.assertIn("no completed full-review receipt", reason)
 
-    def test_a_run_started_before_the_request_that_finished_after_it_is_no_receipt(self):
+    def test_a_run_started_before_the_request_that_finished_after_it_is_no_receipt(
+        self,
+    ):
         # Causality, not completion order: the request must precede the start.
         reason = self.run_effective("old_run_started_before_request")
         self.assertIn("no completed full-review receipt", reason)
 
     def test_a_neutral_run_is_never_a_source_completion(self):
-        self.assertIn("no completed full-review receipt", self.run_effective("neutral_not_receipt"))
+        self.assertIn(
+            "no completed full-review receipt",
+            self.run_effective("neutral_not_receipt"),
+        )
 
     def test_a_same_named_run_from_another_app_is_not_kody(self):
         # Check-run identity is the authenticated GitHub App, never the label.
         self.assertIn(
-            "no completed full-review receipt", self.run_effective("forged_name_other_app")
+            "no completed full-review receipt",
+            self.run_effective("forged_name_other_app"),
         )
 
     def test_a_newer_queued_run_with_an_old_success_blocks(self):
@@ -838,7 +850,9 @@ class GateSource(unittest.TestCase):
         self.assertIn("sort_by(.id)", text)
         self.assertIn("reduce .[] as $r", text)
 
-    def test_the_thread_gate_reads_resolution_state_and_fails_closed_on_pagination(self):
+    def test_the_thread_gate_reads_resolution_state_and_fails_closed_on_pagination(
+        self,
+    ):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("reviewThreads(first:100)", text)
         self.assertIn("pageInfo{hasNextPage}", text)
@@ -931,6 +945,8 @@ case "$*" in
         printf '%s\n' '[{"id":1,"user":{"id":11,"login":"other"},"commit_id":"2222222222222222222222222222222222222222","state":"CHANGES_REQUESTED"},{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"APPROVED"}]' ;;
       approval_legacy_ids)
         printf '%s\n' '[{"user":{"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"APPROVED"}]' ;;
+      approval_reverse_dismissed) printf '%s\n' '[{"id": 2, "user": {"id": 10, "login": "kody-ai[bot]"}, "commit_id": "1111111111111111111111111111111111111111", "state": "DISMISSED", "submitted_at": "2026-10-30T13:20:00Z"}]' '[{"id": 1, "user": {"id": 10, "login": "kody-ai[bot]"}, "commit_id": "1111111111111111111111111111111111111111", "state": "APPROVED", "submitted_at": "2026-10-30T13:20:00Z"}]' ;;
+      approval_reverse_approved) printf '%s\n' '[{"id": 2, "user": {"id": 10, "login": "kody-ai[bot]"}, "commit_id": "1111111111111111111111111111111111111111", "state": "APPROVED", "submitted_at": "2026-10-30T13:20:00Z"}]' '[{"id": 1, "user": {"id": 10, "login": "kody-ai[bot]"}, "commit_id": "1111111111111111111111111111111111111111", "state": "CHANGES_REQUESTED", "submitted_at": "2026-10-30T13:20:00Z"}]' ;;
       approval_held)
         printf '%s\n' '[{"id":1,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"APPROVED","submitted_at":"2026-10-30T13:20:00Z"}]' ;;
       record_dismissed)
@@ -957,6 +973,7 @@ case "$*" in
     # them: the guard's own jq pass does the marker/request reduction, so
     # the tests exercise the real filter rather than a pre-reduced answer.
     case "$GH_FAKE_MODE" in
+      multiline_request_drift) printf '%s\n' '{"created_at": "2026-10-30T14:00:00Z", "user": {"type": "User"}, "body": "Please review.\\n@kody start-review"}' ;;
       request_drift) printf '%s\n' '{"created_at":"2026-10-30T14:00:00Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
       *) printf '%s\n' '{"created_at":"2026-10-30T13:00:00Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
     esac
@@ -1060,7 +1077,12 @@ def run_arm_guard(
             }
         )
         proc = subprocess.run(
-            ["bash", str(script)], capture_output=True, text=True, env=env, timeout=60, check=False
+            ["bash", str(script)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+            check=False,
         )
         calls = root / "calls.txt"
         recorded = []
@@ -1078,7 +1100,9 @@ class ArmBoundaryGuard(unittest.TestCase):
         self.assertIn(fragment, out)
         disarm_calls = [c for c in recorded if "--disable-auto" in c]
         self.assertEqual(
-            len(disarm_calls), 1, f"abort must explicitly disarm a prior arm: {recorded}"
+            len(disarm_calls),
+            1,
+            f"abort must explicitly disarm a prior arm: {recorded}",
         )
 
     def test_clean_state_passes(self) -> None:
@@ -1166,14 +1190,20 @@ class ArmBoundaryGuard(unittest.TestCase):
         # gate, empty request and empty receipt.  A historical request comment
         # (classified none, live present) must not abort the legacy contract.
         code, out, _ = run_arm_guard(
-            "request_drift", classified_request="", classified_receipt="", review_gate=""
+            "request_drift",
+            classified_request="",
+            classified_receipt="",
+            review_gate="",
         )
         self.assertEqual(code, 0, out)
         self.assertIn("Arming boundary re-verified", out)
 
     def test_the_legacy_empty_gate_boundary_ignores_unresolved_threads(self) -> None:
         code, out, _ = run_arm_guard(
-            "thread_reopened", classified_request="", classified_receipt="", review_gate=""
+            "thread_reopened",
+            classified_request="",
+            classified_receipt="",
+            review_gate="",
         )
         self.assertEqual(code, 0, out)
         self.assertIn("Arming boundary re-verified", out)
@@ -1190,7 +1220,9 @@ class ArmBoundaryGuard(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("dismissed or removed after classification", out)
 
-    def test_a_current_head_commented_record_passes_the_effective_boundary(self) -> None:
+    def test_a_current_head_commented_record_passes_the_effective_boundary(
+        self,
+    ) -> None:
         code, out, _ = run_arm_guard("commented_record", review_gate="effective")
         self.assertEqual(code, 0, out)
 
@@ -1198,6 +1230,46 @@ class ArmBoundaryGuard(unittest.TestCase):
         for mode in ("approval_other_old_cr", "approval_legacy_ids"):
             code, out, _ = run_arm_guard(mode, classified_receipt="", review_gate="approval")
             self.assertEqual(code, 0, out)
+
+    def test_approval_classifier_orders_review_ids_across_reversed_pages(self):
+        for mode, expected in (
+            ("appr_reverse_dismissed", "no current-head approval"),
+            ("appr_reverse_approved", "compare API failed"),
+        ):
+            code, out, reason, _ = run_classify_full(
+                mode, require_approval="true", request_pattern=""
+            )
+            self.assertEqual(code, 0, out)
+            self.assertIn(expected, reason)
+
+    def test_approval_boundary_orders_review_ids_across_reversed_pages(self):
+        code, out, _ = run_arm_guard(
+            "approval_reverse_dismissed", classified_receipt="", review_gate="approval"
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn("dismissed or superseded", out)
+        code, out, _ = run_arm_guard(
+            "approval_reverse_approved", classified_receipt="", review_gate="approval"
+        )
+        self.assertEqual(code, 0, out)
+
+    def test_multiline_request_invalidates_classify_and_boundary(self):
+        import yaml
+
+        pattern = yaml.safe_load(WORKFLOW.read_text())[True]["workflow_call"]["inputs"][
+            "review_request_pattern"
+        ]["default"]
+        code, out, reason, _ = run_classify_full(
+            "multiline_request",
+            review_gate="effective",
+            require_approval="false",
+            request_pattern=pattern,
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn("no completed full-review receipt", reason)
+        code, out, _ = run_arm_guard("multiline_request_drift", review_gate="effective")
+        self.assertEqual(code, 1, out)
+        self.assertIn("review request", out)
 
     def test_effective_boundary_keeps_other_reviewers_outstanding_requests(self):
         code, out, _ = run_arm_guard("approval_other_old_cr", review_gate="effective")
@@ -1221,7 +1293,13 @@ class ArmBoundaryGuard(unittest.TestCase):
         examples = [
             ("@kody start-review\n\nReview complete head", True),
             ("  @kody start-review", True),
-            ("# Kody Review Complete\n- Request a Review: use `@kody start-review`", False),
+            ("Please check this.\n@kody start-review", True),
+            ("Please check this.\r\n\t@kody start-review", True),
+            ("Intro\n- use `@kody start-review`", False),
+            (
+                "# Kody Review Complete\n- Request a Review: use `@kody start-review`",
+                False,
+            ),
             ("@kody start-review-not-a-command", False),
         ]
         for body, expected in examples:
@@ -1235,7 +1313,7 @@ class ArmBoundaryGuard(unittest.TestCase):
                     "--arg",
                     "pattern",
                     pattern,
-                    '$body | test($pattern; "i")',
+                    '$body | split("\n") | any(.[]; test($pattern; "i"))',
                 ],
                 capture_output=True,
                 text=True,
@@ -1284,7 +1362,10 @@ class ArmBoundaryGuard(unittest.TestCase):
         # Kody 4433065293: classify proved the lane on the event payload;
         # the boundary must re-prove it on the LIVE ref/title.
         self.assert_guard_aborts(
-            "clean", "left the restricted lane", classified_receipt="", restrict="dependabot"
+            "clean",
+            "left the restricted lane",
+            classified_receipt="",
+            restrict="dependabot",
         )
 
     def test_a_pr_still_in_the_restricted_lane_passes(self):
@@ -1336,7 +1417,11 @@ class HttpMethodSource(unittest.TestCase):
             if "graphql" in cmd:
                 continue
             if " -f " in cmd or cmd.rstrip("\\").endswith(" -f"):
-                self.assertIn("--method GET", cmd, f"read with -f fields lacks --method GET: {cmd}")
+                self.assertIn(
+                    "--method GET",
+                    cmd,
+                    f"read with -f fields lacks --method GET: {cmd}",
+                )
 
     def test_reusable_reads_pin_get(self):
         self.check_file(WORKFLOW)

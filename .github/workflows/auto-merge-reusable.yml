@@ -111,8 +111,8 @@ on:
           Case-insensitive regex matched against issue-comment bodies
           (inside gh's jq; bodies never touch disk) to catch a review request
           newer than the fleet reviewer's latest review - a headless review
-          start that has no check run yet.  The default matches only a leading
-          command, never a mention in Kody completion/usage-guide comments.
+          start that has no check run yet.  Matching is line-by-line; the default
+          matches only a line-leading command, not inline Kody guide mentions.
           A forged request can only delay
           arming.  Empty disables this one check.
         type: string
@@ -270,7 +270,7 @@ jobs:
              | jq -c '
                  {created_at,
                     markers: ([ . | select(.user.type == "Bot") | .body // "" | select(contains("swu-autofix-run: bot=")) | scan("actions/runs/[0-9]+") | sub("actions/runs/";"") ]),
-                    request: (if env.REVIEW_REQUEST_PATTERN == "" then false else ((.body // "") | test(env.REVIEW_REQUEST_PATTERN; "i")) end)}' \
+                    request: (if env.REVIEW_REQUEST_PATTERN == "" then false else ((.body // "") | split("\n") | any(.[]; test(env.REVIEW_REQUEST_PATTERN; "i"))) end)}' \
                > "$RUNNER_TEMP/comments.reduced"; then
             cat "$RUNNER_TEMP/comments.err" >&2
             skip "PR comment lookup failed - fail closed"
@@ -367,8 +367,8 @@ jobs:
               # Strict legacy gate: only an APPROVED review by the fleet
               # reviewer on this exact head commit qualifies; a newer push
               # makes the old approval not count.  No implicit lane exemption.
-              if ! jq -r --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" \
-                '.[] | select(.user.login == $who and .commit_id == $head and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | .state' \
+              if ! jq -rs --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" \
+                '[ .[][] | select(.user.login == $who and .commit_id == $head and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) ] | sort_by(.id) | .[].state' \
                 "$reviews_raw" > "$RUNNER_TEMP/reviews.out" 2>>"$RUNNER_TEMP/reviews.err"; then
                 cat "$RUNNER_TEMP/reviews.err" >&2
                 skip "review lookup failed - fail closed"
@@ -639,7 +639,7 @@ jobs:
              | jq -c '
                  {created_at,
                     markers: ([ . | select(.user.type == "Bot") | .body // "" | select(contains("swu-autofix-run: bot=")) | scan("actions/runs/[0-9]+") | sub("actions/runs/";"") ]),
-                    request: (if env.REVIEW_REQUEST_PATTERN == "" then false else ((.body // "") | test(env.REVIEW_REQUEST_PATTERN; "i")) end)}' \
+                    request: (if env.REVIEW_REQUEST_PATTERN == "" then false else ((.body // "") | split("\n") | any(.[]; test(env.REVIEW_REQUEST_PATTERN; "i"))) end)}' \
                > "$RUNNER_TEMP/arm-comments.reduced"; then
             cat "$RUNNER_TEMP/arm-comments.err" >&2
             abort "comment re-read failed"
@@ -712,7 +712,7 @@ jobs:
                     # Match the classifier legacy current-head/configured-reviewer
                     # scope exactly; unrelated old requests do not widen it.
                     ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head
-                        and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) ] | .[-1].state) as $decisive
+                        and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) ] | sort_by(.id) | .[-1].state) as $decisive
                     | if $decisive == "APPROVED" then "ok" else "approval-lost" end
                   else
                     ([ $all[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") ]) as $d

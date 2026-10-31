@@ -31,7 +31,7 @@ jobs:
       #                          # dispositioned (also set require_current_approval: false);
       #                          # unset = legacy require_current_approval contract (strict
       #                          # APPROVED gate by default; explicit false = no review gate)
-      # review_request_pattern: '^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)' # leading command only
+      # review_request_pattern: '^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)' # own-line command anywhere
     secrets:
       merge_token: ${{ needs.bot-token.outputs.token }} # existing approved App-token route
 ```
@@ -104,8 +104,8 @@ jobs:
     stops being decisive, so a dismissal unwinds that review's verdict), every
     review thread is resolved, and no review request is newer than the
     receipt (a request without a newer receipt fails closed - an ack cannot
-    defeat the wait).  The default request pattern matches a command at the
-    beginning of a comment, not a quoted command in Kody's completion guide.  A new push makes the old review stale and disarms
+    defeat the wait).  The request pattern is tested line-by-line. The default matches a command
+    at the start of any line, not an inline quoted command in Kody's completion guide.  A new push makes the old review stale and disarms
     until re-review.
   - `approval`: the legacy strict gate - the fleet reviewer's latest decisive
     review on the current head must be APPROVED.  This is what omitted inputs
