@@ -31,15 +31,17 @@ static int mp_fd_readable(int fd, const struct timespec *deadline) {
 }
 
 /* Discard bytes through the next LF within the deadline;  keep any bytes past that LF
- * for the following frame.  EOF is terminal. */
-static void mp_drain_oversize(int fd, const struct timespec *deadline) {
+ * for the following frame.  EOF is terminal.  Returns 1 when the oversized line was
+ * fully drained (its LF seen, or EOF made it terminal), 0 when the deadline or a read
+ * error cut the drain short with the stream still mid-line. */
+static int mp_drain_oversize(int fd, const struct timespec *deadline) {
     mp_carry_len = 0;
     while (!mp_input_eof) {
-        if (!mp_fd_readable(fd, deadline)) return;
+        if (!mp_fd_readable(fd, deadline)) return 0;
         unsigned char chunk[4096];
         ssize_t got = read(fd, chunk, sizeof(chunk));
-        if (got < 0) return;
-        if (got == 0) { mp_input_eof = 1; return; }
+        if (got < 0) return 0;
+        if (got == 0) { mp_input_eof = 1; return 1; }
         for (ssize_t i = 0; i < got; ++i) {
             if (chunk[i] == '\n') {
                 /* Preserve the tail:  it is the start of the next frame. */
@@ -47,10 +49,11 @@ static void mp_drain_oversize(int fd, const struct timespec *deadline) {
                 if (tail > sizeof(mp_carry)) tail = sizeof(mp_carry);
                 memcpy(mp_carry, chunk + i + 1, tail);
                 mp_carry_len = tail;
-                return;
+                return 1;
             }
         }
     }
+    return 1;  /* EOF already observed:  nothing left mid-line */
 }
 
 void mp_input_reset(void) {
@@ -64,14 +67,14 @@ long mp_read_frame(int fd, unsigned char *buf, size_t cap,
     for (;;) {
         for (size_t i = 0; i < mp_carry_len; ++i) {
             if (mp_carry[i] == '\n') {
-                if (i > cap) {  /* line over the limit:  refuse whole, never truncate */
+                size_t len = i;
+                if (len && mp_carry[len - 1] == '\r') --len;  /* CRLF:  the CR is framing */
+                if (len > cap) {  /* line over the limit:  refuse whole, never truncate */
                     size_t rest = mp_carry_len - (i + 1);
                     memmove(mp_carry, mp_carry + i + 1, rest);
                     mp_carry_len = rest;
                     return -3;
                 }
-                size_t len = i;
-                if (len && mp_carry[len - 1] == '\r') --len;
                 memcpy(buf, mp_carry, len);
                 size_t rest = mp_carry_len - (i + 1);
                 memmove(mp_carry, mp_carry + i + 1, rest);
@@ -89,7 +92,9 @@ long mp_read_frame(int fd, unsigned char *buf, size_t cap,
             return (long)len;
         }
         if (mp_carry_len >= sizeof(mp_carry)) {  /* full, no LF:  oversized */
-            mp_drain_oversize(fd, deadline);
+            /* A drain cut short leaves the stream mid-line:  report the deadline (-2),
+             * never "fully drained" (-3), so the remainder is not reframed. */
+            if (!mp_drain_oversize(fd, deadline)) return -2;
             return -3;
         }
         if (!mp_fd_readable(fd, deadline)) return -2;

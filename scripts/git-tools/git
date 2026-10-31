@@ -351,6 +351,14 @@ def _native_echo_post(body: bytes, write: bool, timeout: float = REMOTE_TIMEOUT_
             "/usr/local/libexec/assigned-echo-mcp/linux-custody.py",
         ]
     elif sys.platform == "darwin":
+        # The fixed signed helper is the owner shell's custody route only:  it validates
+        # the owner session (UID 501) itself, so the CLI refuses every other caller -
+        # root included - before any spawn, never elevating and never falling back.
+        if os.geteuid() != 501:
+            die(
+                "the approved native ECHO custody route is not available on this host; there is no fallback",
+                EXIT_AUTH,
+            )
         helper_command = ["/usr/local/libexec/assigned-echo-mcp/mac-request"]
     else:
         die(

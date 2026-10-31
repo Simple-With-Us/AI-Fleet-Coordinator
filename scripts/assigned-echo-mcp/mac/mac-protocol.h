@@ -218,26 +218,42 @@ static long mp_key_decode(const unsigned char *t, size_t span, size_t slen,
 
 static int mp_js_value_c(const unsigned char *t, size_t n, size_t *p, int depth);
 
+/* 64-bit FNV-1a over a decoded key:  narrows duplicate candidates;  equality is always
+ * confirmed byte-exact, so a collision can only cost work, never a wrong verdict. */
+static unsigned long long mp_key_hash(const unsigned char *p, size_t n) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
 static int mp_js_object_c(const unsigned char *t, size_t n, size_t *p, int depth) {
     ++*p;  /* at '{' */
     mp_js_ws(t, n, p);
     if (*p < n && t[*p] == '}') { ++*p; return 1; }
     size_t spans[MP_MAX_KEYS][2];
+    unsigned long long hashes[MP_MAX_KEYS];
     size_t count = 0;
     for (;;) {
         mp_js_ws(t, n, p);
         size_t ks = *p;
         if (!mp_js_string(t, n, p)) return 0;
         if (count >= MP_MAX_KEYS) return 0;
-        spans[count][0] = ks; spans[count][1] = *p - ks;
         unsigned char a[MP_MAX_KEY_BYTES + 4], b[MP_MAX_KEY_BYTES + 4];
         long la = mp_key_decode(t, ks, *p - ks, a, MP_MAX_KEY_BYTES);
         if (la < 0) return 0;
+        /* Each key decodes once;  an equal hash re-decodes that prior key for the exact
+         * byte comparison.  Hash comparisons stay O(k^2) on k <= MP_MAX_KEYS 64-bit
+         * values (bounded and cheap);  the quadratic key DECODING is avoided unless
+         * hashes collide, and a collision can only cost work, never change a verdict. */
+        unsigned long long ha = mp_key_hash(a, (size_t)la);
         for (size_t j = 0; j < count; ++j) {
+            if (hashes[j] != ha) continue;
             long lb = mp_key_decode(t, spans[j][0], spans[j][1], b, MP_MAX_KEY_BYTES);
             if (lb < 0) return 0;
             if (la == lb && !memcmp(a, b, (size_t)la)) return 0;  /* duplicate decoded key */
         }
+        spans[count][0] = ks; spans[count][1] = *p - ks;
+        hashes[count] = ha;
         ++count;
         mp_js_ws(t, n, p);
         if (*p >= n || t[*p] != ':') return 0;
@@ -292,26 +308,18 @@ static int mp_js_valid(const unsigned char *t, size_t n) {
     return p == n;
 }
 
-/* Decoded-string equality for a string value spanning [span, span+slen) including quotes. */
+/* Decoded-string equality for a string value spanning [span, span+slen) including quotes.
+ * The span decodes exactly as keys decode (\uXXXX with surrogate pairs, UTF-8 encoded),
+ * so an escaped spelling of a protocol constant still classifies as that constant:  an
+ * escaped "tools\u002fcall" method or identity must NOT slip past classification and
+ * identity binding as merely "not equal".  Malformed escapes, or a decoded value beyond
+ * the key bound, are simply not equal (such a value never equals a short constant). */
 static int mp_js_str_eq(const unsigned char *t, size_t span, size_t slen, const char *expect) {
-    size_t i = span + 1, end = span + slen - 1;
-    while (i < end && *expect) {
-        unsigned char c = t[i];
-        if (c == '\\') {
-            ++i;
-            if (i >= end) return 0;
-            c = t[i];
-            if (c == 'u') return 0;  /* protocol constants never need \u escapes */
-            if (c == 'n') c = '\n';
-            else if (c == 't') c = '\t';
-            else if (c == 'r') c = '\r';
-            else if (c == 'b') c = '\b';
-            else if (c == 'f') c = '\f';
-        }
-        if (c != (unsigned char)*expect) return 0;
-        ++i; ++expect;
-    }
-    return i == end && *expect == 0;
+    unsigned char decoded[MP_MAX_KEY_BYTES + 4];
+    long n = mp_key_decode(t, span, slen, decoded, MP_MAX_KEY_BYTES);
+    if (n < 0) return 0;
+    size_t want = strlen(expect);
+    return (size_t)n == want && !memcmp(decoded, expect, want);
 }
 
 /* Find a top-level key in a validated JSON object at obj (position of '{').

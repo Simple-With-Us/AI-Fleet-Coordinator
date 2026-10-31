@@ -305,6 +305,112 @@ int main(void) {
     /* 30. redirect policy wired off */
     CHECK("redirects never followed", mp_redirect_allowed() == 0);
 
+    /* 33. PR 1208 review (kody, HIGH):  escaped spellings of protocol constants must
+     * classify exactly as their decoded form, so identity binding cannot be bypassed
+     * with \u escapes.  Unit level first (mp_js_str_eq decodes like mp_key_decode). */
+    {
+        static const char esc_call[] = "\"tools\\u002fcall\"";
+        CHECK("str_eq decodes \\u escape", mp_js_str_eq((const unsigned char *)esc_call, 0, sizeof(esc_call) - 1, "tools/call"));
+        static const char esc_surr[] = "\"\\ud83d\\ude00\"";
+        CHECK("str_eq decodes surrogate pair", mp_js_str_eq((const unsigned char *)esc_surr, 0, sizeof(esc_surr) - 1, "\xf0\x9f\x98\x80"));
+        static const char esc_bad[] = "\"\\u00zz\"";
+        CHECK("str_eq malformed escape unequal", !mp_js_str_eq((const unsigned char *)esc_bad, 0, sizeof(esc_bad) - 1, "x"));
+        static const char plain[] = "\"tools/call\"";
+        CHECK("str_eq plain still equal", mp_js_str_eq((const unsigned char *)plain, 0, sizeof(plain) - 1, "tools/call"));
+        CHECK("str_eq plain still unequal", !mp_js_str_eq((const unsigned char *)plain, 0, sizeof(plain) - 1, "tools/list"));
+    }
+
+    /* 34. escaped method VALUE is still a call:  identity injected, frame posted */
+    script_reset();
+    script_push(200, NULL, "application/json", "{\"jsonrpc\":\"2.0\",\"id\":40,\"result\":{\"ok\":true}}");
+    n = handle("{\"jsonrpc\":\"2.0\",\"id\":40,\"method\":\"tools\\u002fcall\",\"params\":{\"name\":\"gr_wf_repo_get\",\"arguments\":{}}}");
+    CHECK("escaped method still a call", n && strstr((char *)out, "\"ok\":true"));
+    CHECK("escaped method gets identity injected",
+          strstr((char *)captured.frame, "\"identity\":\"ECHO\"") != NULL);
+
+    /* 35. escaped method KEY is still found:  identity injected */
+    script_reset();
+    script_push(200, NULL, "application/json", "{\"jsonrpc\":\"2.0\",\"id\":41,\"result\":{\"ok\":true}}");
+    n = handle("{\"jsonrpc\":\"2.0\",\"id\":41,\"metho\\u0064\":\"tools/call\",\"params\":{\"name\":\"gr_wf_repo_get\",\"arguments\":{}}}");
+    CHECK("escaped method key still a call", n && strstr((char *)out, "\"ok\":true"));
+    CHECK("escaped method key gets identity injected",
+          strstr((char *)captured.frame, "\"identity\":\"ECHO\"") != NULL);
+
+    /* 36. escaped ECHO identity value passes (it decodes to the fixed identity) */
+    script_reset();
+    script_push(200, NULL, "application/json", "{\"jsonrpc\":\"2.0\",\"id\":42,\"result\":{\"ok\":true}}");
+    n = handle("{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"gr_wf_repo_get\",\"arguments\":{\"identity\":\"ECH\\u004f\"}}}");
+    CHECK("escaped ECHO identity accepted", n && strstr((char *)out, "\"ok\":true") && captured.calls == 1);
+
+    /* 37. escaped FOREIGN identity still refused before any POST */
+    script_reset();
+    n = handle("{\"jsonrpc\":\"2.0\",\"id\":43,\"method\":\"tools/call\",\"params\":{\"name\":\"gr_wf_repo_get\",\"arguments\":{\"identity\":\"WIS\\u0045\"}}}");
+    CHECK("escaped foreign identity refused", n && strstr((char *)out, "identity_not_allowed"));
+    CHECK("no POST for escaped foreign identity", captured.calls == 0);
+
+    /* 38. escaped arguments KEY does not hide a foreign identity */
+    script_reset();
+    n = handle("{\"jsonrpc\":\"2.0\",\"id\":44,\"method\":\"tools/call\",\"params\":{\"name\":\"gr_wf_repo_get\",\"argument\\u0073\":{\"identity\":\"WISE\"}}}");
+    CHECK("escaped arguments key refused", n && strstr((char *)out, "identity_not_allowed"));
+    CHECK("no POST via escaped arguments key", captured.calls == 0);
+
+    /* 39. escaped identities name still skips injection (it IS the identities verb) */
+    script_reset();
+    script_push(200, NULL, "application/json", "{\"jsonrpc\":\"2.0\",\"id\":45,\"result\":{\"ok\":true}}");
+    n = handle("{\"jsonrpc\":\"2.0\",\"id\":45,\"method\":\"tools/call\",\"params\":{\"name\":\"identitie\\u0073\",\"arguments\":{}}}");
+    CHECK("escaped identities name not injected",
+          n && strstr((char *)captured.frame, "\"identity\"") == NULL);
+
+    /* 40. PR 1208 review (kody, performance):  the duplicate scan decodes each key once.
+     * Functional verdicts are unchanged:  large many-key objects pass, an exact
+     * duplicate near the end still refuses, an escaped twin still refuses. */
+    {
+        static unsigned char many[65536];
+        size_t m = 0;
+        many[m++] = '{';
+        for (int k = 0; k < 300; ++k)
+            m += (size_t)snprintf((char *)many + m, sizeof(many) - m, "%s\"k%d\":%d", k ? "," : "", k, k);
+        many[m++] = '}';
+        CHECK("300 distinct keys canonical", mp_js_canonical(many, m));
+        /* sizeof-sized tails, grammar asserted valid first:  a refusal below is the
+         * duplicate, never a malformed frame. */
+        static const char dup_tail[] = ",\"k299\":0}";
+        memcpy(many + m - 1, dup_tail, sizeof(dup_tail) - 1);
+        size_t dm = m - 1 + sizeof(dup_tail) - 1;
+        CHECK("trailing-duplicate frame grammar valid", mp_js_valid(many, dm));
+        CHECK("trailing duplicate still refused", !mp_js_canonical(many, dm));
+        static const char twin_tail[] = ",\"k29\\u0039\":0}";
+        memcpy(many + m - 1, twin_tail, sizeof(twin_tail) - 1);
+        size_t tm = m - 1 + sizeof(twin_tail) - 1;
+        CHECK("escaped-twin frame grammar valid", mp_js_valid(many, tm));
+        CHECK("trailing escaped twin still refused", !mp_js_canonical(many, tm));
+    }
+
+    /* 41. Max-key bound:  MP_MAX_KEYS (1024) distinct keys pass;  a 1025th key, or a
+     * genuine duplicate scanned at the bound, refuses. */
+    {
+        static unsigned char wide[65536];
+        size_t w = 0;
+        wide[w++] = '{';
+        for (int k = 0; k < 1024; ++k)
+            w += (size_t)snprintf((char *)wide + w, sizeof(wide) - w, "%s\"k%d\":%d", k ? "," : "", k, k);
+        wide[w++] = '}';
+        CHECK("1024 distinct keys canonical", mp_js_canonical(wide, w));
+        static const char over_tail[] = ",\"k1024\":0}";
+        memcpy(wide + w - 1, over_tail, sizeof(over_tail) - 1);
+        CHECK("1025 keys refused", !mp_js_canonical(wide, w - 1 + sizeof(over_tail) - 1));
+        w = 0;
+        wide[w++] = '{';
+        for (int k = 0; k < 1023; ++k)
+            w += (size_t)snprintf((char *)wide + w, sizeof(wide) - w, "%s\"k%d\":%d", k ? "," : "", k, k);
+        wide[w++] = '}';
+        static const char bound_dup[] = ",\"k0\":0}";
+        memcpy(wide + w - 1, bound_dup, sizeof(bound_dup) - 1);
+        size_t bm = w - 1 + sizeof(bound_dup) - 1;
+        CHECK("bound-duplicate frame grammar valid", mp_js_valid(wide, bm));
+        CHECK("duplicate scanned at the 1024-key bound refused", !mp_js_canonical(wide, bm));
+    }
+
     printf(failures ? "\n%d FAILURES\n" : "\nALL FIXTURE CHECKS PASS\n", failures);
     return failures ? 1 : 0;
 }

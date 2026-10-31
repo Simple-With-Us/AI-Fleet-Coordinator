@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include "mac-input.h"
 
 #define MID_CAP (4u * 1024u * 1024u)  /* ordinary-frame cap, for the mid-scale drain */
@@ -118,6 +119,73 @@ int main(void) {
     CHECK("next after CRLF", r == 2);
     close(fd);
 
+    /* PR 1208 review (sentry):  the cap is measured AFTER the CR strip, so an exact-cap
+     * CRLF frame passes while an over-cap CRLF frame still refuses whole. */
+    reset_deadline();
+    {
+        unsigned char line[36];
+        memset(line, 'b', 32);
+        line[32] = '\r'; line[33] = '\n';
+        fd = feed(line, 34);
+        r = mp_read_frame(fd, buf, 32, &future);
+        CHECK("exact-cap CRLF accepted whole", r == 32 && !memcmp(buf, line, 32));
+        r = mp_read_frame(fd, buf, 32, &future);
+        CHECK("exact-cap CRLF then EOF", r == -1);
+        close(fd);
+    }
+    reset_deadline();
+    {
+        unsigned char line[36];
+        memset(line, 'b', 33);
+        line[33] = '\r'; line[34] = '\n';
+        fd = feed(line, 35);
+        r = mp_read_frame(fd, buf, 32, &future);
+        CHECK("cap+1 CRLF refused (-3)", r == -3);
+        r = mp_read_frame(fd, buf, 32, &future);
+        CHECK("cap+1 CRLF then EOF", r == -1);
+        close(fd);
+    }
+
+    /* PR 1208 review (kody):  an oversized line whose drain is cut short by the deadline
+     * reports -2 (deadline), never -3 "fully drained" - the stream is still mid-line.
+     * The line overruns the whole static carry (MP_INPUT_MAX_FRAME + 2, no LF) so the
+     * real drain runs;  the writer then stalls with the pipe open past the deadline. */
+    mp_input_reset();
+    {
+        int fds[2];
+        assert(pipe(fds) == 0);
+        pid_t pid = fork();
+        assert(pid >= 0);
+        if (!pid) {
+            close(fds[0]);
+            static unsigned char chunk[65536];
+            memset(chunk, 'X', sizeof(chunk));
+            size_t total = MP_INPUT_MAX_FRAME + 100;  /* no LF:  forces the real drain */
+            for (size_t off = 0; off < total;) {
+                size_t want = total - off < sizeof(chunk) ? total - off : sizeof(chunk);
+                ssize_t w = write(fds[1], chunk, want);
+                if (w <= 0) _exit(1);
+                off += (size_t)w;
+            }
+            sleep(10);  /* pipe stays open, line unfinished:  the drain must time out */
+            close(fds[1]);
+            _exit(0);
+        }
+        close(fds[1]);
+        unsigned char *big = malloc(MP_INPUT_MAX_FRAME + 2);
+        assert(big);
+        struct timespec soon;
+        clock_gettime(CLOCK_MONOTONIC, &soon);
+        soon.tv_sec += 3;
+        r = mp_read_frame(fds[0], big, MP_INPUT_MAX_FRAME, &soon);
+        CHECK("deadline-aborted drain reports -2, not -3", r == -2);
+        free(big);
+        kill(pid, SIGKILL);
+        close(fds[0]);
+        int status;
+        waitpid(pid, &status, 0);
+    }
+
     /* Expired deadline reports -2 even with input pending. */
     mp_input_reset();
     {
@@ -198,6 +266,39 @@ int main(void) {
         CHECK("production-cap frame accepted whole", r == (long)MP_INPUT_MAX_FRAME);
         r = mp_read_frame(fds[0], big, MP_INPUT_MAX_FRAME, &future);
         CHECK("production-cap then EOF", r == -1);
+        free(big);
+        close(fds[0]);
+        int status;
+        waitpid(pid, &status, 0);
+    }
+    mp_input_reset();
+    {
+        int fds[2];
+        assert(pipe(fds) == 0);
+        pid_t pid = fork();
+        assert(pid >= 0);
+        if (!pid) {
+            close(fds[0]);
+            static unsigned char chunk[65536];
+            memset(chunk, 'a', sizeof(chunk));
+            size_t total = MP_INPUT_MAX_FRAME;
+            for (size_t off = 0; off < total;) {
+                size_t want = total - off < sizeof(chunk) ? total - off : sizeof(chunk);
+                ssize_t w = write(fds[1], chunk, want);
+                if (w <= 0) _exit(1);
+                off += (size_t)w;
+            }
+            if (write(fds[1], "\r\n", 2) != 2) _exit(1);  /* exact-cap CRLF */
+            close(fds[1]);
+            _exit(0);
+        }
+        close(fds[1]);
+        unsigned char *big = malloc(MP_INPUT_MAX_FRAME + 2);
+        assert(big);
+        r = mp_read_frame(fds[0], big, MP_INPUT_MAX_FRAME, &future);
+        CHECK("production-cap CRLF frame accepted whole", r == (long)MP_INPUT_MAX_FRAME);
+        r = mp_read_frame(fds[0], big, MP_INPUT_MAX_FRAME, &future);
+        CHECK("production-cap CRLF then EOF", r == -1);
         free(big);
         close(fds[0]);
         int status;

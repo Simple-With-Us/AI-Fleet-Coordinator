@@ -16,10 +16,12 @@
 #define MP_INPUT_MAX_FRAME (6u * 1024u * 1024u + 64u * 1024u)
 
 /* Read one LF-terminated frame from fd into buf (at most cap bytes;  a trailing CR is
- * stripped).  Returns the frame length, -1 at EOF, -2 when the CLOCK_MONOTONIC deadline
- * expired first, -3 for an oversized frame (line fully drained, any bytes past its LF
- * preserved for the next call).  A final line without LF at EOF is returned as-is;  an
- * oversized final line at EOF is -3 once, then EOF. */
+ * stripped before the cap is measured, so an exact-cap CRLF frame passes).  Returns the
+ * frame length, -1 at EOF, -2 when the CLOCK_MONOTONIC deadline expired first (including
+ * when it cuts an oversized-line drain short mid-line), -3 for an oversized frame whose
+ * line was fully drained (any bytes past its LF preserved for the next call).  A final
+ * line without LF at EOF is returned as-is;  an oversized final line at EOF is -3 once,
+ * then EOF. */
 long mp_read_frame(int fd, unsigned char *buf, size_t cap,
                    const struct timespec *deadline);
 

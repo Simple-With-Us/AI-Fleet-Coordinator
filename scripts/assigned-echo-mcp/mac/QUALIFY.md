@@ -9,8 +9,8 @@ and reads the same hello + answer lines, so the ingress framing is preserved.
 
 Current gate status:  source and synthetic behavior only.  On the actual Mac, strict
 clang -Wall -Wextra -Werror compiles of the core, framing, transport and wrapper pass,
-and the nonsensitive fixtures pass under ASan/UBSan:  mac-fixture 42 checks,
-mac-input-fixture 22 checks, mac-transport-fixture 28 checks with an NSURLProtocol
+and the nonsensitive fixtures pass under ASan/UBSan:  mac-fixture 66 checks,
+mac-input-fixture 29 checks, mac-transport-fixture 28 checks with an NSURLProtocol
 stub that intercepts every request so no network is reachable.  compile-only.sh
 reproduces exactly that, including the sanitizer runs.  The hard process bound is
 qualified, not assumed:  input reads and in-flight requests hold the 180s deadline,

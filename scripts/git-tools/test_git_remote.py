@@ -683,19 +683,32 @@ class TestNativeCustodyTransport(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], ["/usr/bin/python3", "-I", self.CUSTODY])
 
     def test_mac_invokes_the_fixed_signed_helper_without_elevation(self):
-        for euid in (501, 0):  # owner shell and root alike:  custody is the helper's own checks
-            run, result, exc = self._run_transport(euid=euid, platform="darwin")
-            self.assertIsNone(exc)
-            self.assertEqual(result[0], 200)
-            self.assertEqual(
-                run.call_args.args[0],
-                ["/usr/local/libexec/assigned-echo-mcp/mac-request"],
-            )
-            kwargs = run.call_args.kwargs
-            self.assertNotIn("shell", kwargs)  # list argv, never a shell
-            self.assertEqual(kwargs["env"], {"PATH": "/usr/bin:/bin"})  # no environment, no bearer
-            self.assertEqual(kwargs["stderr"], git.subprocess.DEVNULL)
-            self.assertTrue(kwargs["input"].endswith(b'{"jsonrpc":"2.0","id":1}\n'))
+        run, result, exc = self._run_transport(euid=501, platform="darwin")
+        self.assertIsNone(exc)
+        self.assertEqual(result[0], 200)
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/local/libexec/assigned-echo-mcp/mac-request"],
+        )
+        kwargs = run.call_args.kwargs
+        self.assertNotIn("shell", kwargs)  # list argv, never a shell
+        self.assertEqual(kwargs["env"], {"PATH": "/usr/bin:/bin"})  # no environment, no bearer
+        self.assertEqual(kwargs["stderr"], git.subprocess.DEVNULL)
+        self.assertTrue(kwargs["input"].endswith(b'{"jsonrpc":"2.0","id":1}\n'))
+
+    def test_mac_root_refuses_before_any_spawn(self):
+        # The helper's custody is the owner session (UID 501) only:  root is refused by
+        # the CLI before any spawn, matching the helper's own validation exactly.
+        run, result, exc = self._run_transport(euid=0, platform="darwin")
+        self.assertIsNotNone(exc)
+        self.assertEqual(exc.code, 6)  # EXIT_AUTH
+        self.assertEqual(run.call_count, 0)
+
+    def test_mac_non_owner_refuses_before_any_spawn(self):
+        run, result, exc = self._run_transport(euid=1000, platform="darwin")
+        self.assertIsNotNone(exc)
+        self.assertEqual(exc.code, 6)  # EXIT_AUTH
+        self.assertEqual(run.call_count, 0)
 
     def test_mac_missing_helper_refuses_before_any_spawn(self):
         run, result, exc = self._run_transport(euid=501, platform="darwin", isfile=False)
