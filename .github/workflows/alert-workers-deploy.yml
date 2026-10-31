@@ -36,14 +36,19 @@ jobs:
       - run: python3 scripts/test-deploy-alert-workers.py
       - name: Load existing scoped release credential
         env:
-          INFISICAL_PROJECT_ID: 8dae6d03-8f12-48b2-adf3-e5c1b881c8c5
+          INFISICAL_PROJECT_ID: ${{ vars.INFISICAL_PROJECT_ID }}
           INFISICAL_ENVIRONMENT: prod
           INFISICAL_SECRET_PATH: /
           INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
           INFISICAL_REQUIRED: CLOUDFLARE_FLEET_API_TOKEN
           INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_AUTOMATION_CLIENT_ID }}
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_AUTOMATION_CLIENT_SECRET }}
-        run: node scripts/infisical-fetch.mjs
+        run: |
+          if [ -z "$INFISICAL_PROJECT_ID" ]; then
+            echo "Missing INFISICAL_PROJECT_ID repository variable" >&2
+            exit 1
+          fi
+          node scripts/infisical-fetch.mjs
       - name: Verify reviews and release exact alert targets
         env:
           GH_TOKEN: ${{ github.token }}

@@ -106,7 +106,7 @@ class Tests(unittest.TestCase):
         review = {"user": {"login": "kody-ai[bot]"}, "state": "APPROVED", "commit_id": "c" * 40}
         with (
             patch.object(m, "github", side_effect=[[pr], [review]]),
-            patch.object(m, "review_covers", return_value=False),
+            patch.object(m, "git", side_effect=AssertionError("No old comparison allowed")),
             self.assertRaises(RuntimeError),
         ):
             m.reviewed("a" * 40)
@@ -190,30 +190,6 @@ class Tests(unittest.TestCase):
         self.assertNotIn("agent-sync-mcp/wrangler", text)
         self.assertIn("17,47 * * * *", text)
 
-    def test_review_compare_uses_remote_objects(self):
-        with patch.object(
-            m,
-            "github",
-            return_value={"status": "ahead", "files": [{"filename": "docs/example.md"}]},
-        ):
-            self.assertTrue(m.review_covers({"commit_id": "a" * 40}, "b" * 40))
-        with patch.object(
-            m,
-            "github",
-            return_value={
-                "status": "ahead",
-                "files": [{"filename": "scripts/deploy-alert-workers.py"}],
-            },
-        ):
-            self.assertFalse(m.review_covers({"commit_id": "a" * 40}, "b" * 40))
-
-    def test_incomplete_comparison_fails(self):
-        with (
-            patch.object(m, "github", return_value={"status": "ahead", "files": [{}] * 300}),
-            self.assertRaises(RuntimeError),
-        ):
-            m.review_covers({"commit_id": "a" * 40}, "b" * 40)
-
     def test_numeric_receipt_not_boolean(self):
         import json
 
@@ -248,6 +224,36 @@ class Tests(unittest.TestCase):
             opener.return_value.open.return_value = response
             with self.assertRaises(RuntimeError):
                 m.probe({"health": "https://example.invalid", "ok": True})
+
+    def test_numeric_health_not_boolean(self):
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = b'{"ok":1}'
+        with patch.object(m.urllib.request, "build_opener") as opener:
+            opener.return_value.open.return_value = response
+            with self.assertRaises(RuntimeError):
+                m.probe({"health": "https://example.invalid", "ok": True})
+
+    def test_null_annotations_fail_baseline(self):
+        with patch.object(
+            m,
+            "cloudflare",
+            side_effect=[
+                {"deployments": [{"versions": [{"version_id": "x", "percentage": 100}]}]},
+                {"annotations": None},
+            ],
+        ):
+            self.assertIsNone(m.deployed_tag("alert-ingress"))
+
+    def test_api_message_is_controlled_failure(self):
+        with (
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            patch.object(m, "request_json", return_value={"message": "refused"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m.github("/anything")
 
 
 if __name__ == "__main__":

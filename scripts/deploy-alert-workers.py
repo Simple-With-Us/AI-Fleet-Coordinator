@@ -107,10 +107,13 @@ def request_json(url, token, data=None):
 
 
 def github(path):
-    return request_json(
+    body = request_json(
         "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + path,
         os.environ["GH_TOKEN"],
     )
+    if isinstance(body, dict) and "message" in body:
+        raise RuntimeError("GitHub read rejected")
+    return body
 
 
 def cloudflare(path):
@@ -135,32 +138,7 @@ def deployed_tag(name):
     if len(versions) != 1 or versions[0].get("percentage") != 100:
         return None
     version = cloudflare("/workers/scripts/" + name + "/versions/" + versions[0]["version_id"])
-    return version.get("annotations", {}).get("workers/tag")
-
-
-def review_covers(review, head):
-    commit = review.get("commit_id", "")
-    if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        return False
-    if commit == head:
-        return True
-    # Squash merge checkouts need not contain intermediate PR commits.
-    comparison = github("/compare/" + commit + "..." + head + "?per_page=100")
-    files = comparison.get("files")
-    if (
-        not isinstance(files, list)
-        or len(files) >= 300
-        or comparison.get("status") not in ("ahead", "identical")
-    ):
-        raise RuntimeError("Incomplete or divergent review comparison")
-    protected = [t["root"] for t in TARGETS.values()]
-    return not any(
-        f["filename"] in RELEASE_PATHS
-        or any(f["filename"].startswith(root) for root in protected)
-        or f.get("previous_filename") in RELEASE_PATHS
-        or any(f.get("previous_filename", "").startswith(root) for root in protected)
-        for f in files
-    )
+    return (version.get("annotations") or {}).get("workers/tag")
 
 
 def reviewed(sha):
@@ -189,10 +167,7 @@ def reviewed(sha):
         if not qualified:
             continue
         head = pr["head"]["sha"]
-        if not (
-            any(r.get("commit_id") == head for r in qualified)
-            or any(review_covers(r, head) for r in reversed(qualified))
-        ):
+        if not any(r.get("commit_id") == head for r in qualified):
             continue
         # GraphQL includes actual thread resolution, unlike review state.
         owner, repo = os.environ["GITHUB_REPOSITORY"].split("/")
