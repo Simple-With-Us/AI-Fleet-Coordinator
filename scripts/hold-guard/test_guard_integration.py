@@ -199,13 +199,21 @@ class GuardIntegration(unittest.TestCase):
         p = self.run_guard(PR="3", PR_URL="u")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         calls = self.calls()
-        disarm = next(i for i,c in enumerate(calls) if c["argv"][:2] == ["pr", "merge"])
-        events = next(i for i,c in enumerate(calls) if any(a.endswith("/events") for a in c["argv"]))
+        disarm = next(i for i, c in enumerate(calls) if c["argv"][:2] == ["pr", "merge"])
+        events = next(
+            i for i, c in enumerate(calls) if any(a.endswith("/events") for a in c["argv"])
+        )
         self.assertLess(disarm, events)
 
     def test_clear_publish_failure_does_not_disarm(self):
-        self.scenario({"labels": {"3": []}, "events": {"3": [[]]}, "armed": True,
-                       "fail": {"check-runs": {"rc": 1}}})
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {"3": [[]]},
+                "armed": True,
+                "fail": {"check-runs": {"rc": 1}},
+            }
+        )
         p = self.run_guard(PR="3", PR_URL="u")
         self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
         self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]])
