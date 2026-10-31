@@ -176,25 +176,36 @@ class GuardIntegration(unittest.TestCase):
         self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
 
     def test_clear_armed_pr_is_never_disarmed(self):
-        self.scenario({"labels": {"3": []}, "events": {"3": [[]]}, "armed": True,
-                       "fail": {"pr_merge": {"rc": 1}, "pr_view": {"rc": 1}}})
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {"3": [[]]},
+                "armed": True,
+                "fail": {"pr_merge": {"rc": 1}, "pr_view": {"rc": 1}},
+            }
+        )
         p = self.run_guard(PR="3", PR_URL="u")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertFalse([c for c in self.calls() if c["argv"][:1] == ["pr"]])
-        posts = [c for c in self.calls() if "POST" in c["argv"] and
-                 any(a.endswith("/check-runs") for a in c["argv"])]
+        posts = [
+            c
+            for c in self.calls()
+            if "POST" in c["argv"] and any(a.endswith("/check-runs") for a in c["argv"])
+        ]
         self.assertEqual(json.loads(posts[0]["stdin"])["conclusion"], "success")
 
     def test_hold_arriving_at_fence_disarms_before_red_publish(self):
         hold = ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z")
-        self.scenario({"labels": {"3": []}, "events_seq": {"3": [[[]], [[hold]]]},
-                       "armed": False})
+        self.scenario({"labels": {"3": []}, "events_seq": {"3": [[[]], [[hold]]]}, "armed": False})
         p = self.run_guard(PR="3", PR_URL="u")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         calls = self.calls()
-        disarm = next(i for i,c in enumerate(calls) if c["argv"][:2] == ["pr", "merge"])
-        publish = next(i for i,c in enumerate(calls) if "POST" in c["argv"] and
-                       any(a.endswith("/check-runs") for a in c["argv"]))
+        disarm = next(i for i, c in enumerate(calls) if c["argv"][:2] == ["pr", "merge"])
+        publish = next(
+            i
+            for i, c in enumerate(calls)
+            if "POST" in c["argv"] and any(a.endswith("/check-runs") for a in c["argv"])
+        )
         self.assertLess(disarm, publish)
         self.assertEqual(json.loads(calls[publish]["stdin"])["conclusion"], "failure")
 
