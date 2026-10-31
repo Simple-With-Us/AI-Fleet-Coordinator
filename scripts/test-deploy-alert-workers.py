@@ -113,7 +113,18 @@ class Tests(unittest.TestCase):
             "commit_id": "c" * 40,
         }
         with (
-            patch.object(m, "github", side_effect=[[pr], [review]]),
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [
+                        {"state": "PENDING", "user": None},
+                        {"state": "COMMENTED", "user": "invalid"},
+                        review,
+                    ],
+                ],
+            ),
             patch.object(m, "git", side_effect=AssertionError("No old comparison allowed")),
             self.assertRaises(RuntimeError),
         ):
@@ -152,7 +163,18 @@ class Tests(unittest.TestCase):
             }
         ).encode()
         with (
-            patch.object(m, "github", side_effect=[[pr], [review]]),
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [
+                        {"state": "PENDING", "user": None},
+                        {"state": "COMMENTED", "user": "invalid"},
+                        review,
+                    ],
+                ],
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
@@ -193,7 +215,18 @@ class Tests(unittest.TestCase):
             }
         ).encode()
         with (
-            patch.object(m, "github", side_effect=[[pr], [review]]),
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [
+                        {"state": "PENDING", "user": None},
+                        {"state": "COMMENTED", "user": "invalid"},
+                        review,
+                    ],
+                ],
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):

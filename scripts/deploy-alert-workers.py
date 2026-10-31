@@ -178,7 +178,8 @@ def reviewed(sha):
         qualified = [
             r
             for r in reviews
-            if r.get("user", {}).get("login") == "kody-ai[bot]"
+            if isinstance(r.get("user"), dict)
+            and r["user"].get("login") == "kody-ai[bot]"
             and r.get("state") in ("APPROVED", "COMMENTED")
         ]
         # COMMENTED is a completed substantive Kody review, not an issue comment.
