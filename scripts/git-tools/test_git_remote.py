@@ -1375,7 +1375,10 @@ class TestReview1199(unittest.TestCase):
                 "properties": {
                     "x": {"type": "integer", "minimum": 0},
                     "s": {"type": "string", "enum": ["aa", "bb"]},
-                    "o": {"type": "object", "properties": {"n": {"type": "integer", "maximum": 100}}},
+                    "o": {
+                        "type": "object",
+                        "properties": {"n": {"type": "integer", "maximum": 100}},
+                    },
                 }
             }
         ],
@@ -1479,7 +1482,6 @@ class TestReview1199(unittest.TestCase):
     # 4. read1 stays, but a response without it fails closed, not with a traceback.
     def test_response_without_read1_is_a_guarded_transport_failure(self):
         import types
-        import urllib.request
 
         class FakeSock:
             def settimeout(self, value):
@@ -1500,9 +1502,7 @@ class TestReview1199(unittest.TestCase):
             def open(self, req, timeout=None):
                 return NoRead1Response()
 
-        with mock.patch.object(
-            git.urllib.request, "build_opener", lambda *handlers: FakeOpener()
-        ):
+        with mock.patch.object(git.urllib.request, "build_opener", lambda *handlers: FakeOpener()):
             with self.assertRaises(git._TransportError):
                 git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
 
