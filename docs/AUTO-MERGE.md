@@ -27,6 +27,11 @@ jobs:
       # restrict_to_pattern: "dependabot|congress-trading-shared"   # dep-bump lanes only
       # hold_labels: "do-not-automerge,needs-human-merge"
       # kody_check_name: "Kody Code Review"   # fleet reviewer check-run name
+      # review_gate: effective   # explicit opt-in: current-head review + findings
+      #                          # dispositioned (also set require_current_approval: false);
+      #                          # unset = legacy require_current_approval contract (strict
+      #                          # APPROVED gate by default; explicit false = no review gate)
+      # review_request_pattern: '@kody[ \t]+start-review'   # headless review-start probe
     secrets:
       merge_token: ${{ needs.bot-token.outputs.token }} # existing approved App-token route
 ```
@@ -64,14 +69,82 @@ jobs:
   caller's permissions, so a caller that wants the fallback to work also
   grants its workflow `checks: read`, `actions: read` and `issues: read`.
 
-- Current-head approval: by default (`require_current_approval: true`) a PR is
-  armed only while `approval_reviewer` (default `kody-ai[bot]`) has an APPROVED
-  review on the PR's current head commit.  A skipped review check, a COMMENTED
-  review, an approval on an older commit, a later CHANGES_REQUESTED, or a failed
-  lookup all disarm.  A new push makes the old approval stale.  There is no implicit lane
-  exemption (the lane pattern matches a title the author controls); a dependency
-  caller opts out with `require_current_approval: false`.  Callers pin the reusable by SHA,
-  so the gate reaches a repo when its pin is bumped.
+- Review gates.  `require_current_approval` (default `true`) keeps the legacy
+  strict contract: the fleet reviewer must have an APPROVED review on the
+  current head, and an explicit `false` remains the opt-out with no review
+  gate.  `review_gate` is unset by default and changes nothing; its only
+  supported value, `effective`, opts into the gate below.  Any other value
+  fails closed, and `require_current_approval: true` (the default) always wins
+  over it - opting in also means setting `require_current_approval: false`.  A
+  green CI run or a
+  successful Kody check-run is never proof that findings were addressed (AFC
+  #1207: the Kody check was green while a valid HIGH review comment was still
+  open), so the gate reads the review record and thread state, not check
+  conclusions, and every lookup fails closed.
+  - `effective`: a full-review receipt proves a whole-code Kody review
+    completed on the PR's exact head: a check-run created by the
+    authenticated Kody GitHub App (BOTH `kody_app_slug`, default `kody-ai`,
+    and `kody_app_id`, default `413034` - the numeric app id observed in live
+    fleet check data; slugs can be renamed, ids cannot) under
+    the exact `kody_check_name`, completed with conclusion SUCCESS, whose
+    output carries Kody's unambiguous full-review verdict (title "Code
+    Review Complete" + summary starting "Review finished successfully" -
+    the license/ignore/manual skip outputs never carry it), and whose
+    started_at is no earlier than the newest review request, so a run that
+    began before the request and finished after it cannot answer it and no
+    ack can advance the boundary (AFC #1207 ack 5724125545).  A newer
+    queued/in_progress Kody run blocks.  Neutral, skipped, failure and
+    error conclusions are never a source completion.  Separately, the
+    fleet reviewer (`approval_reviewer`) has a review record on the current
+    head - an additional consistency requirement, never provenance.  The
+    check's success conclusion is never treated as proof findings were
+    addressed.  No reviewer's CHANGES_REQUESTED is outstanding under
+    the fleet's effective-decision contract (only a later APPROVED by the SAME
+    reviewer supersedes; COMMENTED never clears a request; a dismissed review
+    stops being decisive, so a dismissal unwinds that review's verdict), every
+    review thread is resolved, and no review request is newer than the
+    receipt (a request without a newer receipt fails closed - an ack cannot
+    defeat the wait).  A new push makes the old review stale and disarms
+    until re-review.
+  - `approval`: the legacy strict gate - the fleet reviewer's latest decisive
+    review on the current head must be APPROVED.  This is what omitted inputs
+    resolve to, and `require_current_approval: true` always forces it.
+  - No review gate: the pre-existing explicit opt-out is unchanged -
+    `require_current_approval: false` with `review_gate` unset.  There is no
+    `review_gate: off`.
+  - Resolved threads are not proof of fixes: fake resolutions are reopened by
+    the review-handling process.  The gate's job is the negative proof - an
+    unresolved thread means findings are not dispositioned.
+  Callers pin the reusable by SHA, so the gate reaches a repo when its pin is
+  bumped.
+
+## Arming boundary
+
+Classification and arming are separate moments.  The arm job's first step
+re-reads everything the classification relied on and aborts on ANY drift, API,
+parse or pagination uncertainty: the PR is still open, the exact head matches
+the classified head, no hold label appeared, the newest review request is
+unchanged, no Kody run is queued/in_progress, the classified receipt check-run
+is re-read and re-validated live - same app identity (`kody_app_slug` AND
+`kody_app_id`), same head SHA, completed SUCCESS with the verdict
+title/summary, and a started_at at or after the newest review request as
+re-read at the boundary - and the formal review record is re-read with its
+decisive state re-derived from the live list (an outstanding CHANGES_REQUESTED
+aborts; under the approval gate, a dismissed or superseded head approval aborts;
+under the effective gate, the current-head fleet-reviewer record being
+dismissed or removed aborts, even with zero open threads),
+no autofix run became active (marker comments and repo-wide run listings, both
+paginated), and every review-thread page is still resolved.  The request and
+thread re-checks run only where classification evaluated them: under the
+legacy no-gate contract (`require_current_approval: false`, `review_gate`
+unset) classification never reads requests or threads, so the boundary skips
+those re-checks too.  An abort also
+runs `gh pr merge --disable-auto` best-effort, and the disarm job runs on arm
+failure as well as on classification rejection, so a failed arm never leaves
+a previously armed auto-merge in place.  Every merge invocation pins the
+expected head with `gh pr merge --match-head-commit` (verified against the
+installed CLI's help), closing the seconds between the boundary check and the
+arm command; GitHub refuses the arm if the head moved.
 
 ## Merge queues
 
