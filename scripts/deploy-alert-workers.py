@@ -241,9 +241,10 @@ def credential_receipt():
     ):
         raise RuntimeError("Unqualified credential delivery run")
     jobs = github("/actions/runs/" + str(run_id) + "/jobs?per_page=100")
-    if jobs.get("total_count") != len(jobs.get("jobs", [])):
+    jobs_list = jobs.get("jobs")
+    if not isinstance(jobs_list, list) or jobs.get("total_count") != len(jobs_list):
         raise RuntimeError("Incomplete qualification job evidence")
-    steps = [step for job in jobs["jobs"] for step in job.get("steps", [])]
+    steps = [step for job in jobs_list for step in job.get("steps", [])]
     qualification = [
         step
         for step in steps
@@ -268,10 +269,7 @@ def credential_receipt():
         source,
         "HEAD",
         "--",
-        "scripts/deploy-alert-workers.py",
-        ".github/workflows/alert-workers-deploy.yml",
-        "scripts/infisical-fetch.mjs",
-        "scripts/deploy-mapped-worker.py",
+        *[p for p in RELEASE_PATHS if p != "docs/releases/alert-credentials-qualified.json"],
     ):
         raise RuntimeError("Credential qualification source changed")
     return True
@@ -279,8 +277,7 @@ def credential_receipt():
 
 def main():
     if not credential_receipt():
-        print("Awaiting reviewed successful nondeployment credential qualification receipt")
-        return
+        raise RuntimeError("Missing credential qualification receipt; deployment blocked")
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=30).strip()
     if current_main() != sha:
         print("Superseded")

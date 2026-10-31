@@ -40,11 +40,13 @@ class Tests(unittest.TestCase):
     def test_superseded_does_not_release(self):
         with (
             patch.object(m.subprocess, "check_output", return_value="a" * 40),
-            patch.object(m, "current_main", return_value="b" * 40),
+            patch.object(m, "current_main", return_value="b" * 40) as current,
+            patch.object(m, "credential_receipt", return_value=True),
             patch.object(m.subprocess, "run") as run,
         ):
             m.main()
             run.assert_not_called()
+            current.assert_called_once()
 
     def test_missing_cutover_proof_skips_only_that_target(self):
         with patch.object(m.pathlib.Path, "exists", return_value=False):
@@ -279,9 +281,76 @@ class Tests(unittest.TestCase):
             patch.object(m.subprocess, "run") as run,
             patch.object(m, "current_main") as current,
         ):
-            m.main()
+            with self.assertRaises(RuntimeError):
+                m.main()
             run.assert_not_called()
             current.assert_not_called()
+
+    def receipt_fixture(self, **changes):
+        receipt = {"run_id": 123, "source_sha": "a" * 40, "nondeployment": True}
+        receipt.update(changes)
+        run = {
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": "a" * 40,
+            "head_branch": "main",
+            "path": ".github/workflows/alert-workers-deploy.yml",
+        }
+        jobs = {
+            "total_count": 1,
+            "jobs": [
+                {
+                    "steps": [
+                        {
+                            "name": "Qualify existing credential delivery without deployment",
+                            "conclusion": "success",
+                        },
+                        {
+                            "name": "Verify reviews and release exact alert targets",
+                            "conclusion": "skipped",
+                        },
+                    ]
+                }
+            ],
+        }
+        return receipt, run, jobs
+
+    def check_receipt(self, receipt, run, jobs, changed=""):
+        import json
+
+        with (
+            patch.object(m.pathlib.Path, "exists", return_value=True),
+            patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
+            patch.object(m, "github", side_effect=[run, jobs]),
+            patch.object(m, "git", return_value=changed) as git,
+        ):
+            result = m.credential_receipt()
+            self.assertIn("scripts/worker-targets.json", git.call_args.args)
+            self.assertIn("scripts/agent-sync-mcp/package-lock.json", git.call_args.args)
+            return result
+
+    def test_qualified_receipt_passes(self):
+        self.assertTrue(self.check_receipt(*self.receipt_fixture()))
+
+    def test_numeric_nondeployment_receipt_fails(self):
+        with self.assertRaises(RuntimeError):
+            self.check_receipt(*self.receipt_fixture(nondeployment=1))
+
+    def test_missing_jobs_fails_controlled(self):
+        receipt, run, _ = self.receipt_fixture()
+        with self.assertRaises(RuntimeError):
+            self.check_receipt(receipt, run, {"total_count": 0})
+
+    def test_executed_release_invalidates_qualification(self):
+        receipt, run, jobs = self.receipt_fixture()
+        jobs["jobs"][0]["steps"][1]["conclusion"] = "success"
+        with self.assertRaises(RuntimeError):
+            self.check_receipt(receipt, run, jobs)
+
+    def test_changed_release_source_invalidates_receipt(self):
+        with self.assertRaises(RuntimeError):
+            self.check_receipt(*self.receipt_fixture(), changed="scripts/worker-targets.json")
 
 
 if __name__ == "__main__":
