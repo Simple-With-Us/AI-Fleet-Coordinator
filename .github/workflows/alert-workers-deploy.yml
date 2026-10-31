@@ -36,7 +36,7 @@ jobs:
       - run: python3 scripts/test-deploy-alert-workers.py
       - name: Load existing scoped release credential
         env:
-          INFISICAL_PROJECT_ID: ${{ vars.INFISICAL_PROJECT_ID }}
+          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
           INFISICAL_ENVIRONMENT: prod
           INFISICAL_SECRET_PATH: /
           INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
@@ -45,7 +45,7 @@ jobs:
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_AUTOMATION_CLIENT_SECRET }}
         run: |
           if [ -z "$INFISICAL_PROJECT_ID" ]; then
-            echo "Missing INFISICAL_PROJECT_ID repository variable" >&2
+            echo "Missing existing INFISICAL_FLEET_OPS_PROJECT_ID secret" >&2
             exit 1
           fi
           node scripts/infisical-fetch.mjs
