@@ -62,6 +62,10 @@ SMOKE_CASES = (
     # fleet-cli-release.py).  The earlier `whoami` case expected exit 4 and failed on a host that has the helper and a
     # bearer for the smoke seat.
     ("simple_board_usage_error", "scripts/simple-board", ["show"], 2),
+    # Same shape as the board cases:  --help prints and exits 0, and a usage error exits 2, with a blank
+    # HOME and no credentials, with or without the host's seat helper.
+    ("simple_git_help", "scripts/simple-git", ["--help"], 0),
+    ("simple_git_usage_error", "scripts/simple-git", ["call"], 2),
     ("recall_help", "scripts/recall", ["--help"], 0),
     ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
     ("fleet_mode_block", "scripts/fleet-mode", [], 0),

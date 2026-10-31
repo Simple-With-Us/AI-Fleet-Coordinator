@@ -263,8 +263,14 @@ class ActualRuntime(unittest.TestCase):
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
-        self.assertEqual(self.receiver.MAX_FILES, 143)
+        self.assertEqual(self.receiver.MAX_FILES, 145)
         self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
+        # The git tools CLI ships in the bundle:  required of new bundles, never of rollback targets.
+        for path in ("scripts/simple-git", "scripts/git-tools/git"):
+            self.assertIn(path, self.bundle["files"])
+            self.assertIn(path, self.receiver.TOOL_REQUIRED)
+            self.assertNotIn(path, self.receiver.BASE_REQUIRED)
+        self.assertEqual(self.receiver.HELPER_COMMANDS["scripts/simple-git"], "simple-git")
 
         status = self.receiver.control(self.home, "status")
         self.assertEqual(status["status"], "ready")
@@ -280,6 +286,8 @@ class ActualRuntime(unittest.TestCase):
             ("scripts/simple-chat", ["mcp", "--help"], 0, b"--default-seat"),
             ("scripts/linear-board/board", ["--help"], 0, b"whoami"),
             ("scripts/linear-board/board", ["whoami"], 4, b""),
+            ("scripts/simple-git", ["--help"], 0, b"simple-git"),
+            ("scripts/simple-git", ["list"], 4, b""),
         ]
         for script, args, code, text in cases:
             with self.subTest(script=script, args=args):
