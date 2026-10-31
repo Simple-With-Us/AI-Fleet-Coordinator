@@ -1015,7 +1015,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument(
         "--all",
         action="store_true",
-        help="nightly sources (board, effort-log, doc, skill, memory, apple-note; "
+        help="nightly sources (linear, doc, skill, memory, apple-note; "
         "excludes chat-log — pass --source chat-log for the rare policy scan)",
     )
     g.add_argument("--source", help="comma-separated: " + ",".join(GENERATORS))

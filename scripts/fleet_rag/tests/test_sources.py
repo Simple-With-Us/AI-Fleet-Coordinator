@@ -1473,6 +1473,22 @@ class ChatLogTests(unittest.TestCase):
         self.assertEqual(split["chat/claude/big#ruling1"].category, "infrastructure")
         self.assertEqual(split["chat/claude/big#ruling2"].category, "preference")
 
+    def test_retired_sources_are_explicit_only_and_linear_refreshes_by_default(self) -> None:
+        self.assertEqual(
+            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory", "apple-note")
+        )
+        self.assertIn("linear", sources.SOURCES)
+        from fleet_rag.ingest import _resolve_names, _attests_health
+
+        for selection in (None, "all"):
+            names = _resolve_names(selection)
+            self.assertEqual(names, list(sources.NIGHTLY_SOURCES))
+            self.assertTrue(_attests_health(names, True, None, None))
+        self.assertFalse(_attests_health(["board", "effort-log"], True, None, None))
+        for name in ("board", "effort-log"):
+            self.assertNotIn(name, sources.NIGHTLY_SOURCES)
+            self.assertIn(name, sources.GENERATORS)
+
     def test_nightly_sources_exclude_chat_log(self) -> None:
         self.assertNotIn("chat-log", sources.NIGHTLY_SOURCES)
         self.assertIn("chat-log", sources.SOURCES)

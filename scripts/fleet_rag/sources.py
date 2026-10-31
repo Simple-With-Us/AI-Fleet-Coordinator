@@ -136,10 +136,12 @@ def take_doc_skips() -> list[tuple[str, str]]:
     return out
 
 
-SOURCES = ("board", "effort-log", "doc", "skill", "memory", "apple-note", "chat-log")
+SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log", "board", "effort-log")
 # Nightly / `ingest --all`.  chat-log is an infrequent owner-policy scan, not a lesson dump
 # (owner 2026-09-02).  Pass `--source chat-log` explicitly.
-NIGHTLY_SOURCES = ("board", "effort-log", "doc", "skill", "memory", "apple-note")
+# Retired board/effort-log generators remain explicit-only for migration verification.
+# Never reintroduce their corpus documents through default or --all refreshes.
+NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory", "apple-note")
 
 WARNINGS: list[str] = []
 
