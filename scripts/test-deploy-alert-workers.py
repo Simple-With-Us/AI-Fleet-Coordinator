@@ -379,6 +379,24 @@ class Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             m.outstanding_requests([{"id": 1, "state": "APPROVED"}])
 
+    def test_irrelevant_reviews_do_not_require_sequence(self):
+        self.assertFalse(
+            m.outstanding_requests([{"state": "COMMENTED"}, {"state": "PENDING", "user": None}])
+        )
+        self.assertTrue(
+            m.outstanding_requests(
+                [
+                    {"state": "COMMENTED"},
+                    {"id": 1, "state": "CHANGES_REQUESTED", "user": {"id": 10}},
+                ]
+            )
+        )
+
+    def test_null_formal_user_is_controlled_failure(self):
+        for user in [None, False, "invalid", {}, {"id": True}]:
+            with self.subTest(user=user), self.assertRaises(RuntimeError):
+                m.outstanding_requests([{"id": 1, "state": "APPROVED", "user": user}])
+
 
 if __name__ == "__main__":
     unittest.main()

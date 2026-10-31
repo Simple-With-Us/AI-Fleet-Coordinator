@@ -147,13 +147,15 @@ def outstanding_requests(reviews):
     # COMMENTED does not clear a formal request. Only a later decisive review
     # by that same reviewer supersedes its prior decision; never mutate history.
     decisions = {}
-    if any(type(r.get("id")) is not int for r in reviews):
+    decisive = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+    if any(type(r.get("id")) is not int for r in decisive):
         raise RuntimeError("Missing formal review sequence")
-    for review in sorted(reviews, key=lambda r: r["id"]):
+    for review in sorted(decisive, key=lambda r: r["id"]):
         state = review.get("state")
         if state in ("APPROVED", "CHANGES_REQUESTED"):
-            reviewer = review.get("user", {}).get("id")
-            if reviewer is None:
+            user = review.get("user")
+            reviewer = user.get("id") if isinstance(user, dict) else None
+            if type(reviewer) is not int:
                 raise RuntimeError("Missing formal reviewer identity")
             decisions[reviewer] = state
     return any(state == "CHANGES_REQUESTED" for state in decisions.values())
