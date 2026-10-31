@@ -51,6 +51,7 @@ async function verifySignature(request, secret, body) {
 __name(verifySignature, "verifySignature");
 async function ghFetch(url, token) {
   return fetch(url, {
+    redirect: "manual",
     headers: {
       Authorization: `Bearer ${token}`,
       "User-Agent": "pr-conflict-watch",
@@ -79,6 +80,7 @@ __name(getMergeState, "getMergeState");
 async function postSlack(token, text) {
   await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
+    redirect: "manual",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json; charset=utf-8"

@@ -38,3 +38,13 @@ test('duplicate candidates produce one lookup per PR',async()=>{
  const r=await run(worker,{repository:{full_name:'a/b'},check_suite:{pull_requests:[{number:1},{number:1}]}},'check_suite');
  assert.equal(r.status,200);assert.equal(r.calls.filter(c=>String(c.url).includes('api.github.com')).length,1);
 });
+
+test('malformed GitHub replies cannot change state or notify Slack',async()=>{
+ const real=globalThis.fetch;let writes=0;
+ globalThis.fetch=async(url,init)=>{assert.equal(init.redirect,'manual');return new Response(JSON.stringify({state:'unexpected'}));};
+ try {
+  const pending=[],env={GITHUB_WEBHOOK_SECRET:'secret',GITHUB_TOKEN:'g',PR_STATE:{async get(){throw Error('must not read state');},async put(){writes++;}}};
+  await worker.fetch(await signed({repository:{full_name:'a/b'},pull_request:{number:1}}),env,{waitUntil:p=>pending.push(p)});
+  await Promise.all(pending);assert.equal(writes,0);
+ }finally{globalThis.fetch=real;}
+});
