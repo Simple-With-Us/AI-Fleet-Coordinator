@@ -1,0 +1,10 @@
+name = "pr-conflict-watch"
+main = "index.js"
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+keep_vars = true
+logpush = false
+
+[[kv_namespaces]]
+binding = "PR_STATE"
+id = "a759db5d58bc4d2e96fcfec852f97a14"
