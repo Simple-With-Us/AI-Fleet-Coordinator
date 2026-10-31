@@ -119,6 +119,9 @@ SHIPPED = (
     "scripts/simple-chat",
     "scripts/simple-notes",
     "scripts/simple-board",
+    # The git tools CLI entry wrapper and implementation (mirrors the release policy).
+    "scripts/simple-git",
+    "scripts/git-tools/",
     "scripts/agent_sync/",
     "scripts/linear-board/",
     "fleet-apps.json",
@@ -142,6 +145,9 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple-chat",
         "scripts/simple-notes",
         "scripts/simple-board",
+        # The git tools CLI entry wrapper and implementation (mirrors the release EXACT entries).
+        "scripts/simple-git",
+        "scripts/git-tools/git",
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",

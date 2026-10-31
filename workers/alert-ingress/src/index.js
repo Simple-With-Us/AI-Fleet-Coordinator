@@ -1,3 +1,4 @@
+import { readBoundedBody, BodyLimitError } from "./body.js";
 // Shared alert ingress — one door for every inbound signal.
 //
 // The problem this solves is not "too many alerts", it is that every inbound
@@ -1410,15 +1411,11 @@ const handler = {
     if (request.method !== "POST") return json({ error: "POST only" }, 405);
 
     const source = hookMatch[1].toLowerCase();
-    const raw = await request.text();
-    // One limit rules, and it is applied BEFORE the body is verified or parsed.
-    // The bound is in ENCODED BYTES, the same unit as the documented limit, so
-    // "too large" means one thing:  a body of 64 KiB of multi-byte characters
-    // is over the limit, and a body of 256 KiB of characters is far over it.
-    // Checking it here means an oversized body costs no signature work and no
-    // parse, which is the whole point of bounding it.
-    if (new TextEncoder().encode(raw).length > MAX_BODY_BYTES) {
-      return json({ error: "payload too large" }, 413);
+    let raw;
+    try { raw = new TextDecoder().decode(await readBoundedBody(request, MAX_BODY_BYTES)); }
+    catch (error) {
+      if (error instanceof BodyLimitError) return json({ error: "payload too large" }, 413);
+      return json({ error: "invalid body" }, 400);
     }
     if (!(await verify(request, raw, env, source))) {
       return json({ error: "bad signature" }, 401);
@@ -2006,8 +2003,33 @@ const writerFor = (env) =>
   env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName(WRITER_OBJECT_NAME));
 export default {
   async fetch(request, env) {
-    if (new URL(request.url).pathname === "/health")
-      return handler.fetch(request, env, {});
+    const path = new URL(request.url).pathname;
+    if (path === "/health") return handler.fetch(request, env, {});
+    const hook = path.match(/^\/webhook\/([a-z0-9_-]{1,32})$/i);
+    const operator = path === "/sweep" || /^\/status\/[^/]+\/[^/]+(?:\/[^/]+)?$/.test(path);
+    if (!hook && !operator && path !== "/status") return json({ error: "not found" }, 404);
+    if (hook) {
+      if (request.method !== "POST") return json({ error: "POST only" }, 405);
+      const source = hook[1].toLowerCase();
+      // Static-token sources and the generic bearer can be rejected without
+      // waking the writer. Signed sources still verify the body inside it.
+      if ((source === "betterstack" || !["datadog", "sentry", "pagerduty"].includes(source)) &&
+          !(await verify(request, "", env, source))) return json({ error: "bad signature" }, 401);
+      if (source === "datadog" &&
+          !(env.DATADOG_WEBHOOK_SECRET && safeEqual(request.headers.get("x-datadog-token") || "", env.DATADOG_WEBHOOK_SECRET)) &&
+          !/^[a-f0-9]{64}$/.test(request.headers.get("x-datadog-signature") || ""))
+        return json({ error: "bad signature" }, 401);
+      if (source === "sentry" && !/^[a-f0-9]{64}$/.test(request.headers.get("sentry-hook-signature") || ""))
+        return json({ error: "bad signature" }, 401);
+      if (source === "pagerduty" &&
+          !(env.PAGERDUTY_WEBHOOK_SECRET && safeEqual(request.headers.get("x-pagerduty-token") || "", env.PAGERDUTY_WEBHOOK_SECRET)) &&
+          !(request.headers.get("x-pagerduty-signature") || "").split(",").some(part => /^v1=[a-f0-9]{64}$/.test(part.trim())))
+        return json({ error: "bad signature" }, 401);
+      const length = request.headers.get("content-length");
+      if (length && /^\d+$/.test(length) && Number(length) > MAX_BODY_BYTES)
+        return json({ error: "payload too large" }, 413);
+    }
+    if (operator && !authorized(request, env)) return json({ error: "unauthorized" }, 401);
     if (!env.ALERT_WRITER)
       return json({ error: "durable writer unavailable", stale: true }, 503);
     return writerFor(env).fetch(request);

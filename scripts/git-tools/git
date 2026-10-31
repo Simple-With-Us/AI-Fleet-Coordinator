@@ -1,0 +1,1490 @@
+#!/usr/bin/env python3
+"""The fleet git tools CLI:  a thin client for the git tools of the hosted simple-tools MCP.
+
+Every operation is remote.  The endpoint is the fixed constant below (no environment override), the bearer
+comes from the process environment only (SIMPLE_TOOLS_BEARER, placed there by the host's seat helper from the
+declared seat's own private file - never an argument, file or log line here), and there is no direct path,
+no credential minting and no other credential source.  On the ECHO custody lane the fixed root-controlled
+native transport carries the call instead and no bearer is read at all.
+
+The tool surface is DISCOVERED at run time:  every list/show/call first performs tools/list on this caller's
+own transport (bounded pages, cursor-loop rejection, each advertised schema validated) and only then acts.
+The shipped catalog.json is an offline fixture for tests and reference, never call authority.  Read/write is
+NOT discovered:  an action is a write unless the pinned, reviewed read set below names it.
+
+Writes name their actor and this client resolves the actor for reads AND writes the same way:  a declared
+seat or an explicit identity must match the seat the server itself reports for this bearer (the identities
+answer), any mismatch is refused before the target call, and the resolved seat is injected as `identity`.
+On the native ECHO lane the custody itself proves ECHO:  any other declared or explicit seat is refused
+before ANY RPC.  There is no flag that picks a seat, a token or an endpoint.
+
+An unknown write outcome is never replayed automatically:  a dead answer after the request left, a 5xx/408 on
+a write, or the server's outcome_unknown all print the uncertainty note and stop.  The server's own message
+text is untrusted (it can echo caller input), so only its allow-listed error code is ever shown.  A genuine
+relay refusal keeps its real code - it is never reclassified as an uncertain write.
+
+This file is standard library only.  The command environment prefix is _ENV_STEM below;
+everything user-visible takes the installed name from argv[0].  Python 3.10+.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import http.client
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import signal  # SIGKILL for the isolated pattern-check child only, never this process
+import socket
+import ssl
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+EXIT_ERROR = 1
+EXIT_USAGE = 2  # bad flags, unknown tool, invalid arguments, identity mismatch
+EXIT_NO_CREDS = 4  # no bearer and not the native custody lane
+EXIT_AUTH = 6  # bearer refused by the hosted endpoint, or seat mismatch
+
+# Keep the command environment prefix in step with the host helper and wrapper key.
+# User-visible text uses the installed name.
+_ENV_STEM = "SIMPLE_GIT"
+REMOTE_ENV = _ENV_STEM + "_REMOTE"  # set by the seat helper;  informational only, this tool is always remote
+NATIVE_ECHO_ENV = _ENV_STEM + "_NATIVE_ECHO"
+USER_AGENT = _ENV_STEM.lower().replace("_", "-") + "-remote/1"
+
+REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
+REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
+REMOTE_TIMEOUT_S = 40
+# One budget for the whole verb:  the identities probe, every discovery page and the target call share
+# it.  Each request gets the REMAINING budget (capped per request), direct transport and native alike;  a
+# call whose budget is gone is never started, so a write refused that way is reported as definitely not
+# sent.  A deadline that ends while a request is in flight cannot prove the request did not land, so an
+# in-flight write timeout keeps the uncertainty wording.
+OVERALL_DEADLINE_S = 300
+REMOTE_PROTOCOL_VERSION = "2025-06-18"
+REMOTE_MAX_BYTES = 4_000_000
+REMOTE_MAX_DEPTH = 64
+REMOTE_MAX_NODES = 100_000
+REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
+SEAT_PATTERN = re.compile(r"[A-Z][A-Z0-9-]{1,30}")
+TOOL_NAME_RE = re.compile(r"gr_[a-z0-9_]{1,80}\Z")
+IDENTITIES_TOOL = "identities"
+NATIVE_ECHO_SEAT = "ECHO"
+
+DISCOVERY_MAX_PAGES = 16
+DISCOVERY_MAX_TOOLS = 2000
+DISCOVERY_MAX_CURSOR = 512
+
+# Read/write is policy, not discovery:  the reviewed read set (the relay's WF_V1_READ_ACTIONS plus the two
+# typed read tools, gr-workflow-v1.js / gr-typed-v1.js at capture time).  An advertised action this set does
+# not name is treated as a WRITE:  uncertainty wording, actor resolution and no-reply rules stay conservative.
+WF_V1_READ_ACTIONS = """wf_pr_commits_page wf_pr_review_get wf_release_latest wf_release_by_tag wf_commit_comments_page
+wf_commit_comment_get wf_pr_requested_reviewers wf_repo_tags wf_repo_languages wf_pr_list_page
+wf_compare_commits_page wf_pr_reviews_page wf_pr_comments_page wf_check_runs_page wf_check_run_get
+wf_file_history wf_runs_page wf_workflows_page wf_pr_files_page wf_issue_parent wf_issue_subissues
+wf_issue_blocked_by wf_issue_blocking wf_commit_statuses wf_git_blob_get wf_git_commit_get wf_git_tree_get
+wf_release_asset_download wf_job_log wf_run_logs wf_artifact_download wf_milestones wf_milestone_get
+wf_deployments wf_deployment_get wf_deployment_statuses wf_environments wf_environment_get wf_release_list
+wf_release_get wf_tag_get wf_review_threads wf_issue_list wf_issue_get wf_pr_get wf_pr_reviews wf_pr_comments
+wf_issue_comments wf_commit_get wf_compare wf_branch_get wf_repo_get wf_labels wf_workflows wf_run_get
+wf_run_artifacts wf_release_assets wf_release_asset_get wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches
+wf_commits wf_code_search wf_runs wf_run_jobs wf_checks wf_merge_queue_entry wf_job_get wf_workflow_get
+wf_artifact_get wf_artifacts_page wf_caches_page wf_cache_usage wf_run_attempt_get wf_run_attempt_jobs
+wf_run_pending_deployments wf_repo_variables wf_repo_variable_get wf_issue_events wf_issue_timeline
+wf_git_blob_binary_get""".split()
+READ_TOOLS = frozenset(["gr_v1_pr_state", "gr_v1_pr_hold_state"] + ["gr_" + a for a in WF_V1_READ_ACTIONS])
+
+# Per-action input byte limits (gr-workflow-v1.js WF_V1_INPUT_LIMITS; default 64 KiB).
+INPUT_LIMITS = {
+    "gr_wf_release_asset_upload_binary": 253952,
+    "gr_wf_file_put": 6 * 1024 * 1024,
+    "gr_wf_files_put": 6 * 1024 * 1024,
+}
+DEFAULT_INPUT_LIMIT = 65536
+
+# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src), kept in
+# step with scripts/linear-board/board.  Anything else, including a code that merely looks safe, prints as
+# "error".
+_REMOTE_CODES = frozenset(
+    (
+        "invalid_argument",
+        "unavailable",
+        "upstream_error",
+        "not_authorized",
+        "rate_limited",
+        "not_configured",
+        "outcome_unknown",
+        "paused",
+        "linear_error",
+        "internal",
+        "response_too_large",
+        "refused_secret",
+        "not_found",
+        "channel_not_allowed",
+        "claim_held",
+        "zulip_error",
+        "writes_disabled",
+        "unknown_tool",
+        "session_required",
+        "relay_refused",
+        "identity_required",
+        "identity_not_allowed",
+        "forbidden",
+        "fleetlink_seat_disabled",
+        "fleetlink_refused",
+        "dm_not_allowed",
+        "budget_exhausted",
+    )
+)
+_REMOTE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_REMOTE_UNKNOWN = "; the write may or may not have been applied, check before sending it again"
+
+
+def prog() -> str:
+    # The wrapper records the name it was INSTALLED under before any interpreter re-exec (which would
+    # otherwise replace argv[0] with the real script path);  without it, argv[0] itself is the source.
+    chosen = env(_ENV_STEM + "_ARGV0").strip() or os.path.basename(sys.argv[0] or "git")
+    # _visible leaves newline and tab printable by design;  in the program name they would split die()
+    # lines on stderr (a caller-controlled environment could spoof log lines), so escape them here.
+    return _visible(chosen).replace("\n", "\\n").replace("\t", "\\t")
+
+
+def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
+    sys.stderr.write(f"{prog()}: {msg}\n")
+    raise SystemExit(code)
+
+
+def env(name: str) -> str:
+    return os.environ.get(name, "")
+
+
+ARGS_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _no_constant(value):
+    raise ValueError("non-finite numbers are not JSON")
+
+
+def _strict_object(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError("duplicate JSON key")
+        out[key] = value
+    return out
+
+
+def strict_loads(text):
+    """JSON with no duplicate keys and no NaN/Infinity, for caller arguments and server answers alike."""
+    return json.loads(text, object_pairs_hook=_strict_object, parse_constant=_no_constant)
+
+
+def _visible(text: str) -> str:
+    """Hosted text with control characters (other than newline and tab) shown as \\xNN, so it cannot drive the terminal."""
+    return _REMOTE_CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), text)
+
+
+# ----------------------------------------------------------------- seat declaration (mirrors the host's seat helper)
+
+
+def declared_seat() -> str | None:
+    """The seat this process says it is, or None when it says nothing.  Same precedence and conflict rules as
+    the host's seat-remote-defaults helper;  used only to fill or check the `identity` argument, never to pick
+    a credential."""
+    launcher = env("AGENT_LAUNCHER").strip()
+    launch_seat = env("AGENT_LAUNCH_SEAT").strip().upper()
+    seat = env("AGENT_SEAT").strip().upper()
+    tag = env("AGENT_TAG").strip().upper()
+    if launcher and not launch_seat:
+        die("AGENT_LAUNCHER is set without AGENT_LAUNCH_SEAT", EXIT_USAGE)
+    if launch_seat and not launcher:
+        die("AGENT_LAUNCH_SEAT is set without AGENT_LAUNCHER", EXIT_USAGE)
+    declared = [v for v in (launch_seat, seat, tag) if v]
+    if len(set(declared)) > 1:
+        die("conflicting seat declarations in the environment", EXIT_USAGE)
+    if not declared:
+        return None
+    if SEAT_PATTERN.fullmatch(declared[0]) is None:
+        die("the declared seat name has an invalid format", EXIT_USAGE)
+    return declared[0]
+
+
+def native_echo_selected() -> bool:
+    return env(NATIVE_ECHO_ENV) == "1"
+
+
+def remote_bearer() -> str:
+    v = env(REMOTE_BEARER_ENV)
+    if not v:
+        die(
+            f"this bot's own bearer must be in {REMOTE_BEARER_ENV} (the host's seat helper places it there "
+            "from the declared seat's own file); there is no fallback to direct credentials and no other "
+            "source",
+            EXIT_NO_CREDS,
+        )
+    if not REMOTE_BEARER_RE.fullmatch(v):
+        die(
+            f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)",
+            EXIT_NO_CREDS,
+        )
+    return v
+
+
+# ----------------------------------------------------------------- transport (mirrors scripts/linear-board/board's pinned hosted transport)
+
+
+class _TransportError(Exception):
+    """The request did not produce an HTTP answer.  `sent` is False only when it provably never left
+    (name lookup, refused connection, certificate check);  every other stage is treated as sent."""
+
+    def __init__(self, sent: bool, reason: str = "") -> None:
+        super().__init__(reason)
+        self.sent = sent
+        self.reason = reason
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so the Authorization header never follows a 3xx."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[int, str, bytes]:
+    """The one network call of the remote transport:  (status, content type, body).  Tests replace this.
+    Redirects are never followed (the Authorization header must not leave the fixed origin), the body is
+    read under one total deadline and one byte cap.  Never retried."""
+    deadline = time.monotonic() + timeout
+    op = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    try:
+        with op.open(req, timeout=timeout) as r:
+            chunks, total = [], 0
+            sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
+            if sock is None:
+                # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
+                # outlast the deadline:  fail closed rather than read unbounded.
+                raise _TransportError(True, "transport")
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _TransportError(True, "deadline")
+                sock.settimeout(remaining)
+                try:
+                    chunk = r.read1(65536)
+                except AttributeError:
+                    # read1's partial-read semantics serve the slow-drip deadline and an ordinary
+                    # http.client.HTTPResponse provides it;  a wrapped response that cannot read this
+                    # way is a transport failure here, never a traceback.
+                    raise _TransportError(True, "transport") from None
+                if time.monotonic() > deadline:
+                    raise _TransportError(True, "deadline")
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > REMOTE_MAX_BYTES:
+                    raise _TransportError(True, "too large")
+                chunks.append(chunk)
+            return r.status, r.headers.get("Content-Type", ""), b"".join(chunks)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return exc.code, "", b""
+    except urllib.error.URLError as exc:
+        unsent = isinstance(
+            exc.reason, (socket.gaierror, ConnectionRefusedError, ssl.SSLCertVerificationError)
+        )
+        raise _TransportError(not unsent, "unreachable") from None
+    except _TransportError:
+        raise
+    except (http.client.HTTPException, OSError, ValueError):
+        raise _TransportError(True, "transport") from None
+
+
+def _error_code_of(result: dict) -> str | None:
+    """The hosted server's error code from a tools/call-style result:  structuredContent, then
+    `_meta["agent-sync/error"]`, then the first text part that is a JSON object.  Only allow-listed codes
+    are recognized;  anything else (or nothing) is None."""
+    candidates = []
+    sc = result.get("structuredContent")
+    if isinstance(sc, dict):
+        candidates.append(sc)
+    meta = result.get("_meta")
+    if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict):
+        candidates.append(meta["agent-sync/error"])
+    for part in result.get("content") or []:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            try:
+                obj = strict_loads(part["text"])
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(obj, dict):
+                candidates.append(obj)
+                break
+    for cand in candidates:
+        code = cand.get("code")
+        if isinstance(code, str) and code in _REMOTE_CODES:
+            return code
+    return None
+
+
+def _native_echo_post(body: bytes, write: bool, timeout: float = REMOTE_TIMEOUT_S):
+    """Fixed existing root-controlled ECHO custody transport; no credential export.
+
+    The adapter reports an UNCERTAIN transport failure as isError with code=outcome_unknown in the
+    content/meta error object, and a genuine refusal with its own code (a seat mismatch is
+    identity_not_allowed).  Both are read by the shared error parsing;  nothing is fabricated here and a
+    genuine refusal is never reclassified or retried."""
+    # The approved custody route is Linux systemd only and absent on the Mac:  fail closed, no substitute.
+    if sys.platform != "linux" or not os.path.isfile(
+        "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"
+    ):
+        die(
+            "the approved native ECHO custody route is not available on this host; there is no fallback",
+            EXIT_AUTH,
+        )
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": REMOTE_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": prog(), "version": "1"},
+        },
+    }
+    notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    data = (
+        json.dumps(initialize).encode()
+        + b"\n"
+        + json.dumps(notification).encode()
+        + b"\n"
+        + body
+        + b"\n"
+    )
+    command = ["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"]
+    if os.geteuid() != 0:
+        # Ordinary shell: the exact already-authorized custody elevation, absolute and
+        # non-interactive (-n fails closed, it never prompts); no shell, no environment or
+        # alternate path, root behavior unchanged.
+        command = ["/usr/bin/sudo", "-n"] + command
+    try:
+        proc = subprocess.run(
+            command,
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,  # the actual remaining budget from _rpc (already > 0, already capped)
+            env={"PATH": "/usr/bin:/bin"},
+            check=False,
+        )
+        if proc.returncode or len(proc.stdout) > 3 * REMOTE_MAX_BYTES:
+            raise ValueError("native transport failed")
+        lines = [strict_loads(line) for line in proc.stdout.splitlines() if line.strip()]
+        if len(lines) != 2 or any(not isinstance(x, dict) for x in lines):
+            raise ValueError("invalid native response")
+        hello, answer = lines
+        if (
+            hello.get("id") != 0
+            or not isinstance(hello.get("result"), dict)
+            or answer.get("id") != 1
+        ):
+            raise ValueError("native response mismatch")
+        return 200, "application/json", json.dumps(answer).encode()
+    except (OSError, ValueError, RecursionError, subprocess.SubprocessError):
+        die(
+            "native ECHO transport unavailable; "
+            + (
+                "write outcome unknown, do not replay before checking the target"
+                if write
+                else "no direct-credential fallback"
+            ),
+            EXIT_ERROR,
+        )
+
+
+# ----------------------------------------------------------------- answer parsing (mirrors board)
+
+
+def _depth_ok(text: str) -> bool:
+    depth = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > REMOTE_MAX_DEPTH:
+                return False
+        elif ch in "]}":
+            depth -= 1
+    return True
+
+
+def _nodes_ok(value) -> bool:
+    stack, count = [value], 0
+    while stack:
+        item = stack.pop()
+        count += 1
+        if count > REMOTE_MAX_NODES:
+            return False
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return True
+
+
+def _events(ctype: str, raw: bytes) -> list[str]:
+    """The JSON texts of one answer:  the body itself, or each Server-Sent Event (its `data:` lines joined by a
+    newline, as the SSE format defines, comments and other fields ignored)."""
+    text = raw.decode("utf-8", "replace")
+    if "text/event-stream" not in ctype.lower():
+        return [text]
+    events, current = [], []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line == "":
+            if current:
+                events.append("\n".join(current))
+                current = []
+        elif line.startswith("data:"):
+            value = line[5:]
+            current.append(value[1:] if value.startswith(" ") else value)
+    if current:
+        events.append("\n".join(current))
+    return events
+
+
+def _rpc_result(ctype: str, raw: bytes, write: bool):
+    """The result object of one JSON-RPC answer, or (None, message).  Only an allow-listed code leaves this
+    function on the error path:  the server's own message text is untrusted and can echo the caller's input,
+    so it is never copied into an error."""
+    unknown = _REMOTE_UNKNOWN if write else ""
+    msg = None
+    for text in _events(ctype, raw):
+        if not _depth_ok(text):
+            return None, "the hosted endpoint sent an answer that nests too deeply" + unknown
+        try:
+            candidate = strict_loads(text)
+        except (ValueError, RecursionError):
+            continue
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("jsonrpc") == "2.0"
+            and type(candidate.get("id")) is int
+            and candidate["id"] == 1
+            and ("result" in candidate) != ("error" in candidate)
+        ):
+            msg = candidate
+            break
+    if msg is None:
+        return None, "the hosted endpoint sent no readable answer to the call" + unknown
+    if not _nodes_ok(msg):
+        return None, "the hosted endpoint sent an oversized answer" + unknown
+    if "error" in msg:
+        err = msg["error"]
+        code = err.get("code") if isinstance(err, dict) else None
+        shown = code if isinstance(code, str) and code in _REMOTE_CODES else "error"
+        return None, "the hosted endpoint refused the call" + (
+            "" if shown == "error" else f" ({shown})"
+        )
+    result = msg.get("result")
+    if not isinstance(result, dict):
+        return None, "the hosted endpoint sent no result" + unknown
+    return result, ""
+
+
+def _failure(exc: "_TransportError", write: bool) -> str:
+    if write and exc.sent:
+        return (
+            "the hosted endpoint did not answer"
+            + _REMOTE_UNKNOWN
+            + " (no direct fallback)"
+        )
+    return "the hosted endpoint could not be reached (no direct fallback)"
+
+
+def _status_message(status: int, write: bool) -> str:
+    if status in (401, 403):
+        return "the hosted endpoint refused this bearer (not valid, expired, paused or not accepted for MCP)"
+    return f"the hosted endpoint answered HTTP {status}" + (
+        _REMOTE_UNKNOWN if write and (status >= 500 or status == 408) else ""
+    )
+
+
+# ----------------------------------------------------------------- secret scanning (remote mode has no unscanned route)
+
+_SCANNER = None
+
+
+def _scanner():
+    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.
+    If it cannot be loaded nothing is sent:  there is no unscanned route."""
+    global _SCANNER
+    if _SCANNER is not None:
+        return _SCANNER
+    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_git_secretscan", str(path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (OSError, ImportError, AttributeError, SyntaxError):
+        die(
+            "the secret scanner is not available, so nothing was sent (there is no unscanned route)",
+            EXIT_ERROR,
+        )
+    _SCANNER = module
+    return module
+
+
+def _scan_arguments(arguments, bearer: str) -> str | None:
+    """The first argument field the fleet secret scanner flags, as `secret_scan:<field>` (the field name only,
+    never the text or any part of it), or None.  Every string at any depth is checked, and the bearer itself
+    always matches."""
+    scanner = _scanner()
+    stack = [("", arguments)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, str):
+            if scanner.scan(value, known=[bearer] if bearer else []) is not None:
+                return "secret_scan:" + (path or "arguments")
+        elif isinstance(value, dict):
+            stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
+        elif isinstance(value, (list, tuple)):
+            stack.extend((f"{path}[{i}]", v) for i, v in enumerate(value))
+    return None
+
+
+# ----------------------------------------------------------------- the one remote round trip
+
+
+def _rpc(bearer: str, method: str, params: dict, write: bool, deadline: float | None = None):
+    """One JSON-RPC POST to the fixed endpoint.  Returns the result object.  Never retried.
+    `deadline` is the verb's overall budget:  a call whose budget is already gone is never started (a
+    write refused that way is definitely NOT sent), and a call that does start gets only the remaining
+    budget."""
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    ).encode()
+    timeout = REMOTE_TIMEOUT_S
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Nothing left for this request, so it never leaves:  for a write that is a certainty,
+            # not the in-flight uncertainty wording.
+            die(
+                "the overall time budget was exhausted before this call"
+                + ("; the write was not sent" if write else ""),
+                EXIT_ERROR,
+            )
+        timeout = min(REMOTE_TIMEOUT_S, remaining)
+    try:
+        status, ctype, raw = (
+            _native_echo_post(body, write, timeout)
+            if native_echo_selected()
+            else _remote_post(
+                REMOTE_MCP_URL,
+                {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "MCP-Protocol-Version": REMOTE_PROTOCOL_VERSION,
+                    "Authorization": "Bearer " + bearer,
+                    "User-Agent": USER_AGENT,
+                },
+                body,
+                timeout,
+            )
+        )
+    except _TransportError as exc:
+        die(_failure(exc, write), EXIT_ERROR)
+    if status in (401, 403):
+        die(_status_message(status, write), EXIT_AUTH)
+    if status != 200:
+        die(_status_message(status, write), EXIT_ERROR)
+    result, problem = _rpc_result(ctype, raw, write)
+    if problem:
+        die(problem, EXIT_ERROR)
+    return result
+
+
+def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: float | None = None) -> dict:
+    """One tools/call.  Returns {"structured":..., "text":...}.  Never retried."""
+    hit = _scan_arguments(arguments, bearer)
+    if hit:
+        die(f"refused before sending: {hit}", EXIT_USAGE)
+    result = _rpc(
+        bearer, "tools/call", {"name": tool, "arguments": arguments}, write, deadline
+    )
+    content = result.get("content")
+    sc = result.get("structuredContent")
+    if (
+        (content is not None and not isinstance(content, list))
+        or any(
+            not isinstance(p, dict) or ("text" in p and not isinstance(p["text"], str))
+            for p in content or []
+        )
+        or (sc is not None and not isinstance(sc, dict))
+        or not isinstance(result.get("isError", False), bool)
+    ):
+        die(
+            "the hosted endpoint sent a result in an unexpected shape"
+            + (_REMOTE_UNKNOWN if write else ""),
+            EXIT_ERROR,
+        )
+    if result.get("isError"):
+        code = _error_code_of(result)
+        shown = code if code is not None else "error"
+        note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
+        # retry-after is the only other field ever shown, and only bounded.
+        retry = None
+        meta = result.get("_meta")
+        for source in (sc if isinstance(sc, dict) else {}, meta.get("agent-sync/error") if isinstance(meta, dict) and isinstance(meta.get("agent-sync/error"), dict) else {}):
+            value = source.get("retry_after_s", source.get("retry_after"))
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 86400:
+                retry = value
+                break
+        after = f", retry after {int(-(-retry // 1))}s" if retry is not None else ""
+        die(f"{tool} failed on the hosted server: {shown}{after}{note}", EXIT_ERROR)
+    parts = [
+        c.get("text")
+        for c in content or []
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    return {
+        "structured": sc if isinstance(sc, dict) else {},
+        "text": "\n".join(t for t in parts if isinstance(t, str)),
+    }
+
+
+# ----------------------------------------------------------------- runtime discovery (the only tool authority)
+
+
+def discover_tools(bearer: str, deadline: float | None = None) -> dict:
+    """The git tools THIS caller's endpoint serves right now, via bounded tools/list pages:  at most
+    DISCOVERY_MAX_PAGES pages, DISCOVERY_MAX_TOOLS tools, each cursor a fresh bounded string (a repeat is a
+    loop and refuses), every advertised tool shape-validated.  Read/write is NOT taken from the answer:  the
+    pinned reviewed read set decides, and an unknown action is a write."""
+    tools: dict = {}
+    cursor = None
+    seen_cursors = set()
+    for _ in range(DISCOVERY_MAX_PAGES):
+        params = {"cursor": cursor} if cursor is not None else {}
+        result = _rpc(bearer, "tools/list", params, False, deadline)
+        page = result.get("tools")
+        if not isinstance(page, list):
+            die("the hosted endpoint answered tools/list without a tools array")
+        for entry in page:
+            if len(tools) >= DISCOVERY_MAX_TOOLS:
+                die("the hosted endpoint advertised too many tools")
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("name"), str)
+                or TOOL_NAME_RE.fullmatch(entry["name"]) is None
+            ):
+                continue  # not a git tool;  other families exist on the same endpoint
+            name = entry["name"]
+            if name in tools:
+                die("the hosted endpoint advertised the same tool twice")
+            schema = entry.get("inputSchema")
+            if not _schema_ok(schema):
+                die(f"the hosted endpoint advertised {name} with a missing or unreadable schema")
+            # tools/list is untrusted operational data:  descriptions are display text through _visible,
+            # never instructions, and bounded before storing.
+            description = entry.get("description")
+            title = entry.get("title")
+            if (
+                isinstance(description, str) and len(description) > 4096
+                or isinstance(title, str) and len(title) > 512
+            ):
+                die(f"the hosted endpoint advertised {name} with an oversized description")
+            tools[name] = {
+                "name": name,
+                "title": title if isinstance(title, str) else "",
+                "description": description if isinstance(description, str) else "",
+                "read": name in READ_TOOLS,
+                "input_bytes": INPUT_LIMITS.get(name, DEFAULT_INPUT_LIMIT),
+                "schema": schema,
+            }
+        nxt = result.get("nextCursor")
+        if nxt is None:  # absent or JSON null:  the only normal end of the list
+            break
+        if (
+            not isinstance(nxt, str)
+            or not nxt  # an empty cursor is malformed, never a terminator
+            or len(nxt) > DISCOVERY_MAX_CURSOR
+            or nxt in seen_cursors
+            or nxt == cursor
+        ):
+            die("the hosted endpoint sent a malformed or repeating tools/list cursor")
+        seen_cursors.add(nxt)
+        cursor = nxt
+    else:
+        die(f"the hosted endpoint kept paging past {DISCOVERY_MAX_PAGES} pages")
+    if not tools:
+        die("the hosted endpoint advertises no git tools to this bearer")
+    return tools
+
+
+_PATTERN_CHECK_MAX_S = 5  # per-validation wall-clock cap on ALL pattern work, inside the overall budget
+
+# The exact contract for untrusted patterns:  only these 18 patterns - the reviewed catalog's complete
+# set, sha256 of the pattern text - may ever be compiled or searched.  Anything unrecognized fails
+# closed, on every platform.  There is NO heuristic:  widening this set is a reviewed code change, and
+# each member's compile size and match cost are verified facts, not estimates.
+_KNOWN_PATTERN_DIGESTS = frozenset(
+    (
+    "0de5285caead4b0618cd25d9f6c0ec9bc330f05eb97ffcb941e12f4be4ec3f8f",
+    "10d10184fb6ea3c9990c8e5d942c75336a0b516cb0dec06ef3fc9ac0b5abdb7a",
+    "126a2cf27187e82c7e365633238f2826294e633753f816f6fe6767be1b1feabe",
+    "15f8c50c6b67c4fce53733c7fb9b475d2302cb579025492f00a6e510b413e81b",
+    "30faeacdfec06158676b35a41d36c0493619b5e86afa7ae578aff5eff450013b",
+    "38a3d1088fbdbafafbcf18a3b050a2b49fe75cee854720ae984e511d9eaa57bb",
+    "45b5f55a38eb846af40064f0db7ec2ea0825785dfe6a1135ce82f2094b001005",
+    "52f851fad882359b4da47ab468f04139b0a5bbc846a922f655c5b37cdcfd05de",
+    "7a3e89f559ebec394da08a91160bb5eab26b2ef30d26eeb88c270079b58d2e2f",
+    "7b8be75214feb9b9cc29abc256a0996c92dcd7d05abfb1ca5f7b922d58aaffec",
+    "88b2ed1aec9cd281271858178ffa9dc52d0f283a9c71e2b8fb843199216bd11d",
+    "a6aa272af8e604e6e4097952430e60ec47a3a0578c73732ac48fcdb785db9cb5",
+    "ab10742c40c95e23b40b24a42ff97316a3eaa79654b6afb5f2decd39f1ec47f6",
+    "b9c4b86e8e227fb8026d44a0115b4e31e00ec77b831c6c430431d5dc6be67a67",
+    "c6a7ec8f6b892580934b579c27e0cdce61bbf2fb611904b5961f7871b455bd4a",
+    "efcdbef2487e6736c09187488425ab45b044c6e7833c0039c43dd94cd4fe3d2b",
+    "f0e2589feb4a3846c8c810fd5a17c9c24747122ddbc23d5865bbb8710038975d",
+    "f755b5cc0997d16521245eb191dba503d456297b4e110a6ed421770e81ddd67c"
+)
+)
+
+
+def _pattern_known(pattern: str) -> bool:
+    return hashlib.sha256(pattern.encode("utf-8")).hexdigest() in _KNOWN_PATTERN_DIGESTS
+
+
+def _as_limit_target(resource) -> tuple:
+    """The (soft, hard) RLIMIT_AS values to set:  the 1 GiB cap clamped DOWN to the platform's actual
+    hard limit, which is never raised (an unprivileged fixed value can exceed it - macOS rejects that
+    outright with ValueError).  Pure computation, unit-testable;  supplementary defense-in-depth only -
+    the real allocation bound is the exact 18-pattern contract:  nothing unrecognized is ever compiled,
+    on any OS."""
+    _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    cap = 1 << 30
+    target = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
+    return target, hard
+
+
+def _patterns_match(checks, end: float):
+    """Run every (pattern, value) search - and the pattern COMPILES - in one isolated child process with
+    a hard bound.  Untrusted tools/list patterns can backtrack catastrophically on CPU that no RPC or
+    socket deadline can interrupt, so the bound is a child this process may KILL (the child only;  this
+    process never sends itself signals).  `end` is ONE absolute monotonic deadline shared by all
+    pattern work in this validation, capped by the verb's overall budget.  The child also gets POSIX
+    rlimits (CPU seconds;  address space clamped to the platform's own hard limit) where the platform
+    supports them, and when that required safety is unavailable there is no run at all.  Only the exact
+    reviewed pattern set (_KNOWN_PATTERN_DIGESTS) ever reaches the child, so compile and search sizes
+    are verified facts on every platform.  Returns True/False for a definite verdict, or None when the
+    bound expired, the pattern is unrecognized, or the child died without a verdict:  an unverifiable
+    pattern is refused, never trusted."""
+    if not checks:
+        return True
+    # The exact contract, checked before forking:  an unrecognized pattern is never compiled anywhere.
+    if not all(_pattern_known(pattern) for pattern, _v in checks):
+        return None
+    if not hasattr(os, "fork"):  # non-POSIX:  no enforceable bound exists;  refuse rather than risk it
+        return None
+    try:
+        import resource  # POSIX rlimits:  the child's CPU/address-space bounds
+    except ImportError:
+        return None  # required safety unavailable:  fail closed
+    if time.monotonic() >= end:
+        return None
+    try:
+        read_fd, write_fd = os.pipe()
+    except OSError:
+        return None
+    try:
+        pid = os.fork()
+    except OSError:
+        os.close(read_fd)
+        os.close(write_fd)
+        return None
+    if pid == 0:  # child:  limits first, then re work, then a one-byte verdict;  never returns
+        try:
+            os.close(read_fd)
+            try:
+                cpu = max(1, int(end - time.monotonic()) + 1)
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+            except (OSError, ValueError):
+                os._exit(3)  # the CPU bound is required safety:  no verdict without it
+            try:
+                # Supplementary:  clamp the address-space cap DOWN to the platform's actual hard limit
+                # (an unprivileged fixed value can exceed it - macOS raises ValueError).  Never raises
+                # the hard limit;  failure is tolerated because only the exact reviewed pattern set is accepted
+                # (Darwin may not enforce RLIMIT_AS).
+                target, hard = _as_limit_target(resource)
+                if target > 0:
+                    resource.setrlimit(resource.RLIMIT_AS, (target, hard))
+            except (AttributeError, OSError, ValueError):
+                pass
+            verdict = False
+            try:
+                if not all(_pattern_known(pattern) for pattern, _v in checks):
+                    os._exit(4)  # unrecognized pattern:  no verdict, refused upstream
+                verdict = all(
+                    re.search(re.compile(pattern), value) for pattern, value in checks
+                )
+            except (re.error, ValueError, MemoryError, RecursionError):
+                verdict = False
+            try:
+                os.write(write_fd, b"1" if verdict else b"0")
+            except OSError:
+                pass
+        finally:
+            os._exit(0)
+    os.close(write_fd)
+    try:
+        while True:
+            done, _status = os.waitpid(pid, os.WNOHANG)
+            if done == pid:
+                try:
+                    data = os.read(read_fd, 1)
+                except OSError:
+                    data = b""
+                if not data:
+                    return None  # exited without a verdict (e.g. limits unavailable):  unverifiable
+                return data == b"1"
+            if time.monotonic() >= end:
+                try:
+                    os.kill(pid, signal.SIGKILL)  # the isolated child, never this process
+                except OSError:
+                    pass
+                try:
+                    os.waitpid(pid, 0)
+                except OSError:
+                    pass
+                return None
+            time.sleep(0.005)
+    except BaseException:
+        # This process is going down:  kill and reap OUR child rather than leave it burning CPU.
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except Exception:
+            pass
+        raise
+    finally:
+        os.close(read_fd)
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_nonneg_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _schema_constraints_ok(schema, depth: int = 0) -> bool:
+    """Every constraint this client interprets has the type the check relies on, recursively:  required
+    lists, properties maps, anyOf variants, items, numeric bounds, length/item bounds, pattern (must
+    compile) and enum.  tools/list is untrusted:  a malformed leaf makes the whole advertised schema
+    unreadable (a clean refusal at discovery), never a TypeError traceback during validation."""
+    if not isinstance(schema, dict) or depth > 8:
+        return False
+    if schema.get("type") is not None and not isinstance(schema["type"], str):
+        return False
+    required = schema.get("required")
+    if required is not None and (
+        not isinstance(required, list) or not all(isinstance(x, str) for x in required)
+    ):
+        return False
+    if not all(_is_number(schema[k]) for k in ("minimum", "maximum") if k in schema):
+        return False
+    if not all(
+        _is_nonneg_int(schema[k])
+        for k in ("minLength", "maxLength", "minItems", "maxItems")
+        if k in schema
+    ):
+        return False
+    # A pattern is never compiled or searched in this process:  both happen only inside the isolated,
+    # deadline-bounded child in _patterns_match (compile cost included).  Here it must be a string from
+    # the exact reviewed set - anything unrecognized fails closed (the child re-checks by digest).
+    pattern = schema.get("pattern")
+    if pattern is not None and (
+        not isinstance(pattern, str) or not _pattern_known(pattern)
+    ):
+        return False
+    enum = schema.get("enum")
+    if enum is not None and not isinstance(enum, list):
+        return False
+    items = schema.get("items")
+    if items is not None and not _schema_constraints_ok(items, depth + 1):
+        return False
+    props = schema.get("properties")
+    if props is not None and (
+        not isinstance(props, dict)
+        or len(props) > 200
+        or not all(isinstance(k, str) for k in props)
+        or not all(_schema_constraints_ok(v, depth + 1) for v in props.values())
+    ):
+        return False
+    any_of = schema.get("anyOf")
+    if any_of is not None and (
+        not isinstance(any_of, list)
+        or not all(_schema_constraints_ok(v, depth + 1) for v in any_of)
+    ):
+        return False
+    return True
+
+
+def _schema_ok(schema) -> bool:
+    """A discovered input schema is usable:  an object schema whose required/properties are ordinary and
+    whose leaf constraints are well-typed all the way down."""
+    if not isinstance(schema, dict) or not _nodes_ok(schema):
+        return False
+    if schema.get("type") not in (None, "object"):
+        return False
+    return _schema_constraints_ok(schema)
+
+
+# ----------------------------------------------------------------- client-side argument validation (the server remains the enforcement boundary)
+
+
+def _bounded(value, max_bytes: int) -> bool:
+    """The Worker's structural input guard (gr-workflow-v1.js boundedWorkflowInput):  depth, node, key, string
+    and total-byte limits, evaluated before any schema read."""
+    stack = [(value, 0)]
+    nodes = 0
+    total = 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > 500 or depth > 6:
+            return False
+        if isinstance(item, str):
+            if len(item) > max_bytes:
+                return False
+            total += len(item.encode("utf-8", "replace"))
+        elif isinstance(item, dict):
+            if len(item) > 100:
+                return False
+            for k, v in item.items():
+                if not isinstance(k, str):
+                    return False
+                stack.append((k, depth + 1))
+                stack.append((v, depth + 1))
+        elif isinstance(item, list):
+            stack.extend((v, depth + 1) for v in item)
+    return total <= max_bytes
+
+
+def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
+    """The Worker's typeOk:  one JSON-schema leaf check (type, pattern, enum, lengths, numeric bounds,
+    items).  `pattern` is NOT searched here:  with a collector, the (pattern, value) pair is deferred
+    to the isolated deadline-bounded child (_patterns_match) and this leaf is tentatively True."""
+    kind = schema.get("type")
+    if kind == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        # Discovery already refused a malformed bound;  guard anyway, so a bad leaf is a clean False
+        # and never a TypeError.
+        lo, hi = schema.get("minimum"), schema.get("maximum")
+        if lo is not None and (not _is_number(lo) or value < lo):
+            return False
+        if hi is not None and (not _is_number(hi) or value > hi):
+            return False
+        return True
+    if kind == "boolean":
+        return isinstance(value, bool)
+    if kind == "array":
+        if not isinstance(value, list):
+            return False
+        lo, hi = schema.get("minItems"), schema.get("maxItems")
+        if lo is not None and (not _is_nonneg_int(lo) or len(value) < lo):
+            return False
+        if hi is not None and (not _is_nonneg_int(hi) or len(value) > hi):
+            return False
+        items = schema.get("items")
+        if isinstance(items, dict):
+            return all(
+                _object_ok(items, v, pattern_checks=pattern_checks)
+                if items.get("type") == "object"
+                else _type_ok(items, v, pattern_checks)
+                for v in value
+            )
+        return True
+    if kind == "object":
+        return _object_ok(schema, value, pattern_checks=pattern_checks)
+    if kind == "string" or kind is None:
+        if not isinstance(value, str):
+            return False
+        pattern = schema.get("pattern")
+        if pattern is not None:
+            if not isinstance(pattern, str):
+                return False
+            if pattern_checks is None:  # direct caller without the sandbox:  match inline
+                try:
+                    if not re.search(pattern, value):
+                        return False
+                except re.error:
+                    return False
+            else:
+                pattern_checks.append((pattern, value))
+        enum = schema.get("enum")
+        if enum is not None and (not isinstance(enum, list) or value not in enum):
+            return False
+        lo, hi = schema.get("minLength"), schema.get("maxLength")
+        if lo is not None and (not _is_nonneg_int(lo) or len(value) < lo):
+            return False
+        if hi is not None and (not _is_nonneg_int(hi) or len(value) > hi):
+            return False
+        return True
+    return True  # unknown type keyword:  leave it to the server
+
+
+def _object_ok(schema: dict, value, tolerate_identity: bool = False, pattern_checks=None) -> bool:
+    """validWfV1Args2:  every required key present, every present key known, each value type-ok.
+    tolerate_identity lets a write's `identity` be absent here because this client fills it itself."""
+    if not isinstance(value, dict):
+        return False
+    props = schema.get("properties") or {}
+    for key in schema.get("required") or ():
+        if key not in value and not (tolerate_identity and key == "identity"):
+            return False
+    for key, item in value.items():
+        if key not in props:
+            return False
+        if isinstance(props[key], dict) and not _type_ok(props[key], item, pattern_checks):
+            return False
+    return True
+
+
+def validate_arguments(entry: dict, args, deadline: float | None = None) -> None:
+    """Early failure only:  mirrors the Worker's boundary checks (bounded input, exact keys, leaf types,
+    anyOf variants, per-action byte limit) against the DISCOVERED schema.  The server enforces its own copy
+    plus the per-action refinements (file content budget, read-expansion rules) this client does not
+    duplicate. Discovery restricts patterns to the exact reviewed set; compile and search run in a
+    child with a wall-clock deadline. The overall deadline is checked before validation starts."""
+    name = entry["name"]
+    schema = entry.get("schema") or {}
+    if not isinstance(args, dict):
+        die(f"{name}: arguments must be a JSON object", EXIT_USAGE)
+    tolerate = not entry["read"]
+
+    # ONE absolute end for ALL pattern work in this validation - every variant, every fork:  the
+    # dedicated cap and the verb's overall deadline, whichever ends first.
+    pattern_end = time.monotonic() + _PATTERN_CHECK_MAX_S
+    if deadline is not None:
+        pattern_end = min(pattern_end, deadline)
+
+    def check_patterns(checks):
+        """True/False a definite verdict;  dies on an unverifiable one (bound expired or no sandbox)."""
+        verdict = _patterns_match(checks, pattern_end)
+        if verdict is None:
+            die(
+                f"{name}: argument pattern checks did not complete within the time budget"
+                + ("; the write was not sent" if tolerate else ""),
+                EXIT_ERROR,
+            )
+        return verdict
+
+    if deadline is not None and time.monotonic() > deadline:
+        # Nothing validated, nothing sent:  a write refused here is definitely not sent.
+        die(
+            "the overall time budget was exhausted before argument validation"
+            + ("; the write was not sent" if tolerate else ""),
+            EXIT_ERROR,
+        )
+    limit = entry.get("input_bytes") or DEFAULT_INPUT_LIMIT
+    if not _bounded(args, limit):
+        die(f"{name}: arguments exceed the structural input limits", EXIT_USAGE)
+    if len(json.dumps(args, separators=(",", ":"), ensure_ascii=False).encode()) > limit:
+        die(f"{name}: arguments exceed the {limit}-byte input limit", EXIT_USAGE)
+    any_of = schema.get("anyOf")
+    variants = [v for v in any_of if isinstance(v, dict)] if isinstance(any_of, list) else []
+    if not variants:
+        checks = []
+        if not _object_ok(schema, args, tolerate_identity=tolerate, pattern_checks=checks):
+            die(
+                f"{name}: arguments do not match its schema (`{prog()} show {name}` prints it)",
+                EXIT_USAGE,
+            )
+        if not check_patterns(checks):
+            die(
+                f"{name}: arguments do not match its schema (`{prog()} show {name}` prints it)",
+                EXIT_USAGE,
+            )
+        return
+    # Intersection semantics:  the root constraints AND at least one variant.  A key declared by BOTH
+    # keeps the ROOT schema in the merged map (so its constraints always apply) and is ALSO checked
+    # against the variant's schema - overlapping constraints intersect, they never replace.  A key only
+    # the variant declares is checked by the variant's schema and is unknown to every other variant;
+    # required keys are the root's union the variant's.  Nothing is weakened globally:  a key no root
+    # and no variant declares still fails every variant's unknown-key check.
+    root = dict(schema)
+    root.pop("anyOf", None)
+    root_props = root.get("properties") or {}
+    root_required = set(root.get("required") or ())
+    for variant in variants:
+        merged = dict(root)
+        merged["required"] = sorted(root_required | set(variant.get("required") or ()))
+        props = dict(root_props)
+        overlap = []
+        variant_props = variant.get("properties")
+        if isinstance(variant_props, dict):
+            for key, subschema in variant_props.items():
+                if key in root_props:
+                    overlap.append((key, subschema))
+                else:
+                    props[key] = subschema
+        merged["properties"] = props
+        vchecks = []  # initialized for EVERY variant, properties or not
+        if _object_ok(
+            merged, args, tolerate_identity=tolerate, pattern_checks=vchecks
+        ) and all(
+            not isinstance(subschema, dict)
+            or key not in args
+            or _type_ok(subschema, args[key], vchecks)
+            for key, subschema in overlap
+        ):
+            if check_patterns(vchecks):
+                return
+    die(
+        f"{name}: arguments do not match any supported variant (`{prog()} show {name}` prints the schema)",
+        EXIT_USAGE,
+    )
+
+
+# ----------------------------------------------------------------- actor resolution (reads AND writes, mismatch refused before the target call)
+
+
+def establish_principal(out: dict) -> str:
+    """The server principal from ONE identities result, strictly:  authenticated_seat and default_identity
+    must AGREE when both are usable (a contradiction is refused, never preferred over), at least one must be
+    usable, and the server's own advertised identities must include the reported seat when it advertises
+    any.  No target call has happened at this point:  no uncertainty wording."""
+    sc = out["structured"]
+    usable = []
+    for key in ("authenticated_seat", "default_identity"):
+        value = sc.get(key)
+        if value is None:
+            continue  # absent or explicit null:  the legacy fallback to the other field
+        if not isinstance(value, str) or SEAT_PATTERN.fullmatch(value) is None:
+            # Present and non-null but malformed:  refuse rather than silently ignore it.
+            die("the hosted server reported a malformed seat field", EXIT_AUTH)
+        usable.append(value)
+    if not usable:
+        die("the hosted server did not report a usable seat for this bearer", EXIT_AUTH)
+    if len(set(usable)) > 1:
+        die("the hosted server reported contradictory seats for this bearer", EXIT_AUTH)
+    seat = usable[0]
+    advertised = sc.get("identities")
+    if not isinstance(advertised, list) or not advertised or not all(
+        isinstance(entry, dict)
+        and isinstance(entry.get("identity"), str)
+        and SEAT_PATTERN.fullmatch(entry["identity"])
+        for entry in advertised
+    ):
+        die("the hosted server advertised no usable identities", EXIT_AUTH)
+    if seat not in [entry["identity"] for entry in advertised]:
+        die("the hosted server's advertised identities do not include its reported seat", EXIT_AUTH)
+    return seat
+
+
+def authenticated_seat(bearer: str, deadline: float | None = None) -> str:
+    """The seat the server reports for this bearer, via the hosted identities tool."""
+    return establish_principal(remote_call(IDENTITIES_TOOL, {}, False, bearer, deadline))
+
+
+def resolve_actor(
+    entry: dict,
+    args: dict,
+    bearer: str,
+    server_seat: str | None = None,
+    deadline: float | None = None,
+) -> dict:
+    """The actor for a read OR a write.  A declared seat and an explicit identity must agree with each other
+    and with the seat the server reports for this bearer;  any mismatch is refused BEFORE the target call -
+    whether or not the tool takes an `identity` argument (the assertion is never skipped).  The native ECHO
+    custody proves ECHO without a probe and refuses any other declared or explicit seat before ANY RPC.
+    When the tool takes `identity` the resolved seat is injected;  there is no passthrough.  `server_seat`
+    threads the probe main() already made so a call probes at most once."""
+    schema = entry.get("schema") or {}
+    takes_identity = "identity" in (schema.get("properties") or {})
+    declared = declared_seat()
+    given = args.get("identity")
+    if given is not None and (not isinstance(given, str) or SEAT_PATTERN.fullmatch(given) is None):
+        die("identity must be a seat name (uppercase, e.g. CODEX)", EXIT_USAGE)
+    if declared is not None and given is not None and given != declared:
+        die(
+            f"identity {given} does not match the declared seat {declared};  this client never acts as "
+            "another seat",
+            EXIT_USAGE,
+        )
+    wanted = given or declared
+    if wanted is None and not takes_identity:
+        return args  # nothing declared, nothing to inject:  no probe is owed
+    if native_echo_selected():
+        # Custody proves ECHO:  no probe, and no other seat is possible.  Refused before ANY RPC.
+        if wanted is not None and wanted != NATIVE_ECHO_SEAT:
+            die(
+                f"the native ECHO lane acts as {NATIVE_ECHO_SEAT} only;  declared/requested {wanted} is "
+                "refused",
+                EXIT_USAGE,
+            )
+        seat = NATIVE_ECHO_SEAT
+    else:
+        seat = server_seat or authenticated_seat(bearer, deadline)
+        if wanted is not None and seat != wanted:
+            die(
+                f"the server reports this bearer as {seat}, not {wanted};  refusing before the call",
+                EXIT_AUTH,
+            )
+    if not takes_identity:
+        return args
+    return {**args, "identity": seat}
+
+
+# ----------------------------------------------------------------- verbs
+
+
+def _print_result(out: dict, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps({"structured": out["structured"], "text": out["text"]}, indent=2))
+    elif out["text"]:
+        print(_visible(out["text"]))
+    else:
+        print(json.dumps(out["structured"], indent=2))
+    return 0
+
+
+def cmd_list(tools: dict, a) -> int:
+    rows = [t for t in tools.values() if a.flavour == "all" or (t["read"] == (a.flavour == "reads"))]
+    if a.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "name": t["name"],
+                        "read": t["read"],
+                        "description": t["description"],
+                    }
+                    for t in rows
+                ],
+                indent=2,
+            )
+        )
+    else:
+        for t in rows:
+            print(f"{'read' if t['read'] else 'write'}  {t['name']}")
+        print(
+            f"{len(rows)} tools.  `{prog()} show NAME` prints one schema;  "
+            f"the hosted server may still refuse a listed tool (listing is not execution proof).",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def cmd_show(tools: dict, a) -> int:
+    entry = tools.get(a.tool)
+    if entry is None:
+        die(f"unknown tool {a.tool!r};  `{prog()} list` lists what the server advertises", EXIT_USAGE)
+    if a.json:
+        print(json.dumps(entry, indent=2))
+    else:
+        print(f"{entry['name']}  ({'read' if entry['read'] else 'write'})")
+        if entry.get("title"):
+            print(_visible(entry["title"]))
+        if entry.get("description"):
+            print(_visible(entry["description"]))
+        print(json.dumps(entry["schema"], indent=2))
+    return 0
+
+
+def _read_args_json(a) -> dict:
+    raw = a.args_json
+    try:
+        if raw is None:
+            return {}
+        if raw == "-":
+            raw = sys.stdin.read(ARGS_MAX_BYTES + 1)
+            if len(raw) > ARGS_MAX_BYTES:
+                die(f"--args-json exceeds {ARGS_MAX_BYTES} bytes", EXIT_USAGE)
+        elif raw.startswith("@"):
+            path = raw[1:]
+            try:
+                with open(path, "r") as handle:
+                    raw = handle.read(ARGS_MAX_BYTES + 1)
+            except OSError:
+                die(f"cannot read {path!r}", EXIT_USAGE)
+            if len(raw) > ARGS_MAX_BYTES:
+                # The path only:  raw now holds file CONTENTS and an error must never echo any of it.
+                die(f"--args-json @{path!r} exceeds {ARGS_MAX_BYTES} bytes", EXIT_USAGE)
+    except UnicodeDecodeError:
+        die("--args-json is not valid UTF-8", EXIT_USAGE)
+    if len(raw.encode("utf-8", "replace")) > ARGS_MAX_BYTES:
+        die(f"--args-json exceeds {ARGS_MAX_BYTES} bytes", EXIT_USAGE)
+    if not _depth_ok(raw):
+        die("--args-json nests too deeply", EXIT_USAGE)
+    try:
+        args = strict_loads(raw)
+    except (ValueError, RecursionError):
+        # Generic only:  the parser's own message can echo the caller's duplicate key or value.
+        die("--args-json is not valid JSON", EXIT_USAGE)
+    if not isinstance(args, dict):
+        die("--args-json must be a JSON object", EXIT_USAGE)
+    return args
+
+
+def cmd_call(
+    tools: dict,
+    a,
+    bearer: str,
+    args: dict | None = None,
+    server_seat: str | None = None,
+    deadline: float | None = None,
+) -> int:
+    entry = tools.get(a.tool)
+    if entry is None:
+        die(f"unknown tool {a.tool!r};  `{prog()} list` lists what the server advertises", EXIT_USAGE)
+    if args is None:
+        args = _read_args_json(a)
+    # The caller's own arguments are validated before the actor probe (a refused call costs no extra call),
+    # and secret-scanned inside remote_call before anything is sent:  there is no unscanned route.
+    validate_arguments(entry, args, deadline)
+    args = resolve_actor(entry, args, bearer, server_seat, deadline)
+    return _print_result(remote_call(a.tool, args, not entry["read"], bearer, deadline), a.json)
+
+
+def cmd_whoami(out: dict, a) -> int:
+    if a.json:
+        return _print_result(out, True)
+    sc = out["structured"]
+    shown = [
+        k
+        for k in ("authenticated_seat", "default_identity", "transport")
+        if sc.get(k)
+    ]
+    for k in shown:
+        print(f"{k}: {_visible(str(sc[k]))}")
+    for ident in sc.get("identities") or []:
+        if isinstance(ident, dict) and ident.get("identity"):
+            print(f"identity: {_visible(str(ident['identity']))}")
+    if not shown:
+        print(json.dumps(sc, indent=2))
+    return 0
+
+
+# ----------------------------------------------------------------- parser / main
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog=prog(),
+        allow_abbrev=False,
+        description="Fleet git tools: a thin client for the hosted simple-tools MCP git tools. "
+        "Every operation runs on the hosted server as this bot's own identity; there is no direct path.",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+    pl = sub.add_parser(
+        "list", help="list the git tools the server advertises right now", allow_abbrev=False
+    )
+    pl.add_argument("--json", action="store_true")
+    flavour = pl.add_mutually_exclusive_group()
+    flavour.add_argument("--reads", dest="flavour", action="store_const", const="reads", default="all")
+    flavour.add_argument("--writes", dest="flavour", action="store_const", const="writes")
+    ps = sub.add_parser("show", help="show one advertised tool's schema", allow_abbrev=False)
+    ps.add_argument("tool")
+    ps.add_argument("--json", action="store_true")
+    pw = sub.add_parser(
+        "whoami", help="show the identity the hosted server reports for this bearer", allow_abbrev=False
+    )
+    pw.add_argument("--json", action="store_true")
+    pc = sub.add_parser(
+        "call", help="call one tool:  call NAME --args-json JSON|@FILE|-", allow_abbrev=False
+    )
+    pc.add_argument("tool")
+    pc.add_argument(
+        "--args-json",
+        metavar="JSON|@FILE|-",
+        help="arguments as a JSON object, @file, or - for stdin (default: {})",
+    )
+    pc.add_argument("--json", action="store_true", help="print structured content and text as JSON")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    a = build_parser().parse_args(argv)
+    # One overall budget for the verb:  the identities probe, every discovery page and the target call
+    # all draw from it, and a request that cannot start inside it is never sent.
+    overall_deadline = time.monotonic() + OVERALL_DEADLINE_S
+    args = None
+    if native_echo_selected():
+        # The custody proves ECHO without any probe:  a non-ECHO declared seat, or a non-ECHO explicit
+        # identity on a call, is refused before ANY RPC - even the discovery page.  (resolve_actor repeats
+        # the same check for the call itself;  this one has to happen before tools/list leaves.)
+        declared = declared_seat()
+        if declared is not None and declared != NATIVE_ECHO_SEAT:
+            die(
+                f"the native ECHO lane acts as {NATIVE_ECHO_SEAT} only;  declared {declared} is refused",
+                EXIT_USAGE,
+            )
+        if a.cmd == "call":
+            args = _read_args_json(a)
+            given = args.get("identity")
+            if given is not None and given != NATIVE_ECHO_SEAT:
+                die(
+                    f"the native ECHO lane acts as {NATIVE_ECHO_SEAT} only;  requested identity is refused",
+                    EXIT_USAGE,
+                )
+    bearer = "" if native_echo_selected() else remote_bearer()
+    server_seat = None
+    whoami_out = None
+    if native_echo_selected():
+        server_seat = NATIVE_ECHO_SEAT  # the custody proves it;  no probe is owed for the actor path
+        if a.cmd == "whoami":
+            # whoami's one identities fetch, validated before display:  a contradictory server principal is
+            # refused, not shown, and it must be the seat the custody proves.
+            whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer, overall_deadline)
+            if establish_principal(whoami_out) != NATIVE_ECHO_SEAT:
+                die(
+                    f"the server principal contradicts the {NATIVE_ECHO_SEAT} custody;  refusing to display",
+                    EXIT_AUTH,
+                )
+    else:
+        # Exactly one identities result before ANY bearer-mode discovery, display or target call:  it
+        # establishes the actor (the server's own principal - an undeclared caller is never anonymous and
+        # never picks the identity) and a declared seat must match it.
+        declared = declared_seat()  # a broken declaration is refused before anything leaves
+        whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer, overall_deadline)
+        server_seat = establish_principal(whoami_out)
+        if declared is not None and declared != server_seat:
+            die(
+                f"the server reports this bearer as {server_seat}, not the declared {declared};  refusing",
+                EXIT_AUTH,
+            )
+    if a.cmd == "whoami":
+        return cmd_whoami(whoami_out, a)
+    tools = discover_tools(bearer, overall_deadline)
+    if a.cmd == "list":
+        return cmd_list(tools, a)
+    if a.cmd == "show":
+        return cmd_show(tools, a)
+    return cmd_call(tools, a, bearer, args, server_seat, overall_deadline)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

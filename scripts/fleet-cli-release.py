@@ -23,15 +23,15 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 137 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 143 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
 # platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
-# (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026), added for that review;
-# the 138th is agent_sync/notes_service_reader.py, which notes_client imports for the scoped service token;
-# the 139th is agent_sync/mcp/bearer_gate.py, the own-bearer check for `simple-chat mcp`.
-MAX_FILES = 139
+# (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026);  the 138th and 139th are notes_service_reader.py and mcp/bearer_gate.py (from main);  the 140th and 141st are platform_letter_muse.py and muse_session_rename.py (the Muse adapter);  the 142nd is platform_letter_grok_leader.py (the Grok adapter);  the 143rd is platform_letter_antigravity.py (the Antigravity adapter), added for that review.
+# The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
+# and its implementation;  tests and the offline catalog fixture stay repo-only).
+MAX_FILES = 145
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -68,6 +68,9 @@ EXACT = frozenset(
         "scripts/simple-chat",
         "scripts/simple-notes",
         "scripts/simple-board",
+        # The git tools CLI entry wrapper and implementation.
+        "scripts/simple-git",
+        "scripts/git-tools/git",
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",
@@ -125,6 +128,10 @@ TOOL_REQUIRED = frozenset(
         "scripts/simple-chat",
         "scripts/simple-notes",
         "scripts/simple-board",
+        # The git tools CLI.  TOOL_REQUIRED, not BASE_REQUIRED:  a retained pre-git release stays a valid
+        # rollback target (the smoke skips cases whose script a rollback target does not carry).
+        "scripts/simple-git",
+        "scripts/git-tools/git",
         "scripts/recall",
         *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
         "scripts/fleet_lanes/bin/lane",
@@ -276,7 +283,16 @@ def smoke(release: Path, home: Path) -> None:
     for path in release.rglob("*"):
         if path.is_file() and (
             path.suffix == ".py"
-            or path.name in ("board", "simple-chat", "simple-notes", "simple-board", "recall")
+            or path.name
+            in (
+                "board",
+                "simple-chat",
+                "simple-notes",
+                "simple-board",
+                "simple-git",
+                "git",
+                "recall",
+            )
         ):
             try:
                 compile(path.read_bytes(), str(path), "exec")
@@ -293,6 +309,10 @@ def smoke(release: Path, home: Path) -> None:
         # earlier case ran `whoami` and expected exit 4 (missing credentials), which depended on the host:  a host that
         # has the helper and a bearer for the smoke seat authenticates and exits 0, and every release was refused.
         ("simple_board_usage_error", "scripts/simple-board", ["show"], 2),
+        # Same shape as the board cases:  --help prints and exits 0, and a usage error exits 2, with a blank
+        # HOME and no credentials, with or without the host's seat helper.
+        ("simple_git_help", "scripts/simple-git", ["--help"], 0),
+        ("simple_git_usage_error", "scripts/simple-git", ["call"], 2),
         ("recall_help", "scripts/recall", ["--help"], 0),
         ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
         ("fleet_mode_block", "scripts/fleet-mode", [], 0),
@@ -343,6 +363,8 @@ HELPER_COMMANDS = {
     "scripts/simple-chat": "simple-chat",
     "scripts/simple-board": "simple-board",
     "scripts/recall": "recall",
+    # The Git command uses the same own-seat helper as the other remote tools.
+    "scripts/simple-git": "simple-git",
 }
 HELPER_PATH = ".config/fleet-cli/seat-remote-defaults.py"
 
@@ -468,6 +490,8 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
     bin_dir = home / ".local/bin"
     return {
         bin_dir / "simple-board": (wrapper(home, "scripts/simple-board"), 0o755),
+        # The user-facing Git command.
+        bin_dir / "simple-git": (wrapper(home, "scripts/simple-git"), 0o755),
         bin_dir / "simple-chat": (wrapper(home, "scripts/simple-chat"), 0o755),
         bin_dir / "simple-notes": (wrapper(home, "scripts/simple-notes"), 0o755),
         bin_dir / "simple-chat-codex-mcp": (

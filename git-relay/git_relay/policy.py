@@ -226,6 +226,7 @@ class SeatPolicy:
         "wf_compare",
         "wf_branch_get",
         "wf_repo_get",
+        "wf_installation_metadata",
         "wf_labels",
         "wf_workflows",
         "wf_run_get",

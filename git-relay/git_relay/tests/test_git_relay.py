@@ -1972,7 +1972,7 @@ class TestPolicyMintPermissionsValidation(unittest.TestCase):
                             "actions": ["mint_token"],
                             "repos": ["a/b"],
                             "app_slug": "swu-echo",
-                            "mint_permissions": {"workflows": "write"},
+                            "mint_permissions": {"administration": "write"},
                         }
                     }
                 )

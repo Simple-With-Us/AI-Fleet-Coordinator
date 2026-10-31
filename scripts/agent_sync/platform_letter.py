@@ -2244,6 +2244,23 @@ def main(
             if spec is None:
                 stderr.write("platform-letter hook: no adapter for the platform\n")
                 return 0
+            # A platform whose hook payload has no event name, or whose hook answers in a shape of its own
+            # (Antigravity: an event inferred from the payload, an answer of injected steps), owns its entry:
+            # `hook_main` takes what `hook` takes, minus the spec, and calls `hook` itself.
+            own = getattr(load_adapter(flags.get("platform", "")), "hook_main", None)
+            if callable(own):
+                return int(
+                    own(
+                        env,
+                        stdin,
+                        stdout,
+                        runner=runner,
+                        transport=transport,
+                        location_flag=flags.get("location", ""),
+                        remote_flag=flags.get("remote", ""),
+                        stderr=stderr,
+                    )
+                )
             return hook(
                 spec,
                 env,
