@@ -108,13 +108,15 @@ on:
         default: ""
       review_request_pattern:
         description: >-
-          Case-insensitive extended regex matched against issue-comment bodies
+          Case-insensitive regex matched against issue-comment bodies
           (inside gh's jq; bodies never touch disk) to catch a review request
           newer than the fleet reviewer's latest review - a headless review
-          start that has no check run yet.  A forged request can only delay
+          start that has no check run yet.  The default matches only a leading
+          command, never a mention in Kody completion/usage-guide comments.
+          A forged request can only delay
           arming.  Empty disables this one check.
         type: string
-        default: '@kody[ \t]+start-review'
+        default: '^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)'
       kody_app_slug:
         description: >-
           Authenticated GitHub App slug that owns the review check-runs.  The
@@ -252,17 +254,30 @@ jobs:
           # by the head branch would never see them.  Two precise sources instead:
           # the per-PR marker comments the lanes leave (they carry the run id), and
           # repo-wide active runs whose pull_requests list this PR.
-          # Comment bodies are user-controlled text: never persist them.  jq
-          # reduces each comment to its marker run id inside gh, so only run ids
-          # reach the runner disk.  Markers count only when a Bot wrote them: a
-          # human commenter could otherwise forge one with a bogus run id and
-          # disarm the gate.  Only the 50 newest run ids are queried, so
-          # long-lived PRs do not spend the token's quota on ancient history.
-          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --method GET --paginate                --jq '.[] | select(.user.type == "Bot") | .body | select(contains("swu-autofix-run: bot=")) | [scan("actions/runs/[0-9]+") | sub("actions/runs/";"")] | .[]'                > "$RUNNER_TEMP/marker-runs.raw" 2>"$RUNNER_TEMP/comments.err"; then
+          # Comment bodies are user-controlled text: never persist them.  ONE
+          # paginated read serves both the autofix markers and the review
+          # request probe (Kody 4433065484): gh emits each comment as a single
+          # @json line and the local jq pass reduces it to a created_at, the
+          # Bot-only marker run ids and a request-match flag, so bodies never
+          # reach the runner disk.  The request pattern reaches jq only through
+          # the step environment (Kody 4433065134), never the program text.
+          # Markers count only when a Bot wrote them: a human commenter could
+          # otherwise forge one with a bogus run id and disarm the gate.  Only
+          # the 50 newest run ids are queried, so long-lived PRs do not spend
+          # the token's quota on ancient history.
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --method GET --paginate \
+               --jq '.[]' 2>"$RUNNER_TEMP/comments.err" \
+             | jq -c '
+                 {created_at,
+                    markers: ([ . | select(.user.type == "Bot") | .body // "" | select(contains("swu-autofix-run: bot=")) | scan("actions/runs/[0-9]+") | sub("actions/runs/";"") ]),
+                    request: (if env.REVIEW_REQUEST_PATTERN == "" then false else ((.body // "") | test(env.REVIEW_REQUEST_PATTERN; "i")) end)}' \
+               > "$RUNNER_TEMP/comments.reduced"; then
             cat "$RUNNER_TEMP/comments.err" >&2
             skip "PR comment lookup failed - fail closed"
           fi
-          sort -un "$RUNNER_TEMP/marker-runs.raw" | tail -50 > "$RUNNER_TEMP/marker-runs.txt"
+          if ! jq -r '.markers[]? | select(type == "string")' "$RUNNER_TEMP/comments.reduced" | sort -un | tail -50 > "$RUNNER_TEMP/marker-runs.txt"; then
+            skip "PR comment parse failed - fail closed"
+          fi
           while read -r run_id; do
             [ -n "$run_id" ] || continue
             if run_json="$(GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs/$run_id" 2>"$RUNNER_TEMP/run-err.txt")"; then
@@ -328,17 +343,18 @@ jobs:
             # A forged request can only delay arming (fail-safe direction).
             newest_request=""
             receipt_run=""
+            # The newest request comes from the same reduced comment read as
+            # the markers.  Timestamps compare as epochs: ISO strings
+            # misorder fractional seconds ('.' sorts before 'Z'), so max_by
+            # parses each candidate and an unparsable one fails closed
+            # (Kody 4433064857).
             if [ -n "$REVIEW_REQUEST_PATTERN" ]; then
-              case "$REVIEW_REQUEST_PATTERN" in
-                *\"*) skip "review_request_pattern contains a quote - fail closed" ;;
-              esac
-              if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --method GET --paginate \
-                   --jq ".[] | .created_at + \" \" + (if ((.body // \"\") | test(\"$REVIEW_REQUEST_PATTERN\"; \"i\")) then \"match\" else \"nomatch\" end)" \
-                   > "$RUNNER_TEMP/requests.out" 2>"$RUNNER_TEMP/requests.err"; then
-                cat "$RUNNER_TEMP/requests.err" >&2
-                skip "review request lookup failed - fail closed"
+              if ! newest_request="$(jq -rs '
+                  def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
+                  [ .[] | select(.request == true) | .created_at ]
+                  | if length == 0 then "" else max_by(ts) end' "$RUNNER_TEMP/comments.reduced")"; then
+                skip "review request parse failed - fail closed"
               fi
-              newest_request="$(awk '$2 == "match" { print $1 }' "$RUNNER_TEMP/requests.out" | sort | tail -1)"
             fi
 
             reviews_raw="$RUNNER_TEMP/reviews.json"
@@ -363,12 +379,19 @@ jobs:
               fi
               [ "$latest" = "APPROVED" ] || skip "no current-head approval from $APPROVAL_REVIEWER on $HEAD"
               # A newer request is answered only by a newer APPROVED on this
-              # head - an ack's timestamp never answers a request.
-              latest_approval="$(jq -r -s --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" \
-                '[ .[][] | select(((.user // {}).login) == $who and .commit_id == $head and .state == "APPROVED" and (.submitted_at | type) == "string") | .submitted_at ] | max // "none"' \
-                "$reviews_raw" 2>>"$RUNNER_TEMP/reviews.err")"
-              if [ -n "$newest_request" ] && { [ "$latest_approval" = "none" ] || [[ "$newest_request" > "$latest_approval" ]]; }; then
-                skip "review requested at $newest_request with no newer APPROVED from $APPROVAL_REVIEWER on $HEAD - wait for the review"
+              # head - an ack's timestamp never answers a request.  Epochs,
+              # not ISO strings: fractional seconds misorder under a raw
+              # string compare (Kody 4433064857).
+              if [ -n "$newest_request" ]; then
+                if ! stale="$(jq -r -n --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" --arg req "$newest_request" \
+                    --slurpfile pages "$reviews_raw" '
+                    def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
+                    ([ $pages | .[] | .[] | select(((.user // {}).login) == $who and .commit_id == $head and .state == "APPROVED" and (.submitted_at | type) == "string") | .submitted_at | ts ] | max) as $latest
+                    | if $latest == null then "true" elif ($req | ts) > $latest then "true" else "false" end' 2>>"$RUNNER_TEMP/reviews.err")"; then
+                  cat "$RUNNER_TEMP/reviews.err" >&2
+                  skip "review lookup failed - fail closed"
+                fi
+                [ "$stale" = "false" ] || skip "review requested at $newest_request with no newer APPROVED from $APPROVAL_REVIEWER on $HEAD - wait for the review"
               fi
             else
               # Effective gate, mirroring the fleet's
@@ -398,14 +421,15 @@ jobs:
               if ! jq -r -n --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" --arg req "$newest_request" \
                 --arg app "$KODY_APP_SLUG" --argjson appid "$KODY_APP_ID" --arg name "$KODY_CHECK_NAME" \
                 --slurpfile pages "$reviews_raw" --slurpfile runs "$kody_status" '
+                def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
                 ([ $pages | .[] | .[] ]) as $all
                 | ([ $runs[] | select(.app == $app and .app_id == $appid and .name == $name
                       and .status == "completed" and .conclusion == "success"
                       and (.started_at | type) == "string" and (.completed_at | type) == "string"
-                      and .completed_at >= .started_at
+                      and ((.completed_at | ts) >= (.started_at | ts))
                       and .title == "Code Review Complete"
                       and (.summary | startswith("Review finished successfully"))
-                      and ($req == "" or .started_at >= $req)) ]) as $receipts
+                      and ($req == "" or (.started_at | ts) >= ($req | ts))) ]) as $receipts
                 | ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head and .state != "DISMISSED" and .state != "PENDING") ]) as $onhead
                 | ([ $all[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") ]) as $d
                 | if any($d[]; (.id | type) != "number" or (((.user // {}).id) | type) != "number")
@@ -416,7 +440,7 @@ jobs:
                     + " onhead=" + ($onhead | length | tostring)
                     + " receipts=" + ($receipts | length | tostring)
                     + " receipt_run=" + (([ $receipts[] | .id ] | max | tostring) // "none")
-                    + " receipt_at=" + (([ $receipts[] | .completed_at ] | max) // "none")
+                    + " receipt_at=" + (([ $receipts[] | .completed_at ] | max_by(ts)) // "none")
                   end' > "$RUNNER_TEMP/effective.out" 2>>"$RUNNER_TEMP/reviews.err"; then
                 cat "$RUNNER_TEMP/reviews.err" >&2
                 skip "review lookup failed - fail closed"
@@ -525,6 +549,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      checks: read
+      actions: read
+      issues: read
     steps:
       - name: Re-verify PR state at the arming boundary
         # Classification convinced the gate minutes ago; arming re-reads the
@@ -547,6 +574,7 @@ jobs:
           KODY_APP_SLUG: ${{ inputs.kody_app_slug }}
           KODY_APP_ID: ${{ inputs.kody_app_id }}
           REVIEW_REQUEST_PATTERN: ${{ inputs.review_request_pattern }}
+          RESTRICT: ${{ inputs.restrict_to_pattern }}
           HOLD_LABELS: ${{ inputs.hold_labels }}
         run: |
           set -euo pipefail
@@ -580,6 +608,18 @@ jobs:
             fi
           done
 
+          # Lane restriction re-check (Kody 4433065293): classify admitted
+          # the PR inside its caller lane on the event payload, but the head
+          # ref can be retargeted and the title edited in between - the
+          # boundary re-proves the lane on the LIVE ref/title before any
+          # merge command runs.
+          if [ -n "$RESTRICT" ]; then
+            live_title="$(jq -r '.title' "$pr_json")"
+            if ! [[ "$live_head_ref" =~ $RESTRICT ]] && ! [[ "$live_title" =~ $RESTRICT ]]; then
+              abort "PR left the restricted lane /$RESTRICT/ after classification"
+            fi
+          fi
+
           # Request and thread re-checks exist only where classify evaluated
           # them: under the legacy no-gate contract (resolved gate empty)
           # classify never reads requests or threads, so the boundary must not
@@ -587,17 +627,32 @@ jobs:
           # comment or an unresolved thread would otherwise block a contract
           # main never gated on.
           live_request=""
+          # ONE paginated read serves the request re-check and the autofix
+          # marker scan below (Kody 4433065484): gh emits each comment as a
+          # single @json line and the local jq pass reduces it to a
+          # created_at, Bot-only marker run ids and a request-match flag, so
+          # bodies never reach the runner disk.  The request pattern reaches
+          # jq only through the step environment (Kody 4433065134), never
+          # the program text.
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --method GET --paginate \
+               --jq '.[]' 2>"$RUNNER_TEMP/arm-comments.err" \
+             | jq -c '
+                 {created_at,
+                    markers: ([ . | select(.user.type == "Bot") | .body // "" | select(contains("swu-autofix-run: bot=")) | scan("actions/runs/[0-9]+") | sub("actions/runs/";"") ]),
+                    request: (if env.REVIEW_REQUEST_PATTERN == "" then false else ((.body // "") | test(env.REVIEW_REQUEST_PATTERN; "i")) end)}' \
+               > "$RUNNER_TEMP/arm-comments.reduced"; then
+            cat "$RUNNER_TEMP/arm-comments.err" >&2
+            abort "comment re-read failed"
+          fi
           if [ -n "$REVIEW_GATE" ] && [ -n "$REVIEW_REQUEST_PATTERN" ]; then
-            case "$REVIEW_REQUEST_PATTERN" in
-              *\"*) abort "review_request_pattern contains a quote" ;;
-            esac
-            if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --method GET --paginate \
-                 --jq ".[] | .created_at + \" \" + (if ((.body // \"\") | test(\"$REVIEW_REQUEST_PATTERN\"; \"i\")) then \"match\" else \"nomatch\" end)" \
-                 > "$RUNNER_TEMP/arm-requests.out" 2>"$RUNNER_TEMP/arm-requests.err"; then
-              cat "$RUNNER_TEMP/arm-requests.err" >&2
-              abort "request re-read failed"
+            # Epoch max, not a string sort: fractional seconds misorder ISO
+            # strings (Kody 4433064857); an unparsable value fails closed.
+            if ! live_request="$(jq -rs '
+                def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
+                [ .[] | select(.request == true) | .created_at ]
+                | if length == 0 then "" else max_by(ts) end' "$RUNNER_TEMP/arm-comments.reduced")"; then
+              abort "request re-read parse failed"
             fi
-            live_request="$(awk '$2 == "match" { print $1 }' "$RUNNER_TEMP/arm-requests.out" | sort | tail -1)"
           fi
           if [ -n "$REVIEW_GATE" ]; then
             [ "$live_request" = "$CLASSIFIED_REQUEST" ] || abort "review request drifted: classified '${CLASSIFIED_REQUEST:-none}', live '${live_request:-none}'"
@@ -626,13 +681,14 @@ jobs:
             fi
             if ! arm_receipt_ok="$(jq -r --arg app "$KODY_APP_SLUG" --argjson appid "$KODY_APP_ID" --arg name "$KODY_CHECK_NAME" \
                 --arg head "$live_head" --arg req "$CLASSIFIED_REQUEST" '
+                def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
                 ((.app.slug // "") == $app) and ((.app.id // 0) == $appid) and .name == $name
                 and .head_sha == $head and .status == "completed" and .conclusion == "success"
                 and (.started_at | type) == "string" and (.completed_at | type) == "string"
-                and .completed_at >= .started_at
+                and ((.completed_at | ts) >= (.started_at | ts))
                 and (((.output.title) // "") == "Code Review Complete")
                 and (((.output.summary) // "") | startswith("Review finished successfully"))
-                and ($req == "" or .started_at >= $req)' "$RUNNER_TEMP/arm-receipt.json")"; then
+                and ($req == "" or (.started_at | ts) >= ($req | ts))' "$RUNNER_TEMP/arm-receipt.json")"; then
               abort "receipt re-validation parse failed"
             fi
             [ "$arm_receipt_ok" = "true" ] || abort "classified receipt $CLASSIFIED_RECEIPT no longer validates against the live check-run"
@@ -652,22 +708,23 @@ jobs:
             fi
             if ! arm_decision="$(jq -r -s --arg who "$APPROVAL_REVIEWER" --arg head "$live_head" --arg gate "$REVIEW_GATE" '
                 ([ .[][] ]) as $all
-                | ([ $all[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") ]) as $d
-                | if any($d[]; (.id | type) != "number" or (((.user // {}).id) | type) != "number")
-                  then "ERROR"
+                | if $gate == "approval" then
+                    # Match the classifier legacy current-head/configured-reviewer
+                    # scope exactly; unrelated old requests do not widen it.
+                    ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head
+                        and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) ] | .[-1].state) as $decisive
+                    | if $decisive == "APPROVED" then "ok" else "approval-lost" end
                   else
-                    ($d | sort_by(.id) | reduce .[] as $r ({}; .[$r.user.id | tostring] = $r.state)) as $last
-                    | ([ $last[] | select(. == "CHANGES_REQUESTED") ] | length) as $outstanding
-                    | if $outstanding > 0 then "cr"
-                      elif $gate == "approval" then
-                        ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head
-                            and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) ] | sort_by(.id) | .[-1].state) as $decisive
-                        | if $decisive == "APPROVED" then "ok" else "approval-lost" end
+                    ([ $all[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") ]) as $d
+                    | if any($d[]; (.id | type) != "number" or (((.user // {}).id) | type) != "number")
+                      then "ERROR"
                       else
-                        # The same existence prerequisite classify enforced.
-                        ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head
+                        ($d | sort_by(.id) | reduce .[] as $r ({}; .[$r.user.id | tostring] = $r.state)) as $last
+                        | ([ $last[] | select(. == "CHANGES_REQUESTED") ] | length) as $outstanding
+                        | ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head
                             and .state != "DISMISSED" and .state != "PENDING") ] | length) as $onhead
-                        | if $onhead == 0 then "record-lost" else "ok" end
+                        | if $outstanding > 0 then "cr"
+                          elif $onhead == 0 then "record-lost" else "ok" end
                       end
                   end' "$RUNNER_TEMP/arm-reviews.json")"; then
               abort "review re-read parse failed"
@@ -681,13 +738,9 @@ jobs:
             esac
           fi
 
-          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --method GET --paginate \
-               --jq '.[] | select(.user.type == "Bot") | .body | select(contains("swu-autofix-run: bot=")) | [scan("actions/runs/[0-9]+") | sub("actions/runs/";"")] | .[]' \
-               > "$RUNNER_TEMP/arm-marker-runs.raw" 2>"$RUNNER_TEMP/arm-comments.err"; then
-            cat "$RUNNER_TEMP/arm-comments.err" >&2
-            abort "marker comment re-read failed"
+          if ! jq -r '.markers[]? | select(type == "string")' "$RUNNER_TEMP/arm-comments.reduced" | sort -un | tail -50 > "$RUNNER_TEMP/arm-marker-runs.txt"; then
+            abort "marker comment parse failed"
           fi
-          sort -un "$RUNNER_TEMP/arm-marker-runs.raw" | tail -50 > "$RUNNER_TEMP/arm-marker-runs.txt"
           while read -r run_id; do
             [ -n "$run_id" ] || continue
             if run_json="$(GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs/$run_id" 2>"$RUNNER_TEMP/arm-run-err.txt")"; then

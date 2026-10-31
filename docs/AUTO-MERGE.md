@@ -31,7 +31,7 @@ jobs:
       #                          # dispositioned (also set require_current_approval: false);
       #                          # unset = legacy require_current_approval contract (strict
       #                          # APPROVED gate by default; explicit false = no review gate)
-      # review_request_pattern: '@kody[ \t]+start-review'   # headless review-start probe
+      # review_request_pattern: '^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)' # leading command only
     secrets:
       merge_token: ${{ needs.bot-token.outputs.token }} # existing approved App-token route
 ```
@@ -104,7 +104,8 @@ jobs:
     stops being decisive, so a dismissal unwinds that review's verdict), every
     review thread is resolved, and no review request is newer than the
     receipt (a request without a newer receipt fails closed - an ack cannot
-    defeat the wait).  A new push makes the old review stale and disarms
+    defeat the wait).  The default request pattern matches a command at the
+    beginning of a comment, not a quoted command in Kody's completion guide.  A new push makes the old review stale and disarms
     until re-review.
   - `approval`: the legacy strict gate - the fleet reviewer's latest decisive
     review on the current head must be APPROVED.  This is what omitted inputs
@@ -129,8 +130,11 @@ is re-read and re-validated live - same app identity (`kody_app_slug` AND
 `kody_app_id`), same head SHA, completed SUCCESS with the verdict
 title/summary, and a started_at at or after the newest review request as
 re-read at the boundary - and the formal review record is re-read with its
-decisive state re-derived from the live list (an outstanding CHANGES_REQUESTED
-aborts; under the approval gate, a dismissed or superseded head approval aborts;
+decisive state re-derived from the live list (under the effective gate, an
+outstanding CHANGES_REQUESTED from any reviewer aborts; under the approval
+gate, only the configured reviewer's decisive reviews on the current head
+are considered, matching classification, and a dismissed or superseded
+head approval aborts;
 under the effective gate, the current-head fleet-reviewer record being
 dismissed or removed aborts, even with zero open threads),
 no autofix run became active (marker comments and repo-wide run listings, both

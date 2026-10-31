@@ -273,9 +273,10 @@ class ArmStep(unittest.TestCase):
 CLASSIFY_STEP_NAME = "Classify PR for auto-merge eligibility"
 
 # The fake answers each API call with the --jq-filtered lines the step expects:
-# check-run statuses for the Kody lookup, one bare run id per marker comment
-# (comment bodies must never reach the runner disk), the run status for
-# marker-run lookups, and one @json line per active workflow run.
+# check-run statuses for the Kody lookup, raw @json comment lines for the
+# combined comments read (the step's own jq reduces them, so the tests
+# exercise the real Bot-marker and request-pattern filters), the run status
+# for marker-run lookups, and one @json line per active workflow run.
 # The compare call fails on purpose:  it bounds the script after the gates, so a
 # "compare API failed" skip proves the gates passed.
 FAKE_GH_CLASSIFY = """#!/bin/bash
@@ -291,6 +292,7 @@ case "$*" in
       neutral_not_receipt) printf '%s\n' '{"id":9,"name":"Kody Code Review","app":"kody-ai","app_id":413034,"status":"completed","conclusion":"neutral","started_at":"2026-10-30T11:55:00Z","completed_at":"2026-10-30T12:00:30Z","title":"Code Review Complete","summary":"Review finished successfully."}' ;;
       forged_name_other_app) printf '%s\n' '{"id":9,"name":"Kody Code Review","app":"some-other-app","app_id":999,"status":"completed","conclusion":"success","started_at":"2026-10-30T11:55:00Z","completed_at":"2026-10-30T12:00:30Z","title":"Code Review Complete","summary":"Review finished successfully."}' ;;
       old_run_started_before_request) printf '%s\n' '{"id":9,"name":"Kody Code Review","app":"kody-ai","app_id":413034,"status":"completed","conclusion":"success","started_at":"2026-10-30T12:59:00Z","completed_at":"2026-10-30T13:05:00Z","title":"Code Review Complete","summary":"Review finished successfully."}' ;;
+      fractional_request_order) printf '%s\n' '{"id":9,"name":"Kody Code Review","app":"kody-ai","app_id":413034,"status":"completed","conclusion":"success","started_at":"2026-10-30T13:00:00Z","completed_at":"2026-10-30T13:00:30Z","title":"Code Review Complete","summary":"Review finished successfully."}' ;;
       queued_new_run_old_success)
         printf '%s\n' '{"id":124599873261,"name":"Kody Code Review","app":"kody-ai","app_id":413034,"status":"completed","conclusion":"success","started_at":"2026-10-30T11:55:00Z","completed_at":"2026-10-30T12:00:30Z","title":"Code Review Complete","summary":"Review finished successfully."}'
         printf '%s\n' '{"id":10,"name":"Kody Code Review","app":"kody-ai","app_id":413034,"status":"queued","conclusion":"none","started_at":"2026-10-30T13:10:00Z","completed_at":null,"title":"","summary":""}'
@@ -300,27 +302,33 @@ case "$*" in
     exit 0
     ;;
   *issues/1/comments*)
-    if [[ "$*" == *nomatch* ]]; then
-      # Review-request reduction: only created_at plus a match flag, never a body.
-      case "$GH_FAKE_MODE" in
-        request_after_review|mixed_history|old_run_started_before_request|appr_request_then_ack) printf '%s\n' '2026-10-30T13:00:00Z match' ;;
-        request_before_review|request_then_ack_only) printf '%s\n' '2026-10-30T11:00:00Z match' ;;
-        requests_api_fails) echo "gh: api down" >&2; exit 1 ;;
-        *) : ;;
-      esac
-      exit 0
-    fi
     case "$GH_FAKE_MODE" in
-      comments_api_fails) echo "gh: api down" >&2; exit 1 ;;
+      comments_api_fails|requests_api_fails) echo "gh: api down" >&2; exit 1 ;;
+    esac
+    # Raw per-comment @json lines, as `gh api ... --jq '.[] | @json'` emits
+    # them: the step's own jq pass does the marker/request reduction, so
+    # the tests exercise the real filter rather than a pre-reduced answer.
+    case "$GH_FAKE_MODE" in
+      request_after_review|mixed_history|old_run_started_before_request|appr_request_then_ack)
+        printf '%s\n' '{"created_at":"2026-10-30T13:00:00Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
+      request_before_review|request_then_ack_only)
+        printf '%s\n' '{"created_at":"2026-10-30T11:00:00Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
+      fractional_request_order)
+        printf '%s\n' '{"created_at":"2026-10-30T13:00:00Z","user":{"type":"User"},"body":"@kody start-review"}'
+        printf '%s\n' '{"created_at":"2026-10-30T13:00:00.500Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
+      fractional_request_older)
+        printf '%s\n' '{"created_at":"2026-10-30T11:00:00.500Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
+      appr_fractional)
+        printf '%s\n' '{"created_at":"2026-10-30T13:00:00.500Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
+      appr_fractional_ok)
+        printf '%s\n' '{"created_at":"2026-10-30T13:00:00Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
+    esac
+    case "$GH_FAKE_MODE" in
       marker_run_active|marker_run_done|marker_status_fails|marker_run_404)
-        # Post-jq output: only the marker's run id, never the comment body.
-        printf '%s\n' '555'
-        ;;
+        printf '%s\n' '{"created_at":"2026-10-30T10:00:00Z","user":{"type":"Bot"},"body":"swu-autofix-run: bot=x run at https://github.com/x/actions/runs/555"}' ;;
       forged_marker)
-        # A User-authored marker is filtered out by the step's jq, so the fake
-        # answers with no run ids at all.
-        :
-        ;;
+        # User-authored: the step's real jq keeps Bot-authored markers only.
+        printf '%s\n' '{"created_at":"2026-10-30T10:00:00Z","user":{"type":"User"},"body":"swu-autofix-run: bot=x run at https://github.com/x/actions/runs/555"}' ;;
     esac
     exit 0
     ;;
@@ -352,12 +360,16 @@ case "$*" in
   *pulls/1/reviews*)
     case "$GH_FAKE_MODE" in
       reviews_api_fails) echo "gh: api down" >&2; exit 1 ;;
-      eff_commented_current|kody_success_open_findings|request_after_review|request_before_review|threads_api_fails|threads_next_page|requests_api_fails|ack_skipped|check_failed|request_then_ack_only)
+      eff_commented_current|kody_success_open_findings|request_after_review|request_before_review|threads_api_fails|threads_next_page|requests_api_fails|ack_skipped|check_failed|request_then_ack_only|fractional_request_order|fractional_request_older)
         printf '%s\n' '[{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"COMMENTED","submitted_at":"2026-10-30T12:00:00Z"}]' ;;
       old_run_started_before_request|neutral_not_receipt|forged_name_other_app|queued_new_run_old_success)
         printf '%s\n' '[{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"COMMENTED","submitted_at":"2026-10-30T12:00:00Z"}]' ;;
       appr_request_then_ack)
         printf '%s\n' '[{"id":1,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"APPROVED","submitted_at":"2026-10-30T12:00:00Z"},{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"COMMENTED","submitted_at":"2026-10-30T13:05:00Z"}]' ;;
+      appr_fractional)
+        printf '%s\n' '[{"id":1,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"APPROVED","submitted_at":"2026-10-30T13:00:00Z"}]' ;;
+      appr_fractional_ok)
+        printf '%s\n' '[{"id":1,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"APPROVED","submitted_at":"2026-10-30T13:00:00.500Z"}]' ;;
       grace_edge)
         # Submitted 30s after the run completed: inside the 60s pairing grace.
         printf '%s\n' '[{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$H'","state":"COMMENTED","submitted_at":"2026-10-30T12:01:00Z"}]' ;;
@@ -685,8 +697,45 @@ class ClassifyEffectiveReviewGate(unittest.TestCase):
     def test_a_review_request_older_than_the_review_does_not_block(self):
         self.assertIn("compare API failed", self.run_effective("request_before_review"))
 
+    def test_a_fractional_request_newer_than_the_receipt_blocks(self):
+        # Kody 4433064857: "13:00:00Z" sorts AFTER "13:00:00.500Z" as text
+        # ('Z' > '.'), so a string sort calls the whole-second request the
+        # newest and a run started at 13:00:00Z would pass; epochs see the
+        # fractional request as the newest and find no receipt started at
+        # or after it.
+        reason = self.run_effective("fractional_request_order")
+        self.assertIn("no completed full-review receipt", reason)
+
+    def test_a_fractional_request_older_than_the_receipt_passes(self):
+        self.assertIn("compare API failed", self.run_effective("fractional_request_older"))
+
+    def test_approval_mode_a_fractional_request_needs_a_newer_approval(self):
+        # Same misorder in the approval staleness check: the 13:00:00.500Z
+        # request is newer than the 13:00:00Z approval, so it must block.
+        code, output, reason = run_classify("appr_fractional", require_approval="true")
+        self.assertEqual(code, 0, output)
+        self.assertIn("no newer APPROVED", reason)
+
+    def test_approval_mode_a_fractional_approval_after_the_request_passes(self):
+        # A 13:00:00.500Z APPROVED answers a 13:00:00Z request; a string
+        # compare would block it ('Z' > '.'), epochs let it through.
+        code, output, reason = run_classify("appr_fractional_ok", require_approval="true")
+        self.assertEqual(code, 0, output)
+        self.assertIn("compare API failed", reason)
+
+    def test_the_pr_comments_are_read_once(self):
+        # Kody 4433065484: the request probe and the marker scan share one
+        # paginated read; the old code read the whole comment history twice.
+        _code, _output, _reason, calls = run_classify_full(
+            "eff_commented_current", "effective", require_approval="false"
+        )
+        comments_calls = [c for c in calls if "issues/1/comments" in c]
+        self.assertEqual(len(comments_calls), 1, calls)
+
     def test_the_request_lookup_fails_closed(self):
-        self.assertIn("review request lookup failed", self.run_effective("requests_api_fails"))
+        # One combined comment read now (Kody 4433065484): its failure is
+        # the comment lookup failure, with or without a review gate.
+        self.assertIn("PR comment lookup failed", self.run_effective("requests_api_fails"))
 
     def test_a_review_ack_under_a_skipped_check_has_no_receipt(self):
         # AFC #1207 review 5724125545: COMMENTED on the exact head while the
@@ -796,13 +845,26 @@ class GateSource(unittest.TestCase):
         self.assertIn("review thread pagination needs explicit resolution - fail closed", text)
 
     def test_the_request_probe_matches_any_author(self):
-        # A forged request can only delay arming, never permit it: the headless
-        # probe must not trust only Bot-authored comments.
+        # A forged request can only delay arming, never permit it: the probe
+        # must not trust only Bot-authored comments, and the pattern reaches
+        # jq through the environment, never interpolated into the program
+        # (Kody 4433065134).
         text = WORKFLOW.read_text(encoding="utf-8")
-        probe_lines = [line for line in text.splitlines() if "nomatch" in line]
-        self.assertTrue(probe_lines, "headless request probe missing")
+        probe_lines = [
+            line for line in text.splitlines() if "test(env.REVIEW_REQUEST_PATTERN" in line
+        ]
+        self.assertTrue(probe_lines, "env-fed request probe missing")
         for line in probe_lines:
             self.assertNotIn('user.type == "Bot"', line)
+        squashed = text.replace("\\", "")
+        self.assertNotIn('test("$REVIEW_REQUEST_PATTERN"', squashed)
+        self.assertNotIn("review_request_pattern contains a quote", text)
+
+    def test_the_comment_history_is_read_once_per_job(self):
+        # Kody 4433065484: classify and the boundary each paginate the PR
+        # comment history exactly once.
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertEqual(text.count("issues/$PR_NUMBER/comments"), 2)
 
     def test_the_kody_lookup_keeps_app_identity_and_verdict_fields(self):
         text = WORKFLOW.read_text(encoding="utf-8")
@@ -847,13 +909,15 @@ printf '%s\n' "$*" >> "$GH_CALLS"
 HEAD_OK="1111111111111111111111111111111111111111"
 case "$*" in
   *check-runs/124599873261*)
-    SHA="$HEAD_OK"; CONC="success"
+    SHA="$HEAD_OK"; CONC="success"; STARTED="2026-10-30T13:05:00Z"
     case "$GH_FAKE_MODE" in
       receipt_fetch_fails) echo "gh: api down" >&2; exit 1 ;;
       receipt_gone_neutral) CONC="neutral" ;;
       receipt_head_mismatch) SHA="3333333333333333333333333333333333333333" ;;
+      receipt_fractional_started) STARTED="2026-10-30T13:00:00.900Z" ;;
+      receipt_fractional_stale) STARTED="2026-10-30T13:00:00Z" ;;
     esac
-    printf '{"app":{"slug":"kody-ai","id":413034},"name":"Kody Code Review","head_sha":"%s","status":"completed","conclusion":"%s","started_at":"2026-10-30T13:05:00Z","completed_at":"2026-10-30T13:10:00Z","output":{"title":"Code Review Complete","summary":"Review finished successfully. Suggestions (if any) were posted as PR/file comments."}}\n' "$SHA" "$CONC"
+    printf '{"app":{"slug":"kody-ai","id":413034},"name":"Kody Code Review","head_sha":"%s","status":"completed","conclusion":"%s","started_at":"%s","completed_at":"2026-10-30T13:10:00Z","output":{"title":"Code Review Complete","summary":"Review finished successfully. Suggestions (if any) were posted as PR/file comments."}}\n' "$SHA" "$CONC" "$STARTED"
     exit 0
     ;;
   *reviews*)
@@ -863,6 +927,10 @@ case "$*" in
         printf '%s\n' '[{"id":1,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"CHANGES_REQUESTED","submitted_at":"2026-10-30T13:30:00Z"}]' ;;
       approval_dismissed)
         printf '%s\n' '[{"id":1,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"APPROVED","submitted_at":"2026-10-30T13:20:00Z"},{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"DISMISSED","submitted_at":"2026-10-30T13:40:00Z"}]' ;;
+      approval_other_old_cr)
+        printf '%s\n' '[{"id":1,"user":{"id":11,"login":"other"},"commit_id":"2222222222222222222222222222222222222222","state":"CHANGES_REQUESTED"},{"id":2,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"APPROVED"}]' ;;
+      approval_legacy_ids)
+        printf '%s\n' '[{"user":{"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"APPROVED"}]' ;;
       approval_held)
         printf '%s\n' '[{"id":1,"user":{"id":10,"login":"kody-ai[bot]"},"commit_id":"'$HEAD_OK'","state":"APPROVED","submitted_at":"2026-10-30T13:20:00Z"}]' ;;
       record_dismissed)
@@ -881,19 +949,19 @@ case "$*" in
     esac
     exit 0
     ;;
-  *nomatch*)
+  *issues/1/comments*)
     case "$GH_FAKE_MODE" in
-      request_drift) printf '%s\n' '2026-10-30T14:00:00Z match' ;;
-      requests_fail) echo "gh: api down" >&2; exit 1 ;;
-      *) printf '%s\n' '2026-10-30T13:00:00Z match' ;;
+      requests_fail|marker_comments_fails) echo "gh: api down" >&2; exit 1 ;;
     esac
-    exit 0
-    ;;
-  *swu-autofix-run*)
+    # Raw per-comment @json lines, as `gh api ... --jq '.[] | @json'` emits
+    # them: the guard's own jq pass does the marker/request reduction, so
+    # the tests exercise the real filter rather than a pre-reduced answer.
     case "$GH_FAKE_MODE" in
-      marker_active|marker_status_fails) printf '%s\n' '555' ;;
-      marker_comments_fails) echo "gh: api down" >&2; exit 1 ;;
-      *) : ;;
+      request_drift) printf '%s\n' '{"created_at":"2026-10-30T14:00:00Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
+      *) printf '%s\n' '{"created_at":"2026-10-30T13:00:00Z","user":{"type":"User"},"body":"@kody start-review"}' ;;
+    esac
+    case "$GH_FAKE_MODE" in
+      marker_active|marker_status_fails) printf '%s\n' '{"created_at":"2026-10-30T10:00:00Z","user":{"type":"Bot"},"body":"swu-autofix-run: bot=x run at https://github.com/x/actions/runs/555"}' ;;
     esac
     exit 0
     ;;
@@ -927,7 +995,7 @@ case "$*" in
     esac
     STATE="open"
     [ "$GH_FAKE_MODE" = "not_open" ] && STATE="merged"
-    printf '{"state":"%s","head":{"sha":"%s","ref":"feature/x","repo":{"full_name":"Simple-With-Us/Example"}},"draft":%s,"labels":%s}\n' "$STATE" "$SHA" "$DRAFT" "$LABELS"
+    printf '{"state":"%s","head":{"sha":"%s","ref":"feature/x","repo":{"full_name":"Simple-With-Us/Example"}},"draft":%s,"title":"x","labels":%s}\n' "$STATE" "$SHA" "$DRAFT" "$LABELS"
     exit 0
     ;;
   *graphql*)
@@ -956,6 +1024,7 @@ def run_arm_guard(
     classified_request: str = "2026-10-30T13:00:00Z",
     classified_receipt: str = "124599873261",
     review_gate: str = "",
+    restrict: str = "",
 ) -> tuple[int, str, list[str]]:
     """Run the arming-boundary guard step with a fake `gh`; return (exit code, combined output)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -985,8 +1054,9 @@ def run_arm_guard(
                 "KODY_APP_ID": "413034",
                 "KODY_CHECK_NAME": "Kody Code Review",
                 "KODY_APP_SLUG": "kody-ai",
-                "REVIEW_REQUEST_PATTERN": "@kody[ \t]+start-review",
+                "REVIEW_REQUEST_PATTERN": "^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)",
                 "HOLD_LABELS": "do-not-automerge,needs-human-merge",
+                "RESTRICT": restrict,
             }
         )
         proc = subprocess.run(
@@ -1124,22 +1194,114 @@ class ArmBoundaryGuard(unittest.TestCase):
         code, out, _ = run_arm_guard("commented_record", review_gate="effective")
         self.assertEqual(code, 0, out)
 
+    def test_approval_boundary_matches_classify_scope(self):
+        for mode in ("approval_other_old_cr", "approval_legacy_ids"):
+            code, out, _ = run_arm_guard(mode, classified_receipt="", review_gate="approval")
+            self.assertEqual(code, 0, out)
+
+    def test_effective_boundary_keeps_other_reviewers_outstanding_requests(self):
+        code, out, _ = run_arm_guard("approval_other_old_cr", review_gate="effective")
+        self.assertEqual(code, 1, out)
+        self.assertIn("requested changes", out)
+
+    def test_arm_fallback_has_the_reads_the_boundary_uses(self):
+        import yaml
+
+        parsed = yaml.safe_load(WORKFLOW.read_text())
+        perms = parsed["jobs"]["arm"]["permissions"]
+        for scope in ("checks", "actions", "issues"):
+            self.assertEqual(perms.get(scope), "read")
+
+    def test_default_request_pattern_ignores_kody_guide_mentions(self):
+        import yaml
+
+        parsed = yaml.safe_load(WORKFLOW.read_text())
+        # PyYAML1.1 reads on as True; input text itself remains YAML1.2.
+        pattern = parsed[True]["workflow_call"]["inputs"]["review_request_pattern"]["default"]
+        examples = [
+            ("@kody start-review\n\nReview complete head", True),
+            ("  @kody start-review", True),
+            ("# Kody Review Complete\n- Request a Review: use `@kody start-review`", False),
+            ("@kody start-review-not-a-command", False),
+        ]
+        for body, expected in examples:
+            proc = subprocess.run(
+                [
+                    "jq",
+                    "-nr",
+                    "--arg",
+                    "body",
+                    body,
+                    "--arg",
+                    "pattern",
+                    pattern,
+                    '$body | test($pattern; "i")',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), str(expected).lower())
+
     def test_api_uncertainty_aborts(self) -> None:
         for mode, fragment in (
             ("pr_read_fails", "PR re-read failed"),
             ("runs_read_fails", "check-run re-read failed"),
-            ("marker_comments_fails", "marker comment re-read failed"),
+            ("marker_comments_fails", "comment re-read failed"),
             ("marker_status_fails", "autofix run status lookup failed"),
+            # One combined comment read now (Kody 4433065484): its failure
+            # aborts with the same message with or without a review gate.
+            ("requests_fail", "comment re-read failed"),
         ):
             with self.subTest(mode=mode):
                 self.assert_guard_aborts(mode, fragment)
-        # Request and thread re-reads exist only under a non-empty gate.
-        for mode, fragment in (
-            ("requests_fail", "request re-read failed"),
-            ("threads_fail", "thread re-read failed"),
-        ):
+        # Thread re-reads exist only under a non-empty gate.
+        for mode, fragment in (("threads_fail", "thread re-read failed"),):
             with self.subTest(mode=mode):
                 self.assert_guard_aborts(mode, fragment, review_gate="effective")
+
+    def test_receipt_started_fractionally_after_the_request_still_validates(self):
+        # Kody 4433064857: "13:00:00.900Z" sorts BEFORE "13:00:00Z" as text
+        # ('.' < 'Z'), so a string compare rejects a receipt that actually
+        # started after the request; epochs accept it.
+        code, out, _ = run_arm_guard(
+            "receipt_fractional_started", classified_request="2026-10-30T13:00:00Z"
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn("Arming boundary re-verified", out)
+
+    def test_receipt_started_before_a_fractional_request_aborts(self):
+        # The dangerous direction: a run started at 13:00:00Z answers a
+        # 13:00:00.500Z request under a string compare; epochs reject it.
+        self.assert_guard_aborts(
+            "receipt_fractional_stale",
+            "no longer validates",
+            classified_request="2026-10-30T13:00:00.500Z",
+        )
+
+    def test_a_pr_that_left_the_restricted_lane_aborts(self):
+        # Kody 4433065293: classify proved the lane on the event payload;
+        # the boundary must re-prove it on the LIVE ref/title.
+        self.assert_guard_aborts(
+            "clean", "left the restricted lane", classified_receipt="", restrict="dependabot"
+        )
+
+    def test_a_pr_still_in_the_restricted_lane_passes(self):
+        code, out, _ = run_arm_guard(
+            "clean", classified_request="", classified_receipt="", restrict="feature"
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn("Arming boundary re-verified", out)
+
+    def test_the_pr_comments_are_read_once(self):
+        # Kody 4433065484: the request re-check and the marker scan share
+        # one paginated read; the old code read the whole comment history
+        # twice.
+        code, out, recorded = run_arm_guard("commented_record", review_gate="effective")
+        self.assertEqual(code, 0, out)
+        comments_calls = [c for c in recorded if "issues/1/comments" in c]
+        self.assertEqual(len(comments_calls), 1, recorded)
 
 
 def _gh_api_lines(path: Path):
