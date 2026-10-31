@@ -202,6 +202,7 @@ SPECS = {
     "wf_compare": ({"contents": "read"}, False),
     "wf_branch_get": ({"contents": "read"}, False),
     "wf_repo_get": ({"metadata": "read"}, False),
+    "wf_installation_metadata": ({"metadata": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -3805,6 +3806,13 @@ class WorkflowVerbs:
         branch = quote(_ref(args, "branch"), safe="")
         data = self._get(f"/repos/{repo}/branches/{branch}")
         return {"branch": _obj(data)}
+
+    def wf_installation_metadata(self, repo, args):
+        _only(args, ("repo",))
+        # check_shape stops here without credentials. Runtime dispatch uses the
+        # authenticated seat's minter, never this installation-token handle.
+        self._get("/installation-metadata-shape-only")
+        raise Refused("installation metadata requires authenticated dispatcher")
 
     def wf_repo_get(self, repo, args):
         _only(args, ("repo",))

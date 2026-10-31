@@ -330,6 +330,76 @@ class AppTokenMinter:
             raise AppTokenError(f"app id for {slug} is not an integer") from None
         return app_id, pair[prefix + "_PRIVATE_KEY"]
 
+    def installation_metadata(self, slug: str, repo: str) -> dict:
+        """Own-App accepted installation metadata only. No access token is minted."""
+        if not re.fullmatch(r"swu-[a-z0-9-]{1,90}", slug) or not re.fullmatch(
+            r"(?!.*\.\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}", repo
+        ):
+            raise AppTokenError("invalid installation lookup")
+        app_id, pem = self._app_credentials(slug)
+        bearer = self._signer(app_id, pem, int(self._clock()))
+        del pem
+        try:
+            app = self._api("GET", "/app", bearer)
+            if (
+                not isinstance(app, dict)
+                or type(app.get("id")) is not int
+                or app["id"] != app_id
+                or app.get("slug") != slug
+            ):
+                raise AppTokenError("own App identity unverifiable")
+            owner, name = repo.split("/", 1)
+            install = self._api("GET", f"/repos/{owner}/{name}/installation", bearer)
+            if not isinstance(install, dict):
+                raise AppTokenError("installation metadata unverifiable")
+            account = install.get("account")
+            permissions = install.get("permissions")
+            iid = install.get("id")
+            suspended = install.get("suspended_at")
+            if (
+                type(iid) is not int
+                or not 0 < iid <= 9007199254740991
+                or install.get("app_id") != app_id
+                or install.get("app_slug") != slug
+                or not isinstance(account, dict)
+                or type(account.get("id")) is not int
+                or not 0 < account["id"] <= 9007199254740991
+                or not isinstance(account.get("login"), str)
+                or account["login"].casefold() != owner.casefold()
+                or not isinstance(permissions, dict)
+                or len(permissions) > 256
+                or any(
+                    not isinstance(k, str)
+                    or not re.fullmatch(r"[a-z][a-z0-9_]{0,99}", k)
+                    or v not in ("read", "write")
+                    for k, v in permissions.items()
+                )
+                or "suspended_at" not in install
+                or (
+                    suspended is not None
+                    and (
+                        not isinstance(suspended, str)
+                        or not re.fullmatch(r"[0-9]{4}-[0-9TZ:.+\-]{10,40}", suspended)
+                    )
+                )
+            ):
+                raise AppTokenError("installation metadata unverifiable")
+            return {
+                "installation": {
+                    "app_slug": slug,
+                    "installation_id": iid,
+                    "account": {"id": account["id"], "login": account["login"]},
+                    "accepted_permissions": dict(permissions),
+                    "suspended": suspended is not None,
+                }
+            }
+        except AppTokenError:
+            raise
+        except Exception:
+            raise AppTokenError("installation metadata unavailable") from None
+        finally:
+            del bearer
+
     def token_for(self, slug: str, repo: str, permissions: dict) -> tuple[str, float]:
         """Mint (or serve from cache) an installation token;  returns (token, expiry epoch)."""
         for key in permissions:
