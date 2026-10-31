@@ -97,6 +97,17 @@ ensure_disarmed() {
   esac
 }
 
+# Fast current-label signal: disarm visible holds before expensive paginated
+# timeline ownership evaluation. Errors also disarm, never a false-clear.
+# Removed-but-unreleased historical holds still require timeline recovery.
+if signal="$(python3 "$DIR/hold_guard.py" "$REPO" "$PR" --hold-signal)" &&
+   signal_state="$(printf '%s' "$signal" | jq -er '.held | if type == "boolean" then tostring else error("invalid hold signal") end')"; then
+  [ "$signal_state" = true ] && ensure_disarmed
+else
+  any_error=1; read_error="current hold signal error"
+  ensure_disarmed
+fi
+
 # 2. Evaluate holds (fail closed per PR).
 combined='[]'
 for pr in "${prs[@]}"; do
@@ -297,7 +308,6 @@ if [ -z "$(printf '%s' "$owned" | tr -d '[:space:]')" ] || [ -s "$PF" ]; then
   fi
 fi
 
-[ "$any_error" -eq 1 ] && ensure_disarmed
 echo "::endgroup::"
 [ "$any_error" -eq 1 ] && exit 3
 exit 0

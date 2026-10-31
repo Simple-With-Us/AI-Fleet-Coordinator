@@ -316,3 +316,10 @@ find a new hold or read error after an initially clear evaluation; those also
 trigger disarm before the conclusion is published. Setter ownership, repair
 fences, error propagation and the documented asynchronous window stay intact.
 This does not arm or merge a PR or override CI/review requirements.
+
+A bounded current-label read precedes timeline pagination: visible holds or
+a failed current-label read disarm immediately, before ownership history is
+fetched. Removed-but-unreleased historical holds require timeline recovery;
+that unavoidable read window remains explicit. Clear publish-write failures
+make the job red but do not strip legitimate auto-merge; read failures and
+actual holds still do. No concurrent unconditional disarm of clear PRs.

@@ -194,6 +194,28 @@ class GuardIntegration(unittest.TestCase):
         ]
         self.assertEqual(json.loads(posts[0]["stdin"])["conclusion"], "success")
 
+    def test_visible_hold_disarms_before_paginated_timeline(self):
+        self.scenario({"labels": {"3": [{"name": "do-not-merge"}]}, "events": {"3": [[]]}})
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        calls = self.calls()
+        disarm = next(i for i,c in enumerate(calls) if c["argv"][:2] == ["pr", "merge"])
+        events = next(i for i,c in enumerate(calls) if any(a.endswith("/events") for a in c["argv"]))
+        self.assertLess(disarm, events)
+
+    def test_clear_publish_failure_does_not_disarm(self):
+        self.scenario({"labels": {"3": []}, "events": {"3": [[]]}, "armed": True,
+                       "fail": {"check-runs": {"rc": 1}}})
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]])
+
+    def test_current_label_signal_error_disarms_and_fails(self):
+        self.scenario({"fail": {"labels/3": {"rc": 1}}})
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 3)
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]]), 1)
+
     def test_hold_arriving_at_fence_disarms_before_red_publish(self):
         hold = ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z")
         self.scenario({"labels": {"3": []}, "events_seq": {"3": [[[]], [[hold]]]}, "armed": False})
