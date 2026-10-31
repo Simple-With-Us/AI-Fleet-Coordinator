@@ -339,10 +339,9 @@ class TestUserBearerInput(unittest.TestCase):
         # traceback and never a prompt attempt.
         with (
             mock.patch.dict(os.environ, {}, clear=True),
-            mock.patch.object(git.sys, "stdin", None),
+            mock.patch.object(git.sys, "stdin", None),self.assertRaises(SystemExit) as ctx
         ):
-            with self.assertRaises(SystemExit) as ctx:
-                git.remote_bearer()
+            git.remote_bearer()
         self.assertEqual(ctx.exception.code, 4)
 
     def test_non_interactive_without_env_fails_closed_without_prompting(self):
