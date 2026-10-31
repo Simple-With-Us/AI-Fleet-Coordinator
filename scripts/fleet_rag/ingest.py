@@ -838,7 +838,9 @@ def _run_locked(
         # unyielded rows from this pipeline; explicit migration reconciliation
         # owns deletion separately after per-document coverage verification.
         if prune and source_ok and name == "linear":
-            report["warnings"].append("linear: pruning skipped; generator is not a complete deletion inventory")
+            report["warnings"].append(
+                "linear: pruning skipped; generator is not a complete deletion inventory"
+            )
         if prune and source_ok and name != "linear":
             try:
                 gone = prune_source(name, yielded, state, writer, stats, state_path)
