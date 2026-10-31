@@ -363,8 +363,9 @@ HELPER_COMMANDS = {
     "scripts/simple-chat": "simple-chat",
     "scripts/simple-board": "simple-board",
     "scripts/recall": "recall",
-    # The Git command uses the same own-seat helper as the other remote tools.
-    "scripts/simple-git": "simple-git",
+    # NOT scripts/simple-git:  each Git CLI user supplies their OWN bearer (env or the hidden prompt)
+    # and the server decides identity and permissions from it, so its wrapper never reads or runs the
+    # host seat helper on any path.  The helper stays wired for the commands above.
 }
 HELPER_PATH = ".config/fleet-cli/seat-remote-defaults.py"
 
