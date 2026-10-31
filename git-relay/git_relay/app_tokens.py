@@ -37,6 +37,17 @@ MINT_PERMISSION_CEILING = (
 )
 
 
+class InstallationReadError(Exception):
+    """Safe status/retry-only read failure, never upstream prose or credentials."""
+
+    def __init__(self, status, retry_after=None):
+        super().__init__("installation metadata read failed")
+        self.status = status if type(status) is int and 0 <= status <= 599 else 0
+        self.retry_after = (
+            retry_after if type(retry_after) is int and 0 <= retry_after <= 86400 else None
+        )
+
+
 class AppTokenError(Exception):
     """A mint or credential lookup failed;  never carries secret material."""
 
@@ -359,6 +370,7 @@ class AppTokenMinter:
             if (
                 type(iid) is not int
                 or not 0 < iid <= 9007199254740991
+                or type(install.get("app_id")) is not int
                 or install.get("app_id") != app_id
                 or install.get("app_slug") != slug
                 or not isinstance(account, dict)
@@ -395,7 +407,11 @@ class AppTokenMinter:
             }
         except AppTokenError:
             raise
-        except Exception:
+        except Exception as exc:
+            from .github_client import RelayGitHubError
+
+            if isinstance(exc, RelayGitHubError):
+                raise InstallationReadError(exc.status, exc.retry_after) from None
             raise AppTokenError("installation metadata unavailable") from None
         finally:
             del bearer
