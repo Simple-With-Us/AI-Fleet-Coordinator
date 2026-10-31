@@ -59,6 +59,12 @@ USER_AGENT = _ENV_STEM.lower().replace("_", "-") + "-remote/1"
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_TIMEOUT_S = 40
+# One budget for the whole verb:  the identities probe, every discovery page and the target call share
+# it.  Each request gets the REMAINING budget (capped per request), direct transport and native alike;  a
+# call whose budget is gone is never started, so a write refused that way is reported as definitely not
+# sent.  A deadline that ends while a request is in flight cannot prove the request did not land, so an
+# in-flight write timeout keeps the uncertainty wording.
+OVERALL_DEADLINE_S = 300
 REMOTE_PROTOCOL_VERSION = "2025-06-18"
 REMOTE_MAX_BYTES = 4_000_000
 REMOTE_MAX_DEPTH = 64
@@ -142,7 +148,9 @@ def prog() -> str:
     # The wrapper records the name it was INSTALLED under before any interpreter re-exec (which would
     # otherwise replace argv[0] with the real script path);  without it, argv[0] itself is the source.
     chosen = env(_ENV_STEM + "_ARGV0").strip() or os.path.basename(sys.argv[0] or "git")
-    return _visible(chosen)
+    # _visible leaves newline and tab printable by design;  in the program name they would split die()
+    # lines on stderr (a caller-controlled environment could spoof log lines), so escape them here.
+    return _visible(chosen).replace("\n", "\\n").replace("\t", "\\t")
 
 
 def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
@@ -266,7 +274,13 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
                 if remaining <= 0:
                     raise _TransportError(True, "deadline")
                 sock.settimeout(remaining)
-                chunk = r.read1(65536)
+                try:
+                    chunk = r.read1(65536)
+                except AttributeError:
+                    # read1's partial-read semantics serve the slow-drip deadline and an ordinary
+                    # http.client.HTTPResponse provides it;  a wrapped response that cannot read this
+                    # way is a transport failure here, never a traceback.
+                    raise _TransportError(True, "transport") from None
                 if time.monotonic() > deadline:
                     raise _TransportError(True, "deadline")
                 if not chunk:
@@ -317,7 +331,7 @@ def _error_code_of(result: dict) -> str | None:
     return None
 
 
-def _native_echo_post(body: bytes, write: bool):
+def _native_echo_post(body: bytes, write: bool, timeout: float = REMOTE_TIMEOUT_S):
     """Fixed existing root-controlled ECHO custody transport; no credential export.
 
     The adapter reports an UNCERTAIN transport failure as isError with code=outcome_unknown in the
@@ -362,7 +376,7 @@ def _native_echo_post(body: bytes, write: bool):
             input=data,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=REMOTE_TIMEOUT_S,
+            timeout=timeout,  # the actual remaining budget from _rpc (already > 0, already capped)
             env={"PATH": "/usr/bin:/bin"},
             check=False,
         )
@@ -553,14 +567,29 @@ def _scan_arguments(arguments, bearer: str) -> str | None:
 # ----------------------------------------------------------------- the one remote round trip
 
 
-def _rpc(bearer: str, method: str, params: dict, write: bool):
-    """One JSON-RPC POST to the fixed endpoint.  Returns the result object.  Never retried."""
+def _rpc(bearer: str, method: str, params: dict, write: bool, deadline: float | None = None):
+    """One JSON-RPC POST to the fixed endpoint.  Returns the result object.  Never retried.
+    `deadline` is the verb's overall budget:  a call whose budget is already gone is never started (a
+    write refused that way is definitely NOT sent), and a call that does start gets only the remaining
+    budget."""
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     ).encode()
+    timeout = REMOTE_TIMEOUT_S
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Nothing left for this request, so it never leaves:  for a write that is a certainty,
+            # not the in-flight uncertainty wording.
+            die(
+                "the overall time budget was exhausted before this call"
+                + ("; the write was not sent" if write else ""),
+                EXIT_ERROR,
+            )
+        timeout = min(REMOTE_TIMEOUT_S, remaining)
     try:
         status, ctype, raw = (
-            _native_echo_post(body, write)
+            _native_echo_post(body, write, timeout)
             if native_echo_selected()
             else _remote_post(
                 REMOTE_MCP_URL,
@@ -572,7 +601,7 @@ def _rpc(bearer: str, method: str, params: dict, write: bool):
                     "User-Agent": USER_AGENT,
                 },
                 body,
-                REMOTE_TIMEOUT_S,
+                timeout,
             )
         )
     except _TransportError as exc:
@@ -587,13 +616,13 @@ def _rpc(bearer: str, method: str, params: dict, write: bool):
     return result
 
 
-def remote_call(tool: str, arguments: dict, write: bool, bearer: str) -> dict:
+def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: float | None = None) -> dict:
     """One tools/call.  Returns {"structured":..., "text":...}.  Never retried."""
     hit = _scan_arguments(arguments, bearer)
     if hit:
         die(f"refused before sending: {hit}", EXIT_USAGE)
     result = _rpc(
-        bearer, "tools/call", {"name": tool, "arguments": arguments}, write
+        bearer, "tools/call", {"name": tool, "arguments": arguments}, write, deadline
     )
     content = result.get("content")
     sc = result.get("structuredContent")
@@ -639,7 +668,7 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str) -> dict:
 # ----------------------------------------------------------------- runtime discovery (the only tool authority)
 
 
-def discover_tools(bearer: str) -> dict:
+def discover_tools(bearer: str, deadline: float | None = None) -> dict:
     """The git tools THIS caller's endpoint serves right now, via bounded tools/list pages:  at most
     DISCOVERY_MAX_PAGES pages, DISCOVERY_MAX_TOOLS tools, each cursor a fresh bounded string (a repeat is a
     loop and refuses), every advertised tool shape-validated.  Read/write is NOT taken from the answer:  the
@@ -649,7 +678,7 @@ def discover_tools(bearer: str) -> dict:
     seen_cursors = set()
     for _ in range(DISCOVERY_MAX_PAGES):
         params = {"cursor": cursor} if cursor is not None else {}
-        result = _rpc(bearer, "tools/list", params, False)
+        result = _rpc(bearer, "tools/list", params, False, deadline)
         page = result.get("tools")
         if not isinstance(page, list):
             die("the hosted endpoint answered tools/list without a tools array")
@@ -686,10 +715,11 @@ def discover_tools(bearer: str) -> dict:
                 "schema": schema,
             }
         nxt = result.get("nextCursor")
-        if nxt in (None, ""):
+        if nxt is None:  # absent or JSON null:  the only normal end of the list
             break
         if (
             not isinstance(nxt, str)
+            or not nxt  # an empty cursor is malformed, never a terminator
             or len(nxt) > DISCOVERY_MAX_CURSOR
             or nxt in seen_cursors
             or nxt == cursor
@@ -704,31 +734,75 @@ def discover_tools(bearer: str) -> dict:
     return tools
 
 
-def _schema_ok(schema) -> bool:
-    """A discovered input schema is usable:  an object schema whose required/properties are ordinary."""
-    if not isinstance(schema, dict) or not _nodes_ok(schema):
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_nonneg_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _schema_constraints_ok(schema, depth: int = 0) -> bool:
+    """Every constraint this client interprets has the type the check relies on, recursively:  required
+    lists, properties maps, anyOf variants, items, numeric bounds, length/item bounds, pattern (must
+    compile) and enum.  tools/list is untrusted:  a malformed leaf makes the whole advertised schema
+    unreadable (a clean refusal at discovery), never a TypeError traceback during validation."""
+    if not isinstance(schema, dict) or depth > 8:
         return False
-    if schema.get("type") not in (None, "object"):
+    if schema.get("type") is not None and not isinstance(schema["type"], str):
         return False
     required = schema.get("required")
     if required is not None and (
         not isinstance(required, list) or not all(isinstance(x, str) for x in required)
     ):
         return False
+    if not all(_is_number(schema[k]) for k in ("minimum", "maximum") if k in schema):
+        return False
+    if not all(
+        _is_nonneg_int(schema[k])
+        for k in ("minLength", "maxLength", "minItems", "maxItems")
+        if k in schema
+    ):
+        return False
+    pattern = schema.get("pattern")
+    if pattern is not None:
+        if not isinstance(pattern, str):
+            return False
+        try:
+            re.compile(pattern)
+        except re.error:
+            return False
+    enum = schema.get("enum")
+    if enum is not None and not isinstance(enum, list):
+        return False
+    items = schema.get("items")
+    if items is not None and not _schema_constraints_ok(items, depth + 1):
+        return False
     props = schema.get("properties")
     if props is not None and (
         not isinstance(props, dict)
         or len(props) > 200
-        or not all(isinstance(k, str) and isinstance(v, dict) for k, v in props.items())
+        or not all(isinstance(k, str) for k in props)
+        or not all(_schema_constraints_ok(v, depth + 1) for v in props.values())
     ):
         return False
     any_of = schema.get("anyOf")
     if any_of is not None and (
         not isinstance(any_of, list)
-        or not all(isinstance(v, dict) for v in any_of)
+        or not all(_schema_constraints_ok(v, depth + 1) for v in any_of)
     ):
         return False
     return True
+
+
+def _schema_ok(schema) -> bool:
+    """A discovered input schema is usable:  an object schema whose required/properties are ordinary and
+    whose leaf constraints are well-typed all the way down."""
+    if not isinstance(schema, dict) or not _nodes_ok(schema):
+        return False
+    if schema.get("type") not in (None, "object"):
+        return False
+    return _schema_constraints_ok(schema)
 
 
 # ----------------------------------------------------------------- client-side argument validation (the server remains the enforcement boundary)
@@ -768,9 +842,12 @@ def _type_ok(schema: dict, value) -> bool:
     if kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
             return False
-        if "minimum" in schema and value < schema["minimum"]:
+        # Discovery already refused a malformed bound;  guard anyway, so a bad leaf is a clean False
+        # and never a TypeError.
+        lo, hi = schema.get("minimum"), schema.get("maximum")
+        if lo is not None and (not _is_number(lo) or value < lo):
             return False
-        if "maximum" in schema and value > schema["maximum"]:
+        if hi is not None and (not _is_number(hi) or value > hi):
             return False
         return True
     if kind == "boolean":
@@ -778,9 +855,10 @@ def _type_ok(schema: dict, value) -> bool:
     if kind == "array":
         if not isinstance(value, list):
             return False
-        if "minItems" in schema and len(value) < schema["minItems"]:
+        lo, hi = schema.get("minItems"), schema.get("maxItems")
+        if lo is not None and (not _is_nonneg_int(lo) or len(value) < lo):
             return False
-        if "maxItems" in schema and len(value) > schema["maxItems"]:
+        if hi is not None and (not _is_nonneg_int(hi) or len(value) > hi):
             return False
         items = schema.get("items")
         if isinstance(items, dict):
@@ -795,17 +873,21 @@ def _type_ok(schema: dict, value) -> bool:
         if not isinstance(value, str):
             return False
         pattern = schema.get("pattern")
-        if pattern:
+        if pattern is not None:
+            if not isinstance(pattern, str):
+                return False
             try:
                 if not re.search(pattern, value):
                     return False
             except re.error:
                 return False
-        if "enum" in schema and value not in schema["enum"]:
+        enum = schema.get("enum")
+        if enum is not None and (not isinstance(enum, list) or value not in enum):
             return False
-        if "minLength" in schema and len(value) < schema["minLength"]:
+        lo, hi = schema.get("minLength"), schema.get("maxLength")
+        if lo is not None and (not _is_nonneg_int(lo) or len(value) < lo):
             return False
-        if "maxLength" in schema and len(value) > schema["maxLength"]:
+        if hi is not None and (not _is_nonneg_int(hi) or len(value) > hi):
             return False
         return True
     return True  # unknown type keyword:  leave it to the server
@@ -843,29 +925,51 @@ def validate_arguments(entry: dict, args) -> None:
     if len(json.dumps(args, separators=(",", ":"), ensure_ascii=False).encode()) > limit:
         die(f"{name}: arguments exceed the {limit}-byte input limit", EXIT_USAGE)
     tolerate = not entry["read"]
-    if not _object_ok(schema, args, tolerate_identity=tolerate):
-        die(
-            f"{name}: arguments do not match its schema (`{prog()} show {name}` prints it)",
-            EXIT_USAGE,
-        )
     any_of = schema.get("anyOf")
-    if isinstance(any_of, list) and any_of:
-        ok = False
-        for variant in any_of:
-            if not isinstance(variant, dict):
-                continue
-            merged = dict(schema)
-            merged.pop("anyOf", None)
-            required = set(merged.get("required") or ()) | set(variant.get("required") or ())
-            merged["required"] = sorted(required)
-            if _object_ok(merged, args, tolerate_identity=tolerate):
-                ok = True
-                break
-        if not ok:
+    variants = [v for v in any_of if isinstance(v, dict)] if isinstance(any_of, list) else []
+    if not variants:
+        if not _object_ok(schema, args, tolerate_identity=tolerate):
             die(
-                f"{name}: arguments do not match any supported variant (`{prog()} show {name}` prints the schema)",
+                f"{name}: arguments do not match its schema (`{prog()} show {name}` prints it)",
                 EXIT_USAGE,
             )
+        return
+    # Intersection semantics:  the root constraints AND at least one variant.  A key declared by BOTH
+    # keeps the ROOT schema in the merged map (so its constraints always apply) and is ALSO checked
+    # against the variant's schema - overlapping constraints intersect, they never replace.  A key only
+    # the variant declares is checked by the variant's schema and is unknown to every other variant;
+    # required keys are the root's union the variant's.  Nothing is weakened globally:  a key no root
+    # and no variant declares still fails every variant's unknown-key check.
+    root = dict(schema)
+    root.pop("anyOf", None)
+    root_props = root.get("properties") or {}
+    root_required = set(root.get("required") or ())
+    for variant in variants:
+        merged = dict(root)
+        merged["required"] = sorted(root_required | set(variant.get("required") or ()))
+        variant_props = variant.get("properties")
+        if isinstance(variant_props, dict):
+            props = dict(root_props)
+            overlap = []
+            for key, subschema in variant_props.items():
+                if key in root_props:
+                    overlap.append((key, subschema))
+                else:
+                    props[key] = subschema
+            merged["properties"] = props
+            if _object_ok(merged, args, tolerate_identity=tolerate) and all(
+                not isinstance(subschema, dict)
+                or key not in args
+                or _type_ok(subschema, args[key])
+                for key, subschema in overlap
+            ):
+                return
+        elif _object_ok(merged, args, tolerate_identity=tolerate):
+            return
+    die(
+        f"{name}: arguments do not match any supported variant (`{prog()} show {name}` prints the schema)",
+        EXIT_USAGE,
+    )
 
 
 # ----------------------------------------------------------------- actor resolution (reads AND writes, mismatch refused before the target call)
@@ -904,12 +1008,18 @@ def establish_principal(out: dict) -> str:
     return seat
 
 
-def authenticated_seat(bearer: str) -> str:
+def authenticated_seat(bearer: str, deadline: float | None = None) -> str:
     """The seat the server reports for this bearer, via the hosted identities tool."""
-    return establish_principal(remote_call(IDENTITIES_TOOL, {}, False, bearer))
+    return establish_principal(remote_call(IDENTITIES_TOOL, {}, False, bearer, deadline))
 
 
-def resolve_actor(entry: dict, args: dict, bearer: str, server_seat: str | None = None) -> dict:
+def resolve_actor(
+    entry: dict,
+    args: dict,
+    bearer: str,
+    server_seat: str | None = None,
+    deadline: float | None = None,
+) -> dict:
     """The actor for a read OR a write.  A declared seat and an explicit identity must agree with each other
     and with the seat the server reports for this bearer;  any mismatch is refused BEFORE the target call -
     whether or not the tool takes an `identity` argument (the assertion is never skipped).  The native ECHO
@@ -941,7 +1051,7 @@ def resolve_actor(entry: dict, args: dict, bearer: str, server_seat: str | None 
             )
         seat = NATIVE_ECHO_SEAT
     else:
-        seat = server_seat or authenticated_seat(bearer)
+        seat = server_seat or authenticated_seat(bearer, deadline)
         if wanted is not None and seat != wanted:
             die(
                 f"the server reports this bearer as {seat}, not {wanted};  refusing before the call",
@@ -1043,7 +1153,14 @@ def _read_args_json(a) -> dict:
     return args
 
 
-def cmd_call(tools: dict, a, bearer: str, args: dict | None = None, server_seat: str | None = None) -> int:
+def cmd_call(
+    tools: dict,
+    a,
+    bearer: str,
+    args: dict | None = None,
+    server_seat: str | None = None,
+    deadline: float | None = None,
+) -> int:
     entry = tools.get(a.tool)
     if entry is None:
         die(f"unknown tool {a.tool!r};  `{prog()} list` lists what the server advertises", EXIT_USAGE)
@@ -1052,8 +1169,8 @@ def cmd_call(tools: dict, a, bearer: str, args: dict | None = None, server_seat:
     # The caller's own arguments are validated before the actor probe (a refused call costs no extra call),
     # and secret-scanned inside remote_call before anything is sent:  there is no unscanned route.
     validate_arguments(entry, args)
-    args = resolve_actor(entry, args, bearer, server_seat)
-    return _print_result(remote_call(a.tool, args, not entry["read"], bearer), a.json)
+    args = resolve_actor(entry, args, bearer, server_seat, deadline)
+    return _print_result(remote_call(a.tool, args, not entry["read"], bearer, deadline), a.json)
 
 
 def cmd_whoami(out: dict, a) -> int:
@@ -1115,6 +1232,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
+    # One overall budget for the verb:  the identities probe, every discovery page and the target call
+    # all draw from it, and a request that cannot start inside it is never sent.
+    overall_deadline = time.monotonic() + OVERALL_DEADLINE_S
     args = None
     if native_echo_selected():
         # The custody proves ECHO without any probe:  a non-ECHO declared seat, or a non-ECHO explicit
@@ -1142,7 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "whoami":
             # whoami's one identities fetch, validated before display:  a contradictory server principal is
             # refused, not shown, and it must be the seat the custody proves.
-            whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer)
+            whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer, overall_deadline)
             if establish_principal(whoami_out) != NATIVE_ECHO_SEAT:
                 die(
                     f"the server principal contradicts the {NATIVE_ECHO_SEAT} custody;  refusing to display",
@@ -1153,7 +1273,7 @@ def main(argv: list[str] | None = None) -> int:
         # establishes the actor (the server's own principal - an undeclared caller is never anonymous and
         # never picks the identity) and a declared seat must match it.
         declared = declared_seat()  # a broken declaration is refused before anything leaves
-        whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer)
+        whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer, overall_deadline)
         server_seat = establish_principal(whoami_out)
         if declared is not None and declared != server_seat:
             die(
@@ -1162,12 +1282,12 @@ def main(argv: list[str] | None = None) -> int:
             )
     if a.cmd == "whoami":
         return cmd_whoami(whoami_out, a)
-    tools = discover_tools(bearer)
+    tools = discover_tools(bearer, overall_deadline)
     if a.cmd == "list":
         return cmd_list(tools, a)
     if a.cmd == "show":
         return cmd_show(tools, a)
-    return cmd_call(tools, a, bearer, args, server_seat)
+    return cmd_call(tools, a, bearer, args, server_seat, overall_deadline)
 
 
 if __name__ == "__main__":

@@ -145,7 +145,7 @@ class FakeTransport:
             except IndexError:
                 tools, nxt = [], None
             result = {"tools": tools}
-            if nxt:
+            if nxt is not None:
                 result["nextCursor"] = nxt
         elif req["method"] == "tools/call":
             name = req["params"]["name"]
@@ -219,7 +219,7 @@ def _no_network(url, headers, body, timeout):
     raise AssertionError("no remote call may leave in this test")
 
 
-def _no_network_native(body, write):
+def _no_network_native(body, write, timeout=None):
     raise AssertionError("no native call may leave in this test")
 
 
@@ -229,9 +229,11 @@ class FakeNative:
     def __init__(self, pages=None, call_results=None):
         self.transport = FakeTransport(pages=pages, seat="ECHO", call_results=call_results)
         self.bodies = []
+        self.timeouts = []
 
-    def post(self, body, write):
+    def post(self, body, write, timeout=None):
         self.bodies.append(body)
+        self.timeouts.append(timeout)
         req = json.loads(body.decode())
         # Route through the same fixture logic, without the Authorization assertion.
         if req["method"] == "tools/list":
@@ -243,7 +245,7 @@ class FakeNative:
             except IndexError:
                 tools, nxt = [], None
             result = {"tools": tools}
-            if nxt:
+            if nxt is not None:
                 result["nextCursor"] = nxt
         else:
             name = req["params"]["name"]
@@ -1297,6 +1299,250 @@ class TestSchemaFailClosed(unittest.TestCase):
         )
         self.assertEqual(code, 1)
         self.assertIn("missing or unreadable schema", err)
+
+
+class TestReview1199(unittest.TestCase):
+    """PR 1199 review fixes:  strict cursors, anyOf intersection, the overall budget, read1 guard,
+    program-name escaping and recursive leaf-schema validation."""
+
+    # 1. An empty nextCursor is malformed, never a terminator.
+    def test_empty_cursor_is_malformed_not_a_terminator(self):
+        t = FakeTransport(pages=[(DEFAULT_PAGE[:1], "")])
+        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        self.assertEqual(code, 1)
+        self.assertIn("malformed or repeating", err)
+
+    def test_absent_and_null_cursor_end_the_list(self):
+        for nxt in (None,):  # absent already covered everywhere;  null is explicit here
+            t = FakeTransport(pages=[(DEFAULT_PAGE[:1], nxt)])
+            code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+            self.assertEqual(code, 0, err)
+
+    # 2. anyOf intersection:  root constraints AND one variant, variant-only keys known there only.
+    ANYOF_SCHEMA = {
+        "type": "object",
+        "required": ["repo"],
+        "properties": {"repo": {"type": "string"}},
+        "anyOf": [
+            {"required": ["mode"], "properties": {"mode": {"type": "string", "enum": ["a", "b"]}}},
+            {"required": ["count"], "properties": {"count": {"type": "integer", "minimum": 1}}},
+        ],
+    }
+
+    def _anyof_transport(self):
+        return FakeTransport(pages=[[make_tool("gr_wf_repo_get", self.ANYOF_SCHEMA)]])
+
+    def _anyof_call(self, args, t=None):
+        return run_cli(
+            ["call", "gr_wf_repo_get", "--args-json", json.dumps(args)],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t or self._anyof_transport(),
+        )
+
+    def test_anyof_variant_only_property_accepted(self):
+        for args in ({"repo": "r", "mode": "a"}, {"repo": "r", "count": 2}):
+            code, out, err = self._anyof_call(args)
+            self.assertEqual(code, 0, err)
+
+    def test_anyof_variant_constraints_enforced(self):
+        for args in ({"repo": "r", "mode": "c"}, {"repo": "r", "count": 0}):
+            code, out, err = self._anyof_call(args)
+            self.assertEqual(code, 2, err)
+
+    def test_anyof_unknown_key_still_refused(self):
+        code, out, err = self._anyof_call({"repo": "r", "mode": "a", "bogus": 1})
+        self.assertEqual(code, 2)
+        self.assertIn("do not match any supported variant", err)
+
+    def test_anyof_root_required_still_enforced(self):
+        code, out, err = self._anyof_call({"mode": "a"})
+        self.assertEqual(code, 2)
+        code, out, err = self._anyof_call({"repo": "r"})
+        self.assertEqual(code, 2)
+
+    # 2b. Overlapping root/variant keys:  BOTH constraints apply (intersection, never replacement).
+    OVERLAP_SCHEMA = {
+        "type": "object",
+        "required": ["repo"],
+        "properties": {
+            "repo": {"type": "string"},
+            "x": {"type": "integer", "minimum": 10},
+            "s": {"type": "string", "minLength": 2},
+            "o": {"type": "object", "properties": {"n": {"type": "integer", "minimum": 5}}},
+        },
+        "anyOf": [
+            {
+                "properties": {
+                    "x": {"type": "integer", "minimum": 0},
+                    "s": {"type": "string", "enum": ["aa", "bb"]},
+                    "o": {"type": "object", "properties": {"n": {"type": "integer", "maximum": 100}}},
+                }
+            }
+        ],
+    }
+
+    def _overlap_call(self, args):
+        t = FakeTransport(pages=[[make_tool("gr_wf_repo_get", self.OVERLAP_SCHEMA)]])
+        return run_cli(
+            ["call", "gr_wf_repo_get", "--args-json", json.dumps(args)],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+
+    def test_anyof_overlap_enforces_the_root_side(self):
+        # root x minimum 10, variant minimum 0:  1 satisfies the variant but violates the root
+        code, out, err = self._overlap_call({"repo": "r", "x": 1})
+        self.assertEqual(code, 2)
+        code, out, err = self._overlap_call({"repo": "r", "x": 15})
+        self.assertEqual(code, 0, err)
+
+    def test_anyof_overlap_enforces_both_string_sides(self):
+        # root string minLength 2, variant enum [aa, bb]:  both apply
+        code, out, err = self._overlap_call({"repo": "r", "s": "cc"})
+        self.assertEqual(code, 2)  # enum refuses
+        code, out, err = self._overlap_call({"repo": "r", "s": "a"})
+        self.assertEqual(code, 2)  # enum AND root minLength refuse
+        code, out, err = self._overlap_call({"repo": "r", "s": "aa"})
+        self.assertEqual(code, 0, err)
+
+    def test_anyof_overlap_nested_object_bounds_from_both_sides(self):
+        # root nested minimum 5, variant nested maximum 100:  both bounds hold
+        code, out, err = self._overlap_call({"repo": "r", "o": {"n": 1}})
+        self.assertEqual(code, 2)  # root bound refuses
+        code, out, err = self._overlap_call({"repo": "r", "o": {"n": 150}})
+        self.assertEqual(code, 2)  # variant bound refuses
+        code, out, err = self._overlap_call({"repo": "r", "o": {"n": 50}})
+        self.assertEqual(code, 0, err)
+
+    # 3. One overall budget:  probe + pages + target;  an exhausted budget never starts the write.
+    def test_budget_exhausted_before_target_write_is_reported_not_sent(self):
+        t = FakeTransport()
+        ticks = iter([1000.0, 1000.0, 1000.0, 1000.0 + 9999.0])
+        clock = mock.patch.object(
+            git.time, "monotonic", side_effect=lambda: next(ticks, 1000.0 + 9999.0)
+        )
+        with clock:
+            code, out, err = run_cli(
+                ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
+                env={"SIMPLE_TOOLS_BEARER": BEARER},
+                transport=t,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("the write was not sent", err)
+        self.assertNotIn("may or may not have been applied", err)
+        self.assertNotIn("gr_wf_issue_create", [c[0] for c in t.calls])
+
+    def test_each_request_gets_the_remaining_budget(self):
+        t = FakeTransport()
+        timeouts = []
+        inner = t.post
+
+        def record(url, headers, body, timeout):
+            timeouts.append(timeout)
+            return inner(url, headers, body, timeout)
+
+        t.post = record
+        with mock.patch.object(git, "OVERALL_DEADLINE_S", 10):
+            code, out, err = run_cli(
+                ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
+                env={"SIMPLE_TOOLS_BEARER": BEARER},
+                transport=t,
+            )
+        self.assertEqual(code, 0, err)
+        self.assertTrue(timeouts)
+        self.assertTrue(all(0 < x <= 10 for x in timeouts), timeouts)
+
+    def test_native_path_gets_the_remaining_budget(self):
+        native = FakeNative()
+        with mock.patch.object(git, "OVERALL_DEADLINE_S", 10):
+            code, out, err = run_cli(
+                ["list"],
+                env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
+                native_post=native.post,
+            )
+        self.assertEqual(code, 0, err)
+        self.assertTrue(native.timeouts)
+        self.assertTrue(all(0 < x <= 10 for x in native.timeouts), native.timeouts)
+
+    def test_native_timeout_is_the_actual_remaining_budget_without_a_floor(self):
+        native = FakeNative()
+        with mock.patch.object(git, "OVERALL_DEADLINE_S", 0.5):
+            code, out, err = run_cli(
+                ["list"],
+                env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
+                native_post=native.post,
+            )
+        self.assertEqual(code, 0, err)
+        self.assertTrue(native.timeouts)
+        self.assertTrue(all(0 < x < 1 for x in native.timeouts), native.timeouts)
+
+    # 4. read1 stays, but a response without it fails closed, not with a traceback.
+    def test_response_without_read1_is_a_guarded_transport_failure(self):
+        import types
+        import urllib.request
+
+        class FakeSock:
+            def settimeout(self, value):
+                self.value = value
+
+        class NoRead1Response:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+            fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=FakeSock()))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return NoRead1Response()
+
+        with mock.patch.object(
+            git.urllib.request, "build_opener", lambda *handlers: FakeOpener()
+        ):
+            with self.assertRaises(git._TransportError):
+                git._remote_post(git.REMOTE_MCP_URL, {}, b"{}", 5)
+
+    # 5. The program name cannot carry newline/tab into stderr lines.
+    def test_prog_escapes_newline_and_tab(self):
+        with mock.patch.dict(os.environ, {"SIMPLE_GIT_ARGV0": "evil\nname\there"}):
+            self.assertEqual(git.prog(), "evil\\nname\\there")
+
+    # 6. Malformed leaf constraints:  clean refusal at discovery, clean False in _type_ok.
+    def _schema_refusal(self, schema):
+        t = FakeTransport(pages=[[make_tool("gr_wf_repo_get", schema)]])
+        code, out, err = run_cli(["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        self.assertEqual(code, 1)
+        self.assertIn("missing or unreadable schema", err)
+
+    def test_malformed_leaf_bounds_make_the_schema_unreadable(self):
+        for bad in (
+            {"type": "object", "properties": {"n": {"type": "integer", "minimum": "x"}}},
+            {"type": "object", "properties": {"n": {"type": "integer", "minimum": True}}},
+            {"type": "object", "properties": {"s": {"type": "string", "minLength": 1.5}}},
+            {"type": "object", "properties": {"s": {"type": "string", "pattern": 5}}},
+            {"type": "object", "properties": {"s": {"type": "string", "pattern": "["}}},
+            {"type": "object", "properties": {"s": {"type": "string", "enum": "abc"}}},
+            {"type": "object", "properties": {"a": {"type": "array", "items": "x"}}},
+            {"type": "object", "anyOf": [{"properties": {"n": {"maximum": "x"}}}]},
+        ):
+            self._schema_refusal(bad)
+
+    def test_type_ok_guards_return_false_without_a_traceback(self):
+        self.assertFalse(git._type_ok({"type": "integer", "minimum": "x"}, 5))
+        self.assertFalse(git._type_ok({"type": "integer", "maximum": None or "x"}, 5))
+        self.assertFalse(git._type_ok({"type": "string", "minLength": "x"}, "abc"))
+        self.assertFalse(git._type_ok({"type": "string", "maxLength": True}, "abc"))
+        self.assertFalse(git._type_ok({"type": "string", "enum": "abc"}, "a"))
+        self.assertFalse(git._type_ok({"type": "string", "pattern": 5}, "abc"))
+        self.assertFalse(git._type_ok({"type": "array", "minItems": "x"}, []))
+        # Well-formed leaves still pass.
+        self.assertTrue(git._type_ok({"type": "integer", "minimum": 1, "maximum": 9}, 5))
+        self.assertTrue(git._type_ok({"type": "string", "minLength": 1, "enum": ["a"]}, "a"))
+        self.assertTrue(git._type_ok({"type": "array", "minItems": 0, "maxItems": 2}, [1]))
 
 
 REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
