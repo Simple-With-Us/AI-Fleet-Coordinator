@@ -2249,10 +2249,10 @@ def _linear_scan_entry(node) -> tuple:
 def _linear_ingested_versions() -> dict:
     """doc_id -> ingest state row for the linear rows of the ingest state file, so a routine
     run fetches only issues Linear changed since they were ingested.  Any read problem
-    degrades to an empty map - the safe direction:  it refetches, it never skips.  This is why
-    the source must stay OUT of the nightly prune set:  prune deletes whatever a source did
-    not yield, and an incrementally skipped doc is still live.  A deliberate full pass
-    (FLEET_RAG_LINEAR_FULL=1, e.g. before a manual `--source linear --prune`) refetches all."""
+    degrades to an empty map - the safe direction: it refetches, it never skips.
+    Linear is never a deletion inventory: FULL refetches selected issues but can
+    still omit truncated ones. The orchestrator skips Linear prune in nightly
+    runs and refuses a separate Linear prune before any write."""
     path = pathlib.Path(
         os.environ.get("FLEET_RAG_LINEAR_STATE")
         or (pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json")

@@ -167,7 +167,8 @@ class IngestTests(unittest.TestCase):
         before = json.loads(self.state.read_text())
         points = set(self.qd.points)
         for full in ("", "1"):
-            with (mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),
+            with (mock.patch.object(sources, "NIGHTLY_SOURCES", ("linear",)),
+                  mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),
                   mock.patch.dict(ingest.GENERATORS, {"linear": lambda limit=None: iter([])})):
                 report = ingest.run("linear", prune=True, cfg={"x": "y"}, qd=self.qd,
                                     state_path=self.state, last_run_path=self.last,
@@ -176,6 +177,18 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(json.loads(self.state.read_text()), before)
             self.assertEqual(set(self.qd.points), points)
             self.assertTrue(any("pruning skipped" in w for w in report["warnings"]))
+
+    def test_explicit_linear_prune_refused_before_any_write(self) -> None:
+        for full in ("", "1"):
+            with (mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),
+                  mock.patch.dict(ingest.GENERATORS, {"linear": lambda limit=None: iter([])})):
+                with self.assertRaisesRegex(ingest.FleetRagError, "complete deletion inventory"):
+                    ingest.run("linear", prune=True, cfg={"x": "y"}, qd=self.qd,
+                               state_path=self.state, last_run_path=self.last,
+                               log_path=self.logf, log=lambda *a: None)
+            self.assertFalse(self.state.exists())
+            self.assertFalse(self.logf.exists())
+            self.assertFalse(self.qd.points)
 
     def test_first_run_then_idempotent(self) -> None:
         rep = self._run()

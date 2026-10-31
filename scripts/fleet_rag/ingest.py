@@ -666,6 +666,12 @@ def run(
         raise FleetRagError(
             f"unknown source(s): {', '.join(unknown)}; known: {', '.join(GENERATORS)}"
         )
+    if prune and "linear" in names and set(names) != set(sources.NIGHTLY_SOURCES):
+        raise FleetRagError(
+            "Linear prune requires a separately verified complete deletion inventory; "
+            "this generator is incremental even with FLEET_RAG_LINEAR_FULL. "
+            "Use --source linear without --prune to refresh."
+        )
     if prune and limit:
         raise FleetRagError(
             "--prune cannot be combined with --limit: a truncated source would prune "
