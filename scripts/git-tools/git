@@ -218,7 +218,7 @@ def remote_bearer() -> str:
     hidden prompt on an interactive terminal.  The answer is held only in process memory for the session -
     never an argument, history, a file this tool writes or a log line."""
     v = env(REMOTE_BEARER_ENV)
-    if not v and sys.stdin.isatty():
+    if not v and sys.stdin is not None and sys.stdin.isatty():
         try:
             with warnings.catch_warnings():
                 # A terminal that refuses echo control must fail CLOSED:  getpass warns (GetPassWarning)

@@ -270,7 +270,14 @@ class ActualRuntime(unittest.TestCase):
             self.assertIn(path, self.bundle["files"])
             self.assertIn(path, self.receiver.TOOL_REQUIRED)
             self.assertNotIn(path, self.receiver.BASE_REQUIRED)
-        self.assertEqual(self.receiver.HELPER_COMMANDS["scripts/simple-git"], "simple-git")
+        # simple-git is NOT a helper command:  each CLI user supplies their own bearer and the server
+        # decides identity and permissions from it.  Its installed wrapper never reads or runs the
+        # host seat helper;  the other remote commands keep their wiring.
+        self.assertNotIn("scripts/simple-git", self.receiver.HELPER_COMMANDS)
+        self.assertNotIn("scripts/git-tools/git", self.receiver.HELPER_COMMANDS)
+        installed = (self.home / ".local/bin/simple-git").read_text()
+        self.assertNotIn("runpy", installed)
+        self.assertNotIn("seat-remote-defaults", installed)
 
         status = self.receiver.control(self.home, "status")
         self.assertEqual(status["status"], "ready")
@@ -416,6 +423,7 @@ class ActualRuntime(unittest.TestCase):
             "simple-chat",
             "simple-notes",
             "simple-board",
+            "simple-git",
             "fleet-cli-release",
             "simple-chat-codex-mcp",
             "recall",

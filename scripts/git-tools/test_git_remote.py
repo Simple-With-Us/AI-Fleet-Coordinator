@@ -334,6 +334,17 @@ class TestUserBearerInput(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 4)
         read_tripwire.assert_not_called()
 
+    def test_no_stdin_at_all_fails_closed_without_prompting(self):
+        # A detached launcher with fd 0 closed (sys.stdin is None):  the same clean refusal, never a
+        # traceback and never a prompt attempt.
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(git.sys, "stdin", None),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                git.remote_bearer()
+        self.assertEqual(ctx.exception.code, 4)
+
     def test_non_interactive_without_env_fails_closed_without_prompting(self):
         # getpass carries the tripwire:  a non-tty caller must get the plain no-credential refusal.
         code, out, err = run_cli(["list"])
