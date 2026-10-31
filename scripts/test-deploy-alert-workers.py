@@ -32,9 +32,9 @@ class Tests(unittest.TestCase):
             patch.object(m.subprocess, "check_output", return_value="a" * 40),
             patch.object(m, "current_main", return_value="a" * 40),
             patch.object(m, "github", return_value={"workflow_runs": []}),
+            self.assertRaises(RuntimeError),
         ):
-            with self.assertRaises(RuntimeError):
-                m.main()
+            m.main()
 
     def test_superseded_does_not_release(self):
         with (
@@ -64,9 +64,9 @@ class Tests(unittest.TestCase):
         with (
             patch.object(m.pathlib.Path, "exists", return_value=True),
             patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
+            self.assertRaises(RuntimeError),
         ):
-            with self.assertRaises(RuntimeError):
-                m.cutover_receipt()
+            m.cutover_receipt()
 
     def test_review_includes_release_infrastructure(self):
         self.assertIn(".github/workflows/alert-workers-deploy.yml", m.RELEASE_PATHS)
@@ -208,9 +208,11 @@ class Tests(unittest.TestCase):
             self.assertFalse(m.review_covers({"commit_id": "a" * 40}, "b" * 40))
 
     def test_incomplete_comparison_fails(self):
-        with patch.object(m, "github", return_value={"status": "ahead", "files": [{}] * 300}):
-            with self.assertRaises(RuntimeError):
-                m.review_covers({"commit_id": "a" * 40}, "b" * 40)
+        with (
+            patch.object(m, "github", return_value={"status": "ahead", "files": [{}] * 300}),
+            self.assertRaises(RuntimeError),
+        ):
+            m.review_covers({"commit_id": "a" * 40}, "b" * 40)
 
     def test_numeric_receipt_not_boolean(self):
         import json
@@ -227,9 +229,9 @@ class Tests(unittest.TestCase):
         with (
             patch.object(m.pathlib.Path, "exists", return_value=True),
             patch.object(m.pathlib.Path, "read_text", return_value=json.dumps(receipt)),
+            self.assertRaises(RuntimeError),
         ):
-            with self.assertRaises(RuntimeError):
-                m.cutover_receipt()
+            m.cutover_receipt()
 
     def test_redirect_handler_refuses_forward(self):
         self.assertIsNone(
