@@ -377,6 +377,10 @@ class TestUserBearerInput(unittest.TestCase):
         with (
             mock.patch.dict(os.environ, {}, clear=True),
             mock.patch.object(git.sys, "stdin", None),
+            mock.patch.object(git.os, "open", side_effect=OSError),
+            mock.patch.object(
+                git.getpass, "getpass", side_effect=AssertionError("prompt must not fire")
+            ),
             self.assertRaises(SystemExit) as ctx,
         ):
             git.remote_bearer()
@@ -423,6 +427,23 @@ class TestPromptTerminalGate(unittest.TestCase):
             mock.patch.object(git.sys, "stdin", io.StringIO()),
         ):
             self.assertFalse(git._prompt_terminal_available())
+
+    def test_closed_stdin_isatty_errors_fail_closed_without_prompting(self):
+        for error in (ValueError("closed stdin"), OSError("bad fd")):
+            with self.subTest(error=type(error).__name__):
+                stdin = mock.Mock()
+                stdin.isatty.side_effect = error
+                with (
+                    mock.patch.dict(os.environ, {}, clear=True),
+                    mock.patch.object(git.os, "open", side_effect=OSError),
+                    mock.patch.object(git.sys, "stdin", stdin),
+                    mock.patch.object(
+                        git.getpass, "getpass", side_effect=AssertionError("prompt must not fire")
+                    ),
+                    self.assertRaises(SystemExit) as ctx,
+                ):
+                    git.remote_bearer()
+                self.assertEqual(ctx.exception.code, 4)
 
 
 class TestDiscovery(unittest.TestCase):
