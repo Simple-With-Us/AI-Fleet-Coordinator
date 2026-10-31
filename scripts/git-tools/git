@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """The fleet git tools CLI:  a thin client for the git tools of the hosted simple-tools MCP.
 
-Every operation is remote.  The endpoint is the fixed constant below (no environment override), the bearer
-comes from the process environment only (SIMPLE_TOOLS_BEARER, placed there by the host's seat helper from the
-declared seat's own private file - never an argument, file or log line here), and there is no direct path,
-no credential minting and no other credential source.  On the ECHO custody lane the fixed root-controlled
-native transport carries the call instead and no bearer is read at all.
+Every operation is remote.  The endpoint is the fixed constant below (no environment override) and the
+bearer is the CLI user's OWN credential:  it comes from SIMPLE_TOOLS_BEARER in the environment (automation)
+or one hidden interactive prompt (no echo - never an argument, history, a file or a log line here), and
+there is no direct path, no credential minting and no other credential source.  The server, never this
+client, decides who the bearer is and what it may do.
 
 The tool surface is DISCOVERED at run time:  every list/show/call first performs tools/list on this caller's
 own transport (bounded pages, cursor-loop rejection, each advertised schema validated) and only then acts.
@@ -15,8 +15,7 @@ NOT discovered:  an action is a write unless the pinned, reviewed read set below
 Writes name their actor and this client resolves the actor for reads AND writes the same way:  a declared
 seat or an explicit identity must match the seat the server itself reports for this bearer (the identities
 answer), any mismatch is refused before the target call, and the resolved seat is injected as `identity`.
-On the native ECHO lane the custody itself proves ECHO:  any other declared or explicit seat is refused
-before ANY RPC.  There is no flag that picks a seat, a token or an endpoint.
+There is no flag that picks a seat, a token or an endpoint.
 
 An unknown write outcome is never replayed automatically:  a dead answer after the request left, a 5xx/408 on
 a write, or the server's outcome_unknown all print the uncertainty note and stop.  The server's own message
@@ -30,6 +29,7 @@ everything user-visible takes the installed name from argv[0].  Python 3.10+.
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import http.client
 import importlib.util
@@ -40,29 +40,28 @@ import re
 import signal  # SIGKILL for the isolated pattern-check child only, never this process
 import socket
 import ssl
-import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import warnings
 
 EXIT_ERROR = 1
 EXIT_USAGE = 2  # bad flags, unknown tool, invalid arguments, identity mismatch
-EXIT_NO_CREDS = 4  # no bearer and not the native custody lane
+EXIT_NO_CREDS = 4  # no bearer supplied (neither the environment nor the hidden prompt)
 EXIT_AUTH = 6  # bearer refused by the hosted endpoint, or seat mismatch
 
 # Keep the command environment prefix in step with the host helper and wrapper key.
 # User-visible text uses the installed name.
 _ENV_STEM = "SIMPLE_GIT"
 REMOTE_ENV = _ENV_STEM + "_REMOTE"  # set by the seat helper;  informational only, this tool is always remote
-NATIVE_ECHO_ENV = _ENV_STEM + "_NATIVE_ECHO"
 USER_AGENT = _ENV_STEM.lower().replace("_", "-") + "-remote/1"
 
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_TIMEOUT_S = 40
 # One budget for the whole verb:  the identities probe, every discovery page and the target call share
-# it.  Each request gets the REMAINING budget (capped per request), direct transport and native alike;  a
+# it.  Each request gets the REMAINING budget (capped per request);  a
 # call whose budget is gone is never started, so a write refused that way is reported as definitely not
 # sent.  A deadline that ends while a request is in flight cannot prove the request did not land, so an
 # in-flight write timeout keeps the uncertainty wording.
@@ -75,7 +74,6 @@ REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 SEAT_PATTERN = re.compile(r"[A-Z][A-Z0-9-]{1,30}")
 TOOL_NAME_RE = re.compile(r"gr_[a-z0-9_]{1,80}\Z")
 IDENTITIES_TOOL = "identities"
-NATIVE_ECHO_SEAT = "ECHO"
 
 DISCOVERY_MAX_PAGES = 16
 DISCOVERY_MAX_TOOLS = 2000
@@ -215,22 +213,58 @@ def declared_seat() -> str | None:
     return declared[0]
 
 
-def native_echo_selected() -> bool:
-    return env(NATIVE_ECHO_ENV) == "1"
+def _prompt_terminal_available() -> bool:
+    """A hidden prompt needs a real terminal to hide the answer on.  getpass reads the CONTROLLING
+    terminal (/dev/tty), not stdin, so `call --args-json -` with piped JSON still prompts - and the
+    prompt never consumes the piped stdin.  Where there is no controlling terminal, fall back to an
+    interactive stdin (a console without /dev/tty);  a detached caller (stdin missing or not a
+    terminal either) gets no prompt and the clean refusal below."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        try:
+            return sys.stdin is not None and sys.stdin.isatty()
+        except (ValueError, OSError):
+            return False
+    os.close(fd)
+    return True
 
 
 def remote_bearer() -> str:
+    """The CLI user's OWN bearer:  SIMPLE_TOOLS_BEARER from the environment (automation), otherwise one
+    hidden prompt on the controlling terminal.  The answer is held only in process memory for the
+    session - never an argument, history, a file this tool writes or a log line."""
     v = env(REMOTE_BEARER_ENV)
+    if not v and _prompt_terminal_available():
+        try:
+            with warnings.catch_warnings():
+                # A terminal that refuses echo control must fail CLOSED:  getpass warns (GetPassWarning)
+                # and would then read the bearer ECHOED.  Turn the warning into an error so the fallback
+                # dies before a single character is read or echoed - the echoed path never runs.
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                v = getpass.getpass(f"{prog()} bearer (input hidden): ").strip()
+        except KeyboardInterrupt:
+            # Ctrl-C at the prompt is a clean interruption (128 + SIGINT), never a masked
+            # missing-credential error or a traceback.
+            sys.stderr.write("\n")
+            raise SystemExit(130) from None
+        except EOFError:
+            v = ""
+        except getpass.GetPassWarning:
+            die(
+                f"this terminal could not hide your bearer input;  set {REMOTE_BEARER_ENV} instead - "
+                "an echoed bearer is never read",
+                EXIT_NO_CREDS,
+            )
     if not v:
         die(
-            f"this bot's own bearer must be in {REMOTE_BEARER_ENV} (the host's seat helper places it there "
-            "from the declared seat's own file); there is no fallback to direct credentials and no other "
-            "source",
+            f"your own simple-tools bearer is required:  set {REMOTE_BEARER_ENV} or answer the hidden "
+            "prompt;  there is no fallback and no other credential source",
             EXIT_NO_CREDS,
         )
     if not REMOTE_BEARER_RE.fullmatch(v):
         die(
-            f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)",
+            "the supplied bearer is not a bearer token (unexpected characters or length)",
             EXIT_NO_CREDS,
         )
     return v
@@ -331,81 +365,6 @@ def _error_code_of(result: dict) -> str | None:
         if isinstance(code, str) and code in _REMOTE_CODES:
             return code
     return None
-
-
-def _native_echo_post(body: bytes, write: bool, timeout: float = REMOTE_TIMEOUT_S):
-    """Fixed existing root-controlled ECHO custody transport; no credential export.
-
-    The adapter reports an UNCERTAIN transport failure as isError with code=outcome_unknown in the
-    content/meta error object, and a genuine refusal with its own code (a seat mismatch is
-    identity_not_allowed).  Both are read by the shared error parsing;  nothing is fabricated here and a
-    genuine refusal is never reclassified or retried."""
-    # The approved custody route is Linux systemd only and absent on the Mac:  fail closed, no substitute.
-    if sys.platform != "linux" or not os.path.isfile(
-        "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"
-    ):
-        die(
-            "the approved native ECHO custody route is not available on this host; there is no fallback",
-            EXIT_AUTH,
-        )
-    initialize = {
-        "jsonrpc": "2.0",
-        "id": 0,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": REMOTE_PROTOCOL_VERSION,
-            "capabilities": {},
-            "clientInfo": {"name": prog(), "version": "1"},
-        },
-    }
-    notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-    data = (
-        json.dumps(initialize).encode()
-        + b"\n"
-        + json.dumps(notification).encode()
-        + b"\n"
-        + body
-        + b"\n"
-    )
-    command = ["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"]
-    if os.geteuid() != 0:
-        # Ordinary shell: the exact already-authorized custody elevation, absolute and
-        # non-interactive (-n fails closed, it never prompts); no shell, no environment or
-        # alternate path, root behavior unchanged.
-        command = ["/usr/bin/sudo", "-n"] + command
-    try:
-        proc = subprocess.run(
-            command,
-            input=data,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,  # the actual remaining budget from _rpc (already > 0, already capped)
-            env={"PATH": "/usr/bin:/bin"},
-            check=False,
-        )
-        if proc.returncode or len(proc.stdout) > 3 * REMOTE_MAX_BYTES:
-            raise ValueError("native transport failed")
-        lines = [strict_loads(line) for line in proc.stdout.splitlines() if line.strip()]
-        if len(lines) != 2 or any(not isinstance(x, dict) for x in lines):
-            raise ValueError("invalid native response")
-        hello, answer = lines
-        if (
-            hello.get("id") != 0
-            or not isinstance(hello.get("result"), dict)
-            or answer.get("id") != 1
-        ):
-            raise ValueError("native response mismatch")
-        return 200, "application/json", json.dumps(answer).encode()
-    except (OSError, ValueError, RecursionError, subprocess.SubprocessError):
-        die(
-            "native ECHO transport unavailable; "
-            + (
-                "write outcome unknown, do not replay before checking the target"
-                if write
-                else "no direct-credential fallback"
-            ),
-            EXIT_ERROR,
-        )
 
 
 # ----------------------------------------------------------------- answer parsing (mirrors board)
@@ -591,21 +550,17 @@ def _rpc(bearer: str, method: str, params: dict, write: bool, deadline: float | 
             )
         timeout = min(REMOTE_TIMEOUT_S, remaining)
     try:
-        status, ctype, raw = (
-            _native_echo_post(body, write, timeout)
-            if native_echo_selected()
-            else _remote_post(
-                REMOTE_MCP_URL,
-                {
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                    "MCP-Protocol-Version": REMOTE_PROTOCOL_VERSION,
-                    "Authorization": "Bearer " + bearer,
-                    "User-Agent": USER_AGENT,
-                },
-                body,
-                timeout,
-            )
+        status, ctype, raw = _remote_post(
+            REMOTE_MCP_URL,
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": REMOTE_PROTOCOL_VERSION,
+                "Authorization": "Bearer " + bearer,
+                "User-Agent": USER_AGENT,
+            },
+            body,
+            timeout,
         )
     except _TransportError as exc:
         die(_failure(exc, write), EXIT_ERROR)
@@ -1218,8 +1173,7 @@ def resolve_actor(
 ) -> dict:
     """The actor for a read OR a write.  A declared seat and an explicit identity must agree with each other
     and with the seat the server reports for this bearer;  any mismatch is refused BEFORE the target call -
-    whether or not the tool takes an `identity` argument (the assertion is never skipped).  The native ECHO
-    custody proves ECHO without a probe and refuses any other declared or explicit seat before ANY RPC.
+    whether or not the tool takes an `identity` argument (the assertion is never skipped).
     When the tool takes `identity` the resolved seat is injected;  there is no passthrough.  `server_seat`
     threads the probe main() already made so a call probes at most once."""
     schema = entry.get("schema") or {}
@@ -1237,22 +1191,12 @@ def resolve_actor(
     wanted = given or declared
     if wanted is None and not takes_identity:
         return args  # nothing declared, nothing to inject:  no probe is owed
-    if native_echo_selected():
-        # Custody proves ECHO:  no probe, and no other seat is possible.  Refused before ANY RPC.
-        if wanted is not None and wanted != NATIVE_ECHO_SEAT:
-            die(
-                f"the native ECHO lane acts as {NATIVE_ECHO_SEAT} only;  declared/requested {wanted} is "
-                "refused",
-                EXIT_USAGE,
-            )
-        seat = NATIVE_ECHO_SEAT
-    else:
-        seat = server_seat or authenticated_seat(bearer, deadline)
-        if wanted is not None and seat != wanted:
-            die(
-                f"the server reports this bearer as {seat}, not {wanted};  refusing before the call",
-                EXIT_AUTH,
-            )
+    seat = server_seat or authenticated_seat(bearer, deadline)
+    if wanted is not None and seat != wanted:
+        die(
+            f"the server reports this bearer as {seat}, not {wanted};  refusing before the call",
+            EXIT_AUTH,
+        )
     if not takes_identity:
         return args
     return {**args, "identity": seat}
@@ -1432,50 +1376,19 @@ def main(argv: list[str] | None = None) -> int:
     # all draw from it, and a request that cannot start inside it is never sent.
     overall_deadline = time.monotonic() + OVERALL_DEADLINE_S
     args = None
-    if native_echo_selected():
-        # The custody proves ECHO without any probe:  a non-ECHO declared seat, or a non-ECHO explicit
-        # identity on a call, is refused before ANY RPC - even the discovery page.  (resolve_actor repeats
-        # the same check for the call itself;  this one has to happen before tools/list leaves.)
-        declared = declared_seat()
-        if declared is not None and declared != NATIVE_ECHO_SEAT:
-            die(
-                f"the native ECHO lane acts as {NATIVE_ECHO_SEAT} only;  declared {declared} is refused",
-                EXIT_USAGE,
-            )
-        if a.cmd == "call":
-            args = _read_args_json(a)
-            given = args.get("identity")
-            if given is not None and given != NATIVE_ECHO_SEAT:
-                die(
-                    f"the native ECHO lane acts as {NATIVE_ECHO_SEAT} only;  requested identity is refused",
-                    EXIT_USAGE,
-                )
-    bearer = "" if native_echo_selected() else remote_bearer()
-    server_seat = None
+    bearer = remote_bearer()
     whoami_out = None
-    if native_echo_selected():
-        server_seat = NATIVE_ECHO_SEAT  # the custody proves it;  no probe is owed for the actor path
-        if a.cmd == "whoami":
-            # whoami's one identities fetch, validated before display:  a contradictory server principal is
-            # refused, not shown, and it must be the seat the custody proves.
-            whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer, overall_deadline)
-            if establish_principal(whoami_out) != NATIVE_ECHO_SEAT:
-                die(
-                    f"the server principal contradicts the {NATIVE_ECHO_SEAT} custody;  refusing to display",
-                    EXIT_AUTH,
-                )
-    else:
-        # Exactly one identities result before ANY bearer-mode discovery, display or target call:  it
-        # establishes the actor (the server's own principal - an undeclared caller is never anonymous and
-        # never picks the identity) and a declared seat must match it.
-        declared = declared_seat()  # a broken declaration is refused before anything leaves
-        whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer, overall_deadline)
-        server_seat = establish_principal(whoami_out)
-        if declared is not None and declared != server_seat:
-            die(
-                f"the server reports this bearer as {server_seat}, not the declared {declared};  refusing",
-                EXIT_AUTH,
-            )
+    # Exactly one identities result before ANY discovery, display or target call:  it establishes the
+    # actor (the server's own principal - an undeclared caller is never anonymous and never picks the
+    # identity) and a declared seat must match it.
+    declared = declared_seat()  # a broken declaration is refused before anything leaves
+    whoami_out = remote_call(IDENTITIES_TOOL, {}, False, bearer, overall_deadline)
+    server_seat = establish_principal(whoami_out)
+    if declared is not None and declared != server_seat:
+        die(
+            f"the server reports this bearer as {server_seat}, not the declared {declared};  refusing",
+            EXIT_AUTH,
+        )
     if a.cmd == "whoami":
         return cmd_whoami(whoami_out, a)
     tools = discover_tools(bearer, overall_deadline)

@@ -312,7 +312,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_workflow_dispatch",
     title: "Dispatch Workflow",
     description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.",
-    inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object" } }),
+    inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object" }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"}, expected_head_sha: {type:"string",pattern:"^[0-9a-f]{40}$"} }),
   },
   {
     name: "gr_resolve_thread",

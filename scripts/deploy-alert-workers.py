@@ -143,6 +143,24 @@ def deployed_tag(name):
     return (version.get("annotations") or {}).get("workers/tag")
 
 
+def outstanding_requests(reviews):
+    # COMMENTED does not clear a formal request. Only a later decisive review
+    # by that same reviewer supersedes its prior decision; never mutate history.
+    decisions = {}
+    decisive = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+    if any(type(r.get("id")) is not int for r in decisive):
+        raise RuntimeError("Missing formal review sequence")
+    for review in sorted(decisive, key=lambda r: r["id"]):
+        state = review.get("state")
+        if state in ("APPROVED", "CHANGES_REQUESTED"):
+            user = review.get("user")
+            reviewer = user.get("id") if isinstance(user, dict) else None
+            if type(reviewer) is not int:
+                raise RuntimeError("Missing formal reviewer identity")
+            decisions[reviewer] = state
+    return any(state == "CHANGES_REQUESTED" for state in decisions.values())
+
+
 def reviewed(sha):
     # A target-changing commit must be the merge of a real, non-draft PR.
     prs = github("/commits/" + sha + "/pulls")
@@ -155,12 +173,13 @@ def reviewed(sha):
         reviews = github("/pulls/" + number + "/reviews?per_page=100")
         if len(reviews) >= 100:
             raise RuntimeError("Review pagination needs explicit resolution")
-        if any(r.get("state") == "CHANGES_REQUESTED" for r in reviews):
+        if outstanding_requests(reviews):
             raise RuntimeError("Changes-requested review needs explicit resolution")
         qualified = [
             r
             for r in reviews
-            if r.get("user", {}).get("login") == "kody-ai[bot]"
+            if isinstance(r.get("user"), dict)
+            and r["user"].get("login") == "kody-ai[bot]"
             and r.get("state") in ("APPROVED", "COMMENTED")
         ]
         # COMMENTED is a completed substantive Kody review, not an issue comment.

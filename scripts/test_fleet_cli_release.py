@@ -325,6 +325,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertLess(text.index("from pathlib import Path"), text.index(line), name)
             self.assertLess(text.index(line), text.index("release = Path("), name)
         for script in (
+            "scripts/simple-git",
             "scripts/simple-notes",
             "scripts/fleet-mode",
             "scripts/fleet_lanes/bin/lane",
@@ -337,6 +338,17 @@ class ReleaseTests(unittest.TestCase):
         # no credential value or secret path component is generated
         for name in ("simple-chat", "simple-board", "recall"):
             self.assertNotIn(".secrets", release.wrapper(self.home, "scripts/" + name).decode())
+
+    def test_simple_git_wrapper_never_runs_the_helper(self):
+        # The canonical generated simple-git wrapper carries no helper read or run - even on a host
+        # that HAS the helper installed (this suite's fake home does) and with a seat declared in the
+        # caller's environment.  A declared seat passes through for the server-side identity check;
+        # it never re-enables the helper.  The helper stays wired for chat/board/recall (above).
+        with mock.patch.dict(os.environ, {"AGENT_SEAT": "KELVIN"}):
+            text = release.wrapper(self.home, "scripts/simple-git").decode()
+        self.assertNotIn("runpy", text)
+        self.assertNotIn("seat-remote-defaults", text)
+        self.assertNotIn(".secrets", text)
 
     def test_a_host_without_the_helper_keeps_plain_wrappers(self):
         helper = self.home / ".config/fleet-cli/seat-remote-defaults.py"
@@ -1030,9 +1042,11 @@ class ShippedDataFilesTests(unittest.TestCase):
             with self.assertRaisesRegex(release.Refused, "bad_file_set"):
                 release.decode_bundle(json.dumps(bundle).encode())
 
-    def test_git_tools_join_the_helper_command_map(self):
-        # The seat helper runs for the new command exactly like the existing remote tools.
-        self.assertEqual(release.HELPER_COMMANDS["scripts/simple-git"], "simple-git")
+    def test_git_tools_are_not_helper_commands(self):
+        # Each simple-git user supplies their OWN bearer and the server decides identity and
+        # permissions from it:  simple-git is not a helper command.  The generated-wrapper half of
+        # this contract is ReleaseTests.test_simple_git_wrapper_never_runs_the_helper.
+        self.assertNotIn("scripts/simple-git", release.HELPER_COMMANDS)
         self.assertNotIn("scripts/git-tools/git", release.HELPER_COMMANDS)
 
 

@@ -4,8 +4,8 @@
 v2 contract under test:  tools/list runs at run time on this caller's own transport (bounded pages,
 cursor-loop rejection, per-tool schema validation) and is the only tool authority;  read/write is the pinned
 reviewed read set and an unknown action is a WRITE;  the actor is resolved for reads AND writes (declared,
-explicit and server-reported seats must agree, mismatch refused before the target call);  the native ECHO
-lane refuses any other seat before ANY RPC;  JSON is strict in both directions;  argument reads are bounded;
+explicit and server-reported seats must agree, mismatch refused before the target call);  the bearer is
+the CLI user's own (environment or one hidden prompt);  JSON is strict in both directions;  argument reads are bounded;
 tools/list output is untrusted display data, never authority.
 
 The transport is faked:  no network, no credentials, no custody.  The shared fleet secret scanner is not in
@@ -37,7 +37,6 @@ BEARER = "b" * 40
 ENV_KEYS = (
     "SIMPLE_TOOLS_BEARER",
     "SIMPLE_GIT_REMOTE",
-    "SIMPLE_GIT_NATIVE_ECHO",
     "SIMPLE_GIT_ARGV0",
     "AGENT_SEAT",
     "AGENT_TAG",
@@ -186,26 +185,45 @@ class FakeTransport:
         return self.status, "application/json", envelope
 
 
-def run_cli(argv, *, env=None, transport=None, stdin_text="", native_post=None, scanner="fake"):
-    """Run main() fully wired:  no real network, clean seat/bearer environment, captured output."""
+def run_cli(argv, *, env=None, transport=None, stdin_text="", scanner="fake", typed_bearer=None):
+    """Run main() fully wired:  no real network, clean seat/bearer environment, captured output.
+
+    typed_bearer=None simulates a caller with NO prompt terminal (the gate is pinned closed) and arms
+    the hidden bearer prompt with a tripwire:  it must never fire.  A string pins the gate open and
+    simulates an interactive user answering the hidden prompt with that bearer;  combined with
+    stdin_text it is the piped --args-json case (stdin not a tty, prompt on the controlling tty)."""
     clean_env = {k: v for k, v in os.environ.items() if k not in ENV_KEYS}
     clean_env.update(env or {})
     remote_post = transport.post if transport is not None else _no_network
-    native = native_post if native_post is not None else _no_network_native
     if scanner == "fake":
         scanner_obj = FakeScanner()
     else:
         scanner_obj = (
             None  # None: the real load path (fail-closed test, or the real scanner when present)
         )
+    if typed_bearer is None:
+        stdin_obj = io.StringIO(stdin_text)
+        prompt = mock.Mock(side_effect=AssertionError("the hidden prompt must not fire here"))
+        can_prompt = False
+    else:
+        if stdin_text:
+            # Piped --args-json -:  stdin is not a terminal;  the bearer still comes from the hidden
+            # prompt on the controlling terminal, which never consumes the piped JSON.
+            stdin_obj = io.StringIO(stdin_text)
+        else:
+            stdin_obj = mock.Mock()
+            stdin_obj.isatty.return_value = True
+        prompt = mock.Mock(return_value=typed_bearer)
+        can_prompt = True
     out, err = io.StringIO(), io.StringIO()
     code = 0
     with (
         mock.patch.dict(os.environ, clean_env, clear=True),
         mock.patch.object(sys, "argv", ["simple-git"] + list(argv)),
-        mock.patch.object(sys, "stdin", io.StringIO(stdin_text)),
+        mock.patch.object(sys, "stdin", stdin_obj),
         mock.patch.object(git, "_remote_post", remote_post),
-        mock.patch.object(git, "_native_echo_post", native),
+        mock.patch.object(git, "_prompt_terminal_available", lambda: can_prompt),
+        mock.patch.object(git.getpass, "getpass", prompt),
         mock.patch.object(git, "_SCANNER", scanner_obj),
         contextlib.redirect_stdout(out),
         contextlib.redirect_stderr(err),
@@ -219,46 +237,6 @@ def run_cli(argv, *, env=None, transport=None, stdin_text="", native_post=None, 
 
 def _no_network(url, headers, body, timeout):
     raise AssertionError("no remote call may leave in this test")
-
-
-def _no_network_native(body, write, timeout=None):
-    raise AssertionError("no native call may leave in this test")
-
-
-class FakeNative:
-    """The custody adapter stand-in:  answers from fixtures, records every request body."""
-
-    def __init__(self, pages=None, call_results=None):
-        self.transport = FakeTransport(pages=pages, seat="ECHO", call_results=call_results)
-        self.bodies = []
-        self.timeouts = []
-
-    def post(self, body, write, timeout=None):
-        self.bodies.append(body)
-        self.timeouts.append(timeout)
-        req = json.loads(body.decode())
-        # Route through the same fixture logic, without the Authorization assertion.
-        if req["method"] == "tools/list":
-            self.transport.list_requests += 1
-            cursor = req["params"].get("cursor")
-            index = 0 if cursor is None else int(cursor.split("-", 1)[1])
-            try:
-                tools, nxt = self.transport._page(index)
-            except IndexError:
-                tools, nxt = [], None
-            result = {"tools": tools}
-            if nxt is not None:
-                result["nextCursor"] = nxt
-        else:
-            name = req["params"]["name"]
-            self.transport.calls.append((name, req["params"].get("arguments") or {}))
-            result = self.transport.call_results.get(name) or {
-                "structuredContent": {"ok": True},
-                "content": [{"type": "text", "text": "done"}],
-                "isError": False,
-            }
-        envelope = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
-        return 200, "application/json", envelope
 
 
 class TestSmokeShape(unittest.TestCase):
@@ -297,6 +275,175 @@ class TestSmokeShape(unittest.TestCase):
             transport=FakeTransport(),
         )
         self.assertEqual(code, 2)
+
+
+class TestUserBearerInput(unittest.TestCase):
+    """The CLI user's OWN bearer:  SIMPLE_TOOLS_BEARER for automation, otherwise one hidden prompt on an
+    interactive terminal - never an argument, history, a file or a log line."""
+
+    def test_prompt_answer_becomes_the_authorization_bearer(self):
+        # FakeTransport.post asserts the Authorization header carries exactly BEARER:  the prompted value
+        # is what reaches the fixed endpoint.
+        code, out, err = run_cli(["list"], transport=FakeTransport(), typed_bearer=BEARER)
+        self.assertEqual(code, 0, err)
+
+    def test_prompt_answer_whoami(self):
+        code, out, err = run_cli(["whoami"], transport=FakeTransport(), typed_bearer=BEARER)
+        self.assertEqual(code, 0, err)
+        self.assertIn("authenticated_seat: CODEX", out)
+
+    def test_environment_bearer_never_prompts(self):
+        # The harness arms getpass with a tripwire whenever typed_bearer is None:  any prompt fails here.
+        code, out, err = run_cli(
+            ["list"], env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=FakeTransport()
+        )
+        self.assertEqual(code, 0, err)
+
+    def test_empty_prompt_answer_fails_closed_without_network(self):
+        code, out, err = run_cli(["list"], typed_bearer="")
+        self.assertEqual(code, 4)
+        self.assertIn("SIMPLE_TOOLS_BEARER", err)
+
+    def test_malformed_prompt_answer_refused_without_network(self):
+        code, out, err = run_cli(["list"], typed_bearer="not a bearer!")
+        self.assertEqual(code, 4)
+
+    def test_prompt_interrupted_fails_closed(self):
+        # EOF at the prompt (Ctrl-D):  the plain missing-credential refusal, exit 4.
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(git, "_prompt_terminal_available", lambda: True),
+            mock.patch.object(git.getpass, "getpass", side_effect=EOFError),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                git.remote_bearer()
+        self.assertEqual(ctx.exception.code, 4)
+
+    def test_prompt_ctrl_c_is_a_clean_130_never_a_masked_refusal(self):
+        # Ctrl-C at the prompt:  an interruption (128 + SIGINT), not a masked missing-bearer exit 4
+        # and never a traceback.
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(git, "_prompt_terminal_available", lambda: True),
+            mock.patch.object(git.getpass, "getpass", side_effect=KeyboardInterrupt),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            git.remote_bearer()
+        self.assertEqual(ctx.exception.code, 130)
+
+    def test_piped_args_json_still_prompts_without_consuming_the_json(self):
+        # call --args-json - :  the JSON arrives on piped stdin;  the bearer comes from the hidden
+        # prompt on the CONTROLLING terminal.  The prompt fires despite stdin not being a tty, and
+        # the piped JSON reaches the command intact.
+        t = FakeTransport()
+        code, out, err = run_cli(
+            ["call", "gr_wf_repo_get", "--args-json", "-"],
+            stdin_text='{"owner":"o"}',
+            typed_bearer=BEARER,
+            transport=t,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(t.calls[0][0], "identities")
+        self.assertEqual(t.calls[1], ("gr_wf_repo_get", {"owner": "o", "identity": "CODEX"}))
+
+    def test_echo_control_failure_fails_closed_before_any_input_is_read(self):
+        # Force getpass's echoed fallback path (termios refuses echo control):  the warning must become
+        # a hard failure BEFORE the fallback prints its echo notice or reads a single character.
+        import termios
+
+        def no_echo_control(fd):
+            raise termios.error("echo control refused")
+
+        read_tripwire = mock.Mock(
+            side_effect=AssertionError("the echoed fallback must never read input")
+        )
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(git.sys, "stdin") as stdin,
+            mock.patch("termios.tcgetattr", no_echo_control),
+            mock.patch.object(git.getpass, "_raw_input", read_tripwire),
+        ):
+            stdin.isatty.return_value = True
+            stdin.fileno.return_value = 0
+            with self.assertRaises(SystemExit) as ctx:
+                git.remote_bearer()
+        self.assertEqual(ctx.exception.code, 4)
+        read_tripwire.assert_not_called()
+
+    def test_no_stdin_at_all_fails_closed_without_prompting(self):
+        # A detached launcher with fd 0 closed (sys.stdin is None):  the same clean refusal, never a
+        # traceback and never a prompt attempt.
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(git.sys, "stdin", None),
+            mock.patch.object(git.os, "open", side_effect=OSError),
+            mock.patch.object(
+                git.getpass, "getpass", side_effect=AssertionError("prompt must not fire")
+            ),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            git.remote_bearer()
+        self.assertEqual(ctx.exception.code, 4)
+
+    def test_non_interactive_without_env_fails_closed_without_prompting(self):
+        # getpass carries the tripwire:  a non-tty caller must get the plain no-credential refusal.
+        code, out, err = run_cli(["list"])
+        self.assertEqual(code, 4)
+        self.assertIn("SIMPLE_TOOLS_BEARER", err)
+
+
+class TestPromptTerminalGate(unittest.TestCase):
+    """Where the hidden prompt may fire:  the controlling terminal getpass itself reads, so piped
+    --args-json stdin still prompts and is never consumed;  a detached caller never gets a prompt."""
+
+    def test_controlling_tty_prompts_even_with_piped_stdin(self):
+        with (
+            mock.patch.object(git.os, "open", return_value=99) as opened,
+            mock.patch.object(git.os, "close") as closed,
+            mock.patch.object(git.sys, "stdin", io.StringIO("{}")),
+        ):
+            self.assertTrue(git._prompt_terminal_available())
+        opened.assert_called_once_with("/dev/tty", os.O_RDONLY)
+        closed.assert_called_once_with(99)
+
+    def test_no_controlling_tty_falls_back_to_interactive_stdin(self):
+        # A console without /dev/tty:  an interactive stdin still gets the prompt.
+        with (
+            mock.patch.object(git.os, "open", side_effect=OSError),
+            mock.patch.object(git.sys, "stdin") as stdin,
+        ):
+            stdin.isatty.return_value = True
+            self.assertTrue(git._prompt_terminal_available())
+
+    def test_detached_caller_never_prompts(self):
+        with (
+            mock.patch.object(git.os, "open", side_effect=OSError),
+            mock.patch.object(git.sys, "stdin", None),
+        ):
+            self.assertFalse(git._prompt_terminal_available())
+        with (
+            mock.patch.object(git.os, "open", side_effect=OSError),
+            mock.patch.object(git.sys, "stdin", io.StringIO()),
+        ):
+            self.assertFalse(git._prompt_terminal_available())
+
+    def test_closed_stdin_isatty_errors_fail_closed_without_prompting(self):
+        for error in (ValueError("closed stdin"), OSError("bad fd")):
+            with self.subTest(error=type(error).__name__):
+                stdin = mock.Mock()
+                stdin.isatty.side_effect = error
+                with (
+                    mock.patch.dict(os.environ, {}, clear=True),
+                    mock.patch.object(git.os, "open", side_effect=OSError),
+                    mock.patch.object(git.sys, "stdin", stdin),
+                    mock.patch.object(
+                        git.getpass, "getpass", side_effect=AssertionError("prompt must not fire")
+                    ),
+                    self.assertRaises(SystemExit) as ctx,
+                ):
+                    git.remote_bearer()
+                self.assertEqual(ctx.exception.code, 4)
 
 
 class TestDiscovery(unittest.TestCase):
@@ -548,158 +695,6 @@ class TestActorResolution(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         self.assertIn("authenticated_seat: CODEX", out)
-
-
-class TestNativeEcho(unittest.TestCase):
-    def test_declared_other_seat_refused_before_any_rpc(self):
-        native = FakeNative()
-        code, out, err = run_cli(
-            ["list"],
-            env={"SIMPLE_GIT_NATIVE_ECHO": "1", "AGENT_SEAT": "CODEX"},
-            native_post=native.post,
-        )
-        self.assertEqual(code, 2)
-        self.assertEqual(native.bodies, [])  # not even discovery left
-
-    def test_explicit_other_identity_refused_before_any_rpc(self):
-        native = FakeNative()
-        code, out, err = run_cli(
-            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t","identity":"CODEX"}'],
-            env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
-            native_post=native.post,
-        )
-        self.assertEqual(code, 2)
-        self.assertEqual(native.bodies, [])
-
-    def test_native_lane_needs_no_bearer_and_skips_the_probe(self):
-        native = FakeNative()
-        code, out, err = run_cli(
-            ["call", "gr_wf_repo_get", "--args-json", '{"owner":"o"}'],
-            env={"SIMPLE_GIT_NATIVE_ECHO": "1"},  # no SIMPLE_TOOLS_BEARER at all
-            native_post=native.post,
-        )
-        self.assertEqual(code, 0, err)
-        names = [c[0] for c in native.transport.calls]
-        self.assertNotIn("identities", names)  # custody proves ECHO: no probe
-        self.assertEqual(
-            native.transport.calls[-1], ("gr_wf_repo_get", {"owner": "o", "identity": "ECHO"})
-        )
-
-    def test_native_declared_echo_passes(self):
-        native = FakeNative()
-        code, out, err = run_cli(
-            ["list"],
-            env={"SIMPLE_GIT_NATIVE_ECHO": "1", "AGENT_SEAT": "ECHO"},
-            native_post=native.post,
-        )
-        self.assertEqual(code, 0, err)
-
-    def _error_result(self, code_in_content):
-        text = json.dumps({"code": code_in_content}) if code_in_content else "plain failure text"
-        return {"isError": True, "content": [{"type": "text", "text": text}]}
-
-    def test_native_uncertain_transport_shape_keeps_outcome_unknown(self):
-        native = FakeNative(
-            call_results={"gr_wf_issue_create": self._error_result("outcome_unknown")}
-        )
-        code, out, err = run_cli(
-            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-            env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
-            native_post=native.post,
-        )
-        self.assertEqual(code, 1)
-        self.assertIn("outcome_unknown", err)
-        self.assertIn("may or may not have been applied", err)
-
-    def test_native_genuine_refusal_keeps_its_code_and_is_not_uncertain(self):
-        native = FakeNative(
-            call_results={"gr_wf_issue_create": self._error_result("relay_refused")}
-        )
-        code, out, err = run_cli(
-            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-            env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
-            native_post=native.post,
-        )
-        self.assertEqual(code, 1)
-        self.assertIn("relay_refused", err)
-        self.assertNotIn("may or may not have been applied", err)
-
-    def test_native_error_without_a_known_code_is_not_fabricated_as_unknown(self):
-        native = FakeNative(call_results={"gr_wf_issue_create": self._error_result(None)})
-        code, out, err = run_cli(
-            ["call", "gr_wf_issue_create", "--args-json", '{"title":"t"}'],
-            env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
-            native_post=native.post,
-        )
-        self.assertEqual(code, 1)
-        self.assertNotIn("outcome_unknown", err)
-        self.assertNotIn("may or may not have been applied", err)
-
-
-class TestNativeCustodyTransport(unittest.TestCase):
-    """_native_echo_post itself: the fixed Linux custody route, root direct, ordinary shell via
-    the exact already-authorized non-interactive elevation.  Linux-only, no fallback."""
-
-    CUSTODY = "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"
-
-    def _run_transport(self, euid, platform="linux", isfile=True, returncode=0, write=False):
-        answer = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
-        hello = {"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": "x"}}
-        proc = types.SimpleNamespace(
-            returncode=returncode,
-            stdout=(json.dumps(hello) + "\n" + json.dumps(answer) + "\n").encode(),
-        )
-        with (
-            mock.patch.object(git.os, "geteuid", return_value=euid),
-            mock.patch.object(git.sys, "platform", platform),
-            mock.patch.object(git.os.path, "isfile", return_value=isfile),
-            mock.patch.object(git.subprocess, "run", return_value=proc) as run,
-        ):
-            try:
-                result = git._native_echo_post(b'{"jsonrpc":"2.0","id":1}', write)
-                return run, result, None
-            except SystemExit as exc:
-                return run, None, exc
-
-    def test_ordinary_shell_uses_the_exact_authorized_elevation(self):
-        run, result, exc = self._run_transport(euid=1000)
-        self.assertIsNone(exc)
-        self.assertEqual(result[0], 200)
-        argv = run.call_args.args[0]
-        self.assertEqual(
-            argv,
-            ["/usr/bin/sudo", "-n", "/usr/bin/python3", "-I", self.CUSTODY],
-        )
-        kwargs = run.call_args.kwargs
-        self.assertNotIn("shell", kwargs)  # list argv, never a shell
-        self.assertEqual(kwargs["env"], {"PATH": "/usr/bin:/bin"})  # no environment preservation
-        self.assertEqual(kwargs["stderr"], git.subprocess.DEVNULL)  # no secret output channel
-        self.assertTrue(kwargs["input"].endswith(b'{"jsonrpc":"2.0","id":1}\n'))
-
-    def test_root_invocation_is_unchanged_without_sudo(self):
-        run, result, exc = self._run_transport(euid=0)
-        self.assertIsNone(exc)
-        self.assertEqual(result[0], 200)
-        self.assertEqual(run.call_args.args[0], ["/usr/bin/python3", "-I", self.CUSTODY])
-
-    def test_mac_refuses_for_ordinary_and_root_alike_no_fallback(self):
-        for euid in (1000, 0):
-            run, result, exc = self._run_transport(euid=euid, platform="darwin")
-            self.assertIsNotNone(exc)
-            self.assertEqual(exc.code, 6)  # EXIT_AUTH
-            self.assertEqual(run.call_count, 0)
-
-    def test_missing_custody_helper_refuses_before_any_spawn(self):
-        run, result, exc = self._run_transport(euid=1000, isfile=False)
-        self.assertIsNotNone(exc)
-        self.assertEqual(exc.code, 6)
-        self.assertEqual(run.call_count, 0)
-
-    def test_sudo_refusal_fails_closed_once_no_retry(self):
-        run, result, exc = self._run_transport(euid=1000, returncode=1, write=True)
-        self.assertIsNotNone(exc)
-        self.assertEqual(exc.code, 1)  # EXIT_ERROR
-        self.assertEqual(run.call_count, 1)  # exactly one attempt, never retried
 
 
 class TestStrictJsonAndBounds(unittest.TestCase):
@@ -1309,45 +1304,6 @@ class TestPrincipalEstablishment(unittest.TestCase):
         self.assertEqual(len(t.calls), 1)
         self.assertEqual(t.calls[0][0], "identities")
 
-    def _native_whoami_result(self, auth, default, advertised=None):
-        return {
-            "structuredContent": {
-                "authenticated_seat": auth,
-                "default_identity": default,
-                "identities": advertised if advertised is not None else [{"identity": auth}],
-            },
-            "content": [{"type": "text", "text": auth}],
-            "isError": False,
-        }
-
-    def test_native_whoami_displays_a_consistent_echo_principal(self):
-        native = FakeNative(call_results={"identities": self._native_whoami_result("ECHO", "ECHO")})
-        code, out, err = run_cli(
-            ["whoami"], env={"SIMPLE_GIT_NATIVE_ECHO": "1"}, native_post=native.post
-        )
-        self.assertEqual(code, 0, err)
-        self.assertIn("authenticated_seat: ECHO", out)
-
-    def test_native_whoami_refuses_a_contradictory_principal(self):
-        native = FakeNative(
-            call_results={"identities": self._native_whoami_result("ECHO", "CODEX")}
-        )
-        code, out, err = run_cli(
-            ["whoami"], env={"SIMPLE_GIT_NATIVE_ECHO": "1"}, native_post=native.post
-        )
-        self.assertEqual(code, 6)
-        self.assertNotIn("authenticated_seat", out)
-
-    def test_native_whoami_refuses_a_non_echo_principal(self):
-        native = FakeNative(
-            call_results={"identities": self._native_whoami_result("CODEX", "CODEX")}
-        )
-        code, out, err = run_cli(
-            ["whoami"], env={"SIMPLE_GIT_NATIVE_ECHO": "1"}, native_post=native.post
-        )
-        self.assertEqual(code, 6)
-        self.assertNotIn("authenticated_seat: CODEX", out)
-
 
 class TestSchemaFailClosed(unittest.TestCase):
     def test_missing_input_schema_is_a_refusal(self):
@@ -1814,33 +1770,8 @@ class TestReview1199(unittest.TestCase):
         self.assertTrue(timeouts)
         self.assertTrue(all(0 < x <= 10 for x in timeouts), timeouts)
 
-    def test_native_path_gets_the_remaining_budget(self):
-        native = FakeNative()
-        with mock.patch.object(git, "OVERALL_DEADLINE_S", 10):
-            code, out, err = run_cli(
-                ["list"],
-                env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
-                native_post=native.post,
-            )
-        self.assertEqual(code, 0, err)
-        self.assertTrue(native.timeouts)
-        self.assertTrue(all(0 < x <= 10 for x in native.timeouts), native.timeouts)
-
-    def test_native_timeout_is_the_actual_remaining_budget_without_a_floor(self):
-        native = FakeNative()
-        with mock.patch.object(git, "OVERALL_DEADLINE_S", 0.5):
-            code, out, err = run_cli(
-                ["list"],
-                env={"SIMPLE_GIT_NATIVE_ECHO": "1"},
-                native_post=native.post,
-            )
-        self.assertEqual(code, 0, err)
-        self.assertTrue(native.timeouts)
-        self.assertTrue(all(0 < x < 1 for x in native.timeouts), native.timeouts)
-
     # 4. read1 stays, but a response without it fails closed, not with a traceback.
     def test_response_without_read1_is_a_guarded_transport_failure(self):
-        import types
 
         class FakeSock:
             def settimeout(self, value):

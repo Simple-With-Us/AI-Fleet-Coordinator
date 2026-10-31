@@ -393,3 +393,19 @@ test("an upstream not_configured 503 never impersonates a local failure", async 
   const res=await tools.call("gr_open_pr",{repo:"a/b",base:"main",head:"f",title:"t",body:"b"});
   assert.equal(res.isError,true);assert.match(res.content[0].text,/outcome is unknown/);assert.doesNotMatch(res.content[0].text,/Nothing was sent/);
 });
+
+test("dispatch intent source pair is meaningful and schema bounded", async () => {
+  let upstream = 0;
+  const tools = grHarness(new GrRelayClient({
+    baseUrl: "https://git-relay.example.test", accessId: "test-access-id", accessSecret: "test-access-secret", bearer: "sbt_jet-chat_testbearer",
+    fetch: async () => { upstream++; return new Response(JSON.stringify({accepted:true,replayed:false}),{status:200}); },
+  }));
+  const base={repo:"a/b",workflow:"ci.yml",ref:"main"};
+  for (const extra of [{intent_id:"qualification-one"},{expected_head_sha:"a".repeat(40)},{intent_id:"short",expected_head_sha:"a".repeat(40)}]) {
+    const result=await tools.call("gr_workflow_dispatch",{...base,...extra});
+    assert.equal(result.isError,true);
+  }
+  assert.equal(upstream,0);
+  const result=await tools.call("gr_workflow_dispatch",{...base,intent_id:"qualification-one",expected_head_sha:"a".repeat(40)});
+  assert.ok(!result.isError);assert.equal(upstream,1);
+});

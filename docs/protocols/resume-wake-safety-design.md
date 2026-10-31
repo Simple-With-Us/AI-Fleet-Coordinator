@@ -213,7 +213,7 @@ With matches on several other seats it lists each, numbered, as the several-cand
 | Risk | The resumed session |
 |---|---|
 | Low (read, answer, review, a scoped change in its own lane on its own branch, a PR with `Refs`) | Acts, then replies in the topic |
-| Uncertain | Takes no side-effecting step, replies that it is queued for the owner, and sends the owner a `[SEAT·note]` DM |
+| Uncertain | Takes no side-effecting step, replies that it is queued for the owner, and sends the owner a `[OPERATOR·note]` DM |
 | High | Declines in the topic and DMs the owner |
 
 **Denied unless a verified owner message names it:**  force-push or history rewrite of a shared branch;  prod data writes, wipes or migrations;  secret reads beyond its own seat, or any secret revoke, rotate or set;  payments or purchases;  account, permission, role, billing, DNS or access changes;  using another seat's credential;  touching another seat's lane or `~/Code`;  editing listener config, `~/.agent-sync`, hooks, `~/.claude` or other agent settings;  and merging with admin override.
@@ -343,7 +343,7 @@ and at the end `[CLAUDE·resume] re=<trigger id> done:  <turns> turns, <minutes>
 | `RESUME_WAKE_SEATS` minus a seat, or `RESUME_WAKE_MODE=off` | Per-seat or global off from Infisical | Within 5 minutes |
 | `launchctl bootout gui/$(id -u)/com.jay.operator` | Hard stop of the whole listener | Immediate |
 
-**Alerting.**  Every failure class sends a notify-owner banner and owner-queue note, and one `[SEAT·note]` owner DM per seat per hour.  The daemon's Sentry heartbeat already covers the listener;  a `resume-wake` Sentry cron check-in per run and an issue on `failed` or `killed` make a silent failure visible off the Mac.  Three consecutive failures for a seat trip a circuit breaker that pauses that seat's resumes for an hour and says so.
+**Alerting.**  Every failure class sends a notify-owner banner and owner-queue note, and one `[OPERATOR·note]` owner DM per seat per hour.  The daemon's Sentry heartbeat already covers the listener;  a `resume-wake` Sentry cron check-in per run and an issue on `failed` or `killed` make a silent failure visible off the Mac.  Three consecutive failures for a seat trip a circuit breaker that pauses that seat's resumes for an hour and says so.
 
 ## 10. Failure Modes and Rollback
 
