@@ -120,8 +120,7 @@ const ZULIP_OUTCOME_UNPARSEABLE = "unparseable";
 /**
  * Validate a Zulip response body at the boundary.
  *
- * This Worker has no npm dependencies, so there is no zod here: the shape
- * check is by hand.  Only a plain object with a string `result` and a string
+ * The external response goes through zod before any result fields are used.  Only a plain object with a string `result` and a string
  * `msg` (when present) is trusted.  Anything else is a failure with a fixed
  * message, so an unexpected body is never mistaken for a success.
  *
@@ -131,10 +130,11 @@ const ZULIP_OUTCOME_UNPARSEABLE = "unparseable";
  *   carries; the message is returned to the caller but never logged.
  */
 function parseZulipBody(json) {
-  if (!isPlainObject(json)) {
+  const validated = z.object({ result: z.string(), msg: z.string().optional(), id: z.number().int().positive().optional() }).safeParse(json);
+  if (!validated.success) {
     return { ok: false, msg: UNPARSEABLE_RESPONSE, outcome: ZULIP_OUTCOME_UNPARSEABLE };
   }
-
+  json = validated.data;
   const result = json.result;
   if (typeof result !== "string") {
     return { ok: false, msg: UNPARSEABLE_RESPONSE, outcome: ZULIP_OUTCOME_UNPARSEABLE };
@@ -410,7 +410,8 @@ export default {
       await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
         while (next < candidates.length) {
           const [owner, repo, number] = candidates[next++];
-          await handlePr(owner, repo, number, config, env);
+          try { await handlePr(owner, repo, number, config, env); }
+          catch { console.error(JSON.stringify({ event: "pr_dispatch_failed", number })); }
         }
       }));
     })());

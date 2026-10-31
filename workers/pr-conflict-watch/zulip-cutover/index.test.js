@@ -37,3 +37,9 @@ test('ping remains ignored and candidates deduplicated',async()=>{
  const ping=await run({payload:{zen:'fixture'},event:'ping'});assert.equal(ping.status,200);assert.equal(ping.calls.length,0);
  const r=await run({payload:{repository:{full_name:'a/b'},check_suite:{pull_requests:[{number:1},{number:1}]}},event:'check_suite'});assert.equal(r.calls.length,2);
 });
+
+test('one failed PR does not discard remaining batch candidates',async()=>{
+ const real=globalThis.fetch,seen=[],pending=[];
+ globalThis.fetch=async(url)=>{seen.push(String(url));if(String(url).endsWith('/1'))throw Error('fixture');return new Response(JSON.stringify({number:2,state:'closed',title:'PR',html_url:'https://test/pr',base:{ref:'main'},head:{ref:'codex/fix'},user:{login:'owner'}}));};
+ try{await worker.fetch(await signed({repository:{full_name:'a/b'},check_suite:{pull_requests:[{number:1},{number:2}]}},'check_suite'),{...env,PR_STATE:{async get(){return null;}}},{waitUntil:p=>pending.push(p)});await Promise.all(pending);assert.equal(seen.length,2);}finally{globalThis.fetch=real;}
+});

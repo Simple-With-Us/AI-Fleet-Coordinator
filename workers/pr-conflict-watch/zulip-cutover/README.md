@@ -5,3 +5,5 @@ Preserves deployed GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN, PR_STATE and webhook des
 Release configuration: this directory's wrangler.toml. `keep_vars = true` preserves existing runtime settings; do not use parent config or source. Bind delivery secrets before release without changing existing GitHub credentials. Remove obsolete SLACK_BOT_TOKEN only after successful replacement verification. No automatic release added.
 
 Offline: npm ci --ignore-scripts; node --test *.test.js. No arbitrary test alert is authorized. Verify actual delivery using an existing real conflict event and preserve dedupe.
+
+Reviewed release configuration is `slack-backport/wrangler.toml`, not the parent wrangler.toml. It targets only the existing script and KV binding. `keep_vars = true` preserves deployed vars; existing secret bindings must remain unchanged. No secret commands or new runtime resources are part of this patch.
