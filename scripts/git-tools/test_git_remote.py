@@ -704,7 +704,9 @@ class TestNativeCustodyTransport(unittest.TestCase):
         self.assertEqual(run.call_count, 0)
 
     def test_mac_helper_failure_fails_closed_once_no_retry(self):
-        run, result, exc = self._run_transport(euid=501, platform="darwin", returncode=1, write=True)
+        run, result, exc = self._run_transport(
+            euid=501, platform="darwin", returncode=1, write=True
+        )
         self.assertIsNotNone(exc)
         self.assertEqual(exc.code, 1)  # EXIT_ERROR
         self.assertEqual(run.call_count, 1)  # exactly one attempt, never retried
