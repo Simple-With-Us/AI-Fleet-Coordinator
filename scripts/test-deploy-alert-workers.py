@@ -39,6 +39,21 @@ class Tests(unittest.TestCase):
   review={'user':{'login':'kody-ai[bot]'},'state':'APPROVED','commit_id':'c'*40}
   with patch.object(m,'github',side_effect=[[pr],[review]]),patch.object(m,'git',return_value='scripts/deploy-alert-workers.py'):
    with self.assertRaises(RuntimeError):m.reviewed('a'*40)
+ def test_review_with_unresolved_thread_fails(self):
+  import json
+  from unittest.mock import MagicMock
+  pr={'number':1,'merged_at':'now','merge_commit_sha':'a'*40,'head':{'sha':'b'*40}}
+  review={'user':{'login':'kody-ai[bot]'},'state':'APPROVED','commit_id':'b'*40}
+  response=MagicMock();response.__enter__.return_value.read.return_value=json.dumps({'data':{'repository':{'pullRequest':{'reviewThreads':{'pageInfo':{'hasNextPage':False},'nodes':[{'isResolved':False}]}}}}}).encode()
+  with patch.object(m,'github',side_effect=[[pr],[review]]),patch.dict(m.os.environ,{'GITHUB_REPOSITORY':'test/repo','GH_TOKEN':'offline'}),patch.object(m.urllib.request,'urlopen',return_value=response):
+   with self.assertRaises(RuntimeError):m.reviewed('a'*40)
+ def test_exact_review_and_resolved_threads_pass(self):
+  import json
+  from unittest.mock import MagicMock
+  pr={'number':1,'merged_at':'now','merge_commit_sha':'a'*40,'head':{'sha':'b'*40}}
+  review={'user':{'login':'kody-ai[bot]'},'state':'COMMENTED','commit_id':'b'*40}
+  response=MagicMock();response.__enter__.return_value.read.return_value=json.dumps({'data':{'repository':{'pullRequest':{'reviewThreads':{'pageInfo':{'hasNextPage':False},'nodes':[{'isResolved':True}]}}}}}).encode()
+  with patch.object(m,'github',side_effect=[[pr],[review]]),patch.dict(m.os.environ,{'GITHUB_REPOSITORY':'test/repo','GH_TOKEN':'offline'}),patch.object(m.urllib.request,'urlopen',return_value=response):m.reviewed('a'*40)
  def test_workflow_is_main_ci_and_catchup_without_broad_gate(self):
   text=m.pathlib.Path('.github/workflows/alert-workers-deploy.yml').read_text()
   self.assertIn('workflow_run:',text);self.assertIn('workflows: [CI]',text)

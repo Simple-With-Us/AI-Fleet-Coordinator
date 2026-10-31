@@ -120,6 +120,8 @@ def main():
         if not changed:
             probe(target); continue
         subprocess.run(['git','merge-base','--is-ancestor',live,sha],check=True)
+        if git('diff','--name-only',live,sha,'--',target['config']):
+            raise RuntimeError('Deployment configuration change requires manual reconciliation')
         commits = subprocess.check_output(['git','rev-list','--first-parent',live+'..'+sha,'--',target['root'],*RELEASE_PATHS,'docs/releases/pr-conflict-zulip-verified.json'],text=True).splitlines()
         if not commits:
             raise RuntimeError('Changed source without reviewable commit evidence')
