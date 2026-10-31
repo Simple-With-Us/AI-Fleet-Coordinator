@@ -1667,7 +1667,6 @@ class TestReview1199(unittest.TestCase):
 
     # 4. read1 stays, but a response without it fails closed, not with a traceback.
     def test_response_without_read1_is_a_guarded_transport_failure(self):
-        import types
 
         class FakeSock:
             def settimeout(self, value):
