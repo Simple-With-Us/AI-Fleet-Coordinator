@@ -9,13 +9,13 @@ async function signed(payload,event='pull_request') {
 }
 async function run({reply={result:'success',id:7},previous=null,state='dirty',payload={repository:{full_name:'a/b'},pull_request:{number:1}},event='pull_request'}={}) {
  const real=globalThis.fetch,calls=[],data=new Map(previous?[['state:a/b#1',previous]]:[]),pending=[];
- globalThis.fetch=async(url,init)=>{assert.equal(init.redirect,'manual');calls.push({url,body:init?.body});return new Response(JSON.stringify(String(url).includes('api.github.com')?{state:'open',mergeable_state:state,title:'PR',html_url:'https://test/pr',base:{ref:'main'},head:{ref:'wise/fix'},user:{login:'owner'}}:reply));};
+ globalThis.fetch=async(url,init)=>{assert.equal(init.redirect,'manual');calls.push({url,body:init?.body});return new Response(JSON.stringify(String(url).includes('api.github.com')?{number:1,state:'open',mergeable_state:state,title:'PR',html_url:'https://test/pr',base:{ref:'main'},head:{ref:'wise/fix'},user:{login:'owner'}}:reply));};
  try {const res=await worker.fetch(await signed(payload,event),{...env,PR_STATE:{async get(k){return data.get(k)||null;},async put(k,v){data.set(k,v);},async delete(k){data.delete(k);}}},{waitUntil:p=>pending.push(p)});await Promise.all(pending);return {status:res.status,calls,data};}finally{globalThis.fetch=real;}
 }
 test('real signed conflict flow posts only to Zulip Alerts and stores existing state key',async()=>{
  const r=await run();assert.equal(r.status,200);assert.equal(r.calls.length,2);
  assert.equal(r.calls[1].url,'https://zulip.example.com/api/v1/messages');
- const body=new URLSearchParams(r.calls[1].body);assert.equal(body.get('to'),'Alerts');assert.equal(body.get('topic'),'pr-conflicts b');assert.match(body.get('content'),/merge conflict/);
+ const body=new URLSearchParams(r.calls[1].body);assert.equal(body.get('to'),'Alerts');assert.equal(body.get('topic'),'pr-conflicts b');assert.match(body.get('content'),/merge conflict/);assert.match(body.get('content'),/#1 PR/);assert.match(body.get('content'),/@\*\*Wise\*\*/i);assert.ok(!body.get('content').includes('undefined'));
  assert.equal(r.data.get('state:a/b#1'),'dirty');assert.ok(!r.calls.some(x=>String(x.url).includes('slack')));
 });
 test('failed Zulip delivery never poisons dedupe or loses recovery',async()=>{

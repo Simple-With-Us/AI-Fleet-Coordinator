@@ -2,7 +2,11 @@ import { z } from "zod";
 const PrSchema = z.object({
   state: z.enum(["open", "closed"]),
   mergeable_state: z.string().nullable().optional(),
+  number: z.number().int().positive().safe(),
   title: z.string(), html_url: z.string().url(),
+  base: z.object({ ref: z.string() }),
+  head: z.object({ ref: z.string() }),
+  user: z.object({ login: z.string() }),
 });
 const WebhookSchema = z.object({
   repository: z.object({ full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/) }),
