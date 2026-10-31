@@ -33,3 +33,8 @@ test('paths and health stay compatible',async()=>{
  assert.equal((await worker.fetch(new Request('https://test/legacy-path'),{},{})).status,200);
  assert.equal((await run(worker,{repository:{full_name:'a/b'},pull_request:{number:1}})).status,200);
 });
+
+test('duplicate candidates produce one lookup per PR',async()=>{
+ const r=await run(worker,{repository:{full_name:'a/b'},check_suite:{pull_requests:[{number:1},{number:1}]}},'check_suite');
+ assert.equal(r.status,200);assert.equal(r.calls.filter(c=>String(c.url).includes('api.github.com')).length,1);
+});
