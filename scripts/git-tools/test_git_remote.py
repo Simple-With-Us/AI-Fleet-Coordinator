@@ -22,6 +22,7 @@ import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -633,6 +634,71 @@ class TestNativeEcho(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertNotIn("outcome_unknown", err)
         self.assertNotIn("may or may not have been applied", err)
+
+
+class TestNativeCustodyTransport(unittest.TestCase):
+    """_native_echo_post itself: the fixed Linux custody route, root direct, ordinary shell via
+    the exact already-authorized non-interactive elevation.  Linux-only, no fallback."""
+
+    CUSTODY = "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"
+
+    def _run_transport(self, euid, platform="linux", isfile=True, returncode=0, write=False):
+        answer = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+        hello = {"jsonrpc": "2.0", "id": 0, "result": {"protocolVersion": "x"}}
+        proc = types.SimpleNamespace(
+            returncode=returncode,
+            stdout=(json.dumps(hello) + "\n" + json.dumps(answer) + "\n").encode(),
+        )
+        with mock.patch.object(git.os, "geteuid", return_value=euid), mock.patch.object(
+            git.sys, "platform", platform
+        ), mock.patch.object(git.os.path, "isfile", return_value=isfile), mock.patch.object(
+            git.subprocess, "run", return_value=proc
+        ) as run:
+            try:
+                result = git._native_echo_post(b'{"jsonrpc":"2.0","id":1}', write)
+                return run, result, None
+            except SystemExit as exc:
+                return run, None, exc
+
+    def test_ordinary_shell_uses_the_exact_authorized_elevation(self):
+        run, result, exc = self._run_transport(euid=1000)
+        self.assertIsNone(exc)
+        self.assertEqual(result[0], 200)
+        argv = run.call_args.args[0]
+        self.assertEqual(
+            argv,
+            ["/usr/bin/sudo", "-n", "/usr/bin/python3", "-I", self.CUSTODY],
+        )
+        kwargs = run.call_args.kwargs
+        self.assertNotIn("shell", kwargs)  # list argv, never a shell
+        self.assertEqual(kwargs["env"], {"PATH": "/usr/bin:/bin"})  # no environment preservation
+        self.assertEqual(kwargs["stderr"], git.subprocess.DEVNULL)  # no secret output channel
+        self.assertTrue(kwargs["input"].endswith(b'{"jsonrpc":"2.0","id":1}\n'))
+
+    def test_root_invocation_is_unchanged_without_sudo(self):
+        run, result, exc = self._run_transport(euid=0)
+        self.assertIsNone(exc)
+        self.assertEqual(result[0], 200)
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/python3", "-I", self.CUSTODY])
+
+    def test_mac_refuses_for_ordinary_and_root_alike_no_fallback(self):
+        for euid in (1000, 0):
+            run, result, exc = self._run_transport(euid=euid, platform="darwin")
+            self.assertIsNotNone(exc)
+            self.assertEqual(exc.code, 6)  # EXIT_AUTH
+            self.assertEqual(run.call_count, 0)
+
+    def test_missing_custody_helper_refuses_before_any_spawn(self):
+        run, result, exc = self._run_transport(euid=1000, isfile=False)
+        self.assertIsNotNone(exc)
+        self.assertEqual(exc.code, 6)
+        self.assertEqual(run.call_count, 0)
+
+    def test_sudo_refusal_fails_closed_once_no_retry(self):
+        run, result, exc = self._run_transport(euid=1000, returncode=1, write=True)
+        self.assertIsNotNone(exc)
+        self.assertEqual(exc.code, 1)  # EXIT_ERROR
+        self.assertEqual(run.call_count, 1)  # exactly one attempt, never retried
 
 
 class TestStrictJsonAndBounds(unittest.TestCase):

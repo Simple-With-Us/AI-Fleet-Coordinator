@@ -340,11 +340,6 @@ def _native_echo_post(body: bytes, write: bool, timeout: float = REMOTE_TIMEOUT_
     content/meta error object, and a genuine refusal with its own code (a seat mismatch is
     identity_not_allowed).  Both are read by the shared error parsing;  nothing is fabricated here and a
     genuine refusal is never reclassified or retried."""
-    if os.geteuid() != 0:
-        die(
-            "native ECHO transport requires the existing root-controlled launch context",
-            EXIT_AUTH,
-        )
     # The approved custody route is Linux systemd only and absent on the Mac:  fail closed, no substitute.
     if sys.platform != "linux" or not os.path.isfile(
         "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"
@@ -372,9 +367,15 @@ def _native_echo_post(body: bytes, write: bool, timeout: float = REMOTE_TIMEOUT_
         + body
         + b"\n"
     )
+    command = ["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"]
+    if os.geteuid() != 0:
+        # Ordinary shell: the exact already-authorized custody elevation, absolute and
+        # non-interactive (-n fails closed, it never prompts); no shell, no environment or
+        # alternate path, root behavior unchanged.
+        command = ["/usr/bin/sudo", "-n"] + command
     try:
         proc = subprocess.run(
-            ["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"],
+            command,
             input=data,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
