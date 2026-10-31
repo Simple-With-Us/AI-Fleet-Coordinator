@@ -32,6 +32,19 @@ class Inventory(unittest.TestCase):
         self.assertEqual(x["operations"], [])
         self.assertIn("GraphQL", x["classification_note"])
 
+    def test_missing_paths_fails_explicitly_instead_of_publishing_empty_coverage(self):
+        for spec in ({}, {"paths": []}, None):
+            with self.assertRaises(ValueError):
+                m.inventory(spec, [])
+
+    def test_malformed_path_entries_and_empty_tags_are_safe(self):
+        x = m.inventory(
+            {"paths": {"/bad": None, "/empty": {"get": {"operationId": "test/get", "tags": []}}}},
+            [],
+        )
+        self.assertEqual(len(x["operations"]), 1)
+        self.assertEqual(x["operations"][0]["category"], "other")
+
 
 if __name__ == "__main__":
     unittest.main()

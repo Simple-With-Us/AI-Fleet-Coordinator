@@ -68,7 +68,12 @@ def relay_evidence():
 def inventory(spec, exposed):
     evidence = relay_evidence()
     operations = []
-    for path, methods in spec["paths"].items():
+    paths = spec.get("paths") if isinstance(spec, dict) else None
+    if not isinstance(paths, dict):
+        raise ValueError("OpenAPI paths must be an object; previous inventory remains intact")
+    for path, methods in paths.items():
+        if not isinstance(methods, dict):
+            continue
         for method, operation in methods.items():
             if (
                 method.upper() not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
@@ -88,7 +93,13 @@ def inventory(spec, exposed):
                     "operation_id": operation["operationId"],
                     "method": method.upper(),
                     "path": path,
-                    "category": operation.get("tags", ["other"])[0],
+                    "category": (
+                        operation["tags"][0]
+                        if isinstance(operation.get("tags"), list)
+                        and operation["tags"]
+                        and isinstance(operation["tags"][0], str)
+                        else "other"
+                    ),
                     "candidate_handlers": candidates,
                     "status": "route-evidence-needs-semantic-audit"
                     if candidates
