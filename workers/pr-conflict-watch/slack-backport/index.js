@@ -1,3 +1,15 @@
+import { z } from "zod";
+const PrSchema = z.object({
+  state: z.enum(["open", "closed"]),
+  mergeable_state: z.string().nullable().optional(),
+  title: z.string(), html_url: z.string().url(),
+});
+const WebhookSchema = z.object({
+  repository: z.object({ full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/) }),
+  pull_request: z.object({ number: z.number().int().positive().safe() }).optional(),
+  check_suite: z.object({pull_requests: z.array(z.object({number: z.number().int().positive().safe()}))}).optional(),
+  check_run: z.object({pull_requests: z.array(z.object({number: z.number().int().positive().safe()}))}).optional(),
+});
 import { readBoundedBody, BodyLimitError } from "./body.js";
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
@@ -51,7 +63,10 @@ async function getMergeState(owner, repo, number, token) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await ghFetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, token);
     if (!res.ok) return null;
-    const pr = await res.json();
+    let parsed;
+    try { parsed = PrSchema.safeParse(await res.json()); } catch { return null; }
+    if (!parsed.success) return null;
+    const pr = parsed.data;
     if (pr.state !== "open") return { state: "closed", pr };
     if (pr.mergeable_state && pr.mergeable_state !== "unknown") {
       return { state: pr.mergeable_state, pr };
@@ -116,6 +131,9 @@ var index_default = {
     if (!payload || typeof payload !== "object" || Array.isArray(payload))
       return new Response("invalid payload", { status: 400 });
     const candidates = [];
+    const parsed = WebhookSchema.safeParse(payload);
+    if (!parsed.success) return new Response("invalid payload", { status: 400 });
+    payload = parsed.data;
     const name = payload.repository?.full_name;
     const relevant = event === "pull_request" || event === "check_suite" || event === "check_run";
     if (!relevant) return new Response("ignored", { status: 200 });
