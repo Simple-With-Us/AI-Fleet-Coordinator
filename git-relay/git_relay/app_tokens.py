@@ -25,6 +25,7 @@ TIMEOUT_SECONDS = 30
 REFRESH_MARGIN_SECONDS = 300
 MINT_PERMISSION_CEILING = (
     "contents",
+    "workflows",
     "pull_requests",
     "issues",
     "actions",

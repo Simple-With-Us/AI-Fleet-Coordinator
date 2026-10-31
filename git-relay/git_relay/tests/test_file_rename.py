@@ -88,7 +88,7 @@ class Rename(unittest.TestCase):
     def test_closed_preflight_and_workflow_paths(self):
         # Synthetic assembled fixtures, never credentials.
         for bad in [
-            {"source_path": ".github/workflows/x.yml"},
+            {"source_path": ".github/workflows"},
             {"destination_path": ".github"},
             {"source_path": "../x"},
             {"destination_path": "old.txt/a"},
