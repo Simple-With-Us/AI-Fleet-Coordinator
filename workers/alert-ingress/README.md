@@ -273,3 +273,7 @@ Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-we
 Timeline transitions use a separate durable outcome keyed by the exact normalized transition and previous state.  Destination inventory is completed before mutation; a definitive pre-send failure leaves the previous phase unchanged.  Timeline `unknown` is never resent, while a definitive provider refusal can retry the same transition safely.  Sweep failures are isolated per incident, so one refusal cannot abort independent promotions.
 
 Better Stack Uptime incident-change payloads support the default data.attributes resolved_at field as well as explicit status; optional monitor relationship IDs retain stable keys.
+
+### Request bounds
+
+The entry point rejects unknown routes, wrong webhook methods, missing/malformed vendor authentication and oversized declared webhook bodies before Durable Object dispatch. Operator routes keep their existing methods and bearer checks. Webhook bodies are streamed up to the existing 64 KiB byte limit before verification/parsing; missing or inaccurate Content-Length cannot bypass the limit. `/health` stays storage-free.

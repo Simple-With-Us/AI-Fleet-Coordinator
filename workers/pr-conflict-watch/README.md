@@ -105,3 +105,9 @@ node --test workers/pr-conflict-watch/*.test.js
 ```
 
 The test files are named explicitly: the directory form (`node --test workers/pr-conflict-watch/`) resolves `index.js` as a single module and reports one passing test without running any test file, which leaves the gate vacuous (reproduced on Node 22 and 24).
+
+### Request bounds
+
+POST destinations remain path-independent. Bodies are read once with an actual byte limit of 25 MiB, matching the GitHub webhook payload ceiling (https://docs.github.com/en/webhooks/webhook-events-and-payloads?apiVersion=). Missing/malformed signatures and oversized bodies are rejected before Infisical lookup. HMAC is computed on the original bytes before JSON parsing. Candidate PRs are validated, deduplicated and drained by at most four concurrent workers.
+
+These source fixes do not authorize a production cutover from the older Slack deployment to this Infisical/Zulip version. That requires separate release verification.
