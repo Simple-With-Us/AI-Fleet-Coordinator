@@ -88,6 +88,50 @@ on:
           review gate must set this to false explicitly.
         type: boolean
         default: true
+      review_gate:
+        description: >-
+          Explicit opt-in review disposition for arming.  Unset (the default)
+          preserves the require_current_approval contract unchanged.  The only
+          supported value, "effective", requires: the fleet reviewer
+          (approval_reviewer) has a full review on the PR's CURRENT head
+          commit, no reviewer's CHANGES_REQUESTED is outstanding (only a later
+          APPROVED by the SAME reviewer supersedes it - COMMENTED never clears
+          a request, and a dismissal unwinds the dismissed review), every
+          review thread is resolved, and no review-request comment is newer
+          than the fleet reviewer's latest review.  require_current_approval:
+          true (the default) always wins over this input, so an effective-gate
+          caller also sets require_current_approval: false.  Any other value
+          fails closed.  A green CI or a successful Kody check-run
+          is never treated as proof findings were addressed; every lookup
+          fails closed.
+        type: string
+        default: ""
+      review_request_pattern:
+        description: >-
+          Case-insensitive regex matched against issue-comment bodies
+          (inside gh's jq; bodies never touch disk) to catch a review request
+          newer than the fleet reviewer's latest review - a headless review
+          start that has no check run yet.  Matching is line-by-line; the default
+          matches only a line-leading command, not inline Kody guide mentions.
+          A forged request can only delay
+          arming.  Empty disables this one check.
+        type: string
+        default: '^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)'
+      kody_app_slug:
+        description: >-
+          Authenticated GitHub App slug that owns the review check-runs.  The
+          full-review receipt below only trusts runs created by THIS app under
+          kody_check_name; a same-named run from any other app is ignored.
+        type: string
+        default: "kody-ai"
+      kody_app_id:
+        description: >-
+          Numeric GitHub App id that owns the review check-runs; the stable
+          identity behind kody_app_slug (slugs can be renamed, ids cannot).
+          The default is the kody-ai app id observed in live fleet check data.
+          The full-review receipt and the running-run block require BOTH.
+        type: string
+        default: "413034"
       approval_reviewer:
         description: >-
           Login of the reviewer whose APPROVED review on the head commit
@@ -126,6 +170,10 @@ jobs:
     outputs:
       skip: ${{ steps.check.outputs.skip }}
       reason: ${{ steps.check.outputs.reason }}
+      head: ${{ steps.check.outputs.head }}
+      newest_request: ${{ steps.check.outputs.newest_request }}
+      receipt_id: ${{ steps.check.outputs.receipt_id }}
+      resolved_gate: ${{ steps.check.outputs.resolved_gate }}
     steps:
       - uses: actions/checkout@v7
         if: inputs.require_codeowners_gate
@@ -145,7 +193,11 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           KODY_CHECK_NAME: ${{ inputs.kody_check_name }}
+          KODY_APP_SLUG: ${{ inputs.kody_app_slug }}
+          KODY_APP_ID: ${{ inputs.kody_app_id }}
           REQUIRE_APPROVAL: ${{ inputs.require_current_approval }}
+          REVIEW_GATE: ${{ inputs.review_gate }}
+          REVIEW_REQUEST_PATTERN: ${{ inputs.review_request_pattern }}
           APPROVAL_REVIEWER: ${{ inputs.approval_reviewer }}
           MERGE_TOKEN: ${{ secrets.merge_token }}
           RESTRICT: ${{ inputs.restrict_to_pattern }}
@@ -177,12 +229,23 @@ jobs:
           kody_status="$RUNNER_TEMP/kody-status.txt"
           # Filter server-side by the caller-supplied check name and paginate: an
           # unfiltered per_page=100 listing can truncate the Kody run out of the
-          # window.  gh adds -f fields to the query string on GET.
-          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/commits/$HEAD/check-runs"                -f per_page=100 -f check_name="$KODY_CHECK_NAME" --paginate                --jq '.check_runs[].status' > "$kody_status" 2>"$RUNNER_TEMP/kody.err"; then
+          # listing.  gh adds -f fields to the query string on GET.
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/commits/$HEAD/check-runs" \
+               -f per_page=100 -f check_name="$KODY_CHECK_NAME" --method GET --paginate \
+               --jq '.check_runs[] | {id, name, app: ((.app.slug) // ""), app_id: ((.app.id) // 0), status, conclusion: (.conclusion // "none"), started_at, completed_at, title: (((.output.title) // "") | gsub("\\n"; " ")), summary: (((.output.summary) // "") | gsub("\\n"; " "))}' > "$kody_status" 2>"$RUNNER_TEMP/kody.err"; then
             cat "$RUNNER_TEMP/kody.err" >&2
             skip "Kodus review check lookup failed - fail closed"
           fi
-          if grep -qxE 'queued|in_progress' "$kody_status"; then
+          # An ACTIVE run from the authenticated Kody app under the configured
+          # check name blocks arming; a forged-name run from any other app is
+          # not a Kody run at all (identity is the GitHub App, not the label).
+          if ! kody_running="$(jq -r -s --arg app "$KODY_APP_SLUG" --argjson appid "$KODY_APP_ID" --arg name "$KODY_CHECK_NAME" \
+              'any(.[]; .app == $app and .app_id == $appid and .name == $name and (.status == "queued" or .status == "in_progress"))' \
+              "$kody_status" 2>>"$RUNNER_TEMP/kody.err")"; then
+            cat "$RUNNER_TEMP/kody.err" >&2
+            skip "Kodus review check parse failed - fail closed"
+          fi
+          if [ "$kody_running" = "true" ]; then
             skip "Kodus review running on head $HEAD"
           fi
 
@@ -191,17 +254,30 @@ jobs:
           # by the head branch would never see them.  Two precise sources instead:
           # the per-PR marker comments the lanes leave (they carry the run id), and
           # repo-wide active runs whose pull_requests list this PR.
-          # Comment bodies are user-controlled text: never persist them.  jq
-          # reduces each comment to its marker run id inside gh, so only run ids
-          # reach the runner disk.  Markers count only when a Bot wrote them: a
-          # human commenter could otherwise forge one with a bogus run id and
-          # disarm the gate.  Only the 50 newest run ids are queried, so
-          # long-lived PRs do not spend the token's quota on ancient history.
-          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --paginate                --jq '.[] | select(.user.type == "Bot") | .body | select(contains("swu-autofix-run: bot=")) | [scan("actions/runs/[0-9]+") | sub("actions/runs/";"")] | .[]'                > "$RUNNER_TEMP/marker-runs.raw" 2>"$RUNNER_TEMP/comments.err"; then
+          # Comment bodies are user-controlled text: never persist them.  ONE
+          # paginated read serves both the autofix markers and the review
+          # request probe (Kody 4433065484): gh emits each comment as a single
+          # @json line and the local jq pass reduces it to a created_at, the
+          # Bot-only marker run ids and a request-match flag, so bodies never
+          # reach the runner disk.  The request pattern reaches jq only through
+          # the step environment (Kody 4433065134), never the program text.
+          # Markers count only when a Bot wrote them: a human commenter could
+          # otherwise forge one with a bogus run id and disarm the gate.  Only
+          # the 50 newest run ids are queried, so long-lived PRs do not spend
+          # the token's quota on ancient history.
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --method GET --paginate \
+               --jq '.[]' 2>"$RUNNER_TEMP/comments.err" \
+             | jq -c '
+                 {created_at,
+                    markers: ([ . | select(.user.type == "Bot") | .body // "" | select(contains("swu-autofix-run: bot=")) | scan("actions/runs/[0-9]+") | sub("actions/runs/";"") ]),
+                    request: (if env.REVIEW_REQUEST_PATTERN == "" then false else ((.body // "") | split("\n") | any(.[]; test(env.REVIEW_REQUEST_PATTERN; "i"))) end)}' \
+               > "$RUNNER_TEMP/comments.reduced"; then
             cat "$RUNNER_TEMP/comments.err" >&2
             skip "PR comment lookup failed - fail closed"
           fi
-          sort -un "$RUNNER_TEMP/marker-runs.raw" | tail -50 > "$RUNNER_TEMP/marker-runs.txt"
+          if ! jq -r '.markers[]? | select(type == "string")' "$RUNNER_TEMP/comments.reduced" | sort -un | tail -50 > "$RUNNER_TEMP/marker-runs.txt"; then
+            skip "PR comment parse failed - fail closed"
+          fi
           while read -r run_id; do
             [ -n "$run_id" ] || continue
             if run_json="$(GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs/$run_id" 2>"$RUNNER_TEMP/run-err.txt")"; then
@@ -221,38 +297,193 @@ jobs:
           runs_out="$RUNNER_TEMP/autofix-runs.txt"
           : > "$runs_out"
           for st in queued in_progress; do
-            if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs?status=$st&per_page=100" --jq '.workflow_runs[] | {path, prs: [.pull_requests[].number]} | @json' >> "$runs_out" 2>"$RUNNER_TEMP/runs.err"; then
+            if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs?status=$st&per_page=100" --paginate --jq '.workflow_runs[] | {path, prs: [.pull_requests[].number]} | @json' >> "$runs_out" 2>"$RUNNER_TEMP/runs.err"; then
               cat "$RUNNER_TEMP/runs.err" >&2
               skip "autofix run lookup failed - fail closed"
             fi
           done
-          if jq -e --argjson pr "$PR_NUMBER" 'select(.path == ".github/workflows/autofix.yml" or .path == ".github/workflows/claude-code-autofix.yml" or .path == ".github/workflows/kody-fleet-autofix.yml") | select(.prs | index($pr) != null)' "$runs_out" > /dev/null 2>&1; then
-            skip "autofix run queued or in progress for PR #$PR_NUMBER"
+          if ! autofix_matches="$(jq -s --argjson pr "$PR_NUMBER" '[.[] | select(.path == ".github/workflows/autofix.yml" or .path == ".github/workflows/claude-code-autofix.yml" or .path == ".github/workflows/kody-fleet-autofix.yml") | select(.prs | index($pr) != null)] | length' "$runs_out")"; then
+            skip "autofix run parse failed - fail closed"
           fi
+          [ "$autofix_matches" = "0" ] || skip "autofix run queued or in progress for PR #$PR_NUMBER"
 
-          # Qualified current review: a green CI plus a skipped or stale review check
-          # must not arm a merge.  Only an APPROVED review by the fleet reviewer on
-          # this exact head commit qualifies; a newer push makes the old approval
-          # not count, and the next pull_request or pull_request_review event
-          # re-evaluates.  No implicit lane exemption (the lane pattern matches a
-          # title the author controls); callers opt out with the input.  The
-          # lookup fails closed.
+          # Review disposition gate.  A green CI run or a successful Kody
+          # check-run is never proof that findings were addressed (AFC #1207:
+          # the Kody check was green while a valid HIGH review comment was
+          # still open).  This gate reads the review record and the thread
+          # state, never check conclusions, and every lookup fails closed.
+          # Gate resolution.  require_current_approval keeps its legacy
+          # contract: true (the default) forces the strict current-head
+          # APPROVED gate, and an explicit false with review_gate unset means
+          # no review gate, exactly as before this input existed.  review_gate
+          # is an explicit opt-in to the effective gate only; it never weakens
+          # require_current_approval, and an unknown value fails closed.
+          gate=""
+          if [ -n "$REVIEW_GATE" ]; then
+            case "$REVIEW_GATE" in
+              effective) gate="effective" ;;
+              *) skip "unknown review_gate '$REVIEW_GATE' - fail closed" ;;
+            esac
+          fi
           if [ "${REQUIRE_APPROVAL:-true}" = "true" ]; then
-            reviews_out="$RUNNER_TEMP/reviews.txt"
+            gate="approval"
+          fi
+          # The boundary re-evaluates decisive state under the RESOLVED gate,
+          # not the raw input: require_current_approval=true must force the
+          # approval rule there too, or a dismissal after classification
+          # would pass an effective re-check without any approval.
+          RESOLVED_GATE="$gate"
+          echo "resolved_gate=$RESOLVED_GATE" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$gate" ]; then
+            # Review-request lookup, computed before the review gates: the
+            # effective gate's receipt must have STARTED after the NEWEST
+            # request, and the headless probe keys off it.  Bodies are reduced
+            # inside gh; only a created_at and a match flag reach the runner.
+            # A forged request can only delay arming (fail-safe direction).
+            newest_request=""
+            receipt_run=""
+            # The newest request comes from the same reduced comment read as
+            # the markers.  Timestamps compare as epochs: ISO strings
+            # misorder fractional seconds ('.' sorts before 'Z'), so max_by
+            # parses each candidate and an unparsable one fails closed
+            # (Kody 4433064857).
+            if [ -n "$REVIEW_REQUEST_PATTERN" ]; then
+              if ! newest_request="$(jq -rs '
+                  def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
+                  [ .[] | select(.request == true) | .created_at ]
+                  | if length == 0 then "" else max_by(ts) end' "$RUNNER_TEMP/comments.reduced")"; then
+                skip "review request parse failed - fail closed"
+              fi
+            fi
+
             reviews_raw="$RUNNER_TEMP/reviews.json"
             if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" --method GET --paginate \
-                 > "$reviews_raw" 2>"$RUNNER_TEMP/reviews.err" \
-               || ! jq -r --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" \
-                 '.[] | select(.user.login == $who and .commit_id == $head and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | .state' \
-                 "$reviews_raw" > "$reviews_out" 2>>"$RUNNER_TEMP/reviews.err"; then
+                 > "$reviews_raw" 2>"$RUNNER_TEMP/reviews.err"; then
               cat "$RUNNER_TEMP/reviews.err" >&2
               skip "review lookup failed - fail closed"
             fi
-            latest="$(tail -n 1 "$reviews_out" || true)"
-            if grep -qx 'CHANGES_REQUESTED' "$reviews_out" && [ "$latest" != "APPROVED" ]; then
-              skip "changes requested on head $HEAD"
+            if [ "$gate" = "approval" ]; then
+              # Strict legacy gate: only an APPROVED review by the fleet
+              # reviewer on this exact head commit qualifies; a newer push
+              # makes the old approval not count.  No implicit lane exemption.
+              if ! jq -rs --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" \
+                '[ .[][] | select(.user.login == $who and .commit_id == $head and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) ] | sort_by(.id) | .[].state' \
+                "$reviews_raw" > "$RUNNER_TEMP/reviews.out" 2>>"$RUNNER_TEMP/reviews.err"; then
+                cat "$RUNNER_TEMP/reviews.err" >&2
+                skip "review lookup failed - fail closed"
+              fi
+              latest="$(tail -n 1 "$RUNNER_TEMP/reviews.out" || true)"
+              if grep -qx 'CHANGES_REQUESTED' "$RUNNER_TEMP/reviews.out" && [ "$latest" != "APPROVED" ]; then
+                skip "changes requested on head $HEAD"
+              fi
+              [ "$latest" = "APPROVED" ] || skip "no current-head approval from $APPROVAL_REVIEWER on $HEAD"
+              # A newer request is answered only by a newer APPROVED on this
+              # head - an ack's timestamp never answers a request.  Epochs,
+              # not ISO strings: fractional seconds misorder under a raw
+              # string compare (Kody 4433064857).
+              if [ -n "$newest_request" ]; then
+                if ! stale="$(jq -r -n --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" --arg req "$newest_request" \
+                    --slurpfile pages "$reviews_raw" '
+                    def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
+                    ([ $pages | .[] | .[] | select(((.user // {}).login) == $who and .commit_id == $head and .state == "APPROVED" and (.submitted_at | type) == "string") | .submitted_at | ts ] | max) as $latest
+                    | if $latest == null then "true" elif ($req | ts) > $latest then "true" else "false" end' 2>>"$RUNNER_TEMP/reviews.err")"; then
+                  cat "$RUNNER_TEMP/reviews.err" >&2
+                  skip "review lookup failed - fail closed"
+                fi
+                [ "$stale" = "false" ] || skip "review requested at $newest_request with no newer APPROVED from $APPROVAL_REVIEWER on $HEAD - wait for the review"
+              fi
+            else
+              # Effective gate, mirroring the fleet's
+              # effective-review-decision contract: decisive reviews
+              # (APPROVED or CHANGES_REQUESTED) are keyed by integer reviewer
+              # id and ordered by integer review id, and only a later decisive
+              # review by the SAME reviewer supersedes.  COMMENTED never
+              # clears a request.  A DISMISSED review is not decisive, so a
+              # dismissal unwinds the dismissed review's own verdict.  A
+              # decisive review missing its formal sequence or reviewer
+              # identity fails closed.
+              # Full-review receipt: the ONLY accepted proof that a whole-code
+              # Kody review completed on this exact head is a check-run that
+              #   - was created by the authenticated Kody GitHub App
+              #     (kody_app_slug) under the exact configured check name,
+              #   - completed with conclusion SUCCESS (neutral, skipped,
+              #     failure and error states are never a source completion),
+              #   - carries Kody's unambiguous full-review verdict in its
+              #     output (title "Code Review Complete" + summary starting
+              #     "Review finished successfully"; the license/ignore/manual
+              #     skip outputs never carry it), and
+              #   - STARTED no earlier than the newest review request, so a
+              #     run that began before the request and finished after it
+              #     cannot answer it, and no ack can advance the boundary.
+              # A newer queued/in_progress run already blocked above; a newer
+              # request leaves no qualifying receipt, which fails closed.
+              if ! jq -r -n --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" --arg req "$newest_request" \
+                --arg app "$KODY_APP_SLUG" --argjson appid "$KODY_APP_ID" --arg name "$KODY_CHECK_NAME" \
+                --slurpfile pages "$reviews_raw" --slurpfile runs "$kody_status" '
+                def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
+                ([ $pages | .[] | .[] ]) as $all
+                | ([ $runs[] | select(.app == $app and .app_id == $appid and .name == $name
+                      and .status == "completed" and .conclusion == "success"
+                      and (.started_at | type) == "string" and (.completed_at | type) == "string"
+                      and ((.completed_at | ts) >= (.started_at | ts))
+                      and .title == "Code Review Complete"
+                      and (.summary | startswith("Review finished successfully"))
+                      and ($req == "" or (.started_at | ts) >= ($req | ts))) ]) as $receipts
+                | ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head and .state != "DISMISSED" and .state != "PENDING") ]) as $onhead
+                | ([ $all[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") ]) as $d
+                | if any($d[]; (.id | type) != "number" or (((.user // {}).id) | type) != "number")
+                  then "ERROR missing formal review sequence or reviewer identity"
+                  else
+                    ($d | sort_by(.id) | reduce .[] as $r ({}; .[$r.user.id | tostring] = $r.state)) as $last
+                    | "outstanding=" + ([ $last[] | select(. == "CHANGES_REQUESTED") ] | length | tostring)
+                    + " onhead=" + ($onhead | length | tostring)
+                    + " receipts=" + ($receipts | length | tostring)
+                    + " receipt_run=" + (([ $receipts[] | .id ] | max | tostring) // "none")
+                    + " receipt_at=" + (([ $receipts[] | .completed_at ] | max_by(ts)) // "none")
+                  end' > "$RUNNER_TEMP/effective.out" 2>>"$RUNNER_TEMP/reviews.err"; then
+                cat "$RUNNER_TEMP/reviews.err" >&2
+                skip "review lookup failed - fail closed"
+              fi
+              read -r effective_line < "$RUNNER_TEMP/effective.out"
+              case "$effective_line" in
+                ERROR*) skip "effective review decision needs a formal review sequence - fail closed" ;;
+              esac
+              outstanding="${effective_line%% *}"
+              outstanding="${outstanding#outstanding=}"
+              onhead="$(printf '%s' "$effective_line" | sed -n 's/.* onhead=\([0-9]*\).*/\1/p')"
+              receipts="$(printf '%s' "$effective_line" | sed -n 's/.* receipts=\([0-9]*\).*/\1/p')"
+              receipt_run="$(printf '%s' "$effective_line" | sed -n 's/.* receipt_run=\([^ ]*\).*/\1/p')"
+              [ "$outstanding" = "0" ] || skip "changes requested by a reviewer still outstanding on PR #$PR_NUMBER"
+              # No receipt, no arming: a review ack, a skipped/neutral/failed
+              # run, a run from another app, or a run that started before the
+              # newest request are all absent here (fail closed).
+              [ "$receipts" != "0" ] || skip "no completed full-review receipt from $KODY_APP_SLUG on head $HEAD (newest request: ${newest_request:-none})"
+              echo "::notice::full-review receipt: $KODY_CHECK_NAME run $receipt_run on $HEAD"
+              # The current-head review record is an additional consistency
+              # requirement, never provenance: the receipt above is the proof
+              # the review ran; the record carries the disposition.
+              [ "$onhead" != "0" ] || skip "no current-head review record from $APPROVAL_REVIEWER on $HEAD"
             fi
-            [ "$latest" = "APPROVED" ] || skip "no current-head approval from $APPROVAL_REVIEWER on $HEAD"
+
+            # Findings disposition: every review thread must be resolved.  A
+            # resolved thread is not proof of a fix (fake resolutions get
+            # reopened by review handling), but an unresolved thread is proof
+            # the findings are NOT dispositioned.  The lookup fails closed,
+            # including on pagination.
+            threads_out="$RUNNER_TEMP/threads.out"
+            if ! GH_TOKEN="$GATE_TOKEN" gh api graphql \
+                 -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F number="$PR_NUMBER" \
+                 -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}' \
+                 --jq '.data.repository.pullRequest.reviewThreads | (.pageInfo.hasNextPage | tostring) + " " + ([ .nodes[] | select(.isResolved == false) ] | length | tostring)' \
+                 > "$threads_out" 2>"$RUNNER_TEMP/threads.err"; then
+              cat "$RUNNER_TEMP/threads.err" >&2
+              skip "review thread lookup failed - fail closed"
+            fi
+            read -r has_next_page unresolved_threads _ < "$threads_out"
+            [ "$has_next_page" = "false" ] || skip "review thread pagination needs explicit resolution - fail closed"
+            [ "${unresolved_threads:-1}" = "0" ] || skip "${unresolved_threads} unresolved review thread(s) on PR #$PR_NUMBER"
+
           fi
 
           # Lane restriction (dependency-bump callers)
@@ -306,6 +537,9 @@ jobs:
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "reason=eligible" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          echo "newest_request=${newest_request:-}" >> "$GITHUB_OUTPUT"
+          echo "receipt_id=${receipt_run:-}" >> "$GITHUB_OUTPUT"
 
   arm:
     runs-on: ubuntu-latest
@@ -315,12 +549,247 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      checks: read
+      actions: read
+      issues: read
     steps:
+      - name: Re-verify PR state at the arming boundary
+        # Classification convinced the gate minutes ago; arming re-reads the
+        # exact head, the newest review request, active review/autofix runs,
+        # every review-thread page and the hold labels NOW.  Any drift, API,
+        # parse or pagination uncertainty aborts the job before any merge
+        # command runs - a schedule sweep never rescues a stale classification.
+        env:
+          GH_TOKEN: ${{ secrets.merge_token }}
+          FALLBACK_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          CLASSIFIED_HEAD: ${{ needs.classify.outputs.head }}
+          CLASSIFIED_REQUEST: ${{ needs.classify.outputs.newest_request }}
+          CLASSIFIED_RECEIPT: ${{ needs.classify.outputs.receipt_id }}
+          REVIEW_GATE: ${{ needs.classify.outputs.resolved_gate }}
+          APPROVAL_REVIEWER: ${{ inputs.approval_reviewer }}
+          KODY_CHECK_NAME: ${{ inputs.kody_check_name }}
+          KODY_APP_SLUG: ${{ inputs.kody_app_slug }}
+          KODY_APP_ID: ${{ inputs.kody_app_id }}
+          REVIEW_REQUEST_PATTERN: ${{ inputs.review_request_pattern }}
+          RESTRICT: ${{ inputs.restrict_to_pattern }}
+          HOLD_LABELS: ${{ inputs.hold_labels }}
+        run: |
+          set -euo pipefail
+          abort() {
+            echo "::error::arming boundary re-verification failed: $1"
+            # A boundary failure must never leave a previously armed
+            # auto-merge in place; disarm best-effort before exiting.
+            GH_TOKEN="$GATE_TOKEN" gh pr merge --disable-auto "$PR_URL" >/dev/null 2>&1 || true
+            exit 1
+          }
+          GATE_TOKEN="$GH_TOKEN"
+          [ -n "$GATE_TOKEN" ] || GATE_TOKEN="$FALLBACK_TOKEN"
+
+          pr_json="$RUNNER_TEMP/arm-pr.json"
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER" > "$pr_json" 2>"$RUNNER_TEMP/arm-pr.err"; then
+            cat "$RUNNER_TEMP/arm-pr.err" >&2
+            abort "PR re-read failed"
+          fi
+          live_head="$(jq -r '.head.sha' "$pr_json")"
+          live_head_ref="$(jq -r '.head.ref' "$pr_json")"
+          [ "$(jq -r '.state' "$pr_json")" = "open" ] || abort "PR is no longer open"
+          [ "$live_head" = "$CLASSIFIED_HEAD" ] || abort "head drifted: classified $CLASSIFIED_HEAD, live $live_head"
+          [ "$(jq -r '.draft' "$pr_json")" = "false" ] || abort "PR became a draft"
+          [ "$(jq -r '.head.repo.full_name' "$pr_json")" = "$REPO" ] || abort "head repo changed"
+          live_labels="$(jq -c '[.labels[].name]' "$pr_json")"
+          IFS=',' read -ra holds <<< "$HOLD_LABELS"
+          for h in "${holds[@]}"; do
+            [ -n "$h" ] || continue
+            if printf '%s' "$live_labels" | jq -e --arg h "$h" 'index($h) != null' >/dev/null; then
+              abort "hold label '$h' appeared after classification"
+            fi
+          done
+
+          # Lane restriction re-check (Kody 4433065293): classify admitted
+          # the PR inside its caller lane on the event payload, but the head
+          # ref can be retargeted and the title edited in between - the
+          # boundary re-proves the lane on the LIVE ref/title before any
+          # merge command runs.
+          if [ -n "$RESTRICT" ]; then
+            live_title="$(jq -r '.title' "$pr_json")"
+            if ! [[ "$live_head_ref" =~ $RESTRICT ]] && ! [[ "$live_title" =~ $RESTRICT ]]; then
+              abort "PR left the restricted lane /$RESTRICT/ after classification"
+            fi
+          fi
+
+          # Request and thread re-checks exist only where classify evaluated
+          # them: under the legacy no-gate contract (resolved gate empty)
+          # classify never reads requests or threads, so the boundary must not
+          # invent a check classification skipped - a historical request
+          # comment or an unresolved thread would otherwise block a contract
+          # main never gated on.
+          live_request=""
+          # ONE paginated read serves the request re-check and the autofix
+          # marker scan below (Kody 4433065484): gh emits each comment as a
+          # single @json line and the local jq pass reduces it to a
+          # created_at, Bot-only marker run ids and a request-match flag, so
+          # bodies never reach the runner disk.  The request pattern reaches
+          # jq only through the step environment (Kody 4433065134), never
+          # the program text.
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f per_page=100 --method GET --paginate \
+               --jq '.[]' 2>"$RUNNER_TEMP/arm-comments.err" \
+             | jq -c '
+                 {created_at,
+                    markers: ([ . | select(.user.type == "Bot") | .body // "" | select(contains("swu-autofix-run: bot=")) | scan("actions/runs/[0-9]+") | sub("actions/runs/";"") ]),
+                    request: (if env.REVIEW_REQUEST_PATTERN == "" then false else ((.body // "") | split("\n") | any(.[]; test(env.REVIEW_REQUEST_PATTERN; "i"))) end)}' \
+               > "$RUNNER_TEMP/arm-comments.reduced"; then
+            cat "$RUNNER_TEMP/arm-comments.err" >&2
+            abort "comment re-read failed"
+          fi
+          if [ -n "$REVIEW_GATE" ] && [ -n "$REVIEW_REQUEST_PATTERN" ]; then
+            # Epoch max, not a string sort: fractional seconds misorder ISO
+            # strings (Kody 4433064857); an unparsable value fails closed.
+            if ! live_request="$(jq -rs '
+                def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
+                [ .[] | select(.request == true) | .created_at ]
+                | if length == 0 then "" else max_by(ts) end' "$RUNNER_TEMP/arm-comments.reduced")"; then
+              abort "request re-read parse failed"
+            fi
+          fi
+          if [ -n "$REVIEW_GATE" ]; then
+            [ "$live_request" = "$CLASSIFIED_REQUEST" ] || abort "review request drifted: classified '${CLASSIFIED_REQUEST:-none}', live '${live_request:-none}'"
+          fi
+
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/commits/$live_head/check-runs" -f per_page=100 -f check_name="$KODY_CHECK_NAME" --method GET --paginate \
+               --jq '.check_runs[] | {app: ((.app.slug) // ""), app_id: ((.app.id) // 0), name, status}' > "$RUNNER_TEMP/arm-runs.json" 2>"$RUNNER_TEMP/arm-runs.err"; then
+            cat "$RUNNER_TEMP/arm-runs.err" >&2
+            abort "check-run re-read failed"
+          fi
+          if ! arm_running="$(jq -r -s --arg app "$KODY_APP_SLUG" --argjson appid "$KODY_APP_ID" --arg name "$KODY_CHECK_NAME" \
+              'any(.[]; .app == $app and .app_id == $appid and .name == $name and (.status == "queued" or .status == "in_progress"))' "$RUNNER_TEMP/arm-runs.json")"; then
+            abort "check-run parse failed"
+          fi
+          [ "$arm_running" != "true" ] || abort "a Kody review started running after classification"
+
+          # Receipt re-validation: the run classification trusted is re-read
+          # and must still validate - same app identity, head SHA and verdict,
+          # and a started_at at or after the newest review request (a bound,
+          # not timestamp equality).  A re-requested or superseded review
+          # invalidates it here.
+          if [ -n "$CLASSIFIED_RECEIPT" ]; then
+            if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/check-runs/$CLASSIFIED_RECEIPT" > "$RUNNER_TEMP/arm-receipt.json" 2>"$RUNNER_TEMP/arm-receipt.err"; then
+              cat "$RUNNER_TEMP/arm-receipt.err" >&2
+              abort "receipt check-run re-read failed"
+            fi
+            if ! arm_receipt_ok="$(jq -r --arg app "$KODY_APP_SLUG" --argjson appid "$KODY_APP_ID" --arg name "$KODY_CHECK_NAME" \
+                --arg head "$live_head" --arg req "$CLASSIFIED_REQUEST" '
+                def ts: (capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?Z$") as $m | ($m.b + "Z" | fromdateiso8601) + (($m.f // "0") | tonumber)) // error("unparsable timestamp");
+                ((.app.slug // "") == $app) and ((.app.id // 0) == $appid) and .name == $name
+                and .head_sha == $head and .status == "completed" and .conclusion == "success"
+                and (.started_at | type) == "string" and (.completed_at | type) == "string"
+                and ((.completed_at | ts) >= (.started_at | ts))
+                and (((.output.title) // "") == "Code Review Complete")
+                and (((.output.summary) // "") | startswith("Review finished successfully"))
+                and ($req == "" or (.started_at | ts) >= ($req | ts))' "$RUNNER_TEMP/arm-receipt.json")"; then
+              abort "receipt re-validation parse failed"
+            fi
+            [ "$arm_receipt_ok" = "true" ] || abort "classified receipt $CLASSIFIED_RECEIPT no longer validates against the live check-run"
+          fi
+
+          # Formal review decisive-state re-check: a CHANGES_REQUESTED (or, in
+          # approval mode, a dismissal) landing after classification must stop
+          # the arm even when every review thread is still resolved.  The
+          # effective gate also re-derives classify's existence prerequisite:
+          # a non-dismissed, non-pending fleet-reviewer record on the live
+          # head - a record dismissed or removed after classification aborts.
+          if [ -n "$REVIEW_GATE" ]; then
+            if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" --method GET --paginate \
+                 > "$RUNNER_TEMP/arm-reviews.json" 2>"$RUNNER_TEMP/arm-reviews.err"; then
+              cat "$RUNNER_TEMP/arm-reviews.err" >&2
+              abort "review re-read failed"
+            fi
+            if ! arm_decision="$(jq -r -s --arg who "$APPROVAL_REVIEWER" --arg head "$live_head" --arg gate "$REVIEW_GATE" '
+                ([ .[][] ]) as $all
+                | if $gate == "approval" then
+                    # Match the classifier legacy current-head/configured-reviewer
+                    # scope exactly; unrelated old requests do not widen it.
+                    ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head
+                        and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) ] | sort_by(.id) | .[-1].state) as $decisive
+                    | if $decisive == "APPROVED" then "ok" else "approval-lost" end
+                  else
+                    ([ $all[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") ]) as $d
+                    | if any($d[]; (.id | type) != "number" or (((.user // {}).id) | type) != "number")
+                      then "ERROR"
+                      else
+                        ($d | sort_by(.id) | reduce .[] as $r ({}; .[$r.user.id | tostring] = $r.state)) as $last
+                        | ([ $last[] | select(. == "CHANGES_REQUESTED") ] | length) as $outstanding
+                        | ([ $all[] | select(((.user // {}).login) == $who and .commit_id == $head
+                            and .state != "DISMISSED" and .state != "PENDING") ] | length) as $onhead
+                        | if $outstanding > 0 then "cr"
+                          elif $onhead == 0 then "record-lost" else "ok" end
+                      end
+                  end' "$RUNNER_TEMP/arm-reviews.json")"; then
+              abort "review re-read parse failed"
+            fi
+            case "$arm_decision" in
+              ok) ;;
+              cr) abort "a reviewer requested changes after classification" ;;
+              approval-lost) abort "the head approval was dismissed or superseded after classification" ;;
+              record-lost) abort "the current-head review record was dismissed or removed after classification" ;;
+              *) abort "review decision needs a formal review sequence - fail closed" ;;
+            esac
+          fi
+
+          if ! jq -r '.markers[]? | select(type == "string")' "$RUNNER_TEMP/arm-comments.reduced" | sort -un | tail -50 > "$RUNNER_TEMP/arm-marker-runs.txt"; then
+            abort "marker comment parse failed"
+          fi
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            if run_json="$(GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs/$run_id" 2>"$RUNNER_TEMP/arm-run-err.txt")"; then
+              run_status="$(printf '%s' "$run_json" | jq -r '.status')"
+            elif grep -q 'HTTP 404' "$RUNNER_TEMP/arm-run-err.txt"; then
+              continue
+            else
+              cat "$RUNNER_TEMP/arm-run-err.txt" >&2
+              abort "autofix run status lookup failed"
+            fi
+            if [ "$run_status" = "queued" ] || [ "$run_status" = "in_progress" ]; then
+              abort "autofix run $run_id $run_status after classification"
+            fi
+          done < "$RUNNER_TEMP/arm-marker-runs.txt"
+
+          : > "$RUNNER_TEMP/arm-autofix.txt"
+          for st in queued in_progress; do
+            if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs?status=$st&per_page=100" --paginate --jq '.workflow_runs[] | {path, prs: [.pull_requests[].number]} | @json' >> "$RUNNER_TEMP/arm-autofix.txt" 2>"$RUNNER_TEMP/arm-runs.err"; then
+              cat "$RUNNER_TEMP/arm-runs.err" >&2
+              abort "autofix run lookup failed"
+            fi
+          done
+          if ! arm_autofix_matches="$(jq -s --argjson pr "$PR_NUMBER" '[.[] | select(.path == ".github/workflows/autofix.yml" or .path == ".github/workflows/claude-code-autofix.yml" or .path == ".github/workflows/kody-fleet-autofix.yml") | select(.prs | index($pr) != null)] | length' "$RUNNER_TEMP/arm-autofix.txt")"; then
+            abort "autofix run parse failed"
+          fi
+          [ "$arm_autofix_matches" = "0" ] || abort "autofix run became active for PR #$PR_NUMBER"
+
+          if [ -n "$REVIEW_GATE" ]; then
+            if ! GH_TOKEN="$GATE_TOKEN" gh api graphql \
+                 -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F number="$PR_NUMBER" \
+                 -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}' \
+                 --jq '.data.repository.pullRequest.reviewThreads | (.pageInfo.hasNextPage | tostring) + " " + ([ .nodes[] | select(.isResolved == false) ] | length | tostring)' \
+                 > "$RUNNER_TEMP/arm-threads.out" 2>"$RUNNER_TEMP/arm-threads.err"; then
+              cat "$RUNNER_TEMP/arm-threads.err" >&2
+              abort "thread re-read failed"
+            fi
+            read -r arm_has_next arm_unresolved _ < "$RUNNER_TEMP/arm-threads.out"
+            [ "$arm_has_next" = "false" ] || abort "review thread pagination needs explicit resolution"
+            [ "${arm_unresolved:-1}" = "0" ] || abort "$arm_unresolved review thread(s) reopened after classification"
+          fi
+
+          echo "Arming boundary re-verified: head $live_head, request '${live_request:-none}', no active runs, no holds."
+
       - name: Fetch Wise relay token in this job
         if: inputs.use_wise_relay
         env:
           INFISICAL_TOKEN: ${{ secrets.WISE_RELAY_INFISICAL_TOKEN || secrets.wise_infisical_token }}
           EXPECTED_MERGE_ACTOR: ${{ inputs.expected_merge_actor }}
+          EXPECTED_HEAD: ${{ needs.classify.outputs.head }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           DELETE_BRANCH: ${{ inputs.delete_branch }}
         run: |
@@ -350,7 +819,8 @@ jobs:
           echo "Configured bot merge principal verified."
 
           set -euo pipefail
-          args=(--auto --squash)
+          [ -n "$EXPECTED_HEAD" ] || { echo "::error::no classified head to pin the merge to; refusing to arm."; exit 1; }
+          args=(--auto --squash --match-head-commit "$EXPECTED_HEAD")
           [ "$DELETE_BRANCH" = "true" ] && args+=(--delete-branch)
           echo "Enabling auto-merge (${args[*]}) for $PR_URL"
           out="$(gh pr merge "${args[@]}" "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
@@ -362,7 +832,7 @@ jobs:
             # so arm again without the flag instead of failing the step for every PR
             # in the repo (AFC-413).
             echo "::notice::the merge queue refuses --delete-branch; arming without it"
-            out="$(gh pr merge --auto --squash "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
+            out="$(gh pr merge --auto --squash --match-head-commit "$EXPECTED_HEAD" "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
             echo "auto_merge_command status=failed code=outcome_unknown request_id=unavailable"
           fi
           if echo "$out" | grep -qiE 'already enabled|Auto merge is already'; then
@@ -656,11 +1126,13 @@ jobs:
         if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.merge_token }}
+          EXPECTED_HEAD: ${{ needs.classify.outputs.head }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           DELETE_BRANCH: ${{ inputs.delete_branch }}
         run: |
           set -euo pipefail
-          args=(--auto --squash)
+          [ -n "$EXPECTED_HEAD" ] || { echo "::error::no classified head to pin the merge to; refusing to arm."; exit 1; }
+          args=(--auto --squash --match-head-commit "$EXPECTED_HEAD")
           [ "$DELETE_BRANCH" = "true" ] && args+=(--delete-branch)
           echo "Enabling auto-merge (${args[*]}) for $PR_URL"
           out="$(gh pr merge "${args[@]}" "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
@@ -672,7 +1144,7 @@ jobs:
             # so arm again without the flag instead of failing the step for every PR
             # in the repo (AFC-413).
             echo "::notice::the merge queue refuses --delete-branch; arming without it"
-            out="$(gh pr merge --auto --squash "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
+            out="$(gh pr merge --auto --squash --match-head-commit "$EXPECTED_HEAD" "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
             echo "auto_merge_command status=failed code=outcome_unknown request_id=unavailable"
           fi
           if echo "$out" | grep -qiE 'already enabled|Auto merge is already'; then
@@ -696,8 +1168,11 @@ jobs:
 
   disarm:
     runs-on: ubuntu-latest
-    needs: classify
-    if: needs.classify.outputs.skip == 'true'
+    needs: [classify, arm]
+    # Runs when classification rejected the PR, and also when the arm job
+    # failed after a PASS: a boundary abort or relay failure must never leave
+    # a previously armed auto-merge in place.
+    if: ${{ always() && (needs.classify.outputs.skip == 'true' || needs.classify.result == 'failure' || needs.arm.result == 'failure') }}
     permissions:
       contents: write
       pull-requests: write
@@ -706,7 +1181,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          REASON: ${{ needs.classify.outputs.reason }}
+          REASON: ${{ needs.classify.outputs.skip == 'true' && needs.classify.outputs.reason || 'arm job failed after a pass - clearing any prior arm' }}
         run: |
           set -euo pipefail
           echo "PR ineligible ($REASON); ensuring auto-merge is off for $PR_URL"

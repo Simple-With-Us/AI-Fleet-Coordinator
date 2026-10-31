@@ -107,6 +107,8 @@ TOOLS += [
                 "workflow": {"type": "string", "description": "workflow file name or numeric id"},
                 "ref": {"type": "string"},
                 "inputs": {"type": "object"},
+                "intent_id": {"type": "string"},
+                "expected_head_sha": {"type": "string"},
             },
             "required": ["repo", "workflow", "ref"],
         },
@@ -156,6 +158,14 @@ def _validate_args(name: str, args: dict) -> str | None:
     ):
         return "thread_id must be a PRRT_ review-thread id"
     if name == "workflow_dispatch":
+        intent, expected = args.get("intent_id"), args.get("expected_head_sha")
+        if (intent is None) != (expected is None):
+            return "intent_id and expected_head_sha must be supplied together"
+        if intent is not None and (
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}", intent)
+            or not re.fullmatch(r"[0-9a-f]{40}", expected)
+        ):
+            return "invalid dispatch intent or expected source"
         inputs = args.get("inputs")
         if inputs is not None:
             if len(inputs) > MAX_DISPATCH_INPUTS:

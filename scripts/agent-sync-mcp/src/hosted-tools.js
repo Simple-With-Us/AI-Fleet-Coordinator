@@ -293,6 +293,8 @@ const LINEAR_WORKSPACE_CACHE = new Map();
 const GR_DISPATCH_ARGS = z
   .object({
     repo: z.string().min(3).max(200),
+    intent_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$/).optional(),
+    expected_head_sha: z.string().regex(/^[0-9a-f]{40}$/).optional(),
     workflow: z.string().min(1).max(200),
     ref: z.string().min(1).max(200),
     inputs: z
@@ -1396,7 +1398,11 @@ export class HostedTools {
   async tool_gr_reply_thread(args) { return this.grCall("reply_thread", args); }
   async tool_gr_comment_pr(args) { return this.grCall("comment_pr", args); }
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
-  async tool_gr_workflow_dispatch(args) { return this.grCall("workflow_dispatch", parseArgs(GR_DISPATCH_ARGS, args)); }
+  async tool_gr_workflow_dispatch(args) {
+    const parsed = parseArgs(GR_DISPATCH_ARGS, args);
+    if ((parsed.intent_id === undefined) !== (parsed.expected_head_sha === undefined)) throw new ToolError("invalid_argument", "intent_id and expected_head_sha must be supplied together");
+    return this.grCall("workflow_dispatch", parsed);
+  }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */

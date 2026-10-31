@@ -2,8 +2,8 @@
 """Tests for the simple-git entry wrapper (scripts/simple-git when installed).
 
 Covers:  the installed basename survives (including through a symlink and through the Python-version
-re-exec, via SIMPLE_GIT_ARGV0);  the 3.9 interpreter fallback;  the host seat-helper trust protocol
-(absent = optional, present-but-untrustworthy = refusal, trusted = runs with the command key);  a missing
+re-exec, via SIMPLE_GIT_ARGV0);  the 3.9 interpreter fallback;  the host seat helper is NEVER consulted
+(each CLI user supplies their own bearer;  a declared seat still passes through untouched);  a missing
 implementation file is a clean error.
 """
 
@@ -25,6 +25,7 @@ FAKE_IMPL = (
     "import os, sys\n"
     "print('ARGV0=' + os.path.basename(sys.argv[0]))\n"
     "print('ENV0=' + os.environ.get('SIMPLE_GIT_ARGV0', '-'))\n"
+    "print('SEAT=' + os.environ.get('AGENT_SEAT', '-'))\n"
 )
 
 CLEAN_KEYS = (
@@ -133,9 +134,12 @@ class TestInstalledName(unittest.TestCase):
                 self.assertEqual(exc.code, 1)
 
 
-class TestHelperTrust(unittest.TestCase):
-    """The helper path comes from the account database (pwd), never $HOME, so these tests stage the file in
-    the real sandbox home and remove it again.  They skip if a real helper is installed there."""
+class TestHelperNeverConsulted(unittest.TestCase):
+    """simple-git runs the host seat helper for NO case:  every CLI user supplies their own bearer
+    (SIMPLE_TOOLS_BEARER or the implementation's hidden prompt) and the server decides identity and
+    permissions from it.  These tests stage a helper in the real sandbox home (the old path came from the
+    account database, never $HOME) and prove it is neither run nor even trust-checked.  They skip if a
+    real helper is installed there."""
 
     def setUp(self):
         import pwd
@@ -167,26 +171,9 @@ class TestHelperTrust(unittest.TestCase):
         self.helper.chmod(mode)
         return self.helper
 
-    def test_absent_helper_is_optional(self):
-        tmp = make_tree()
-        try:
-            result = run_wrapper(tmp, tmp / "scripts" / "simple-git")
-            self.assertEqual(result.returncode, 0, result.stderr)
-        finally:
-            shutil.rmtree(tmp)
-
-    def test_present_but_untrustworthy_helper_is_a_refusal(self):
-        tmp = make_tree()
-        try:
-            self._install_helper(tmp, "pass\n", 0o664)  # group-writable: never trusted
-            result = run_wrapper(tmp, tmp / "scripts" / "simple-git")
-            self.assertEqual(result.returncode, 3)
-            self.assertIn("could not be trusted", result.stderr)
-            self.assertNotIn("ARGV0", result.stdout)  # the tool never ran
-        finally:
-            shutil.rmtree(tmp)
-
-    def test_trusted_helper_runs_with_the_command_key(self):
+    def test_a_trusted_helper_is_never_run(self):
+        # A perfectly trustworthy helper that would place a seat's saved bearer:  never consulted,
+        # with or without an explicit bearer in the environment.
         tmp = make_tree()
         try:
             marker = tmp / "marker"
@@ -195,19 +182,47 @@ class TestHelperTrust(unittest.TestCase):
                 "import os\nopen(os.environ['MARKER'], 'w').write(fleet_command)\n",
                 0o600,
             )
-            result = run_wrapper(tmp, tmp / "scripts" / "simple-git", {"MARKER": str(marker)})
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(marker.read_text(), "simple-git")
+            for extra in ({}, {"SIMPLE_TOOLS_BEARER": "u" * 40}):
+                result = run_wrapper(
+                    tmp, tmp / "scripts" / "simple-git", {"MARKER": str(marker), **extra}
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("ARGV0=simple-git", result.stdout)  # the tool ran
+            self.assertFalse(marker.exists())  # the helper never ran, either time
         finally:
             shutil.rmtree(tmp)
 
-    def test_failing_helper_is_a_refusal(self):
+    def test_an_untrustworthy_helper_is_not_even_checked(self):
+        # Group-writable (the old trust protocol's refusal case):  not a refusal anymore, because the
+        # helper is never read at all - the tool simply runs.
         tmp = make_tree()
         try:
-            self._install_helper(tmp, "raise ValueError('boom')\n", 0o600)
+            self._install_helper(tmp, "pass\n", 0o664)
             result = run_wrapper(tmp, tmp / "scripts" / "simple-git")
-            self.assertEqual(result.returncode, 3)
-            self.assertIn("helper failed", result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("ARGV0=simple-git", result.stdout)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_a_declared_seat_passes_through_with_no_helper_read(self):
+        # AGENT_SEAT is the user's declaration, asserted by the implementation against the server's own
+        # answer for their bearer:  it reaches the tool untouched and still triggers no helper read.
+        tmp = make_tree()
+        try:
+            marker = tmp / "marker"
+            self._install_helper(
+                tmp,
+                "import os\nopen(os.environ['MARKER'], 'w').write(fleet_command)\n",
+                0o600,
+            )
+            result = run_wrapper(
+                tmp,
+                tmp / "scripts" / "simple-git",
+                {"MARKER": str(marker), "AGENT_SEAT": "KELVIN"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("SEAT=KELVIN", result.stdout)
+            self.assertFalse(marker.exists())
         finally:
             shutil.rmtree(tmp)
 
