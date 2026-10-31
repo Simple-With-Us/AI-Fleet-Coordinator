@@ -205,6 +205,10 @@ def _retry_after_seconds(headers) -> int | None:
     return None
 
 
+class DispatchPreReadUnavailable(Exception):
+    """Dispatch source read failed before any write was attempted."""
+
+
 class GitHubClient:
     def __init__(self, token: str, base_url: str = "https://api.github.com", opener=None):
         if not token:
@@ -514,7 +518,12 @@ class GitHubClient:
             # actual run head verification later. Never claim an execution fence.
             if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}", ref) or ".." in ref:
                 raise ValueError("intent dispatch requires a canonical branch name")
-            actual = self._call("GET", f"/repos/{repo}/git/ref/heads/{ref}", bearer=bearer)
+            try:
+                actual = self._call("GET", f"/repos/{repo}/git/ref/heads/{ref}", bearer=bearer)
+            except RelayGitHubError as exc:
+                if exc.status == 0 or exc.status >= 500:
+                    raise DispatchPreReadUnavailable() from None
+                raise
             if actual.get("object", {}).get("sha") != expected_head_sha:
                 raise ValueError("dispatch source changed before send")
         receipt = self._call(

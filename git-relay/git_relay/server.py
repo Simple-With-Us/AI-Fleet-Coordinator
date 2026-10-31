@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .app_tokens import AppTokenError
 from .audit import AuditLog
-from .github_client import GitHubClient, RelayGitHubError
+from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import DEFAULT_RATE_PER_HOUR, DEFAULT_WRITE_RATE_PER_HOUR, PolicyError, SeatPolicy
 from .policy_input import seats_json_from_env
@@ -367,6 +367,8 @@ class Relay:
                             json.dumps(canonical, sort_keys=True).encode()
                         ).hexdigest()
                         if canonical.get("intent_id") and replay.get("request_digest") != digest:
+                            outcome = "digest_mismatch"
+                            detail = {"reason": "dispatch_intent_payload_mismatch"}
                             return 409, {
                                 "error": "dispatch intent already bound to a different request",
                                 "retryable": False,
@@ -394,7 +396,7 @@ class Relay:
                 outcome = "denied"
                 detail = {"reason": str(exc)}
                 return 403, {"error": str(exc)}
-            except PreReadUnavailable:
+            except (PreReadUnavailable, DispatchPreReadUnavailable):
                 self._release(key, "refused")
                 outcome = "unavailable"
                 detail = {"reason": "pre_read_unavailable"}

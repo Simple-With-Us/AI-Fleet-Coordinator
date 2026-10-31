@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from git_relay.audit import AuditLog
-from git_relay.github_client import GitHubClient
+from git_relay.github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
 from git_relay.policy import SeatPolicy
 from git_relay.server import Relay, _validate_args
 
@@ -60,6 +60,11 @@ class DispatchIntents(unittest.TestCase):
                 SEAT_TOKEN, "workflow_dispatch", self.args(expected_head_sha="b" * 40)
             )
             self.assertEqual(status, 409)
+            audit = [
+                json.loads(line) for line in (Path(tmp) / "audit.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(audit[-1]["result"], "digest_mismatch")
+            self.assertNotIn("idempotent_replay", audit[-1].get("detail", {}))
             self.assertEqual(relay._dispatch.call_count, 1)
             status, _ = relay.handle(
                 SEAT_TOKEN, "workflow_dispatch", self.args(intent_id="qualification-source-two")
@@ -119,3 +124,25 @@ class DispatchIntents(unittest.TestCase):
             self.assertEqual(
                 relay.client.workflow_dispatch.call_args.kwargs["expected_head_sha"], "a" * 40
             )
+
+    def test_transient_source_read_is_safe_retry_not_unknown(self):
+        client = GitHubClient("fixture")
+        client._call = Mock(side_effect=RelayGitHubError(503, "fixture"))
+        with self.assertRaises(DispatchPreReadUnavailable):
+            client.workflow_dispatch(
+                "example/x", "ci.yml", "main", {}, "fixture", expected_head_sha="a" * 40
+            )
+        self.assertEqual(client._call.call_count, 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(APP_SEATS_JSON),
+                StubClient(),
+                AuditLog(str(Path(tmp) / "audit.jsonl")),
+                app_minter=FakeMinter(),
+            )
+            relay._dispatch = Mock(side_effect=[DispatchPreReadUnavailable(), {"accepted": True}])
+            status, body = relay.handle(SEAT_TOKEN, "workflow_dispatch", self.args())
+            self.assertEqual(status, 503)
+            self.assertTrue(body["retryable"])
+            status, _ = relay.handle(SEAT_TOKEN, "workflow_dispatch", self.args())
+            self.assertEqual(status, 200)
