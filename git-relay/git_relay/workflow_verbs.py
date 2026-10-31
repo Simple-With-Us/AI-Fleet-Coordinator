@@ -725,16 +725,16 @@ class WorkflowVerbs:
             raise Refused("action or repository denied")
         app_slug, ceiling = policy.app_identity(seat)
         required = dict(SPECS[action][0])
-        # Direct callers must satisfy the same bounded syntax/secret checks as
-        # Relay.handle before any workflow-capable token is created or cached.
-        if args is not None:
-            cls.check_shape(action, args, repo)
         needs_workflows = args is not None and bool(workflow_write_paths(action, args))
         if needs_workflows:
             required["workflows"] = "write"
         required.setdefault("metadata", "read")
         if _perm_within_ceiling(required, ceiling):
             raise CeilingDenied("seat permission ceiling insufficient")
+        # Relay.handle already validated syntax/secrets before dispatch. Direct
+        # callers validate here only after the cheap bounded scope/ceiling gate.
+        if args is not None and not preauthorized:
+            cls.check_shape(action, args, repo)
         try:
             token, _ = minter.token_for(app_slug, repo, required)
         except Exception:

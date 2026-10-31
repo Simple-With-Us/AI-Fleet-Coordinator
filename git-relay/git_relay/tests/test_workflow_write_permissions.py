@@ -147,6 +147,36 @@ class WorkflowPermissions(unittest.TestCase):
                 )
             self.assertEqual(minter.calls, [])
 
+    def test_denied_ceiling_precedes_expensive_secret_shape_scan(self):
+        from unittest.mock import patch
+
+        args = self.full_args(
+            "wf_file_put", {"path": ".github/workflows/x.yml", "content_b64": "!!!"}
+        )
+        with patch.object(WorkflowVerbs, "check_shape") as scan:
+            with self.assertRaises(CeilingDenied):
+                WorkflowVerbs.for_action(
+                    Client(), Policy(CEILING), Minter(), "swu-wise", "wf_file_put", REPO, args=args
+                )
+            scan.assert_not_called()
+
+    def test_preauthorized_dispatch_reuses_gateway_shape_validation(self):
+        from unittest.mock import patch
+
+        args = self.full_args("wf_file_put", {"path": ".github/workflows/x.yml"})
+        with patch.object(WorkflowVerbs, "check_shape") as scan:
+            WorkflowVerbs.for_action(
+                Client(),
+                Policy({**CEILING, "workflows": "write"}),
+                Minter(),
+                "swu-wise",
+                "wf_file_put",
+                REPO,
+                args=args,
+                preauthorized=True,
+            )
+            scan.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

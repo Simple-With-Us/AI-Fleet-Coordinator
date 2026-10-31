@@ -115,6 +115,19 @@ def inventory(spec, exposed):
     }
 
 
+def previous_exposed(path):
+    try:
+        previous = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    exposed = previous.get("exposed_tools", []) if isinstance(previous, dict) else []
+    return (
+        [item for item in exposed if isinstance(item, str) and item.startswith("gr_")]
+        if isinstance(exposed, list)
+        else []
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("spec", type=pathlib.Path)
@@ -122,8 +135,7 @@ def main():
         "--output", type=pathlib.Path, default=ROOT / "docs/github-capabilities/inventory.json"
     )
     args = parser.parse_args()
-    previous = json.loads(args.output.read_text()) if args.output.exists() else {}
-    result = inventory(json.loads(args.spec.read_text()), previous.get("exposed_tools", []))
+    result = inventory(json.loads(args.spec.read_text()), previous_exposed(args.output))
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(
         json.dumps(

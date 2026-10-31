@@ -45,6 +45,15 @@ class Inventory(unittest.TestCase):
         self.assertEqual(len(x["operations"]), 1)
         self.assertEqual(x["operations"][0]["category"], "other")
 
+    def test_corrupt_prior_output_recovers(self):
+        import tempfile, pathlib
+
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "inventory.json"
+            for body in ("{", "[]", '{"exposed_tools": null}', '{"exposed_tools": [1, "gr_ok"]}'):
+                p.write_text(body)
+                self.assertEqual(m.previous_exposed(p), ["gr_ok"] if "gr_ok" in body else [])
+
 
 if __name__ == "__main__":
     unittest.main()
