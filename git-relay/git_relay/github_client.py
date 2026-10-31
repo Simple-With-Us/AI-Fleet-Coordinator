@@ -491,7 +491,7 @@ class GitHubClient:
         return {"merged": data.get("merged"), "sha": data.get("sha")}
 
     def workflow_dispatch(
-        self, repo: str, workflow: str, ref: str, inputs: dict, bearer: str
+        self, repo: str, workflow: str, ref: str, inputs: dict, bearer: str, expected_head_sha=None
     ) -> dict:
         self._check_repo(repo)
         if not isinstance(workflow, str) or "/" in workflow or ".." in workflow:
@@ -508,13 +508,39 @@ class GitHubClient:
                     raise ValueError(
                         f"inputs string values are capped at {MAX_DISPATCH_INPUT_VALUE} characters"
                     )
-        self._call(
+        if expected_head_sha is not None:
+            # GitHub accepts a branch/tag, not an atomic expected-SHA condition.
+            # Restrict intent calls to branch refs, check before send, and require
+            # actual run head verification later. Never claim an execution fence.
+            if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}", ref) or ".." in ref:
+                raise ValueError("intent dispatch requires a canonical branch name")
+            actual = self._call("GET", f"/repos/{repo}/git/ref/heads/{ref}", bearer=bearer)
+            if actual.get("object", {}).get("sha") != expected_head_sha:
+                raise ValueError("dispatch source changed before send")
+        receipt = self._call(
             "POST",
             f"/repos/{repo}/actions/workflows/{workflow}/dispatches",
             {"ref": ref, "inputs": inputs or {}},
             bearer=bearer,
         )
-        return {"dispatched": True, "workflow": workflow, "ref": ref}
+        result = {"dispatched": True, "accepted": True, "workflow": workflow, "ref": ref}
+        # New GitHub API versions return a run receipt; older204 responses do not.
+        # Project only validated identifiers, never arbitrary headers/body/error text.
+        run_id = receipt.get("workflow_run_id") if isinstance(receipt, dict) else None
+        if type(run_id) is int and 0 < run_id <= 10**18:
+            result["workflow_run_id"] = run_id
+            for field in ("run_url", "html_url"):
+                value = receipt.get(field)
+                prefix = (
+                    "https://api.github.com/repos/" if field == "run_url" else "https://github.com/"
+                )
+                if value == prefix + repo + "/actions/runs/" + str(run_id):
+                    result[field] = value
+        if expected_head_sha is not None:
+            result["expected_head_sha"] = expected_head_sha
+            result["source_checked_before_send"] = True
+            result["source_fence_atomic"] = False
+        return result
 
     def resolve_thread(self, thread_id: str, bearer: str) -> dict:
         if not isinstance(thread_id, str) or not thread_id.startswith("PRRT_"):

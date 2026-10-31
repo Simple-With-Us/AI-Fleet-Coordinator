@@ -47,6 +47,8 @@ class OutcomeStoreError(RuntimeError):
 
 
 def key_for(seat: str, action: str, args: dict) -> str:
+    if action == "workflow_dispatch" and args.get("intent_id"):
+        args = {"intent_id": args["intent_id"]}
     if action == "wf_file_delete":
         args = {k: args[k] for k in ("repo", "path", "branch", "prior_sha")}
     if action == "wf_labels_add":
