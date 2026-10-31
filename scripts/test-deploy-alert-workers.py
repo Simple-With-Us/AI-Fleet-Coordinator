@@ -32,6 +32,7 @@ class Tests(unittest.TestCase):
             patch.object(m.subprocess, "check_output", return_value="a" * 40),
             patch.object(m, "current_main", return_value="a" * 40),
             patch.object(m, "github", return_value={"workflow_runs": []}),
+            patch.object(m, "credential_receipt", return_value=True),
             self.assertRaises(RuntimeError),
         ):
             m.main()
@@ -254,6 +255,33 @@ class Tests(unittest.TestCase):
             self.assertRaises(RuntimeError),
         ):
             m.github("/anything")
+
+    def test_qualification_cannot_deploy(self):
+        with (
+            patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
+            patch.object(m, "current_main"),
+            patch.object(m, "cloudflare", return_value={}),
+            patch.object(m, "preflight_config"),
+            patch.object(m, "deployed_tag", return_value="a" * 40),
+            patch.object(m, "probe"),
+            patch.object(m.subprocess, "run") as run,
+        ):
+            m.qualify_credentials()
+            run.assert_not_called()
+
+    def test_missing_qualification_credential_fails(self):
+        with patch.dict(m.os.environ, {}, clear=True), self.assertRaises(RuntimeError):
+            m.qualify_credentials()
+
+    def test_first_automatic_run_cannot_deploy(self):
+        with (
+            patch.object(m, "credential_receipt", return_value=False),
+            patch.object(m.subprocess, "run") as run,
+            patch.object(m, "current_main") as current,
+        ):
+            m.main()
+            run.assert_not_called()
+            current.assert_not_called()
 
 
 if __name__ == "__main__":

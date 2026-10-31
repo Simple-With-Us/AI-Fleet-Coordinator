@@ -7,6 +7,7 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 import tomllib
 import urllib.error
 import urllib.request
@@ -37,6 +38,7 @@ RELEASE_PATHS = [
     "scripts/agent-sync-mcp/package.json",
     "scripts/agent-sync-mcp/package-lock.json",
     ".github/workflows/alert-workers-deploy.yml",
+    "docs/releases/alert-credentials-qualified.json",
 ]
 
 
@@ -203,7 +205,82 @@ def probe(target):
         raise RuntimeError("Health validation failed") from exc
 
 
+def qualify_credentials():
+    # Named delivery is required, but values never enter logs or artifacts.
+    if not os.environ.get("CLOUDFLARE_API_TOKEN") or not os.environ.get("GH_TOKEN"):
+        raise RuntimeError("Existing release credential delivery missing")
+    current_main()
+    for name, target in TARGETS.items():
+        settings = cloudflare("/workers/scripts/" + name + "/settings")
+        preflight_config(target, settings)
+        tag = deployed_tag(name)
+        if not isinstance(tag, str) or not re.fullmatch(r"[0-9a-f]{40}", tag):
+            raise RuntimeError("Missing qualified live version baseline")
+        probe(target)
+    print("Existing credential delivery and scoped live reads qualified; no deployment")
+
+
+def credential_receipt():
+    path = pathlib.Path("docs/releases/alert-credentials-qualified.json")
+    if not path.exists():
+        return False
+    receipt = json.loads(path.read_text())
+    run_id = receipt.get("run_id")
+    source = receipt.get("source_sha", "")
+    if type(run_id) is not int or run_id <= 0 or not re.fullmatch(r"[0-9a-f]{40}", source):
+        raise RuntimeError("Invalid credential qualification receipt")
+    run = github("/actions/runs/" + str(run_id))
+    if (
+        receipt.get("nondeployment") is not True
+        or run.get("event") != "workflow_dispatch"
+        or run.get("conclusion") != "success"
+        or run.get("status") != "completed"
+        or run.get("head_sha") != source
+        or run.get("head_branch") != "main"
+        or run.get("path") != ".github/workflows/alert-workers-deploy.yml"
+    ):
+        raise RuntimeError("Unqualified credential delivery run")
+    jobs = github("/actions/runs/" + str(run_id) + "/jobs?per_page=100")
+    if jobs.get("total_count") != len(jobs.get("jobs", [])):
+        raise RuntimeError("Incomplete qualification job evidence")
+    steps = [step for job in jobs["jobs"] for step in job.get("steps", [])]
+    qualification = [
+        step
+        for step in steps
+        if step.get("name") == "Qualify existing credential delivery without deployment"
+    ]
+    release = [
+        step
+        for step in steps
+        if step.get("name") == "Verify reviews and release exact alert targets"
+    ]
+    if (
+        len(qualification) != 1
+        or qualification[0].get("conclusion") != "success"
+        or len(release) != 1
+        or release[0].get("conclusion") != "skipped"
+    ):
+        raise RuntimeError("Run did not prove nondeployment qualification")
+    # Receipt itself arrives in a separately reviewed follow-up; executable source must match.
+    if git(
+        "diff",
+        "--name-only",
+        source,
+        "HEAD",
+        "--",
+        "scripts/deploy-alert-workers.py",
+        ".github/workflows/alert-workers-deploy.yml",
+        "scripts/infisical-fetch.mjs",
+        "scripts/deploy-mapped-worker.py",
+    ):
+        raise RuntimeError("Credential qualification source changed")
+    return True
+
+
 def main():
+    if not credential_receipt():
+        print("Awaiting reviewed successful nondeployment credential qualification receipt")
+        return
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=30).strip()
     if current_main() != sha:
         print("Superseded")
@@ -338,4 +415,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--qualify-only"]:
+        qualify_credentials()
+    elif sys.argv[1:]:
+        raise SystemExit("Unknown release arguments")
+    else:
+        main()

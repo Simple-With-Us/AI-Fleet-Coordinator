@@ -5,6 +5,11 @@ on:
     branches: [main]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      qualify_only:
+        description: Verify existing credentials and live read access without deploying
+        type: boolean
+        default: true
   schedule:
     - cron: "17,47 * * * *"
 permissions:
@@ -49,7 +54,13 @@ jobs:
             exit 1
           fi
           node scripts/infisical-fetch.mjs
+      - name: Qualify existing credential delivery without deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
+        run: python3 scripts/deploy-alert-workers.py --qualify-only
       - name: Verify reviews and release exact alert targets
+        if: github.event_name != 'workflow_dispatch' || !inputs.qualify_only
         env:
           GH_TOKEN: ${{ github.token }}
           CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
