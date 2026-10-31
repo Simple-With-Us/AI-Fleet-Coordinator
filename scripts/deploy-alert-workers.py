@@ -3,6 +3,9 @@
 import importlib.util
 import json
 import os
+import pathlib
+import re
+import tomllib
 import subprocess
 import urllib.request
 
@@ -13,6 +16,43 @@ TARGETS = {
     'alert-ingress': {'root': 'workers/alert-ingress/', 'config': 'workers/alert-ingress/wrangler.toml', 'health': 'https://alert-ingress.jays-services.workers.dev/health', 'ok': True},
     'pr-conflict-watch': {'root': 'workers/pr-conflict-watch/zulip-cutover/', 'config': 'workers/pr-conflict-watch/zulip-cutover/wrangler.toml', 'health': 'https://pr-conflict-watch.jays-services.workers.dev/health', 'text': 'ok'},
 }
+
+RELEASE_PATHS = ["scripts/deploy-alert-workers.py", "scripts/deploy-mapped-worker.py", "scripts/worker-targets.json", "scripts/infisical-fetch.mjs", "scripts/agent-sync-mcp/package.json", "scripts/agent-sync-mcp/package-lock.json", ".github/workflows/alert-workers-deploy.yml"]
+
+def git(*args):
+    return subprocess.check_output(["git", *args], text=True).strip()
+
+def cutover_receipt():
+    path = pathlib.Path("docs/releases/pr-conflict-zulip-verified.json")
+    if not path.exists():
+        return False
+    receipt = json.loads(path.read_text())
+    if receipt.get("sender_id") != 1212033 or receipt.get("channel_id") != 642233:
+        raise RuntimeError("Wrong cutover sender or audience")
+    if not re.fullmatch(r"[0-9a-f]{40}", receipt.get("source_sha", "")) or not receipt.get("version_id"):
+        raise RuntimeError("Missing exact cutover release receipt")
+    if not isinstance(receipt.get("message_id"), int) or receipt["message_id"] <= 0 or not receipt.get("message_url", "").startswith("https://simplewithus.zulipchat.com/"):
+        raise RuntimeError("Missing verified first real Zulip delivery")
+    if receipt.get("real_conflict_event") is not True:
+        raise RuntimeError("Synthetic alerts cannot qualify the cutover")
+    return True
+
+def preflight_config(target, settings):
+    # Existing runtime settings are not silently changed by a code-only release.
+    config = tomllib.loads(pathlib.Path(target['config']).read_text())
+    for key in ('compatibility_date', 'compatibility_flags', 'logpush'):
+        if key in config and config[key] != settings.get(key):
+            raise RuntimeError('Runtime setting change requires manual reconciliation: '+key)
+    live = {b['name']: b for b in settings.get('bindings', [])}
+    for binding in config.get('kv_namespaces', []):
+        if live.get(binding['binding'], {}).get('namespace_id') != binding['id']:
+            raise RuntimeError('KV binding change is not an automatic code release')
+    for binding in config.get('durable_objects', {}).get('bindings', []):
+        found = live.get(binding['name'], {})
+        if found.get('class_name') != binding['class_name'] or binding.get('script_name'):
+            raise RuntimeError('Durable Object binding change requires manual reconciliation')
+    if config.get('routes') or config.get('route'):
+        raise RuntimeError('Route configuration is outside this code-only release')
 
 def github(path):
     req = urllib.request.Request('https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY'] + path,
@@ -30,7 +70,12 @@ def reviewed(sha):
         reviews = github('/pulls/' + number + '/reviews?per_page=100')
         if len(reviews) >= 100:
             raise RuntimeError('Review pagination needs explicit resolution')
-        if not any(r.get('user', {}).get('login') == 'kody-ai[bot]' and r.get('state') in ('APPROVED', 'COMMENTED') for r in reviews):
+        qualified = [r for r in reviews if r.get('user', {}).get('login') == 'kody-ai[bot]' and r.get('state') in ('APPROVED', 'COMMENTED')]
+        # Review must cover the actual composition, not any older review on the PR.
+        if not qualified:
+            continue
+        head = pr['head']['sha']
+        if not any(r.get('commit_id') == head or not git('diff','--name-only',r['commit_id'],head,'--',*[t['root'] for t in TARGETS.values()],*RELEASE_PATHS) for r in qualified):
             continue
         # GraphQL includes actual thread resolution, unlike review state.
         owner, repo = os.environ['GITHUB_REPOSITORY'].split('/')
@@ -63,19 +108,27 @@ def main():
     if not any(r['head_sha']==sha and r['status']=='completed' and r['conclusion']=='success' for r in runs):
         raise RuntimeError('Exact-main CI has not passed')
     for name, target in TARGETS.items():
+        # An uncut-over target must not block the independent ingress release.
+        if name == 'pr-conflict-watch' and not cutover_receipt():
+            print('Awaiting first verified real Zulip delivery; skipping '+name)
+            continue
         live = m.deployed_tag(name)
         if not live:
             raise RuntimeError('No exact release baseline for '+name)
         subprocess.run(['git','cat-file','-e',live+'^{commit}'],check=True)
-        changed = subprocess.check_output(['git','diff','--name-only',live,sha,'--',target['root']],text=True).splitlines()
+        changed = subprocess.check_output(['git','diff','--name-only',live,sha,'--',target['root'],*RELEASE_PATHS,'docs/releases/pr-conflict-zulip-verified.json'],text=True).splitlines()
         if not changed:
             probe(target); continue
-        commits = subprocess.check_output(['git','rev-list','--first-parent',live+'..'+sha,'--',target['root']],text=True).splitlines()
+        subprocess.run(['git','merge-base','--is-ancestor',live,sha],check=True)
+        commits = subprocess.check_output(['git','rev-list','--first-parent',live+'..'+sha,'--',target['root'],*RELEASE_PATHS,'docs/releases/pr-conflict-zulip-verified.json'],text=True).splitlines()
+        if not commits:
+            raise RuntimeError('Changed source without reviewable commit evidence')
         for commit in commits:
             reviewed(commit)
         # Initial cutover is manual and verified first. Automated code releases
         # cannot provision delivery credentials or reintroduce Slack.
         settings = m.api('/workers/scripts/'+name+'/settings')
+        preflight_config(target, settings)
         if name == 'pr-conflict-watch':
             names = {b['name'] for b in settings.get('bindings',[])}
             required = {'GITHUB_WEBHOOK_SECRET','GITHUB_TOKEN','PR_STATE','ZULIP_SITE','ZULIP_BOT_EMAIL','ZULIP_BOT_API_KEY'}
