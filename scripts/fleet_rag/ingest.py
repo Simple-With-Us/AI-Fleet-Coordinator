@@ -666,6 +666,12 @@ def run(
         raise FleetRagError(
             f"unknown source(s): {', '.join(unknown)}; known: {', '.join(GENERATORS)}"
         )
+    if prune and "linear" in names and set(names) != set(sources.NIGHTLY_SOURCES):
+        raise FleetRagError(
+            "Linear prune requires a separately verified complete deletion inventory; "
+            "this generator is incremental even with FLEET_RAG_LINEAR_FULL. "
+            "Use --source linear without --prune to refresh."
+        )
     if prune and limit:
         raise FleetRagError(
             "--prune cannot be combined with --limit: a truncated source would prune "
@@ -833,7 +839,15 @@ def _run_locked(
         for w in sources.take_warnings():
             report["warnings"].append(f"{name}: {w}")
             log(f"[{name}] WARNING {w}")
-        if prune and source_ok:
+        # Linear is a delta stream, not an authoritative deletion inventory. Even
+        # FULL refetch can skip incomplete/truncated issues. Never prune its
+        # unyielded rows from this pipeline; explicit migration reconciliation
+        # owns deletion separately after per-document coverage verification.
+        if prune and source_ok and name == "linear":
+            report["warnings"].append(
+                "linear: pruning skipped; generator is not a complete deletion inventory"
+            )
+        if prune and source_ok and name != "linear":
             try:
                 gone = prune_source(name, yielded, state, writer, stats, state_path)
                 if gone:
@@ -1015,7 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument(
         "--all",
         action="store_true",
-        help="nightly sources (board, effort-log, doc, skill, memory, apple-note; "
+        help="nightly sources (linear, doc, skill, memory, apple-note; "
         "excludes chat-log — pass --source chat-log for the rare policy scan)",
     )
     g.add_argument("--source", help="comma-separated: " + ",".join(GENERATORS))
