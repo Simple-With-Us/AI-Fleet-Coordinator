@@ -547,7 +547,8 @@ def _is_fallbackable(reason: str | None) -> bool:
 # structural half of that rule:  config already refuses `wake = "mcode"`, but a config check is only a
 # promise, while this is the choke point every wake passes through.  A fallback runtime that cannot
 # be reached by this dispatch can never become a primary, however the config was written or edited.
-PRIMARY_RUNTIMES = ("claude", "muse")
+# openrouter is both:  its HTTP call offers the model no tools, so it is a verified primary too.
+PRIMARY_RUNTIMES = ("claude", "muse", "openrouter")
 
 
 # Chat-catalog statuses that must NOT be asked for a location (mirror of
@@ -604,6 +605,8 @@ class Daemon:
         wake_path: str | None = None,
         muse_runner: A.MuseRunner | None = None,
         mcode_runner: A.McodeRunner | None = None,
+        openrouter_runner: A.OpenRouterRunner | None = None,
+        openrouter_key: A.OpenRouterKey | None = None,
         agents_runner: Callable[[Sequence[str]], str | None] | None = None,
         board_runner: Callable[..., Any] | None = None,
         board_bin: str | None = None,
@@ -645,6 +648,13 @@ class Daemon:
         )
         self.mcode_runner = mcode_runner or A.McodeRunner(
             on_start=self._track_child, on_exit=self._untrack_child
+        )
+        # The OpenRouter HTTP runtime has no child process, so there is nothing to track or kill:  its
+        # hard deadline is its own.  The key is read from Fleet-OPS `/wake` when a call needs it, and
+        # every value read joins the scrubbed and scanned set (hide_values) at that moment.
+        self.openrouter_runner = openrouter_runner or A.OpenRouterRunner()
+        self.openrouter_key = openrouter_key or A.OpenRouterKey(
+            self.env, self.home, hide=self.hide_values
         )
         self.wake_path = wake_path or A.default_wake_path(self.home)
         self.agents_runner = agents_runner or self._run_agents
@@ -2443,6 +2453,41 @@ class Daemon:
             trigger_ids=pending.trigger_ids,
         )
 
+    def _notify_openrouter_pin_stale(self, runner: SeatRunner, pending: W.Pending) -> None:
+        """The `pin_stale` owner notice for an OPENROUTER seat.  There is no binary to name:  the pin
+        vouches for the request (endpoint, model, schema, contract, policy), so the note says which of
+        those changed and the two commands that re-verify it.  It is never re-pinned automatically."""
+        state = A.openrouter_pin_state(runner.paths, runner.cfg.model, A.OPENROUTER_ROLE_PRIMARY)
+        self.notifier.notify(
+            runner.seat,
+            "simple-chat %s" % runner.seat,
+            "the OpenRouter wake request changed, so %s wakes are inbox-only until it is "
+            "re-pinned" % runner.seat,
+            kind="wake-pin_stale",
+            key="wake:%s:%s" % (runner.seat, "pin_stale"),
+            note=A.openrouter_pin_red_entry(state, runner.seat, A.OPENROUTER_ROLE_PRIMARY),
+            trigger_ids=pending.trigger_ids,
+        )
+
+    def _notify_openrouter_failure(self, runner: SeatRunner, result: A.RunResult) -> None:
+        """Tell the owner when OpenRouter keeps refusing every wake for a reason only a person can fix:
+        credits exhausted (402) or a rejected key (401).  One banner an hour, not one per wake, and none
+        for a one-off timeout or 5xx, which the `failed` row already records.  A 402 is a failure
+        reason, never a hold:  the next wake tries again, and the credits being topped up needs no
+        restart."""
+        status = result.http_status
+        if status not in (401, 402):
+            return
+        self.notifier.notify(
+            runner.seat,
+            "simple-chat %s" % runner.seat,
+            "OpenRouter wakes are failing: %s" % A.openrouter_http_reason(status),
+            kind="wake-openrouter-%d" % status,
+            key="wake-openrouter:%d" % status,
+            once_per=3600.0,
+            note="the messages are in the seat inbox, and the next wake tries again",
+        )
+
     def _drop(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
         self._clear_host_defer(runner, pending)
         runner.ledger.append(pending.row("dropped", now, reason=reason))
@@ -2461,6 +2506,9 @@ class Daemon:
             # (Kody, PR #880).
             if runner.cfg.wake == "muse":
                 self._notify_muse_pin_stale(runner, pending)
+                return
+            if runner.cfg.wake == "openrouter":
+                self._notify_openrouter_pin_stale(runner, pending)
                 return
             claude = A.resolve_claude(runner.cfg.claude, self.wake_path)
             pin = A.pin_state(runner.paths, claude)
@@ -2685,12 +2733,29 @@ class Daemon:
             return None, str(state["why"] or "not_pinned")
         return str(state["muse"]), None
 
+    def _pinned_openrouter(self, runner: SeatRunner, role: str) -> tuple[str | None, str | None]:
+        """(the model to call, why not), for an `openrouter` primary or fallback.  The runtime has no
+        binary, so the pin is on its own files (one pair per role) and vouches for the request shape:
+        the endpoint, the model, the strict schema, the contract and the policy version.  Same
+        never-self-heal rule as the others:  a request nobody verified is not sent, and a pin that
+        went stale holds the seat rather than re-pinning itself."""
+        model = (
+            runner.cfg.fallback_model if role == A.OPENROUTER_ROLE_FALLBACK else runner.cfg.model
+        )
+        state = A.openrouter_pin_state(runner.paths, model, role)
+        if not state["pinned"]:
+            return None, str(state["why"] or "not_pinned")
+        return model, None
+
     def _pinned_fallback(self, runner: SeatRunner) -> tuple[str | None, str | None]:
         """(the realpath to run, why not), for the seat's fallback runtime.  Same never-self-heal
         rule as the primaries:  a fallback that was never verified by a person is not trusted, and a
-        fallback whose binary moved holds rather than re-pinning itself."""
+        fallback whose binary moved holds rather than re-pinning itself.  For `openrouter` the
+        "realpath" is the model slug."""
         if not runner.cfg.fallback:
             return None, "no_fallback"
+        if runner.cfg.fallback == "openrouter":
+            return self._pinned_openrouter(runner, A.OPENROUTER_ROLE_FALLBACK)
         mcode = A.resolve_mcode(runner.cfg.mcode, self.wake_path)
         if not mcode:
             return None, "no_mcode"
@@ -2707,10 +2772,14 @@ class Daemon:
         primary: str,
         primary_error: str,
         primary_limited: bool = False,
+        primary_refused: bool = False,
     ) -> A.RunResult | None:
         """Run the seat's fallback runtime after the primary failed, or None when there is none to
         run.  The ledger and the log name which runtime answered, so a wake answered by the fallback
         is never mistaken for one answered by the primary.
+
+        `fallback = "openrouter"` follows its own rule (run_openrouter_fallback below).  The rest of
+        this method is the mcode rule.
 
         Only a fault on the allowlist falls back.  A provider quota never does:  a capped provider
         stays capped whichever binary asks, so a fallback there would spend a second run to learn
@@ -2728,6 +2797,10 @@ class Daemon:
         binary.  Until then the fallback is held and the hold is logged, never silently skipped."""
         if not runner.cfg.fallback:
             return None
+        if runner.cfg.fallback == "openrouter":
+            return self.run_openrouter_fallback(
+                runner, prompt, schema, primary, primary_error, primary_refused
+            )
         if primary_limited or not _is_fallbackable(primary_error):
             return None
         if not runner.cfg.fallback_uncontained_ok:
@@ -2767,6 +2840,93 @@ class Daemon:
                 schema=schema,
             )
         return None
+
+    def run_openrouter_fallback(
+        self,
+        runner: SeatRunner,
+        prompt: str,
+        schema: str,
+        primary: str,
+        primary_error: str,
+        primary_refused: bool = False,
+    ) -> A.RunResult | None:
+        """The OpenRouter fallback:  one HTTPS call to the seat's `fallback_model`, or None when it
+        must not run.  `schema` is the strict schema the call sends.
+
+        It answers ANY primary failure that is not a safety refusal:  a crashed or timed-out runtime, a
+        nonzero exit, an answer the validator refuses, an authentication or quota error, a primary that
+        cannot run at all (a stale or missing pin, no binary).  That is wider than the mcode rule on
+        purpose, and the reason is the owner's own ("so that it won't possibly be at quota"):  the mcode
+        allowlist keeps a capped provider from being asked twice, because mcode runs on the same kind of
+        subscription, but OpenRouter is another account billed by credits, so a capped primary is exactly
+        what this fallback is for.  `primary_refused` is the one hold that stays:  the daemon killed or
+        refused that child on purpose (it listed a tool, ran a hook, or ran the wrong number of models),
+        and answering it elsewhere would be trying to get around a guard that just fired.
+
+        There is no `fallback_uncontained_ok` here:  the call offers the model no tool, so nothing the
+        model says can act, and the reply still goes through the validator and the Operator's voice.
+
+        The fallback is only trusted once a person pinned it (its own pin, one per role), and a hold is
+        logged with its reason, never silently skipped."""
+        if primary_refused:
+            self.log.write(
+                "wake-fallback-held",
+                seat=runner.seat,
+                fallback="openrouter",
+                reason="primary_refused",
+                primary=primary,
+                primary_error=primary_error,
+            )
+            return None
+        model, why = self._pinned_openrouter(runner, A.OPENROUTER_ROLE_FALLBACK)
+        if model is None:
+            self.log.write(
+                "wake-fallback-held",
+                seat=runner.seat,
+                fallback="openrouter",
+                reason=why or "not_pinned",
+                primary=primary,
+                primary_error=primary_error,
+            )
+            return None
+        self.log.write(
+            "wake-fallback",
+            seat=runner.seat,
+            primary=primary,
+            primary_error=primary_error,
+            fallback="openrouter",
+            model=model,
+        )
+        return self.run_openrouter(model, prompt, schema)
+
+    def run_openrouter(self, model: str, prompt: str, schema: str) -> A.RunResult:
+        """One OpenRouter call for `model`, as a primary or as the fallback.  The key is read at the
+        moment of the call;  a key that cannot be read is a failed run with a reason that names the
+        secret and never its value, so the caller treats it like any other runtime failure."""
+        try:
+            key = self.openrouter_key.get()
+        except A.OpenRouterUnavailable as exc:
+            failed = A.RunResult()
+            failed.error = exc.reason
+            return failed
+        return self.openrouter_runner.run(model, prompt, schema, key)
+
+    def _openrouter_fields(
+        self, result: A.RunResult | None, adapter: str, model: str, from_fallback: bool
+    ) -> dict[str, Any]:
+        """The ledger and log fields only an OpenRouter call has:  the model slug asked for, which
+        role asked, and from the response its HTTP status, the token counts and the model id that
+        served it.  Counts and ids only, never the key and never any text of a request or a response.
+        Empty for every other adapter, so no other runtime's row changes."""
+        if adapter != "openrouter":
+            return {}
+        role = A.OPENROUTER_ROLE_FALLBACK if from_fallback else A.OPENROUTER_ROLE_PRIMARY
+        fields: dict[str, Any] = {"model": model, "runtime_role": role}
+        if result is not None:
+            fields["http_status"] = result.http_status
+            fields["usage"] = result.usage
+            fields["served_model"] = result.models[0] if result.models else None
+        return fields
 
     def _reserved_worker_wakes(self, *, exclude_seat: str | None = None) -> int:
         """Seats with a muse or claude wake running or already accepted into the queue."""
@@ -2843,6 +3003,42 @@ class Daemon:
             return None
         return A.quota_block(runner.cfg.provider or "", self.clock.time())
 
+    def _primary_state(self, runner: SeatRunner) -> tuple[str | None, str | None]:
+        """(what the primary runs, why it cannot run now), for a `claude`, `muse` or `openrouter` seat.
+
+        What it runs is the pinned realpath of the binary, or the model slug for `openrouter`.  Why not
+        is the pin reason (`not_pinned`, `pin_stale`, `no_claude`, `no_muse`, ...) or, when the pin is
+        fine, the CodeCaps quota reading that says the provider has nothing left.  The order is the one
+        `_wake_block` always had:  the pin first, then the quota.  Both are decided before any child or
+        call exists, so a held seat costs nothing."""
+        wake = runner.cfg.wake
+        if wake == "claude":
+            binary, why = self._pinned_claude(runner)
+        elif wake == "muse":
+            binary, why = self._pinned_muse(runner)
+        elif wake == "openrouter":
+            binary, why = self._pinned_openrouter(runner, A.OPENROUTER_ROLE_PRIMARY)
+        else:
+            return None, "wake_type_not_runnable"
+        if why:
+            return None, why
+        spent = self._quota_reason(runner)
+        if spent:
+            return None, spent
+        return binary, None
+
+    def _fallback_stands_in(self, runner: SeatRunner) -> bool:
+        """Can the seat's OpenRouter fallback answer in place of a primary that cannot run now?
+
+        True only for `fallback = "openrouter"` whose own pin is good and whose key was not just found
+        unreadable.  A primary that is held (a stale or missing pin, no binary, a provider with no quota
+        left) then no longer holds the wake:  it is skipped, and the fallback answers.  Nothing else
+        stands in:  the mcode fallback still answers only a run that started and failed, as before."""
+        if runner.cfg.fallback != "openrouter":
+            return False
+        model, _ = self._pinned_openrouter(runner, A.OPENROUTER_ROLE_FALLBACK)
+        return model is not None and not self.openrouter_key.known_unavailable()
+
     def _wake_block(self, runner: SeatRunner, pending: W.Pending, now: float) -> str | None:
         """Why this wake must not run now, or None.  Checked when the quiet window ends and again
         just before the run (a restored or long-queued wake gets the same checks)."""
@@ -2852,19 +3048,21 @@ class Daemon:
             return "seat_refused"  # a credential or role problem:  nothing is posted with that key
         if L.paused(self.root, runner.seat, wakes=True):
             return "paused"
-        if runner.cfg.wake in ("claude", "muse"):
-            # One preflight for both local primaries, before any child exists.  It was briefly wired
+        if runner.cfg.wake in ("claude", "muse", "openrouter"):
+            # One preflight for every primary, before any child (or HTTP call) exists.  It was briefly wired
             # into the muse branch alone, which left a capped CLAUDE seat spawning a child every
             # time:  the helper accepted both wake types, but only one of them called it.
-            if runner.cfg.wake == "claude":
-                _, why = self._pinned_claude(runner)
-            else:
-                _, why = self._pinned_muse(runner)
-            if why:
-                return why
-            spent = self._quota_reason(runner)
-            if spent:
-                return spent
+            _, hold = self._primary_state(runner)
+            if hold and not self._fallback_stands_in(runner):
+                return hold
+            if (
+                not hold
+                and runner.cfg.wake == "openrouter"
+                and self.openrouter_key.known_unavailable()
+            ):
+                # The key could not be read a moment ago (state only, no network):  every call would
+                # fail the same way, so the wake is held rather than run to fail.
+                return "openrouter_unavailable"
             # The reply goes out as the Operator, so a wake that cannot be answered is not run.  This is
             # the cheap half of the preflight (no network, no thread, safe on the router thread): it
             # only knows a build that failed recently.  run_wake does the blocking half.
@@ -3134,7 +3332,14 @@ class Daemon:
         budget is measured on a FOUR-message prompt.  The fallback therefore gets the trigger
         messages and the newest of the rest, up to MCODE_FALLBACK_MAX_MESSAGES, and no held-back
         detail, so the budget it runs under is the budget it was measured against.
+
+        The OpenRouter fallback gets the whole prompt, as every runtime but mcode does, with one
+        difference:  no chat catalog.  Existing-chat selection and inspection are decided only for a
+        muse run (a `chat_target` from any other adapter is held), so the header tells this model
+        that selection is disabled and both keys must be null.
         """
+        if runner.cfg.fallback == "openrouter":
+            return self._wake_prompt(runner, pending, history, held, None, letter, board_on)
         if runner.cfg.fallback != "mcode":
             return self._wake_prompt(runner, pending, history, held, chat_context, letter, board_on)
         return self._wake_prompt(
@@ -3168,21 +3373,22 @@ class Daemon:
         # claude and muse share everything below the run:  same prompt, same schema, same
         # validator, same posting path.  They differ only in which pinned binary is checked and
         # which runner spawns it, so the two are dispatched here rather than forked.
-        binary = None
-        why = None
-        if runner.cfg.wake == "muse":
-            binary, why = self._pinned_muse(runner)
-        elif runner.cfg.wake == "claude":
-            binary, why = self._pinned_claude(runner)
-        else:
+        if runner.cfg.wake not in PRIMARY_RUNTIMES:
             # Unreachable through the config, which refuses anything outside KNOWN_WAKES.  Kept so
             # that a hand-edited or future config cannot quietly reach a runtime that was never
             # verified as a primary.
             self._drop(runner, pending, "wake_type_not_runnable", now)
             return
+        binary, why = self._primary_state(runner)
+        # A primary that cannot run now (a stale or missing pin, no binary, a provider with no quota
+        # left) is skipped when the seat's OpenRouter fallback stands in for it;  `_wake_block` above
+        # let this wake through for exactly that reason.  With no fallback the wake is dropped, as ever.
+        primary_skipped: str | None = None
         if binary is None:
-            self._drop(runner, pending, why or "not_pinned", now)
-            return
+            if not self._fallback_stands_in(runner):
+                self._drop(runner, pending, why or "not_pinned", now)
+                return
+            primary_skipped = why or "not_pinned"
         # The other half of the preflight, before any budget is spent or any child exists: this runs
         # on the seat's own wake worker, which may wait for the Operator client to be built (the router
         # never does).  A wake whose reply could not be posted is not run at all.
@@ -3192,6 +3398,22 @@ class Daemon:
             self._operator_refused("wake-preflight", exc, seat=runner.seat, wake_id=pending.wake_id)
             self._not_run(runner, pending, "operator_unavailable", now)
             return
+        # The first call this wake makes is an OpenRouter call when the primary is one or is skipped, so
+        # the key is read now, on the seat's own worker thread (the vault read may wait;  the router
+        # thread never does), and after the Operator check, so a wake that cannot be posted costs no
+        # vault read.  A wake whose call cannot be made is not run, and nothing is reserved.
+        if runner.cfg.wake == "openrouter" or primary_skipped is not None:
+            try:
+                self.openrouter_key.get()
+            except A.OpenRouterUnavailable as exc:
+                self.log.write(
+                    "openrouter-key-unavailable",
+                    seat=runner.seat,
+                    wake_id=pending.wake_id,
+                    reason=self.scrub(exc.reason),
+                )
+                self._not_run(runner, pending, "openrouter_unavailable", now)
+                return
         try:
             history = self.history(runner, pending)
         except Z.AgentSyncError as exc:
@@ -3224,17 +3446,20 @@ class Daemon:
         )
         held_count = held["count"] if held else 0
         is_muse = runner.cfg.wake == "muse"
-        adapter = "muse" if is_muse else "claude"
+        is_openrouter = runner.cfg.wake == "openrouter"
+        adapter = "muse" if is_muse else "openrouter" if is_openrouter else "claude"
         # A subscription-backed run reserves nothing:  there is no per-run dollar cap to reserve
         # against and the run is covered by a plan the user already pays for (config.wake_max_usd).
+        # An OpenRouter call reserves nothing either (config.wake_max_usd says why).
         # The row still names the adapter, so the ledger says which runtime answered.
         runner.ledger.append(
             pending.row(
                 "started",
                 now,
-                reserved_usd=0.0 if is_muse else C.WAKE_MAX_BUDGET_USD,
+                reserved_usd=0.0 if is_muse or is_openrouter else C.WAKE_MAX_BUDGET_USD,
                 adapter=adapter,
                 held_back=held_count,
+                **self._openrouter_fields(None, adapter, runner.cfg.model, False),
             )
         )
         schema = W.schema_text(self.fleet_tags)
@@ -3250,13 +3475,32 @@ class Daemon:
         typing = self._typing_signal(runner, pending)
         if typing is not None:
             typing.start()
+        argv: list[str] | None = None
+        muse_env: dict[str, str] | None = None
+        from_fallback = False  # the answer (or the failure) is the fallback's, not the primary's
         try:
-            if is_muse:
+            if primary_skipped is not None:
+                # The primary cannot run now and the OpenRouter fallback stands in for it (see
+                # _fallback_stands_in):  nothing is spawned or called for the primary, the log says so,
+                # and the fallback below is the only run.  The "failure" is a record, not a fault.
+                result = A.RunResult()
+                result.error = "primary unavailable: %s" % A.clean_banner(primary_skipped, 120)
+                self.log.write(
+                    "wake-primary-skipped",
+                    seat=runner.seat,
+                    wake_id=pending.wake_id,
+                    primary=adapter,
+                    reason=result.error,
+                    fallback=runner.cfg.fallback,
+                )
+            elif is_muse:
                 argv = A.muse_argv(binary, runner.cfg.model)
                 muse_env = A.muse_env(self.env, self.home, self.wake_path, seat=runner.seat)
                 result = self.muse_runner.run(
                     argv, muse_env, runner.paths.wake_dir, prompt, schema=muse_schema
                 )
+            elif is_openrouter:
+                result = self.run_openrouter(runner.cfg.model, prompt, muse_schema)
             else:
                 argv = A.claude_argv(binary, runner.cfg.model, self.fleet_tags)
                 result = self.claude_runner.run(
@@ -3267,15 +3511,29 @@ class Daemon:
                 )
             # The primary failed for any reason a fallback could answer differently (a
             # crashed runtime, an unparseable result, a missing binary).  A quota refusal
-            # never falls back:  a capped provider stays capped whichever binary asks.
-            if result.refused or result.error:
+            # never falls back to mcode:  a capped provider stays capped whichever binary asks.
+            primary_failure = result.refused or result.error or ""
+            if (
+                not primary_failure
+                and runner.cfg.fallback == "openrouter"
+                and result.result is not None
+            ):
+                # An answer the validator would refuse (not JSON, a wrong key, a value out of its
+                # enum) is no answer, and the OpenRouter fallback gets the wake instead.  Only that
+                # fallback:  the mcode rule never covered this, and it keeps its own.
+                _, invalid = W.validate(result.parsed)
+                if invalid:
+                    primary_failure = "invalid result: %s" % invalid
+            if primary_failure:
+                primary_error = primary_failure
                 fallback = self.run_fallback(
                     runner,
                     fallback_prompt,
-                    schema,
+                    muse_schema if runner.cfg.fallback == "openrouter" else schema,
                     adapter,
-                    result.refused or result.error or "",
+                    primary_error,
                     result.limited,
+                    bool(result.refused),
                 )
                 if fallback is not None:
                     self.log.write(
@@ -3288,10 +3546,22 @@ class Daemon:
                         secs=fallback.secs,
                         models=fallback.models,
                         error=fallback.error,
+                        http_status=fallback.http_status,
                     )
                     if fallback.ok or fallback.refused or fallback.error:
+                        if runner.cfg.fallback == "openrouter" and (
+                            fallback.error or fallback.refused
+                        ):
+                            # Both runtimes failed:  keep why the first one did, because losing it
+                            # would leave "HTTP 402" with no sign of the failure that led to it.
+                            fallback.error = A.clean_banner(
+                                "%s (after %s failed: %s)"
+                                % (fallback.error or fallback.refused, adapter, primary_error),
+                                220,
+                            )
                         result = fallback
                         adapter = runner.cfg.fallback
+                        from_fallback = True
             raw_result = result.parsed if isinstance(result.parsed, dict) else {}
             requested_inspect = raw_result.get("chat_inspect")
             if result.ok and requested_inspect is not None:
@@ -3346,6 +3616,14 @@ class Daemon:
             # they run, so the indicator stays up for them.
             if typing is not None:
                 typing.stop()
+        # What only an OpenRouter call has (the model asked for, its role, the status, the token counts,
+        # the model that served it);  empty for every other runtime, whose rows do not change.
+        or_fields = self._openrouter_fields(
+            result,
+            adapter,
+            runner.cfg.fallback_model if from_fallback else runner.cfg.model,
+            from_fallback,
+        )
         self.log.write(
             "wake-run",
             seat=runner.seat,
@@ -3361,6 +3639,7 @@ class Daemon:
             stdout_len=result.stdout_len,
             stderr_len=result.stderr_len,
             stderr_sha256=result.stderr_sha,
+            **or_fields,
         )
         done = self.clock.time()
         if result.refused or result.error:
@@ -3374,8 +3653,11 @@ class Daemon:
                     held_back=held_count,
                     limited=result.limited or None,
                     adapter=adapter,
+                    **or_fields,
                 )
             )
+            if adapter == "openrouter":
+                self._notify_openrouter_failure(runner, result)
             if result.limited:
                 # A quota refusal is not a fault and must not read like one.  The banner names the
                 # provider's own words and its reset, and says the message is in the seat inbox, so
@@ -3427,6 +3709,7 @@ class Daemon:
                     secs=result.secs,
                     held_back=held_count,
                     adapter=adapter,
+                    **or_fields,
                 )
             )
             if pending.owner:
@@ -3457,6 +3740,7 @@ class Daemon:
                     cost_usd=result.cost_usd,
                     adapter=adapter,
                     chat=chat_outcome,
+                    **or_fields,
                 )
             )
             return
@@ -3482,6 +3766,7 @@ class Daemon:
                 invalid=why,
                 held_back=held_count,
                 adapter=adapter,
+                **or_fields,
                 **outcome,
             )
         )
@@ -5859,6 +6144,7 @@ class Daemon:
                 "claude": "headless wake",
                 "http": "routine wake",
                 "muse": "headless wake",
+                "openrouter": "headless wake",
             }.get(cfg.wake, "inbox only"), None
         assigned = self.partition.get(seat)
         if assigned in C.INSTANCES and assigned != self.config.instance:
@@ -7215,6 +7501,31 @@ class Daemon:
                 # muse entry:  no "run " prefix when the remediation begins with its own verb, and
                 # the unreadable remediation carries `--runtime fallback` in BOTH halves.
                 red.append(A.mcode_pin_red_entry(mcode_pin, seat))
+            # The OpenRouter runtime has no binary, so its pin is on the model and the request shape,
+            # one per role.  Same reporting as the others:  red only for a pin that went stale (a
+            # fresh install is "NOT pinned" in the status line, waiting on its manual test).
+            or_pin = (
+                A.openrouter_pin_state(runner.paths, runner.cfg.model, A.OPENROUTER_ROLE_PRIMARY)
+                if runner.cfg.wake == "openrouter"
+                else None
+            )
+            or_fallback_pin = (
+                A.openrouter_pin_state(
+                    runner.paths, runner.cfg.fallback_model, A.OPENROUTER_ROLE_FALLBACK
+                )
+                if runner.cfg.fallback == "openrouter"
+                else None
+            )
+            for or_state, or_role in (
+                (or_pin, A.OPENROUTER_ROLE_PRIMARY),
+                (or_fallback_pin, A.OPENROUTER_ROLE_FALLBACK),
+            ):
+                if or_state and or_state["why"] in (
+                    "pin_stale",
+                    "pin_unverified",
+                    "pin_unreadable",
+                ):
+                    red.append(A.openrouter_pin_red_entry(or_state, seat, or_role))
             for problem in runner.cfg.config_problems:
                 red.append(
                     "config problem, so wakes are inbox-only (mentions still queue): %s"
@@ -7227,7 +7538,9 @@ class Daemon:
                 quota_line = A.quota_red_from_state(
                     runner.cfg.provider or "", quota
                 )  # one reading, both uses
-                if quota_line:
+                # ... and not when the seat's OpenRouter fallback answers in its place:  "wakes are not
+                # running" would be false, and the status line below says the fallback is answering.
+                if quota_line and not self._fallback_stands_in(runner):
                     red.append(quota_line)
             seats[seat] = {
                 "bot": runner.cfg.bot,
@@ -7238,10 +7551,30 @@ class Daemon:
                 "wake": runner.cfg.wake,
                 "routine": routine,
                 "muse_bridge": MB.enabled(self.config, seat),
-                "pinned": (pin or muse_pin or {}).get("pinned"),
-                "pin": pin or muse_pin,
+                "pinned": (pin or muse_pin or or_pin or {}).get("pinned"),
+                "pin": pin or muse_pin or or_pin,
                 "claude": claude,
                 "muse": muse,
+                "model": runner.cfg.model if runner.cfg.wake == "openrouter" else None,
+                # The OpenRouter fallback, when a seat has one:  its model, its own pin, and whether it
+                # would answer right now in place of a primary that cannot run.
+                "fallback": (
+                    {
+                        "runtime": "openrouter",
+                        "model": runner.cfg.fallback_model,
+                        "pinned": or_fallback_pin["pinned"] if or_fallback_pin else None,
+                        "pin": or_fallback_pin,
+                        "ready": self._fallback_stands_in(runner),
+                        # Set while the primary cannot run and the fallback answers in its place.
+                        "stands_in": bool(
+                            self._fallback_stands_in(runner) and self._primary_state(runner)[1]
+                        ),
+                        "primary_hold": A.clean_banner(self._primary_state(runner)[1] or "", 120)
+                        or None,
+                    }
+                    if runner.cfg.fallback == "openrouter"
+                    else None
+                ),
                 "provider": runner.cfg.provider,
                 "quota": quota,
                 "wakes_24h": len(day),

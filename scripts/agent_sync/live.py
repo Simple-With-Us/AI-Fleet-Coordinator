@@ -265,6 +265,20 @@ class SeatPaths:
         # once a person has verified that build's wake contract, exactly as for the primaries.
         self.wake_pin_mcode = os.path.join(self.seat_dir, "wake-pin-mcode.json")
         self.wake_pin_candidate_mcode = os.path.join(self.seat_dir, "wake-pin-candidate-mcode.json")
+        # The OpenRouter HTTP runtime has no binary to pin, so a pin vouches for the request shape
+        # (endpoint, model, schema, contract, body template, policy version).  One pin per role:  the
+        # primary and the fallback of a seat may name different models, and a pin made for one can
+        # never stand in for the other.
+        self.wake_pin_openrouter = os.path.join(self.seat_dir, "wake-pin-openrouter.json")
+        self.wake_pin_candidate_openrouter = os.path.join(
+            self.seat_dir, "wake-pin-candidate-openrouter.json"
+        )
+        self.wake_pin_openrouter_fallback = os.path.join(
+            self.seat_dir, "wake-pin-openrouter-fallback.json"
+        )
+        self.wake_pin_candidate_openrouter_fallback = os.path.join(
+            self.seat_dir, "wake-pin-candidate-openrouter-fallback.json"
+        )
 
     def lease(self, lease_id: str) -> str:
         return os.path.join(self.leases, lease_id + ".json")

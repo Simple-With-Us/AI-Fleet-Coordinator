@@ -273,6 +273,7 @@ class SeatPolicy:
         rate_per_hour: int = DEFAULT_RATE_PER_HOUR,
         verifier=None,
         write_rate_per_hour: int = DEFAULT_WRITE_RATE_PER_HOUR,
+        assertion_verifier=None,
     ):
         if not seats_json:
             raise PolicyError("GIT_RELAY_SEATS_JSON is empty")
@@ -299,6 +300,15 @@ class SeatPolicy:
             identity = str(cfg.get("identity") or seat)
             if auth == "shared" and not identity:
                 raise PolicyError(f"seat {seat!r}: shared auth needs an identity")
+            # oauth_assert lets the Worker's hosted-OAuth path in for this seat:
+            # a short-lived HMAC assertion the Worker mints only after its own
+            # grant checks (git_relay/assertion.py).  Default off:  a seat
+            # without the flag refuses assertions exactly as before.
+            oauth_assert = cfg.get("oauth_assert", False)
+            if not isinstance(oauth_assert, bool):
+                raise PolicyError(f"seat {seat!r}: oauth_assert must be true or absent")
+            if oauth_assert and auth != "shared":
+                raise PolicyError(f"seat {seat!r}: oauth_assert needs shared auth")
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
             unknown = [a for a in actions if a not in self.ALL_ACTIONS]
@@ -347,6 +357,7 @@ class SeatPolicy:
             self._seats[seat] = {
                 "auth": auth,
                 "identity": identity,
+                "oauth_assert": oauth_assert,
                 "token_hash": hashlib.sha256(token.encode()).hexdigest() if token else None,
                 "actions": set(actions),
                 "repos": [str(r) for r in repos],
@@ -369,19 +380,24 @@ class SeatPolicy:
         if write_rate_per_hour < 1:
             raise PolicyError("write_rate_per_hour must be at least 1")
         self._verifier = verifier
+        self._assertion_verifier = assertion_verifier
         self._rate_per_hour = rate_per_hour
         self._write_rate_per_hour = write_rate_per_hour
         self._calls: dict[str, list[float]] = {}
         self._writes: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
-    def authenticate(self, token: str) -> str | None:
+    def authenticate(self, token: str, proof: dict | None = None) -> str | None:
         """Return the seat the presented credential resolves to, or None.
 
         Static tokens compare constant-time over the seats that have one.
         With no static match and a shared verifier configured, the bearer is
         resolved through ST-MCP;  it must land on a seat in "shared" mode
         whose configured identity the verifier confirmed.
+
+        `proof` carries {"action", "body_sha256"} of the exact request the
+        token rides on;  only the assertion family binds to it.  Bearers and
+        static tokens are bearer-equivalent credentials and ignore it.
         """
         if not token:
             return None
@@ -392,6 +408,43 @@ class SeatPolicy:
                 match = seat
         if match is not None:
             return match
+        # Worker-minted OAuth assertions:  the Worker verifies the HMAC, the
+        # action/body binding, the live grant state and the one-use jti per
+        # call (git_relay/assertion.py);  the relay holds no mint-capable key.
+        # An assertion-shaped token is refused outright when the callback, the
+        # request binding or the seat flag fails, or when no configured
+        # oauth_assert seat claims the verified identity - it never falls
+        # through to another token family.
+        named_assertion = (
+            self._assertion_verifier.parse_identity(token)
+            if self._assertion_verifier is not None
+            else None
+        )
+        if named_assertion is not None:
+            # Refuse locally when no configured oauth_assert seat claims the
+            # identity the token names, BEFORE the blocking remote verify:
+            # every forged shape then costs no Worker callback (mirrors the
+            # bearer pre-check below).  A valid assertion always names its
+            # flagged seat, so this can never false-refuse one.
+            if not any(
+                cfg["auth"] == "shared"
+                and cfg["oauth_assert"]
+                and cfg["identity"] == named_assertion
+                for cfg in self._seats.values()
+            ):
+                return None
+            resolved = self._assertion_verifier.resolve(token, proof)
+            if resolved is None:
+                return None
+            identity, claims = resolved
+            # Scope authorization is inside the signature:  a grant approved
+            # without zulip:write can mint assertions, but never for a write.
+            if self.is_write(proof["action"]) and "zulip:write" not in claims.get("scopes", []):
+                return None
+            for seat, cfg in self._seats.items():
+                if cfg["auth"] == "shared" and cfg["oauth_assert"] and cfg["identity"] == identity:
+                    return seat
+            return None
         if self._verifier is None:
             return None
         # Refuse locally when no configured shared seat claims the identity the

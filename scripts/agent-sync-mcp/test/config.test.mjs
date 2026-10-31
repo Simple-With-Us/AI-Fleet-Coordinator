@@ -281,3 +281,14 @@ test("the standard ChatGPT callback may be listed by JET, JET-CHAT and CODEX onl
   assert.equal(clientBoundToSeat(tagged("CODEX"), "JET-CHAT", CHATGPT_REDIRECT, all), false);
   assert.equal(clientBoundToSeat({ clientId: "synthetic-manual-client", clientName: "ChatGPT" }, "JET-CHAT", CHATGPT_REDIRECT, all), false);
 });
+
+// PUBLIC_HOST is compiled; omit its redundant var to leave a Free-plan slot.
+test("compiled hostname is identical with redundant PUBLIC_HOST var absent", () => {
+  const withVar = loadConfig({ ...testEnv(), PUBLIC_HOST });
+  const env = { ...testEnv() }; delete env.PUBLIC_HOST;
+  const withoutVar = loadConfig(env);
+  assert.equal(withoutVar.host, withVar.host);
+  assert.equal(withoutVar.issuer, withVar.issuer);
+  assert.equal(withoutVar.resource, withVar.resource);
+  assert.ok(!("PUBLIC_HOST" in wranglerConfig().vars));
+});

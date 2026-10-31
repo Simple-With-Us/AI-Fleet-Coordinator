@@ -72,3 +72,12 @@ ef42f132ad746c13dbe89c058d9e895ef64790a8:scripts/agent-sync-mcp/wrangler.jsonc:g
 # (generic-api-key read the name as the keyword).  It is not a credential;  the constant is renamed and the value is
 # built at run time from the next commit on, so this fingerprint silences the historical commit only.
 8c22abaa83c0a72ded6140f21ca12bd185f9e6ca:scripts/agent_sync/tests/test_claude_letter.py:generic-api-key:175
+
+# PR1190 synthetic cross-language assertion test key, never a deployed credential.
+# Exact historical commit/file/rule/line only; keep scanning all other material.
+9018a538594f7756c7dd4ecc6cb3a3d7aacf7db0:git-relay/git_relay/tests/test_assertion.py:generic-api-key:36
+9018a538594f7756c7dd4ecc6cb3a3d7aacf7db0:scripts/agent-sync-mcp/test/gr-assert.test.mjs:generic-api-key:25
+# PR #1190 squash commit on main (c3917b4b): same synthetic vector key at rest.
+# Built at runtime from the next commit on, so these silence the historical commit only.
+c3917b4bf6b2b045fa4089ab3ae8f725922d4396:git-relay/git_relay/tests/test_assertion.py:generic-api-key:36
+c3917b4bf6b2b045fa4089ab3ae8f725922d4396:scripts/agent-sync-mcp/test/gr-assert.test.mjs:generic-api-key:25

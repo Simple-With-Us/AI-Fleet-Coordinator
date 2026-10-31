@@ -1342,7 +1342,7 @@ export class HostedTools {
    * text. */
   async grCall(action, args, {typedPrincipal = null, workflow = false} = {}) {
     const client = this.requireGr();
-    const { status, body } = await (typedPrincipal ? client.callTyped(action, args, typedPrincipal) : workflow ? client.callWorkflow(action, args) : client.call(action, args));
+    const { status, body, localFailure } = await (typedPrincipal ? client.callTyped(action, args, typedPrincipal) : workflow ? client.callWorkflow(action, args) : client.call(action, args));
     if (status === 0) throw new ToolError("unavailable", "GR-MCP could not reach git-relay.  Try again shortly;  if it persists, the relay host is down.");
     // The relay uses 502 for a write whose outcome is UNKNOWN (GitHub may have
     // accepted;  replay is refused until resolved) - never misread it as an
@@ -1358,6 +1358,11 @@ export class HostedTools {
       );
     }
     if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
+    // Only the transport's own root marker proves this failed before send.
+    // Upstream status/body content can never supply that marker.
+    if (localFailure === true && status === 503 && body?.error === "not_configured") {
+      throw new ToolError("not_configured", "GR-MCP is not configured on this server right now (the relay front or the hosted-OAuth signer is unavailable).  Nothing was sent to git-relay;  the other tools still work.");
+    }
     // Every other 5xx is outcome_unknown (kody discussion_r4372747157):  a
     // relay crash or edge error can follow an ACCEPTED mutation, so calling
     // it a refusal (definite, no side effect) is wrong - retry only after a

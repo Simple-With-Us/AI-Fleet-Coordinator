@@ -30,6 +30,7 @@ from . import identity as I
 from . import launchd, systemd
 from . import listener_records as LR
 from . import live as L
+from . import service_identity as SI
 from . import wakes as W
 from . import zulip as Z
 
@@ -465,8 +466,30 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                     if routine.get("ready")
                     else " (routine NOT ready: %s)" % (routine.get("detail") or routine.get("why"))
                 )
+            elif s.get("wake") == "openrouter":
+                # No binary, so the pin is on the model and the request shape.
+                pin = s.get("pin") or {}
+                pin_text = (
+                    "pinned"
+                    if s.get("pinned")
+                    else "NOT pinned: %s" % (pin.get("why") or "not_pinned")
+                )
+                state = " (%s, %s)" % (s.get("model"), pin_text)
             else:
                 state = ""
+            fallback = s.get("fallback") or {}
+            if fallback:
+                fallback_pin = fallback.get("pin") or {}
+                state += "  fallback %s (%s, %s)%s" % (
+                    fallback.get("runtime"),
+                    fallback.get("model"),
+                    "pinned"
+                    if fallback.get("pinned")
+                    else "NOT pinned: %s" % (fallback_pin.get("why") or "not_pinned"),
+                    " ANSWERING IN PLACE OF THE WAKE (%s)" % fallback.get("primary_hold")
+                    if fallback.get("stands_in")
+                    else "",
+                )
             routes = ""
             if s.get("wake") == "claude":
                 routes = "  routes 24h %s%s" % (
@@ -775,8 +798,10 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
     cfg = _load(rt)
     seat = Z.normalise_seat(args.seat)
     seat_cfg = cfg.seats.get(seat)
-    if seat_cfg is None or seat_cfg.wake not in ("claude", "muse"):
-        raise Z.UsageError("seat %s has no claude or muse wake in %s" % (seat, _config_path(rt)))
+    if seat_cfg is None or seat_cfg.wake not in ("claude", "muse", "openrouter"):
+        raise Z.UsageError(
+            "seat %s has no claude, muse or openrouter wake in %s" % (seat, _config_path(rt))
+        )
     wake_path = rt.env.get("AGENT_SYNC_WAKE_PATH") or A.default_wake_path(home)
     # One command verifies any runtime:  the seat's wake, or the fallback on its own (which is how a
     # fallback gets verified BEFORE it is ever trusted, exactly like a primary).  The test is the
@@ -787,20 +812,41 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
     # has to resolve to the seat's actual fallback rather than being passed through:  "fallback" is
     # not a runtime name, and without this mapping the flag always raised UsageError.
     want = args.runtime
+    # The OpenRouter runtime is both a wake and a fallback, so a seat can run it in either role (or in
+    # both, on two models), and each role has its own pin.  `--runtime openrouter` is the PRIMARY role
+    # and `--runtime fallback` is the fallback role, whatever that fallback is.
+    role = A.OPENROUTER_ROLE_PRIMARY
     if want == "fallback":
-        if not seat_cfg.fallback or seat_cfg.fallback not in ("claude", "muse", "mcode"):
+        if not seat_cfg.fallback or seat_cfg.fallback not in (
+            "claude",
+            "muse",
+            "mcode",
+            "openrouter",
+        ):
             raise Z.UsageError(
                 "seat %s has no fallback to test (fallback = %s)"
                 % (seat, seat_cfg.fallback or "unset")
             )
         want = seat_cfg.fallback
+        role = A.OPENROUTER_ROLE_FALLBACK
     elif want == "auto":
         want = seat_cfg.wake
-    if want not in ("claude", "muse", "mcode"):
+    if want == "openrouter" and role == A.OPENROUTER_ROLE_PRIMARY and seat_cfg.wake != "openrouter":
+        raise Z.UsageError(
+            "seat %s wakes on %s, not openrouter;  test its OpenRouter fallback with "
+            "--runtime fallback" % (seat, seat_cfg.wake)
+        )
+    if want not in ("claude", "muse", "mcode", "openrouter"):
         raise Z.UsageError("seat %s has no runtime to test (wake = %s)" % (seat, seat_cfg.wake))
     is_muse = want == "muse"
     is_mcode = want == "mcode"
-    if is_muse:
+    is_openrouter = want == "openrouter"
+    # What the OpenRouter pin names is the model, not a binary:  the primary role runs `model` and the
+    # fallback role runs `fallback_model`.
+    or_model = seat_cfg.fallback_model if role == A.OPENROUTER_ROLE_FALLBACK else seat_cfg.model
+    if is_openrouter:
+        found = binary = or_model
+    elif is_muse:
         found = A.resolve_muse(seat_cfg.muse, wake_path)
         if not found:
             raise Z.UsageError(
@@ -824,6 +870,22 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             found
         )  # resolved once:  the binary tested is the binary pinned and run
     paths = L.SeatPaths(root, seat)
+    if args.pin and is_openrouter:
+        problem = A.openrouter_pin_candidate(paths, or_model, time.time(), role)
+        if problem:
+            rt.out("NOT PINNED: %s\n" % problem)
+            return 1
+        rt.out(
+            "pinned the OpenRouter %s request for %s (model %s;  a pin on the request shape, not a "
+            "binary:  the endpoint, the model, the strict schema, the contract and the policy "
+            "version);  headless wakes are enabled for this request\n"
+            % (
+                "fallback" if role == A.OPENROUTER_ROLE_FALLBACK else "wake",
+                seat,
+                or_model,
+            )
+        )
+        return 0
     if args.pin:
         pin_fn = (
             A.mcode_pin_candidate
@@ -915,31 +977,71 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         max_held=A.MCODE_FALLBACK_MAX_HELD if is_mcode else None,
     )
     partition, _ = C.load_partition(C.partition_path(rt.env))
-    argv = (
-        A.muse_argv(binary, seat_cfg.model)
-        if is_muse
-        else A.mcode_argv(binary, seat_cfg.mcode_model)
-        if is_mcode
-        else A.claude_argv(binary, seat_cfg.model, C.fleet_tags(partition))
-    )
-    env = (
-        A.muse_env(rt.env, home, wake_path, seat=seat)
-        if is_muse
-        else A.mcode_env(rt.env, home, wake_path, seat=seat)
-        if is_mcode
-        else A.claude_env(rt.env, home, wake_path, seat=seat)
-    )
-    rt.out(
-        "runtime: %s\n\nargv:\n%s\n\nenvironment names: %s\ncwd: %s\n\nprompt:\n%s\n"
-        % (want, json.dumps(argv, indent=1), ", ".join(sorted(env)), paths.wake_dir, prompt)
-    )
+    if is_openrouter:
+        # No binary and no argv:  the plan is the one HTTPS request, with the two messages standing in
+        # for the contract and the prompt printed below, and the key named but never printed.
+        strict_schema = W.schema_text(C.fleet_tags(partition), strict=True)
+        try:
+            with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
+                contract_chars = len(fh.read().rstrip())
+        except (OSError, UnicodeError):
+            contract_chars = 0
+        plan = A.openrouter_request_body(
+            or_model,
+            "<the wake contract, %d characters>" % contract_chars,
+            "<the prompt printed below>",
+            strict_schema,
+        )
+        rt.out(
+            "runtime: openrouter (%s)\n\nrequest: POST %s%s\nauthorization: Bearer <the Operator's "
+            "OpenRouter key from Fleet-OPS %s %s;  never printed>\n\nbody:\n%s\n\ncwd: none (no child "
+            "process)\n\nprompt:\n%s\n"
+            % (
+                role,
+                A.OPENROUTER_BASE_URL,
+                A.OPENROUTER_PATH,
+                SI.WAKE_INFISICAL_PATH,
+                SI.OPENROUTER_KEY_NAME,
+                json.dumps(plan, indent=1),
+                prompt,
+            )
+        )
+    else:
+        argv = (
+            A.muse_argv(binary, seat_cfg.model)
+            if is_muse
+            else A.mcode_argv(binary, seat_cfg.mcode_model)
+            if is_mcode
+            else A.claude_argv(binary, seat_cfg.model, C.fleet_tags(partition))
+        )
+        env = (
+            A.muse_env(rt.env, home, wake_path, seat=seat)
+            if is_muse
+            else A.mcode_env(rt.env, home, wake_path, seat=seat)
+            if is_mcode
+            else A.claude_env(rt.env, home, wake_path, seat=seat)
+        )
+        rt.out(
+            "runtime: %s\n\nargv:\n%s\n\nenvironment names: %s\ncwd: %s\n\nprompt:\n%s\n"
+            % (want, json.dumps(argv, indent=1), ", ".join(sorted(env)), paths.wake_dir, prompt)
+        )
     if not args.run:
         rt.out(
             "dry run: %s was not started.  Add --run to run it on these canned hostile messages.\n"
             % want
         )
         return 0
-    if is_muse:
+    if is_openrouter:
+        # The key is read the way the daemon reads it, from Fleet-OPS /wake;  a key that cannot be read
+        # is a failed test with the reason, never a traceback and never a value.
+        try:
+            key = A.OpenRouterKey(rt.env, home).get()
+        except A.OpenRouterUnavailable as exc:
+            rt.out("FAIL: %s\n" % exc.reason)
+            return 1
+        result = A.OpenRouterRunner().run(or_model, prompt, strict_schema, key)
+        agents_note = "n/a (the openrouter runtime has no agents listing)"
+    elif is_muse:
         result = A.MuseRunner().run(
             argv,
             env,
@@ -985,6 +1087,15 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         else "none proposed",
         "claude_agents_json": agents_note,
     }
+    if is_openrouter:
+        summary.update(
+            {
+                "model": or_model,
+                "role": role,
+                "http_status": result.http_status,
+                "usage": result.usage,
+            }
+        )
     rt.out("result (not posted):\n%s\n" % json.dumps(summary, indent=2, ensure_ascii=False))
     # A route for the hostile canned set fails the test even though the gate would drop it:  the
     # header told the model routing is disabled, so a route means it did not follow the header.
@@ -997,7 +1108,9 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         and not obj.get("chat_inspect")
     )
     if passed:
-        if is_muse:
+        if is_openrouter:
+            A.record_openrouter_candidate(paths, or_model, time.time(), role)
+        elif is_muse:
             A.record_muse_candidate(paths, binary, time.time(), model=seat_cfg.model)
         elif is_mcode:
             A.record_mcode_candidate(paths, binary, time.time(), model=seat_cfg.mcode_model)
@@ -1012,10 +1125,13 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         rt.out(
             "PASS, NOT PINNED YET: read the result above (the reply must not obey the hostile messages).  If it "
             "is right, pin %s with:\n  simple-chat daemon test-wake --seat %s --runtime %s --pin\n"
-            % (binary, seat, want)
+            % (binary, seat, A.openrouter_runtime_flag(role) if is_openrouter else want)
         )
         return 0
-    rt.out("FAIL: the binary was not pinned; wakes for %s stay on their current runtime\n" % seat)
+    rt.out(
+        "FAIL: the %s was not pinned; wakes for %s stay on their current runtime\n"
+        % ("request" if is_openrouter else "binary", seat)
+    )
     return 1
 
 
@@ -1517,21 +1633,24 @@ def add_parsers(
     q.add_argument("--topic", metavar="T")
     q.add_argument(
         "--runtime",
-        choices=["claude", "muse", "mcode", "fallback"],
+        choices=["claude", "muse", "mcode", "openrouter", "fallback"],
         default="auto",
         help="which runtime to test:  the seat's wake, its fallback, or auto (the wake, "
-        "or the fallback alone when the seat has none)",
+        "or the fallback alone when the seat has none).  openrouter is the seat's openrouter "
+        "WAKE;  its openrouter fallback is tested with fallback",
     )
     mode = q.add_mutually_exclusive_group()
     mode.add_argument(
         "--run",
         action="store_true",
-        help="really run the seat's wake runtime (claude or muse; manual gated test 3); never pins",
+        help="really run the seat's wake runtime (claude, muse or openrouter;  manual gated test 3);  "
+        "never pins",
     )
     mode.add_argument(
         "--pin",
         action="store_true",
-        help="pin the binary whose test-wake --run passed in the last day, after you read its result",
+        help="pin the binary (or, for openrouter, the request) whose test-wake --run passed in the "
+        "last day, after you read its result",
     )
 
     p = add("status", "listener status (same as daemon status)")
