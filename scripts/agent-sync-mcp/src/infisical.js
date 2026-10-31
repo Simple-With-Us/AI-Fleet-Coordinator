@@ -108,6 +108,7 @@ export function infisicalStats() {
 }
 
 export function _resetInfisicalForTests() {
+  isolatedCache.clear();
   cache.clear();
   stats.fetched = 0;
   stats.cacheHits = 0;
@@ -141,9 +142,9 @@ function mode(env) {
   return m === "fallback" || m === "required" ? m : "off";
 }
 
-async function fetchRaw(env, path, name) {
-  const token = typeof env.INFISICAL_SERVICE_TOKEN === "string" ? env.INFISICAL_SERVICE_TOKEN.trim() : "";
-  if (!token) throw new InfisicalError("INFISICAL_SERVICE_TOKEN is not bound", { code: "not_configured" });
+async function fetchRaw(env, path, name, { tokenOverride, tokenBinding = "INFISICAL_SERVICE_TOKEN" } = {}) {
+  const token = tokenOverride ?? (typeof env.INFISICAL_SERVICE_TOKEN === "string" ? env.INFISICAL_SERVICE_TOKEN.trim() : "");
+  if (!token) throw new InfisicalError(`${tokenBinding} is not bound`, { code: "not_configured" });
   const workspace = String(env.INFISICAL_WORKSPACE_ID ?? "").trim();
   if (!workspace) throw new InfisicalError("INFISICAL_WORKSPACE_ID is not bound", { code: "not_configured" });
   const environment = String(env.INFISICAL_ENVIRONMENT ?? "prod").trim() || "prod";
@@ -280,4 +281,52 @@ export async function resolveWakeKeys(env, names) {
   await prefetchFolder(env, "/wake");
   const keys = await Promise.all(names.map((name) => resolveSecret(env, { name, path: "/wake", envName: name, optional: true })));
   return keys.map((key) => key.trim()).filter(Boolean);
+}
+// ---------------------------------------------------------------- isolated custody reads
+//
+// The read-tools service token (INFISICAL_SERVICE_TOKEN) is deliberately
+// broad:  every folder it may read is readable by anything holding it.  A
+// MINT-capable secret must not ride it.  resolveSecretIsolated serves one
+// secret through a NARROWLY SCOPED, separately bound service token (e.g.
+// GR_ASSERT_INFISICAL_SERVICE_TOKEN, scoped to /gr-assert-signing only):
+//
+//   - provenance is exact:  the value comes from `path` through
+//     `tokenBinding`, and from nowhere else;
+//   - NO fallback:  the generic INFISICAL_SERVICE_TOKEN is never consulted
+//     for this read, no legacy Worker binding is read, and no other folder
+//     or key name is tried;
+//   - the shared folder cache is bypassed:  a value listed under the broad
+//     token (e.g. the /gr-front Access pair) is never reused as this secret,
+//     and this secret is never served from a listing it was not read under;
+//   - fail closed:  no binding answers "" in off/fallback mode and throws in
+//     required mode;  a genuine 404 answers "" (capability off) while an
+//     outage or a scope denial throws in required mode, as elsewhere.
+
+const isolatedCache = new Map();
+
+export async function resolveSecretIsolated(env, { name, path, tokenBinding }) {
+  const m = mode(env);
+  if (m === "off") return "";
+  const token = typeof env[tokenBinding] === "string" ? env[tokenBinding].trim() : "";
+  if (!token) {
+    if (m === "required") throw new InfisicalError(`${tokenBinding} is not bound`, { code: "not_configured" });
+    return "";
+  }
+  const cacheKey = `${tokenBinding}\u0001${path}\u0001${name}`;
+  const hit = isolatedCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+    stats.cacheHits++;
+    return hit.value;
+  }
+  try {
+    const value = await fetchRaw(env, path, name, { tokenOverride: token, tokenBinding });
+    isolatedCache.set(cacheKey, { value, at: Date.now() });
+    stats.fetched++;
+    return value;
+  } catch (error) {
+    if (error instanceof InfisicalError && error.code === "not_found") return "";
+    if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
+    logEvent("infisical_isolated_failed", { path, name, binding: tokenBinding, code: errorCode(error), status: error?.status ?? null });
+    return "";
+  }
 }

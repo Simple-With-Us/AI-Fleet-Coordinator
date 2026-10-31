@@ -1557,3 +1557,49 @@ export async function gbBearerStatus(store, now = Date.now()) {
     mint_count: Number(row.mint_count) || 0,
   };
 }
+// ---------------------------------------------------------------- gr-assert one-use jti claims
+//
+// A gr-assert/2 assertion is one-use:  the /internal/gr-assert-verify route
+// claims its jti here, atomically with the live gate check, before it answers
+// ok.  Two layers of serialization make the check-and-claim safe:
+//   - the Durable Object runtime processes one RPC of one object at a time
+//     (the input gate), so two verify calls of one seat cannot interleave;
+//   - store.transaction additionally makes the reads and the write one
+//     storage transaction, so even an interleaving runtime could never split
+//     the jti read from its claim write.
+//
+// Entries live until their assertion's own expiry (a later replay is expired
+// anyway).  The map is BOUNDED and fails closed:  at capacity of live
+// (unexpired) records a new claim refuses - live nonce records are NEVER
+// evicted to make room, because discarding one would reopen its replay
+// window.  Capacity refills on its own within one max TTL (<=120s).
+
+const GR_JTI_KEY = "gr_assert_jtis";
+const GR_JTI_MAX = 512;
+
+/**
+ * Run the seat's live gate check and, only when it passes, claim one
+ * assertion jti - a single transaction, so the check and the claim can never
+ * be split.  `expiresAt` is the assertion's exp in epoch milliseconds.
+ * Returns { ok: true } exactly once per jti, or { ok: false, reason } with
+ * "paused", "grant_invalid", "replayed" or "jti_store_full".
+ */
+export async function claimGrAssert(store, { epoch, approvedAt, phase, jti, expiresAt }, now = Date.now()) {
+  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  return store.transaction(async (txn) => {
+    // Revocation equivalence, per call:  the same gate check serveMcp runs.
+    // A refusal spends nothing - a paused-then-unpaused assertion still works.
+    const gate = await check(txn, { epoch, approvedAt, phase }, now);
+    if (gate.code !== "ok") return { ok: false, reason: gate.code === "paused" ? "paused" : "grant_invalid" };
+    const seen = (await txn.get(GR_JTI_KEY)) ?? {};
+    for (const [k, v] of Object.entries(seen)) {
+      if (!(Number.isFinite(v) && v > now)) delete seen[k];
+    }
+    if (Object.hasOwn(seen, jti)) return { ok: false, reason: "replayed" };
+    if (Object.keys(seen).length >= GR_JTI_MAX) return { ok: false, reason: "jti_store_full" };
+    seen[jti] = expiresAt;
+    await txn.put(GR_JTI_KEY, seen);
+    return { ok: true };
+  });
+}
+

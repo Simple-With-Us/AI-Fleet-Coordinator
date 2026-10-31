@@ -171,6 +171,21 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         '# provider = "MiniMax"                    # the CodeCaps provider the quota gate reads',
         '# fallback = "mcode"                      # optional; the mcode fallback (3.3b).  Fallback-only by design.',
         "# fallback_uncontained_ok = false       # mcode writes files while it answers; only true if that is accepted",
+        "",
+        "# The OpenRouter wake (docs/protocols/agent-sync-listener.md 3.3c) is one HTTPS call with no tools:",
+        "# no binary to pin and no login to expire.  The key is the Operator's, read from Fleet-OPS /wake.",
+        "# Either run the Muse contributor tier through it as the wake (and fall back to a second model):",
+        "# [seat.MM]",
+        '# bot = "MiniMax"',
+        '# wake = "openrouter"',
+        '# model = "meta/muse-spark-1.3-contributor"       # the default for this wake type',
+        '# fallback = "openrouter"                         # optional; another model on a failure',
+        '# fallback_model = "~deepseek/deepseek-flash-latest"   # the default;  must differ from model',
+        "# ... or keep the muse binary as the wake and let OpenRouter answer when it cannot:",
+        '# wake = "muse"',
+        '# fallback = "openrouter"',
+        "# Either way:  `simple-chat daemon test-wake --seat MM --run` then --pin (and --runtime fallback",
+        "# for the fallback's own pin).  fallback_uncontained_ok is not used:  there are no tools.",
     ]
     listed = [seat for seat in READER_SEATS[1:] if present(seat)]
     if listed:

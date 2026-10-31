@@ -202,6 +202,7 @@ SPECS = {
     "wf_compare": ({"contents": "read"}, False),
     "wf_branch_get": ({"contents": "read"}, False),
     "wf_repo_get": ({"metadata": "read"}, False),
+    "wf_installation_metadata": ({"metadata": "read"}, False),
     "wf_labels": ({"issues": "read"}, False),
     "wf_workflows": ({"actions": "read"}, False),
     "wf_run_get": ({"actions": "read"}, False),
@@ -291,6 +292,24 @@ def _path(args, key="path"):
 def _workflow_path(path):
     """A relay write targeting the workflows dir itself, its parent, or anything under it."""
     return path == ".github" or path == ".github/workflows" or path.startswith(".github/workflows/")
+
+
+def workflow_write_paths(action, args):
+    """Identify real workflow-file edits, never treat parent dirs as writable files."""
+    if not isinstance(args, dict):
+        raise Refused("invalid workflow arguments")
+    if action in ("wf_file_put", "wf_file_delete"):
+        paths = [args.get("path")]
+    elif action == "wf_file_rename":
+        paths = [args.get("source_path"), args.get("destination_path")]
+    elif action == "wf_files_put":
+        files = args.get("files")
+        if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
+            raise Refused("invalid files")
+        paths = [f.get("path") for f in files if isinstance(f, dict)]
+    else:
+        return []
+    return [p for p in paths if isinstance(p, str) and p.startswith(".github/workflows/")]
 
 
 def _enum(args, key, allowed, default=None):
@@ -653,6 +672,7 @@ class WorkflowVerbs:
         self.client, self.policy, self.seat, self.bearer = client, policy, seat, bearer
         # The handle is minted for exactly one authorized action and repository.
         self.action, self.repo = action, repo
+        self.workflow_write_allowed = False
 
     @classmethod
     def check_shape(cls, action, args, repo):
@@ -685,13 +705,14 @@ class WorkflowVerbs:
             "probe",
         )
         handle.action, handle.repo = action, repo
+        handle.workflow_write_allowed = True  # syntax probe only, no bearer or I/O
         try:
             handle.run(action, args)
         except _Reached:
             return
 
     @classmethod
-    def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False):
+    def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False, args=None):
         """Seat is already authenticated by the broker; authorize once, mint least permission.
 
         preauthorized is for Relay.handle only: it has just run policy.authorize for this
@@ -705,14 +726,28 @@ class WorkflowVerbs:
             raise Refused("action or repository denied")
         app_slug, ceiling = policy.app_identity(seat)
         required = dict(SPECS[action][0])
+        needs_workflows = args is not None and bool(workflow_write_paths(action, args))
+        if needs_workflows:
+            required["workflows"] = "write"
         required.setdefault("metadata", "read")
         if _perm_within_ceiling(required, ceiling):
             raise CeilingDenied("seat permission ceiling insufficient")
+        # Relay.handle already validated syntax/secrets before dispatch. Direct
+        # callers validate here only after the cheap bounded scope/ceiling gate.
+        if args is not None and not preauthorized:
+            cls.check_shape(action, args, repo)
         try:
             token, _ = minter.token_for(app_slug, repo, required)
         except Exception:
             raise Unknown("own App credential unavailable") from None
-        return cls(client, policy, seat, token, app_slug, action, repo)
+        handle = cls(client, policy, seat, token, app_slug, action, repo)
+        handle.workflow_write_allowed = needs_workflows
+        return handle
+
+    def _write_path_denied(self, path):
+        if path in (".github", ".github/workflows"):
+            return True
+        return _workflow_path(path) and not getattr(self, "workflow_write_allowed", False)
 
     def _get(self, path):
         return self.client._call("GET", path, None, bearer=self.bearer)
@@ -3772,6 +3807,13 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/branches/{branch}")
         return {"branch": _obj(data)}
 
+    def wf_installation_metadata(self, repo, args):
+        _only(args, ("repo",))
+        # check_shape stops here without credentials. Runtime dispatch uses the
+        # authenticated seat's minter, never this installation-token handle.
+        self._get("/installation-metadata-shape-only")
+        raise Refused("installation metadata requires authenticated dispatcher")
+
     def wf_repo_get(self, repo, args):
         _only(args, ("repo",))
         data = self._get(f"/repos/{repo}")
@@ -5491,7 +5533,7 @@ class WorkflowVerbs:
         message = args.get("message")
         if source == dest or source.startswith(dest + "/") or dest.startswith(source + "/"):
             raise Refused("rename paths overlap")
-        if branch.startswith("refs/") or any(_workflow_path(x) for x in (source, dest)):
+        if branch.startswith("refs/") or any(self._write_path_denied(x) for x in (source, dest)):
             raise Refused("qualified refs and workflow paths refused")
         if any(len(x) > 1024 or len(x.split("/")) > 8 for x in (source, dest)):
             raise Refused("rename path exceeds bounds")
@@ -5672,8 +5714,8 @@ class WorkflowVerbs:
         path, branch, sha = _path(args), _ref(args, "branch"), _sha(args, "prior_sha")
         if branch.startswith("refs/"):
             raise Refused("qualified branch refs are not accepted")
-        if _workflow_path(path):
-            raise Refused("workflow files are not writable here")
+        if self._write_path_denied(path):
+            raise Refused("workflow permission required for this path")
         message = args.get("message")
         if (
             not isinstance(message, str)
@@ -5740,8 +5782,8 @@ class WorkflowVerbs:
     def wf_file_put(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "content_b64", "prior_sha"))
         path, branch = _path(args), _ref(args, "branch")
-        if _workflow_path(path):
-            raise Refused("workflow files are not writable here")
+        if self._write_path_denied(path):
+            raise Refused("workflow permission required for this path")
         message = args.get("message")
         content = args.get("content_b64")
         if not isinstance(message, str) or not 1 <= len(message) <= 500 or "\x00" in message:
@@ -5815,7 +5857,7 @@ class WorkflowVerbs:
             if not isinstance(f, dict) or set(f) - {"path", "content_b64", "delete"}:
                 raise Refused("invalid files")
             path = _path(f)
-            if path in seen or _workflow_path(path):
+            if path in seen or self._write_path_denied(path):
                 raise Refused("duplicate or workflow path refused")
             seen.add(path)
             if f.get("delete") is True:

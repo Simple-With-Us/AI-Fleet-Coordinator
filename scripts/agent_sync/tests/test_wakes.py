@@ -358,12 +358,11 @@ class ContractTests(unittest.TestCase):
 class ReplyTextTests(unittest.TestCase):
     def test_mentions_are_neutralized_and_groups_removed(self) -> None:
         text = W.compose_reply(
-            "CLAUDE",
             4821,
             "@**Codex** and @**Jay Wedgeworth|12**, ping @*fleet* and @_*ops* @**all**",
         )
         first, body = text.split("\n", 1)
-        self.assertEqual(first, "[CLAUDE·wake] re=4821")
+        self.assertEqual(first, "[OPERATOR·wake] re=4821")
         self.assertNotIn("@**", body)
         self.assertIn("@_**Codex**", body)
         self.assertIn("@_**Jay Wedgeworth|12**", body)

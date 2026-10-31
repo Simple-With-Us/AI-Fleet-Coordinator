@@ -199,7 +199,8 @@ The commands use the installed symlink by absolute path, so a GUI app's short `P
 |---|---|---|
 | `inbox` | Writes to the seat inbox only.  An owner wake-worthy item sends one notify-owner per topic per hour | Default for every seat |
 | `claude` | The fixed argv in section 3.3, hardcoded in code; config sets only the model, the budgets and an optional absolute `claude` path | CLAUDE in v1 |
-| `muse` | The fixed argv in section 3.3a, the same wake contract and the same validator over a different runtime (`muse exec`); config adds an optional absolute `muse` path and the `provider` whose CodeCaps quota the wake gate reads.  May name `fallback = "mcode"` | Any seat, one switch at a time.  Verified, not yet adopted (AFC-291) |
+| `muse` | The fixed argv in section 3.3a, the same wake contract and the same validator over a different runtime (`muse exec`); config adds an optional absolute `muse` path and the `provider` whose CodeCaps quota the wake gate reads.  May name `fallback = "mcode"` or `fallback = "openrouter"` | Any seat, one switch at a time.  Verified, not yet adopted (AFC-291) |
+| `openrouter` | One HTTPS call to OpenRouter's chat-completions API (section 3.3c):  the same wake contract, the same strict schema and the same validator as `muse`, over a runtime with no binary and no tools.  Config adds `model` (default `meta/muse-spark-1.3-contributor`).  Pinned on the request shape, not on a binary.  May name `fallback = "openrouter"` with a different `fallback_model` | Any seat, one switch at a time.  The primary option for a seat whose muse binary is not running (owner, Oct 30 2026) |
 | `command` | A fixed argv for another platform, after its lockdown test (section 6) | v2, not built |
 | `http` | Sends one fixed JSON body (contract `agent-sync-wake/1`:  the trigger's ids, channel, topic and stream id or DM members, sender, the daemon's owner flag, a 2,000-character excerpt inside the untrusted markers, a Zulip link, the seat and `dm`) to a remote routine webhook.  The top-level channel, topic and sender name are escaped display copies; only `reply_to` carries the exact names, for addressing.  The URL and sender key come from environment variables the seat's `routine` block names, read once at start (a new or rotated value needs a restart, not a reload).  Auth is a plain header, Bearer, or a hex HMAC-SHA256 of the raw body.  A 2xx is accepted; a 5xx or a network failure is retried 3 times with backoff; a 4xx or a redirect never is.  The routine replies in Zulip itself, so the daemon posts nothing for the seat.  The URL, query, key and signature are never logged ([agent-sync-server.md](agent-sync-server.md#the-routine-wake-http)) | GB personas on the server instance (GB-COMPILER first).  Built |
 | `notify-owner` | macOS banner plus `owner-queue.jsonl` (the server instance has no display:  owner queue only) | Escalations, budgets, dead queues, config problems |
@@ -256,9 +257,9 @@ env -i HOME=$HOME USER=$USER LOGNAME=$USER LANG=en_US.UTF-8 TMPDIR=$TMPDIR \
 **The daemon carries out the result.**
 
 1. **Concurrency.**  One wake runs per seat at a time, with a FIFO of 5; overflow is held back (section 3.5).  Before spawning and again before posting, the daemon re-checks topic leases and mention leases, skipping any lease the triggers were released or returned from.  Just before spawning it also re-checks the pause, the pin, the loop guard, staleness and the budgets.  If a live session took over before the spawn, the triggers go to that lease as interrupts (one row per id, read from the seat inbox and its rotated copy, the grace period restarted, the seat-inbox rows marked `delivered_to`) and the wake is `skipped`; after the run, the reply goes to that lease's inbox as a `draft from wake, not posted`.
-2. **`reply`.**  Every `@**X**` becomes `@_**X**` and group mentions are removed, repeated until the text stops changing (removing a group mention can join an `@` to a following `**name**`), and any `@*` left is made silent, so a wake reply notifies no one.  The secret scanner (common key prefixes, private-key blocks, Zulip-shaped keys, and every loaded bot key and its base64 form) refuses a match.  First line `[CLAUDE·wake] re=<trigger id>`.  The Operator bot posts it, not the seat's bot, and the tag says whose wake it reports (owner ruling, Oct 30 2026; see The Operator's voice below).  A channel trigger is answered in its topic.  A DM trigger is answered only by DM to the original recipient set, never in a channel: the seat stays in it and the Operator joins it, so Zulip opens one new group conversation, and the owner still has to be in it.  Posts are at least 3 seconds apart.
+2. **`reply`.**  Every `@**X**` becomes `@_**X**` and group mentions are removed, repeated until the text stops changing (removing a group mention can join an `@` to a following `**name**`), and any `@*` left is made silent, so a wake reply notifies no one.  The secret scanner (common key prefixes, private-key blocks, Zulip-shaped keys, and every loaded bot key and its base64 form) refuses a match.  First line `[OPERATOR·wake] re=<trigger id>`.  The Operator bot posts it, not the seat's bot, and the tag says whose wake it reports (owner ruling, Oct 30 2026; see The Operator's voice below).  A channel trigger is answered in its topic.  A DM trigger is answered only by DM to the original recipient set, never in a channel: the seat stays in it and the Operator joins it, so Zulip opens one new group conversation, and the owner still has to be in it.  Posts are at least 3 seconds apart.
 3. **`simple-board`** (off:  `board_per_day = 0`, decision 2).  The daemon runs `simple-board` with a list argv and no shell:  `simple-board file --title=<v> --desc=<v> --severity=P2|P3 --app=<APP> --by CLAUDE --env Mac --kind agent-report --uid zulip:CLAUDE:<trigger id> --url <realm>/#narrow/channel/<stream id>/near/<trigger id>`.  APP is the topic's leading acronym when it is in `fleet-apps.json` (`CT#2316 sentry` gives CT, and a Linear work topic `BF-123 reconnect loop` gives BF), else AFC.  After the Linear cutover this `simple-board` is the Linear-backed CLI, which proves its seat from that seat's own bearer, never from `AGENT_SEAT`;  the daemon passes the waking seat's `bearer_locator` from `listener.toml` (`[seat.X] bearer_locator`, a `FOLDER:KEY_NAME` location, never a value) as `SIMPLE_BOARD_BEARER_LOCATOR`, strips `AGENT_SEAT` and `AGENT_LAUNCH_SEAT` from the child, and skips the filing when that seat has no locator.  The parsed result is kept in the ledger.
-4. **`escalate` or `owner_note`.**  These go through notify-owner (the note goes to the owner queue, never the banner).  Unless the owner alone triggered the wake, the daemon also sends the owner a Zulip DM from the Operator bot (`owner_dm_text`, then `dm_owner`): `[CLAUDE·note] re=<trigger id>`, the sender's name, the place (`#channel > topic`, or a DM), the risk, the note in a quote block (backticks and mentions removed) and a link to the trigger message.  The tag is `·note`, never `·wake`, so the router does not take the DM for a wake reply.  It rides on a wake that already passed the budgets, so it is at most one DM per wake; the secret scanner withholds a flagged note but still sends the rest, and a failed send is recorded in the ledger row (`owner_dm`, `owner_dm_error`) and never fails the wake.  If the owner triggered the wake and nothing was posted, the daemon also posts a fixed one-line ack: queued for your confirmation in one of that seat's next sessions.
+4. **`escalate` or `owner_note`.**  These go through notify-owner (the note goes to the owner queue, never the banner).  Unless the owner alone triggered the wake, the daemon also sends the owner a Zulip DM from the Operator bot (`owner_dm_text`, then `dm_owner`): `[OPERATOR·note] re=<trigger id>`, the sender's name, the place (`#channel > topic`, or a DM), the risk, the note in a quote block (backticks and mentions removed) and a link to the trigger message.  The tag is `·note`, never `·wake`, so the router does not take the DM for a wake reply.  It rides on a wake that already passed the budgets, so it is at most one DM per wake; the secret scanner withholds a flagged note but still sends the rest, and a failed send is recorded in the ledger row (`owner_dm`, `owner_dm_error`) and never fails the wake.  If the owner triggered the wake and nothing was posted, the daemon also posts a fixed one-line ack: queued for your confirmation in one of that seat's next sessions.
 5. **`route`** (owner 2026-10-10).  Handled last, after the reply; see Route suggestions below.
 
 #### Route suggestions
@@ -278,10 +279,10 @@ Owner decision, Sat, Oct 10 (decision 13).  The tool-less wake may suggest pagin
 
 **Budget** (per routing seat, counted from that seat's own ledger, owner triggers included since every route needs one):  `routes_per_hour = 3`, `routes_per_day = 10`, and `route_topic_minutes = 30` (one route per topic per 30 minutes).  Only posted routes count.  They sit in `[seat.X] budget` beside the wake budgets.
 
-**The route post.**  As the Operator bot, in the trigger's topic, after the reply (two posts, never one: a post that starts `[CLAUDE·wake]` is a `wake_tag` and wakes no one, so a combined post could not page its target):
+**The route post.**  As the Operator bot, in the trigger's topic, after the reply (two posts, never one: a post that starts `[OPERATOR·wake]` is a `wake_tag` and wakes no one, so a combined post could not page its target):
 
 ~~~
-[CLAUDE·route→CODEX] re=<newest owner trigger id>
+[OPERATOR·route→CODEX] re=<newest owner trigger id>
 @**Codex|<bot user id>** CLAUDE paged you on Jay's behalf:  <reason>
 ```quote
 <the owner's message, one line, cut to 300 characters>
@@ -293,7 +294,7 @@ The mention is the daemon's own, with the user id so a duplicate display name ca
 
 **Loop guard.**  A `·route` post counts like a `·wake` reply in the topic's loop guard (in every listener that sees it), but it is not a `wake_tag`, so it still wakes the seat it mentions.  The gate's owner rule and `route_trigger` mean a route can never lead to another route.
 
-**Ledger and owner.**  The `done` row carries `route`: `{"seat", "status": "posted" | "dropped" | "failed" | "error", "why", "mode", "posted_id", "target_id", "re", "owner_dm"}`.  A posted route sends the owner a `[CLAUDE·note] re=<owner trigger id>` DM from the Operator bot (the same channel as escalation notes): `Routed: <SEAT> (<mode>)`, the place, the reason in a quote block, and a link to the route post, plus an owner-queue note (`kind = "route"`).  A dropped route is an owner-queue note (`kind = "route_dropped"`, with a Mac banner) naming the seat and the reason, never a Zulip post.  `simple-chat status` shows `routes 24h N` on the claude seat's line (`(routing off)` when the kill switch is off), and `status.json` carries `routes_24h` and `route_enabled`.
+**Ledger and owner.**  The `done` row carries `route`: `{"seat", "status": "posted" | "dropped" | "failed" | "error", "why", "mode", "posted_id", "target_id", "re", "owner_dm"}`.  A posted route sends the owner a `[OPERATOR·note] re=<owner trigger id>` DM from the Operator bot (the same channel as escalation notes): `Routed: <SEAT> (<mode>)`, the place, the reason in a quote block, and a link to the route post, plus an owner-queue note (`kind = "route"`).  A dropped route is an owner-queue note (`kind = "route_dropped"`, with a Mac banner) naming the seat and the reason, never a Zulip post.  `simple-chat status` shows `routes 24h N` on the claude seat's line (`(routing off)` when the kill switch is off), and `status.json` carries `routes_24h` and `route_enabled`.
 
 ### The Operator's voice (owner ruling, Oct 30 2026)
 
@@ -301,10 +302,10 @@ The owner's rule, repeated for weeks and ruled again on Oct 30 2026: anytime an 
 
 | Post | Where | Sent as |
 | --- | --- | --- |
-| The wake reply, and the fixed owner ack | the trigger's topic, or the DM thread (`Daemon.post`) | Operator, text tagged `[SEAT·wake]` |
-| The route page | the trigger's topic (`handle_route`, through `Daemon.post`) | Operator, tagged `[SEAT·route→TARGET]` |
-| The escalation note | DM to the owner (`dm_owner`) | Operator, tagged `[SEAT·note]` |
-| The route note | DM to the owner (`_note_route_posted`) | Operator, tagged `[SEAT·note]` |
+| The wake reply, and the fixed owner ack | the trigger's topic, or the DM thread (`Daemon.post`) | Operator, text tagged `[OPERATOR·wake]` |
+| The route page | the trigger's topic (`handle_route`, through `Daemon.post`) | Operator, tagged `[OPERATOR·route→TARGET]` |
+| The escalation note | DM to the owner (`dm_owner`) | Operator, tagged `[OPERATOR·note]` |
+| The route note | DM to the owner (`_note_route_posted`) | Operator, tagged `[OPERATOR·note]` |
 | The quota-hold notice | DM to the sender and the owner (`_tell_requester`) | Operator |
 | The `@all` reminder | DM to the owner (`_run_broadcast_audit`) | Operator, tagged `[OPERATOR·note]` |
 | The `#alerts` held-wake digest | its post and its edits (`_held_alert`, `_held_alert_edit`) | Operator |
@@ -312,11 +313,13 @@ The owner's rule, repeated for weeks and ruled again on Oct 30 2026: anytime an 
 
 **One choke point.**  `Daemon._operator_send` (and `_operator_edit`) is the only place the daemon writes composed text to Zulip.  It secret-scans the content, takes the next 3-second slot, and posts with the Operator client from `operator_post.OperatorVoice`.  No site calls `runner.client.post` or `.patch` any more, and a test fails the build if one comes back.
 
-**The Operator client** is built on first use, the way `operator_registration_ask.send_location_question` builds its own: the credential comes from Fleet-OPS `/zulip_operator` through `service_identity.operator_credentials`, and `users/me` has to be the pinned Operator bot owned by the pinned owner (`service_identity.operator_bot`, from `OPERATOR_ZULIP_USER_ID` and `OPERATOR_ZULIP_EMAIL`) before anything is sent.  It is cached, a rejected credential (401 or 403, on a post or an edit) drops it, and so does a changed owner pin.  A build that fails is remembered for two minutes, so a vault outage costs one attempt per window.  A build reads the vault and asks Zulip `users/me`, so it never runs under the client's lock: it is single flight (the first caller builds, the others join it) and only the cached state is guarded.  **The router thread never waits for a build.**  The digest, an edit of it, the quota notice and the typing indicator ask with `wait=False`: with no client ready they are skipped that time (the digest's window and the notice's window stay unspent), the build goes on in the background, and the next ask finds it.  `Daemon.run` starts that build at start (`OperatorVoice.warm`).  **A wake is not run when its reply cannot go out.**  `_wake_block` (router or worker) refuses a `claude` or `muse` wake with `operator_unavailable` when a build failed recently (`OperatorVoice.known_unavailable`, state only, no network), and `run_wake` makes the blocking check on the seat's own wake worker before any budget is reserved or any child exists, so the wake is dropped with that reason (the message stays in the seat inbox) instead of running and then failing to post.  The Mac needs no `[seat.OPERATOR]` section for this.  The client carries the owner pin, so the owner-in-the-conversation guard (AFC-469) applies to it like to any bot: every direct message above has the owner in it, and the one-to-one status exemption (`operator_status_dm`) is not used.
+**The tag says OPERATOR, not the seat (owner ruling, Oct 30 2026).**  A wake reply, the escalation note, the route note and the route post are the daemon's own text, posted by the Operator bot, so their first line is `[OPERATOR·wake] re=<trigger id>`, `[OPERATOR·note] re=<trigger id>` and `[OPERATOR·route→TARGET] re=<owner trigger id>`.  Before this they read `[MM·wake]` and so on, which named a seat (and, for a headless Muse run, a MiniMax seat) that had not said it.  Which seat the wake was for is in the wake ledger row (`seat`, `wake_id`, `trigger_ids`), in a `Seat:` line of the escalation note and the route note, and in the body of the route post (`MM paged you on Jay's behalf`).  The router and the loop guard match any `[WORD·wake]` or `[WORD·route` tag, so nothing else changed: an `[OPERATOR·wake]` post still wakes no one and still counts on the loop guard.  The cost is that two seats woken in one topic no longer differ by tag;  `re=` points at the message each one answers.
+
+**The Operator client** is built on first use, the way `operator_registration_ask.send_location_question` builds its own: the credential comes from Fleet-OPS `/zulip_operator` through `service_identity.operator_credentials`, and `users/me` has to be the pinned Operator bot owned by the pinned owner (`service_identity.operator_bot`, from `OPERATOR_ZULIP_USER_ID` and `OPERATOR_ZULIP_EMAIL`) before anything is sent.  It is cached, a rejected credential (401 or 403, on a post or an edit) drops it, and so does a changed owner pin.  A build that fails is remembered for two minutes, so a vault outage costs one attempt per window.  A build reads the vault and asks Zulip `users/me`, so it never runs under the client's lock: it is single flight (the first caller builds, the others join it) and only the cached state is guarded.  **The router thread never waits for a build.**  The digest, an edit of it, the quota notice and the typing indicator ask with `wait=False`: with no client ready they are skipped that time (the digest's window and the notice's window stay unspent), the build goes on in the background, and the next ask finds it.  `Daemon.run` starts that build at start (`OperatorVoice.warm`).  **A wake is not run when its reply cannot go out.**  `_wake_block` (router or worker) refuses a `claude`, `muse` or `openrouter` wake with `operator_unavailable` when a build failed recently (`OperatorVoice.known_unavailable`, state only, no network), and `run_wake` makes the blocking check on the seat's own wake worker before any budget is reserved or any child exists, so the wake is dropped with that reason (the message stays in the seat inbox) instead of running and then failing to post.  The Mac needs no `[seat.OPERATOR]` section for this.  The client carries the owner pin, so the owner-in-the-conversation guard (AFC-469) applies to it like to any bot: every direct message above has the owner in it, and the one-to-one status exemption (`operator_status_dm`) is not used.
 
 **No fallback.**  With no Operator (the vault cannot be read, the credential is rejected, the identity is not the pinned one, the owner is not pinned) the post is not made.  The daemon logs `operator-voice-unavailable` once per window with the reason and `operator-post-refused` for each post it dropped, with the `site`: `wake-reply`, `owner-dm`, `route-note`, `quota-hold`, `broadcast-audit`, `held-alert` or `held-alert-edit`.  A wake whose reply was dropped is a `failed` ledger row with `post_error`, and a posted one carries `posted_by = "OPERATOR"`.  An Operator that is present but cannot post in a place (it is not in a private channel, say) is the same: `post-failed` in the log and `post_error` on the row.  The seat's bot is never tried instead.
 
-**What does not change.**  The `[SEAT·wake]` tag stays on the first line, because the loop guard and the router read it (a `·wake` post never wakes anyone) and it is what tells a reader whose wake the Operator is relaying; the sender line says Operator, the tag says which seat's consultant wrote it.  A seat's own words, typed by that agent through its own tools (`simple-chat`, the MCP tools), still go out as the seat: the rule is about text the daemon composes.  `daemon probe` (a diagnostic a person runs) and the inbox delivery (subscriptions and read flags, no text) are not wake posts and are untouched.
+**What does not change.**  The `[OPERATOR·wake]` tag stays on the first line, because the loop guard and the router read it (a `·wake` post never wakes anyone); the sender line and the tag both say Operator, and the seat the wake was for is named in the ledger row and the note body, as the tag paragraph above describes.  A seat's own words, typed by that agent through its own tools (`simple-chat`, the MCP tools), still go out as the seat: the rule is about text the daemon composes.  `daemon probe` (a diagnostic a person runs) and the inbox delivery (subscriptions and read flags, no text) are not wake posts and are untouched.
 
 **Consequences worth knowing.**  A DM thread's reply is a new group conversation (the Operator joined it), so the daemon also counts that reply on the thread that woke the seat, or the loop guard of the trigger thread would never move.  The reply in a thread reaches the seat's inbox as an ordinary item from a non-eligible sender and wakes no one.  A bot that sent a message to a seat whose quota is spent gets the notice as an inbox item, no longer as a DM that wakes it.  `held_alert_seat` no longer chooses a poster: the Operator carries the digest, and a standing digest that a seat's bot posted before this change is forgotten (it cannot be edited without that seat's identity), so the digest restarts as the Operator's own message.
 
@@ -367,7 +370,7 @@ The prompt and schema go in as **files**, not stdin and not an inline string:  `
 
 ### 3.3b The mcode Fallback (`fallback = "mcode"`)
 
-A wake may name one fallback runtime, tried **only when the primary could not produce a usable answer** — a crashed runtime, an unparseable result, a missing or unpinned binary.  `mcode` is the only value `KNOWN_FALLBACKS` accepts.
+A wake may name one fallback runtime, tried **only when the primary could not produce a usable answer** — a crashed runtime, an unparseable result, a missing or unpinned binary.  `KNOWN_FALLBACKS` accepts `mcode` (this section) and `openrouter` ([section 3.3c](#33c-the-openrouter-wake)), and each follows its own rule for which failures it answers:  the rule below is mcode's.
 
 **What does and does not fall back.**  Only a fault another runtime could plausibly answer:  the binary could not start, the child produced no parseable result, or it ran past the deadline (`FALLBACKABLE_FAULTS`).  That is an **allowlist**, not a blocklist of known error words.  A blocklist keyed on message text breaks in the expensive direction:  a genuine cap whose wording nobody anticipated would read as "some other fault", the fallback would run, and a second wake would be spent on a provider with nothing left.  Under an allowlist, anything unrecognised simply does not fall back.
 
@@ -402,6 +405,134 @@ mcode exec --prompt-mode work --permission off --output-format json --input - \
 - **Cannot be HOME-isolated.**  Pointing HOME at the inert workspace was tried and mcode refused:  "Sign in to MiniMax to use Agent features", because the credential lives under HOME.  muse drops every vendor and identity variable instead.
 
 Its own pin files (`wake-pin-mcode.json`), verified before it is ever trusted, on the same never-self-heal rule as the primaries.  When the fallback answers, the ledger and log name it (`adapter`), so a wake answered by the fallback is never mistaken for the primary.  Any seat may name it — the CLAUDE seat at its weekly cap is exactly the case it exists for.
+
+### 3.3c The OpenRouter Wake
+
+The third local wake type, and the second fallback.  Same contract, same strict schema, same validator and same posting path as `muse`;  a different runtime carries it:  one HTTPS call to OpenRouter's chat-completions API, with no binary to pin, no login to expire and no tools.  The model still gets nothing to call, still returns JSON, and the daemon still validates it and posts the reply as the Operator (section 3.3, The Operator's voice).  No new post path was added.
+
+**Why (owner, Oct 30 2026).**  "lets use deepseek-flash-latest as backup if muse doesn't work so that it won't possibly be at quota", then "no I meant using openrouter to run the meta/muse-spark-1.3-contributor", and "I think openrouter is nice though."  The MM seat's `wake = "muse"` was dropped on every wake with `pin_stale` because the muse binary path moved, so headless Muse was not running at all.  An HTTP runtime has no binary path to move and no vendor login or subscription window to exhaust.
+
+**Two ways to use it.**
+
+| | Config | What answers |
+|---|---|---|
+| The seat's wake | `wake = "openrouter"` with `model = "meta/muse-spark-1.3-contributor"` (the default for this wake type) | The Muse contributor tier run through OpenRouter, so the wake does not depend on the muse binary, its pin, or Meta's login or quota |
+| A fallback behind any `claude`, `muse` or `openrouter` wake | `fallback = "openrouter"` with `fallback_model` (default `~deepseek/deepseek-flash-latest`) | A second model, when the primary did not produce a usable answer (below) |
+
+**Data collection (owner, Oct 30 2026).**  OpenRouter serves `meta/muse-spark-1.3-contributor` only to an account that allows data collection, so that privacy setting has to be on for the account the key belongs to.  The runtime does not set `provider.data_collection` itself, so the account's setting decides.  What goes out on each wake is the daemon's fenced prompt (up to 15 Zulip messages), to OpenRouter and to the model's provider; that is the cost of the contributor tier, and the owner accepted it.  A model OpenRouter will not serve under the account's policy answers with an HTTP error, which is a failure reason like any other and sends the wake to the fallback.
+
+The leading `~` is part of OpenRouter's id for a "latest" alias.  Copy-paste for the Mac's MM seat (neither is installed;  the owner edits `~/.agent-sync/listener.toml`):
+
+```toml
+# MM answers on the Muse model through OpenRouter, and on DeepSeek Flash when that call fails.
+[seat.MM]
+bot = "MiniMax"
+wake = "openrouter"
+model = "meta/muse-spark-1.3-contributor"
+fallback = "openrouter"
+fallback_model = "~deepseek/deepseek-flash-latest"
+```
+
+```toml
+# MM keeps the muse binary as its wake, and OpenRouter answers whenever the binary cannot.
+[seat.MM]
+bot = "MiniMax"
+wake = "muse"
+fallback = "openrouter"                # fallback_model defaults to ~deepseek/deepseek-flash-latest
+```
+
+Replace the whole `[seat.MM]` section rather than editing one line.  On an `openrouter` wake the keys that belong to the other runtimes are refused (`muse`, `provider`, `mcode`, `mcode_model`, and `fallback_uncontained_ok` with any OpenRouter fallback), and each refusal downgrades the seat to `inbox` with a RED config line until it is removed.  On the `muse` wake a `fallback = "mcode"` line becomes `fallback = "openrouter"` and `fallback_uncontained_ok` goes.
+
+**Config rules**, in the style of the other wake keys (a problem downgrades only that seat's wake to `inbox`, section 5):
+
+- `model` is `provider/name` with an optional leading `~` (`^~?[A-Za-z0-9][A-Za-z0-9._-]{0,39}/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`), and a `muse` or `claude` seat keeps its CLI-alias `model`.  `fallback_model` has the same shape and applies only with `fallback = "openrouter"`.  A `:` suffix is refused on purpose:  `:online` adds web search, and an unattended no-tools wake wants none of it.
+- A seat that uses OpenRouter as both wake and fallback must name two different models (the same call twice cannot answer what the first did not).
+- `fallback = "openrouter"` is accepted on a `claude`, `muse` or `openrouter` wake and refused on `inbox` and `http`.  `fallback = "mcode"` is refused on an `openrouter` wake (the mcode binary and model keys belong to a claude or muse seat).
+- **`fallback_uncontained_ok` is refused with `fallback = "openrouter"`.**  The call offers the model no tool, so there is nothing to contain and nothing to acknowledge;  the flag stays for mcode only.
+- `provider` is refused on an `openrouter` wake:  it names a CodeCaps subscription window, and OpenRouter bills credits.
+- The base URL is not a config key.  It is the constant `https://openrouter.ai/api/v1` in `adapters.py`, so a config can never send the key somewhere else.  A test injects a loopback URL;  the runner refuses any other `http` URL, userinfo and whitespace.
+
+**The call.**  One `POST {base}/chat/completions`, no stream, no retry loop (a retry on a 429 or a 5xx would spend the seat's serialized worker on a provider that just said no;  the fallback is the second chance), a hard overall deadline of 120 seconds (the socket timeout bounds each step and a watchdog shuts the socket at the deadline, so a server that drips bytes cannot hold the worker), no proxy and no redirect (a 3xx is a failure, so the key goes only to the host in the URL).  Standard library only (`http.client`).
+
+```json
+{"model": "<model>",
+ "messages": [{"role": "system", "content": "<wake-contract.md>"},
+              {"role": "user", "content": "<the daemon's wake prompt>"}],
+ "response_format": {"type": "json_schema",
+                     "json_schema": {"name": "wake_result", "strict": true, "schema": "<the strict wake schema>"}},
+ "provider": {"require_parameters": true},
+ "temperature": 0.2, "max_tokens": 4096,
+ "reasoning": {"effort": "minimal", "exclude": true}, "stream": false}
+```
+
+- The contract is the system message and the daemon's prompt is the user message, so the untrusted-data fence, the per-message bound and the 15-message history limit are exactly what `muse` and `claude` get.  The strict schema is `wakes.schema_text(fleet_tags, strict=True)`, the one the muse runtime sends (every property required).
+- `provider.require_parameters` keeps OpenRouter from routing to a provider that cannot honor the strict `response_format` instead of quietly dropping it.  No `tools`, no `tool_choice`, no plugin and no web search:  nothing is offered, and a response that carries a tool call is a failure.
+- `reasoning.effort` is `minimal`, the lowest tier the models accept (the muse runtime learned that `none` does not exist on the Meta provider).  Both default models list `reasoning`, `reasoning_effort`, `response_format` and `structured_outputs` in the OpenRouter catalog.  `max_tokens` is 4,096:  the answer is one JSON object of about 1,300 tokens, so that bounds the output price of a wake under a tenth of a cent.
+- The fallback's prompt is the whole prompt (as every runtime but mcode gets) with one difference:  no chat catalog.  Existing-chat selection is decided only for a muse run, so the header tells this model that selection is disabled and `chat_target` and `chat_inspect` must be null.  A `chat_target` from an OpenRouter run is held, never queued, so **chat routing through the chat catalog needs a muse run** and an OpenRouter-primary seat does without it.
+
+**The key.**
+
+| Name | Where | Read by |
+|---|---|---|
+| `OPERATOR_OPENROUTER_API_KEY` | Infisical Fleet-OPS (`INFISICAL_FLEET_OPS_PROJECT_ID`), `prod`, folder `/wake` | The daemon, through `service_identity.openrouter_api_key`, at the moment of a call |
+
+The owner named the secret.  It is read the way the Operator's own credential is (`operator_credentials` reads `/zulip_operator`):  one named value through the installed `fleet-secrets` reader, with its in-memory cache, its outage memory and its last-known-good fallback, so a call costs one vault read per cache window.  The project id is the one every other Fleet-OPS read uses:  `INFISICAL_FLEET_OPS_PROJECT_ID`, else the first line of `~/.agent-sync/fleet-ops-project-id`, so `test-wake --run` works from a shell that lacks the LaunchAgent's variable.  The rules from FLEET-PROTOCOL "OpenRouter" stand:  nothing here creates, rotates or provisions a key, no other app's key (`CT_OPENROUTER_API_KEY`, `ST_OPENROUTER_API_KEY`) is ever read, and there is no OpenRouter MCP.  The value is hidden the moment it is read (the log scrub and the secret scanner cover it and `Bearer <key>`), goes in one `Authorization` header, and is never an argv, a ledger row, a pin, a status field or an exception message.  **No request body and no response body is ever put in an error or a log line:**  response bodies can echo the prompt, so a failure carries a fixed phrase and a status number.  A key that cannot be read is the reason `openrouter_unavailable`:  the wake is dropped before anything is reserved (the message stays in the seat inbox, like `operator_unavailable`), and the failure is remembered for two minutes so the router thread asks with no network.  The hosted server container ships no `fleet-secrets`, so an `openrouter` seat belongs on the Mac listener until the server has the credential.
+
+**Failure reasons** (the ledger `reason`, always fixed text):
+
+| Reason | Meaning |
+|---|---|
+| `HTTP 400` ... `HTTP 504` with a phrase | `400 request rejected`, `401 key rejected`, `402 credits exhausted`, `403 forbidden or blocked by moderation`, `404 no provider supports the request`, `408 provider timed out`, `413`, `422`, `429 rate limited`, `502 provider failed`, `503 no provider available`, any other 5xx `provider error`, a 3xx `redirects are refused` |
+| `timed out after N seconds` | The overall deadline passed |
+| `network: <class>` | Refused, reset, DNS or a TLS failure (the class name only) |
+| `no parseable result` | The body or the answer was not JSON, or the answer was empty |
+| `provider error (code N)`, `provider error mid-answer` | OpenRouter carried an error inside a 200, or the stream ended in one |
+| `answer cut off at max_tokens`, `answer blocked by a content filter`, `the model refused`, `the model returned a tool call (none were offered)` | The model's own stop |
+| `response too large` | Over 256 KiB |
+| `invalid result: ...` | A well-formed body whose answer the validator refuses (the same check as every runtime) |
+| `the OpenRouter key is unavailable: ...` | The vault read failed (it names the secret, never a value) |
+
+An HTTP 402 is a failure reason, **never a hold**:  the next wake simply tries again, and topping the account up needs no restart.  A 401 or a 402 raises one owner banner an hour (`wake-openrouter-401` or `-402`), not one per wake.
+
+**When the fallback runs.**  `fallback = "openrouter"` answers the wake whenever the primary did not produce a usable answer, which is wider than the mcode rule on purpose:
+
+| Primary outcome | mcode | openrouter |
+|---|---|---|
+| Could not start, no parseable result, timed out | falls back (the allowlist) | falls back |
+| A nonzero exit, a provider's terminal refusal, an authentication error | does not (not on the allowlist) | falls back |
+| An answer the validator refuses (not JSON, wrong keys, out of enum) | does not | falls back |
+| A provider quota refusal (`RunResult.limited`) | never (a capped provider stays capped) | falls back:  OpenRouter is another account billed by credits, which is exactly the owner's reason for it ("so that it won't possibly be at quota") |
+| Cannot run at all:  `pin_stale`, `not_pinned`, no binary, or a CodeCaps reading that says the provider is spent | the wake is dropped or held | the primary is **skipped** (`wake-primary-skipped` in the log) and the fallback answers, with nothing spawned |
+| A safety refusal (a tool listed, a hook ran, no init event, the wrong number of models) | never | never (`wake-fallback-held`, `primary_refused`):  the daemon killed that child on purpose |
+
+The wake-level holds do not change:  a paused seat, the loop guard, a stale trigger, a spent count cap, `operator_unavailable` and `owner_not_pinned` stop the wake before any runtime is chosen, fallback or not.  The fallback runs only when its own pin is good (and, to stand in for a primary that cannot run, when its key was not just found unreadable);  otherwise the primary's own reason stands, so a seat with a stale muse pin and no good fallback is held with `pin_stale` exactly as before.  When both runtimes fail, the ledger reason keeps both (`HTTP 402 (credits exhausted) (after muse failed: no parseable result)`).  The status line says `ANSWERING IN PLACE OF THE WAKE (<why>)` while a fallback is standing in, and a CodeCaps hold the fallback covers is not shown as a RED "wakes are not running".
+
+**Pin.**  There is no binary to pin, so the pin vouches for the **request shape**:  the endpoint (host and path), the model slug, the role, the strict schema, the wake contract bytes, the request-body template (so the temperature, `max_tokens`, `require_parameters`, the reasoning setting and the absence of any tool are in it), the timeout, the response cap and `OPENROUTER_WAKE_POLICY_VERSION`.  A change to any of them makes the pin stale and the seat holds with a reason (`pin_stale`, `pin_unverified`, `pin_unreadable` when the contract cannot be read, or `not_pinned` for a seat nobody verified).  It never self-heals.
+
+| Role | Pin file | Candidate file | `--runtime` |
+|---|---|---|---|
+| The seat's wake | `<SEAT>/wake-pin-openrouter.json` | `<SEAT>/wake-pin-candidate-openrouter.json` | `openrouter` (or `auto` on an openrouter seat) |
+| The fallback | `<SEAT>/wake-pin-openrouter-fallback.json` | `<SEAT>/wake-pin-candidate-openrouter-fallback.json` | `fallback` |
+
+The two roles have their own pins because a seat may run OpenRouter as both on two models, and the role is part of the fingerprint, so one pin copied over the other is stale.  **A `~...-latest` alias can change the served weights upstream without changing anything the fingerprint covers;  that is accepted (the owner asked for "latest").**  The model slug itself is in the fingerprint, and the ledger records `served_model`, the dated id the response named, so a change is visible after the fact.
+
+`simple-chat daemon test-wake --seat S --runtime openrouter|fallback --run` sends the same four canned hostile messages, applies the same pass rule (a valid answer, no board item, no route, no chat selection) and prints the result with the HTTP status and token counts, never the key.  It never pins.  `--pin` records the pin after a person has read the result, and refuses a pass over a day old, a pass made for another model, and a pass made before the request changed.  The dry run (no `--run`) prints the request plan and reads no secret.
+
+**Cost and quota.**  OpenRouter bills credits, not a subscription window, so the CodeCaps gate does not apply:  `_quota_reason` returns nothing for an `openrouter` wake, `provider_quota` is never read for it, the status reports no `quota` and no RED for it, and `openrouter` is in `QUOTA_NEVER_CAP_PROVIDERS`.  `wake_max_usd` stays `0.0`, like muse.  A real reserve could be computed from `max_tokens` and the catalog's prices (about $0.001 to $0.003 a wake at the Muse contributor's $0.10 in and $0.20 out per million tokens, and about the same for DeepSeek Flash), but that is two orders of magnitude under the $0.25 a claude run reserves and the dollar axis was removed from the budgets on Oct 13, so a reserve would be a made-up number:  the count caps (`wakes_per_hour`, `wakes_per_day`, `per_topic_per_hour`, `owner_per_day`, `owner_per_topic_per_hour`) are the real bound, unchanged.  An OpenRouter wake is not deferred for host load and does not count toward `host_wake_max_running`, because it starts no process.
+
+**Ledger and status.**  The rows carry `adapter = "openrouter"` (the existing field that names the runtime), `model` (the slug asked for), `runtime_role` (`primary` or `fallback`), `http_status`, `usage` (token counts only:  `prompt_tokens`, `completion_tokens`, `total_tokens`, `reasoning_tokens`) and `served_model`, plus the existing `posted_by`.  `simple-chat status` shows `wake openrouter (<model>, pinned)` or `(<model>, NOT pinned: <why>)`, and `fallback openrouter (<model>, ...)` on a seat that has one.
+
+**After editing `listener.toml` on the Mac.**
+
+```
+simple-chat daemon reload
+simple-chat daemon test-wake --seat MM --run        # the wake;  read the result, then:
+simple-chat daemon test-wake --seat MM --pin
+simple-chat daemon test-wake --seat MM --runtime fallback --run    # only with fallback = "openrouter"
+simple-chat daemon test-wake --seat MM --runtime fallback --pin
+```
+
+On a seat whose wake is `muse` with an OpenRouter fallback, only the two `--runtime fallback` commands apply for OpenRouter (the bare ones test and pin the muse binary).  Until the fallback is pinned it is held and logged, never silently skipped.
 
 ### 3.4 Ledger and Reporting
 
@@ -545,11 +676,23 @@ live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, 
 # muse = "/absolute/path/to/muse"          # optional; else muse on the wake PATH
 # provider = "MiniMax"                     # the CodeCaps provider the quota gate reads
 # fallback = "mcode"                       # optional; the mcode fallback (section 3.3b)
+
+# The OpenRouter wake (section 3.3c):  one HTTPS call, no tools, no binary.  The key is the Operator's,
+# read from Fleet-OPS /wake OPERATOR_OPENROUTER_API_KEY.  Either as the seat's wake, with a second model behind it:
+# [seat.MM]
+# bot = "MiniMax"
+# wake = "openrouter"
+# model = "meta/muse-spark-1.3-contributor"      # the default for this wake type
+# fallback = "openrouter"                         # optional
+# fallback_model = "~deepseek/deepseek-flash-latest"   # the default;  must differ from model
+# ... or behind the muse binary, answering whenever it cannot (a stale pin, no binary, a failed run):
+# wake = "muse"
+# fallback = "openrouter"
 ```
 
 (TOML inline tables must sit on one line; the sample does.)
 
-**A config problem fails soft (AFC-358).**  A problem in how a seat is WOKEN (the `wake` value, `claude`, `muse` or `mcode` paths, `model`, `fallback`, `fallback_uncontained_ok`, `provider`, `budget`, `held_back`, `routine`, `route_enabled`, `muse_bridge`, a routine variable shared with another setting, a routine reading the Zulip site variable) downgrades only that seat's wake to `inbox`:  the seat still connects, still captures every mention and DM into its inbox, and `simple-chat status` shows it with a `RED config problem` line, a banner naming the first problem, and the problem in `config_errors`.  A problem in what makes the seat a seat (`instance`, `creds`, `bot`, `allow_admin`, the `*_env` names, a variable shared with another seat) still keeps it out, but `status` now lists it as a `NOT LOADED` row with its problems and raises a banner, instead of letting it vanish.  A wake that finds no `claude` or `muse` binary (`no_claude`, `no_muse`) raises a banner naming `seat.X.claude` or `seat.X.muse`, at most once a day per seat.
+**A config problem fails soft (AFC-358).**  A problem in how a seat is WOKEN (the `wake` value, `claude`, `muse` or `mcode` paths, `model`, `fallback`, `fallback_model`, `fallback_uncontained_ok`, `provider`, `budget`, `held_back`, `routine`, `route_enabled`, `muse_bridge`, a routine variable shared with another setting, a routine reading the Zulip site variable) downgrades only that seat's wake to `inbox`:  the seat still connects, still captures every mention and DM into its inbox, and `simple-chat status` shows it with a `RED config problem` line, a banner naming the first problem, and the problem in `config_errors`.  A problem in what makes the seat a seat (`instance`, `creds`, `bot`, `allow_admin`, the `*_env` names, a variable shared with another seat) still keeps it out, but `status` now lists it as a `NOT LOADED` row with its problems and raises a banner, instead of letting it vanish.  A wake that finds no `claude` or `muse` binary (`no_claude`, `no_muse`) raises a banner naming `seat.X.claude` or `seat.X.muse`, at most once a day per seat.
 
 Opt-in `[notes_queue]` (AFC-486, server instance only):  `enabled = true`, `worker_seats` and `server_seats`.  The Operator then serves its Apple Notes queue under `/notes/v1/` on the listener API (`[listener_api]` must be on), and a seatless runner on the Mac claims each request;  see [operator-notes.md](operator-notes.md).  Off by default, and a section with any error stays off.  The Zulip-channel relay of AFC-331 (`[notes_relay]`, `#notes-relay`) is retired, and an old `[notes_relay]` section is ignored.
 
@@ -561,7 +704,7 @@ The Mac sample also carries `instance = "mac"` in `[daemon]`.  The sample enable
 | `simple-chat daemon install [--dry-run] [--python P] [--bin B]` and `uninstall [--dry-run]` | Writes or removes the plist, the log files and the sample config, and prints the `launchctl bootstrap` or `bootout` command.  Never runs launchctl |
 | `simple-chat daemon init [--seat S] [--rc PATH] [--yes]` | Writes the config template if missing, reads the user list as the `--seat` bot (credentials from `--rc`, then `ZULIP_RC`, then the seat's own source in `listener.toml` whether or not the seat is enabled, which for `creds = "env"` is its `email_env` and `key_env`; the key must be that seat's own bot or init refuses), pins `owner_user_id` and the optional `eligible_user_ids` after confirmation, lists credential files found by name without enabling them, and checks each listed bot's file mode, role and #work-in-progress subscription |
 | `simple-chat daemon pause [--seat S] [--wakes-only]`, `resume [--seat S]`, `reload` | Kill switch and reload |
-| `simple-chat daemon test-wake --seat S [--runtime claude\|muse\|mcode\|fallback] [--topic T] [--run \| --pin]` | Prints the argv, environment names and prompt.  `--run` runs the chosen runtime on canned hostile messages, applies the init and hook assertions (claude) or the envelope checks (muse, mcode) and the validator, checks `claude agents --json` on a claude seat, and prints the result without posting; it never pins.  `--pin` then pins the binary that passed, after a person has read the result.  `--runtime fallback` verifies the fallback on its own |
+| `simple-chat daemon test-wake --seat S [--runtime claude\|muse\|mcode\|openrouter\|fallback] [--topic T] [--run \| --pin]` | Prints the argv, environment names and prompt (for openrouter, the request plan:  no secret is read for a dry run).  `--run` runs the chosen runtime on canned hostile messages, applies the init and hook assertions (claude) or the envelope checks (muse, mcode) and the validator, checks `claude agents --json` on a claude seat, and prints the result without posting; it never pins.  `--pin` then pins the binary (for openrouter, the request) that passed, after a person has read the result.  `--runtime fallback` verifies the fallback on its own, and is how an openrouter fallback is tested and pinned (`--runtime openrouter` is the seat's openrouter wake) |
 | `simple-chat daemon status` or `simple-chat status [--json] [--probe] [--seat S]` | Running or not, LaunchAgent and plugin versions, per bot:  connected, last event, cursor, wake adapter and pin, wakes and cost in 24 hours; leases with watcher state; pause state; config errors in red |
 | `simple-chat attach [--topic T ...] [--mentions] [--platform P] [--lease ID]` | Writes or updates the lease.  Also `--wait [--timeout S]`, `--drain [--replay N]`, `--rewake` and `--hook EVENT` |
 | `simple-chat detach (--topic T ... \| --all)` | Removes topics or the lease |
@@ -647,4 +790,4 @@ Decided by the owner, Thu, Oct 8 (2026-10-08).
 
 Decided by the owner, Sat, Oct 10 (2026-10-10).
 
-13. **Route suggestions from the CLAUDE wake.**  Jay approved ("yes") an optional `route` in the wake result:  the tool-less wake may suggest paging one fleet seat, and the daemon validates it deterministically and posts `[CLAUDE·route→SEAT]` with a single mention.  It is honored only when the wake batch holds an owner trigger, only from channel topics, never to the waking seat, a trigger's sender or a seat already mentioned, within 3 routes an hour, 10 a day and one per topic per 30 minutes, with a `route_enabled` kill switch.  It counts on the loop guard, never chains, is logged in the ledger, and is reported to Jay as a `[CLAUDE·note]` DM (section 3.3, Route suggestions).
+13. **Route suggestions from the CLAUDE wake.**  Jay approved ("yes") an optional `route` in the wake result:  the tool-less wake may suggest paging one fleet seat, and the daemon validates it deterministically and posts `[OPERATOR·route→SEAT]` with a single mention.  It is honored only when the wake batch holds an owner trigger, only from channel topics, never to the waking seat, a trigger's sender or a seat already mentioned, within 3 routes an hour, 10 a day and one per topic per 30 minutes, with a `route_enabled` kill switch.  It counts on the loop guard, never chains, is logged in the ledger, and is reported to Jay as a `[OPERATOR·note]` DM (section 3.3, Route suggestions).

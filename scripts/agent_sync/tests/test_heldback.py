@@ -1398,7 +1398,7 @@ class HeldBackClaudeTests(HeldMixin, DaemonHarness):
         self.assertEqual([r["state"] for r in catch_up], ["queued", "accepted", "started", "done"])
         self.assertEqual((catch_up[0]["trigger_ids"], catch_up[0]["trigger_ts"]), ([held], None))
         self.assertIn("Trigger message ids: %d" % held, self.dumps()[-1]["stdin"])
-        self.assertTrue(self.bot_posts()[-1]["content"].startswith("[CLAUDE·wake] re=%d\n" % held))
+        self.assertTrue(self.bot_posts()[-1]["content"].startswith("[OPERATOR·wake] re=%d\n" % held))
         self.assertEqual([r["by"] for r in self.rows("surfaced")], [catch_up[0]["wake_id"]])
         self.assertEqual(self.held(), [])
         self.step(daemon, 3600)

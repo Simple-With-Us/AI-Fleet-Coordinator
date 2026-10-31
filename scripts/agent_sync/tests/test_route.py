@@ -1,6 +1,6 @@
 """Wake route suggestions (owner, Sat, Oct 10, 2026):  the tool-less CLAUDE wake may suggest paging
 one fleet seat.  The daemon checks it deterministically and honors it only for an owner trigger in a
-channel topic:  it posts `[CLAUDE·route→SEAT] re=<owner trigger>` with one live mention, counts it on
+channel topic:  it posts `[OPERATOR·route→SEAT] re=<owner trigger>` with one live mention, counts it on
 the loop guard, records it in the ledger and tells the owner.  Everything else is dropped and noted."""
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ class RouteHonoredTests(RouteHarness):
         self.assertEqual(done["route"]["status"], "posted")
         posts = self.stream_posts()
         self.assertEqual(len(posts), 1, [post["content"] for post in posts])
-        self.assertTrue(posts[0]["content"].startswith("[CLAUDE·route→CODEX] re=%d\n" % mid), posts[0]["content"])
+        self.assertTrue(posts[0]["content"].startswith("[OPERATOR·route→CODEX] re=%d\n" % mid), posts[0]["content"])
         self.assertNotIn("wake-undelivered", [item["kind"] for item in self.owner_queue()])
 
     def test_an_owner_triggered_route_posts_the_reply_then_the_route_and_notes_the_owner(self) -> None:
@@ -106,8 +106,8 @@ class RouteHonoredTests(RouteHarness):
         posts = self.stream_posts()
         self.assertEqual(len(posts), 2, [p["content"] for p in posts])
         reply, route = posts
-        self.assertTrue(reply["content"].startswith("[CLAUDE·wake] re=%d\n" % mid))
-        self.assertTrue(route["content"].startswith("[CLAUDE·route→CODEX] re=%d\n" % mid), route["content"])
+        self.assertTrue(reply["content"].startswith("[OPERATOR·wake] re=%d\n" % mid))
+        self.assertTrue(route["content"].startswith("[OPERATOR·route→CODEX] re=%d\n" % mid), route["content"])
         self.assertEqual((route["display_recipient"], route["subject"]), ("agent-sync", "t"))
         self.assertIn("@**Codex|11** CLAUDE paged you on Jay's behalf:", route["content"])
         self.assertEqual(W.loud_mentions(route["content"]), 1, "only the daemon's mention is live")
@@ -119,7 +119,7 @@ class RouteHonoredTests(RouteHarness):
                          ("CODEX", "inbox only", route["id"]))
         dms = self.owner_dms()
         self.assertEqual(len(dms), 1)
-        self.assertTrue(dms[0]["content"].startswith("[CLAUDE·note] re=%d\n" % mid))
+        self.assertTrue(dms[0]["content"].startswith("[OPERATOR·note] re=%d\n" % mid))
         self.assertIn("Routed: CODEX (inbox only)", dms[0]["content"])
         self.assertIn("Jay wants a look at the CT build failure.", dms[0]["content"])
         self.assertTrue(any(q["kind"] == "route" and "CODEX" in (q["note"] or "") for q in self.owner_queue()))
@@ -141,7 +141,7 @@ class RouteHonoredTests(RouteHarness):
         self.owner_says(daemon)
         self.wake_cycle(daemon, 6)
         post = self.stream_posts()[-1]["content"]
-        self.assertTrue(post.startswith("[CLAUDE·route→CODEX]"))
+        self.assertTrue(post.startswith("[OPERATOR·route→CODEX]"))
         self.assertEqual(W.loud_mentions(post), 1)
         self.assertIn("@_**Cursor**", post)
         self.assertNotIn("@*everyone*", post)
@@ -194,7 +194,7 @@ class RouteDroppedTests(RouteHarness):
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
         self.assertIn("Routing: disabled (no_owner_trigger); leave route null", self.dumps()[0]["stdin"])
-        self.assertEqual([p["content"].split("\n")[0][:13] for p in self.stream_posts()], ["[CLAUDE·wake]"])
+        self.assertEqual([p["content"].split("\n")[0][:15] for p in self.stream_posts()], ["[OPERATOR·wake]"])
         route = self.done()["route"]
         self.assertEqual((route["status"], route["why"]), ("dropped", "no_owner_trigger"))
         self.assertTrue(any(q["kind"] == "route_dropped" and "no_owner_trigger" in (q["note"] or "")
@@ -211,7 +211,7 @@ class RouteDroppedTests(RouteHarness):
         dms = self.owner_dms()
         self.assertEqual(len(dms), 1)
         self.assertIn("Route to CODEX dropped: no_owner_trigger.", dms[0]["content"])
-        self.assertFalse(any(p["content"].startswith("[CLAUDE·route") for p in self.stream_posts()))
+        self.assertFalse(any(p["content"].startswith("[OPERATOR·route") for p in self.stream_posts()))
 
     def test_routes_to_the_sender_self_or_an_already_mentioned_seat_are_dropped(self) -> None:
         cases = [
@@ -227,7 +227,7 @@ class RouteDroppedTests(RouteHarness):
                 self.owner_says(daemon, content, topic="t%d" % n)
                 self.wake_cycle(daemon, 6)
                 self.assertEqual((self.done()["route"]["status"], self.done()["route"]["why"]), ("dropped", why))
-        self.assertFalse(any(p["content"].startswith("[CLAUDE·route") for p in self.stream_posts()))
+        self.assertFalse(any(p["content"].startswith("[OPERATOR·route") for p in self.stream_posts()))
 
     def test_a_route_to_a_trigger_sender_is_dropped(self) -> None:
         self.set_claude(mode="ok", output=routed())
@@ -401,7 +401,7 @@ class RouteUnitTests(RouteHarness):
         text = W.compose_route("CLAUDE", "CODEX", "Co*dex|", 11, 77, "a\nb ```x``` @**Jay**",
                                "```\n@**all** break out\n```", "https://z/near/77")
         lines = text.split("\n")
-        self.assertEqual(lines[0], "[CLAUDE·route→CODEX] re=77")
+        self.assertEqual(lines[0], "[OPERATOR·route→CODEX] re=77")
         self.assertTrue(lines[1].startswith("@**Codex|11** CLAUDE paged you on Jay's behalf:  a b '''x''' @_**Jay**"))
         self.assertEqual((lines[2], lines[4]), ("```quote", "```"))
         self.assertNotIn("`", lines[3])

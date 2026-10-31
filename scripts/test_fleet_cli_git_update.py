@@ -22,6 +22,7 @@ spec.loader.exec_module(U)
 PY_OK = "#!/usr/bin/python3\nimport sys\nsys.exit(0)\n"
 PY_BROKEN = "#!/usr/bin/python3\nimport sys\nsys.exit(1)\n"
 BOARD = "#!/usr/bin/python3\nimport sys\nsys.exit(2 if sys.argv[1:] == ['show'] else 0)\n"
+GITCLI = "#!/usr/bin/python3\nimport sys\nsys.exit(2 if sys.argv[1:] == ['call'] else 0)\n"
 BASH_OK = "#!/bin/bash\nexit 0\n"
 # A stand-in for fleet-cli-release.py:  only what the updater imports.
 RELEASE = """from pathlib import Path
@@ -115,6 +116,13 @@ class PrivateStateTests(unittest.TestCase):
             self.assertTrue(Path(argv[-1]).is_absolute())
 
 
+class SmokeCaseInventoryTests(unittest.TestCase):
+    def test_smoke_cases_cover_simple_git(self) -> None:
+        cases = {name: (script, args, expected) for name, script, args, expected in U.SMOKE_CASES}
+        self.assertEqual(cases["simple_git_help"], ("scripts/simple-git", ["--help"], 0))
+        self.assertEqual(cases["simple_git_usage_error"], ("scripts/simple-git", ["call"], 2))
+
+
 class GitUpdateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -138,6 +146,7 @@ class GitUpdateTests(unittest.TestCase):
             "scripts/simple-chat": agent_sync,
             "scripts/simple-notes": PY_OK,
             "scripts/simple-board": BOARD,
+            "scripts/simple-git": GITCLI,
             "scripts/recall": PY_OK,
             "scripts/fleet_lanes/bin/lane": BASH_OK,
             "scripts/fleet-mode": BASH_OK,

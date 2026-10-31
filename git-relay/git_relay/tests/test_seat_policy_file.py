@@ -212,7 +212,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "ce70d77c7ac74970")
+        self.assertEqual(seat_policy.digest(SEATS), "04f89c1a2ade3bff")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -340,3 +340,61 @@ class SeatPolicyFile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SeatPolicyOauthAssertRender(unittest.TestCase):
+    """The oauth_assert per-seat opt-in renders only as an explicit true."""
+
+    DOC_MIN = {
+        "profiles": {
+            "p": {
+                "actions": ["open_pr"],
+                "mint_permissions": {"metadata": "read"},
+                "repos": [SYNTHETIC_REPO],
+            }
+        },
+        "seats": [
+            {"identity": "CODEX", "app_slug": "swu-codex", "profile": "p"},
+            {"identity": "ECHO", "app_slug": "swu-echo", "profile": "p", "oauth_assert": True},
+        ],
+    }
+
+    def test_flag_renders_only_when_true(self):
+        seats = seat_policy.render(self.DOC_MIN)
+        self.assertNotIn("oauth_assert", seats["swu-codex"])
+        self.assertIs(seats["swu-echo"]["oauth_assert"], True)
+
+    def test_non_true_flag_is_refused(self):
+        for bad in (False, "true", 1):
+            doc = json.loads(json.dumps(self.DOC_MIN))
+            doc["seats"][1]["oauth_assert"] = bad
+            with self.assertRaises(seat_policy.PolicyFileError):
+                seat_policy.render(doc)
+
+    def test_the_reviewed_file_still_renders_for_the_deployed_policy(self):
+        # The reviewed file itself carries no oauth_assert yet:  the relay
+        # accepts the rendered JSON unchanged, assertions refused everywhere.
+        policy = SeatPolicy(seat_policy.compact(SEATS), assertion_verifier=None)
+        self.assertIsNone(
+            policy.authenticate(
+                "gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_"
+                "6c83d4e7a1b73c7c8afcc28641b50e8afe2b53ec21ed554f4c96947ca255f334"
+            )
+        )
+
+
+class HostedOAuthReviewedPolicyTests(unittest.TestCase):
+    def test_full_hosted_oauth_flags_only(self):
+        import json
+        import pathlib
+
+        data = json.loads(
+            (
+                pathlib.Path(__file__).resolve().parents[2] / "deploy" / "seat-policy.json"
+            ).read_text()
+        )
+        flagged = {row["identity"] for row in data["seats"] if row.get("oauth_assert")}
+        self.assertEqual(
+            flagged, {"CLAUDE", "CODEX", "CURSOR", "ECHO", "GROK-WEB", "JET-CHAT", "WISE"}
+        )
+        self.assertNotIn("JET", flagged)
