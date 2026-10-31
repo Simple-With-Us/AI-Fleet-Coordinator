@@ -390,17 +390,21 @@ def owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
 
 
 def owner_start_matches_current(start, current_utc, acquired_at, lock_mtime, owner_mtime):
-    """Return same/different, or None when token evidence is unusable."""
-    if start == current_utc:
-        return True
+    """Return same/different, or None when token evidence is unusable.
+
+    Mirrors scripts/mac-resource-watch.py:  tokens more than 24 hours apart
+    are a reused pid; within that window equality is only the fallback when
+    the tokens or acquired_at cannot be checked.
+    """
+    exact = start == current_utc
     old_epoch = c_lstart_epoch(start)
     current_epoch = c_lstart_epoch(current_utc)
     if old_epoch is None or current_epoch is None:
-        return None
-    if not owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
-        return None
+        return True if exact else None
     if abs(old_epoch - current_epoch) > 24 * 60 * 60:
         return False
+    if not owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
+        return True if exact else None
     # The old token may match this process only if it began by publication
     # of the owner record; this rejects a later process reusing the pid.
     if current_epoch > acquired_at:

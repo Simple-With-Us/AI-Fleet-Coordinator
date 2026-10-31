@@ -591,20 +591,23 @@ def _owner_start_matches_current(
 ) -> bool | None:
     """Return same/different, or None when token evidence is unusable.
 
-    Exact UTC tokens are decisive.  A differing, parseable token can be a
-    pre-migration local-time token; acquired_at rules out a reused pid whose
-    new process started after this owner record was published.
+    Tokens more than 24 hours apart cannot name the same process under any
+    timezone change, so they mean a reused pid even when acquired_at cannot
+    be trusted.  Within that window, a pre-migration local-time token can
+    equal a later process's UTC token, so string equality alone is not
+    decisive:  acquired_at rules out a process that started after this owner
+    record was published, and equality is only the fallback when the tokens
+    or acquired_at cannot be checked.
     """
-    if start == current_utc:
-        return True
+    exact = start == current_utc
     old_epoch = _c_lstart_epoch(start)
     current_epoch = _c_lstart_epoch(current_utc)
     if old_epoch is None or current_epoch is None:
-        return None
-    if not _owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
-        return None
+        return True if exact else None
     if abs(old_epoch - current_epoch) > 24 * 60 * 60:
         return False
+    if not _owner_acquired_at_is_sane(acquired_at, lock_mtime, owner_mtime):
+        return True if exact else None
     if current_epoch > acquired_at:
         return False
     return True
