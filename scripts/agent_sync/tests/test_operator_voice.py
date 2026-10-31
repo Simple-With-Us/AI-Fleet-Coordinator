@@ -386,13 +386,13 @@ class OperatorHarness(DaemonHarness):
 
 
 class WakeReplyTests(OperatorHarness):
-    def test_a_channel_wake_reply_is_the_operators_and_keeps_the_seat_tag(self) -> None:
+    def test_a_channel_wake_reply_is_the_operators_and_tagged_operator(self) -> None:
         daemon = self.started()
         mid = self.peer_wake(daemon)
         posts = self.operator_posts()
         self.assertEqual(len(posts), 1)
         self.assertEqual((posts[0]["display_recipient"], posts[0]["subject"]), ("agent-sync", "t"))
-        self.assertTrue(posts[0]["content"].startswith("[CLAUDE·wake] re=%d\n" % mid), posts[0]["content"])
+        self.assertTrue(posts[0]["content"].startswith("[OPERATOR·wake] re=%d\n" % mid), posts[0]["content"])
         self.assertEqual(self.seat_requests(), [], "the seat's own bot wrote nothing")
         row = self.final_row()
         self.assertEqual((row["state"], row["posted_id"], row["posted_by"]), ("done", posts[0]["id"], "OPERATOR"))
@@ -405,7 +405,7 @@ class WakeReplyTests(OperatorHarness):
         posts = self.operator_posts()
         self.assertEqual(len(posts), 1)
         self.assertEqual(sorted(r["id"] for r in posts[0]["display_recipient"]), [CLAUDE_ID, OWNER, OPERATOR_USER_ID])
-        self.assertTrue(posts[0]["content"].startswith("[CLAUDE·wake] re=%d" % dm))
+        self.assertTrue(posts[0]["content"].startswith("[OPERATOR·wake] re=%d" % dm))
         self.assertEqual(self.seat_requests(), [])
 
     def test_a_reply_in_a_new_dm_thread_still_counts_on_the_thread_that_woke_the_seat(self) -> None:
@@ -571,13 +571,14 @@ class SiteTests(OperatorHarness):
                                            "risk": risk, "owner_note": "Codex asked for the key."})
         return self.peer_wake(daemon)
 
-    def test_the_escalation_note_is_a_dm_from_the_operator_tagged_with_the_seat(self) -> None:
+    def test_the_escalation_note_is_a_dm_from_the_operator_and_names_the_seat_in_its_body(self) -> None:
         daemon = self.started()
         mid = self.escalate(daemon)
         notes = [m for m in self.operator_posts() if m["type"] == "private"]
         self.assertEqual(len(notes), 1)
         self.assertEqual(sorted(r["id"] for r in notes[0]["display_recipient"]), [OWNER, OPERATOR_USER_ID])
-        self.assertTrue(notes[0]["content"].startswith("[CLAUDE·note] re=%d\n" % mid), notes[0]["content"])
+        self.assertTrue(notes[0]["content"].startswith("[OPERATOR·note] re=%d\n" % mid), notes[0]["content"])
+        self.assertIn("\nSeat: CLAUDE\n", notes[0]["content"], "the tag names the Operator, so the body names the seat")
         self.assertEqual(self.final_row()["owner_dm"], notes[0]["id"])
         self.assertEqual(self.seat_requests(), [])
 
@@ -734,7 +735,7 @@ class StructureTests(unittest.TestCase):
 # --------------------------------------------------------------------------------------------
 
 ME = R.SeatIdentity("CODEX", CODEX, "Codex", "codex-bot@zulip.test")
-ROUTE = "[CLAUDE·route→CODEX] re=500\n@**Codex|11** CLAUDE paged you on Jay's behalf: look at the build"
+ROUTE = "[OPERATOR·route→CODEX] re=500\n@**Codex|11** CLAUDE paged you on Jay's behalf: look at the build"
 
 
 def context(**changes: Any) -> R.Context:
@@ -769,9 +770,9 @@ class RouteEligibilityTests(unittest.TestCase):
     def test_nothing_else_the_operator_says_is_eligible(self) -> None:
         for label, content in (
             ("a question", "@**Codex|11** which session did you mean?"),
-            ("a wake relay", "[CLAUDE·wake] re=500\n@**Codex|11** hello"),
+            ("a wake relay", "[OPERATOR·wake] re=500\n@**Codex|11** hello"),
             ("a status message", "[OPERATOR·status] @**Codex|11** your wake ran"),
-            ("a note", "[CLAUDE·note] re=500\n@**Codex|11** note"),
+            ("a note", "[OPERATOR·note] re=500\n@**Codex|11** note"),
         ):
             with self.subTest(label):
                 self.assertIsNone(self.wake(message(OPERATOR_USER_ID, content)))

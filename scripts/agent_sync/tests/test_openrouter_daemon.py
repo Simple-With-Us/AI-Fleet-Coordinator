@@ -226,7 +226,7 @@ class PrimaryTests(OpenRouterHarness):
         self.assertEqual(seen.body["response_format"]["json_schema"]["schema"]["required"][:2], ["action", "reply"])
         # The Operator said it, tagged with the seat's wake, and no seat bot wrote a thing.
         (post,) = self.operator_posts()
-        self.assertTrue(post["content"].startswith("[MM·wake] re=%d\n" % mid), post["content"])
+        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re=%d\n" % mid), post["content"])
         self.assertEqual((post["display_recipient"], post["subject"]), ("agent-sync", "t"))
         self.assertEqual(self.seat_requests(), [])
         # The ledger names the runtime, the model and what the call reported, and nothing secret.
@@ -467,7 +467,7 @@ class FallbackTests(OpenRouterHarness):
         self.assertEqual(row["state"], "done", row)
         self.assertEqual((row["adapter"], row["runtime_role"], row["model"]), ("openrouter", "fallback", FALLBACK_MODEL))
         (post,) = self.operator_posts()
-        self.assertTrue(post["content"].startswith("[MM·wake] re="), "the Operator carries the seat's tag")
+        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re="), "the reply carries the Operator's own tag")
         self.assertEqual(row["posted_by"], "OPERATOR")
         self.assertEqual(self.seat_requests(), [])
         return row
@@ -653,7 +653,7 @@ class OpenRouterBehindOpenRouterTests(OpenRouterHarness):
         started = [r for r in self.ledger("MM") if r["state"] == "started"][0]
         self.assertEqual((started["adapter"], started["model"], started["runtime_role"]), ("openrouter", MODEL, "primary"))
         (post,) = self.operator_posts()
-        self.assertTrue(post["content"].startswith("[MM·wake] re="))
+        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re="))
 
     def test_a_schema_invalid_primary_answer_is_answered_by_the_other_model(self) -> None:
         self.router.reply(Reply(body=completion({"action": "reply"})))

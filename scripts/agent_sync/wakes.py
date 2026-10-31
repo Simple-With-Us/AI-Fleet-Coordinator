@@ -897,8 +897,15 @@ def loud_mentions(text: str) -> int:
     return len(_LOUD_RE.findall(text))
 
 
-def compose_reply(seat: str, trigger_id: int, text: str) -> str:
-    return "[%s·wake] re=%d\n%s" % (seat, trigger_id, neutralize_mentions(text.strip()))
+#: What every post the daemon composes calls itself in its first-line tag (owner ruling, Oct 30 2026:
+#: "I want it to be the operator's", not the seat's or the runtime's).  A wake reply used to read
+#: `[MM·wake]`, which named a seat (and, for a headless Muse run, a MiniMax seat) that did not say it.
+#: The seat the wake was for is in the ledger and in the bodies of the notes and route posts, not in the tag.
+OPERATOR_TAG = "OPERATOR"
+
+
+def compose_reply(trigger_id: int, text: str) -> str:
+    return "[%s·wake] re=%d\n%s" % (OPERATOR_TAG, trigger_id, neutralize_mentions(text.strip()))
 
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")
@@ -923,14 +930,14 @@ def compose_route(
     owner_text: str,
     link: str,
 ) -> str:
-    """The route post:  `[SEAT·route→TARGET] re=<owner trigger>`, then the daemon's single mention of
+    """The route post:  `[OPERATOR·route→TARGET] re=<owner trigger>`, then the daemon's single mention of
     the target bot (`@**Name|id**`, so a duplicate display name cannot redirect it), the model's
     reason, and the owner's ask quoted, with every mention in the reason and the quote made silent.
     Kept apart from the `·wake` reply:  a `·wake`-tagged post never wakes anyone, a `·route` post
     wakes the seat it mentions."""
     name = _NAME_RE.sub("", target_name).strip() or target
     lines = [
-        "[%s\u00b7route\u2192%s] re=%d" % (seat, target, trigger_id),
+        "[%s\u00b7route\u2192%s] re=%d" % (OPERATOR_TAG, target, trigger_id),
         "@**%s|%d** %s paged you on Jay's behalf:  %s"
         % (name, int(target_id), seat, _one_line(reason, LIMITS["route_reason"])),
         "```quote",
