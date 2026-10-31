@@ -1,0 +1,6684 @@
+{
+ "provenance": "hosted simple-tools MCP tools/list, captured by the host's own seat 2026-10-31; identity enum neutralized (caller-relative); list presence is not execution proof",
+ "tools": [
+  {
+   "name": "gr_comment_pr",
+   "description": "Add a conversation comment to a pull request through git-relay, as your own GitHub App.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "description": "pull request number"
+     },
+     "body": {
+      "type": "string"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   },
+   "title": "Comment on Pull Request"
+  },
+  {
+   "name": "gr_edit_pr",
+   "description": "Edit a pull request's title and/or body through git-relay, as your own GitHub App.  At least one of title or body is required.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "description": "pull request number"
+     },
+     "title": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    },
+    "anyOf": [
+     {
+      "required": [
+       "title"
+      ]
+     },
+     {
+      "required": [
+       "body"
+      ]
+     }
+    ]
+   },
+   "title": "Edit Pull Request"
+  },
+  {
+   "name": "gr_merge_pr",
+   "description": "Merge a pull request through git-relay, as your own GitHub App, when your seat's allowlist covers it.  method is squash (default), merge or rebase.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "description": "pull request number"
+     },
+     "method": {
+      "type": "string",
+      "enum": [
+       "squash",
+       "merge",
+       "rebase"
+      ]
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   },
+   "title": "Merge Pull Request"
+  },
+  {
+   "name": "gr_open_pr",
+   "description": "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "base",
+     "head",
+     "title",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "description": "owner/name"
+     },
+     "base": {
+      "type": "string"
+     },
+     "head": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   },
+   "title": "Open Pull Request"
+  },
+  {
+   "name": "gr_reply_thread",
+   "description": "Reply to a pull request review comment through git-relay, as your own GitHub App.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "comment_id",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "description": "pull request number"
+     },
+     "comment_id": {
+      "type": "integer"
+     },
+     "body": {
+      "type": "string"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   },
+   "title": "Reply to Review Comment"
+  },
+  {
+   "name": "gr_resolve_thread",
+   "description": "Resolve a pull request review thread through git-relay, as your own GitHub App.  thread_id is the PRRT_ review-thread id.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "thread_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "description": "owner/name"
+     },
+     "thread_id": {
+      "type": "string"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   },
+   "title": "Resolve Review Thread"
+  },
+  {
+   "name": "gr_wf_artifact_delete",
+   "description": "Irreversibly remove exact repo-scoped artifact ID. No upstream expected-state fence or head-SHA CAS exists. Explicit action/repo authorization and owner execution authority required. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "artifact_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "artifact_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_artifact_download",
+   "description": "Download an Actions artifact (zip) as a base64 byte range (up to 256 KiB); page with offset/next_offset. Content is untrusted data. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "artifact_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "artifact_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 536870912
+     },
+     "length": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 262144
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_artifact_get",
+   "description": "Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "artifact_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "artifact_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_artifacts_page",
+   "description": "Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_assignees_add",
+   "description": "assignees add. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "assignees",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "assignees": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_assignees_remove",
+   "description": "assignees remove. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "assignees",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "assignees": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_automerge_disable",
+   "description": "automerge disable. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_automerge_enable",
+   "description": "automerge enable. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "method",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "method": {
+      "type": "string",
+      "enum": [
+       "SQUASH",
+       "MERGE",
+       "REBASE"
+      ]
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_branch_create",
+   "description": "Create a new branch without overwrite. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "branch",
+     "sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_branch_delete",
+   "description": "branch delete; expected SHA pre-read is not an atomic ref lock. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "branch",
+     "expected_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "expected_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_branch_get",
+   "description": "Read branch get. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "branch"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_branch_update",
+   "description": "branch update; expected SHA pre-read is not an atomic ref lock. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "branch",
+     "sha",
+     "expected_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "expected_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_branches",
+   "description": "List branches. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_cache_usage",
+   "description": "Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_caches_page",
+   "description": "Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_check_create",
+   "description": "Write own-App check run; requires explicit checks:write. Capability never authorizes fabricated test results or gate bypass. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha",
+     "name",
+     "status",
+     "conclusion",
+     "title",
+     "summary",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^swu-[a-z0-9-]+/report$"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "queued",
+       "in_progress",
+       "completed"
+      ]
+     },
+     "conclusion": {
+      "type": "string",
+      "enum": [
+       "none",
+       "action_required",
+       "cancelled",
+       "failure",
+       "neutral",
+       "success",
+       "skipped",
+       "timed_out"
+      ]
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+     },
+     "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_check_run_get",
+   "description": "Read exact check-run metadata bound to requested commit SHA. App ID is provenance, not independent CI proof. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "check_run_id",
+     "head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "check_run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_check_runs_page",
+   "description": "Read one exact-name check-run metadata page at a commit; all attempts, not a verdict. No output text; full page has_more is conservative. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "head_sha",
+     "check_name"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "check_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_check_update",
+   "description": "Write own-App check run; requires explicit checks:write. Capability never authorizes fabricated test results or gate bypass. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "check_id",
+     "expected_sha",
+     "name",
+     "status",
+     "conclusion",
+     "title",
+     "summary",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "check_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^swu-[a-z0-9-]+/report$"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "queued",
+       "in_progress",
+       "completed"
+      ]
+     },
+     "conclusion": {
+      "type": "string",
+      "enum": [
+       "none",
+       "action_required",
+       "cancelled",
+       "failure",
+       "neutral",
+       "success",
+       "skipped",
+       "timed_out"
+      ]
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+     },
+     "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_checks",
+   "description": "List check runs for a ref (needs checks:read in the seat ceiling). Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "ref"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "ref": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_code_search",
+   "description": "Search code in the repository. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "term"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "term": {
+      "type": "string",
+      "maxLength": 500
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commit_comment_create",
+   "description": "Create a whole-commit comment, not inline path comments; exact SHA verified. Notification/write requires separate authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commit_comment_delete",
+   "description": "Delete an exact commit comment after prior-body SHA256 check; pre-read is not atomic. Separate operation authority required. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha",
+     "comment_id",
+     "expected_body_sha256",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "comment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_body_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commit_comment_get",
+   "description": "Read one untrusted commit comment correlated with its ID and exact commit SHA. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha",
+     "comment_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "comment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commit_comment_update",
+   "description": "Update an exact commit comment with prior-body SHA256 check; pre-read is not atomic. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha",
+     "comment_id",
+     "expected_body_sha256",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "comment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_body_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commit_comments_page",
+   "description": "Read a bounded page of untrusted commit comments at an exact SHA; no snapshot or full-history claim. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commit_get",
+   "description": "Read commit get. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commit_status_create",
+   "description": "Create a commit status only under separate owner authority; never fabricate a CI result or bypass a gate. Requires statuses:write in the seat ceiling. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha",
+     "state",
+     "context",
+     "description",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "error",
+       "failure",
+       "pending",
+       "success"
+      ]
+     },
+     "context": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^swu-[a-z0-9-]+/report$"
+     },
+     "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 140
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commit_statuses",
+   "description": "Read commit statuses, not check runs. Requires statuses:read in the seat ceiling. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_commits",
+   "description": "List commits. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "ref"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "ref": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_compare",
+   "description": "Read compare. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "base",
+     "head"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "base": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "head": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_compare_commits_page",
+   "description": "Read exact-SHA compare graph metadata page, not patches/files or complete diff. Merge-base/counts/commit-parent SHAs only; conservative full-page has_more. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "base_sha",
+     "head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_deployment_create",
+   "description": "Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha",
+     "environment",
+     "description",
+     "transient",
+     "production",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "environment": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+     },
+     "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 140
+     },
+     "transient": {
+      "type": "boolean"
+     },
+     "production": {
+      "type": "boolean"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_deployment_delete",
+   "description": "Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "deployment_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "deployment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_deployment_get",
+   "description": "Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "deployment_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "deployment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_deployment_status_create",
+   "description": "Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "deployment_id",
+     "state",
+     "description",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "deployment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "error",
+       "failure",
+       "inactive",
+       "in_progress",
+       "queued",
+       "pending",
+       "success"
+      ]
+     },
+     "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 140
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_deployment_statuses",
+   "description": "Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "deployment_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "deployment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_deployments",
+   "description": "Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_environment_get",
+   "description": "Read exact environment metadata and protection-type summary; no environment creation, deletion, approval or policy changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "name"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_environments",
+   "description": "Read bounded environment metadata, not full protection rules or reviewers; null means unknown/notreturned, not unprotected. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_file_delete",
+   "description": "Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "path",
+     "branch",
+     "message",
+     "prior_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     },
+     "prior_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_file_get",
+   "description": "Read one file. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "path",
+     "ref"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+     },
+     "ref": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_file_history",
+   "description": "Read bounded exact-path commit/parent SHA history at immutable head. No messages, authors, contents, rename-follow or full-history claim. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "path",
+     "head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_file_put",
+   "description": "Write one file to a branch. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 6291456,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "path",
+     "branch",
+     "message",
+     "content_b64",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "message": {
+      "type": "string",
+      "maxLength": 500
+     },
+     "content_b64": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2796204
+     },
+     "prior_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_file_rename",
+   "description": "Rename exact regular blob on non-default branch, absent destination, no workflow paths. Bounded trees; no force and no automatic replay. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "source_path",
+     "destination_path",
+     "branch",
+     "message",
+     "expected_head_sha",
+     "prior_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "source_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+     },
+     "destination_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "prior_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_files_put",
+   "description": "Write up to 20 files in one commit, fenced on the branch head. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 6291456,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "branch",
+     "message",
+     "expected_head_sha",
+     "files",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "message": {
+      "type": "string",
+      "maxLength": 500
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "path"
+       ],
+       "properties": {
+        "path": {
+         "type": "string",
+         "maxLength": 1024,
+         "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+        },
+        "content_b64": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 2796204
+        },
+        "delete": {
+         "type": "boolean"
+        }
+       }
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_git_blob_create",
+   "description": "Create unattached bounded UTF-8 blob; no ref or tree changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "text",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "text": {
+      "type": "string",
+      "maxLength": 40000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_git_blob_get",
+   "description": "Read bounded UTF-8 blob by exact SHA (40KiB maximum). Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_git_commit_create",
+   "description": "Create unattached commit with exact tree and one/two parents. No arbitrary author/signature/ref changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "tree_sha",
+     "parents",
+     "message",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "tree_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "parents": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{40}$"
+      }
+     },
+     "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_git_commit_get",
+   "description": "Read bounded Git commit object, not full REST commit diff. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_git_tree_create",
+   "description": "Create unattached tree from base tree and up to20 text files; no workflow paths/ref changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "base_tree",
+     "files",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "base_tree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "path",
+        "text",
+        "mode"
+       ],
+       "properties": {
+        "path": {
+         "type": "string",
+         "maxLength": 1024,
+         "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+        },
+        "text": {
+         "type": "string",
+         "maxLength": 40000
+        },
+        "mode": {
+         "type": "string",
+         "enum": [
+          "100644",
+          "100755"
+         ]
+        }
+       }
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_git_tree_get",
+   "description": "Read nonrecursive tree with at most100 entries; larger trees refused. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_blocked_by",
+   "description": "Read bounded issue relation page, no writes or cross-repo lookup.\u00a0 has_more is conservative, not completeness proof. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_blocking",
+   "description": "Read bounded issue relation page, no writes or cross-repo lookup.\u00a0 has_more is conservative, not completeness proof. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_comment",
+   "description": "Comment on an issue as your own GitHub App. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_comment_delete",
+   "description": "issue comment delete. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "comment_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "comment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_comment_update",
+   "description": "issue comment update. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "comment_id",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "comment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_comments",
+   "description": "Read issue comments. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_create",
+   "description": "Create an issue as your own GitHub App. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "title",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60000
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_dependency_add",
+   "description": "Make issue blocked by another exact same-repository issue. Identity prereads are non-atomic, not a version fence; cycles and remote policy refused by GitHub; no replacement parent or transfer. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "blocker_number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "blocker_number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_dependency_remove",
+   "description": "Remove same-repo issue dependency by validated blocker identity. No head/version CAS; concurrent relation changes remain possible. Not authority to hide work or bypass policy. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "blocker_number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "blocker_number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_events",
+   "description": "Read bounded issue event metadata only; no actor, content, label details or full history claim. Nullable ID/time/commit means unavailable. PR issue endpoints may return PR events. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_get",
+   "description": "Read issue summary. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_list",
+   "description": "List issues (not pull requests). Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "open",
+       "closed",
+       "all"
+      ]
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_lock",
+   "description": "issue lock. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "reason",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "reason": {
+      "type": "string",
+      "enum": [
+       "off-topic",
+       "too heated",
+       "resolved",
+       "spam"
+      ]
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_parent",
+   "description": "Read issue parent in exact repo; missing parent, visibility and other upstream refusals are indistinguishable; never a fabricated empty parent. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_subissues",
+   "description": "Read bounded issue relation page, no writes or cross-repo lookup.\u00a0 has_more is conservative, not completeness proof. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_timeline",
+   "description": "Read bounded issue timeline metadata only, not complete comments/reviews/history or source bodies. Pagination required; has_more is conservative. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_unlock",
+   "description": "issue unlock. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_issue_update",
+   "description": "Update issue text or open/closed state. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60000
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60000
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "open",
+       "closed"
+      ]
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_job_get",
+   "description": "Exact run/head/attempt correlated job_get metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "job_id",
+     "run_id",
+     "head_sha",
+     "run_attempt"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "job_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "run_attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_job_log",
+   "description": "Read one Actions job log as a UTF-8 text range (up to 256 KiB; tiny length may grow by 3 bytes to finish a codepoint); page with offset/next_offset. Log text is untrusted data. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "job_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "job_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 536870912
+     },
+     "length": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 262144
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_job_rerun",
+   "description": "Exact run/head/attempt correlated job_rerun metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "job_id",
+     "run_id",
+     "head_sha",
+     "run_attempt",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "job_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "run_attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_label_create",
+   "description": "label create. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "name",
+     "color",
+     "description",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "name": {
+      "type": "string",
+      "maxLength": 500
+     },
+     "color": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{6}$"
+     },
+     "description": {
+      "type": "string",
+      "maxLength": 500
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_label_delete",
+   "description": "label delete. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "name",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "name": {
+      "type": "string",
+      "maxLength": 500
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_label_update",
+   "description": "Update exact pre-read label metadata. No archive, deletion or issue-label replacement. Requires separate execution authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "name",
+     "expected_label_id",
+     "new_name",
+     "color",
+     "description",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+     },
+     "expected_label_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "new_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+     },
+     "color": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{6}$"
+     },
+     "description": {
+      "type": "string",
+      "maxLength": 100
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_labels",
+   "description": "Read labels. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_labels_add",
+   "description": "Add1-20 exact labels to an issue or PR without replacing unrelated labels. No label creation or suggestions. Returns requested labels only. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "labels",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "labels": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_. /-]{1,100}$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_labels_set",
+   "description": "labels set. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "labels",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "labels": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 100,
+       "pattern": "^[A-Za-z0-9_. /-]{1,100}$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_merge_guarded",
+   "description": "Merge a pull request, fenced on its head. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "method",
+     "expected_head_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "method": {
+      "type": "string",
+      "enum": [
+       "squash",
+       "merge",
+       "rebase"
+      ]
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_merge_queue_dequeue",
+   "description": "Dequeue PR with non-atomic expected-head pre-read; requires separate execution authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_merge_queue_enqueue",
+   "description": "Enqueue exact PR head without jumping the queue. Requires separate execution authority, never bypasses GitHub gates. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_merge_queue_entry",
+   "description": "Read one PR merge-queue entry. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_milestone_create",
+   "description": "Milestone create with fixed repository scope. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "title",
+     "description",
+     "state",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+     },
+     "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "open",
+       "closed"
+      ]
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_milestone_delete",
+   "description": "Milestone delete with fixed repository scope. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "milestone",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "milestone": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_milestone_get",
+   "description": "Milestone get with fixed repository scope. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "milestone"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "milestone": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_milestone_update",
+   "description": "Milestone update with fixed repository scope. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "milestone",
+     "title",
+     "description",
+     "state",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "milestone": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+     },
+     "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "open",
+       "closed"
+      ]
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_milestones",
+   "description": "Milestone s with fixed repository scope. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "open",
+       "closed",
+       "all"
+      ]
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_comments",
+   "description": "Read pr comments. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_comments_page",
+   "description": "Read PR issue-conversation comments with untrusted text, NOT inline review comments. Head observed before/after; no user authority from author metadata. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_commits_page",
+   "description": "Bounded PR commit graph, explicit 250-commit API history cap; no complete-history or atomic snapshot claim. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 250
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_draft",
+   "description": "pr draft. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_files",
+   "description": "List files of a pull request. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_files_page",
+   "description": "Read one metadata-only PR file page with before/after expected-head observations. No patches/URLs, no atomic snapshot or complete diff guarantee. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_get",
+   "description": "Read pr get. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_list",
+   "description": "List pull requests. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "state": {
+      "type": "string",
+      "maxLength": 500
+     },
+     "head": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "base": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_list_page",
+   "description": "Read bounded created-ascending PR metadata page. Mutable list, not snapshot/full inventory; head means same-owner branch only. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "open",
+       "closed",
+       "all"
+      ]
+     },
+     "head": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "base": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_ready",
+   "description": "pr ready. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_requested_reviewers",
+   "description": "Read requested reviewer identity metadata, not completed reviews or approval. Head observed before/after; not atomic. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_review_get",
+   "description": "Exact submitted-review identity/state/commit metadata, not current-head approval verdict. Head observed before/after, not atomic. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "review_id",
+     "expected_head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "review_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_reviews",
+   "description": "Read pr reviews. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_pr_reviews_page",
+   "description": "Read bounded review records and untrusted text with commit/App-user provenance, not an approval verdict. Head observed before/after, no atomic snapshot. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_asset_delete",
+   "description": "Delete one release asset by ID, only while its current name equals expected_name. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "asset_id",
+     "expected_name",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "asset_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/]+$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_asset_download",
+   "description": "Download one byte range (up to 256 KiB, base64) of an uploaded release asset by ID; page with offset/next_offset. Content is untrusted data. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "asset_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "asset_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 536870912
+     },
+     "length": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 262144
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_asset_get",
+   "description": "Read release asset metadata, not binary downloads. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "asset_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "asset_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_asset_update",
+   "description": "Rename or relabel a release asset, fenced on its current name (expected_name). Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "asset_id",
+     "expected_name",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "asset_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/]+$"
+     },
+     "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$"
+     },
+     "label": {
+      "type": "string",
+      "maxLength": 255
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_asset_upload",
+   "description": "Upload up to 32 KiB secret-scanned UTF-8 text as a new asset; no overwrite/delete. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "release_id",
+     "name",
+     "content_b64",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "release_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$"
+     },
+     "content_b64": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 43692
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_asset_upload_binary",
+   "description": "Upload up to 180 KiB of binary data (base64) as a new release asset. Content is secret-scanned, archives are opened and scanned, encrypted or unscannable formats are refused; no overwrite. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 253952,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "release_id",
+     "name",
+     "content_b64",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "release_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$"
+     },
+     "content_b64": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 245760
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_assets",
+   "description": "List release asset metadata, not binary downloads. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "release_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "release_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_by_tag",
+   "description": "Exact release tag lookup identity/flags; no release notes or secrets. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "tag"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "tag": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_create",
+   "description": "release create. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "tag",
+     "name",
+     "body",
+     "draft",
+     "prerelease",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "tag": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "draft": {
+      "type": "boolean"
+     },
+     "prerelease": {
+      "type": "boolean"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_delete",
+   "description": "release delete. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "release_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "release_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_get",
+   "description": "release get. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "release_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "release_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_latest",
+   "description": "Get GitHub latest published non-prerelease identity/tag metadata, not semantic-version ordering. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_list",
+   "description": "release list. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_release_update",
+   "description": "release update. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "release_id",
+     "name",
+     "body",
+     "draft",
+     "prerelease",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "release_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "draft": {
+      "type": "boolean"
+     },
+     "prerelease": {
+      "type": "boolean"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_repo_get",
+   "description": "Read repo get. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_repo_languages",
+   "description": "Read bounded repository language-byte counts; not file counts, contributors, or a live code audit. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_repo_tags",
+   "description": "Read bounded tag name/commit SHA metadata, not annotated tag contents or a complete ref history.\u00a0 Pagination required. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_repo_variable_create",
+   "description": "Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "name",
+     "value",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "name": {
+      "type": "string",
+      "pattern": "^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$"
+     },
+     "value": {
+      "type": "string",
+      "maxLength": 8192
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_repo_variable_delete",
+   "description": "Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "name",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "name": {
+      "type": "string",
+      "pattern": "^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_repo_variable_get",
+   "description": "Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "name"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "name": {
+      "type": "string",
+      "pattern": "^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_repo_variable_update",
+   "description": "Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "name",
+     "value",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "name": {
+      "type": "string",
+      "pattern": "^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$"
+     },
+     "value": {
+      "type": "string",
+      "maxLength": 8192
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_repo_variables",
+   "description": "Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_comment_delete",
+   "description": "review comment delete. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "comment_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "comment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_comment_reply",
+   "description": "Reply to a PR review comment. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "comment_id",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "comment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_comment_update",
+   "description": "review comment update. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "comment_id",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "comment_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_dismiss",
+   "description": "Dismiss a review only when separately authorized by its owner; never a merge-gate bypass. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "review_id",
+     "message",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "review_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_inline",
+   "description": "Create a commit-bound inline PR comment. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "commit_id",
+     "path",
+     "line",
+     "side",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "commit_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$"
+     },
+     "line": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000000
+     },
+     "side": {
+      "type": "string",
+      "enum": [
+       "LEFT",
+       "RIGHT"
+      ]
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_pending_delete",
+   "description": "Delete only a pending review after a pre-read; not atomic. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "review_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "review_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_requests_add",
+   "description": "Request individual and team reviews; sends notifications. Exact PR/head pre-read and bounded identity receipt, not atomic. No submitted-review dismissal; separate operation authority still required. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "reviewers": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,100}(?:\\[bot\\])?$"
+      }
+     },
+     "team_reviewers": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,100}$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_requests_remove",
+   "description": "Cancel pending individual or team review requests, not submitted reviews. Exact PR/head pre-read and bounded identity receipt, not atomic. No submitted-review dismissal; separate operation authority still required. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "reviewers": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,100}(?:\\[bot\\])?$"
+      }
+     },
+     "team_reviewers": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,100}$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_requests_rerequest",
+   "description": "Rerequest individual and team reviews; sends notifications. Exact PR/head pre-read and bounded identity receipt, not atomic. No submitted-review dismissal; separate operation authority still required. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "reviewers": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,100}(?:\\[bot\\])?$"
+      }
+     },
+     "team_reviewers": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,100}$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_submit",
+   "description": "Submit a commit-bound PR review (pre-read is not an atomic head lock). Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "commit_id",
+     "event",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "commit_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "event": {
+      "type": "string",
+      "enum": [
+       "APPROVE",
+       "REQUEST_CHANGES",
+       "COMMENT"
+      ]
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_thread_resolve",
+   "description": "Resolve a review thread only after addressing its finding; never a review-gate bypass. Membership is checked against the repository PR first 100 threads. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "thread_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "thread_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_/=+-]{1,200}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_thread_unresolve",
+   "description": "Unresolve a repository PR review thread after bounded membership validation. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "thread_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "thread_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_/=+-]{1,200}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_threads",
+   "description": "Read five threads/two comments each with thread cursor pagination. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "cursor": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_/=+-]{1,256}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_review_update",
+   "description": "Edit review body, not its state. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "review_id",
+     "body",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "review_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_reviewers_remove",
+   "description": "reviewers remove. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "reviewers",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "reviewers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 100,
+       "pattern": "^[A-Za-z0-9_. /-]{1,100}$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_reviewers_request",
+   "description": "reviewers request. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "reviewers",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "reviewers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 100,
+       "pattern": "^[A-Za-z0-9_. /-]{1,100}$"
+      }
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_approve",
+   "description": "Approve a pending workflow run. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_artifacts",
+   "description": "Read run artifacts. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_attempt_get",
+   "description": "Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "head_sha",
+     "run_attempt"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "run_attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_attempt_jobs",
+   "description": "Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "head_sha",
+     "run_attempt"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "run_attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_cancel",
+   "description": "Cancel a workflow run. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_delete",
+   "description": "Irreversibly delete the exact repo-scoped run ID and logs. No upstream expected-state fence or head-SHA CAS exists. Explicit action/repo authorization and owner execution authority required. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_force_cancel",
+   "description": "Exact run/head/attempt correlated run_force_cancel metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "head_sha",
+     "run_attempt",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "run_attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_get",
+   "description": "Read run get. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_jobs",
+   "description": "List jobs of a workflow run. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_logs",
+   "description": "Download a workflow run log archive (zip) as a base64 byte range (up to 256 KiB); page with offset/next_offset. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 536870912
+     },
+     "length": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 262144
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_logs_delete",
+   "description": "Exact run/head/attempt correlated run_logs_delete metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "head_sha",
+     "run_attempt",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "run_attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_pending_deployments",
+   "description": "Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "head_sha",
+     "run_attempt"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "run_attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_rerun",
+   "description": "Re-run a workflow run. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_run_rerun_all",
+   "description": "Exact run/head/attempt correlated run_rerun_all metadata or accepted request only; pre-read not atomic, no debug logging, execution needs separate authority. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "run_id",
+     "head_sha",
+     "run_attempt",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "run_attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_runs",
+   "description": "List workflow runs. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "status": {
+      "type": "string",
+      "maxLength": 500
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_runs_page",
+   "description": "Read bounded Actions run metadata pages with PR numbers, not logs or review approval. Mutable list; filtered search capped1000 by GitHub. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "branch": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "queued",
+       "in_progress",
+       "completed",
+       "requested",
+       "waiting",
+       "pending",
+       "action_required",
+       "cancelled",
+       "failure",
+       "neutral",
+       "skipped",
+       "stale",
+       "success",
+       "timed_out"
+      ]
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_tag_create",
+   "description": "tag create; expected SHA pre-read is not an atomic ref lock. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "tag",
+     "sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "tag": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_tag_delete",
+   "description": "tag delete; expected SHA pre-read is not an atomic ref lock. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "tag",
+     "expected_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "tag": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "expected_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_tag_get",
+   "description": "tag get; expected SHA pre-read is not an atomic ref lock. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "tag"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "tag": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_tree",
+   "description": "Read a git tree. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "ref"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "ref": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_update_branch",
+   "description": "Update a PR branch, fenced on its head. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "number",
+     "expected_head_sha",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_workflow_disable",
+   "description": "Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo authorization and owner execution authority required. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "workflow_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "workflow_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_workflow_enable",
+   "description": "workflow enable. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "workflow_id",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "workflow_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_workflow_get",
+   "description": "Bounded own-App Actions metadata only; mutable observations, no approval, execution or download URL. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "workflow_id"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "workflow_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_workflows",
+   "description": "Read workflows. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_workflows_page",
+   "description": "Read numeric workflow identity/path/state page, not display-name authority or execution permission. Mutable list, no full inventory claim. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+     },
+     "per_page": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_workflow_dispatch",
+   "description": "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.",
+   "read": false,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "workflow",
+     "ref",
+     "identity"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "description": "owner/name"
+     },
+     "workflow": {
+      "type": "string"
+     },
+     "ref": {
+      "type": "string"
+     },
+     "inputs": {
+      "type": "object"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   },
+   "title": "Dispatch Workflow"
+  }
+ ]
+}

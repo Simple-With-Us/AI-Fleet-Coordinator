@@ -31,7 +31,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
 # platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
 # (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026);  the 138th and 139th are notes_service_reader.py and mcp/bearer_gate.py (from main);  the 140th and 141st are platform_letter_muse.py and muse_session_rename.py (the Muse adapter);  the 142nd is platform_letter_grok_leader.py (the Grok adapter);  the 143rd is platform_letter_antigravity.py (the Antigravity adapter), added for that review.
-MAX_FILES = 143
+# The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
+# and its implementation;  tests and the offline catalog fixture stay repo-only).
+MAX_FILES = 145
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

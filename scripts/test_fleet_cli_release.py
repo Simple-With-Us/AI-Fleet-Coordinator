@@ -28,6 +28,8 @@ def make_bundle(version="one"):
             data = b"{}"
         if path in ("scripts/linear-board/board", "scripts/simple-board"):
             data = b'import sys\nsys.exit(2 if "show" in sys.argv else 0)\n# ' + version.encode()
+        if path == "scripts/simple-git":
+            data = b'import sys\nsys.exit(2 if sys.argv[1:] == ["call"] else 0)\n# ' + version.encode()
         files[path] = {
             "mode": 0o644,
             "sha256": hashlib.sha256(data).hexdigest(),
@@ -259,7 +261,7 @@ class ReleaseTests(unittest.TestCase):
         # Python tools stay isolated (-I -B);  the bash tools get the caller's environment untouched.
         self.assertIn("'-I', '-B'", (bin_dir / "recall").read_text())
         self.assertNotIn("-I", (bin_dir / "lane").read_text().split("argv =")[1])
-        for name in ("simple-board", "simple-chat", "simple-notes"):
+        for name in ("simple-board", "simple-chat", "simple-notes", "simple-git"):
             self.assertIn(
                 "'/usr/bin/python3', '-I', '-B', str(release", (bin_dir / name).read_text()
             )
@@ -288,7 +290,7 @@ class ReleaseTests(unittest.TestCase):
         # A host installed before recall, lane and fleet-mode existed gets their wrappers on the next push.
         self.receive()
         bin_dir = self.home / ".local/bin"
-        for name in ("recall", "lane", "fleet-mode"):
+        for name in ("recall", "lane", "fleet-mode", "simple-git"):
             (bin_dir / name).unlink()
         custom = b"#!/bin/sh\n# my own board, not managed\n"
         (bin_dir / "simple-board").write_bytes(custom)
@@ -296,7 +298,7 @@ class ReleaseTests(unittest.TestCase):
         before = config.read_bytes() if config.exists() else None
         result = self.receive(make_bundle("two"), install=False)
         self.assertEqual(result["status"], "activated")
-        for name in ("recall", "lane", "fleet-mode"):
+        for name in ("recall", "lane", "fleet-mode", "simple-git"):
             self.assertIn(release.MARKER, (bin_dir / name).read_text(), name)
         self.assertEqual(
             (bin_dir / "simple-board").read_bytes(),
@@ -1007,6 +1009,30 @@ class ShippedDataFilesTests(unittest.TestCase):
         self.assertTrue(release.allowed_path(path))
         self.assertIn(path, release.TOOL_REQUIRED)
         self.assertNotIn(path, release.BASE_REQUIRED)
+
+
+    def test_git_tools_are_required_of_new_bundles_only(self):
+        # The git tools CLI (entry wrapper + implementation):  a new bundle must carry both, and an
+        # older retained release (built before them) stays a valid rollback target.
+        for path in ("scripts/simple-git", "scripts/git-tools/git"):
+            self.assertIn(path, release.EXACT, path)
+            self.assertTrue(release.allowed_path(path), path)
+            self.assertIn(path, release.TOOL_REQUIRED, "a new bundle must carry it: " + path)
+            self.assertNotIn(
+                path,
+                release.BASE_REQUIRED,
+                "an older retained release stays a valid rollback target: " + path,
+            )
+            bundle = make_bundle()
+            bundle["files"].pop(path)
+            bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+            with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+                release.decode_bundle(json.dumps(bundle).encode())
+
+    def test_git_tools_join_the_helper_command_map(self):
+        # The seat helper runs for the new command exactly like the existing remote tools.
+        self.assertEqual(release.HELPER_COMMANDS["scripts/simple-git"], "simple-git")
+        self.assertNotIn("scripts/git-tools/git", release.HELPER_COMMANDS)
 
 
 if __name__ == "__main__":
