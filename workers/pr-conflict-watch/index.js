@@ -1,3 +1,4 @@
+import { readBoundedBody, BodyLimitError } from "./body.js";
 // pr-conflict-watch: GitHub webhook receiver that alerts the fleet's Zulip
 // #Alerts stream the moment a PR's mergeable_state turns dirty (merge
 // conflict), and again when that conflict clears.  The alert mentions the seat
@@ -28,9 +29,8 @@ const ZULIP_STREAM = "Alerts";
 // the gap survives Markdown rendering.
 const SENTENCE_GAP = "\u00A0 ";
 
-async function verifySignature(request, secret) {
+async function verifySignature(request, secret, body) {
   const sigHeader = request.headers.get("x-hub-signature-256") || "";
-  const body = await request.clone().arrayBuffer();
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -357,6 +357,15 @@ export default {
       });
     }
 
+    if (!/^sha256=[a-f0-9]{64}$/.test(request.headers.get("x-hub-signature-256") || ""))
+      return new Response("bad signature", { status: 401 });
+    let bytes;
+    try { bytes = await readBoundedBody(request, 25 * 1024 * 1024); }
+    catch (error) {
+      return new Response(error instanceof BodyLimitError ? "payload too large" : "invalid body",
+        { status: error instanceof BodyLimitError ? 413 : 400 });
+    }
+
     // Every secret comes from Infisical at runtime.  When Infisical cannot
     // answer, the Worker says so plainly and posts nothing.
     let config;
@@ -373,29 +382,37 @@ export default {
       });
     }
 
-    const valid = await verifySignature(request, config.GITHUB_WEBHOOK_SECRET);
+    const valid = await verifySignature(request, config.GITHUB_WEBHOOK_SECRET, bytes);
     if (!valid) return new Response("bad signature", { status: 401 });
 
     const event = request.headers.get("x-github-event") || "";
-    const payload = await request.json();
+    let payload;
+    try { payload = JSON.parse(new TextDecoder().decode(bytes)); }
+    catch { return new Response("invalid JSON", { status: 400 }); }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload))
+      return new Response("invalid payload", { status: 400 });
     const candidates = []; // [owner, repo, number]
 
-    if (event === "pull_request" && payload.pull_request) {
-      const [owner, repo] = payload.repository.full_name.split("/");
-      candidates.push([owner, repo, payload.pull_request.number]);
-    } else if ((event === "check_suite" || event === "check_run") && payload.repository) {
-      const [owner, repo] = payload.repository.full_name.split("/");
-      const prs = (event === "check_suite" ? payload.check_suite.pull_requests : payload.check_run.pull_requests) || [];
-      for (const pr of prs) candidates.push([owner, repo, pr.number]);
-    } else {
-      return new Response("ignored", { status: 200 });
-    }
-
-    ctx.waitUntil(
-      Promise.all(
-        candidates.map(([owner, repo, number]) => handlePr(owner, repo, number, config, env))
-      )
-    );
+    const name = payload.repository?.full_name;
+    const relevant = event === "pull_request" || event === "check_suite" || event === "check_run";
+    if (!relevant) return new Response("ignored", { status: 200 });
+    if (typeof name !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name))
+      return new Response("invalid repository", { status: 400 });
+    const [owner, repo] = name.split("/");
+    const prs = event === "pull_request" ? [payload.pull_request] : payload[event]?.pull_requests;
+    if (!Array.isArray(prs) || prs.some(pr => !Number.isSafeInteger(pr?.number) || pr.number < 1))
+      return new Response("invalid pull requests", { status: 400 });
+    for (const number of new Set(prs.map(pr => pr.number))) candidates.push([owner, repo, number]);
+    // Drain the whole delivery with four concurrent lookups, never one per PR.
+    ctx.waitUntil((async () => {
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+        while (next < candidates.length) {
+          const [owner, repo, number] = candidates[next++];
+          await handlePr(owner, repo, number, config, env);
+        }
+      }));
+    })());
     return new Response("ok", { status: 200 });
   },
 };

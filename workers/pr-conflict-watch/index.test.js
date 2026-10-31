@@ -581,6 +581,33 @@ describe("the request flow", () => {
     assert.equal(calls.zulip.length, 0, "no Zulip post");
   });
 
+  it("rejects malformed signatures and oversized declarations before Infisical", async () => {
+    const calls=routeAllFetch();
+    for (const [headers,status] of [[{},401],[{"x-hub-signature-256":"sha256="+"a".repeat(64),"content-length":String(25*1024*1024+1)},413]]) {
+      const res=await worker.fetch(new Request("https://test/any-existing-path",{method:"POST",headers}),ENV,capturingContext().ctx);
+      assert.equal(res.status,status);
+    }
+    assert.equal(calls.infisical.length,0);
+  });
+  it("validates payload shape without downstream PR lookups", async () => {
+    const calls=routeAllFetch();
+    for (const payload of [null, [], {}, {repository:{full_name:"a/b"},pull_request:{number:-1}}]) {
+      const res=await worker.fetch(await signedRequest(payload),ENV,capturingContext().ctx);
+      assert.equal(res.status,400);
+    }
+    assert.equal(calls.github.length,0);
+  });
+  it("deduplicates PR candidates and bounds background fanout", async () => {
+    let active=0,peak=0;
+    const calls=routeAllFetch({github:async()=>{active++;peak=Math.max(peak,active);await new Promise(r=>setImmediate(r));active--;return jsonResponse({...GITHUB_PR,state:"closed"});}});
+    const payload={repository:{full_name:"a/b"},check_run:{pull_requests:Array.from({length:20},(_,i)=>({number:i%10+1}))}};
+    const original=await signedRequest(payload);
+    const headers=new Headers(original.headers);headers.set("x-github-event","check_run");
+    const req=new Request("https://test/legacy/path",{method:"POST",headers,body:await original.text()});
+    const {pending,ctx}=capturingContext();
+    assert.equal((await worker.fetch(req,{...ENV,PR_STATE:kvStub()},ctx)).status,200);await Promise.all(pending);
+    assert.equal(calls.github.length,10);assert.ok(peak<=4);
+  });
   it("verifies the signature with the Infisical secret and posts the alert", async () => {
     const calls = routeAllFetch();
     const kv = kvStub();
