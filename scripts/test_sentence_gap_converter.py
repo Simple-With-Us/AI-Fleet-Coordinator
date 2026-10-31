@@ -29,7 +29,10 @@ ROOT = Path(__file__).resolve().parents[1]
 ONE_HOME = ROOT / "docs" / "fleet-skills" / "sentence-gap" / "SKILL.md"
 
 # The pattern a converter is written as:  a perl substitution with a sentence-end group.
-_PATTERN_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
+# Only a substitution that opens with the sentence-end group is a gap converter;  a
+# follow-on substitution such as the Notes step that turns an existing NBSP gap into a
+# narrow NBSP (s/\x{a0} /\x{202f} /g) creates no gap and has no markup to look past.
+_PATTERN_RE = re.compile(r"perl -CSDA -pe '(s/(?:\(\?<![^)]*\))?\(\[\.!\?\]\).*?/g)'")
 
 # The markup group:  the characters that may sit between a sentence end and the space.
 _MARKUP_GROUP = r'((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)'
@@ -753,6 +756,24 @@ class AssertionCommandTests(unittest.TestCase):
                     pattern,
                     "%s holds a blind leftover check:  %s" % (rel, pattern),
                 )
+
+
+class PatternExtractionTests(unittest.TestCase):
+    """Only a sentence-gap converter is a converter;  a follow-on NBSP step is not."""
+
+    def test_a_follow_on_nbsp_step_is_not_a_converter(self) -> None:
+        text = (
+            "perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z])/$1\\x{a0} /g' body.txt\n"
+            "perl -CSDA -pe 's/([.!?]) +(?=[A-Z])/$1\\x{a0} /g' body.txt\n"
+            "perl -CSDA -pe 's/\\x{a0} /\\x{202f} /g' body.nbsp.txt\n"
+        )
+        self.assertEqual(
+            patterns_in(text),
+            [
+                "s/(?<![0-9])([.!?]) +(?=[A-Z])/$1\\x{a0} /g",
+                "s/([.!?]) +(?=[A-Z])/$1\\x{a0} /g",
+            ],
+        )
 
 
 class GeneratedMirrorTests(unittest.TestCase):
