@@ -188,9 +188,10 @@ class FakeTransport:
 def run_cli(argv, *, env=None, transport=None, stdin_text="", scanner="fake", typed_bearer=None):
     """Run main() fully wired:  no real network, clean seat/bearer environment, captured output.
 
-    typed_bearer=None simulates a NON-interactive caller (stdin is not a tty) and arms the hidden bearer
-    prompt with a tripwire:  it must never fire.  A string simulates an interactive user answering the
-    hidden prompt with that bearer."""
+    typed_bearer=None simulates a caller with NO prompt terminal (the gate is pinned closed) and arms
+    the hidden bearer prompt with a tripwire:  it must never fire.  A string pins the gate open and
+    simulates an interactive user answering the hidden prompt with that bearer;  combined with
+    stdin_text it is the piped --args-json case (stdin not a tty, prompt on the controlling tty)."""
     clean_env = {k: v for k, v in os.environ.items() if k not in ENV_KEYS}
     clean_env.update(env or {})
     remote_post = transport.post if transport is not None else _no_network
@@ -203,10 +204,17 @@ def run_cli(argv, *, env=None, transport=None, stdin_text="", scanner="fake", ty
     if typed_bearer is None:
         stdin_obj = io.StringIO(stdin_text)
         prompt = mock.Mock(side_effect=AssertionError("the hidden prompt must not fire here"))
+        can_prompt = False
     else:
-        stdin_obj = mock.Mock()
-        stdin_obj.isatty.return_value = True
+        if stdin_text:
+            # Piped --args-json -:  stdin is not a terminal;  the bearer still comes from the hidden
+            # prompt on the controlling terminal, which never consumes the piped JSON.
+            stdin_obj = io.StringIO(stdin_text)
+        else:
+            stdin_obj = mock.Mock()
+            stdin_obj.isatty.return_value = True
         prompt = mock.Mock(return_value=typed_bearer)
+        can_prompt = True
     out, err = io.StringIO(), io.StringIO()
     code = 0
     with (
@@ -214,6 +222,7 @@ def run_cli(argv, *, env=None, transport=None, stdin_text="", scanner="fake", ty
         mock.patch.object(sys, "argv", ["simple-git"] + list(argv)),
         mock.patch.object(sys, "stdin", stdin_obj),
         mock.patch.object(git, "_remote_post", remote_post),
+        mock.patch.object(git, "_prompt_terminal_available", lambda: can_prompt),
         mock.patch.object(git.getpass, "getpass", prompt),
         mock.patch.object(git, "_SCANNER", scanner_obj),
         contextlib.redirect_stdout(out),
@@ -300,15 +309,43 @@ class TestUserBearerInput(unittest.TestCase):
         self.assertEqual(code, 4)
 
     def test_prompt_interrupted_fails_closed(self):
+        # EOF at the prompt (Ctrl-D):  the plain missing-credential refusal, exit 4.
         with (
             mock.patch.dict(os.environ, {}, clear=True),
-            mock.patch.object(git.sys, "stdin") as stdin,
+            mock.patch.object(git, "_prompt_terminal_available", lambda: True),
             mock.patch.object(git.getpass, "getpass", side_effect=EOFError),
         ):
-            stdin.isatty.return_value = True
             with self.assertRaises(SystemExit) as ctx:
                 git.remote_bearer()
         self.assertEqual(ctx.exception.code, 4)
+
+    def test_prompt_ctrl_c_is_a_clean_130_never_a_masked_refusal(self):
+        # Ctrl-C at the prompt:  an interruption (128 + SIGINT), not a masked missing-bearer exit 4
+        # and never a traceback.
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(git, "_prompt_terminal_available", lambda: True),
+            mock.patch.object(git.getpass, "getpass", side_effect=KeyboardInterrupt),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                git.remote_bearer()
+        self.assertEqual(ctx.exception.code, 130)
+
+    def test_piped_args_json_still_prompts_without_consuming_the_json(self):
+        # call --args-json - :  the JSON arrives on piped stdin;  the bearer comes from the hidden
+        # prompt on the CONTROLLING terminal.  The prompt fires despite stdin not being a tty, and
+        # the piped JSON reaches the command intact.
+        t = FakeTransport()
+        code, out, err = run_cli(
+            ["call", "gr_wf_repo_get", "--args-json", "-"],
+            stdin_text='{"owner":"o"}',
+            typed_bearer=BEARER,
+            transport=t,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(t.calls[0][0], "identities")
+        self.assertEqual(t.calls[1], ("gr_wf_repo_get", {"owner": "o", "identity": "CODEX"}))
 
     def test_echo_control_failure_fails_closed_before_any_input_is_read(self):
         # Force getpass's echoed fallback path (termios refuses echo control):  the warning must become
@@ -349,6 +386,42 @@ class TestUserBearerInput(unittest.TestCase):
         code, out, err = run_cli(["list"])
         self.assertEqual(code, 4)
         self.assertIn("SIMPLE_TOOLS_BEARER", err)
+
+
+class TestPromptTerminalGate(unittest.TestCase):
+    """Where the hidden prompt may fire:  the controlling terminal getpass itself reads, so piped
+    --args-json stdin still prompts and is never consumed;  a detached caller never gets a prompt."""
+
+    def test_controlling_tty_prompts_even_with_piped_stdin(self):
+        with (
+            mock.patch.object(git.os, "open", return_value=99) as opened,
+            mock.patch.object(git.os, "close") as closed,
+            mock.patch.object(git.sys, "stdin", io.StringIO("{}")),
+        ):
+            self.assertTrue(git._prompt_terminal_available())
+        opened.assert_called_once_with("/dev/tty", os.O_RDONLY)
+        closed.assert_called_once_with(99)
+
+    def test_no_controlling_tty_falls_back_to_interactive_stdin(self):
+        # A console without /dev/tty:  an interactive stdin still gets the prompt.
+        with (
+            mock.patch.object(git.os, "open", side_effect=OSError),
+            mock.patch.object(git.sys, "stdin") as stdin,
+        ):
+            stdin.isatty.return_value = True
+            self.assertTrue(git._prompt_terminal_available())
+
+    def test_detached_caller_never_prompts(self):
+        with (
+            mock.patch.object(git.os, "open", side_effect=OSError),
+            mock.patch.object(git.sys, "stdin", None),
+        ):
+            self.assertFalse(git._prompt_terminal_available())
+        with (
+            mock.patch.object(git.os, "open", side_effect=OSError),
+            mock.patch.object(git.sys, "stdin", io.StringIO()),
+        ):
+            self.assertFalse(git._prompt_terminal_available())
 
 
 class TestDiscovery(unittest.TestCase):

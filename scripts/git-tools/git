@@ -213,12 +213,26 @@ def declared_seat() -> str | None:
     return declared[0]
 
 
+def _prompt_terminal_available() -> bool:
+    """A hidden prompt needs a real terminal to hide the answer on.  getpass reads the CONTROLLING
+    terminal (/dev/tty), not stdin, so `call --args-json -` with piped JSON still prompts - and the
+    prompt never consumes the piped stdin.  Where there is no controlling terminal, fall back to an
+    interactive stdin (a console without /dev/tty);  a detached caller (stdin missing or not a
+    terminal either) gets no prompt and the clean refusal below."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        return sys.stdin is not None and sys.stdin.isatty()
+    os.close(fd)
+    return True
+
+
 def remote_bearer() -> str:
     """The CLI user's OWN bearer:  SIMPLE_TOOLS_BEARER from the environment (automation), otherwise one
-    hidden prompt on an interactive terminal.  The answer is held only in process memory for the session -
-    never an argument, history, a file this tool writes or a log line."""
+    hidden prompt on the controlling terminal.  The answer is held only in process memory for the
+    session - never an argument, history, a file this tool writes or a log line."""
     v = env(REMOTE_BEARER_ENV)
-    if not v and sys.stdin is not None and sys.stdin.isatty():
+    if not v and _prompt_terminal_available():
         try:
             with warnings.catch_warnings():
                 # A terminal that refuses echo control must fail CLOSED:  getpass warns (GetPassWarning)
@@ -226,7 +240,12 @@ def remote_bearer() -> str:
                 # dies before a single character is read or echoed - the echoed path never runs.
                 warnings.simplefilter("error", getpass.GetPassWarning)
                 v = getpass.getpass(f"{prog()} bearer (input hidden): ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            # Ctrl-C at the prompt is a clean interruption (128 + SIGINT), never a masked
+            # missing-credential error or a traceback.
+            sys.stderr.write("\n")
+            raise SystemExit(130) from None
+        except EOFError:
             v = ""
         except getpass.GetPassWarning:
             die(
