@@ -30,12 +30,14 @@ everything user-visible takes the installed name from argv[0].  Python 3.10+.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import signal  # SIGKILL for the isolated pattern-check child only, never this process
 import socket
 import ssl
 import subprocess
@@ -734,6 +736,158 @@ def discover_tools(bearer: str, deadline: float | None = None) -> dict:
     return tools
 
 
+_PATTERN_CHECK_MAX_S = 5  # per-validation wall-clock cap on ALL pattern work, inside the overall budget
+
+# The exact contract for untrusted patterns:  only these 18 patterns - the reviewed catalog's complete
+# set, sha256 of the pattern text - may ever be compiled or searched.  Anything unrecognized fails
+# closed, on every platform.  There is NO heuristic:  widening this set is a reviewed code change, and
+# each member's compile size and match cost are verified facts, not estimates.
+_KNOWN_PATTERN_DIGESTS = frozenset(
+    (
+    "0de5285caead4b0618cd25d9f6c0ec9bc330f05eb97ffcb941e12f4be4ec3f8f",
+    "10d10184fb6ea3c9990c8e5d942c75336a0b516cb0dec06ef3fc9ac0b5abdb7a",
+    "126a2cf27187e82c7e365633238f2826294e633753f816f6fe6767be1b1feabe",
+    "15f8c50c6b67c4fce53733c7fb9b475d2302cb579025492f00a6e510b413e81b",
+    "30faeacdfec06158676b35a41d36c0493619b5e86afa7ae578aff5eff450013b",
+    "38a3d1088fbdbafafbcf18a3b050a2b49fe75cee854720ae984e511d9eaa57bb",
+    "45b5f55a38eb846af40064f0db7ec2ea0825785dfe6a1135ce82f2094b001005",
+    "52f851fad882359b4da47ab468f04139b0a5bbc846a922f655c5b37cdcfd05de",
+    "7a3e89f559ebec394da08a91160bb5eab26b2ef30d26eeb88c270079b58d2e2f",
+    "7b8be75214feb9b9cc29abc256a0996c92dcd7d05abfb1ca5f7b922d58aaffec",
+    "88b2ed1aec9cd281271858178ffa9dc52d0f283a9c71e2b8fb843199216bd11d",
+    "a6aa272af8e604e6e4097952430e60ec47a3a0578c73732ac48fcdb785db9cb5",
+    "ab10742c40c95e23b40b24a42ff97316a3eaa79654b6afb5f2decd39f1ec47f6",
+    "b9c4b86e8e227fb8026d44a0115b4e31e00ec77b831c6c430431d5dc6be67a67",
+    "c6a7ec8f6b892580934b579c27e0cdce61bbf2fb611904b5961f7871b455bd4a",
+    "efcdbef2487e6736c09187488425ab45b044c6e7833c0039c43dd94cd4fe3d2b",
+    "f0e2589feb4a3846c8c810fd5a17c9c24747122ddbc23d5865bbb8710038975d",
+    "f755b5cc0997d16521245eb191dba503d456297b4e110a6ed421770e81ddd67c"
+)
+)
+
+
+def _pattern_known(pattern: str) -> bool:
+    return hashlib.sha256(pattern.encode("utf-8")).hexdigest() in _KNOWN_PATTERN_DIGESTS
+
+
+def _as_limit_target(resource) -> tuple:
+    """The (soft, hard) RLIMIT_AS values to set:  the 1 GiB cap clamped DOWN to the platform's actual
+    hard limit, which is never raised (an unprivileged fixed value can exceed it - macOS rejects that
+    outright with ValueError).  Pure computation, unit-testable;  supplementary defense-in-depth only -
+    the real allocation bound is the exact 18-pattern contract:  nothing unrecognized is ever compiled,
+    on any OS."""
+    _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    cap = 1 << 30
+    target = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
+    return target, hard
+
+
+def _patterns_match(checks, end: float):
+    """Run every (pattern, value) search - and the pattern COMPILES - in one isolated child process with
+    a hard bound.  Untrusted tools/list patterns can backtrack catastrophically on CPU that no RPC or
+    socket deadline can interrupt, so the bound is a child this process may KILL (the child only;  this
+    process never sends itself signals).  `end` is ONE absolute monotonic deadline shared by all
+    pattern work in this validation, capped by the verb's overall budget.  The child also gets POSIX
+    rlimits (CPU seconds;  address space clamped to the platform's own hard limit) where the platform
+    supports them, and when that required safety is unavailable there is no run at all.  Only the exact
+    reviewed pattern set (_KNOWN_PATTERN_DIGESTS) ever reaches the child, so compile and search sizes
+    are verified facts on every platform.  Returns True/False for a definite verdict, or None when the
+    bound expired, the pattern is unrecognized, or the child died without a verdict:  an unverifiable
+    pattern is refused, never trusted."""
+    if not checks:
+        return True
+    # The exact contract, checked before forking:  an unrecognized pattern is never compiled anywhere.
+    if not all(_pattern_known(pattern) for pattern, _v in checks):
+        return None
+    if not hasattr(os, "fork"):  # non-POSIX:  no enforceable bound exists;  refuse rather than risk it
+        return None
+    try:
+        import resource  # POSIX rlimits:  the child's CPU/address-space bounds
+    except ImportError:
+        return None  # required safety unavailable:  fail closed
+    if time.monotonic() >= end:
+        return None
+    try:
+        read_fd, write_fd = os.pipe()
+    except OSError:
+        return None
+    try:
+        pid = os.fork()
+    except OSError:
+        os.close(read_fd)
+        os.close(write_fd)
+        return None
+    if pid == 0:  # child:  limits first, then re work, then a one-byte verdict;  never returns
+        try:
+            os.close(read_fd)
+            try:
+                cpu = max(1, int(end - time.monotonic()) + 1)
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+            except (OSError, ValueError):
+                os._exit(3)  # the CPU bound is required safety:  no verdict without it
+            try:
+                # Supplementary:  clamp the address-space cap DOWN to the platform's actual hard limit
+                # (an unprivileged fixed value can exceed it - macOS raises ValueError).  Never raises
+                # the hard limit;  failure is tolerated because only the exact reviewed pattern set is accepted
+                # (Darwin may not enforce RLIMIT_AS).
+                target, hard = _as_limit_target(resource)
+                if target > 0:
+                    resource.setrlimit(resource.RLIMIT_AS, (target, hard))
+            except (AttributeError, OSError, ValueError):
+                pass
+            verdict = False
+            try:
+                if not all(_pattern_known(pattern) for pattern, _v in checks):
+                    os._exit(4)  # unrecognized pattern:  no verdict, refused upstream
+                verdict = all(
+                    re.search(re.compile(pattern), value) for pattern, value in checks
+                )
+            except (re.error, ValueError, MemoryError, RecursionError):
+                verdict = False
+            try:
+                os.write(write_fd, b"1" if verdict else b"0")
+            except OSError:
+                pass
+        finally:
+            os._exit(0)
+    os.close(write_fd)
+    try:
+        while True:
+            done, _status = os.waitpid(pid, os.WNOHANG)
+            if done == pid:
+                try:
+                    data = os.read(read_fd, 1)
+                except OSError:
+                    data = b""
+                if not data:
+                    return None  # exited without a verdict (e.g. limits unavailable):  unverifiable
+                return data == b"1"
+            if time.monotonic() >= end:
+                try:
+                    os.kill(pid, signal.SIGKILL)  # the isolated child, never this process
+                except OSError:
+                    pass
+                try:
+                    os.waitpid(pid, 0)
+                except OSError:
+                    pass
+                return None
+            time.sleep(0.005)
+    except BaseException:
+        # This process is going down:  kill and reap OUR child rather than leave it burning CPU.
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except Exception:
+            pass
+        raise
+    finally:
+        os.close(read_fd)
+
+
 def _is_number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -764,14 +918,14 @@ def _schema_constraints_ok(schema, depth: int = 0) -> bool:
         if k in schema
     ):
         return False
+    # A pattern is never compiled or searched in this process:  both happen only inside the isolated,
+    # deadline-bounded child in _patterns_match (compile cost included).  Here it must be a string from
+    # the exact reviewed set - anything unrecognized fails closed (the child re-checks by digest).
     pattern = schema.get("pattern")
-    if pattern is not None:
-        if not isinstance(pattern, str):
-            return False
-        try:
-            re.compile(pattern)
-        except re.error:
-            return False
+    if pattern is not None and (
+        not isinstance(pattern, str) or not _pattern_known(pattern)
+    ):
+        return False
     enum = schema.get("enum")
     if enum is not None and not isinstance(enum, list):
         return False
@@ -836,8 +990,10 @@ def _bounded(value, max_bytes: int) -> bool:
     return total <= max_bytes
 
 
-def _type_ok(schema: dict, value) -> bool:
-    """The Worker's typeOk:  one JSON-schema leaf check (type, pattern, enum, lengths, numeric bounds, items)."""
+def _type_ok(schema: dict, value, pattern_checks=None) -> bool:
+    """The Worker's typeOk:  one JSON-schema leaf check (type, pattern, enum, lengths, numeric bounds,
+    items).  `pattern` is NOT searched here:  with a collector, the (pattern, value) pair is deferred
+    to the isolated deadline-bounded child (_patterns_match) and this leaf is tentatively True."""
     kind = schema.get("type")
     if kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
@@ -863,12 +1019,14 @@ def _type_ok(schema: dict, value) -> bool:
         items = schema.get("items")
         if isinstance(items, dict):
             return all(
-                _object_ok(items, v) if items.get("type") == "object" else _type_ok(items, v)
+                _object_ok(items, v, pattern_checks=pattern_checks)
+                if items.get("type") == "object"
+                else _type_ok(items, v, pattern_checks)
                 for v in value
             )
         return True
     if kind == "object":
-        return _object_ok(schema, value)
+        return _object_ok(schema, value, pattern_checks=pattern_checks)
     if kind == "string" or kind is None:
         if not isinstance(value, str):
             return False
@@ -876,11 +1034,14 @@ def _type_ok(schema: dict, value) -> bool:
         if pattern is not None:
             if not isinstance(pattern, str):
                 return False
-            try:
-                if not re.search(pattern, value):
+            if pattern_checks is None:  # direct caller without the sandbox:  match inline
+                try:
+                    if not re.search(pattern, value):
+                        return False
+                except re.error:
                     return False
-            except re.error:
-                return False
+            else:
+                pattern_checks.append((pattern, value))
         enum = schema.get("enum")
         if enum is not None and (not isinstance(enum, list) or value not in enum):
             return False
@@ -893,7 +1054,7 @@ def _type_ok(schema: dict, value) -> bool:
     return True  # unknown type keyword:  leave it to the server
 
 
-def _object_ok(schema: dict, value, tolerate_identity: bool = False) -> bool:
+def _object_ok(schema: dict, value, tolerate_identity: bool = False, pattern_checks=None) -> bool:
     """validWfV1Args2:  every required key present, every present key known, each value type-ok.
     tolerate_identity lets a write's `identity` be absent here because this client fills it itself."""
     if not isinstance(value, dict):
@@ -905,30 +1066,62 @@ def _object_ok(schema: dict, value, tolerate_identity: bool = False) -> bool:
     for key, item in value.items():
         if key not in props:
             return False
-        if isinstance(props[key], dict) and not _type_ok(props[key], item):
+        if isinstance(props[key], dict) and not _type_ok(props[key], item, pattern_checks):
             return False
     return True
 
 
-def validate_arguments(entry: dict, args) -> None:
+def validate_arguments(entry: dict, args, deadline: float | None = None) -> None:
     """Early failure only:  mirrors the Worker's boundary checks (bounded input, exact keys, leaf types,
     anyOf variants, per-action byte limit) against the DISCOVERED schema.  The server enforces its own copy
     plus the per-action refinements (file content budget, read-expansion rules) this client does not
-    duplicate."""
+    duplicate. Discovery restricts patterns to the exact reviewed set; compile and search run in a
+    child with a wall-clock deadline. The overall deadline is checked before validation starts."""
     name = entry["name"]
     schema = entry.get("schema") or {}
     if not isinstance(args, dict):
         die(f"{name}: arguments must be a JSON object", EXIT_USAGE)
+    tolerate = not entry["read"]
+
+    # ONE absolute end for ALL pattern work in this validation - every variant, every fork:  the
+    # dedicated cap and the verb's overall deadline, whichever ends first.
+    pattern_end = time.monotonic() + _PATTERN_CHECK_MAX_S
+    if deadline is not None:
+        pattern_end = min(pattern_end, deadline)
+
+    def check_patterns(checks):
+        """True/False a definite verdict;  dies on an unverifiable one (bound expired or no sandbox)."""
+        verdict = _patterns_match(checks, pattern_end)
+        if verdict is None:
+            die(
+                f"{name}: argument pattern checks did not complete within the time budget"
+                + ("; the write was not sent" if tolerate else ""),
+                EXIT_ERROR,
+            )
+        return verdict
+
+    if deadline is not None and time.monotonic() > deadline:
+        # Nothing validated, nothing sent:  a write refused here is definitely not sent.
+        die(
+            "the overall time budget was exhausted before argument validation"
+            + ("; the write was not sent" if tolerate else ""),
+            EXIT_ERROR,
+        )
     limit = entry.get("input_bytes") or DEFAULT_INPUT_LIMIT
     if not _bounded(args, limit):
         die(f"{name}: arguments exceed the structural input limits", EXIT_USAGE)
     if len(json.dumps(args, separators=(",", ":"), ensure_ascii=False).encode()) > limit:
         die(f"{name}: arguments exceed the {limit}-byte input limit", EXIT_USAGE)
-    tolerate = not entry["read"]
     any_of = schema.get("anyOf")
     variants = [v for v in any_of if isinstance(v, dict)] if isinstance(any_of, list) else []
     if not variants:
-        if not _object_ok(schema, args, tolerate_identity=tolerate):
+        checks = []
+        if not _object_ok(schema, args, tolerate_identity=tolerate, pattern_checks=checks):
+            die(
+                f"{name}: arguments do not match its schema (`{prog()} show {name}` prints it)",
+                EXIT_USAGE,
+            )
+        if not check_patterns(checks):
             die(
                 f"{name}: arguments do not match its schema (`{prog()} show {name}` prints it)",
                 EXIT_USAGE,
@@ -947,25 +1140,27 @@ def validate_arguments(entry: dict, args) -> None:
     for variant in variants:
         merged = dict(root)
         merged["required"] = sorted(root_required | set(variant.get("required") or ()))
+        props = dict(root_props)
+        overlap = []
         variant_props = variant.get("properties")
         if isinstance(variant_props, dict):
-            props = dict(root_props)
-            overlap = []
             for key, subschema in variant_props.items():
                 if key in root_props:
                     overlap.append((key, subschema))
                 else:
                     props[key] = subschema
-            merged["properties"] = props
-            if _object_ok(merged, args, tolerate_identity=tolerate) and all(
-                not isinstance(subschema, dict)
-                or key not in args
-                or _type_ok(subschema, args[key])
-                for key, subschema in overlap
-            ):
+        merged["properties"] = props
+        vchecks = []  # initialized for EVERY variant, properties or not
+        if _object_ok(
+            merged, args, tolerate_identity=tolerate, pattern_checks=vchecks
+        ) and all(
+            not isinstance(subschema, dict)
+            or key not in args
+            or _type_ok(subschema, args[key], vchecks)
+            for key, subschema in overlap
+        ):
+            if check_patterns(vchecks):
                 return
-        elif _object_ok(merged, args, tolerate_identity=tolerate):
-            return
     die(
         f"{name}: arguments do not match any supported variant (`{prog()} show {name}` prints the schema)",
         EXIT_USAGE,
@@ -1168,7 +1363,7 @@ def cmd_call(
         args = _read_args_json(a)
     # The caller's own arguments are validated before the actor probe (a refused call costs no extra call),
     # and secret-scanned inside remote_call before anything is sent:  there is no unscanned route.
-    validate_arguments(entry, args)
+    validate_arguments(entry, args, deadline)
     args = resolve_actor(entry, args, bearer, server_seat, deadline)
     return _print_result(remote_call(a.tool, args, not entry["read"], bearer, deadline), a.json)
 

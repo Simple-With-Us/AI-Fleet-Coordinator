@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1301,6 +1302,23 @@ class TestSchemaFailClosed(unittest.TestCase):
         self.assertIn("missing or unreadable schema", err)
 
 
+def digest_of(pattern):
+    import hashlib
+
+    return hashlib.sha256(pattern.encode("utf-8")).hexdigest()
+
+
+def with_known(*patterns):
+    """Patch the reviewed-pattern set for a test:  production is exactly the 18;  tests may add their
+    adversarial fixture so the sandbox kill path stays exercised."""
+    return mock.patch.object(
+        git, "_KNOWN_PATTERN_DIGESTS", git._KNOWN_PATTERN_DIGESTS | {digest_of(x) for x in patterns}
+    )
+
+
+CATALOG_SHA = r"^[0-9a-f]{40}$"  # a real catalog pattern for ordinary verdict tests
+
+
 class TestReview1199(unittest.TestCase):
     """PR 1199 review fixes:  strict cursors, anyOf intersection, the overall budget, read1 guard,
     program-name escaping and recursive leaf-schema validation."""
@@ -1417,7 +1435,281 @@ class TestReview1199(unittest.TestCase):
         code, out, err = self._overlap_call({"repo": "r", "o": {"n": 50}})
         self.assertEqual(code, 0, err)
 
-    # 3. One overall budget:  probe + pages + target;  an exhausted budget never starts the write.
+    # 7. Untrusted patterns:  compile AND search run only in the isolated, deadline-bounded child
+    # (Kody HIGH r4431100051).  These are real-timeout tests, not screen booleans.
+    def test_patterns_match_definite_verdicts(self):
+        end = time.monotonic() + 5
+        self.assertTrue(git._patterns_match([(CATALOG_SHA, "a" * 40)], end))
+        self.assertFalse(git._patterns_match([(CATALOG_SHA, "g" * 40)], end))
+        self.assertTrue(git._patterns_match([], end))
+
+    def test_unrecognized_pattern_fails_closed_without_compiling(self):
+        # anything outside the exact reviewed 18:  no compile, no search, unverifiable -> refused
+        start = time.monotonic()
+        for pattern in (r"^[a-z]+$", r"^(a|aa){50}$", "a" * 600, r"(a?){1000000000}$", "["):
+            self.assertIsNone(git._patterns_match([(pattern, "abc")], time.monotonic() + 5))
+            self.assertFalse(git._pattern_known(pattern))
+        self.assertLess(time.monotonic() - start, 2)
+
+    def test_catastrophic_patterns_are_killed_inside_the_bound(self):
+        # the host's actual counterexamples, run through the child via a test-extended known set:
+        # each unbounded re.search exceeds 1.5s;  the child must be killed at the bound (unverifiable)
+        patterns = [r"^(a|aa){50}$", r"^a*a*a*a*a*a*b$", r"^(a?){1000000000}$"]
+        with with_known(*patterns):
+            for pattern, value in (
+                (r"^(a|aa){50}$", "a" * 49 + "!"),
+                (r"^a*a*a*a*a*a*b$", "a" * 200 + "!"),
+                (r"^(a?){1000000000}$", "a"),
+            ):
+                start = time.monotonic()
+                verdict = git._patterns_match([(pattern, value)], start + 0.3)
+                elapsed = time.monotonic() - start
+                self.assertIsNone(verdict, pattern)
+                self.assertLess(elapsed, 3, pattern)
+
+    def test_invalid_pattern_is_a_clean_refusal_not_a_traceback(self):
+        # a pattern that is (hypothetically) reviewed-known but does not compile: clean False
+        with with_known("["):
+            self.assertFalse(git._patterns_match([("[", "x")], time.monotonic() + 5))
+
+    def test_the_real_catalog_patterns_compile_and_match_in_the_child(self):
+        import json as _json
+        from pathlib import Path as _Path
+
+        catalog = _json.loads((_Path(__file__).resolve().parent / "catalog.json").read_text())
+        tools = catalog if isinstance(catalog, list) else catalog.get("tools", catalog)
+        patterns = set()
+
+        def walk(node):
+            if isinstance(node, dict):
+                value = node.get("pattern")
+                if isinstance(value, str):
+                    patterns.add(value)
+                for item in node.values():
+                    walk(item)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(tools)
+        self.assertEqual(len(patterns), 18)  # the actual capture: 18 distinct patterns
+        # every real pattern compiles and matches a plausible value inside the child, fast
+        samples = {
+            "repo": "acme/widgets",
+            "branch": "main",
+            "path": "docs/readme.md",
+        }
+        # every pattern INDIVIDUALLY through the child (an all() mismatch must not short-circuit any
+        # pattern out of being exercised):  each compiles and returns a definite verdict, fast
+        start = time.monotonic()
+        for pattern in patterns:
+            verdict = git._patterns_match([(pattern, "x")], time.monotonic() + 5)
+            self.assertIsNotNone(verdict, pattern)
+        self.assertLess(time.monotonic() - start, 5)
+        # and the known host shapes actually MATCH plausible values
+        positive = {
+            r"^(?!.*\.\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$": "acme/widgets",
+            r"^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$": "main",
+            r"^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$": "docs/a.md",
+        }
+        for pattern, value in positive.items():
+            self.assertTrue(git._patterns_match([(pattern, value)], time.monotonic() + 5), pattern)
+
+    def test_call_with_an_unrecognized_pattern_never_reaches_the_child(self):
+        # an unreviewed pattern makes the schema unreadable at discovery: no fork, no target call
+        schema = {
+            "type": "object",
+            "required": ["title", "identity"],
+            "properties": {
+                "title": {"type": "string", "pattern": r"^(a|aa){50}$"},
+                "identity": {"type": "string"},
+            },
+        }
+        t = FakeTransport(pages=[[make_tool("gr_wf_issue_create", schema)]])
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "a" * 49 + "!"})],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("missing or unreadable schema", err)
+        self.assertNotIn("gr_wf_issue_create", [c[0] for c in t.calls])
+
+    def test_call_with_a_normal_pattern_still_passes(self):
+        schema = {
+            "type": "object",
+            "required": ["title", "identity"],
+            "properties": {
+                "title": {"type": "string", "pattern": CATALOG_SHA},
+                "identity": {"type": "string"},
+            },
+        }
+        t = FakeTransport(pages=[[make_tool("gr_wf_issue_create", schema)]])
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "a" * 40})],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = run_cli(
+            ["call", "gr_wf_issue_create", "--args-json", json.dumps({"title": "g" * 40})],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 2)  # a real non-match is a clean usage refusal
+
+    def test_anyof_variant_without_properties_is_not_an_unboundlocalerror(self):
+        # the host repro:  root object {title: string}, anyOf [{required:[title]}], args {title: x}
+        schema = {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "anyOf": [{"required": ["title"]}],
+        }
+        t = FakeTransport(pages=[[make_tool("gr_wf_repo_get", schema)]])
+        code, out, err = run_cli(
+            ["call", "gr_wf_repo_get", "--args-json", '{"title":"x"}'],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Traceback", err)
+
+    def test_one_absolute_deadline_covers_every_variant(self):
+        schema = {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "anyOf": [
+                {"properties": {"title": {"type": "string", "pattern": r"^(a|aa){50}$"}}},
+                {"properties": {"title": {"type": "string", "pattern": r"^(a|aa){60}$"}}},
+                {"properties": {"title": {"type": "string", "pattern": r"^(a|aa){70}$"}}},
+            ],
+        }
+        t = FakeTransport(pages=[[make_tool("gr_wf_issue_create", schema)]])
+        start = time.monotonic()
+        with (
+            mock.patch.object(git, "_PATTERN_CHECK_MAX_S", 0.3),
+            with_known(r"^(a|aa){50}$", r"^(a|aa){60}$", r"^(a|aa){70}$"),
+        ):
+            code, out, err = run_cli(
+                [
+                    "call",
+                    "gr_wf_issue_create",
+                    "--args-json",
+                    json.dumps({"title": "a" * 49 + "!"}),
+                ],
+                env={"SIMPLE_TOOLS_BEARER": BEARER},
+                transport=t,
+            )
+        # one shared 0.3s end - NOT a fresh cap per variant (3 x 0.3 would take ~1s)
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertEqual(code, 1)
+        self.assertIn("did not complete within the time budget", err)
+
+    def test_pattern_work_never_starts_after_the_deadline(self):
+        with mock.patch.object(
+            git.os, "fork", side_effect=AssertionError("fork must not be reached")
+        ):
+            self.assertIsNone(git._patterns_match([(CATALOG_SHA, "a" * 40)], time.monotonic() - 1))
+
+    def test_pipe_failure_fails_closed(self):
+        with mock.patch.object(git.os, "pipe", side_effect=OSError("no fds")):
+            self.assertIsNone(git._patterns_match([(CATALOG_SHA, "a" * 40)], time.monotonic() + 5))
+
+    def test_fork_failure_closes_both_fds_and_fails_closed(self):
+        real_pipe = os.pipe
+        made = []
+
+        def tracking_pipe():
+            r, w = real_pipe()
+            made.extend((r, w))
+            return r, w
+
+        with (
+            mock.patch.object(git.os, "pipe", tracking_pipe),
+            mock.patch.object(git.os, "fork", side_effect=OSError("no processes")),
+        ):
+            self.assertIsNone(git._patterns_match([(CATALOG_SHA, "a" * 40)], time.monotonic() + 5))
+        for fd in made:
+            with self.assertRaises(OSError):
+                os.fstat(fd)  # both closed
+
+    def test_missing_rlimits_fail_closed(self):
+        with mock.patch.dict(sys.modules, {"resource": None}):
+            self.assertIsNone(git._patterns_match([(CATALOG_SHA, "a" * 40)], time.monotonic() + 5))
+
+    def test_as_limit_refusal_still_gives_a_verdict_but_cpu_refusal_fails_closed(self):
+        import resource as _resource
+
+        real = _resource.setrlimit
+        for failing, expected in (
+            (
+                _resource.RLIMIT_AS,
+                True,
+            ),  # the actual Mac 3.15 failure: tolerated, AS is supplementary
+            (_resource.RLIMIT_CPU, None),  # the CPU bound is required safety: no verdict without it
+        ):
+
+            def picky(which, limits, _failing=failing):
+                if which == _failing:
+                    raise ValueError("current limit exceeds maximum limit")
+                return real(which, limits)
+
+            with mock.patch("resource.setrlimit", picky):
+                self.assertIs(
+                    git._patterns_match([(CATALOG_SHA, "a" * 40)], time.monotonic() + 5), expected
+                )
+
+    def test_as_cap_is_clamped_to_the_platform_hard_limit(self):
+        # the Mac failure shape: a fixed 1 GiB exceeds the platform hard limit -> clamp, never raise
+        # (the child is a fork, so this is verified on the pure helper, not observed across the fork)
+
+        class FakeResource:
+            RLIMIT_AS = 9
+            RLIM_INFINITY = -1
+
+            def __init__(self, hard):
+                self.hard = hard
+
+            def getrlimit(self, which):
+                return (64 << 20, self.hard)
+
+        target, hard = git._as_limit_target(FakeResource(512 << 20))
+        self.assertEqual((target, hard), (512 << 20, 512 << 20))  # clamped down to the hard limit
+        target, hard = git._as_limit_target(FakeResource(-1))
+        self.assertEqual((target, hard), (1 << 30, -1))  # unlimited: the cap, hard untouched
+        target, hard = git._as_limit_target(FakeResource(4 << 30))
+        self.assertEqual((target, hard), (1 << 30, 4 << 30))  # larger hard: the cap, hard untouched
+
+    def test_unrecognized_pattern_is_an_unreadable_schema_at_discovery(self):
+        # the exact contract:  anything outside the reviewed 18 fails closed, no compile anywhere
+        for pattern in ("a" * 600, r"(a?){1000000000}$", r"^[a-z]+$", r"(a|aa){50}"):
+            self._schema_refusal(
+                {"type": "object", "properties": {"s": {"type": "string", "pattern": pattern}}}
+            )
+
+    def test_exceptional_parent_exit_kills_and_reaps_its_own_child(self):
+        with with_known(r"^a*a*a*a*a*a*b$"):
+            with mock.patch.object(git.os, "waitpid", side_effect=RuntimeError("boom")):
+                with self.assertRaises(RuntimeError):
+                    git._patterns_match(
+                        [(r"^a*a*a*a*a*a*b$", "a" * 200 + "!")], time.monotonic() + 60
+                    )
+        # the child was killed, not left burning CPU:  reap it here, then nothing remains
+        for _ in range(100):
+            done, _ = os.waitpid(-1, os.WNOHANG)
+            if done == 0:
+                break
+            time.sleep(0.01)
+        self.assertEqual(os.waitpid(-1, os.WNOHANG)[0], 0)
+
+    def test_validation_never_starts_when_the_budget_is_gone(self):
+        entry = {"name": "gr_x", "read": False, "schema": {"type": "object"}}
+        with self.assertRaises(SystemExit) as ctx:
+            git.validate_arguments(entry, {"a": 1}, time.monotonic() - 1)
+        self.assertEqual(ctx.exception.code, 1)
+
+        # 3. One overall budget:  probe + pages + target;  an exhausted budget never starts the write.
+
     def test_budget_exhausted_before_target_write_is_reported_not_sent(self):
         t = FakeTransport()
         ticks = iter([1000.0, 1000.0, 1000.0, 1000.0 + 9999.0])
@@ -1524,7 +1816,6 @@ class TestReview1199(unittest.TestCase):
             {"type": "object", "properties": {"n": {"type": "integer", "minimum": True}}},
             {"type": "object", "properties": {"s": {"type": "string", "minLength": 1.5}}},
             {"type": "object", "properties": {"s": {"type": "string", "pattern": 5}}},
-            {"type": "object", "properties": {"s": {"type": "string", "pattern": "["}}},
             {"type": "object", "properties": {"s": {"type": "string", "enum": "abc"}}},
             {"type": "object", "properties": {"a": {"type": "array", "items": "x"}}},
             {"type": "object", "anyOf": [{"properties": {"n": {"maximum": "x"}}}]},
