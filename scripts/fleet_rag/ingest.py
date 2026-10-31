@@ -833,7 +833,13 @@ def _run_locked(
         for w in sources.take_warnings():
             report["warnings"].append(f"{name}: {w}")
             log(f"[{name}] WARNING {w}")
-        if prune and source_ok:
+        # Linear is a delta stream, not an authoritative deletion inventory. Even
+        # FULL refetch can skip incomplete/truncated issues. Never prune its
+        # unyielded rows from this pipeline; explicit migration reconciliation
+        # owns deletion separately after per-document coverage verification.
+        if prune and source_ok and name == "linear":
+            report["warnings"].append("linear: pruning skipped; generator is not a complete deletion inventory")
+        if prune and source_ok and name != "linear":
             try:
                 gone = prune_source(name, yielded, state, writer, stats, state_path)
                 if gone:

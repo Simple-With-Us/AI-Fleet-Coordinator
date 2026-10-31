@@ -40,6 +40,7 @@ from fleet_rag.core import (
 from fleet_rag.scrub import GitleaksError
 
 KNOWN_SOURCES = (
+    "linear",
     "board",
     "effort-log",
     "apple-note",
