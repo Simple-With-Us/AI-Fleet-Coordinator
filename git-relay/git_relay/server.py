@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .app_tokens import AppTokenError
 from .audit import AuditLog
-from .github_client import GitHubClient, RelayGitHubError
+from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import DEFAULT_RATE_PER_HOUR, DEFAULT_WRITE_RATE_PER_HOUR, PolicyError, SeatPolicy
 from .policy_input import seats_json_from_env
@@ -153,7 +153,13 @@ def _validate_args(action: str, args: dict) -> dict:
         specs.update({"number": ("number", True), "method": ("method", False)})
     elif action == "workflow_dispatch":
         specs.update(
-            {"workflow": ("text", True), "ref": ("text", True), "inputs": ("inputs", False)}
+            {
+                "workflow": ("text", True),
+                "ref": ("text", True),
+                "inputs": ("inputs", False),
+                "intent_id": ("text", False),
+                "expected_head_sha": ("text", False),
+            }
         )
     elif action == "resolve_thread":
         specs["thread_id"] = ("thread_id", True)
@@ -198,6 +204,16 @@ def _validate_args(action: str, args: dict) -> dict:
                         raise ValueError("inputs values are capped at 1024 characters")
         if value is not None:
             canonical[field] = value
+    if action == "workflow_dispatch":
+        intent = canonical.get("intent_id")
+        expected = canonical.get("expected_head_sha")
+        if (intent is None) != (expected is None):
+            raise ValueError("intent_id and expected_head_sha must be supplied together")
+        if intent is not None and (
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}", intent)
+            or not re.fullmatch(r"[0-9a-f]{40}", expected)
+        ):
+            raise ValueError("invalid dispatch intent or expected source")
     GitHubClient._check_repo(canonical["repo"])
     return canonical
 
@@ -345,7 +361,26 @@ class Relay:
                     }
                 if prior is not None and prior["state"] == "ok":
                     detail = {"idempotent_replay": True}
-                    return 200, dict(prior.get("result") or {})
+                    replay = dict(prior.get("result") or {})
+                    if action == "workflow_dispatch":
+                        digest = hashlib.sha256(
+                            json.dumps(canonical, sort_keys=True).encode()
+                        ).hexdigest()
+                        if canonical.get("intent_id") and replay.get("request_digest") != digest:
+                            outcome = "digest_mismatch"
+                            detail = {"reason": "dispatch_intent_payload_mismatch"}
+                            return 409, {
+                                "error": "dispatch intent already bound to a different request",
+                                "retryable": False,
+                            }
+                        replay.update(
+                            {
+                                "replayed": True,
+                                "upstream_request_sent": False,
+                                "execution_verified": False,
+                            }
+                        )
+                    return 200, replay
                 if prior is not None:
                     outcome = "duplicate_refused"
                     return 409, {
@@ -361,7 +396,7 @@ class Relay:
                 outcome = "denied"
                 detail = {"reason": str(exc)}
                 return 403, {"error": str(exc)}
-            except PreReadUnavailable:
+            except (PreReadUnavailable, DispatchPreReadUnavailable):
                 self._release(key, "refused")
                 outcome = "unavailable"
                 detail = {"reason": "pre_read_unavailable"}
@@ -485,6 +520,17 @@ class Relay:
                 payload["github_diagnostics"] = dict(exc.diagnostics)
                 detail["github_diagnostics"] = dict(exc.diagnostics)
                 return 400, payload
+            if action == "workflow_dispatch":
+                result.update(
+                    {
+                        "replayed": False,
+                        "upstream_request_sent": True,
+                        "execution_verified": False,
+                        "request_digest": hashlib.sha256(
+                            json.dumps(canonical, sort_keys=True).encode()
+                        ).hexdigest(),
+                    }
+                )
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
             if action in SeatPolicy.WORKFLOW_ACTIONS:
@@ -727,7 +773,9 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
             "app_slug": app_slug,
             "expires_in_seconds": max(0, int(expiry - time.time())),
         }
-    required = ACTION_REQUIRED_PERMISSIONS[action]
+    required = dict(ACTION_REQUIRED_PERMISSIONS[action])
+    if action == "workflow_dispatch" and args.get("intent_id"):
+        required["contents"] = "read"
     missing = _perm_within_ceiling(required, ceiling)
     if missing:
         raise PolicyDenied(f"seat ceiling does not cover permission {missing!r}")
@@ -769,6 +817,11 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
             _text(args.get("ref"), "ref"),
             args.get("inputs"),
             bearer=token,
+            **(
+                {"expected_head_sha": args["expected_head_sha"]}
+                if args.get("expected_head_sha")
+                else {}
+            ),
         )
     return self.client.resolve_thread(_text(args.get("thread_id"), "thread_id"), bearer=token)
 
