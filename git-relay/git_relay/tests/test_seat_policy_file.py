@@ -50,10 +50,19 @@ NOT_SWU_IDENTITY = {
     "AMP": "swu-amp-agent",
 }
 # Explicit policy exclusions, documented in the deployed policy's header.
-# Original Jet is wake-only and has no GitHub App entry.
-EXCLUDED = {"JET"}
-# The one retired seat (host record 2026-11-01):  pinned legacy scope, excluded from the widening.
-RETIRED_SLUG = "swu-bf-builder"
+# Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
+# 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
+EXCLUDED = {"JET", "BF-BUILDER"}
+# Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
+# the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
+GB_SEATS = {
+    "GB-COMPILER", "GB-DEPLOYER", "GB-DESIGNER", "GB-DIRECTOR", "GB-ENGINEER", "GB-FIXER",
+    "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ORACLE", "GB-PLUMBER", "GB-PUBLISHER", "GB-TRADER",
+}
+BF_SEATS = {
+    "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-ENGINEER", "BF-FIXER",
+    "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "BF-TRADER",
+}
 # The two seats whose live rollout carries the fleet action set in its own order (host
 # render/live compare 2026-11-01):  each pins its exact ordered live list in its own profile.
 ORDER_PINNED = {"swu-amp-agent": "amp", "swu-wise": "wise"}
@@ -118,6 +127,7 @@ class SeatPolicyFile(unittest.TestCase):
             self.assertEqual(policy.authenticate(bearer_for(cfg["identity"])), slug)
             self.assertEqual(policy.app_identity(slug)[0], slug)
         self.assertIsNone(policy.authenticate(bearer_for("JET")))
+        self.assertIsNone(policy.authenticate(bearer_for("BF-BUILDER")))
 
     def test_only_full_jet_login_reaches_jet_app_even_if_old_bearer_is_verified(self):
         policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
@@ -194,8 +204,6 @@ class SeatPolicyFile(unittest.TestCase):
         # other owner, and no per-seat variation.
         reviewed = ["Simple-With-Us/*", "jaywedgeworth22/*"]
         for slug, cfg in SEATS.items():
-            if slug == RETIRED_SLUG:
-                continue
             self.assertEqual(cfg["repos"], reviewed, slug)
             self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
             for pattern in cfg["repos"]:
@@ -205,15 +213,13 @@ class SeatPolicyFile(unittest.TestCase):
     def test_every_seat_shares_the_widened_scope(self):
         # Echo's profile survives so its seat entry stays stable, but after the widening it
         # resolves to the fleet set;  every ACTIVE seat carries exactly the two reviewed
-        # namespaces (the retired seat's pin is the next test).
+        # namespaces.
         self.assertEqual(DOC["profiles"]["echo"]["repos"], "fleet")
         fleet = SEATS["swu-claude"]
         echo = SEATS["swu-echo"]
         self.assertEqual(echo["actions"], fleet["actions"])
         self.assertEqual(echo["mint_permissions"], fleet["mint_permissions"])
         for slug, cfg in SEATS.items():
-            if slug == RETIRED_SLUG:
-                continue
             self.assertEqual(cfg["repos"], fleet["repos"], slug)
             if slug in ORDER_PINNED:
                 # Same set and ceiling as fleet, in the seat's own live order:  the pinned
@@ -227,83 +233,38 @@ class SeatPolicyFile(unittest.TestCase):
                 self.assertEqual(cfg["actions"], fleet["actions"], slug)
             self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
 
-    def test_the_retired_builder_keeps_its_pinned_legacy_scope(self):
-        # BF-BUILDER is retired (host record 2026-11-01):  the every-repo widening must not
-        # reactivate or widen a retired identity, so its profile pins its exact live scope -
-        # the legacy 27 actions and a 6-key ceiling with no workflows - as literal copies.
-        # Any drift in the file or a second seat attaching to the pin fails here.
-        legacy_repos = [
-            "Simple-With-Us/AI-Fleet-Coordinator",
-            "Simple-With-Us/Autorotate",
-            "Simple-With-Us/BotFleet",
-            "Simple-With-Us/Clutch",
-            "Simple-With-Us/CodeCaps",
-            "Simple-With-Us/Congress.Trade",
-            "Simple-With-Us/ContactLogo",
-            "Simple-With-Us/DealDex",
-            "Simple-With-Us/Fleet-OPS",
-            "Simple-With-Us/FleetLink",
-            "Simple-With-Us/HogHunter",
-            "Simple-With-Us/Kodus-Config",
-            "Simple-With-Us/Personal-Site",
-            "Simple-With-Us/Simple-With-Us",
-            "Simple-With-Us/Socratic-Trade",
-            "Simple-With-Us/Usage-Monitor",
-            "Simple-With-Us/congress-trading-shared",
-            "Simple-With-Us/homebrew-tap",
-        ]
-        legacy_actions = [
-            "open_pr",
-            "edit_pr",
-            "reply_thread",
-            "comment_pr",
-            "merge_pr",
-            "workflow_dispatch",
-            "resolve_thread",
-            "wf_review_submit",
-            "wf_review_inline",
-            "wf_branch_create",
-            "wf_pr_list",
-            "wf_pr_files",
-            "wf_file_get",
-            "wf_tree",
-            "wf_branches",
-            "wf_commits",
-            "wf_code_search",
-            "wf_runs",
-            "wf_run_jobs",
-            "wf_checks",
-            "wf_update_branch",
-            "wf_run_rerun",
-            "wf_run_cancel",
-            "wf_run_approve",
-            "wf_file_put",
-            "wf_files_put",
-            "wf_merge_guarded",
-        ]
-        legacy_mint = {
-            "actions": "write",
-            "checks": "read",
-            "contents": "write",
-            "issues": "write",
-            "metadata": "read",
-            "pull_requests": "write",
-        }
-        cfg = SEATS[RETIRED_SLUG]
-        self.assertEqual(cfg["repos"], legacy_repos)
-        self.assertEqual(cfg["actions"], legacy_actions)
-        self.assertEqual(cfg["mint_permissions"], legacy_mint)
-        self.assertNotIn("workflows", cfg["mint_permissions"])
-        pinned = [row["identity"] for row in DOC["seats"] if row["profile"] == "retired-builder"]
-        self.assertEqual(pinned, ["BF-BUILDER"])
-        self.assertNotIn("*", ",".join(cfg["repos"]))
+    def test_bf_builder_is_dropped(self):
+        # BF-BUILDER is dropped (owner 2026-11-01 4:41pm CT):  no seat entry, no profile,
+        # and a bearer the Worker still confirms for it authenticates nowhere.
+        self.assertNotIn("swu-bf-builder", SEATS)
+        self.assertNotIn("retired-builder", DOC["profiles"])
+        self.assertFalse(any(row["identity"] == "BF-BUILDER" for row in DOC["seats"]))
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertIsNone(policy.authenticate(bearer_for("BF-BUILDER")))
+
+    def test_all_gb_and_bf_seats_reach_every_repository(self):
+        # Owner 2026-11-01 4:41pm CT:  all 12 GB seats and all 12 BF bots, including the
+        # new BF-TRADER and BF-ENGINEER, carry the full fleet scope.
+        self.assertEqual(len(GB_SEATS), 12)
+        self.assertEqual(len(BF_SEATS), 12)
+        by_identity = {cfg["identity"]: cfg for cfg in SEATS.values()}
+        gb = {i for i in by_identity if i.startswith("GB-")}
+        bf = {i for i in by_identity if i.startswith("BF-")}
+        self.assertEqual(gb, GB_SEATS)
+        self.assertEqual(bf, BF_SEATS)
+        fleet = SEATS["swu-claude"]
+        for identity in GB_SEATS | BF_SEATS:
+            cfg = by_identity[identity]
+            self.assertEqual(cfg["repos"], ["Simple-With-Us/*", "jaywedgeworth22/*"], identity)
+            self.assertEqual(cfg["actions"], fleet["actions"], identity)
+            self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], identity)
 
     def test_the_reviewed_scope_is_pinned(self):
         # The rendered policy's digest, pinned here apart from the file:  any change to a
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "2e00011c65be8ec9")
+        self.assertEqual(seat_policy.digest(SEATS), "c8ba1a18e33ded34")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
