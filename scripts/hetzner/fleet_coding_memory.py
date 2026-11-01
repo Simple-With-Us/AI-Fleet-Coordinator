@@ -46,9 +46,7 @@ MIB = 1024 * 1024
 UNIT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]*$")
 
 
-def load_excluded_units(
-    path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, warn=None
-) -> set[str]:
+def load_excluded_units(path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, warn=None) -> set[str]:
     """Load the host-local exclude list; untrusted files are ignored entirely."""
     warn = warn or (lambda msg: print(msg, file=sys.stderr))
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -275,9 +273,7 @@ def cg_path(root: Path, rel: str) -> Path | None:
         return None
 
 
-def resolve_unit_cgroups(
-    units, root: Path, runner=subprocess.run
-) -> list[Path]:
+def resolve_unit_cgroups(units, root: Path, runner=subprocess.run) -> list[Path]:
     found = []
     for unit in units:
         try:
@@ -601,9 +597,7 @@ def restore_owned(state: dict[str, Any], persist=None) -> None:
             continue
 
 
-def restore_excluded(
-    state: dict[str, Any], excluded_cgroups, persist=None
-) -> None:
+def restore_excluded(state: dict[str, Any], excluded_cgroups, persist=None) -> None:
     """Hand back owned controls on now-excluded cgroups (external edit wins)."""
     if not excluded_cgroups:
         return
@@ -969,8 +963,7 @@ def main() -> int:
                 ):
                     containers, production, limits = docker_groups(policy, args.cgroot)
                     groups = (
-                        unit_cgroups(policy, args.cgroot, excluded=excluded_units)
-                        + containers,
+                        unit_cgroups(policy, args.cgroot, excluded=excluded_units) + containers,
                         production,
                         limits,
                     )

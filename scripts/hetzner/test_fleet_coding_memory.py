@@ -632,9 +632,7 @@ class ExcludeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             f = self._write_exclude(Path(d) / "exclude-units", "botfleet-server.service\n")
             warnings = []
-            got = m.load_excluded_units(
-                f, expected_uid=os.geteuid() + 1, warn=warnings.append
-            )
+            got = m.load_excluded_units(f, expected_uid=os.geteuid() + 1, warn=warnings.append)
             self.assertEqual(got, set())
             self.assertEqual(len(warnings), 1)
 
@@ -657,9 +655,7 @@ class ExcludeTests(unittest.TestCase):
 
             def runner(argv, **kwargs):
                 unit = argv[-1]
-                return type(
-                    "R", (), {"stdout": f"/system.slice/{unit}\n"}
-                )()
+                return type("R", (), {"stdout": f"/system.slice/{unit}\n"})()
 
             found = m.unit_cgroups(pol, root, runner=runner, excluded={"botfleet-server.service"})
             self.assertEqual([p.name for p in found], ["coding.service"])
