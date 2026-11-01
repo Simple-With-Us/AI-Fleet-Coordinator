@@ -2080,6 +2080,35 @@
    }
   },
   {
+   "name": "gr_wf_git_blob_binary_get",
+   "description": "Read exact Git blob as bounded base64 (32000 bytes), verified Git SHA1 and known ASCII credential-pattern scan. No range, larger blob, write or secret-free guarantee. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo",
+     "sha"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
+     },
+     "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
    "name": "gr_wf_git_blob_create",
    "description": "Create unattached bounded UTF-8 blob; no ref or tree changes. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
    "read": false,
@@ -2297,6 +2326,30 @@
      "sha": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
+     },
+     "identity": {
+      "type": "string",
+      "description": "The bot this call acts as.  Writes must name it;  reads without it act as the calling seat.  identities lists the set."
+     }
+    }
+   }
+  },
+  {
+   "name": "gr_wf_installation_metadata",
+   "description": "Read authenticated caller own-App accepted installation permission metadata. No token mint or other-seat selector; registration permission is not installation acceptance. Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.",
+   "read": true,
+   "input_bytes": 65536,
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "repo"
+    ],
+    "properties": {
+     "repo": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+      "description": "owner/name"
      },
      "identity": {
       "type": "string",
@@ -6671,6 +6724,14 @@
      },
      "inputs": {
       "type": "object"
+     },
+     "intent_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"
+     },
+     "expected_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
      },
      "identity": {
       "type": "string",

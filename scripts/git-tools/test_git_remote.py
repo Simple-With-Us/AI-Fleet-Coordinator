@@ -1515,7 +1515,7 @@ class TestReview1199(unittest.TestCase):
                     walk(item)
 
         walk(tools)
-        self.assertEqual(len(patterns), 18)  # the actual capture: 18 distinct patterns
+        self.assertEqual(len(patterns), 19)  # live capture includes paired dispatch intent_id
         # every real pattern compiles and matches a plausible value inside the child, fast
         samples = {
             "repo": "acme/widgets",
@@ -1531,6 +1531,7 @@ class TestReview1199(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 5)
         # and the known host shapes actually MATCH plausible values
         positive = {
+            r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$": "intent-123",
             r"^(?!.*\.\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$": "acme/widgets",
             r"^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$": "main",
             r"^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$": "docs/a.md",
