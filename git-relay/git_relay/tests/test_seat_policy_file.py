@@ -225,14 +225,24 @@ class SeatPolicyFile(unittest.TestCase):
         # fleet scope as literal copies.  Any drift in the file or a second seat attaching
         # to the pin fails here.
         legacy_repos = [
-            "Simple-With-Us/AI-Fleet-Coordinator", "Simple-With-Us/Autorotate",
-            "Simple-With-Us/BotFleet", "Simple-With-Us/Clutch", "Simple-With-Us/CodeCaps",
-            "Simple-With-Us/Congress.Trade", "Simple-With-Us/ContactLogo",
-            "Simple-With-Us/DealDex", "Simple-With-Us/Fleet-OPS", "Simple-With-Us/FleetLink",
-            "Simple-With-Us/HogHunter", "Simple-With-Us/Kodus-Config",
-            "Simple-With-Us/Personal-Site", "Simple-With-Us/Simple-With-Us",
-            "Simple-With-Us/Socratic-Trade", "Simple-With-Us/Usage-Monitor",
-            "Simple-With-Us/congress-trading-shared", "Simple-With-Us/homebrew-tap",
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "Simple-With-Us/Autorotate",
+            "Simple-With-Us/BotFleet",
+            "Simple-With-Us/Clutch",
+            "Simple-With-Us/CodeCaps",
+            "Simple-With-Us/Congress.Trade",
+            "Simple-With-Us/ContactLogo",
+            "Simple-With-Us/DealDex",
+            "Simple-With-Us/Fleet-OPS",
+            "Simple-With-Us/FleetLink",
+            "Simple-With-Us/HogHunter",
+            "Simple-With-Us/Kodus-Config",
+            "Simple-With-Us/Personal-Site",
+            "Simple-With-Us/Simple-With-Us",
+            "Simple-With-Us/Socratic-Trade",
+            "Simple-With-Us/Usage-Monitor",
+            "Simple-With-Us/congress-trading-shared",
+            "Simple-With-Us/homebrew-tap",
         ]
         cfg = SEATS[RETIRED_SLUG]
         fleet = SEATS["swu-claude"]
