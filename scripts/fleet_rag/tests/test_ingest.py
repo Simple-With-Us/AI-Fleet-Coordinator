@@ -178,6 +178,44 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(set(self.qd.points), points)
             self.assertTrue(any("pruning skipped" in w for w in report["warnings"]))
 
+    def test_linear_receipt_separates_full_read_from_commit_and_dry_run(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+        for dry in (True, False):
+            with (mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+                  mock.patch.object(sources, "_linear_light_scan", return_value={
+                      "uuid-1": "2026-10-21T01:00:00Z"}),
+                  mock.patch.object(sources, "_linear_fetch_full", return_value=[_linear_node()]),
+                  mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+                report = ingest.run("linear", dry_run=dry, cfg={"x": "y"}, qd=self.qd,
+                    state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                    log=lambda *a: None)
+            receipt = report["linear_read_receipt"]
+            self.assertTrue(report["ok"])
+            self.assertTrue(receipt["source_complete"])
+            self.assertFalse(receipt["deletion_authorized"])
+            self.assertEqual(not dry, receipt["issues"]["uuid-1"]["state_hash_verified"])
+
+    def test_full_linear_skips_fail_after_complete_pending_docs_commit(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+        skipped = _linear_node(uid="uuid-skipped")
+        skipped["_linear_truncated"] = True
+        with (mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+              mock.patch.object(sources, "_linear_light_scan", return_value={
+                  "uuid-1": "2026-10-21", "uuid-skipped": "2026-10-21"}),
+              mock.patch.object(sources, "_linear_fetch_full", return_value=[_linear_node(), skipped]),
+              mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+            report = ingest.run("linear", cfg={"x": "y"}, qd=self.qd,
+                state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                log=lambda *a: None)
+        self.assertFalse(report["ok"])
+        state = json.loads(self.state.read_text())
+        self.assertIn("linear/uuid-1", state)
+        self.assertNotIn("linear/uuid-skipped", state)
+        receipt = report["linear_read_receipt"]
+        self.assertFalse(receipt["source_complete"])
+        self.assertTrue(receipt["issues"]["uuid-1"]["state_hash_verified"])
+        self.assertEqual("skipped", receipt["issues"]["uuid-skipped"]["status"])
+
     def test_explicit_linear_prune_refused_before_any_write(self) -> None:
         for full in ("", "1"):
             with (mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),

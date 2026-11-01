@@ -84,7 +84,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(stats["points"], 3)
         self.assertEqual(stats["by_source"]["doc"], 3)
 
-        search = json.loads(by_id[5]["result"]["content"][0]["text"])
+        search = by_id[5]["result"]["structuredContent"]
         self.assertEqual(search["mode"], "hybrid")
         self.assertEqual(len(search["hits"]), 2)
         self.assertIn("global-api-keys", search["hits"][0]["text"])
@@ -94,7 +94,7 @@ class McpServerTests(unittest.TestCase):
         self.assertTrue(contrib["doc_id"].startswith("contrib/TESTSEAT/"))
         self.assertEqual(contrib["status"], "completed")
 
-        again = json.loads(by_id[7]["result"]["content"][0]["text"])
+        again = by_id[7]["result"]["structuredContent"]
         self.assertEqual(len(again["hits"]), 1)
         self.assertEqual(again["hits"][0]["source"], "agent-contribution")
         self.assertEqual(again["hits"][0]["seat"], "TESTSEAT")
@@ -366,10 +366,10 @@ class SearchOptionsTests(unittest.TestCase):
                               "title": "pm2 env", "url": "", "path": "", "created_at": 1756684800000,
                               "updated_at": 1756684800000, "ingest_run": "fake"})
             recall_api.FakeQdrant.points.append({"id": pt["id"], "payload": pt["payload"]})
-        one = json.loads(self.search({"query": "pm2 update-env", "limit": 5})["content"][0]["text"])
+        one = self.search({"query": "pm2 update-env", "limit": 5})["structuredContent"]
         self.assertEqual([h["doc_id"] for h in one["hits"]].count("doc/pm2-env"), 1)
-        two = json.loads(self.search({"query": "pm2 update-env", "limit": 5, "per_doc": 2,
-                                      "prefer_lessons": False, "rerank": False})["content"][0]["text"])
+        two = self.search({"query": "pm2 update-env", "limit": 5, "per_doc": 2,
+                                      "prefer_lessons": False, "rerank": False})["structuredContent"]
         self.assertEqual([h["doc_id"] for h in two["hits"]].count("doc/pm2-env"), 2)
         self.assertEqual(two["mode"], "hybrid")
         self.assertTrue(all(h["group_hits"] == 3 for h in two["hits"] if h["doc_id"] == "doc/pm2-env"))

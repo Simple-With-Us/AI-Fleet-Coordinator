@@ -165,7 +165,17 @@ class ReleaseTests(unittest.TestCase):
         import re
 
         root = Path(__file__).resolve().parent
-        seen, queue = set(), ["recall_api", "core", "doctor", "public_fallback", "contribute_guard"]
+        seen, queue = (
+            set(),
+            [
+                "recall_api",
+                "recall_presentation",
+                "core",
+                "doctor",
+                "public_fallback",
+                "contribute_guard",
+            ],
+        )
         while queue:
             name = queue.pop()
             if name in seen:
@@ -181,6 +191,17 @@ class ReleaseTests(unittest.TestCase):
                         if part.strip() and part.strip().split(" ")[0] != "__version__"
                     ]
         self.assertEqual(seen - {"__init__"}, set(release.RECALL_MODULES) - {"__init__"})
+
+    def test_recall_presentation_ships_and_fits_receiver_file_budget(self):
+        self.assertIn("scripts/fleet_rag/recall_presentation.py", release.REQUIRED)
+        root = Path(__file__).resolve().parent.parent
+        candidates = set(release.EXACT)
+        for directory in ("scripts/agent_sync", "scripts/agent_sync/mcp"):
+            candidates.update(
+                path.relative_to(root).as_posix() for path in (root / directory).glob("*.py")
+            )
+        shipped = {path for path in candidates if release.allowed_path(path)}
+        self.assertLessEqual(len(shipped), release.MAX_FILES)
 
     def test_ships_the_knob_reader_and_not_its_tests_cli_or_readme(self):
         # AFC-486:  simple-notes reads the OPERATOR_API_URL knob through fleet_knobs.  If the server release lacked it,

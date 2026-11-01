@@ -21,7 +21,7 @@
 #      each tool's native shape, skips a tool that is not installed, and leaves a hand-registered entry alone.
 #      Clutch is not touched here: it carries fleet-recall as a native agent preset.  agent-sync is not
 #      registered here (run install_mcp with --with-simple-chat; docs/protocols/agent-sync-mcp.md).
-#   4. With --with-seat-mcp, also copies seat_mcp/tools.py + recall_bridge.py into
+#   4. With --with-seat-mcp, also copies seat_mcp/tools.py + recall_bridge.py + server.py into
 #      $HOME/apps/seat-mcp/seat_mcp/ and prints the pm2 restart command (does not run it).
 #   5. With --hooks, copies scripts/hooks/fleet-recall-session-start.sh and
 #      fleet-recall-stop.py into $HOME/.claude/hooks/ and appends one matcher entry each to
@@ -423,7 +423,7 @@ FAILED_MORE=0
 # ---------------------------------------------------------------- step 4: seat-mcp
 
 install_seat_mcp() {
-  local files=(tools.py recall_bridge.py)
+  local files=(tools.py recall_bridge.py server.py)
   for f in "${files[@]}"; do
     if [[ ! -f "$SRC/seat-mcp/seat_mcp/$f" ]]; then
       say "MISSING $SRC/seat-mcp/seat_mcp/$f" >&2
@@ -431,14 +431,14 @@ install_seat_mcp() {
     fi
   done
   if [[ "$DRY" -eq 1 ]]; then
-    say "plan: copy seat_mcp/{tools.py,recall_bridge.py} -> $SEAT_DST/"
+    say "plan: copy seat_mcp/{tools.py,recall_bridge.py,server.py} -> $SEAT_DST/"
     note "$SEAT_DST" "planned"
   else
     mkdir -p "$SEAT_DST"
     for f in "${files[@]}"; do
       cp -p "$SRC/seat-mcp/seat_mcp/$f" "$SEAT_DST/$f"
     done
-    say "installed $SEAT_DST/{tools.py,recall_bridge.py}"
+    say "installed $SEAT_DST/{tools.py,recall_bridge.py,server.py}"
     note "$SEAT_DST" "installed"
   fi
   say "next: pm2 restart seat-mcp   # not run by this script"
