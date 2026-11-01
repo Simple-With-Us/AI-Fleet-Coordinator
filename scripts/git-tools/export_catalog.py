@@ -17,6 +17,7 @@ import sys
 # read tools.  Everything else the hosted server lists under gr_ is a write for transport purposes:  write
 # uncertainty wording, identity injection and no-retry are the conservative defaults.
 WF_V1_READ_ACTIONS = [
+    "wf_installation_metadata",
     "wf_pr_commits_page",
     "wf_pr_review_get",
     "wf_release_latest",

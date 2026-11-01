@@ -82,7 +82,7 @@ DISCOVERY_MAX_CURSOR = 512
 # Read/write is policy, not discovery:  the reviewed read set (the relay's WF_V1_READ_ACTIONS plus the two
 # typed read tools, gr-workflow-v1.js / gr-typed-v1.js at capture time).  An advertised action this set does
 # not name is treated as a WRITE:  uncertainty wording, actor resolution and no-reply rules stay conservative.
-WF_V1_READ_ACTIONS = """wf_pr_commits_page wf_pr_review_get wf_release_latest wf_release_by_tag wf_commit_comments_page
+WF_V1_READ_ACTIONS = """wf_installation_metadata wf_pr_commits_page wf_pr_review_get wf_release_latest wf_release_by_tag wf_commit_comments_page
 wf_commit_comment_get wf_pr_requested_reviewers wf_repo_tags wf_repo_languages wf_pr_list_page
 wf_compare_commits_page wf_pr_reviews_page wf_pr_comments_page wf_check_runs_page wf_check_run_get
 wf_file_history wf_runs_page wf_workflows_page wf_pr_files_page wf_issue_parent wf_issue_subissues
@@ -694,12 +694,13 @@ def discover_tools(bearer: str, deadline: float | None = None) -> dict:
 
 _PATTERN_CHECK_MAX_S = 5  # per-validation wall-clock cap on ALL pattern work, inside the overall budget
 
-# The exact contract for untrusted patterns:  only these 18 patterns - the reviewed catalog's complete
+# The exact contract for untrusted patterns:  only these 19 patterns - the reviewed catalog's complete
 # set, sha256 of the pattern text - may ever be compiled or searched.  Anything unrecognized fails
 # closed, on every platform.  There is NO heuristic:  widening this set is a reviewed code change, and
 # each member's compile size and match cost are verified facts, not estimates.
 _KNOWN_PATTERN_DIGESTS = frozenset(
     (
+    "1fc130b9b77b0a2f4c8a89b518a6da224199d922c5ee33e7fb68a1f5f5f24d40",
     "0de5285caead4b0618cd25d9f6c0ec9bc330f05eb97ffcb941e12f4be4ec3f8f",
     "10d10184fb6ea3c9990c8e5d942c75336a0b516cb0dec06ef3fc9ac0b5abdb7a",
     "126a2cf27187e82c7e365633238f2826294e633753f816f6fe6767be1b1feabe",
