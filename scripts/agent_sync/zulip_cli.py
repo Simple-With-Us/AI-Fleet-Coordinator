@@ -20,6 +20,7 @@ import stat
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from . import router as ROUTER
 from . import secretscan
 from . import zulip as Z
 from . import zulip_ops as OPS
@@ -127,7 +128,16 @@ def add_parsers(
         default=[],
         metavar="NAME",
         help="address a user or bot like post --to (repeatable); a seat newly tagged by the edit is"
-        " woken.  The edit replaces the whole text, so name again anyone the message should keep",
+        " woken.  The edit replaces the whole text, so name again anyone the message should keep.  "
+        "An OWNER label on the original tag is kept without naming the owner again",
+    )
+    p.add_argument(
+        "--to-owner",
+        dest="to_owner",
+        action="store_true",
+        help="address the owner pinned in listener.toml (daemon.owner_user_id):  adds the mention that wakes "
+        "Jay, written from that id's live full name, never a name you type.  Exits 2 when no owner is "
+        "pinned.  Without it, an original tag that already carries OWNER keeps that routing anyway",
     )
     p.add_argument("--no-tag", action="store_true", help="do not prepend the [SEAT·session] tag")
     body(p)
@@ -437,6 +447,32 @@ def _target(agent: Any, args: argparse.Namespace) -> dict[str, Any]:
     return OPS.target_params(agent, channel=args.channel, topic=args.topic, user_ids=ids or None)
 
 
+def _tag_carries_owner(agent: Any, content: Any) -> bool:
+    """Whether a message's own leading seat tag carries the OWNER label.  The tag is read as
+    `_compose` writes it (`[SEAT·session→OWNER,...]`, with `->` accepted as elsewhere), and only
+    that leading bracket counts.  A `→OWNER` quoted later in the text is not routing."""
+    text, _ = ROUTER.strip_no_wake(str(content or ""), getattr(agent, "seat", None))
+    text = text.lstrip()
+    if not text.startswith("["):
+        return False
+    close = text.find("]")
+    if close < 0:
+        return False
+    tag = text[1:close]
+    if "→" in tag:
+        head, _, labels = tag.partition("→")
+    elif "->" in tag:
+        head, _, labels = tag.partition("->")
+    else:
+        return False
+    seat, session_mark, _session = head.partition("·")
+    #  The same seat-tag rule strip_no_wake uses:  a bracket counts when it carries a session
+    #  part, or when it names this seat.  Any other leading bracket is ordinary text.
+    if not seat or (not session_mark and seat != getattr(agent, "seat", None)):
+        return False
+    return "OWNER" in {label.strip() for label in labels.split(",")}
+
+
 # --------------------------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------------------------
@@ -448,10 +484,29 @@ def cmd_show(agent: Any, args: argparse.Namespace) -> int:
 
 
 def cmd_edit(agent: Any, args: argparse.Namespace) -> int:
+    cli = _cli()
     text = _text(agent, args)
-    mentions, labels = _cli()._resolve_targets(agent, args.to, False)
-    body = _cli()._compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
-    result = OPS.edit_message(agent, args.id, body)
+    to_owner = bool(getattr(args, "to_owner", False))
+    if to_owner:
+        #  The same pre-check reply makes in cli.py:  an unpinned owner exits 2 before the
+        #  original message is even fetched.  Post and reply have no separate owner-queue
+        #  write.  Their routing is the OWNER label plus the pinned mention that
+        #  `_resolve_targets` adds, so reusing that pair here is the whole consistent path.
+        cli._owner_user_id(agent)
+    #  A plain text fix must not silently drop owner routing.  Read this bot's own original
+    #  first, and keep the owner when its tag already carried OWNER.  The kept case cannot
+    #  pre-check the pinned owner before that fetch, because the fetch is what tells us the
+    #  owner is needed.  `_resolve_targets` still fails closed before any edit is sent when
+    #  no owner is pinned.
+    original = OPS.own_message(agent, args.id)
+    to_owner = to_owner or _tag_carries_owner(agent, original.get("content"))
+    mentions, labels = cli._resolve_targets(agent, getattr(args, "to", []) or [], to_owner)
+    #  --no-tag still wins for the bracket, exactly as `_compose` gives post.  The mentions
+    #  above stay, so a seat or the owner named by the edit is still woken.
+    body = cli._compose(
+        agent, text, labels=labels, mentions=mentions, no_tag=bool(getattr(args, "no_tag", False))
+    )
+    result = OPS.edit_message(agent, args.id, body, checked=original)
     return _result(agent, result, "edited id %d" % args.id)
 
 
