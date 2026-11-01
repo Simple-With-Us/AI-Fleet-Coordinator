@@ -32,4 +32,7 @@ systemctl daemon-reload
 if [[ "$mode" == --enable ]]; then
   systemctl enable --now fleet-coding-memory.service
 fi
+if [[ -e "$config/exclude-units" ]]; then
+  echo "Note: host-local exclude list present at $config/exclude-units (left untouched)."
+fi
 echo 'Coding memory code installed; authentication material was not copied.'

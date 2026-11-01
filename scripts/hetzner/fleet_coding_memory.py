@@ -8,6 +8,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -40,7 +41,45 @@ POLICY_FIELDS = {
 }
 CGROOT = Path("/sys/fs/cgroup")
 STATE_DIR = Path("/var/lib/fleet-coding-memory")
+EXCLUDE_FILE = Path("/etc/fleet-coding-memory/exclude-units")
 MIB = 1024 * 1024
+UNIT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]*$")
+
+
+def load_excluded_units(
+    path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, warn=None
+) -> set[str]:
+    """Load the host-local exclude list; untrusted files are ignored entirely."""
+    warn = warn or (lambda msg: print(msg, file=sys.stderr))
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+        return set()
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid or info.st_mode & 0o022:
+            warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+            return set()
+        with os.fdopen(fd, "r") as f:
+            fd = -1  # fdopen owns it now
+            units = set()
+            for line in f:
+                name = line.strip()
+                if not name or name.startswith("#"):
+                    continue
+                if UNIT_NAME_RE.match(name):
+                    units.add(name)
+            return units
+    except OSError:
+        warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+        return set()
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def validate_policy(raw: str) -> dict[str, Any]:
@@ -236,9 +275,11 @@ def cg_path(root: Path, rel: str) -> Path | None:
         return None
 
 
-def unit_cgroups(policy: dict[str, Any], root: Path, runner=subprocess.run) -> list[Path]:
+def resolve_unit_cgroups(
+    units, root: Path, runner=subprocess.run
+) -> list[Path]:
     found = []
-    for unit in policy["coding_units"]:
+    for unit in units:
         try:
             r = runner(
                 ["systemctl", "show", "--value", "-pControlGroup", unit],
@@ -253,6 +294,19 @@ def unit_cgroups(policy: dict[str, Any], root: Path, runner=subprocess.run) -> l
         except Exception:
             continue
     return found
+
+
+def unit_cgroups(
+    policy: dict[str, Any], root: Path, runner=subprocess.run, excluded=None
+) -> list[Path]:
+    excluded = excluded or set()
+    return resolve_unit_cgroups(
+        [u for u in policy["coding_units"] if u not in excluded], root, runner=runner
+    )
+
+
+def _is_excluded_path(path: Path, excluded_cgroups) -> bool:
+    return any(path == ex or ex in path.parents for ex in excluded_cgroups)
 
 
 def docker_groups(
@@ -547,6 +601,44 @@ def restore_owned(state: dict[str, Any], persist=None) -> None:
             continue
 
 
+def restore_excluded(
+    state: dict[str, Any], excluded_cgroups, persist=None
+) -> None:
+    """Hand back owned controls on now-excluded cgroups (external edit wins)."""
+    if not excluded_cgroups:
+        return
+    excluded = set(excluded_cgroups)
+    for name, rec in list(state.get("owned", {}).items()):
+        try:
+            pth, key = name.rsplit(":", 1)
+            p = Path(pth)
+            if p not in excluded:
+                continue
+            if p.stat().st_ino != rec["inode"]:
+                del state["owned"][name]
+                if persist:
+                    persist()
+                continue
+            f = p / key
+            current = f.read_text().strip()
+            if current == rec["last"] and current != rec["baseline"]:
+                write_control(f, str(rec["baseline"]))
+                del state["owned"][name]
+                if persist:
+                    persist()
+            elif current != rec.get("last"):
+                # External edit wins: drop ownership without writing.
+                del state["owned"][name]
+                if persist:
+                    persist()
+            elif current == rec["baseline"]:
+                del state["owned"][name]
+                if persist:
+                    persist()
+        except (OSError, ValueError, KeyError):
+            continue
+
+
 def oom_kill_delta(paths: list[Path], state: dict[str, Any]) -> int:
     previous = state.get("oom_counters", {})
     current: dict[str, dict[str, int]] = {}
@@ -628,17 +720,26 @@ def step(
     now: float | None = None,
     discovered: tuple[Any, ...] | None = None,
     persist=None,
+    excluded_units=None,
+    excluded_cgroups=None,
 ) -> dict[str, Any]:
     now = time.monotonic() if now is None else now
     avail, total = mem_available(proc)
     some = psi_avg(proc / "pressure" / "memory", "some")
     full = psi_avg(proc / "pressure" / "memory", "full")
+    excluded_units = set(excluded_units or set())
+    excluded_cgroups = set(excluded_cgroups or set())
     if discovered is None:
         containers, prod, production_limits = docker_groups(policy, root)
-        code = unit_cgroups(policy, root) + containers
+        code = unit_cgroups(policy, root, excluded=excluded_units) + containers
+        if excluded_units and not excluded_cgroups:
+            excluded_cgroups = set(resolve_unit_cgroups(sorted(excluded_units), root))
     else:
         code, prod = discovered[:2]
         production_limits = discovered[2] if len(discovered) > 2 else {}
+    if excluded_cgroups:
+        restore_excluded(state, excluded_cgroups, persist)
+        code = [p for p in code if not _is_excluded_path(p, excluded_cgroups)]
     code = dedupe_nested(code)
     mode = state.get("mode", "normal")
     if not isinstance(mode, str) or mode not in ("normal", "pressure", "critical"):
@@ -720,12 +821,17 @@ def step(
         "production_unprotected_groups": production_unprotected,
         "oom_kill_delta": oom_delta,
         "control_write_failures": write_failures,
+        "excluded_units": len(excluded_units),
     }
     return state["last_status"]
 
 
 def refresh_worker(
-    state_dir: Path, current: list[Any], wake: threading.Event, stop: threading.Event
+    state_dir: Path,
+    current: list[Any],
+    wake: threading.Event,
+    stop: threading.Event,
+    exclude_file: Path = EXCLUDE_FILE,
 ) -> None:
     """Refresh one immutable policy snapshot off the controller's time-sensitive loop."""
     while not stop.is_set():
@@ -734,6 +840,11 @@ def refresh_worker(
             wake.clear()
         if stop.is_set():
             return
+        # Reload the exclude file on the same cadence; this is the only
+        # place (besides startup) it is read, so an untrusted-file warning
+        # fires once per refresh, not per tick.
+        if len(current) > 2:
+            current[2] = load_excluded_units(exclude_file)
         try:
             fresh = fetch_policy()
             atomic_json(state_dir / "policy.json", fresh)
@@ -759,6 +870,7 @@ def main() -> int:
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--state-dir", type=Path, default=STATE_DIR)
     ap.add_argument("--cgroot", type=Path, default=CGROOT)
+    ap.add_argument("--exclude-file", type=Path, default=EXCLUDE_FILE)
     args = ap.parse_args()
     state_path = args.state_dir / "state.json"
     if args.status:
@@ -814,7 +926,7 @@ def main() -> int:
     reconcile_owned(state, lambda: atomic_json(state_path, state))
     reset_transient_state(state)
     policy, stale = load_lkg(args.state_dir)
-    live = [policy, stale]
+    live: list[Any] = [policy, stale, load_excluded_units(args.exclude_file)]
     quit_flag = False
     refresh = threading.Event()
     stop_refresh = threading.Event()
@@ -830,17 +942,25 @@ def main() -> int:
     signal.signal(signal.SIGINT, onterm)
     signal.signal(signal.SIGHUP, onsighup)
     worker = threading.Thread(
-        target=refresh_worker, args=(args.state_dir, live, refresh, stop_refresh), daemon=True
+        target=refresh_worker,
+        args=(args.state_dir, live, refresh, stop_refresh, args.exclude_file),
+        daemon=True,
     )
     worker.start()
     last_discovery = 0.0
     groups: tuple[list[Path], list[Path], dict[Path, int]] = ([], [], {})
+    excluded_cgroups: set[Path] = set()
+    seen_excluded: set[str] | None = None
     discovered_once = False
     try:
         while True:
             if quit_flag:
                 break
             policy, stale = live[0], live[1]
+            excluded_units = set(live[2]) if len(live) > 2 else set()
+            if excluded_units != seen_excluded:
+                discovered_once = False
+                seen_excluded = set(excluded_units)
             state["policy_stale"] = stale
             try:
                 if (
@@ -848,7 +968,15 @@ def main() -> int:
                     or time.monotonic() - last_discovery >= policy["discovery_seconds"]
                 ):
                     containers, production, limits = docker_groups(policy, args.cgroot)
-                    groups = (unit_cgroups(policy, args.cgroot) + containers, production, limits)
+                    groups = (
+                        unit_cgroups(policy, args.cgroot, excluded=excluded_units)
+                        + containers,
+                        production,
+                        limits,
+                    )
+                    excluded_cgroups = set(
+                        resolve_unit_cgroups(sorted(excluded_units), args.cgroot)
+                    )
                     last_discovery = time.monotonic()
                     discovered_once = True
                 report = step(
@@ -857,6 +985,8 @@ def main() -> int:
                     state,
                     discovered=groups,
                     persist=lambda: atomic_json(state_path, state),
+                    excluded_units=excluded_units,
+                    excluded_cgroups=excluded_cgroups,
                 )
                 state["updated_at"] = int(time.time())
                 atomic_json(state_path, state)
