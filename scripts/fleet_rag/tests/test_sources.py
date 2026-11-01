@@ -1932,6 +1932,21 @@ class LinearSourceTests(unittest.TestCase):
             nodes = sources._linear_fetch_full(["uuid-a", "uuid-b"])
         self.assertEqual(["uuid-a", "uuid-b"], [n["id"] for n in nodes])
 
+    def test_production_iterator_streams_chunks_before_fetching_whole_inventory(self) -> None:
+        selected = {f"uuid-{i}": "2026-10-21" for i in range(125)}
+        calls = []
+        def fetch(ids):
+            calls.append(list(ids))
+            return [_linear_node(uid=uid) for uid in ids]
+        with (mock.patch.object(sources, "_linear_fetch_full", side_effect=fetch),
+              mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+            iterator = sources.iter_linear(light_scan=lambda: selected)
+            next(iterator)
+            self.assertEqual(1, len(calls))
+            self.assertEqual(50, len(calls[0]))
+            self.assertEqual(124, len(list(iterator)))
+        self.assertEqual([50, 50, 25], [len(ids) for ids in calls])
+
     def test_single_issue_combined_overflow_pages_without_losing_text(self) -> None:
         calls = []
         node = _linear_node(comments=[("Wise", "first complete body", "2026-10-20")])

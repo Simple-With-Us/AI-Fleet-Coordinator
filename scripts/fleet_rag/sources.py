@@ -2401,7 +2401,18 @@ def iter_linear(
     found = set()
     incomplete = []
     selected_ids = set(selected)
-    for node in fetch_full(selected):
+
+    # Production fetches one bounded issue chunk at a time. Do not retain the whole
+    # replacement inventory's full descriptions/comments in RAM before the first commit.
+    # Injected fetchers keep their established list contract for callers/tests.
+    def batches():
+        if fetch_full is _linear_fetch_full:
+            for start in range(0, len(selected), LINEAR_FULL_PAGE):
+                yield from fetch_full(selected[start : start + LINEAR_FULL_PAGE])
+        else:
+            yield from fetch_full(selected)
+
+    for node in batches():
         uid = node.get("id")
         if uid not in selected_ids or uid in found:
             raise LinearSourceError(f"linear: unexpected or duplicate fetched id {uid}")
