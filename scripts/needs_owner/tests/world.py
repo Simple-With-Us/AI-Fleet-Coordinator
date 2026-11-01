@@ -102,7 +102,10 @@ class World:
     # ---- running -----------------------------------------------------------------------------
     def env(self, **extra: str) -> dict:
         env = {"PATH": "%s:/usr/bin:/bin" % self.bin, "HOME": str(self.home), "FAKE_STATE_DIR": str(self.state),
-               "FAKE_SCRIPTS_DIR": str(SCRIPTS), "AGENT_SEAT": "CLAUDE", "PYTHONDONTWRITEBYTECODE": "1"}
+               "FAKE_SCRIPTS_DIR": str(SCRIPTS), "AGENT_SEAT": "CLAUDE", "PYTHONDONTWRITEBYTECODE": "1",
+               # A run in a subprocess does not see this process's tempfile.tempdir, so it is pointed at the
+               # same per-world folder here and the leak check covers it too.
+               "TMPDIR": str(self.tmp), "TEMP": str(self.tmp), "TMP": str(self.tmp)}
         env.update(extra)
         # The harness plays the trusted launcher:  a seat binds the run to a bearer locator and the fake board
         # proves that seat (FAKE_BEARER_SEAT).  AGENT_SEAT itself is never an identity any more, so it is not
