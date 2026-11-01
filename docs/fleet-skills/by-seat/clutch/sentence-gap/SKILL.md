@@ -26,6 +26,12 @@ docs, tickets, release notes, design docs.  Only code and code comments are exe
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),
 inside a URL, email, filename, or a brand name containing a period.
 
+No gap where the sentence ends its line (owner ruling 2026-11-01:  "don't need 2 spaces if
+there is a line break like if end of the paragraph").  A sentence that ends at a line
+break, at a blank line (the end of a paragraph) or at the end of the text takes no gap.
+The converter adds none there and the checks do not count it.  A paragraph is still one
+line, so a sentence that continues the same paragraph never sits after a line break.
+
 ### Current rule (owner ruling 2026-10-23) — one mechanism on every surface, and one exception
 
 Jay, Fri, Oct 23:  update the rule everywhere, so it is the same on every surface.  Between

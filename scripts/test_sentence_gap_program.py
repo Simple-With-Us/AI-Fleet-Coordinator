@@ -96,6 +96,17 @@ LIST_CODE_BODY = "- A list item.\n\n      Code line.  Another line.\n"
 
 HARD_BREAK = "A hard break at the end of this line follows.  \n"
 
+# AFC-510 (owner Nov 1 2026):  no gap at a line break, blank line, or end of text.
+LINE_END_UNCHANGED_PREFIX = (
+    "First sentence.\nNext sentence.\n\nEnd of paragraph.\n\nNew paragraph.\n"
+)
+LINE_END_SAME_LINE_PAIR = "Same line.  Gapped here.\n"
+LINE_END_BODY = LINE_END_UNCHANGED_PREFIX + LINE_END_SAME_LINE_PAIR
+EOF_LINE_END_BODIES = (
+    ("no_trailing_newline", "Ends at text."),
+    ("trailing_newline", "Ends at text.\n"),
+)
+
 BODY = """repo:  Fixture-Repo  |  DONE
 
 A plain sentence.  A second plain sentence.
@@ -525,6 +536,45 @@ class ProgramBehaviourTests(unittest.TestCase):
         self.assertIn("```js\nconst x = 1.  More\n", out)
         after = out.split("```js\n", 1)[1]
         self.assertNotIn(NBSP, after)
+
+    def _assert_line_end_fixture(self, out: str, gap: str) -> None:
+        """Shared AFC-510 shape:  prefix untouched, one same-line gap, no gap elsewhere."""
+        self.assertEqual(
+            out[: len(LINE_END_UNCHANGED_PREFIX)],
+            LINE_END_UNCHANGED_PREFIX,
+            "line-break and paragraph-end closes must stay byte for byte",
+        )
+        self.assertEqual(out.count(gap), 1, "only the same-line pair may gain a gap")
+        self.assertIn("Same line." + gap + "Gapped here.", out)
+
+    def test_line_end_closes_stay_byte_for_byte_in_default_mode(self) -> None:
+        """AFC-510:  the program must not gap newline, blank-line, or EOF closes."""
+        out = run_program(self.program, LINE_END_BODY)
+        self._assert_line_end_fixture(out, NBSP + " ")
+        for name, body in EOF_LINE_END_BODIES:
+            with self.subTest(case=name):
+                converted = run_program(self.program, body)
+                self.assertEqual(converted, body)
+                self.assertNotIn(NBSP, converted)
+
+    def test_line_end_closes_stay_byte_for_byte_in_entity_mode(self) -> None:
+        """AFC-510:  entity mode follows the same line-end rule as default mode."""
+        out = run_program(self.program, LINE_END_BODY, "--entity")
+        self._assert_line_end_fixture(out, ENTITY)
+        for name, body in EOF_LINE_END_BODIES:
+            with self.subTest(case=name):
+                converted = run_program(self.program, body, "--entity")
+                self.assertEqual(converted, body)
+                self.assertNotIn(ENTITY, converted)
+
+    def test_the_line_end_fixture_is_idempotent_in_both_modes(self) -> None:
+        """AFC-510:  a second run must not add a gap at a line end that stayed plain."""
+        for entity in (False, True):
+            with self.subTest(entity=entity):
+                args = ("--entity",) if entity else ()
+                out = run_program(self.program, LINE_END_BODY, *args)
+                again = run_program(self.program, out, *args)
+                self.assertEqual(again, out, "the line-end fixture must stay idempotent")
 
 
 if __name__ == "__main__":
