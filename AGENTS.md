@@ -26,7 +26,7 @@ GitHub work goes through the fleet's GitHub tools: `git-relay` is the GitHub rel
 
 ## CI runners
 
-**Local Mac self-hosted runners are permanently banned.**  Never start, spawn, re-enable or configure `trading-live-mac-ci`, `trading-live-mac` or `actions-runner` on any machine.  The reason is security, not preference:  PR-triggered runner code would run on the same machine that holds the fleet's Infisical machine identity and the archived board's `findings.db`.  CI runs on the Coolify self-hosted runners, and iOS build and ship runs on GitHub-hosted `macos-latest`, never on a local Mac runner.  If a `MAC-LOCAL-PROCESSES.md` row for a `mac-xcode*` or `actions.runner*` process ever shows live (`Up` or `Always-on`), the policy is being violated:  retire it or escalate.  Check with `python3 scripts/check-ci-runner-policy.py`.
+**Local Mac self-hosted runners are permanently banned.**  Never start, spawn, re-enable or configure `trading-live-mac-ci`, `trading-live-mac` or `actions-runner` on any machine.  The reason is security, not preference: PR-triggered runner code would run on the same machine that holds the fleet's Infisical machine identity and the archived board's `findings.db`.  CI runs on the Coolify self-hosted runners, and iOS build and ship runs on GitHub-hosted `macos-latest`, never on a local Mac runner.  If a `MAC-LOCAL-PROCESSES.md` row for a `mac-xcode*` or `actions.runner*` process ever shows live (`Up` or `Always-on`), the policy is being violated: retire it or escalate.  Check with `python3 scripts/check-ci-runner-policy.py`.
 
 This section keeps the ban in this repository now that the Fleet-OPS handbook rewrite (Fleet-OPS #203) turned `FLEET-PROTOCOL.md` into a tools manual and moved policy prose to `AGENTS.md`.
 
