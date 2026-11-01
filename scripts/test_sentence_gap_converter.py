@@ -219,10 +219,7 @@ NBSP = " "
 # or the end of the text.  The composite body holds (a) a newline between sentences,
 # (b) a blank line between paragraphs, and a same-line pair that must still convert.
 LINE_END_UNCHANGED_PREFIX = (
-    "First sentence.\n"
-    "Next sentence.\n\n"
-    "End of paragraph.\n\n"
-    "New paragraph.\n"
+    "First sentence.\nNext sentence.\n\nEnd of paragraph.\n\nNew paragraph.\n"
 )
 LINE_END_SAME_LINE_PAIR = "Same line.  Gapped here.\n"
 LINE_END_COMPOSITE_BODY = LINE_END_UNCHANGED_PREFIX + LINE_END_SAME_LINE_PAIR

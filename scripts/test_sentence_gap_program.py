@@ -98,10 +98,7 @@ HARD_BREAK = "A hard break at the end of this line follows.  \n"
 
 # AFC-510 (owner Nov 1 2026):  no gap at a line break, blank line, or end of text.
 LINE_END_UNCHANGED_PREFIX = (
-    "First sentence.\n"
-    "Next sentence.\n\n"
-    "End of paragraph.\n\n"
-    "New paragraph.\n"
+    "First sentence.\nNext sentence.\n\nEnd of paragraph.\n\nNew paragraph.\n"
 )
 LINE_END_SAME_LINE_PAIR = "Same line.  Gapped here.\n"
 LINE_END_BODY = LINE_END_UNCHANGED_PREFIX + LINE_END_SAME_LINE_PAIR
