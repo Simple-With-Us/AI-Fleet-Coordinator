@@ -82,6 +82,24 @@ class InstallationOwnerTests(unittest.TestCase):
         self.assertIn(("GET", "/repos/" + PERSONAL + "/installation", None), calls)
         self.assertFalse(any(c[0] == "POST" for c in calls))
 
+    def test_actions_variables_mints_under_githubs_real_permission_key(self):
+        minter, calls = self.build()
+        minter.token_for("swu-wise", ORG, {"actions_variables": "write"})
+        writes = [call for call in calls if call[0] == "POST"]
+        self.assertEqual(
+            writes[0][2],
+            {
+                "repositories": ["AI-Fleet-Coordinator"],
+                "permissions": {"actions_variables": "write"},
+            },
+        )
+
+    def test_legacy_variables_key_fails_closed(self):
+        minter, calls = self.build()
+        with self.assertRaisesRegex(AppTokenError, "outside the mint ceiling"):
+            minter.token_for("swu-wise", ORG, {"variables": "write"})
+        self.assertFalse(any(call[0] == "POST" for call in calls))
+
     def test_permission_ceiling_still_refuses_admin(self):
         minter, calls = self.build()
         with self.assertRaisesRegex(AppTokenError, "outside the mint ceiling"):
