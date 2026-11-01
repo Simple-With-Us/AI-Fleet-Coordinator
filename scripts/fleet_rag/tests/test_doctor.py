@@ -1044,7 +1044,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = buf.getvalue()
         self.assertIn("hits  (hybrid+rerank)", out)
-        first = out.splitlines()[2]
+        first = json.loads(out.splitlines()[2]).splitlines()[2]
         self.assertTrue(first.startswith("#1  "), first)
         self.assertIn("rerank=", first)
         self.assertIn("fused=", first)

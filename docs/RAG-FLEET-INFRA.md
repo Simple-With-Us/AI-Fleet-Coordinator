@@ -68,6 +68,21 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 |---|---|---|
 | `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`, frozen at the retirement) | category `lesson` when resolved, else `finding`; url is the Linear issue from the migration map |
 | `linear` | All live and archived Linear issues through the installed `simple-board` read-only GraphQL path. Untouched imported history is included, independent of `findings.db`, the migration TSV or freeze date. Committed ingest state controls incremental refetches; `FLEET_RAG_LINEAR_FULL=1` bypasses that cache and selects every scanned UUID. Comment edits can escape issue timestamps, so the committed `refreshed_at` window still forces periodic refetches (default 7 days). Issue chunks halve on the CLI cap; a single issue retries with one connection node, and follow-on comments, labels and attachments page completely with adaptive widths, cursor-progress checks and a per-chunk deadline. A single-field overflow remains an identified incomplete issue, never a partial document. Run `linear_read_receipt` records every scanned UUID, selected count, fetched/cached/skipped status, skip reason and fetched Markdown SHA256. `source_complete` means an unlimited read fetched every scanned UUID without skips; `state_hash_verified` separately compares fetched text with committed ingest state. Neither proves independent Qdrant chunk coverage or authorizes deletion. Linear is in the normal nightly source set, but explicit Linear prune remains refused and nightly Linear prune is skipped, even with FULL. Board/effort reconciliation and retired-file deletion require separate validated coverage and clearance. Stable doc ID `linear/<issue-uuid>` survives team moves; app from `app:<slug>` else team mapping | category `lesson` for completed state, otherwise `finding`; seat from `seat:`/`claimed:` labels |
+
+Agent-facing recall text is presented as nonce-fenced JSON with an explicit warning that hits
+are untrusted data, never instructions or owner approval. The shared `recall_presentation`
+helper covers the standalone stdio MCP, recall-service MCP, seat-mcp and CLI text surfaces.
+The JSON inside the fence is lossless: delimiter-like text uses JSON Unicode escapes, not
+source removal. MCP `structuredContent` and CLI `--json` stdout retain the raw result shape
+and original source text; CLI JSON writes its trust warning to stderr. REST and the Python
+API remain raw-data interfaces. Machine consumers must treat their hits as untrusted source
+data and separately verify authority before acting; indexing text does not authenticate it.
+No text fence can make an agent immune to prompt injection. The hosted/agent-sync MCP already
+has its own untrusted recall envelope. `install-fleet-rag.sh --with-seat-mcp` now copies the
+seat server renderer as well as its bridge/tools; the main package rsync and service Docker
+COPY include the shared helper. These source changes do not install, restart or deploy a
+runtime by themselves.
+
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[TEAM_KEY, Agent] Topic` title convention |
 | `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
