@@ -88,7 +88,10 @@ class InstallationOwnerTests(unittest.TestCase):
         writes = [call for call in calls if call[0] == "POST"]
         self.assertEqual(
             writes[0][2],
-            {"repositories": ["AI-Fleet-Coordinator"], "permissions": {"actions_variables": "write"}},
+            {
+                "repositories": ["AI-Fleet-Coordinator"],
+                "permissions": {"actions_variables": "write"},
+            },
         )
 
     def test_legacy_variables_key_fails_closed(self):
