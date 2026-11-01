@@ -32,10 +32,11 @@ PROGRAM = ROOT / "scripts" / "sentence_gap_convert.pl"
 
 #  The surfaces that document the recipe.  Each one embeds the program, so each one can
 #  be read by a seat that has no checkout of its own.
+#  `.cursor/rules/sentence-gap.mdc` is omitted: the always-on rule points to the skill
+#  instead of embedding the program, to keep ~11k tokens off every Cursor turn.
 SURFACES = (
     "docs/fleet-skills/sentence-gap/SKILL.md",
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
-    ".cursor/rules/sentence-gap.mdc",
     "scripts/pr_sweep/rules.md",
 )
 
