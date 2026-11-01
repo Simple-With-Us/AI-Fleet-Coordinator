@@ -791,8 +791,16 @@ def _run_locked(
         group_chunks = 0
         yielded: set[str] = set()
         source_ok = True
+        linear_receipt = (
+            {} if name == "linear" and GENERATORS[name] is sources.iter_linear else None
+        )
+        if linear_receipt is not None:
+            report["linear_read_receipt"] = linear_receipt
         try:
-            for doc in GENERATORS[name](limit=limit):
+            kwargs = {"limit": limit}
+            if linear_receipt is not None:
+                kwargs["receipt"] = linear_receipt
+            for doc in GENERATORS[name](**kwargs):
                 stats["docs_seen"] += 1
                 if doc.doc_id in seen_run:
                     raise FleetRagError(
@@ -836,6 +844,24 @@ def _run_locked(
             telemetry.capture_exception(e, operation="ingest", source=name)
             if os.environ.get("FLEET_RAG_DEBUG"):
                 traceback.print_exc()
+        if linear_receipt is not None:
+            # Read completeness is not deletion authority. State verification describes
+            # committed document hashes only, not independent Qdrant/chunk coverage.
+            verified = 0
+            for uid, row in linear_receipt.get("issues", {}).items():
+                prev = state.get(f"linear/{uid}", {})
+                matches = (
+                    not dry_run
+                    and row.get("status") == "fetched"
+                    and prev.get("doc_hash") == row.get("content_sha256")
+                )
+                row["state_hash_verified"] = bool(matches)
+                verified += bool(matches)
+            linear_receipt["state_hash_verified_count"] = verified
+            linear_receipt["source_ok"] = source_ok
+            linear_receipt["deletion_authorized"] = False
+            if not source_ok:
+                linear_receipt["source_complete"] = False
         for w in sources.take_warnings():
             report["warnings"].append(f"{name}: {w}")
             log(f"[{name}] WARNING {w}")

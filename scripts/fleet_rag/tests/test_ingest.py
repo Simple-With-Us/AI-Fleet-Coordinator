@@ -178,6 +178,23 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(set(self.qd.points), points)
             self.assertTrue(any("pruning skipped" in w for w in report["warnings"]))
 
+    def test_linear_receipt_separates_full_read_from_commit_and_dry_run(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+        for dry in (True, False):
+            with (mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+                  mock.patch.object(sources, "_linear_light_scan", return_value={
+                      "uuid-1": "2026-10-21T01:00:00Z"}),
+                  mock.patch.object(sources, "_linear_fetch_full", return_value=[_linear_node()]),
+                  mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+                report = ingest.run("linear", dry_run=dry, cfg={"x": "y"}, qd=self.qd,
+                    state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                    log=lambda *a: None)
+            receipt = report["linear_read_receipt"]
+            self.assertTrue(report["ok"])
+            self.assertTrue(receipt["source_complete"])
+            self.assertFalse(receipt["deletion_authorized"])
+            self.assertEqual(not dry, receipt["issues"]["uuid-1"]["state_hash_verified"])
+
     def test_explicit_linear_prune_refused_before_any_write(self) -> None:
         for full in ("", "1"):
             with (mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),
