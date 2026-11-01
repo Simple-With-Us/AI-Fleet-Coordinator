@@ -339,8 +339,8 @@ jobs:
     # The registry's FLEET-PROTOCOL.md rows are read under the GENERATED header, which itself names Fleet-OPS.
     - name: Registry checks read FLEET-PROTOCOL.md under its header
       run: python3 scripts/test_check_fleet_registry.py
-    # check-ci-runner-policy.py must recognize FLEET-PROTOCOL's local-Mac-runner ban wording.
-    - name: CI runner policy lint tracks FLEET-PROTOCOL ban text
+    # check-ci-runner-policy.py must recognize the local-Mac-runner ban wording in AGENTS.md.
+    - name: CI runner policy lint tracks the AGENTS.md ban text
       run: python3 scripts/test_check_ci_runner_policy.py
     # GROK-BUILD in any spelling is an alias for GROK (owner 2026-10-10).  The standalone runtimes (the
     # Linear board, recall) carry a copy of the registry's aliasPattern;  these fail when a copy drifts.
