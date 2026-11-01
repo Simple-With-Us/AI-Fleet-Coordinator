@@ -134,6 +134,23 @@ class DiscoverTests(unittest.TestCase):
         api.list_pages = {None: {"items": [{"id": "bc-one", "status": "IDLE"}]}}
         self.assertEqual(CursorCloudTransport(api).discover()[0]["cwd"], "cursor-cloud://bc-one")
 
+    def test_find_fetches_one_agent_by_id_without_listing(self) -> None:
+        api = FakeCursorApi()
+        api.agents = {"bc-old": agent("bc-old"), "bc-archived": agent("bc-archived", "ARCHIVED")}
+        transport = CursorCloudTransport(api)
+        row = transport.find("bc-old")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["session_id"], "bc-old")
+        self.assertEqual(row["state"], "idle")
+        self.assertEqual(row["title"], "Existing task")
+        self.assertEqual(row["cwd"], "cursor-cloud://bc-old")
+        self.assertEqual(row["repo_url"], "https://github.com/org/repo")
+        self.assertEqual(api.calls, [("GET", "/v1/agents/bc-old", None)])
+        self.assertIsNone(transport.find("bc-archived"))
+        self.assertIsNone(transport.find("bc-gone"))
+        self.assertIsNone(transport.find("not-an-agent"))
+        self.assertFalse(any(path.startswith("/v1/agents?") for _, path, _ in api.calls))
+
 
 class PreflightTests(unittest.TestCase):
     def test_idle_agent_is_ready_and_active_is_busy(self) -> None:

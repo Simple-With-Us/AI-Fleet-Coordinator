@@ -622,6 +622,159 @@ class ChatCatalogTests(unittest.TestCase):
             self.assertEqual(row["status"], "unavailable")
             self.assertFalse(row["capabilities"]["wake"])
 
+    def test_find_returns_an_older_claude_chat_beyond_the_catalog_cap(self):
+        # More chats than the cap:  recency decides which rows discover() keeps, and
+        # the oldest chat falls outside that window.  A direct by-id lookup still
+        # finds that one chat, in the same public shape discover() produces.
+        for index in range(20):
+            write_jsonl(
+                self.home / (".claude/projects/project/session-%02d.jsonl" % index),
+                [
+                    {"type": "custom-title", "customTitle": "Session %d" % index},
+                    {
+                        "type": "user",
+                        "cwd": "/repo",
+                        "timestamp": 1000 + index,
+                        "message": {"content": "question api_key=secret-value"},
+                    },
+                ],
+            )
+        catalog = self.catalog(
+            grok_transport=FakeGrok(), cursor_transport=FakeCursor(), max_records=20
+        )
+        rows = catalog.discover()
+        claude_ids = [row["session_id"] for row in rows if row["platform"] == "claude"]
+        self.assertIn("session-19", claude_ids)
+        self.assertNotIn("session-00", claude_ids)
+        self.assertEqual(claude_ids, sorted(claude_ids, reverse=True))
+        found = catalog.find("claude", "session-00")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["session_id"], "session-00")
+        self.assertEqual(found["title"], "Session 0")
+        self.assertEqual(found["cwd"], "/repo")
+        self.assertEqual(found["updated_at"], 1000)
+        self.assertEqual(found["id"], _stable_id("test-host", "claude", "session-00"))
+        self.assertNotIn("secret-value", json.dumps(found))
+        self.assertIsNone(catalog.find("claude", "session-missing"))
+        self.assertIsNone(catalog.find("claude", "../session-00"))
+        self.assertIsNone(catalog.find("cursor-cloud", "bc-missing"))
+
+    def test_find_returns_an_older_muse_chat_from_sqlite_beyond_the_catalog_cap(self):
+        db = self.home / ".local/share/muse/session-index.db"
+        db.parent.mkdir(parents=True)
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE sessions (ID TEXT, workspace TEXT, title TEXT, updated_at TEXT)"
+        )
+        for index in range(20):
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?)",
+                (
+                    "muse-%02d" % index,
+                    "/repo",
+                    "Muse %d" % index,
+                    "2026-10-%02dT10:00:00Z" % (index + 1),
+                ),
+            )
+        conn.commit()
+        conn.close()
+        catalog = self.catalog(
+            grok_transport=FakeGrok(), cursor_transport=FakeCursor(), max_records=20
+        )
+        rows = catalog.discover()
+        muse_ids = [row["session_id"] for row in rows if row["platform"] == "muse"]
+        self.assertIn("muse-19", muse_ids)
+        self.assertNotIn("muse-00", muse_ids)
+        found = catalog.find("muse", "muse-00")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["session_id"], "muse-00")
+        self.assertEqual(found["title"], "Muse 0")
+        self.assertEqual(found["cwd"], "/repo")
+        self.assertEqual(found["id"], _stable_id("test-host", "muse", "muse-00"))
+        self.assertIsNone(catalog.find("muse", "muse-missing"))
+
+    def test_find_returns_an_older_codex_chat_beyond_the_catalog_cap(self):
+        for index in range(20):
+            write_jsonl(
+                self.home / (".codex/sessions/rollout-%02d.jsonl" % index),
+                [
+                    {
+                        "timestamp": 1000 + index,
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "codex-%02d" % index,
+                            "cwd": "/repo",
+                            "title": "Codex %d" % index,
+                        },
+                    }
+                ],
+            )
+        catalog = self.catalog(
+            grok_transport=FakeGrok(), cursor_transport=FakeCursor(), max_records=20
+        )
+        rows = catalog.discover()
+        codex_ids = [row["session_id"] for row in rows if row["platform"] == "codex"]
+        self.assertIn("codex-19", codex_ids)
+        self.assertNotIn("codex-00", codex_ids)
+        found = catalog.find("codex", "codex-00")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["session_id"], "codex-00")
+        self.assertEqual(found["title"], "Codex 0")
+        self.assertEqual(found["cwd"], "/repo")
+        self.assertIsNone(catalog.find("codex", "codex-missing"))
+
+    def test_find_covers_the_remaining_local_stores(self):
+        folder = self.home / ".minimax/v2/sessions/2026/10/13/09-00-00-ms-session_find"
+        folder.mkdir(parents=True)
+        (folder / "manifest.json").write_text(
+            json.dumps({"sessionId": "mm-find", "updatedAtMs": 1791889200000}),
+            encoding="utf-8",
+        )
+        write_jsonl(
+            folder / "messages.jsonl",
+            [{"message": {"role": "user", "content": "question"}}],
+        )
+        fx_home = self.home / ".fx/sessions/fx-find"
+        fx_home.mkdir(parents=True)
+        (fx_home / "session.json").write_text(
+            json.dumps({"id": "fx-find", "title": "Fx find", "workspace_root": "/repo"}),
+            encoding="utf-8",
+        )
+        meta = self.home / ".cursor/acp-sessions/local-find/meta.json"
+        meta.parent.mkdir(parents=True)
+        meta.write_text(json.dumps({"cwd": "/repo", "title": "Local find"}), encoding="utf-8")
+        catalog = self.catalog(
+            grok_transport=FakeGrok(
+                [
+                    {
+                        "session_id": "grok-find",
+                        "cwd": "/repo",
+                        "state": "idle",
+                        "turn_ended_at": 1,
+                        "wake": True,
+                    }
+                ]
+            ),
+            cursor_transport=FakeCursor(),
+        )
+        minimax = catalog.find("minimax", "mm-find")
+        self.assertIsNotNone(minimax)
+        self.assertEqual(minimax["platform"], "minimax")
+        self.assertEqual(minimax["status"], "available")
+        fx = catalog.find("fx", "fx-find")
+        self.assertIsNotNone(fx)
+        self.assertEqual(fx["title"], "Fx find")
+        local = catalog.find("cursor", "local-find")
+        self.assertIsNotNone(local)
+        self.assertEqual(local["platform"], "cursor-local")
+        self.assertEqual(local["title"], "Local find")
+        grok = catalog.find("grok-leader", "grok-find")
+        self.assertIsNotNone(grok)
+        self.assertEqual(grok["platform"], "grok-leader")
+        self.assertTrue(grok["capabilities"]["wake"])
+        self.assertIsNone(catalog.find("minimax", "mm-missing"))
+        self.assertIsNone(catalog.find("antigravity", "whatever"))
+
     def test_cloud_api_failure_is_visible_and_not_cached_as_live_session(self):
         class Broken:
             def discover(self):

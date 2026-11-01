@@ -195,6 +195,36 @@ class CursorCloudTransport:
         self.last_discovery_status = "partial" if partial else "complete"
         return agents
 
+    def find(self, session_id: str) -> dict[str, Any] | None:
+        """One existing agent by id, in the same record shape `discover` returns.
+
+        The detail endpoint is a single by-id GET, so a chat older than the bounded
+        list window is still reachable without walking the agent list.  Only the
+        statuses `discover` lists produce a record.
+        """
+        safe_id = _agent_id(session_id)
+        if safe_id is None:
+            return None
+        try:
+            agent = self._detail(safe_id)
+        except _ApiFailure:
+            return None
+        if agent is None or agent.get("status") not in ("IDLE", "ACTIVE"):
+            return None
+        return {
+            "platform": self.platform,
+            "host": self.host,
+            "session_id": safe_id,
+            "cwd": _binding_cwd(safe_id),
+            "seat": self.seat,
+            "state": "idle" if agent.get("status") == "IDLE" else "busy",
+            "name": agent.get("name") if isinstance(agent.get("name"), str) else "",
+            "title": agent.get("name") if isinstance(agent.get("name"), str) else "",
+            "url": agent.get("url") if isinstance(agent.get("url"), str) else "",
+            "repo_url": _repo_url(agent),
+            "updated_at": agent.get("updatedAt"),
+        }
+
     def preflight(self, binding: dict[str, str]) -> str:
         if (binding.get("platform") != self.platform or binding.get("host") != self.host
                 or not isinstance(binding.get("session_id"), str)):

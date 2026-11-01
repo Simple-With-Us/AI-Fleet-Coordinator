@@ -354,48 +354,49 @@ class ChatCatalog:
                     excerpts.append({"role": role, "text": text})
         return excerpts[-8:]
 
+    def _claude_row(self, path: Path) -> dict[str, Any] | None:
+        events = _jsonl(path)
+        if not events:
+            return None
+        sid = path.stem
+        cwd = None
+        title = "Claude chat " + sid[:12]
+        updated = 0.0
+        for event in events:
+            if isinstance(event.get("cwd"), str):
+                cwd = event["cwd"]
+            if event.get("type") in {"custom-title", "session_name"}:
+                title = (
+                    _safe_text(
+                        event.get("customTitle") or event.get("name") or event.get("title"),
+                        max_chars=180,
+                    )
+                    or title
+                )
+            updated = max(updated, _timestamp(event.get("timestamp"), event.get("createdAt")))
+        return self._row(
+            "claude",
+            "CLAUDE",
+            sid,
+            cwd=cwd,
+            title=title,
+            updated_at=updated,
+            source=str(path),
+            internal_path=str(path),
+            excerpts=self._parse_text_events(events, "claude"),
+        )
+
     def _scan_claude(self) -> list[dict[str, Any]]:
         base = self.home / ".claude" / "projects"
         files = self._list_files(base)
         rows = []
         for path in files:
-            events = _jsonl(path)
-            if not events:
-                continue
-            sid = path.stem
-            cwd = None
-            title = "Claude chat " + sid[:12]
-            updated = 0.0
-            for event in events:
-                if isinstance(event.get("cwd"), str):
-                    cwd = event["cwd"]
-                if event.get("type") in {"custom-title", "session_name"}:
-                    title = (
-                        _safe_text(
-                            event.get("customTitle") or event.get("name") or event.get("title"),
-                            max_chars=180,
-                        )
-                        or title
-                    )
-                updated = max(updated, _timestamp(event.get("timestamp"), event.get("createdAt")))
-            rows.append(
-                self._row(
-                    "claude",
-                    "CLAUDE",
-                    sid,
-                    cwd=cwd,
-                    title=title,
-                    updated_at=updated,
-                    source=str(path),
-                    internal_path=str(path),
-                    excerpts=self._parse_text_events(events, "claude"),
-                )
-            )
+            row = self._claude_row(path)
+            if row is not None:
+                rows.append(row)
         return rows or [self._unavailable("claude", "CLAUDE", "no local project transcripts")]
 
-    def _scan_codex(self) -> list[dict[str, Any]]:
-        from .codex_chat_transport import BINARY, loaded_rollouts
-
+    def _codex_names(self) -> dict[str, tuple[float, str]]:
         names = {}
         for entry in _jsonl(self.home / ".codex" / "session_index.jsonl"):
             sid = entry.get("id")
@@ -413,52 +414,113 @@ class ChatCatalog:
                 title = re.sub(r"[\x00-\x1f\x7f]", " ", title).strip()[:180]
                 if title:
                     names[sid] = (stamp, title)
+        return names
+
+    def _codex_loaded(self, active: bool) -> frozenset:
+        if not active:
+            return frozenset()
+        from .codex_chat_transport import BINARY, loaded_rollouts
+
+        if os.access(BINARY, os.X_OK) and (self.home / ".codex/queue_1.sqlite").is_file():
+            return loaded_rollouts()
+        return frozenset()
+
+    def _codex_row(
+        self, path: Path, names: dict[str, tuple[float, str]], loaded: frozenset
+    ) -> dict[str, Any] | None:
+        events = _jsonl(path)
+        if not events:
+            return None
+        sid, cwd, title, updated = path.stem, None, "Codex chat " + path.stem[:12], 0.0
+        transcript_title = False
+        header = _first_jsonl(path)
+        ordered_events = ([header] if header else []) + events
+        for event in ordered_events:
+            if event.get("type") == "session_meta" and isinstance(event.get("payload"), dict):
+                meta = event["payload"]
+                sid = str(meta.get("id") or sid)
+                cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else cwd
+                named = _safe_text(meta.get("title"), max_chars=180)
+                if named:
+                    title, transcript_title = named, True
+            updated = max(updated, _timestamp(event.get("timestamp"), event.get("ts")))
+        if not transcript_title and sid in names:
+            title = names[sid][1]
+        return self._row(
+            "codex",
+            "CODEX",
+            sid,
+            wake=str(path) in loaded and bool(cwd) and os.path.isdir(cwd),
+            cwd=cwd,
+            title=title,
+            updated_at=updated,
+            source=str(path),
+            internal_path=str(path),
+            excerpts=self._parse_text_events(events, "codex"),
+        )
+
+    def _scan_codex(self) -> list[dict[str, Any]]:
+        names = self._codex_names()
         base = self.home / ".codex" / "sessions"
         files = self._list_files(base, recursive=True)
-        loaded = (
-            loaded_rollouts()
-            if (
-                files
-                and os.access(BINARY, os.X_OK)
-                and (self.home / ".codex/queue_1.sqlite").is_file()
-            )
-            else frozenset()
-        )
+        loaded = self._codex_loaded(bool(files))
         rows = []
         for path in files:
-            events = _jsonl(path)
-            if not events:
-                continue
-            sid, cwd, title, updated = path.stem, None, "Codex chat " + path.stem[:12], 0.0
-            transcript_title = False
-            header = _first_jsonl(path)
-            ordered_events = ([header] if header else []) + events
-            for event in ordered_events:
-                if event.get("type") == "session_meta" and isinstance(event.get("payload"), dict):
-                    meta = event["payload"]
-                    sid = str(meta.get("id") or sid)
-                    cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else cwd
-                    named = _safe_text(meta.get("title"), max_chars=180)
-                    if named:
-                        title, transcript_title = named, True
-                updated = max(updated, _timestamp(event.get("timestamp"), event.get("ts")))
-            if not transcript_title and sid in names:
-                title = names[sid][1]
-            rows.append(
-                self._row(
-                    "codex",
-                    "CODEX",
-                    sid,
-                    wake=str(path) in loaded and bool(cwd) and os.path.isdir(cwd),
-                    cwd=cwd,
-                    title=title,
-                    updated_at=updated,
-                    source=str(path),
-                    internal_path=str(path),
-                    excerpts=self._parse_text_events(events, "codex"),
-                )
-            )
+            row = self._codex_row(path, names, loaded)
+            if row is not None:
+                rows.append(row)
         return rows or [self._unavailable("codex", "CODEX", "no local rollout transcripts")]
+
+    def _grok_row(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        sid, cwd = item.get("session_id"), item.get("cwd")
+        if not isinstance(sid, str) or not sid:
+            return None
+        state = item.get("state")
+        folder = self._find_grok_session(sid)
+        title = _safe_text(item.get("title"), max_chars=180) or "Grok chat " + sid[:12]
+        updated = _timestamp(item.get("updated_at"))
+        excerpts: list[dict[str, str]] = []
+        if folder:
+            summary = self._read_json(folder / "summary.json")
+            title = (
+                _safe_text(
+                    summary.get("generated_title") or summary.get("session_summary"),
+                    max_chars=180,
+                )
+                or title
+            )
+            info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
+            updated = _timestamp(summary.get("updated_at") or summary.get("last_active_at"))
+            if not cwd and isinstance(info.get("cwd"), str):
+                cwd = info["cwd"]
+            excerpts = self._parse_text_events(_jsonl(folder / "chat_history.jsonl"), "grok-leader")
+        if not isinstance(cwd, str) or not cwd.startswith("/"):
+            cwd = None
+        wake = (
+            item.get("wake") == 1  # JSON true, or a 1 from an older writer
+            and state == "idle"
+            and bool(item.get("turn_ended_at"))
+            and bool(cwd)
+            and not item.get("pending_permission")
+            and not item.get("self")
+        )
+        return self._row(
+            "grok-leader",
+            "GROK",
+            sid,
+            cwd=cwd,
+            title=title,
+            updated_at=updated,
+            status="stale"
+            if item.get("stale")
+            else (state or "unknown")
+            if folder
+            else "metadata-only",
+            wake=wake,
+            source="grok-live",
+            internal_path=str(folder) if folder else None,
+            excerpts=excerpts,
+        )
 
     def _scan_grok(
         self, *, wait: bool = False, force: bool = False, timeout: float | None = None
@@ -483,59 +545,9 @@ class ChatCatalog:
             return [self._unavailable("grok-leader", "GROK", "discovery failed")]
         rows = []
         for item in live[:MAX_FILES_PER_SOURCE]:
-            sid, cwd = item.get("session_id"), item.get("cwd")
-            if not isinstance(sid, str) or not sid:
-                continue
-            state = item.get("state")
-            folder = self._find_grok_session(sid)
-            title = _safe_text(item.get("title"), max_chars=180) or "Grok chat " + sid[:12]
-            updated = _timestamp(item.get("updated_at"))
-            excerpts: list[dict[str, str]] = []
-            if folder:
-                summary = self._read_json(folder / "summary.json")
-                title = (
-                    _safe_text(
-                        summary.get("generated_title") or summary.get("session_summary"),
-                        max_chars=180,
-                    )
-                    or title
-                )
-                info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
-                updated = _timestamp(summary.get("updated_at") or summary.get("last_active_at"))
-                if not cwd and isinstance(info.get("cwd"), str):
-                    cwd = info["cwd"]
-                excerpts = self._parse_text_events(
-                    _jsonl(folder / "chat_history.jsonl"), "grok-leader"
-                )
-            if not isinstance(cwd, str) or not cwd.startswith("/"):
-                cwd = None
-            wake = (
-                item.get("wake") == 1  # JSON true, or a 1 from an older writer
-                and state == "idle"
-                and bool(item.get("turn_ended_at"))
-                and bool(cwd)
-                and not item.get("pending_permission")
-                and not item.get("self")
-            )
-            rows.append(
-                self._row(
-                    "grok-leader",
-                    "GROK",
-                    sid,
-                    cwd=cwd,
-                    title=title,
-                    updated_at=updated,
-                    status="stale"
-                    if item.get("stale")
-                    else (state or "unknown")
-                    if folder
-                    else "metadata-only",
-                    wake=wake,
-                    source="grok-live",
-                    internal_path=str(folder) if folder else None,
-                    excerpts=excerpts,
-                )
-            )
+            row = self._grok_row(item)
+            if row is not None:
+                rows.append(row)
         if not rows:
             self._availability["grok-leader"] = "no live existing leader chats"
             return [self._unavailable("grok-leader", "GROK", "no live existing leader chats")]
@@ -568,6 +580,25 @@ class ChatCatalog:
         except (OSError, ValueError, UnicodeDecodeError):
             return {}
 
+    def _cursor_row(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        sid = record.get("session_id") or record.get("agent_id")
+        if not isinstance(sid, str) or not sid:
+            return None
+        state = str(record.get("state", "unknown")).lower()
+        return self._row(
+            "cursor-cloud",
+            "CURSOR",
+            sid,
+            cwd=record.get("cwd") if isinstance(record.get("cwd"), str) else None,
+            title=_safe_text(record.get("title"), max_chars=180) or "Cursor Cloud chat " + sid[:12],
+            updated_at=_timestamp(record.get("updated_at")),
+            status=state,
+            wake=state in {"idle", "active", "busy"},
+            source="cursor-cloud",
+            host=record.get("host") if isinstance(record.get("host"), str) else None,
+            repo=record.get("repo_url"),
+        )
+
     def _scan_cursor(self) -> list[dict[str, Any]]:
         if self._cursor is None:
             try:
@@ -582,29 +613,35 @@ class ChatCatalog:
             return [self._unavailable("cursor-cloud", "CURSOR", "discovery failed")]
         rows = []
         for record in records[: self.max_records]:
-            sid = record.get("session_id") or record.get("agent_id")
-            if not isinstance(sid, str) or not sid:
-                continue
-            state = str(record.get("state", "unknown")).lower()
-            rows.append(
-                self._row(
-                    "cursor-cloud",
-                    "CURSOR",
-                    sid,
-                    cwd=record.get("cwd") if isinstance(record.get("cwd"), str) else None,
-                    title=_safe_text(record.get("title"), max_chars=180)
-                    or "Cursor Cloud chat " + sid[:12],
-                    updated_at=_timestamp(record.get("updated_at")),
-                    status=state,
-                    wake=state in {"idle", "active", "busy"},
-                    source="cursor-cloud",
-                    host=record.get("host") if isinstance(record.get("host"), str) else None,
-                    repo=record.get("repo_url"),
-                )
-            )
+            row = self._cursor_row(record)
+            if row is not None:
+                rows.append(row)
         return rows or [
             self._unavailable("cursor-cloud", "CURSOR", "no discoverable existing chats")
         ]
+
+    def _cursor_local_row(self, directory: Path) -> dict[str, Any] | None:
+        meta_path = directory / "meta.json"
+        meta = self._read_json(meta_path)
+        if not meta:
+            return None
+        try:
+            updated = meta_path.stat(follow_symlinks=False).st_mtime
+        except OSError:
+            updated = 0.0
+        return self._row(
+            "cursor-local",
+            "CURSOR",
+            directory.name,
+            cwd=meta.get("cwd") if isinstance(meta.get("cwd"), str) else None,
+            title=_safe_text(meta.get("title"), max_chars=180)
+            or "Cursor local chat " + directory.name[:12],
+            updated_at=updated,
+            status="metadata-only",
+            wake=False,
+            source="cursor-acp-metadata",
+            internal_path=None,
+        )
 
     def _scan_cursor_local(self) -> list[dict[str, Any]]:
         """Cursor ACP metadata is catalogued, but no local transcript reader is enabled."""
@@ -621,32 +658,76 @@ class ChatCatalog:
         except OSError:
             return [self._unavailable("cursor-local", "CURSOR", "ACP metadata unavailable")]
         for directory in dirs:
-            meta_path = directory / "meta.json"
-            if not _within(meta_path, base):
+            if not _within(directory / "meta.json", base):
                 continue
-            meta = self._read_json(meta_path)
-            if not meta:
-                continue
-            try:
-                updated = meta_path.stat(follow_symlinks=False).st_mtime
-            except OSError:
-                updated = 0.0
-            rows.append(
-                self._row(
-                    "cursor-local",
-                    "CURSOR",
-                    directory.name,
-                    cwd=meta.get("cwd") if isinstance(meta.get("cwd"), str) else None,
-                    title=_safe_text(meta.get("title"), max_chars=180)
-                    or "Cursor local chat " + directory.name[:12],
-                    updated_at=updated,
-                    status="metadata-only",
-                    wake=False,
-                    source="cursor-acp-metadata",
-                    internal_path=None,
-                )
-            )
+            row = self._cursor_local_row(directory)
+            if row is not None:
+                rows.append(row)
         return rows or [self._unavailable("cursor-local", "CURSOR", "no local ACP sessions")]
+
+    @staticmethod
+    def _muse_columns(
+        conn: sqlite3.Connection,
+    ) -> tuple[list[str], dict[str, str], str] | None:
+        cols = {
+            str(row[1]).lower(): str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")
+        }
+        allowed = (
+            "session_id",
+            "id",
+            "workspace",
+            "title",
+            "created_at",
+            "updated_at",
+            "last_active_at",
+            "createdatms",
+            "updatedatms",
+            "status",
+        )
+        selected = [cols[name] for name in allowed if name in cols]
+        lower_selected = {name.lower(): name for name in selected}
+        id_column = lower_selected.get("session_id") or lower_selected.get("id")
+        if id_column is None:
+            return None
+        return selected, lower_selected, id_column
+
+    def _muse_row(
+        self, meta: dict[str, Any], lower_selected: dict[str, str], id_column: str
+    ) -> dict[str, Any] | None:
+        sid = meta.get(id_column)
+        if isinstance(sid, bool) or not isinstance(sid, (str, int)) or not str(sid):
+            return None
+        session_key = str(sid)
+        workspace_key, title_key = (
+            lower_selected.get("workspace"),
+            lower_selected.get("title"),
+        )
+        return self._row(
+            "muse",
+            "MC",
+            session_key,
+            cwd=meta.get(workspace_key)
+            if workspace_key and isinstance(meta.get(workspace_key), str)
+            else None,
+            title=_safe_text(meta.get(title_key), max_chars=180)
+            if title_key
+            else "Muse chat " + session_key[:12],
+            updated_at=_timestamp(
+                *(
+                    meta.get(lower_selected.get(name))
+                    for name in (
+                        "updated_at",
+                        "last_active_at",
+                        "created_at",
+                        "updatedatms",
+                        "createdatms",
+                    )
+                )
+            ),
+            status="metadata-only",
+            wake=False,
+            source="muse-session-index",
+        )
 
     def _scan_muse(self) -> list[dict[str, Any]]:
         """Read only the fixed Muse SQLite metadata columns, never prompt/search fields."""
@@ -656,27 +737,10 @@ class ChatCatalog:
         conn = None
         try:
             conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=0.25)
-            cols = {
-                str(row[1]).lower(): str(row[1])
-                for row in conn.execute("PRAGMA table_info(sessions)")
-            }
-            allowed = (
-                "session_id",
-                "id",
-                "workspace",
-                "title",
-                "created_at",
-                "updated_at",
-                "last_active_at",
-                "createdatms",
-                "updatedatms",
-                "status",
-            )
-            selected = [cols[name] for name in allowed if name in cols]
-            lower_selected = {name.lower(): name for name in selected}
-            id_column = lower_selected.get("session_id") or lower_selected.get("id")
-            if id_column is None:
+            columns = self._muse_columns(conn)
+            if columns is None:
                 return [self._unavailable("muse", "MC", "Muse session metadata schema unavailable")]
+            selected, lower_selected, id_column = columns
             ordering = next(
                 (
                     lower_selected[name]
@@ -701,43 +765,9 @@ class ChatCatalog:
             query += " LIMIT ?"
             rows = []
             for values in conn.execute(query, (MAX_FILES_PER_SOURCE,)):
-                meta = dict(zip(selected, values))
-                sid = meta.get(id_column)
-                if isinstance(sid, bool) or not isinstance(sid, (str, int)) or not str(sid):
-                    continue
-                session_key = str(sid)
-                workspace_key, title_key = (
-                    lower_selected.get("workspace"),
-                    lower_selected.get("title"),
-                )
-                rows.append(
-                    self._row(
-                        "muse",
-                        "MC",
-                        session_key,
-                        cwd=meta.get(workspace_key)
-                        if workspace_key and isinstance(meta.get(workspace_key), str)
-                        else None,
-                        title=_safe_text(meta.get(title_key), max_chars=180)
-                        if title_key
-                        else "Muse chat " + session_key[:12],
-                        updated_at=_timestamp(
-                            *(
-                                meta.get(lower_selected.get(name))
-                                for name in (
-                                    "updated_at",
-                                    "last_active_at",
-                                    "created_at",
-                                    "updatedatms",
-                                    "createdatms",
-                                )
-                            )
-                        ),
-                        status="metadata-only",
-                        wake=False,
-                        source="muse-session-index",
-                    )
-                )
+                row = self._muse_row(dict(zip(selected, values)), lower_selected, id_column)
+                if row is not None:
+                    rows.append(row)
             return rows or [self._unavailable("muse", "MC", "no Muse sessions")]
         except (sqlite3.Error, OSError, ValueError):
             return [self._unavailable("muse", "MC", "Muse session index unavailable")]
@@ -774,47 +804,76 @@ class ChatCatalog:
         except OSError:
             return 0.0
 
+    def _minimax_row(self, directory: Path) -> dict[str, Any] | None:
+        manifest = self._read_json(directory / "manifest.json")
+        sid = manifest.get("sessionId")
+        if not isinstance(sid, str) or not sid:
+            return None
+        # Manifest schema is allowlisted to session identity and timestamps; `paths`
+        # can contain internal store locations and is intentionally not projected.
+        title = ""
+        cwd = None
+        updated = _timestamp(
+            manifest.get("updatedAtMs"),
+            manifest.get("createdAtMs"),
+            manifest.get("updated_at"),
+            manifest.get("created_at"),
+        ) or self._mtime(directory / "manifest.json")
+        messages = directory / "messages.jsonl"
+        readable = (
+            messages.is_file()
+            and not messages.is_symlink()
+            and _within(messages, self.home / ".minimax/v2/sessions")
+        )
+        return self._row(
+            "minimax",
+            "MM",
+            sid,
+            cwd=cwd,
+            title=title or "MiniMax Code chat",
+            updated_at=updated,
+            status="available" if readable else "metadata-only",
+            wake=False,
+            source="minimax-v2-metadata",
+            internal_path=str(directory),
+        )
+
     def _scan_minimax(self) -> list[dict[str, Any]]:
         dirs = self._minimax_dirs()
         if not dirs:
             return [self._unavailable("minimax", "MM", "no MiniMax Code session store")]
         rows = []
         for directory in dirs:
-            manifest = self._read_json(directory / "manifest.json")
-            sid = manifest.get("sessionId")
-            if not isinstance(sid, str) or not sid:
-                continue
-            # Manifest schema is allowlisted to session identity and timestamps; `paths`
-            # can contain internal store locations and is intentionally not projected.
-            title = ""
-            cwd = None
-            updated = _timestamp(
-                manifest.get("updatedAtMs"),
-                manifest.get("createdAtMs"),
-                manifest.get("updated_at"),
-                manifest.get("created_at"),
-            ) or self._mtime(directory / "manifest.json")
-            messages = directory / "messages.jsonl"
-            readable = (
-                messages.is_file()
-                and not messages.is_symlink()
-                and _within(messages, self.home / ".minimax/v2/sessions")
-            )
-            rows.append(
-                self._row(
-                    "minimax",
-                    "MM",
-                    sid,
-                    cwd=cwd,
-                    title=title or "MiniMax Code chat",
-                    updated_at=updated,
-                    status="available" if readable else "metadata-only",
-                    wake=False,
-                    source="minimax-v2-metadata",
-                    internal_path=str(directory),
-                )
-            )
+            row = self._minimax_row(directory)
+            if row is not None:
+                rows.append(row)
         return rows
+
+    def _fx_row(self, sid: str) -> dict[str, Any] | None:
+        row_path = self.home / ".fx/sessions" / sid / "session.json"
+        if not _within(row_path, self.home / ".fx/sessions"):
+            return None
+        meta = self._read_json(row_path)
+        # The index contains identifiers only for selection; session.json is the metadata source.
+        source = meta
+        workspace = (
+            source.get("workspace_root") if isinstance(source.get("workspace_root"), str) else None
+        )
+        title = _safe_text(source.get("title"), max_chars=180) or "Fx chat " + sid[:12]
+        updated = _timestamp(
+            source.get("updated_at"), source.get("last_active_at"), source.get("created_at")
+        ) or self._mtime(row_path)
+        return self._row(
+            "fx",
+            "FX",
+            sid,
+            cwd=workspace,
+            title=title,
+            updated_at=updated,
+            status="metadata-only",
+            wake=False,
+            source="fx-session-metadata",
+        )
 
     def _scan_fx(self) -> list[dict[str, Any]]:
         base = self.home / ".fx/sessions"
@@ -832,34 +891,9 @@ class ChatCatalog:
             sid = item.get("id")
             if not isinstance(sid, str) or not sid:
                 continue
-            row_path = self.home / ".fx/sessions" / sid / "session.json"
-            if not _within(row_path, self.home / ".fx/sessions"):
-                continue
-            meta = self._read_json(row_path)
-            # The index contains identifiers only for selection; session.json is the metadata source.
-            source = meta
-            workspace = (
-                source.get("workspace_root")
-                if isinstance(source.get("workspace_root"), str)
-                else None
-            )
-            title = _safe_text(source.get("title"), max_chars=180) or "Fx chat " + sid[:12]
-            updated = _timestamp(
-                source.get("updated_at"), source.get("last_active_at"), source.get("created_at")
-            ) or self._mtime(row_path)
-            rows.append(
-                self._row(
-                    "fx",
-                    "FX",
-                    sid,
-                    cwd=workspace,
-                    title=title,
-                    updated_at=updated,
-                    status="metadata-only",
-                    wake=False,
-                    source="fx-session-metadata",
-                )
-            )
+            row = self._fx_row(sid)
+            if row is not None:
+                rows.append(row)
         return rows or [self._unavailable("fx", "FX", "no Fx sessions")]
 
     def _scan(
@@ -995,6 +1029,218 @@ class ChatCatalog:
         elif row.get("status") == "stale":
             result["error"] = "catalog data is stale"
         return result
+
+    def find(self, platform: str, native_id: str) -> dict[str, Any] | None:
+        """One chat by its native session id, outside the bounded discovery window.
+
+        Discovery keeps only the newest rows under `max_records`, so an older chat a
+        message tags by letter (AFC-578) is not among them.  This looks that one chat
+        up directly in the store its platform already reads from and returns the same
+        public row `discover` produces.  It never rescans and never widens the window:
+        recency still decides the order of every untagged list.  A miss, a malformed
+        id, or a store that cannot be read is `None`, never an exception.
+        """
+        if not isinstance(platform, str) or not isinstance(native_id, str):
+            return None
+        sid = native_id.strip()
+        if not sid or "/" in sid or "\\" in sid or "\x00" in sid or sid in {".", ".."}:
+            return None
+        name = platform.strip().lower()
+        try:
+            if name in {"claude", "claude-code"}:
+                row = self._find_claude(sid)
+            elif name == "codex":
+                row = self._find_codex(sid)
+            elif name == "muse":
+                row = self._find_muse(sid)
+            elif name == "minimax":
+                row = self._find_minimax(sid)
+            elif name == "fx":
+                row = self._find_fx(sid)
+            elif name in {"cursor", "cursor-cloud", "cursor-local"}:
+                row = self._find_cursor(name, sid)
+            elif name in {"grok", "grok-leader"}:
+                row = self._find_grok(sid)
+            else:
+                # Follow-up:  platforms with no local store here (antigravity) have no
+                # by-id lookup yet, so a tagged chat on one stays unfound.
+                return None
+        except Exception:
+            return None
+        if row is None or str(row.get("session_id") or "") != sid:
+            return None
+        if row.get("status") == "unavailable":
+            return None
+        return self._public(row)
+
+    def _find_claude(self, sid: str) -> dict[str, Any] | None:
+        base = self.home / ".claude" / "projects"
+        if not base.is_dir() or not _within(base, self.home):
+            return None
+        try:
+            parents = list(base.iterdir())
+        except OSError:
+            return None
+        for parent in parents:
+            if parent.is_symlink() or not parent.is_dir():
+                continue
+            path = parent / (sid + ".jsonl")
+            if path.is_symlink() or not path.is_file() or not _within(path, base):
+                continue
+            return self._claude_row(path)
+        return None
+
+    def _find_codex(self, sid: str) -> dict[str, Any] | None:
+        base = self.home / ".codex" / "sessions"
+        if not base.is_dir() or not _within(base, self.home):
+            return None
+        visited_dirs = 0
+        for current, dirs, files in os.walk(base, followlinks=False):
+            visited_dirs += 1
+            if visited_dirs > MAX_FILES_PER_SOURCE * 32:
+                break
+            here = Path(current)
+            dirs[:] = sorted(name for name in dirs if not (here / name).is_symlink())
+            for name in sorted(files):
+                if not name.endswith(".jsonl"):
+                    continue
+                path = here / name
+                if path.is_symlink() or not _within(path, base):
+                    continue
+                header = _first_jsonl(path)
+                header_id = None
+                if (
+                    header
+                    and header.get("type") == "session_meta"
+                    and isinstance(header.get("payload"), dict)
+                    and header["payload"].get("id")
+                ):
+                    header_id = str(header["payload"]["id"])
+                if header_id != sid and path.stem != sid:
+                    continue
+                # The index names and the loaded set are read only once the one file
+                # is known, so a miss never pays for either.
+                row = self._codex_row(path, self._codex_names(), self._codex_loaded(True))
+                if row is not None and row.get("session_id") == sid:
+                    return row
+        return None
+
+    def _find_muse(self, sid: str) -> dict[str, Any] | None:
+        path = self.home / ".local/share/muse/session-index.db"
+        if path.is_symlink() or not path.is_file() or not _within(path, self.home):
+            return None
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=0.25)
+            columns = self._muse_columns(conn)
+            if columns is None:
+                return None
+            selected, lower_selected, id_column = columns
+            query = (
+                "SELECT "
+                + ", ".join('"' + name.replace('"', '""') + '"' for name in selected)
+                + ' FROM "sessions" WHERE CAST("'
+                + id_column.replace('"', '""')
+                + '" AS TEXT) = ? LIMIT 1'
+            )
+            values = conn.execute(query, (sid,)).fetchone()
+            if values is None:
+                return None
+            return self._muse_row(dict(zip(selected, values)), lower_selected, id_column)
+        except (sqlite3.Error, OSError, ValueError):
+            return None
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _find_minimax(self, sid: str) -> dict[str, Any] | None:
+        base = self.home / ".minimax/v2/sessions"
+        if not base.is_dir() or not _within(base, self.home):
+            return None
+        visited = 0
+        for current, dirs, files in os.walk(base, followlinks=False):
+            visited += 1
+            if visited > MAX_FILES_PER_SOURCE * 32:
+                break
+            here = Path(current)
+            dirs[:] = sorted(
+                (name for name in dirs if not (here / name).is_symlink()), reverse=True
+            )
+            if "session_" in here.name and "manifest.json" in files:
+                if _within(here / "manifest.json", base):
+                    manifest = self._read_json(here / "manifest.json")
+                    if manifest.get("sessionId") == sid:
+                        return self._minimax_row(here)
+                dirs[:] = []
+        return None
+
+    def _find_fx(self, sid: str) -> dict[str, Any] | None:
+        base = self.home / ".fx/sessions"
+        row_path = base / sid / "session.json"
+        if row_path.is_symlink() or not row_path.is_file() or not _within(row_path, base):
+            return None
+        return self._fx_row(sid)
+
+    def _find_cursor(self, name: str, sid: str) -> dict[str, Any] | None:
+        if name in {"cursor", "cursor-local"}:
+            base = self.home / ".cursor" / "acp-sessions"
+            directory = base / sid
+            if (
+                base.is_dir()
+                and _within(base, self.home)
+                and not directory.is_symlink()
+                and directory.is_dir()
+                and _within(directory / "meta.json", base)
+            ):
+                row = self._cursor_local_row(directory)
+                if row is not None:
+                    return row
+            if name == "cursor-local":
+                return None
+        return self._find_cursor_cloud(sid)
+
+    def _find_cursor_cloud(self, sid: str) -> dict[str, Any] | None:
+        if self._cursor is None:
+            try:
+                from .cursor_chat_transport import CursorCloudTransport
+
+                self._cursor = CursorCloudTransport()
+            except Exception:
+                return None
+        finder = getattr(self._cursor, "find", None)
+        if not callable(finder):
+            # Follow-up:  this transport has no by-id fetch, and walking its agent
+            # list would only repeat the bounded discovery window.
+            return None
+        try:
+            record = finder(sid)
+        except Exception:
+            return None
+        if not isinstance(record, dict):
+            return None
+        return self._cursor_row(record)
+
+    def _find_grok(self, sid: str) -> dict[str, Any] | None:
+        if self._grok is None:
+            try:
+                from .chat_transport import GrokTransport
+
+                self._grok = GrokTransport()
+            except Exception:
+                return None
+        try:
+            # The leader transport filters its cached snapshot by session id before
+            # it touches disk, and `wait=False` never blocks on a page walk for one
+            # tagged chat.  No snapshot yet reads as a miss.  A transport whose
+            # discover has no by-id filter raises here and is a follow-up:  walking
+            # its whole list for one chat is what this lookup exists to avoid.
+            live = self._grok.discover(wait=False, force=False, limit=1, session_id=sid)
+        except Exception:
+            return None
+        for item in live if isinstance(live, list) else []:
+            if isinstance(item, dict) and item.get("session_id") == sid:
+                return self._grok_row(item)
+        return None
 
     def resolve(self, record_id: str) -> dict[str, Any] | None:
         """Resolve only an exact ID in this catalog's bounded in-memory cache."""
