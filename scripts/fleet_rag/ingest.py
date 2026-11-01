@@ -835,6 +835,17 @@ def _run_locked(
                     group, group_chunks = [], 0
             if group:
                 process_group(group, state, writer, run_id, stats, state_path, live_owners)
+            if (
+                linear_receipt is not None
+                and linear_receipt.get("full")
+                and any(
+                    row.get("status") == "skipped"
+                    for row in linear_receipt.get("issues", {}).values()
+                )
+            ):
+                raise sources.LinearSourceError(
+                    "linear: FULL read skipped issues; replacement is incomplete"
+                )
         except Exception as e:  # noqa: BLE001 — one bad source must not sink the others
             source_ok = False
             msg = f"{name}: {type(e).__name__}: {e}"

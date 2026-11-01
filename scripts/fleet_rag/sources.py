@@ -2470,7 +2470,7 @@ def iter_linear(
             and all(row["status"] == "fetched" for row in receipt["issues"].values())
         )
 
-    if os.environ.get("FLEET_RAG_LINEAR_FULL") and incomplete:
+    if os.environ.get("FLEET_RAG_LINEAR_FULL") and incomplete and receipt is None:
         raise LinearSourceError(
             f"linear: FULL read skipped issues; replacement is incomplete: {incomplete}"
         )
