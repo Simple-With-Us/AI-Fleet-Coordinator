@@ -62,7 +62,7 @@ def load_excluded_units(path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, war
         if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid or info.st_mode & 0o022:
             warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
             return set()
-        with os.fdopen(fd, "r") as f:
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
             fd = -1  # fdopen owns it now
             units = set()
             for line in f:
@@ -72,6 +72,9 @@ def load_excluded_units(path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, war
                 if UNIT_NAME_RE.match(name):
                     units.add(name)
             return units
+    except UnicodeDecodeError:
+        warn(f"fleet-coding-memory: ignoring unreadable exclude file {path} (not UTF-8)")
+        return set()
     except OSError:
         warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
         return set()

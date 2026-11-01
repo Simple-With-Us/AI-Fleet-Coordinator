@@ -646,6 +646,17 @@ class ExcludeTests(unittest.TestCase):
             self.assertEqual(got, set())
             self.assertEqual(len(warnings), 1)
 
+    def test_non_utf8_exclude_file_is_ignored_not_raised(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = self._write_exclude(Path(d) / "exclude-units", "x\n", mode=0o600)
+            f.write_bytes(b"botfleet-server.service\n\xff\xfe\n")
+            os.chmod(f, 0o600)
+            warnings = []
+            got = m.load_excluded_units(f, expected_uid=os.geteuid(), warn=warnings.append)
+            self.assertEqual(got, set())
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("not UTF-8", warnings[0])
+
     def test_excluded_unit_skipped_in_unit_cgroups(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / "cgroup"
