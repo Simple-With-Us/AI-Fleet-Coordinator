@@ -54,6 +54,9 @@ NOT_SWU_IDENTITY = {
 EXCLUDED = {"JET"}
 # The one retired seat (host record 2026-11-01):  pinned legacy scope, excluded from the widening.
 RETIRED_SLUG = "swu-bf-builder"
+# The two seats whose live rollout carries the fleet action set in its own order (host
+# render/live compare 2026-11-01):  each pins its exact ordered live list in its own profile.
+ORDER_PINNED = {"swu-amp-agent": "amp", "swu-wise": "wise"}
 
 
 def worker_identities() -> set[str]:
@@ -212,18 +215,23 @@ class SeatPolicyFile(unittest.TestCase):
             if slug == RETIRED_SLUG:
                 continue
             self.assertEqual(cfg["repos"], fleet["repos"], slug)
-            self.assertEqual(
-                cfg["actions"],
-                fleet["actions"] + (["wf_repo_get", "wf_pr_get"] if slug == "swu-jet" else []),
-                slug,
-            )
+            if slug in ORDER_PINNED:
+                # Same set and ceiling as fleet, in the seat's own live order:  the pinned
+                # profile holds the exact list, and the reviewed-scope digest holds the order.
+                profile = DOC["profiles"][ORDER_PINNED[slug]]
+                self.assertIsInstance(profile["actions"], list, slug)
+                self.assertEqual(cfg["actions"], profile["actions"], slug)
+                self.assertEqual(len(cfg["actions"]), len(fleet["actions"]), slug)
+                self.assertEqual(sorted(cfg["actions"]), sorted(fleet["actions"]), slug)
+            else:
+                self.assertEqual(cfg["actions"], fleet["actions"], slug)
             self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
 
     def test_the_retired_builder_keeps_its_pinned_legacy_scope(self):
         # BF-BUILDER is retired (host record 2026-11-01):  the every-repo widening must not
-        # reactivate or widen a retired identity, so its profile pins the exact pre-widening
-        # fleet scope as literal copies.  Any drift in the file or a second seat attaching
-        # to the pin fails here.
+        # reactivate or widen a retired identity, so its profile pins its exact live scope -
+        # the legacy 27 actions and a 6-key ceiling with no workflows - as literal copies.
+        # Any drift in the file or a second seat attaching to the pin fails here.
         legacy_repos = [
             "Simple-With-Us/AI-Fleet-Coordinator",
             "Simple-With-Us/Autorotate",
@@ -244,11 +252,48 @@ class SeatPolicyFile(unittest.TestCase):
             "Simple-With-Us/congress-trading-shared",
             "Simple-With-Us/homebrew-tap",
         ]
+        legacy_actions = [
+            "open_pr",
+            "edit_pr",
+            "reply_thread",
+            "comment_pr",
+            "merge_pr",
+            "workflow_dispatch",
+            "resolve_thread",
+            "wf_review_submit",
+            "wf_review_inline",
+            "wf_branch_create",
+            "wf_pr_list",
+            "wf_pr_files",
+            "wf_file_get",
+            "wf_tree",
+            "wf_branches",
+            "wf_commits",
+            "wf_code_search",
+            "wf_runs",
+            "wf_run_jobs",
+            "wf_checks",
+            "wf_update_branch",
+            "wf_run_rerun",
+            "wf_run_cancel",
+            "wf_run_approve",
+            "wf_file_put",
+            "wf_files_put",
+            "wf_merge_guarded",
+        ]
+        legacy_mint = {
+            "actions": "write",
+            "checks": "read",
+            "contents": "write",
+            "issues": "write",
+            "metadata": "read",
+            "pull_requests": "write",
+        }
         cfg = SEATS[RETIRED_SLUG]
-        fleet = SEATS["swu-claude"]
         self.assertEqual(cfg["repos"], legacy_repos)
-        self.assertEqual(cfg["actions"], fleet["actions"])
-        self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"])
+        self.assertEqual(cfg["actions"], legacy_actions)
+        self.assertEqual(cfg["mint_permissions"], legacy_mint)
+        self.assertNotIn("workflows", cfg["mint_permissions"])
         pinned = [row["identity"] for row in DOC["seats"] if row["profile"] == "retired-builder"]
         self.assertEqual(pinned, ["BF-BUILDER"])
         self.assertNotIn("*", ",".join(cfg["repos"]))
@@ -258,7 +303,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "0ec869183fdbacbd")
+        self.assertEqual(seat_policy.digest(SEATS), "2e00011c65be8ec9")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
