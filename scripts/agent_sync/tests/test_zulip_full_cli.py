@@ -10,7 +10,7 @@ import time
 
 from agent_sync import zulip as Z
 from agent_sync import zulip_ops as OPS
-from agent_sync.tests.fake_zulip import BOT_EMAIL
+from agent_sync.tests.fake_zulip import BOT_EMAIL, FAKE_OWNER_ID
 from agent_sync.tests.harness import TAG, Harness
 
 
@@ -42,6 +42,73 @@ class MessageCommandTests(Harness):
         content = self.fake._find(posted)["content"]
         self.assertIn("@**Codex**", content)
         self.assertIn("now for you", content)
+
+    def test_edit_to_owner_tags_the_owner(self) -> None:
+        self.pin_owner()
+        posted = json.loads(self.run_cli("post", "--topic", "t", "first", "--json").out)["id"]
+        result = self.run_cli("edit", "--id", str(posted), "--to-owner", "now for you")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(
+            self.fake._find(posted)["content"],
+            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** now for you" % (TAG, FAKE_OWNER_ID),
+        )
+
+    def test_edit_to_owner_unpinned_exits_2_before_any_request(self) -> None:
+        posted = self.fake.add_message("Claude", "agent-sync", "t", "[CLAUDE·%s] first" % TAG)
+        result = self.run_cli("edit", "--id", str(posted), "--to-owner", "now for you")
+        self.assertEqual(result.code, 2)
+        self.assertIn("owner_user_id is not pinned", result.err)
+        self.assertEqual(self.fake.requests, [])
+        self.assertEqual(self.fake._find(posted)["content"], "[CLAUDE·%s] first" % TAG)
+
+    def test_edit_keeps_owner_routing_from_the_original_tag(self) -> None:
+        self.pin_owner()
+        posted = json.loads(
+            self.run_cli("post", "--topic", "t", "--to-owner", "first", "--json").out
+        )["id"]
+        result = self.run_cli("edit", "--id", str(posted), "second words")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(
+            self.fake._find(posted)["content"],
+            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** second words" % (TAG, FAKE_OWNER_ID),
+        )
+        peer = self.run_cli("edit", "--id", str(posted), "--to", "CODEX", "third words")
+        self.assertEqual(peer.code, 0, peer.err)
+        self.assertEqual(
+            self.fake._find(posted)["content"],
+            "[CLAUDE·%s→OWNER,CODEX] @**Jay Wedgeworth|%d** @**Codex** third words"
+            % (TAG, FAKE_OWNER_ID),
+        )
+
+    def test_edit_keeps_owner_from_a_sibling_tag_and_no_tag_drops_only_the_bracket(self) -> None:
+        self.pin_owner()
+        posted = self.fake.add_message(
+            "Claude",
+            "agent-sync",
+            "t",
+            "[CLAUDE·mvs35f72→OWNER] @**Jay Wedgeworth|%d** first" % FAKE_OWNER_ID,
+        )
+        result = self.run_cli("edit", "--id", str(posted), "second words")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(
+            self.fake._find(posted)["content"],
+            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** second words" % (TAG, FAKE_OWNER_ID),
+        )
+        #  Like post --to with --no-tag, the bracket goes and the mention stays.
+        raw = self.run_cli("edit", "--id", str(posted), "--no-tag", "third words")
+        self.assertEqual(raw.code, 0, raw.err)
+        self.assertEqual(
+            self.fake._find(posted)["content"],
+            "@**Jay Wedgeworth|%d** third words" % FAKE_OWNER_ID,
+        )
+
+    def test_edit_does_not_invent_owner_from_quoted_text(self) -> None:
+        posted = self.fake.add_message(
+            "Claude", "agent-sync", "t", "[CLAUDE·%s] quoted [CLAUDE·x→OWNER] hi" % TAG
+        )
+        result = self.run_cli("edit", "--id", str(posted), "second words")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(self.fake._find(posted)["content"], "[CLAUDE·%s] second words" % TAG)
 
     def test_a_delete_of_a_message_that_vanished_keeps_zulips_own_error(self) -> None:
         # Kody, PR #1148:  only a message that is still there was refused;  any other 400 is Zulip's own.
