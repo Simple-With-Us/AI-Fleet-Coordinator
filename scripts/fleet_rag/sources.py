@@ -136,10 +136,12 @@ def take_doc_skips() -> list[tuple[str, str]]:
     return out
 
 
-SOURCES = ("board", "effort-log", "doc", "skill", "memory", "apple-note", "chat-log")
+SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log", "board", "effort-log")
 # Nightly / `ingest --all`.  chat-log is an infrequent owner-policy scan, not a lesson dump
 # (owner 2026-09-02).  Pass `--source chat-log` explicitly.
-NIGHTLY_SOURCES = ("board", "effort-log", "doc", "skill", "memory", "apple-note")
+# Retired board/effort-log generators remain explicit-only for migration verification.
+# Never reintroduce their corpus documents through default or --all refreshes.
+NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory", "apple-note")
 
 WARNINGS: list[str] = []
 
@@ -1765,32 +1767,20 @@ def iter_chat_logs(
 # which need no bearer and run as the shared Fleet app - so credential lookup, token caching
 # and rate limiting stay in the one sanctioned place instead of being duplicated here.
 #
-# What is yielded, so the frozen board docs are never duplicated and nothing is skipped:
-#   - every issue the frozen corpus does NOT already cover, however old.  Coverage is decided
-#     against the frozen findings.db, not the migration TSV alone:  the TSV also maps GitHub
-#     and effort-log rows that were imported into Linear without ever becoming board findings
-#     (measured 2026-10-28:  4,269 of 14,209 TSV rows have no frozen finding), so TSV
-#     membership by itself would skip thousands of never-covered issues, and
-#   - every covered issue touched at or after the freeze (LINEAR_FREEZE):  its frozen doc
-#     is stale and this fresh copy is its update.
-# The light scan (id + updatedAt only, one page per 250 issues) keeps the nightly cheap;  full
-# bodies and comments are fetched only for the selected ids.  Point ids stay stable
-# (doc_id linear/<identifier>) so a re-run re-embeds only what actually changed.
+# Linear replaces the frozen board corpus. Every live or archived issue is eligible,
+# including imported issues untouched since the freeze. Only committed ingest state may
+# suppress a routine refetch; FULL bypasses that cache. Retired coverage files are used
+# only by explicit migration verification, never by the normal Linear source.
 
 LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
 SIMPLE_BOARD_CLI = os.environ.get("FLEET_RAG_SIMPLE_BOARD", "simple-board")
 LINEAR_PAGE = 250
 LINEAR_FULL_PAGE = 50  # full nodes are heavy (descriptions + comments);  keep each call modest
-# simple-board caps --max-chars at 64000 and exits 1 past it, so oversized responses cannot be
-# lifted away:  the fetch below halves its id chunk on overflow instead, and an issue that
-# overflows even alone is SKIPPED (flagged) rather than ingested partial.
+# Keep the CLI cap. Halve issue chunks, then retry a single issue with one node per
+# connection and adapt later connection-page widths. A single oversized field remains
+# explicitly incomplete; no response or document is truncated.
 LINEAR_MAX_CHARS = 64_000
 LINEAR_COMMENT_PAGE = 100
-# First page plus up to five follow-ups.  Beyond the bound the issue is SKIPPED (with a run
-# warning) rather than ingested truncated:  comments sort oldest-first, so a truncated doc
-# would never pick up the omitted tail and its content hash would freeze the partial copy in
-# place forever - including over an earlier complete one.
-LINEAR_COMMENT_MAX_PAGES = 6
 LINEAR_QUERY_TIMEOUT_S = 120
 # One absolute deadline shared by every page of one scan or fetch operation (Kody: a fresh
 # per-page timeout lets aggregate runtime grow without bound).
@@ -1817,8 +1807,8 @@ def _linear_remaining(deadline: float | None) -> int:
 _LINEAR_LIGHT_FIELDS = "nodes { id identifier updatedAt } pageInfo { hasNextPage endCursor }"
 _LINEAR_FULL_FIELDS = (
     "nodes { id identifier title url description priority createdAt updatedAt "
-    "state { name type } team { key } labels { nodes { name } } "
-    "attachments(first: 20) { nodes { url } } "
+    "state { name type } team { key } labels(first: 100) { nodes { name } pageInfo { hasNextPage endCursor } } "
+    "attachments(first: 100) { nodes { url } pageInfo { hasNextPage endCursor } } "
     "comments(first: %d, orderBy: createdAt) { nodes { body createdAt user { displayName } "
     "externalUser { displayName } } pageInfo { hasNextPage endCursor } } } "
     "pageInfo { hasNextPage endCursor }" % LINEAR_COMMENT_PAGE
@@ -2044,14 +2034,25 @@ def _linear_validate_full(node) -> None:
     for key in ("labels", "attachments", "comments"):
         if not isinstance(node[key], dict) or not isinstance(node[key].get("nodes"), list):
             raise LinearSourceError(f"linear: full issue {key} connection shape is invalid")
-    if not isinstance(node["comments"].get("pageInfo"), dict):
-        raise LinearSourceError("linear: full issue comments pageInfo shape is invalid")
+    for key, fields in (
+        ("labels", ("name",)),
+        ("attachments", ("url",)),
+        ("comments", ("body", "createdAt", "user", "externalUser")),
+    ):
+        connection = node[key]
+        if not isinstance(connection.get("pageInfo"), dict):
+            raise LinearSourceError(f"linear: full issue {key} pageInfo shape is invalid")
+        for item in connection["nodes"]:
+            if not isinstance(item, dict) or any(field not in item for field in fields):
+                raise LinearSourceError(f"linear: full issue {key} node shape is invalid")
 
 
 def _linear_fetch_chunk(chunk: list, deadline: float | None = None) -> list:
-    """One id chunk's full nodes.  A response too large for the CLI halves the chunk;  an issue
-    too large even alone degrades to a flagged placeholder (skipped downstream), never a partial
-    doc.  Any other read failure raises - fail closed."""
+    """Fetch a chunk, reducing issue and connection widths on overflow.
+
+    Single-field overflow is reported by UUID and identifier, never ingested partial.
+    Other read failures fail closed.
+    """
     id_list = ", ".join(json.dumps(i) for i in chunk)
     after = None
     nodes: list = []
@@ -2084,15 +2085,41 @@ def _linear_fetch_chunk(chunk: list, deadline: float | None = None) -> list:
             return _linear_fetch_chunk(chunk[:mid], deadline) + _linear_fetch_chunk(
                 chunk[mid:], deadline
             )
-        warn(
-            "linear: one issue exceeds the CLI size cap on its own;  skipped instead of "
-            "ingesting a truncated copy (any earlier complete version stays current)"
+        # Retry one issue with a single comment rather than treating a large
+        # combined body/thread as an indivisible response. Never truncate a field.
+        minimal = (
+            _LINEAR_FULL_FIELDS.replace(
+                f"comments(first: {LINEAR_COMMENT_PAGE}", "comments(first: 1"
+            )
+            .replace("labels(first: 100", "labels(first: 1")
+            .replace("attachments(first: 100", "attachments(first: 1")
         )
-        return [_linear_placeholder(chunk[0])]
+        try:
+            data = _linear_query(
+                "query { issues(first: 1, includeArchived: true, filter: { id: { in: [%s] } }) { %s } }"
+                % (id_list, minimal),
+                timeout_s=_linear_remaining(deadline),
+            )
+        except LinearSourceError as single:
+            if not _linear_is_overflow(single):
+                raise
+            placeholder = _linear_placeholder(chunk[0])
+            placeholder["_linear_skip_reason"] = (
+                "single issue with one comment exceeds CLI size cap"
+            )
+            warn(
+                f"linear: {placeholder['identifier']} ({chunk[0]}) exceeds the CLI size cap even with one comment"
+            )
+            return [placeholder]
+        nodes = (data.get("issues") or {}).get("nodes") or []
+        for node in nodes:
+            _linear_validate_full(node)
     if not nodes:
         raise LinearSourceError("linear: a full fetch returned no nodes for a non-empty id chunk")
     for node in nodes:
         _linear_complete_comments(node, deadline)
+        for connection, fields in (("labels", "name"), ("attachments", "url")):
+            _linear_complete_connection(node, connection, fields, deadline)
     return nodes
 
 
@@ -2116,53 +2143,76 @@ def _linear_fetch_full(ids: list, deadline: float | None = None) -> list:
     return nodes
 
 
-def _linear_complete_comments(node: dict, deadline: float | None = None) -> None:
-    """Page the comment connection past the first page when the issue has one.  Any truncation
-    risk - the page bound, or a comment page too large for the CLI - flags the node so the run
-    SKIPS it;  every other failure raises.  A truncated copy must never become the corpus's
-    current version of the doc (comments sort oldest-first, so the omitted tail would never
-    arrive and the partial hash would freeze in place)."""
-    comments = node.get("comments") or {}
-    page = comments.get("pageInfo") or {}
-    seen = 1
-    while page.get("hasNextPage") and seen < LINEAR_COMMENT_MAX_PAGES:
+def _linear_complete_connection(
+    node: dict, key: str, fields: str, deadline: float | None = None
+) -> None:
+    """Read every connection page, reducing page width on the CLI response cap.
+
+    Cursor progress and the shared deadline bound a stalled read. A single oversized
+    field is explicitly incomplete, never silently shortened or presented as complete.
+    """
+    connection = node.get(key) or {}
+    page = connection.get("pageInfo") or {}
+    cursors: set[str] = set()
+    width = LINEAR_COMMENT_PAGE
+    while page.get("hasNextPage"):
         after = page.get("endCursor")
-        if not after:
+        if not isinstance(after, str) or not after or after in cursors:
             raise LinearSourceError(
-                f"linear: comment pageInfo for {node.get('identifier')} lost its cursor"
+                f"linear: {key} paging for {node.get('identifier')} lost cursor progress"
             )
-        try:
-            # Singular issue(id:) includes native archives without an includeArchived argument.
-            # The archive-inclusive list queries above select ids; this direct lookup pages them.
-            data = _linear_query(
-                'query { issue(id: "%s") { comments(first: %d, after: "%s", orderBy: createdAt) '
-                "{ nodes { body createdAt user { displayName } externalUser { displayName } } "
-                "pageInfo { hasNextPage endCursor } } } }"
-                % (node.get("id"), LINEAR_COMMENT_PAGE, after),
-                timeout_s=_linear_remaining(deadline),
-            )
-        except LinearSourceError as e:
-            if not _linear_is_overflow(e):
-                raise
-            node["_linear_truncated"] = True
-            return
+        order = ", orderBy: createdAt" if key == "comments" else ""
+        while True:
+            try:
+                data = _linear_query(
+                    "query { issue(id: %s) { %s(first: %d, after: %s%s) { nodes { %s } "
+                    "pageInfo { hasNextPage endCursor } } } }"
+                    % (json.dumps(node["id"]), key, width, json.dumps(after), order, fields),
+                    timeout_s=_linear_remaining(deadline),
+                )
+                break
+            except LinearSourceError as error:
+                if not _linear_is_overflow(error):
+                    raise
+                if width == 1:
+                    node["_linear_truncated"] = True
+                    node["_linear_skip_reason"] = f"{key} single-node page exceeds CLI size cap"
+                    return
+                width = max(1, width // 2)
         issue = data.get("issue")
-        if not isinstance(issue, dict):
+        conn = issue.get(key) if isinstance(issue, dict) else None
+        if (
+            not isinstance(conn, dict)
+            or not isinstance(conn.get("nodes"), list)
+            or not isinstance(conn.get("pageInfo"), dict)
+        ):
             raise LinearSourceError(
-                f"linear: comment paging for {node.get('identifier')} returned no issue"
+                f"linear: {key} paging for {node.get('identifier')} returned malformed connection"
             )
-        conn = issue.get("comments")
-        if not isinstance(conn, dict):
-            raise LinearSourceError(
-                f"linear: comment paging for {node.get('identifier')} returned no connection"
-            )
-        comments.setdefault("nodes", []).extend(conn.get("nodes") or [])
-        page = conn.get("pageInfo") or {}
-        seen += 1
-    if page.get("hasNextPage"):
-        # See LINEAR_COMMENT_MAX_PAGES:  a truncated issue is skipped, never ingested partial.
-        node["_linear_truncated"] = True
-    comments["pageInfo"] = page
+        batch = conn["nodes"]
+        required = {
+            "comments": ("body", "createdAt", "user", "externalUser"),
+            "labels": ("name",),
+            "attachments": ("url",),
+        }[key]
+        if any(
+            not isinstance(item, dict) or any(field not in item for field in required)
+            for item in batch
+        ):
+            raise LinearSourceError(f"linear: {key} paging returned malformed nodes")
+        cursors.add(after)
+        connection.setdefault("nodes", []).extend(batch)
+        page = conn["pageInfo"]
+    connection["pageInfo"] = page
+
+
+def _linear_complete_comments(node: dict, deadline: float | None = None) -> None:
+    _linear_complete_connection(
+        node,
+        "comments",
+        "body createdAt user { displayName } externalUser { displayName }",
+        deadline,
+    )
 
 
 def _linear_severity(node: dict, label_names: list) -> str:
@@ -2247,10 +2297,10 @@ def _linear_scan_entry(node) -> tuple:
 def _linear_ingested_versions() -> dict:
     """doc_id -> ingest state row for the linear rows of the ingest state file, so a routine
     run fetches only issues Linear changed since they were ingested.  Any read problem
-    degrades to an empty map - the safe direction:  it refetches, it never skips.  This is why
-    the source must stay OUT of the nightly prune set:  prune deletes whatever a source did
-    not yield, and an incrementally skipped doc is still live.  A deliberate full pass
-    (FLEET_RAG_LINEAR_FULL=1, e.g. before a manual `--source linear --prune`) refetches all."""
+    degrades to an empty map - the safe direction: it refetches, it never skips.
+    Linear is never a deletion inventory: FULL refetches selected issues but can
+    still omit truncated ones. The orchestrator skips Linear prune in nightly
+    runs and refuses a separate Linear prune before any write."""
     path = pathlib.Path(
         os.environ.get("FLEET_RAG_LINEAR_STATE")
         or (pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json")
@@ -2282,19 +2332,36 @@ def iter_linear(
     light_scan=None,
     fetch_full=None,
     covered_ids=None,
+    receipt: dict | None = None,
 ) -> Iterator[Doc]:
-    """The live board:  Linear issues the frozen board corpus does not cover.  See the section
-    comment above for the selection rule.  `light_scan`/`fetch_full` are test injection points.
-    Selection advances from the ingest state file:  an issue already ingested at its current
-    updatedAt is not refetched (set FLEET_RAG_LINEAR_FULL=1 to force a full pass)."""
-    freeze = freeze or LINEAR_FREEZE
+    """All Linear issues, independent of the retired registry.
+
+    Legacy map_path/freeze/covered_ids arguments remain accepted for callers, but cannot
+    exclude issues. FULL forces every scanned issue to be fetched. A receipt describes
+    source reads, not permission to delete or proof of a committed corpus replacement.
+    """
     light_scan = light_scan or _linear_light_scan
     fetch_full = fetch_full or _linear_fetch_full
-    imported = covered_ids if covered_ids is not None else load_linear_covered_ids(map_path)
     scan = light_scan()
-    selected = [
-        uid for uid in scan if uid not in imported or _linear_scan_entry(scan[uid])[1] >= freeze
-    ]
+    selected = list(scan)
+    if receipt is not None:
+        receipt.update(
+            {
+                "schema": 1,
+                "full": bool(os.environ.get("FLEET_RAG_LINEAR_FULL")),
+                "limited": limit is not None,
+                "scan_count": len(scan),
+                "source_complete": False,
+                "issues": {},
+            }
+        )
+        for uid, entry in scan.items():
+            identifier, updated = _linear_scan_entry(entry)
+            receipt["issues"][uid] = {
+                "identifier": identifier,
+                "scan_updated_at": updated,
+                "status": "not_fetched",
+            }
     if not os.environ.get("FLEET_RAG_LINEAR_FULL"):
         ingested = _linear_ingested_versions()
         refresh_ms = (
@@ -2319,24 +2386,55 @@ def iter_linear(
                     # upsert, dry run, crashed run) advances nothing and is always retried.
                     refreshed_at = int(row.get("refreshed_at") or 0)
                     if refreshed_at and now - refreshed_at < refresh_ms:
-                        continue  # ingested at this version, verified inside the window
+                        if receipt is not None:
+                            receipt["issues"][uid]["status"] = "cached"
+                        continue  # committed and verified inside the refresh window
                 kept.append(uid)
             selected = kept
     selected.sort(key=lambda uid: _linear_scan_entry(scan[uid])[1], reverse=True)
     if limit:
         selected = selected[: int(limit)]
+    if receipt is not None:
+        receipt["selected_count"] = len(selected)
     if not selected:
         return
-    for node in fetch_full(selected):
+    found = set()
+    incomplete = []
+    selected_ids = set(selected)
+
+    # Production fetches one bounded issue chunk at a time. Do not retain the whole
+    # replacement inventory's full descriptions/comments in RAM before the first commit.
+    # Injected fetchers keep their established list contract for callers/tests.
+    def batches():
+        if fetch_full is _linear_fetch_full:
+            for start in range(0, len(selected), LINEAR_FULL_PAGE):
+                yield from fetch_full(selected[start : start + LINEAR_FULL_PAGE])
+        else:
+            yield from fetch_full(selected)
+
+    for node in batches():
+        uid = node.get("id")
+        if uid not in selected_ids or uid in found:
+            raise LinearSourceError(f"linear: unexpected or duplicate fetched id {uid}")
+        found.add(uid)
+        if receipt is not None:
+            receipt["issues"][uid]["identifier"] = node.get("identifier") or uid
         if node.get("_linear_truncated"):
+            incomplete.append(uid)
+            if receipt is not None:
+                receipt["issues"][uid].update(
+                    status="skipped",
+                    reason=node.get("_linear_skip_reason", "incomplete issue read"),
+                )
             warn(
-                f"linear: {node.get('identifier')} has more than "
-                f"{LINEAR_COMMENT_PAGE * LINEAR_COMMENT_MAX_PAGES} comments or exceeds the CLI "
+                f"linear: {node.get('identifier')} could not be read completely or exceeds the CLI "
                 f"size cap;  skipped instead of ingesting a truncated copy (any earlier "
                 f"complete version stays current)"
             )
             continue
-        labels = [l.get("name") or "" for l in (node.get("labels") or {}).get("nodes") or []]
+        labels = [
+            label.get("name") or "" for label in (node.get("labels") or {}).get("nodes") or []
+        ]
         team_key = (node.get("team") or {}).get("key")
         created = parse_ts_ms(node.get("createdAt"))
         updated = parse_ts_ms(node.get("updatedAt"))
@@ -2344,10 +2442,17 @@ def iter_linear(
         # doc_id keys on the issue's stable UUID:  moving a team changes the identifier (the
         # migration map's AFC-1 is CC-133 today), and a renamed identifier must update the same
         # corpus doc, not orphan one and mint a duplicate.
+        markdown = _linear_markdown(node, labels)
+        if receipt is not None:
+            receipt["issues"][uid].update(
+                status="fetched",
+                updated_at=node.get("updatedAt"),
+                content_sha256=hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+            )
         yield Doc(
             doc_id=f"linear/{node.get('id')}",
             title=(node.get("title") or "").strip() or f"Issue {node.get('identifier')}",
-            text_markdown=_linear_markdown(node, labels),
+            text_markdown=markdown,
             source="linear",
             app=_linear_app(team_key, labels),
             category="lesson" if done else "finding",
@@ -2362,6 +2467,23 @@ def iter_linear(
                 "source_kind": _linear_kind(labels) or None,
                 "linear_id": node.get("id"),
             },
+        )
+
+    missing = set(selected) - found
+    if missing:
+        raise LinearSourceError(
+            f"linear: selected ids missing from full fetch: {sorted(missing)[:3]}"
+        )
+    if receipt is not None:
+        receipt["source_complete"] = (
+            not receipt["limited"]
+            and len(found) == len(scan)
+            and all(row["status"] == "fetched" for row in receipt["issues"].values())
+        )
+
+    if os.environ.get("FLEET_RAG_LINEAR_FULL") and incomplete and receipt is None:
+        raise LinearSourceError(
+            f"linear: FULL read skipped issues; replacement is incomplete: {incomplete}"
         )
 
 

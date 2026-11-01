@@ -141,6 +141,15 @@ def evaluate(repo, pr, runner=gh_json):
 def main():
     repo, pr = sys.argv[1], sys.argv[2]
     try:
+        if len(sys.argv) == 4 and sys.argv[3] == "--hold-signal":
+            labels = gh_json(["api", f"repos/{repo}/issues/{pr}/labels"])
+            if not isinstance(labels, list) or any(
+                not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                for label in labels
+            ):
+                raise RuntimeError("Invalid current label evidence")
+            print(json.dumps({"held": any(HOLD_RE.match(label["name"]) for label in labels)}))
+            return
         result = evaluate(repo, pr)
     except Exception as exc:  # fail closed on evaluation error only
         print(json.dumps({"state": "error", "error": str(exc)[:800]}))

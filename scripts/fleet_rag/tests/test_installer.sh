@@ -26,6 +26,8 @@ assert() {  # assert <desc> <command...>
 mkdir -p "$FAKE_REPO/scripts/seat-mcp/seat_mcp"
 cp "$INSTALLER" "$FAKE_REPO/scripts/install-fleet-rag.sh"
 cp -R "$SCRIPTS/fleet_rag" "$FAKE_REPO/scripts/fleet_rag"
+cp -R "$SCRIPTS/fleet_lanes" "$FAKE_REPO/scripts/fleet_lanes"
+cp -R "$SCRIPTS/fleet_config" "$FAKE_REPO/scripts/fleet_config"
 mkdir -p "$FAKE_REPO/scripts/fleet_rag/__pycache__"
 touch "$FAKE_REPO/scripts/fleet_rag/__pycache__/junk.pyc"
 for f in recall recall-tunnel fleet-recall-mcp.py fleet-rag.py; do
@@ -33,8 +35,9 @@ for f in recall recall-tunnel fleet-recall-mcp.py fleet-rag.py; do
 done
 printf '# stub\n' > "$FAKE_REPO/scripts/seat-mcp/seat_mcp/tools.py"
 printf '# stub\n' > "$FAKE_REPO/scripts/seat-mcp/seat_mcp/recall_bridge.py"
+printf '# stub\n' > "$FAKE_REPO/scripts/seat-mcp/seat_mcp/server.py"
 mkdir -p "$FAKE_REPO/scripts/hooks"
-cp "$SCRIPTS/hooks/fleet-recall-session-start.sh" "$SCRIPTS/hooks/fleet-recall-stop.py" "$FAKE_REPO/scripts/hooks/"
+cp "$SCRIPTS/hooks/fleet-recall-session-start.sh" "$SCRIPTS/hooks/fleet-recall-stop.py" "$SCRIPTS/hooks/fleet-recall-prompt-gate.py" "$FAKE_REPO/scripts/hooks/"
 
 # -- fake HOME with minimal configs
 mkdir -p "$FAKE_HOME/.cursor" "$FAKE_HOME/.codex" "$FAKE_HOME/.grok" "$FAKE_HOME/apps/mac-collab"
@@ -168,6 +171,8 @@ assert "stale recall-tunnel symlink replaced" test "$(readlink "$FAKE_HOME/apps/
 assert "PATH symlink ~/.local/bin/recall" test "$(readlink "$FAKE_HOME/.local/bin/recall")" = "$FAKE_HOME/apps/fleet-rag/recall"
 assert "PATH symlink ~/.local/bin/recall-tunnel" test "$(readlink "$FAKE_HOME/.local/bin/recall-tunnel")" = "$FAKE_HOME/apps/fleet-rag/recall-tunnel"
 assert "grok-acp config absent is not created" test ! -e "$FAKE_HOME/apps/grok-acp-runtime/acp-home-config.toml"
+assert "seat-mcp server boundary copied" test -f "$FAKE_HOME/apps/seat-mcp/seat_mcp/server.py"
+assert "recall presentation helper copied" test -f "$FAKE_HOME/apps/fleet-rag/fleet_rag/recall_presentation.py"
 assert "seat-mcp files copied" test -f "$FAKE_HOME/apps/seat-mcp/seat_mcp/recall_bridge.py" -a -f "$FAKE_HOME/apps/seat-mcp/seat_mcp/tools.py"
 assert "pm2 restart printed, not run" grep -q 'pm2 restart seat-mcp' "$TMP/run1.out"
 

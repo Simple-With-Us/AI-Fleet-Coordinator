@@ -1473,6 +1473,22 @@ class ChatLogTests(unittest.TestCase):
         self.assertEqual(split["chat/claude/big#ruling1"].category, "infrastructure")
         self.assertEqual(split["chat/claude/big#ruling2"].category, "preference")
 
+    def test_retired_sources_are_explicit_only_and_linear_refreshes_by_default(self) -> None:
+        self.assertEqual(
+            sources.NIGHTLY_SOURCES, ("linear", "doc", "skill", "memory", "apple-note")
+        )
+        self.assertIn("linear", sources.SOURCES)
+        from fleet_rag.ingest import _resolve_names, _attests_health
+
+        for selection in (None, "all"):
+            names = _resolve_names(selection)
+            self.assertEqual(names, list(sources.NIGHTLY_SOURCES))
+            self.assertTrue(_attests_health(names, True, None, None))
+        self.assertFalse(_attests_health(["board", "effort-log"], True, None, None))
+        for name in ("board", "effort-log"):
+            self.assertNotIn(name, sources.NIGHTLY_SOURCES)
+            self.assertIn(name, sources.GENERATORS)
+
     def test_nightly_sources_exclude_chat_log(self) -> None:
         self.assertNotIn("chat-log", sources.NIGHTLY_SOURCES)
         self.assertIn("chat-log", sources.SOURCES)
@@ -1632,8 +1648,8 @@ def _linear_node(
         "updatedAt": updated,
         "state": {"name": state[0], "type": state[1]},
         "team": {"key": team},
-        "labels": {"nodes": [{"name": n} for n in labels]},
-        "attachments": {"nodes": []},
+        "labels": {"nodes": [{"name": n} for n in labels], "pageInfo": {"hasNextPage": False}},
+        "attachments": {"nodes": [], "pageInfo": {"hasNextPage": False}},
         "comments": {
             "nodes": [
                 {
@@ -1727,13 +1743,14 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(node["identifier"], "AFC-777")
         self.assertTrue(node["_linear_truncated"])
 
-    def test_selection_skips_imported_untouched_but_keeps_new_and_updated(self) -> None:
+    def test_selection_includes_imported_untouched_and_never_reads_registry(self) -> None:
         scan = {
             "uuid-imported-old": "2026-10-11T00:00:00.000Z",  # in TSV, untouched -> skip
             "uuid-imported-active": "2026-10-25T00:00:00.000Z",  # in TSV, post-freeze -> yield
             "uuid-new": "2026-10-12T00:00:00.000Z",  # not in TSV -> yield however old
         }
         nodes = [
+            _linear_node(uid="uuid-imported-old", identifier="AFC-1"),
             _linear_node(uid="uuid-imported-active", identifier="AFC-2"),
             _linear_node(uid="uuid-new", identifier="AFC-3", title="Filed straight into Linear"),
         ]
@@ -1750,10 +1767,10 @@ class LinearSourceTests(unittest.TestCase):
                 fetch_full=fetch,
             )
         )
-        self.assertEqual(sorted(seen_fetch["ids"]), ["uuid-imported-active", "uuid-new"])
+        self.assertEqual(sorted(seen_fetch["ids"]), ["uuid-imported-active", "uuid-imported-old", "uuid-new"])
         # doc_id is the stable issue UUID, not the identifier (team moves rename identifiers)
         self.assertEqual(
-            [d.doc_id for d in docs], ["linear/uuid-imported-active", "linear/uuid-new"]
+            [d.doc_id for d in docs], ["linear/uuid-imported-old", "linear/uuid-imported-active", "linear/uuid-new"]
         )
         self.assertTrue(all(d.source == "linear" for d in docs))
 
@@ -1797,36 +1814,65 @@ class LinearSourceTests(unittest.TestCase):
         self.assertEqual(doc.seat, "WISE")
         self.assertEqual(doc.extra["severity"], "P2")  # priority 3 -> P2 without a label
 
-    def test_comment_pages_are_followed_and_the_bound_flags_truncation(self) -> None:
+    def test_more_than_six_comment_pages_are_complete(self) -> None:
+        calls = []
         def fake_query(query, timeout_s=0):
-            if "issue(id:" in query:
-                return {
-                    "issue": {
-                        "comments": {
-                            "nodes": [
-                                {
-                                    "body": "extra page body",
-                                    "createdAt": "2026-10-22T00:00:00.000Z",
-                                    "user": None,
-                                    "externalUser": {"displayName": "Relay"},
-                                }
-                            ],
-                            "pageInfo": {"hasNextPage": True, "endCursor": "c"},
-                        }
-                    }
-                }
-            raise AssertionError("unexpected query")
-
-        node = _linear_node(comments=[("Claude", "first page body", "2026-10-20T00:00:00.000Z")])
+            calls.append(query)
+            page = len(calls)
+            return {"issue": {"comments": {"nodes": [{"body": f"page-{page}", "createdAt": "2026-10-20", "user": None, "externalUser": None}],
+                "pageInfo": {"hasNextPage": page < 9, "endCursor": f"c{page}"}}}}
+        node = _linear_node(comments=[("Claude", "first", "2026-10-20T00:00:00Z")])
         node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "c0"}
         with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
             sources._linear_complete_comments(node)
-        bodies = [c["body"] for c in node["comments"]["nodes"]]
-        # one original page plus the follow-up pages up to the bound
-        self.assertEqual(len(bodies), sources.LINEAR_COMMENT_MAX_PAGES)
-        self.assertIn("extra page body", bodies)
-        # past the bound the node is flagged, not warned: iter_linear decides to skip it
-        self.assertTrue(node.get("_linear_truncated"))
+        self.assertEqual(10, len(node["comments"]["nodes"]))
+        self.assertFalse(node.get("_linear_truncated"))
+
+    def test_repeated_comment_cursor_fails_closed(self) -> None:
+        node = _linear_node()
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "same"}
+        with mock.patch.object(sources, "_linear_query", return_value={"issue": {
+            "comments": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "same"}}}}):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_complete_comments(node)
+
+    def test_comment_overflow_retries_smaller_pages(self) -> None:
+        node = _linear_node()
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "start"}
+        calls = []
+        def query(q, timeout_s=0):
+            calls.append(q)
+            if "first: 100" in q or "first: 50" in q:
+                raise sources.LinearSourceError("overflow", overflow=True)
+            return {"issue": {"comments": {"nodes": [{"body": "whole tail", "createdAt": "2026-10-20", "user": None, "externalUser": None}],
+                "pageInfo": {"hasNextPage": False}}}}
+        with mock.patch.object(sources, "_linear_query", side_effect=query):
+            sources._linear_complete_comments(node)
+        self.assertEqual(3, len(calls))
+        self.assertEqual("whole tail", node["comments"]["nodes"][-1]["body"])
+        self.assertFalse(node.get("_linear_truncated"))
+
+    def test_full_receipt_covers_untouched_import_and_no_registry_files(self) -> None:
+        receipt = {}
+        with mock.patch.object(sources, "load_linear_covered_ids", side_effect=AssertionError("retired registry")):
+            with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"}):
+                docs = list(sources.iter_linear(map_path="/nonexistent", covered_ids={"uuid-1"},
+                    light_scan=lambda: {"uuid-1": "2020-01-01T00:00:00Z"},
+                    fetch_full=lambda ids: [_linear_node()], receipt=receipt))
+        self.assertEqual(1, len(docs))
+        self.assertTrue(receipt["source_complete"])
+        self.assertEqual("fetched", receipt["issues"]["uuid-1"]["status"])
+        self.assertEqual(64, len(receipt["issues"]["uuid-1"]["content_sha256"]))
+
+    def test_incomplete_receipt_identifies_skipped_issue(self) -> None:
+        node = _linear_node()
+        node["_linear_truncated"] = True
+        receipt = {}
+        self.assertEqual([], list(sources.iter_linear(
+            light_scan=lambda: {"uuid-1": "2026-10-20T00:00:00Z"},
+            fetch_full=lambda ids: [node], receipt=receipt)))
+        self.assertFalse(receipt["source_complete"])
+        self.assertEqual("skipped", receipt["issues"]["uuid-1"]["status"])
 
     def test_overlong_thread_is_skipped_not_ingested_partial(self) -> None:
         node = _linear_node()
@@ -1885,6 +1931,49 @@ class LinearSourceTests(unittest.TestCase):
         with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
             nodes = sources._linear_fetch_full(["uuid-a", "uuid-b"])
         self.assertEqual(["uuid-a", "uuid-b"], [n["id"] for n in nodes])
+
+    def test_production_iterator_streams_chunks_before_fetching_whole_inventory(self) -> None:
+        selected = {f"uuid-{i}": "2026-10-21" for i in range(125)}
+        calls = []
+        def fetch(ids):
+            calls.append(list(ids))
+            return [_linear_node(uid=uid) for uid in ids]
+        with (mock.patch.object(sources, "_linear_fetch_full", side_effect=fetch),
+              mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+            iterator = sources.iter_linear(light_scan=lambda: selected)
+            next(iterator)
+            self.assertEqual(1, len(calls))
+            self.assertEqual(50, len(calls[0]))
+            self.assertEqual(124, len(list(iterator)))
+        self.assertEqual([50, 50, 25], [len(ids) for ids in calls])
+
+    def test_single_issue_combined_overflow_pages_without_losing_text(self) -> None:
+        calls = []
+        node = _linear_node(comments=[("Wise", "first complete body", "2026-10-20")])
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "c1"}
+        node["labels"]["pageInfo"] = {"hasNextPage": True, "endCursor": "l1"}
+        node["attachments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "a1"}
+        def query(q, timeout_s=0):
+            calls.append(q)
+            if "issues(first:" in q:
+                if "comments(first: 100" in q:
+                    raise sources.LinearSourceError("overflow", overflow=True)
+                self.assertIn("labels(first: 1", q)
+                return {"issues": {"nodes": [node], "pageInfo": {"hasNextPage": False}}}
+            if "comments(first:" in q:
+                return {"issue": {"comments": {"nodes": [{"body": "last complete body",
+                    "createdAt": "2026-10-21", "user": None, "externalUser": None}],
+                    "pageInfo": {"hasNextPage": False}}}}
+            key = "labels" if "labels(first:" in q else "attachments"
+            item = {"name": "tail label"} if key == "labels" else {"url": "https://example.org/evidence"}
+            return {"issue": {key: {"nodes": [item], "pageInfo": {"hasNextPage": False}}}}
+        with mock.patch.object(sources, "_linear_query", side_effect=query):
+            (complete,) = sources._linear_fetch_full(["uuid-1"])
+        self.assertFalse(complete.get("_linear_truncated"))
+        self.assertEqual(2, len(complete["comments"]["nodes"]))
+        self.assertEqual("tail label", complete["labels"]["nodes"][-1]["name"])
+        self.assertEqual("https://example.org/evidence", complete["attachments"]["nodes"][-1]["url"])
+        self.assertEqual(5, len(calls))
 
     def test_single_issue_too_large_is_skipped_with_a_placeholder(self) -> None:
         """An issue that overflows even alone degrades to a flagged placeholder, so the run

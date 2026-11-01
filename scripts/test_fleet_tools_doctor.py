@@ -443,6 +443,19 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertEqual(rows["tool-file:scripts/recall"], "OK")
         self.assertEqual(rows["tool-file:docs/FLEET-MODE.md"], "FAIL")
 
+    def test_partial_release_without_recall_presentation_is_missing(self):
+        helper = "scripts/fleet_rag/recall_presentation.py"
+        self.assertIn(helper, doctor.TOOL_FILES)
+        for rel in doctor.TOOL_FILES:
+            if rel != helper:
+                self.touch(f"rt/current/{rel}")
+        report = doctor.Report()
+        doctor.check_tool_files(report)
+        row = report.row(f"tool-file:{helper}")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertEqual(row["state"], "missing")
+        self.assertEqual(report.row("tool-file:scripts/recall")["status"], "OK")
+
     def test_fleet_mode_doc_warns_when_the_mac_copy_differs(self):
         doc = self.home / "apps/FLEET-MODE.md"
         with (

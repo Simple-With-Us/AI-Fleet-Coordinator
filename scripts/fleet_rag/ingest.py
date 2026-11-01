@@ -666,6 +666,12 @@ def run(
         raise FleetRagError(
             f"unknown source(s): {', '.join(unknown)}; known: {', '.join(GENERATORS)}"
         )
+    if prune and "linear" in names and set(names) != set(sources.NIGHTLY_SOURCES):
+        raise FleetRagError(
+            "Linear prune requires a separately verified complete deletion inventory; "
+            "this generator is incremental even with FLEET_RAG_LINEAR_FULL. "
+            "Use --source linear without --prune to refresh."
+        )
     if prune and limit:
         raise FleetRagError(
             "--prune cannot be combined with --limit: a truncated source would prune "
@@ -785,8 +791,16 @@ def _run_locked(
         group_chunks = 0
         yielded: set[str] = set()
         source_ok = True
+        linear_receipt = (
+            {} if name == "linear" and GENERATORS[name] is sources.iter_linear else None
+        )
+        if linear_receipt is not None:
+            report["linear_read_receipt"] = linear_receipt
         try:
-            for doc in GENERATORS[name](limit=limit):
+            kwargs = {"limit": limit}
+            if linear_receipt is not None:
+                kwargs["receipt"] = linear_receipt
+            for doc in GENERATORS[name](**kwargs):
                 stats["docs_seen"] += 1
                 if doc.doc_id in seen_run:
                     raise FleetRagError(
@@ -821,6 +835,17 @@ def _run_locked(
                     group, group_chunks = [], 0
             if group:
                 process_group(group, state, writer, run_id, stats, state_path, live_owners)
+            if (
+                linear_receipt is not None
+                and linear_receipt.get("full")
+                and any(
+                    row.get("status") == "skipped"
+                    for row in linear_receipt.get("issues", {}).values()
+                )
+            ):
+                raise sources.LinearSourceError(
+                    "linear: FULL read skipped issues; replacement is incomplete"
+                )
         except Exception as e:  # noqa: BLE001 — one bad source must not sink the others
             source_ok = False
             msg = f"{name}: {type(e).__name__}: {e}"
@@ -830,10 +855,36 @@ def _run_locked(
             telemetry.capture_exception(e, operation="ingest", source=name)
             if os.environ.get("FLEET_RAG_DEBUG"):
                 traceback.print_exc()
+        if linear_receipt is not None:
+            # Read completeness is not deletion authority. State verification describes
+            # committed document hashes only, not independent Qdrant/chunk coverage.
+            verified = 0
+            for uid, row in linear_receipt.get("issues", {}).items():
+                prev = state.get(f"linear/{uid}", {})
+                matches = (
+                    not dry_run
+                    and row.get("status") == "fetched"
+                    and prev.get("doc_hash") == row.get("content_sha256")
+                )
+                row["state_hash_verified"] = bool(matches)
+                verified += bool(matches)
+            linear_receipt["state_hash_verified_count"] = verified
+            linear_receipt["source_ok"] = source_ok
+            linear_receipt["deletion_authorized"] = False
+            if not source_ok:
+                linear_receipt["source_complete"] = False
         for w in sources.take_warnings():
             report["warnings"].append(f"{name}: {w}")
             log(f"[{name}] WARNING {w}")
-        if prune and source_ok:
+        # Linear is a delta stream, not an authoritative deletion inventory. Even
+        # FULL refetch can skip incomplete/truncated issues. Never prune its
+        # unyielded rows from this pipeline; explicit migration reconciliation
+        # owns deletion separately after per-document coverage verification.
+        if prune and source_ok and name == "linear":
+            report["warnings"].append(
+                "linear: pruning skipped; generator is not a complete deletion inventory"
+            )
+        if prune and source_ok and name != "linear":
             try:
                 gone = prune_source(name, yielded, state, writer, stats, state_path)
                 if gone:
@@ -1015,7 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument(
         "--all",
         action="store_true",
-        help="nightly sources (board, effort-log, doc, skill, memory, apple-note; "
+        help="nightly sources (linear, doc, skill, memory, apple-note; "
         "excludes chat-log — pass --source chat-log for the rare policy scan)",
     )
     g.add_argument("--source", help="comma-separated: " + ",".join(GENERATORS))
