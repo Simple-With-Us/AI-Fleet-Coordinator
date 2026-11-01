@@ -6,6 +6,21 @@ Normal operation lends coding workloads idle memory while retaining the configur
 
 Configured production containers with finite hard limits receive best-effort `memory.low` protection within an ancestor protection budget.  Coding roots include the configured user slice, native coding services, and shared coding containers; nested groups are counted once.  Docker scopes are rediscovered after recreation.  The controller leaves `memory.max`, swap limits and existing narrower limits intact.
 
+## Host-local exclude list
+
+A host can opt a unit out without an Infisical policy change via `/etc/fleet-coding-memory/exclude-units` (override with `--exclude-file`, mainly for tests). One systemd unit name per line; blank lines and lines starting with `#` are ignored, and names are validated as unit names (no `/` or whitespace). Example:
+
+```text
+# BotFleet harness manages its own heap; do not set memory.high on it.
+botfleet-server.service
+```
+
+Trust rules: the file is used only if it is a regular file opened with `O_NOFOLLOW` (symlinks are rejected), owned by uid 0, and not group- or world-writable. Otherwise it is ignored entirely and one warning line goes to stderr per refresh. A missing file means an empty list and is silent.
+
+The file is reloaded on the same cadence as the policy (startup, background refresh, SIGHUP). Excluded units are skipped when `coding_units` are resolved, and an excluded unit's cgroup is never used as a coding root when reached via another route (for example docker discovery or user-slice nesting); exact and descendant cgroups are filtered. Limitation: if a configured coding root is an ancestor of an excluded unit (for example a whole slice), the excluded unit still shares that ancestor's limit — the controller does not carve out nested exceptions.
+
+Hand-back: if the controller previously wrote a control (`memory.high`/`memory.low`) on a cgroup that is now excluded, it restores the recorded baseline the same way it does for groups that disappear. If the current value differs from what the controller last wrote, the external edit wins: ownership is dropped without writing. Status JSON reports an `excluded_units` count.
+
 Settings load at startup and refresh on a background thread; SIGHUP requests a refresh.  A protected last-known-good cache keeps the last valid policy during settings outages, and status marks it stale.  The dedicated settings bridge requires its own read-only service token, scoped to prod `/coding-memory`, through systemd `LoadCredential`.  Infisical root `CODING_MEMORY_READ_TOKEN` is the token source of truth; its deployed binding is `/etc/fleet-coding-memory/read-token` (root-owned, mode 0600, parent 0700).  The installer copies code and nonsecret project metadata; it does not copy credentials.  The reader validates the returned secret folder and refuses ambient or bootstrap authentication.
 
 ## Install And Verify

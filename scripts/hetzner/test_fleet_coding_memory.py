@@ -592,5 +592,142 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(int((parent / "memory.low").read_text()), sum(reduced_lows))
 
 
+class ExcludeTests(unittest.TestCase):
+    def _write_exclude(self, path, text, mode=0o644):
+        path.write_text(text)
+        path.chmod(mode)
+        return path
+
+    def test_parse_validation_comments_and_blanks(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = self._write_exclude(
+                Path(d) / "exclude-units",
+                "# comment\n\nbotfleet-server.service\n  user.slice  \nbad/name.service\nhas space.service\n# other\nfoo@bar.service\n",
+            )
+            warnings = []
+            got = m.load_excluded_units(f, expected_uid=os.geteuid(), warn=warnings.append)
+            self.assertEqual(got, {"botfleet-server.service", "user.slice", "foo@bar.service"})
+            self.assertEqual(warnings, [])
+
+    def test_missing_file_is_empty_and_silent(self):
+        with tempfile.TemporaryDirectory() as d:
+            warnings = []
+            got = m.load_excluded_units(
+                Path(d) / "absent", expected_uid=os.geteuid(), warn=warnings.append
+            )
+            self.assertEqual(got, set())
+            self.assertEqual(warnings, [])
+
+    def test_symlink_is_ignored_with_one_warning(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = self._write_exclude(Path(d) / "real", "botfleet-server.service\n")
+            link = Path(d) / "exclude-units"
+            link.symlink_to(real)
+            warnings = []
+            got = m.load_excluded_units(link, expected_uid=os.geteuid(), warn=warnings.append)
+            self.assertEqual(got, set())
+            self.assertEqual(len(warnings), 1)
+
+    def test_non_root_owner_is_ignored_via_injected_uid(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = self._write_exclude(Path(d) / "exclude-units", "botfleet-server.service\n")
+            warnings = []
+            got = m.load_excluded_units(f, expected_uid=os.geteuid() + 1, warn=warnings.append)
+            self.assertEqual(got, set())
+            self.assertEqual(len(warnings), 1)
+
+    def test_group_writable_is_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = self._write_exclude(
+                Path(d) / "exclude-units", "botfleet-server.service\n", mode=0o664
+            )
+            warnings = []
+            got = m.load_excluded_units(f, expected_uid=os.geteuid(), warn=warnings.append)
+            self.assertEqual(got, set())
+            self.assertEqual(len(warnings), 1)
+
+    def test_non_utf8_exclude_file_is_ignored_not_raised(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = self._write_exclude(Path(d) / "exclude-units", "x\n", mode=0o600)
+            f.write_bytes(b"botfleet-server.service\n\xff\xfe\n")
+            os.chmod(f, 0o600)
+            warnings = []
+            got = m.load_excluded_units(f, expected_uid=os.geteuid(), warn=warnings.append)
+            self.assertEqual(got, set())
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("not UTF-8", warnings[0])
+
+    def test_excluded_unit_skipped_in_unit_cgroups(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "cgroup"
+            cg(root / "system.slice" / "botfleet-server.service")
+            cg(root / "system.slice" / "coding.service")
+            pol = {**policy(), "coding_units": ["botfleet-server.service", "coding.service"]}
+
+            def runner(argv, **kwargs):
+                unit = argv[-1]
+                return type("R", (), {"stdout": f"/system.slice/{unit}\n"})()
+
+            found = m.unit_cgroups(pol, root, runner=runner, excluded={"botfleet-server.service"})
+            self.assertEqual([p.name for p in found], ["coding.service"])
+
+    def test_excluded_cgroup_via_other_route_and_status_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            excluded_group = cg(root / "system.slice" / "botfleet-server.service")
+            coding = cg(root / "system.slice" / "coding.service")
+            state = {}
+            status = run_step(
+                policy(),
+                root,
+                state,
+                proc(root / "proc"),
+                1,
+                ([excluded_group, coding], []),
+                excluded_units={"botfleet-server.service"},
+                excluded_cgroups={excluded_group},
+            )
+            self.assertEqual(status["coding_groups"], 1)
+            self.assertEqual(status["excluded_units"], 1)
+
+    def test_previously_owned_excluded_cgroup_restored_via_step(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            p = cg(root / "system.slice" / "botfleet-server.service", high="max")
+            state = {"owned": {}}
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
+                self.assertTrue(m.write_owned(p, "memory.high", 256 * M, state))
+                self.assertEqual((p / "memory.high").read_text(), str(256 * M))
+                status = m.step(
+                    policy(),
+                    root,
+                    state,
+                    proc(root / "proc"),
+                    1,
+                    ([p], []),
+                    excluded_units={"botfleet-server.service"},
+                    excluded_cgroups={p},
+                )
+            self.assertEqual((p / "memory.high").read_text(), "max")
+            self.assertEqual(state["owned"], {})
+            self.assertEqual(status["excluded_units"], 1)
+            self.assertEqual(status["coding_groups"], 0)
+
+    def test_external_edit_on_excluded_cgroup_respected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = cg(Path(d) / "unit", high="max")
+            state = {"owned": {}}
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
+                m.write_owned(p, "memory.high", 256 * M, state)
+                (p / "memory.high").write_text("123")
+                m.restore_excluded(state, {p})
+            self.assertEqual((p / "memory.high").read_text(), "123")
+            self.assertEqual(state["owned"], {})
+
+
 if __name__ == "__main__":
     unittest.main()
