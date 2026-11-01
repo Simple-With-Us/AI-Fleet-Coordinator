@@ -1258,13 +1258,15 @@ class ChatCatalog:
         """A chat `find` returned, while it is younger than the catalog's own cache TTL.  An
         expired one is dropped rather than revalidated:  the next tagged wake calls `find`
         again and reads the store, so a chat deleted since then is never served."""
-        row = self._found.get(record_id)
-        if row is None:
-            return None
-        if self._clock() - float(row.get("_found_at") or 0.0) > self.ttl:
-            self._found.pop(record_id, None)
-            return None
-        return row
+        # The check and the drop are one step under the lock `find` writes under.
+        with self._scan_lock:
+            row = self._found.get(record_id)
+            if row is None:
+                return None
+            if self._clock() - float(row.get("_found_at") or 0.0) > self.ttl:
+                self._found.pop(record_id, None)
+                return None
+            return row
 
     def resolve(self, record_id: str) -> dict[str, Any] | None:
         """Resolve only an exact ID in this catalog's bounded in-memory cache."""
