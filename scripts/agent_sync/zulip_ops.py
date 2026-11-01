@@ -159,8 +159,13 @@ def own_message(agent: Any, message_id: int) -> dict[str, Any]:
     return message
 
 
-def edit_message(agent: Any, message_id: int, body: str) -> dict[str, Any]:
-    own_message(agent, message_id)
+def edit_message(
+    agent: Any, message_id: int, body: str, *, checked: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Replace this bot's own message.  `checked` is the message a caller already read with
+    `own_message`, so the ownership check is not fetched a second time."""
+    if checked is None:
+        own_message(agent, message_id)
     agent.client.patch("messages/%d" % message_id, {"content": body})
     return {"id": message_id, "edited": True}
 

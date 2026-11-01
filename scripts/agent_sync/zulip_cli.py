@@ -506,7 +506,7 @@ def cmd_edit(agent: Any, args: argparse.Namespace) -> int:
     body = cli._compose(
         agent, text, labels=labels, mentions=mentions, no_tag=bool(getattr(args, "no_tag", False))
     )
-    result = OPS.edit_message(agent, args.id, body)
+    result = OPS.edit_message(agent, args.id, body, checked=original)
     return _result(agent, result, "edited id %d" % args.id)
 
 
