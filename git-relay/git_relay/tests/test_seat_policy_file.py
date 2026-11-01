@@ -56,12 +56,32 @@ EXCLUDED = {"JET", "BF-BUILDER"}
 # Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
 # the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
 GB_SEATS = {
-    "GB-COMPILER", "GB-DEPLOYER", "GB-DESIGNER", "GB-DIRECTOR", "GB-ENGINEER", "GB-FIXER",
-    "GB-HOUSEKEEPER", "GB-MONITOR", "GB-ORACLE", "GB-PLUMBER", "GB-PUBLISHER", "GB-TRADER",
+    "GB-COMPILER",
+    "GB-DEPLOYER",
+    "GB-DESIGNER",
+    "GB-DIRECTOR",
+    "GB-ENGINEER",
+    "GB-FIXER",
+    "GB-HOUSEKEEPER",
+    "GB-MONITOR",
+    "GB-ORACLE",
+    "GB-PLUMBER",
+    "GB-PUBLISHER",
+    "GB-TRADER",
 }
 BF_SEATS = {
-    "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-ENGINEER", "BF-FIXER",
-    "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "BF-TRADER",
+    "BF-COMPILER",
+    "BF-DEPLOYER",
+    "BF-DESIGNER",
+    "BF-DIRECTOR",
+    "BF-ENGINEER",
+    "BF-FIXER",
+    "BF-HOUSEKEEPER",
+    "BF-MONITOR",
+    "BF-ORACLE",
+    "BF-PLUMBER",
+    "BF-PUBLISHER",
+    "BF-TRADER",
 }
 # The two seats whose live rollout carries the fleet action set in its own order (host
 # render/live compare 2026-11-01):  each pins its exact ordered live list in its own profile.
