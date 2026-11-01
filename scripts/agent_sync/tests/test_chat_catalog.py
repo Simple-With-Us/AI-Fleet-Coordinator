@@ -679,6 +679,25 @@ class ChatCatalogTests(unittest.TestCase):
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved["session_id"], "session-00")
 
+    def test_a_found_chat_expires_with_the_catalog_ttl(self):
+        # A found chat is kept only for the wake that found it.  Once it is older than the
+        # catalog TTL it is dropped, so a chat deleted later is never resolved from memory.
+        for index in range(20):
+            write_jsonl(
+                self.home / (".claude/projects/project/session-%02d.jsonl" % index),
+                [{"type": "user", "cwd": "/repo", "timestamp": 1000 + index, "message": {"content": "hi"}}],
+            )
+        catalog = self.catalog(
+            grok_transport=FakeGrok(), cursor_transport=FakeCursor(), max_records=20
+        )
+        catalog.discover()
+        found = catalog.find("claude", "session-00")
+        self.assertIsNotNone(catalog.resolve(found["id"]))
+        (self.home / ".claude/projects/project/session-00.jsonl").unlink()
+        self.clock.now += catalog.ttl + 1
+        self.assertIsNone(catalog.resolve(found["id"]))
+        self.assertIsNone(catalog.find("claude", "session-00"))
+
     def test_find_returns_an_older_muse_chat_from_sqlite_beyond_the_catalog_cap(self):
         db = self.home / ".local/share/muse/session-index.db"
         db.parent.mkdir(parents=True)

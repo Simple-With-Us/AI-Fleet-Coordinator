@@ -1079,6 +1079,7 @@ class ChatCatalog:
             return None
         with self._scan_lock:
             self._found.pop(row["id"], None)
+            row["_found_at"] = self._clock()
             self._found[row["id"]] = row
             while len(self._found) > MAX_FOUND_RECORDS:
                 self._found.pop(next(iter(self._found)))
@@ -1253,6 +1254,18 @@ class ChatCatalog:
                 return self._grok_row(item)
         return None
 
+    def _found_row(self, record_id: str) -> dict[str, Any] | None:
+        """A chat `find` returned, while it is younger than the catalog's own cache TTL.  An
+        expired one is dropped rather than revalidated:  the next tagged wake calls `find`
+        again and reads the store, so a chat deleted since then is never served."""
+        row = self._found.get(record_id)
+        if row is None:
+            return None
+        if self._clock() - float(row.get("_found_at") or 0.0) > self.ttl:
+            self._found.pop(record_id, None)
+            return None
+        return row
+
     def resolve(self, record_id: str) -> dict[str, Any] | None:
         """Resolve only an exact ID in this catalog's bounded in-memory cache."""
         if not isinstance(record_id, str):
@@ -1260,7 +1273,7 @@ class ChatCatalog:
         self.discover()
         row = self._records.get(record_id)
         if row is None:
-            row = self._found.get(record_id)
+            row = self._found_row(record_id)
         return dict(row) if row is not None else None
 
     def excerpt(self, record_id: str, limit: int = 4) -> list[dict[str, str]]:
@@ -1297,7 +1310,7 @@ class ChatCatalog:
             row["_excerpts"] = excerpts
             # A rescan can drop the record between resolve() and here, so publish onto whatever is
             # live now rather than subscripting a key the fanout thread may already have replaced.
-            live = self._records.get(record_id) or self._found.get(record_id)
+            live = self._records.get(record_id) or self._found_row(record_id)
             if live is not None:
                 live["_excerpts"] = row["_excerpts"]
             return list(row["_excerpts"])
@@ -1313,7 +1326,7 @@ class ChatCatalog:
                     if text:
                         safe_rows.append({"role": item["role"], "text": text})
             row["_excerpts"] = safe_rows[-count:]
-            live = self._records.get(record_id) or self._found.get(record_id)
+            live = self._records.get(record_id) or self._found_row(record_id)
             if live is not None:
                 live["_excerpts"] = row["_excerpts"]
         return (
