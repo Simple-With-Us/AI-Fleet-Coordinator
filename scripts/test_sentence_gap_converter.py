@@ -180,6 +180,12 @@ PROTOCOL_FILES = (
     ".cursor/rules/sentence-gap.mdc",
 )
 
+# The slim always-on Cursor rule keeps the pinned blocks but not the full shared region.
+PROTOCOL_FILES_IDENTICAL_REGION = (
+    "docs/fleet-skills/sentence-gap/SKILL.md",
+    "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
+)
+
 REQUIRED_BLOCKS = (
     "**Source files are a different surface and are NOT affected.**",
     "Two more traps, both hit 2026-10-18:",
@@ -1067,7 +1073,7 @@ class ProtocolContentTests(unittest.TestCase):
     def test_the_protocol_region_is_byte_identical_across_the_three(self) -> None:
         """Making the three agree must not cost any of them content."""
         regions = {}
-        for rel in PROTOCOL_FILES:
+        for rel in PROTOCOL_FILES_IDENTICAL_REGION:
             text = (ROOT / rel).read_text(encoding="utf-8")
             start = text.index(PROTOCOL_REGION_START)
             end = text.index(PROTOCOL_REGION_END, start)
