@@ -71,8 +71,15 @@ class World:
         self.bin = self.root / "bin"
         self.state = self.root / "state"
         self.home = self.root / "home"
-        for d in (self.bin, self.state, self.home):
+        self.tmp = self.root / "tmp"
+        for d in (self.bin, self.state, self.home, self.tmp):
             d.mkdir()
+        # The CLI runs in process, so its private files land wherever `tempfile` points.  Point it at this
+        # world's own directory for the life of the world, so another run on the same machine cannot fail
+        # this run's leak check (and this run cannot fail theirs).
+        self._saved_tempdir = tempfile.tempdir
+        tempfile.tempdir = str(self.tmp)
+        test.addCleanup(setattr, tempfile, "tempdir", self._saved_tempdir)
         self.knobs = FakeKnobs()
         self.now = dt.datetime(2026, 10, 11, 18, 0, 0, tzinfo=dt.timezone.utc)  # well after every issue the fake board stamps
         from needs_owner import seat as _seat
@@ -271,4 +278,4 @@ class World:
         self.save_board(world)
 
     def leftover_temp_files(self) -> list[str]:
-        return sorted(p for p in os.listdir(tempfile.gettempdir()) if p.startswith(".needs-owner-"))
+        return sorted(p for p in os.listdir(self.tmp) if p.startswith(".needs-owner-"))
