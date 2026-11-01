@@ -1,7 +1,94 @@
 {
-  "//": "The reviewed git-relay seat policy (README, Policy).  seat_policy.py renders it into GIT_RELAY_SEATS_JSON and installs it on the relay host.  Every seat signs in with its own admin-minted ST-MCP bearer (auth shared) and acts as its own GitHub App, so no entry holds a token.  The App slug of each identity is the swu- App whose GitHub description names that seat;  five are not swu-<identity>:  MA is swu-rob, GROK is swu-grok-build, MM is swu-minimax, JET-CHAT is swu-jet, AMP is swu-amp-agent (swu-amp is reserved for an account).  JET-CHAT is the full Jet login on swu-jet; the original JET connection is wake-only and has no Git entry (Q7).  AMP signs in with its own bearer and acts as its own swu-amp-agent App.",
+  "//": "The reviewed git-relay seat policy (README, Policy).  seat_policy.py renders it into GIT_RELAY_SEATS_JSON and installs it on the relay host.  Every seat signs in with its own admin-minted ST-MCP bearer (auth shared) and acts as its own GitHub App, so no entry holds a token.  The App slug of each identity is the swu- App whose GitHub description names that seat;  five are not swu-<identity>:  MA is swu-rob, GROK is swu-grok-build, MM is swu-minimax, JET-CHAT is swu-jet, AMP is swu-amp-agent (swu-amp is reserved for an account).  JET-CHAT is the full Jet login on swu-jet; the original JET connection is wake-only and has no Git entry (Q7).  AMP signs in with its own bearer and acts as its own swu-amp-agent App.  Repositories: 2026-11-01 every-repo widening (owner instruction 'EVERY SINGLE ONE for every agent'):  every seat reaches Simple-With-Us/* and jaywedgeworth22/* - the two verified namespaces - via the owner/* form the relay engine already matches;  the 18-repo fleet list and Echo's narrower set are retired.  Action, ceiling, identity, rate and review gates are unchanged.",
   "profiles": {
     "fleet": {
+      "actions": [
+        "open_pr",
+        "edit_pr",
+        "reply_thread",
+        "comment_pr",
+        "merge_pr",
+        "workflow_dispatch",
+        "resolve_thread",
+        "wf_review_submit",
+        "wf_review_inline",
+        "wf_branch_create",
+        "wf_pr_list",
+        "wf_pr_files",
+        "wf_file_get",
+        "wf_tree",
+        "wf_branches",
+        "wf_commits",
+        "wf_code_search",
+        "wf_runs",
+        "wf_run_jobs",
+        "wf_checks",
+        "wf_update_branch",
+        "wf_run_rerun",
+        "wf_run_cancel",
+        "wf_run_approve",
+        "wf_file_put",
+        "wf_files_put",
+        "wf_merge_guarded"
+      ],
+      "mint_permissions": {
+        "actions": "write",
+        "checks": "read",
+        "contents": "write",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write",
+        "workflows": "write"
+      },
+      "repos": [
+        "Simple-With-Us/*",
+        "jaywedgeworth22/*"
+      ]
+    },
+    "echo": {
+      "//": "Kept so the ECHO seat entry stays stable;  since the 2026-11-01 widening it resolves to the fleet set exactly (Echo also holds the personal-account installation).  Same actions and ceiling as fleet.",
+      "actions": "fleet",
+      "mint_permissions": "fleet",
+      "repos": "fleet"
+    },
+    "jet": {
+      "//": "Full Jet login preserves the fleet ceiling and repositories, adding the safe repository metadata read explicitly. Other seats are unchanged.",
+      "actions": [
+        "open_pr",
+        "edit_pr",
+        "reply_thread",
+        "comment_pr",
+        "merge_pr",
+        "workflow_dispatch",
+        "resolve_thread",
+        "wf_review_submit",
+        "wf_review_inline",
+        "wf_branch_create",
+        "wf_pr_list",
+        "wf_pr_files",
+        "wf_file_get",
+        "wf_tree",
+        "wf_branches",
+        "wf_commits",
+        "wf_code_search",
+        "wf_runs",
+        "wf_run_jobs",
+        "wf_checks",
+        "wf_update_branch",
+        "wf_run_rerun",
+        "wf_run_cancel",
+        "wf_run_approve",
+        "wf_file_put",
+        "wf_files_put",
+        "wf_merge_guarded",
+        "wf_repo_get",
+        "wf_pr_get"
+      ],
+      "mint_permissions": "fleet",
+      "repos": "fleet"
+    },
+    "retired-builder": {
+      "//": "BF-BUILDER is retired (host record 2026-11-01):  its pre-widening effective scope, frozen as literal copies so the every-repo widening - and any later fleet-profile change - cannot reactivate or widen a retired identity.  Attach no other seat.",
       "actions": [
         "open_pr",
         "edit_pr",
@@ -60,52 +147,6 @@
         "Simple-With-Us/congress-trading-shared",
         "Simple-With-Us/homebrew-tap"
       ]
-    },
-    "echo": {
-      "//": "Echo's own narrower repository set, as deployed.  Same actions and ceiling as fleet.",
-      "actions": "fleet",
-      "mint_permissions": "fleet",
-      "repos": [
-        "Simple-With-Us/AI-Fleet-Coordinator",
-        "Simple-With-Us/CodeCaps",
-        "Simple-With-Us/Fleet-OPS"
-      ]
-    },
-    "jet": {
-      "//": "Full Jet login preserves the fleet ceiling and repositories, adding the safe repository metadata read explicitly. Other seats are unchanged.",
-      "actions": [
-        "open_pr",
-        "edit_pr",
-        "reply_thread",
-        "comment_pr",
-        "merge_pr",
-        "workflow_dispatch",
-        "resolve_thread",
-        "wf_review_submit",
-        "wf_review_inline",
-        "wf_branch_create",
-        "wf_pr_list",
-        "wf_pr_files",
-        "wf_file_get",
-        "wf_tree",
-        "wf_branches",
-        "wf_commits",
-        "wf_code_search",
-        "wf_runs",
-        "wf_run_jobs",
-        "wf_checks",
-        "wf_update_branch",
-        "wf_run_rerun",
-        "wf_run_cancel",
-        "wf_run_approve",
-        "wf_file_put",
-        "wf_files_put",
-        "wf_merge_guarded",
-        "wf_repo_get",
-        "wf_pr_get"
-      ],
-      "mint_permissions": "fleet",
-      "repos": "fleet"
     }
   },
   "seats": [
@@ -199,7 +240,7 @@
     {
       "identity": "BF-BUILDER",
       "app_slug": "swu-bf-builder",
-      "profile": "fleet"
+      "profile": "retired-builder"
     },
     {
       "identity": "BF-COMPILER",

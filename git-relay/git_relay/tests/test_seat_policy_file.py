@@ -52,6 +52,8 @@ NOT_SWU_IDENTITY = {
 # Explicit policy exclusions, documented in the deployed policy's header.
 # Original Jet is wake-only and has no GitHub App entry.
 EXCLUDED = {"JET"}
+# The one retired seat (host record 2026-11-01):  pinned legacy scope, excluded from the widening.
+RETIRED_SLUG = "swu-bf-builder"
 
 
 def worker_identities() -> set[str]:
@@ -180,39 +182,73 @@ class SeatPolicyFile(unittest.TestCase):
                     self.assertIn(name, ceiling, need)
                     self.assertGreaterEqual(rank[ceiling[name]], rank[level], need)
 
-    def test_repositories_are_exact_and_in_the_org(self):
-        # A repository the org moved in keeps its old owner's name only as a redirect,
-        # which the minter does not follow, so every entry names the org.
-        for cfg in SEATS.values():
-            for repo in cfg["repos"]:
-                self.assertNotIn("*", repo)
-                self.assertTrue(repo.startswith(ORG), repo)
+    def test_repositories_are_the_two_reviewed_namespaces(self):
+        # 2026-11-01 every-repo widening (owner instruction):  each seat reaches every
+        # repository in the two verified namespaces - the org and Jay's personal account -
+        # through the owner/* form the relay engine matches (policy._repo_allowed).  A
+        # repository the org moved in keeps its old owner's name only as a redirect, so the
+        # org namespace uses the current owner.  Nothing broader passes:  no bare "*", no
+        # other owner, and no per-seat variation.
+        reviewed = ["Simple-With-Us/*", "jaywedgeworth22/*"]
+        for slug, cfg in SEATS.items():
+            if slug == RETIRED_SLUG:
+                continue
+            self.assertEqual(cfg["repos"], reviewed, slug)
             self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
+            for pattern in cfg["repos"]:
+                self.assertTrue(pattern.endswith("/*"), pattern)
+                self.assertNotEqual(pattern, "*")
 
-    def test_echo_keeps_its_narrower_repositories(self):
-        echo = SEATS["swu-echo"]
+    def test_every_seat_shares_the_widened_scope(self):
+        # Echo's profile survives so its seat entry stays stable, but after the widening it
+        # resolves to the fleet set;  every ACTIVE seat carries exactly the two reviewed
+        # namespaces (the retired seat's pin is the next test).
+        self.assertEqual(DOC["profiles"]["echo"]["repos"], "fleet")
         fleet = SEATS["swu-claude"]
+        echo = SEATS["swu-echo"]
         self.assertEqual(echo["actions"], fleet["actions"])
         self.assertEqual(echo["mint_permissions"], fleet["mint_permissions"])
-        self.assertEqual(echo["repos"], DOC["profiles"]["echo"]["repos"])
-        self.assertLess(set(echo["repos"]), set(fleet["repos"]))
-        # Only Echo is narrowed:  every other seat carries the fleet set exactly.
         for slug, cfg in SEATS.items():
-            if slug != "swu-echo":
-                self.assertEqual(cfg["repos"], fleet["repos"], slug)
-                self.assertEqual(
-                    cfg["actions"],
-                    fleet["actions"] + (["wf_repo_get", "wf_pr_get"] if slug == "swu-jet" else []),
-                    slug,
-                )
-                self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
+            if slug == RETIRED_SLUG:
+                continue
+            self.assertEqual(cfg["repos"], fleet["repos"], slug)
+            self.assertEqual(
+                cfg["actions"],
+                fleet["actions"] + (["wf_repo_get", "wf_pr_get"] if slug == "swu-jet" else []),
+                slug,
+            )
+            self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
+
+    def test_the_retired_builder_keeps_its_pinned_legacy_scope(self):
+        # BF-BUILDER is retired (host record 2026-11-01):  the every-repo widening must not
+        # reactivate or widen a retired identity, so its profile pins the exact pre-widening
+        # fleet scope as literal copies.  Any drift in the file or a second seat attaching
+        # to the pin fails here.
+        legacy_repos = [
+            "Simple-With-Us/AI-Fleet-Coordinator", "Simple-With-Us/Autorotate",
+            "Simple-With-Us/BotFleet", "Simple-With-Us/Clutch", "Simple-With-Us/CodeCaps",
+            "Simple-With-Us/Congress.Trade", "Simple-With-Us/ContactLogo",
+            "Simple-With-Us/DealDex", "Simple-With-Us/Fleet-OPS", "Simple-With-Us/FleetLink",
+            "Simple-With-Us/HogHunter", "Simple-With-Us/Kodus-Config",
+            "Simple-With-Us/Personal-Site", "Simple-With-Us/Simple-With-Us",
+            "Simple-With-Us/Socratic-Trade", "Simple-With-Us/Usage-Monitor",
+            "Simple-With-Us/congress-trading-shared", "Simple-With-Us/homebrew-tap",
+        ]
+        cfg = SEATS[RETIRED_SLUG]
+        fleet = SEATS["swu-claude"]
+        self.assertEqual(cfg["repos"], legacy_repos)
+        self.assertEqual(cfg["actions"], fleet["actions"])
+        self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"])
+        pinned = [row["identity"] for row in DOC["seats"] if row["profile"] == "retired-builder"]
+        self.assertEqual(pinned, ["BF-BUILDER"])
+        self.assertNotIn("*", ",".join(cfg["repos"]))
 
     def test_the_reviewed_scope_is_pinned(self):
         # The rendered policy's digest, pinned here apart from the file:  any change to a
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "04f89c1a2ade3bff")
+        self.assertEqual(seat_policy.digest(SEATS), "0ec869183fdbacbd")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
