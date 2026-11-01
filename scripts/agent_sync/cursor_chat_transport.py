@@ -4,14 +4,15 @@ This adapter only follows up an existing Cloud Agent.  It never creates an
 agent, cancels a run, or selects a model.  API timeouts after a send are
 uncertain and are never retried automatically.
 """
+
 from __future__ import annotations
 
+import importlib.util
 import re
 import urllib.parse
-from typing import Any, Callable
-
+from collections.abc import Callable
 from pathlib import Path
-import importlib.util
+from typing import Any
 
 
 def _load_surfaces() -> Any:
@@ -78,13 +79,18 @@ def _message_text(row: dict[str, Any]) -> str:
     value: Any = row.get("text") if isinstance(row.get("text"), str) else row.get("content", "")
     if isinstance(value, list):
         value = "".join(
-            part.get("text", "") for part in value
-            if isinstance(part, dict) and part.get("type") in {"text", "input_text", "output_text"}
+            part.get("text", "")
+            for part in value
+            if isinstance(part, dict)
+            and part.get("type") in {"text", "input_text", "output_text"}
             and isinstance(part.get("text"), str)
         )
     elif isinstance(value, dict):
-        value = (value.get("text", "") if value.get("type") in {"text", "input_text", "output_text"}
-                 else "")
+        value = (
+            value.get("text", "")
+            if value.get("type") in {"text", "input_text", "output_text"}
+            else ""
+        )
     return value if isinstance(value, str) else ""
 
 
@@ -100,20 +106,35 @@ class CursorCloudTransport:
     host = "cursor-cloud"
     seat = "CURSOR"
 
-    def __init__(self, surfaces: Any | None = None, *, timeout_seconds: int = 5,
-                 max_agents: int = _MAX_AGENTS) -> None:
+    def __init__(
+        self,
+        surfaces: Any | None = None,
+        *,
+        timeout_seconds: int = 5,
+        max_agents: int = _MAX_AGENTS,
+    ) -> None:
         self.surfaces = surfaces or _surfaces
         self.timeout_seconds = max(1, min(int(timeout_seconds), 30))
         self.max_agents = max(1, min(int(max_agents), _MAX_AGENTS))
         self.last_discovery_status = "not_started"
 
-    def _api(self, method: str, path: str, body: dict[str, Any] | None = None,
-             *, timeout_seconds: int | None = None) -> dict[str, Any]:
+    def _api(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
         api_key = self.surfaces.load_api_key()
         if not api_key:
             raise _ApiFailure(code="missing_api_key")
         try:
-            timeout = self.timeout_seconds if timeout_seconds is None else max(1, min(int(timeout_seconds), 30))
+            timeout = (
+                self.timeout_seconds
+                if timeout_seconds is None
+                else max(1, min(int(timeout_seconds), 30))
+            )
             payload = self.surfaces.api_request(method, path, api_key, body, timeout=timeout)
         except RuntimeError as exc:
             # The shared helper includes response text in its exception.  Inspect it only to
@@ -171,19 +192,21 @@ class CursorCloudTransport:
                 status = item.get("status")
                 if status not in ("IDLE", "ACTIVE"):
                     continue
-                agents.append({
-                    "platform": self.platform,
-                    "host": self.host,
-                    "session_id": agent_id,
-                    "cwd": _binding_cwd(agent_id),
-                    "seat": self.seat,
-                    "state": "idle" if status == "IDLE" else "busy",
-                    "name": item.get("name") if isinstance(item.get("name"), str) else "",
-                    "title": item.get("name") if isinstance(item.get("name"), str) else "",
-                    "url": item.get("url") if isinstance(item.get("url"), str) else "",
-                    "repo_url": _repo_url(item),
-                    "updated_at": item.get("updatedAt"),
-                })
+                agents.append(
+                    {
+                        "platform": self.platform,
+                        "host": self.host,
+                        "session_id": agent_id,
+                        "cwd": _binding_cwd(agent_id),
+                        "seat": self.seat,
+                        "state": "idle" if status == "IDLE" else "busy",
+                        "name": item.get("name") if isinstance(item.get("name"), str) else "",
+                        "title": item.get("name") if isinstance(item.get("name"), str) else "",
+                        "url": item.get("url") if isinstance(item.get("url"), str) else "",
+                        "repo_url": _repo_url(item),
+                        "updated_at": item.get("updatedAt"),
+                    }
+                )
             if len(agents) >= self.max_agents:
                 partial = True
                 break
@@ -226,8 +249,11 @@ class CursorCloudTransport:
         }
 
     def preflight(self, binding: dict[str, str]) -> str:
-        if (binding.get("platform") != self.platform or binding.get("host") != self.host
-                or not isinstance(binding.get("session_id"), str)):
+        if (
+            binding.get("platform") != self.platform
+            or binding.get("host") != self.host
+            or not isinstance(binding.get("session_id"), str)
+        ):
             return "unsupported"
         if binding.get("cwd") != _binding_cwd(binding["session_id"]):
             return "unsupported"
@@ -260,26 +286,38 @@ class CursorCloudTransport:
         except _ApiFailure:
             return []
         rows = _messages(payload)[-bounded_limit:]
-        return [{"role": _message_role(row), "text": _message_text(row)[-_MAX_EXCERPT_CHARS:]}
-                for row in rows]
+        return [
+            {"role": _message_role(row), "text": _message_text(row)[-_MAX_EXCERPT_CHARS:]}
+            for row in rows
+        ]
 
     def receipt(self, binding: dict[str, str], text: str) -> bool:
         """Match exactly one user message; latestRunId is never a delivery receipt."""
-        if (binding.get("platform") != self.platform or binding.get("host") != self.host
-                or _agent_id(binding.get("session_id")) is None or not isinstance(text, str) or not text):
+        if (
+            binding.get("platform") != self.platform
+            or binding.get("host") != self.host
+            or _agent_id(binding.get("session_id")) is None
+            or not isinstance(text, str)
+            or not text
+        ):
             return False
         try:
             payload = self._api(
-                "GET", f"/v1/agents/{urllib.parse.quote(binding['session_id'], safe='')}/conversation"
+                "GET",
+                f"/v1/agents/{urllib.parse.quote(binding['session_id'], safe='')}/conversation",
             )
         except _ApiFailure:
             return False
-        matches = [row for row in _messages(payload)
-                   if _message_role(row) in {"user", "human"} and _message_text(row) == text]
+        matches = [
+            row
+            for row in _messages(payload)
+            if _message_role(row) in {"user", "human"} and _message_text(row) == text
+        ]
         return len(matches) == 1
 
-    def send(self, binding: dict[str, str], text: str,
-             permit: Callable[[], bool] | None = None) -> str:
+    def send(
+        self, binding: dict[str, str], text: str, permit: Callable[[], bool] | None = None
+    ) -> str:
         """Send one follow-up to an existing idle agent, with at-most-once uncertainty."""
         readiness = self.preflight(binding)
         if readiness == "busy":
