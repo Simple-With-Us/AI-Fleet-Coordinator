@@ -659,6 +659,26 @@ class ChatCatalogTests(unittest.TestCase):
         self.assertIsNone(catalog.find("claude", "../session-00"))
         self.assertIsNone(catalog.find("cursor-cloud", "bc-missing"))
 
+    def test_a_found_older_chat_still_resolves_after_a_rescan(self):
+        # The wake that finds a tagged older chat goes on to resolve and excerpt it, so the
+        # found row must stay readable even though discovery rewrites its own rows.
+        for index in range(20):
+            write_jsonl(
+                self.home / (".claude/projects/project/session-%02d.jsonl" % index),
+                [{"type": "user", "cwd": "/repo", "timestamp": 1000 + index, "message": {"content": "hi"}}],
+            )
+        catalog = self.catalog(
+            grok_transport=FakeGrok(), cursor_transport=FakeCursor(), max_records=20
+        )
+        catalog.discover()
+        found = catalog.find("claude", "session-00")
+        self.assertIsNotNone(found)
+        self.assertIsNone(catalog._records.get(found["id"]))
+        catalog.discover(force=True)
+        resolved = catalog.resolve(found["id"])
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved["session_id"], "session-00")
+
     def test_find_returns_an_older_muse_chat_from_sqlite_beyond_the_catalog_cap(self):
         db = self.home / ".local/share/muse/session-index.db"
         db.parent.mkdir(parents=True)

@@ -21,6 +21,8 @@ from typing import Any
 from urllib.parse import quote
 
 MAX_FILES_PER_SOURCE = 160
+# Chats a by-id lookup found outside the discovery window, kept so the wake that found one can read it.
+MAX_FOUND_RECORDS = 64
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_TAIL_BYTES = 192 * 1024
 MAX_EXCERPT_CHARS = 2400
@@ -179,6 +181,10 @@ class ChatCatalog:
         self._cursor = cursor_transport
         self._clock = clock
         self._records: dict[str, dict[str, Any]] = {}
+        # Chats found by id beyond the discovery window (AFC-578).  A scan rewrites `_records`
+        # wholesale, so these live apart from it and `resolve` reads them after it, which keeps a
+        # tagged older chat readable by `excerpt` and `projection` for the wake that found it.
+        self._found: dict[str, dict[str, Any]] = {}
         self._expires = 0.0
         self._last_scan = 0.0
         self._availability: dict[str, str] = {}
@@ -1071,6 +1077,11 @@ class ChatCatalog:
             return None
         if row.get("status") == "unavailable":
             return None
+        with self._scan_lock:
+            self._found.pop(row["id"], None)
+            self._found[row["id"]] = row
+            while len(self._found) > MAX_FOUND_RECORDS:
+                self._found.pop(next(iter(self._found)))
         return self._public(row)
 
     def _find_claude(self, sid: str) -> dict[str, Any] | None:
@@ -1248,6 +1259,8 @@ class ChatCatalog:
             return None
         self.discover()
         row = self._records.get(record_id)
+        if row is None:
+            row = self._found.get(record_id)
         return dict(row) if row is not None else None
 
     def excerpt(self, record_id: str, limit: int = 4) -> list[dict[str, str]]:
@@ -1284,7 +1297,7 @@ class ChatCatalog:
             row["_excerpts"] = excerpts
             # A rescan can drop the record between resolve() and here, so publish onto whatever is
             # live now rather than subscripting a key the fanout thread may already have replaced.
-            live = self._records.get(record_id)
+            live = self._records.get(record_id) or self._found.get(record_id)
             if live is not None:
                 live["_excerpts"] = row["_excerpts"]
             return list(row["_excerpts"])
@@ -1300,7 +1313,7 @@ class ChatCatalog:
                     if text:
                         safe_rows.append({"role": item["role"], "text": text})
             row["_excerpts"] = safe_rows[-count:]
-            live = self._records.get(record_id)
+            live = self._records.get(record_id) or self._found.get(record_id)
             if live is not None:
                 live["_excerpts"] = row["_excerpts"]
         return (
