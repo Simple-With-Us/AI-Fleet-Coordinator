@@ -108,7 +108,14 @@ def _dispatch(method: str, params: JsonDict) -> JsonDict:
         if name == "recall_search":
             # The recall bridge establishes the installed fleet_rag import path lazily.
             # Unrelated seat tools must still work without the recall package installed.
-            from fleet_rag.recall_presentation import mcp_result
+            try:
+                from fleet_rag.recall_presentation import mcp_result
+            except ImportError as exc:
+                raise SeatError(
+                    "recall presentation helper is missing; reinstall the complete fleet_rag "
+                    "package with scripts/install-fleet-rag.sh and restart seat-mcp. "
+                    "Unfenced recall text was not returned."
+                ) from exc
 
             return mcp_result(data)
         return {

@@ -25,7 +25,7 @@ from pathlib import Path
 
 DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-# The reviewed allowlisted runtime contains 143 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 146 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -33,7 +33,8 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026);  the 138th and 139th are notes_service_reader.py and mcp/bearer_gate.py (from main);  the 140th and 141st are platform_letter_muse.py and muse_session_rename.py (the Muse adapter);  the 142nd is platform_letter_grok_leader.py (the Grok adapter);  the 143rd is platform_letter_antigravity.py (the Antigravity adapter), added for that review.
 # The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
-MAX_FILES = 145
+# The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
+MAX_FILES = 146
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

@@ -263,7 +263,8 @@ class ActualRuntime(unittest.TestCase):
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
-        self.assertEqual(self.receiver.MAX_FILES, 145)
+        self.assertEqual(self.receiver.MAX_FILES, 146)
+        self.assertIn("scripts/fleet_rag/recall_presentation.py", self.bundle["files"])
         self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
         # The git tools CLI ships in the bundle:  required of new bundles, never of rollback targets.
         for path in ("scripts/simple-git", "scripts/git-tools/git"):
