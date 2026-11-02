@@ -746,6 +746,11 @@ def _scope_dirs() -> Iterator[str]:
         yield directory
 
 
+def _legacy_cache_path() -> str:
+    """The pre-v2 letter cache path, without the chain refusal."""
+    return os.path.join(data_dir(), "hook-state", "session-letters")
+
+
 def _legacy_cache_dir() -> str:
     """The pre-v2 letter cache:  read as a fallback, never written to."""
     return _refuse_symlink_chain(data_dir(), "hook-state", "session-letters")
@@ -882,7 +887,12 @@ def _cache_home(session_id: str, directories: list[str] | None = None) -> str:
     """
     if os.environ.get("MINIMAX_HOOKS_DATA"):
         return letter_cache_dir()
+    legacy = _legacy_cache_path()
     for directory in directories if directories is not None else list(_scope_dirs()):
+        if directory == legacy:
+            # The pre-v2 directory is a read fallback and never a write target, so a
+            # letter never stays in a place no hook reads.
+            continue
         if os.path.isfile(os.path.join(directory, session_id + ".json")):
             return directory
     return letter_cache_dir()
@@ -1277,8 +1287,13 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             return 2
     out = []
     # The scopes are enumerated once for the whole sweep, so the listing is not
-    # repeated for every session.
-    directories = letter_cache_dirs()
+    # repeated for every session.  A refused path leaves the enumeration to the
+    # per-session path, so every session reports the refusal instead of the run
+    # aborting with a traceback.
+    try:
+        directories = letter_cache_dirs()
+    except RegistryError:
+        directories = None
     for row in sessions():
         kind = str(row.get("session_kind") or "")
         if kind not in ("conversation", "task"):
@@ -1360,7 +1375,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 entry["applied"] = True
             else:
                 try:
-                    update_title(session_id, title)
+                    update_title(session_id, title, directories)
                     entry["registry_synced"] = True
                 except RegistryError as exc:
                     failure = _failure_entry(session_id, exc)
@@ -1455,8 +1470,13 @@ def migrate_pairs() -> int:
         row for row in sessions() if str(row.get("session_kind") or "") in ("conversation", "task")
     ]
     # The scopes are enumerated once for the whole migration, so the listing is not
-    # repeated for every session.
-    directories = letter_cache_dirs()
+    # repeated for every session.  A refused path leaves the enumeration to the
+    # per-session path, so every session reports the refusal instead of the run
+    # aborting with a traceback.
+    try:
+        directories = letter_cache_dirs()
+    except RegistryError:
+        directories = None
     mains = sorted(
         (row for row in rows if not parent_for_row(row)),
         key=lambda row: int(row.get("created_at_ms") or 0),
