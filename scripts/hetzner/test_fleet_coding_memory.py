@@ -613,6 +613,52 @@ class ControllerTests(unittest.TestCase):
             self.assertNotEqual(int((groups[0] / "memory.low").read_text()), 0)
             self.assertEqual(status["control_write_failures"], 0)
 
+    def test_a_suspended_control_is_left_alone_after_a_platform_reset(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding")
+            state = {}
+            run_step(policy(), root, state, proc(root / "proc1"), 1, ([group], []))
+            self.assertNotEqual((group / "memory.high").read_text(), "max")
+            # The operator suspends the control and lifts the throttle.
+            (group / "memory.high").write_text("max")
+            state_dir = root / "state"
+            state_dir.mkdir()
+            (state_dir / "suspended").write_text(f"{group}:memory.high\n")
+            status = run_step(
+                policy(),
+                root,
+                state,
+                proc(root / "proc2"),
+                2,
+                ([group], []),
+                state_dir=state_dir,
+            )
+            self.assertEqual((group / "memory.high").read_text(), "max")
+            self.assertEqual(status["control_reasserted"], 0)
+            self.assertEqual(status["control_write_failures"], 0)
+            self.assertEqual(status["control_suspended"], 1)
+
+    def test_a_suspended_control_is_not_written_by_the_controller(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding")
+            state = {}
+            state_dir = root / "state"
+            state_dir.mkdir()
+            (state_dir / "suspended").write_text(f"{group}\n")
+            status = run_step(
+                policy(),
+                root,
+                state,
+                proc(root / "proc1"),
+                1,
+                ([group], []),
+                state_dir=state_dir,
+            )
+            self.assertEqual((group / "memory.high").read_text(), "max")
+            self.assertEqual(status["control_write_failures"], 0)
+
     def test_a_vanished_group_is_dropped_and_is_not_a_re_assertion(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
