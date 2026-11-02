@@ -53,6 +53,21 @@ final class SecretNamesTests: XCTestCase {
         XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\nnot a name\n")]))
         XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY=somevalue\n")]))
     }
+    func test_names_parse_accepts_mixed_case_names_but_still_refuses_value_shapes() throws {
+        // Live root data carries a legacy mixed-case key name;  listing it is
+        // metadata only, so the parse accepts it while value-shaped lines
+        // keep failing closed (AFC-592).
+        let grouped = try FleetSecrets.parseNamesByPath(
+            [("/", "MAYBE_OLD_not_sure_SLACK_MCP_XOXB_TOKEN\nA_KEY\n")])
+        XCTAssertEqual(grouped[0].names, ["A_KEY", "MAYBE_OLD_not_sure_SLACK_MCP_XOXB_TOKEN"])
+        XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\n-sneaky\n")]))
+        XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\n1LEADING_DIGIT\n")]))
+        XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\nHAS SPACE\n")]))
+        XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\nKEY=value\n")]))
+        // The command-argument check stays strict:  a mixed-case name is
+        // listable metadata, never something `get` will be called with.
+        XCTAssertFalse(FleetSecrets.isValidName("MAYBE_OLD_not_sure_SLACK_MCP_XOXB_TOKEN"))
+    }
     func test_names_uses_names_verb_only_never_get() throws {
         let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
         let secrets = FleetSecrets(commands: fake, home: b3bHome)
