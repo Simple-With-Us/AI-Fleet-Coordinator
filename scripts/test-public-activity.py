@@ -104,10 +104,13 @@ class PublicActivityTests(unittest.TestCase):
         self.assertEqual(selected, ["BotFleet"])
 
     def test_visibility_api_failure_is_fail_closed(self) -> None:
-        with patch(
-            "public_activity_repos.urllib.request.urlopen",
-            side_effect=urllib.error.URLError("fixture"),
-        ), self.assertRaises(RuntimeError):
+        with (
+            patch(
+                "public_activity_repos.urllib.request.urlopen",
+                side_effect=urllib.error.URLError("fixture"),
+            ),
+            self.assertRaises(RuntimeError),
+        ):
             select_public_repos("Simple-With-Us", ["BotFleet"], "fixture")
 
     def test_public_pr_survives_without_effort_board_material(self) -> None:
