@@ -654,9 +654,15 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(
             [self._register("thread-000%d" % i)["label"] for i in (1, 2)], ["AA", "BB"]
         )
-        # every other platform is unchanged:  a single letter, the lowest free
+        # a MiniMax chat is a pair too (owner ruling, Nov 1 2026):  a MiniMax thread reads
+        # like a Claude one, so the Operator letters it the same way whoever registers it.
         self.assertEqual(
             [self._register("mm-000%d" % i, platform="minimax")["label"] for i in (1, 2)],
+            ["AA", "BB"],
+        )
+        # every other platform is unchanged:  a single letter, the lowest free
+        self.assertEqual(
+            [self._register("cu-000%d" % i, platform="cursor")["label"] for i in (1, 2)],
             ["A", "B"],
         )
         # and a caller that does name a space is obeyed
@@ -665,6 +671,107 @@ class RegistryTest(unittest.TestCase):
             self._register("thread-0004", letter_space="double", letter_pick="lowest")["label"],
             "AB",
         )
+
+    # ---- relabel:  a live session moves into another letter space (AFC-586) ----
+
+    def _relabel(self, native, seat="CLAUDE", platform="minimax", **kw):
+        return R.relabel_session(
+            self.db,
+            platform=platform,
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=native,
+            seat=seat,
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+            **kw,
+        )
+
+    def test_relabel_moves_a_live_session_into_the_pair_space(self):
+        first = self._register(
+            "mm-1", platform="minimax", letter_space="single", letter_pick="lowest"
+        )
+        self.assertEqual(first["label"], "A")
+        out = self._relabel("mm-1", letter_space="double", letter_pick="primary")
+        self.assertEqual(out["label"], "AA")
+        self.assertEqual(out["previous"], "A")
+        self.assertEqual(out["outcome"], "relabelled")
+        # the old letter is retired, not deleted:  its history and its generation count stay.
+        retired = self.reg._conn.execute(
+            "SELECT retired_at FROM alias_assignments"
+            " WHERE platform = 'minimax' AND letter = 'A' AND generation = 1"
+        ).fetchone()
+        self.assertIsNotNone(retired["retired_at"])
+        live = self.reg._conn.execute(
+            "SELECT letter FROM alias_assignments WHERE platform = 'minimax' AND retired_at IS NULL"
+        ).fetchall()
+        self.assertEqual([row["letter"] for row in live], ["AA"])
+
+    def test_relabel_is_idempotent_when_the_session_already_holds_that_space(self):
+        first = self._register("mm-1", platform="minimax")
+        self.assertEqual(first["label"], "AA")
+        out = self._relabel("mm-1", letter_space="double", letter_pick="primary")
+        self.assertEqual(out["outcome"], "unchanged")
+        self.assertEqual(out["label"], "AA")
+
+    def test_relabel_moves_a_child_into_its_parents_row(self):
+        parent = self._register("mm-parent", platform="minimax")  # AA
+        child = self._register("mm-child", platform="minimax")  # BB:  no parent was named
+        self.assertEqual((parent["label"], child["label"]), ("AA", "BB"))
+        out = self._relabel(
+            "mm-child", parent_session_id="mm-parent", letter_space="double", force=True
+        )
+        self.assertEqual(out["label"], "AB")  # the first free pair after its parent's AA
+        self.assertEqual(out["placed_after"], "AA")
+
+    def test_relabel_refuses_another_seats_session(self):
+        self._register("mm-1", platform="minimax")
+        with self.assertRaises(ValueError):
+            self._relabel("mm-1", seat="GROK", letter_space="double")
+
+    def test_relabel_refuses_a_session_the_registry_never_saw(self):
+        with self.assertRaises(ValueError):
+            self._relabel("mm-unknown", letter_space="double")
+
+    def test_relabel_only_the_operator_may_issue_a_letter(self):
+        self._register("mm-1", platform="minimax")
+        with self.assertRaises(ValueError):
+            R.relabel_session(
+                self.db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mm-1",
+                seat="CLAUDE",
+                source="test",
+                issuer="MM",
+            )
+
+    def test_the_relabel_command_answers_json(self):
+        self._register("mm-1", platform="minimax", letter_space="single", letter_pick="lowest")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(
+                [
+                    "relabel",
+                    "--db",
+                    self.db,
+                    "--platform",
+                    "minimax",
+                    "--location",
+                    "mac",
+                    "--scope",
+                    "default",
+                    "--session-id",
+                    "mm-1",
+                    "--seat",
+                    "CLAUDE",
+                    "--source",
+                    "test",
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["label"], "AA")
 
     def test_the_register_command_defaults_by_platform(self):
         base = [

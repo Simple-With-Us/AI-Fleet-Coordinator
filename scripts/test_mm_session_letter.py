@@ -279,6 +279,121 @@ class MmSessionLetterTest(unittest.TestCase):
             code = M.sweep(True, topics_file=topic_file)
         return code, out.getvalue(), err.getvalue()
 
+    # --- the pair migration ---
+
+    def _migration_rows(self):
+        return [
+            {
+                "session_id": "mvs_main",
+                "title": "A: Fix the sweep",
+                "session_kind": "conversation",
+                "created_at_ms": 1,
+            },
+            {
+                "session_id": "mvs_child",
+                "title": "explore: look",
+                "session_kind": "task",
+                "parent_session_id": "mvs_main",
+                "created_at_ms": 2,
+            },
+        ]
+
+    def _run_migration(self, letters, calls):
+        def fake_relabel(session_id, parent="", force=False):
+            calls.append((session_id, parent, force))
+            return {
+                "label": "BB",
+                "previous": "A",
+                "outcome": "relabelled",
+                "placed_after": "",
+            }
+
+        with (
+            mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid: letters[sid]),
+            mock.patch.object(M, "relabel", side_effect=fake_relabel),
+            mock.patch.object(M, "cache_letter"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            return M.migrate_pairs()
+
+    def test_the_migration_moves_a_session_that_holds_a_single_letter(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "A", "mvs_child": "A"}, calls)
+        self.assertEqual(code, 0)
+        # The main chat goes first, and the child names it as its parent.
+        self.assertEqual([call[0] for call in calls], ["mvs_main", "mvs_child"])
+        self.assertEqual(calls[1][1], "mvs_main")
+
+    def test_the_migration_leaves_a_session_that_already_holds_a_pair(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "AA", "mvs_child": "AB"}, calls)
+        self.assertEqual(code, 0)
+        # The main chat holds a pair and the child holds a pair in its parent's row:  a
+        # second run of the migration finds nothing to move.
+        self.assertEqual(calls, [])
+
+    def test_the_migration_moves_a_child_that_is_not_in_its_parents_row(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "AA", "mvs_child": "BB"}, calls)
+        self.assertEqual(code, 0)
+        self.assertEqual([call[0] for call in calls], ["mvs_child"])
+        # It already holds a pair, so it has to be placed again rather than moved space.
+        self.assertTrue(calls[0][2])
+
+    def test_the_migration_registers_a_session_the_registry_has_never_seen(self):
+        calls = []
+        registered = []
+
+        def fake_relabel(session_id, parent="", force=False):
+            calls.append((session_id, parent, force))
+            raise M.RegistryError(
+                "session mvs_main is not registered on minimax at mac/default",
+                "not_registered",
+                "failed",
+            )
+
+        def fake_register(session_id, title="", parent_session_id=""):
+            registered.append((session_id, title, parent_session_id))
+            return {"label": "AA"}
+
+        out = io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid: "A"),
+            mock.patch.object(M, "relabel", side_effect=fake_relabel),
+            mock.patch.object(M, "register", side_effect=fake_register),
+            mock.patch.object(M, "cache_letter"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.migrate_pairs()
+        self.assertEqual(code, 0)
+        # The session the registry never saw is registered, so it gets a pair from the start.
+        # The cache is not asked:  it still holds the old single letter.
+        self.assertIn('"outcome": "registered"', out.getvalue())
+        self.assertIn('"letter": "AA"', out.getvalue())
+        self.assertTrue(registered)
+
+    def test_the_letter_command_names_the_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "CD"}
+
+        row = {"session_id": "mvs_child", "session_kind": "task", "parent_session_id": "mvs_main"}
+        with (
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "registry_call", side_effect=fake),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            M.main(["letter", "--session-id", "mvs_child"])
+        self.assertIn("--parent-session-id=mvs_main", seen["args"])
+
     def test_a_secret_shaped_topic_answers_with_a_stable_code(self):
         secret = FIXTURE_SECRET
         with tempfile.TemporaryDirectory() as tmp:
@@ -526,10 +641,108 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(M.hook_pre_tool_use(), 0)
         self.assertEqual(read.call_count, 1)
 
-    def test_space_for_row_reads_the_given_row(self):
-        self.assertEqual(M.space_for_row({"session_kind": "task"}), "double")
-        self.assertEqual(M.space_for_row({"parent_session_id": "p"}), "double")
-        self.assertEqual(M.space_for_row({"session_kind": "conversation"}), "single")
+    def test_parent_for_row_names_the_parent(self):
+        self.assertEqual(M.parent_for_row({"parent_session_id": "mvs_parent"}), "mvs_parent")
+        self.assertEqual(M.parent_for_row({"session_kind": "task"}), "")
+        self.assertEqual(M.parent_for_row({"parent_session_id": "not a session id"}), "")
+
+    # ---- a MiniMax thread is a pair, like every other platform (AFC-586) ----
+
+    def test_a_pair_letter_is_a_valid_prefix(self):
+        self.assertTrue(M.first_line_states_letter("AA: hello\nmore", "AA"))
+        self.assertTrue(M.title_ok("AA: Topic", "AA")[0])
+        self.assertFalse(M.title_ok("A: Topic", "AA")[0])
+
+    def test_wanted_title_drops_the_letter_the_title_already_carries(self):
+        # A thread that is re-lettered keeps its topic:  the old prefix goes, the new one comes.
+        self.assertEqual(M.wanted_title("AA", "A: Fix the sweep"), "AA: Fix the sweep")
+        self.assertEqual(M.wanted_title("AA", "AA: Fix the sweep"), "AA: Fix the sweep")
+        self.assertEqual(M.wanted_title("AA", "Fix the sweep"), "AA: Fix the sweep")
+        # A letter the thread does not hold is dropped when the thread says which one it was.
+        self.assertEqual(M.wanted_title("AA", "A: Fix the sweep", ("A",)), "AA: Fix the sweep")
+
+    def test_a_topic_that_starts_with_an_acronym_keeps_it(self):
+        # Two capitals that are not a pair are an acronym, not a letter.
+        self.assertEqual(M.wanted_title("AA", "HTTP: the protocol"), "AA: HTTP: the protocol")
+        self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
+
+    def test_the_registration_asks_for_a_pair_and_names_the_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "CD"}
+
+        with mock.patch.object(M, "registry_call", side_effect=fake):
+            M.register("sid", "Topic", "mvs_parent")
+        self.assertIn("--letter-space=double", seen["args"])
+        self.assertIn("--letter-pick=primary", seen["args"])
+        self.assertIn("--parent-session-id=mvs_parent", seen["args"])
+
+    def test_a_main_chat_registration_names_no_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "AA"}
+
+        with mock.patch.object(M, "registry_call", side_effect=fake):
+            M.register("sid")
+        self.assertIn("--letter-space=double", seen["args"])
+        self.assertNotIn("--parent-session-id=mvs_parent", seen["args"])
+        self.assertFalse([a for a in seen["args"] if a.startswith("--parent-session-id=")])
+
+    def test_a_child_states_its_own_letter(self):
+        # A child has a letter of its own, one row after its parent's, so it states that one.
+        payload = json.dumps(
+            {
+                "session_id": SESSION_ID,
+                "tool_name": "zulip_post",
+                "tool_input": {"body": "AA: hi"},
+            }
+        ).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "session_kind": "task",
+            "parent_session_id": "mvs_parent",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="CD"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 2)
+
+    def test_a_child_states_its_own_letter_and_passes_when_it_does(self):
+        payload = json.dumps(
+            {
+                "session_id": SESSION_ID,
+                "tool_name": "zulip_post",
+                "tool_input": {"body": "CD: hi"},
+            }
+        ).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "session_kind": "task",
+            "parent_session_id": "mvs_parent",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="CD"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
+
+    def test_a_cron_session_has_no_thread_and_is_not_blocked(self):
+        payload = json.dumps(
+            {"session_id": SESSION_ID, "tool_name": "zulip_post", "tool_input": {"body": "hi"}}
+        ).encode()
+        row = {"session_id": SESSION_ID, "session_kind": "cron"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
 
     # ---- the Kody pass of Oct 29 ----
 
