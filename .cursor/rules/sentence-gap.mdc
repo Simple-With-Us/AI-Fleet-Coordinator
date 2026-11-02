@@ -75,7 +75,7 @@ The sentence gap is **life or death**.  It outranks every other priority.  Nev
 perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Both checks carry the same markup group as the converter.  **Assert before you post — every check, every time.**
+Both checks carry the same markup group as the converter.  **Assert before you post — every check, every time.**  Run only the checks that match the destination, since one destination produces one file.  For the two chat panes, the entity count on `body.entity.txt` must be > 0.  Everywhere else, the real-byte count on `body.nbsp.txt` must be > 0 and its leftover count must be 0.  Never require both modes to pass on one body.
 
 ```sh
 grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*&nbsp; ' body.entity.txt | wc -l      # entity mode: must be > 0
@@ -85,7 +85,7 @@ grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"
 
 ### Code-aware conversion
 
-The one-liner is not safe on a body that carries fenced code, indented code, inline spans, or a `repo:` header.  From any repo, write the program from the `cat > gap.pl <<'PERL'` heredoc in `~/.cursor/skills/sentence-gap/SKILL.md` and run `perl -CSDA -0777 -p gap.pl body.txt` (add `--entity` for the two chat panes).  Inside an AI-Fleet-Coordinator checkout, `perl -CSDA -0777 -p scripts/sentence_gap_convert.pl body.txt` runs the same program.  Idempotency, entity leftover, and the full recipe are in the skill.
+The one-liner is not safe on a body that carries fenced code, indented code, inline spans, or a `repo:` header.  From any repo, write the program from the `cat > gap.pl <<'PERL'` heredoc in `~/.cursor/skills/sentence-gap/SKILL.md` and run `perl -CSDA -0777 -p gap.pl body.txt` (add `--entity` for the two chat panes).  Inside an AI-Fleet-Coordinator checkout, `perl -CSDA -0777 -p scripts/sentence_gap_convert.pl body.txt` runs the same program.  Idempotency, entity leftover, and the full recipe are in the skill.  Before writing any `body*.txt` to disk, scan the unsaved body on stdin for secrets, using `scripts/agent_sync/secretscan.py` inside this repo or the skill's out-of-repo fallback, and refuse to write or post it on a hit.  The skill's secret-scan section has the exact command.
 
 **Source files are a different surface and are NOT affected.**  Code (Swift, TypeScript,
 shell), code comments, identifiers and machine-readable config never get a U+00A0:  a U+00A0
