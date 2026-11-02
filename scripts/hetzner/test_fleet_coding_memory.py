@@ -572,6 +572,106 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(status["production_groups"], 0)
             self.assertEqual(status["coding_target_bytes"], 0)
 
+    def test_a_control_reset_to_the_platform_default_is_re_asserted(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding")
+            state = {}
+            run_step(policy(), root, state, proc(root / "proc1"), 1, ([group], []))
+            self.assertNotEqual((group / "memory.high").read_text(), "max")
+            # A systemd daemon-reload puts the unit's own value back.
+            (group / "memory.high").write_text("max")
+            status = run_step(policy(), root, state, proc(root / "proc2"), 2, ([group], []))
+            self.assertNotEqual((group / "memory.high").read_text(), "max")
+            self.assertEqual(status["control_reasserted"], 1)
+            self.assertEqual(status["control_write_failures"], 0)
+
+    def test_an_outside_value_is_not_overwritten_and_is_counted(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding")
+            state = {}
+            run_step(policy(), root, state, proc(root / "proc1"), 1, ([group], []))
+            (group / "memory.high").write_text("128")
+            status = run_step(policy(), root, state, proc(root / "proc2"), 2, ([group], []))
+            self.assertEqual((group / "memory.high").read_text(), "128")
+            self.assertEqual(status["control_reasserted"], 0)
+            self.assertEqual(status["control_write_failures"], 1)
+
+    def test_a_production_protection_reset_to_zero_is_re_asserted(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            parent = cg(root / "system.slice", usage=0, low="0")
+            groups = [cg(parent / "docker-0.scope", maximum=4 * 1024**3)]
+            state = {}
+            limits = {p: 8 * 1024**3 for p in groups}
+            run_step(policy(), root, state, proc(root / "proc1"), 1, ([], groups, limits))
+            self.assertNotEqual(int((groups[0] / "memory.low").read_text()), 0)
+            # A container recreation puts the container's own value back.
+            (groups[0] / "memory.low").write_text("0")
+            status = run_step(policy(), root, state, proc(root / "proc2"), 2, ([], groups, limits))
+            self.assertNotEqual(int((groups[0] / "memory.low").read_text()), 0)
+            self.assertEqual(status["control_write_failures"], 0)
+
+    def test_a_suspended_control_is_left_alone_after_a_platform_reset(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding")
+            state = {}
+            run_step(policy(), root, state, proc(root / "proc1"), 1, ([group], []))
+            self.assertNotEqual((group / "memory.high").read_text(), "max")
+            # The operator suspends the control and lifts the throttle.
+            (group / "memory.high").write_text("max")
+            state_dir = root / "state"
+            state_dir.mkdir()
+            (state_dir / "suspended").write_text(f"{group}:memory.high\n")
+            status = run_step(
+                policy(),
+                root,
+                state,
+                proc(root / "proc2"),
+                2,
+                ([group], []),
+                state_dir=state_dir,
+            )
+            self.assertEqual((group / "memory.high").read_text(), "max")
+            self.assertEqual(status["control_reasserted"], 0)
+            self.assertEqual(status["control_write_failures"], 0)
+            self.assertEqual(status["control_suspended"], 1)
+
+    def test_a_suspended_control_is_not_written_by_the_controller(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding")
+            state = {}
+            state_dir = root / "state"
+            state_dir.mkdir()
+            (state_dir / "suspended").write_text(f"{group}\n")
+            status = run_step(
+                policy(),
+                root,
+                state,
+                proc(root / "proc1"),
+                1,
+                ([group], []),
+                state_dir=state_dir,
+            )
+            self.assertEqual((group / "memory.high").read_text(), "max")
+            self.assertEqual(status["control_write_failures"], 0)
+
+    def test_a_vanished_group_is_dropped_and_is_not_a_re_assertion(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            group = cg(root / "coding")
+            state = {}
+            run_step(policy(), root, state, proc(root / "proc1"), 1, ([group], []))
+            for child in group.iterdir():
+                child.unlink()
+            group.rmdir()
+            status = run_step(policy(), root, state, proc(root / "proc2"), 2, ([], []))
+            self.assertEqual(status["control_reasserted"], 0)
+            self.assertEqual(state["owned"], {})
+
     def test_production_low_is_capped_and_sums_at_supported_ancestor(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
