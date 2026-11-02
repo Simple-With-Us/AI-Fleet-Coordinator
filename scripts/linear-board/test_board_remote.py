@@ -261,7 +261,8 @@ class Remote(unittest.TestCase):
             ["comment", "AFC-1", "--by", "CODEX", "--text", "token ghp_" + "A1b2C3d4E5" * 4],
             [rpc(self.IDANS)],
         )
-        self.assertEqual([c["name"] for c in calls], ["identities"])
+        # The scan runs before even the identities lookup:  nothing is sent.
+        self.assertEqual([c["name"] for c in calls], [])
         self.assertIn("secret_scan:body", err)
         self.assertNotIn("ghp_", err)
 

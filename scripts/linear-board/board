@@ -6459,17 +6459,13 @@ def _remote_write_identity() -> str:
     return who
 
 
-def remote_call(tool: str, arguments: dict, write: bool = False, claimed_by=None) -> dict:
-    """One tools/call to the fixed endpoint.  Returns the tool's structuredContent."""
-    if write:
-        identity = _remote_write_identity()
-        if claimed_by and str(claimed_by).lower() != identity.lower():
-            die(
-                f"--by {claimed_by} does not match the seat the hosted server reports for this "
-                f"bearer ({identity}); remote mode never acts as another seat",
-                EXIT_USAGE,
-            )
-        arguments = {**arguments, "identity": identity}
+def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
+    """One tools/call to the fixed endpoint.  Returns the tool's structuredContent.
+
+    This stays a pure transport on purpose (the cross-transport hardening
+    tests call it directly):  remote_write owns identity injection, so the
+    argument scan below and the outcome wording see exactly one send.
+    """
     bearer = "" if native_echo_selected() else remote_bearer()
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
@@ -6587,7 +6583,21 @@ def remote_write(a) -> dict:
                 args[key] = val
     if sessions:
         args["session"] = sessions[0]
-    return remote_call(tool, args, write=True, claimed_by=claimed)
+    # Scan before ANY network call, the identities lookup included:  a
+    # credential-shaped argument is refused having sent nothing at all.
+    scan_bearer = "" if native_echo_selected() else remote_bearer()
+    hit = _remote_scan_arguments(_remote_scanner(), args, scan_bearer)
+    if hit:
+        die(f"refused before sending: {hit}", EXIT_USAGE)
+    identity = _remote_write_identity()
+    if claimed and str(claimed).lower() != identity.lower():
+        die(
+            f"--by {claimed} does not match the seat the hosted server reports for this "
+            f"bearer ({identity}); remote mode never acts as another seat",
+            EXIT_USAGE,
+        )
+    args["identity"] = identity
+    return remote_call(tool, args, write=True)
 
 
 def remote_main(a) -> int:
