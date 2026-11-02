@@ -638,8 +638,9 @@ def apply_title(session_id: str, letter: str, topic: str) -> str:
     if not letter or not topic:
         return ""
     # The caller passes the thread's current title, so the title rule applies:  the
-    # letter it already carries is dropped before the new one goes on.
-    title = wanted_title(letter, title_topic(topic, letter))
+    # letter it already carries is dropped before the new one goes on.  The letters the
+    # session held say which prefix is that letter and which is an acronym.
+    title = wanted_title(letter, title_topic(topic, letter, held_letters(session_id)))
     if topic != title:
         try:
             if not set_title(session_id, title):
@@ -717,7 +718,40 @@ def topic_without_letter(title: str, letters: tuple[str, ...] = ()) -> str:
     return text
 
 
-def title_topic(title: str, letter: str = "") -> str:
+def held_letters(session_id: str) -> tuple[str, ...]:
+    """Every letter this session has held, newest first.
+
+    The registry keeps the history, so a thread that was re-lettered still answers for
+    the letter it used to have.  That is what tells the letter prefix of a title from an
+    acronym:  the prefix of a title is that thread's letter when this session held it.
+
+    A registry that cannot be read leaves the history empty, and the caller falls back
+    to the shape rules.  That is the safe direction:  a title that keeps a stale prefix
+    is read and fixed again, while a title that loses an acronym is not.
+    """
+    db = registry_db()
+    if not db:
+        return ()
+    from agent_sync import operator_registry as OR
+
+    reg = OR.SessionRegistry(db)
+    try:
+        row = reg.session_by_identity(
+            platform=PLATFORM,
+            verified_host=location(),
+            profile_scope=PROFILE_SCOPE,
+            native_session_id=session_id,
+        )
+        if row is None:
+            return ()
+        return reg.letters_held(row["record_id"])
+    except (OR.RegistryUnavailable, sqlite3.Error, OSError, ValueError):
+        return ()
+    finally:
+        reg.close_db()
+
+
+def title_topic(title: str, letter: str = "", held: tuple[str, ...] = ()) -> str:
     """The topic of a thread TITLE, without the letter the title already carries.
 
     A title in this seat's form starts with its letter, and a letter on this platform is
@@ -725,13 +759,20 @@ def title_topic(title: str, letter: str = "") -> str:
     of a title are its letter, and they are dropped before a new letter goes on.  Without
     this, a thread that is re-lettered ends up with two prefixes:  "CE: CD: Topic".
 
+    The prefix is the letter when this session held it, and held carries the letters a
+    session held, so a re-lettered title loses its stale prefix and a title that starts
+    with any other two capitals keeps them:  "AI: the model" under the letter AA stays
+    "AA: AI: the model".
+
     A bare topic is not a title, so an acronym at the start of one is left alone:  that
     is what topic_without_letter does, and this is the title form of it.
     """
     text = (title or "").strip()
     match = TITLE_PREFIX_RE.match(text)
     if match:
-        return text[match.end() :].strip()
+        prefix = text[:2]
+        if prefix == letter or prefix in held:
+            return text[match.end() :].strip()
     return topic_without_letter(text, (letter,) if letter else ())
 
 
@@ -1141,10 +1182,10 @@ def _reopen_after_sweep(
         try:
             topic = cached_topic(session_id, directories)
         except RegistryError as exc:
-            # The topic cannot be read, so the cache is left as it is rather than
-            # written with an empty topic.
+            # The topic cannot be read, so the cache is left as it is:  a recache with
+            # an empty topic would wipe the topic the thread holds.
             sys.stderr.write("Could not read the cached topic: %s\n" % exc)
-            topic = ""
+            return letter
         try:
             cache_letter(session_id, letter, topic, LETTER_SPACE, directories)
         except (RegistryError, ValueError, OSError) as exc:
@@ -1338,7 +1379,7 @@ def hook_stop() -> int:
             '"%s: <topic in English>" with the session-title tool, then finish.' % (why, letter)
         )
         return 2
-    fallback = wanted_title(letter, title_topic(title, letter))
+    fallback = wanted_title(letter, title_topic(title, letter, held_letters(session_id)))
     try:
         renamed = set_title(session_id, fallback)
     except ValueError as exc:
@@ -1551,8 +1592,9 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             wanted = wanted_title(letter, topic)
         else:
             # The topic came from the thread's own title, so the letter that title
-            # carries is dropped before the new one goes on.
-            wanted = wanted_title(letter, title_topic(title, letter))
+            # carries is dropped before the new one goes on.  The letters the session
+            # held say which prefix is that letter and which is an acronym.
+            wanted = wanted_title(letter, title_topic(title, letter, held_letters(session_id)))
         already_ok = title_ok(title, letter)[0]
         entry = {
             "session_id": session_id,

@@ -439,6 +439,26 @@ class SessionRegistry:
         ).fetchone()
         return (row["letter"], row["generation"]) if row else ("", 0)
 
+    def letters_held(self, record_id: str) -> tuple[str, ...]:
+        """Every letter this record has held, newest first.
+
+        Read-only, and the history is what tells a letter prefix from an acronym:  a
+        title that starts with a letter this session held is a title the seat wrote, and
+        one that starts with any other two capitals is a topic that happens to begin
+        with an acronym.
+        """
+        rows = self._conn.execute(
+            "SELECT letter FROM alias_assignments WHERE record_id = ?"
+            " ORDER BY assigned_at DESC",
+            (record_id,),
+        ).fetchall()
+        held: list[str] = []
+        for row in rows:
+            letter = str(row["letter"] or "")
+            if letter and letter not in held:
+                held.append(letter)
+        return tuple(held)
+
     def _last_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
         """The letter this record holds now, or, once it is retired, the last one it held.
 

@@ -1342,10 +1342,12 @@ class MmLetterReopenTest(unittest.TestCase):
         self.addCleanup(reg.close_db)
         return reg
 
-    def _write_cache(self, session_id, letter):
+    def _write_cache(self, session_id, letter, topic=""):
         os.makedirs(self.scope, exist_ok=True)
         with open(os.path.join(self.scope, session_id + ".json"), "w", encoding="utf-8") as fh:
-            json.dump({"letter": letter, "host": "mac", "space": "double"}, fh)
+            json.dump(
+                {"letter": letter, "topic": topic, "host": "mac", "space": "double"}, fh
+            )
 
     def _register(self, session_id):
         with self._env(), mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts):
@@ -1383,6 +1385,35 @@ class MmLetterReopenTest(unittest.TestCase):
         # registry now says.
         with self._env():
             self.assertEqual(M.cached_letter(SESSION_ID), letter)
+
+    def test_the_reopened_letter_keeps_the_topic_the_cache_held(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        # Another chat takes AA while the first one is away.
+        second = self._register(self.OTHER_SESSION_ID)
+        self.assertEqual(second["label"], "AA")
+        self._write_cache(SESSION_ID, "AA", "The topic this thread holds")
+        letter = self._letter_for(SESSION_ID)
+        self.assertNotEqual(letter, "AA")
+        with self._env():
+            self.assertEqual(M.cached_topic(SESSION_ID), "The topic this thread holds")
+            self.assertEqual(M.cached_letter(SESSION_ID), letter)
+
+    def test_a_cache_write_that_fails_with_an_oserror_still_returns_the_letter(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(M, "reopen_closed", return_value={"label": "BB"}),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(M, "cached_topic", return_value="A topic"),
+            mock.patch.object(M, "cache_letter", side_effect=OSError("the disk is full")),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "BB")
+        self.assertIn("Could not cache the reopened letter", err.getvalue())
 
     def test_a_reopen_that_cannot_be_done_keeps_the_cached_letter(self):
         err = io.StringIO()
@@ -1429,15 +1460,37 @@ class MmReLetterTitleTest(unittest.TestCase):
     """
 
     def test_a_title_keeps_one_prefix_when_the_letter_changes(self):
-        self.assertEqual(M.title_topic("CD: Topic", "CE"), "Topic")
-        self.assertEqual(M.wanted_title("CE", M.title_topic("CD: Topic", "CE")), "CE: Topic")
+        # The session held CD and now holds CE, so the prefix of its title is its old
+        # letter and it goes before the new one.
+        held = ("CE", "CD")
+        self.assertEqual(M.title_topic("CD: Topic", "CE", held), "Topic")
+        self.assertEqual(
+            M.wanted_title("CE", M.title_topic("CD: Topic", "CE", held)), "CE: Topic"
+        )
 
     def test_a_doubled_pair_title_keeps_one_prefix_too(self):
-        self.assertEqual(M.title_topic("AA: Topic", "CC"), "Topic")
-        self.assertEqual(M.wanted_title("CC", M.title_topic("AA: Topic", "CC")), "CC: Topic")
+        held = ("CC", "AA")
+        self.assertEqual(M.title_topic("AA: Topic", "CC", held), "Topic")
+        self.assertEqual(
+            M.wanted_title("CC", M.title_topic("AA: Topic", "CC", held)), "CC: Topic"
+        )
+
+    def test_a_title_whose_prefix_this_session_never_held_keeps_its_acronym(self):
+        # The session held only AA, so "AI:" is a topic that begins with an acronym and
+        # not a letter of this thread.
+        self.assertEqual(M.title_topic("AI: the model", "AA", ("AA",)), "AI: the model")
+        self.assertEqual(
+            M.wanted_title("AA", M.title_topic("AI: the model", "AA", ("AA",))),
+            "AA: AI: the model",
+        )
 
     def test_a_title_with_no_prefix_keeps_its_topic(self):
         self.assertEqual(M.title_topic("Topic", "CC"), "Topic")
+
+    def test_a_session_that_held_nothing_still_keeps_an_acronym(self):
+        # With no history the shape rules apply, and an acronym is not a letter shape
+        # this platform issues for a thread that never held one.
+        self.assertEqual(M.title_topic("AI: the model", "CC"), "AI: the model")
 
     def test_a_bare_topic_that_starts_with_an_acronym_keeps_it(self):
         # The topic is not a title, so the acronym is not a letter and stays.
