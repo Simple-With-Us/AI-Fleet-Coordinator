@@ -1828,7 +1828,8 @@ class ReopenOverTheHopTest(unittest.TestCase):
                     "code": "space_lost",
                     "outcome": "reopen_refused",
                 },
-            ),self.assertRaises(M.RegistryError) as caught
+            ),
+            self.assertRaises(M.RegistryError) as caught,
         ):
             M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "space_lost")
