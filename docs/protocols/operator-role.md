@@ -228,7 +228,7 @@ Three concrete changes carry that:
     loop guard and the router read (a `·wake` post never wakes anyone) and the label that says
     which seat's consultant wrote the text.  The Operator's own messages (its questions, its
     status messages, the `@all` reminder, tagged `[OPERATOR·note]`) keep their own tags.  See
-    `agent-sync-listener.md`, "The Operator's voice".
+    `eavesdropper.md`, "The Operator's voice".
 
 3.  **The pairing test decides whether the Operator speaks, and the direct message carries what
     it says.**  A message that pairs with a thread gets the Operator's own message, and that

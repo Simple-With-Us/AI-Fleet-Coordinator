@@ -292,7 +292,7 @@ which posts no topic of its own, records the persona's message as the notice and
 in the message id, and the message ids already mirrored are kept in the state), so within about 5 minutes of the post.  A block that is wrong gets **one** reply with a reason word
 (`seat_is_not_the_sender`, `not_json`, `secret_or_personal_data`, ...) and no Linear item.  A topic opened by anyone else is ignored, and so is a persona's block in a topic someone else opened.
 
-**The router rule** (`scripts/agent_sync/router.py`, described in `docs/protocols/agent-sync-listener.md`):  nothing a peer posts in a topic that starts `OWNER ` wakes anyone, except this
+**The router rule** (`scripts/agent_sync/router.py`, described in `docs/protocols/eavesdropper.md`):  nothing a peer posts in a topic that starts `OWNER ` wakes anyone, except this
 notifier's note (CLAUDE's bot, tag `[CLAUDE·needsown→`).  The owner's own message there wakes only the seats it mentions.
 
 **The knobs** (Infisical, project "AI Fleet Coordinator", prod only;  read through `fleet_knobs`, one fetch a run, the last-known-good copy when Infisical is unreachable):
