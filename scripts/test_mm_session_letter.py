@@ -526,10 +526,101 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(M.hook_pre_tool_use(), 0)
         self.assertEqual(read.call_count, 1)
 
-    def test_space_for_row_reads_the_given_row(self):
-        self.assertEqual(M.space_for_row({"session_kind": "task"}), "double")
-        self.assertEqual(M.space_for_row({"parent_session_id": "p"}), "double")
-        self.assertEqual(M.space_for_row({"session_kind": "conversation"}), "single")
+    def test_parent_for_row_names_the_parent(self):
+        self.assertEqual(M.parent_for_row({"parent_session_id": "mvs_parent"}), "mvs_parent")
+        self.assertEqual(M.parent_for_row({"session_kind": "task"}), "")
+        self.assertEqual(M.parent_for_row({"parent_session_id": "not a session id"}), "")
+
+    # ---- a MiniMax thread is a pair, like every other platform (AFC-586) ----
+
+    def test_a_pair_letter_is_a_valid_prefix(self):
+        self.assertTrue(M.first_line_states_letter("AA: hello\nmore", "AA"))
+        self.assertTrue(M.title_ok("AA: Topic", "AA")[0])
+        self.assertFalse(M.title_ok("A: Topic", "AA")[0])
+
+    def test_wanted_title_drops_the_letter_the_title_already_carries(self):
+        # A thread that is re-lettered keeps its topic:  the old prefix goes, the new one comes.
+        self.assertEqual(M.wanted_title("AA", "A: Fix the sweep"), "AA: Fix the sweep")
+        self.assertEqual(M.wanted_title("AA", "AA: Fix the sweep"), "AA: Fix the sweep")
+        self.assertEqual(M.wanted_title("AA", "Fix the sweep"), "AA: Fix the sweep")
+
+    def test_the_registration_asks_for_a_pair_and_names_the_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "CD"}
+
+        with mock.patch.object(M, "registry_call", side_effect=fake):
+            M.register("sid", "Topic", "mvs_parent")
+        self.assertIn("--letter-space=double", seen["args"])
+        self.assertIn("--letter-pick=primary", seen["args"])
+        self.assertIn("--parent-session-id=mvs_parent", seen["args"])
+
+    def test_a_main_chat_registration_names_no_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "AA"}
+
+        with mock.patch.object(M, "registry_call", side_effect=fake):
+            M.register("sid")
+        self.assertIn("--letter-space=double", seen["args"])
+        self.assertNotIn("--parent-session-id=mvs_parent", seen["args"])
+        self.assertFalse([a for a in seen["args"] if a.startswith("--parent-session-id=")])
+
+    def test_a_child_states_its_own_letter(self):
+        # A child has a letter of its own, one row after its parent's, so it states that one.
+        payload = json.dumps(
+            {
+                "session_id": SESSION_ID,
+                "tool_name": "zulip_post",
+                "tool_input": {"body": "AA: hi"},
+            }
+        ).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "session_kind": "task",
+            "parent_session_id": "mvs_parent",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="CD"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 2)
+
+    def test_a_child_states_its_own_letter_and_passes_when_it_does(self):
+        payload = json.dumps(
+            {
+                "session_id": SESSION_ID,
+                "tool_name": "zulip_post",
+                "tool_input": {"body": "CD: hi"},
+            }
+        ).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "session_kind": "task",
+            "parent_session_id": "mvs_parent",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="CD"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
+
+    def test_a_cron_session_has_no_thread_and_is_not_blocked(self):
+        payload = json.dumps(
+            {"session_id": SESSION_ID, "tool_name": "zulip_post", "tool_input": {"body": "hi"}}
+        ).encode()
+        row = {"session_id": SESSION_ID, "session_kind": "cron"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
 
     # ---- the Kody pass of Oct 29 ----
 
