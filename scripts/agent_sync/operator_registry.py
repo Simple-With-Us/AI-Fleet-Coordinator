@@ -2392,13 +2392,23 @@ def main(argv: list[str] | None = None) -> int:
         except platform_letter.SpaceLost as exc:
             # A chat that held a pair would come back with a single letter.  That is
             # refused before anything is written.
-            print(json.dumps({"error": str(exc), "code": "space_lost", "outcome": "reopen_refused"}))
+            print(
+                json.dumps({"error": str(exc), "code": "space_lost", "outcome": "reopen_refused"})
+            )
             return 2
         except LabelExhausted as exc:
-            print(json.dumps({"error": str(exc), "code": "labels_exhausted", "outcome": "reopen_refused"}))
+            print(
+                json.dumps(
+                    {"error": str(exc), "code": "labels_exhausted", "outcome": "reopen_refused"}
+                )
+            )
             return 2
         except (UnknownRecord, KeyError, ValueError, OSError) as exc:
-            print(json.dumps({"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}))
+            print(
+                json.dumps(
+                    {"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}
+                )
+            )
             return 2
         finally:
             reg.close_db()

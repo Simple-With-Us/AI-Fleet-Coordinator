@@ -1828,10 +1828,9 @@ class ReopenOverTheHopTest(unittest.TestCase):
                     "code": "space_lost",
                     "outcome": "reopen_refused",
                 },
-            ),
+            ),self.assertRaises(M.RegistryError) as caught
         ):
-            with self.assertRaises(M.RegistryError) as caught:
-                M.reopen_closed("r1")
+            M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "space_lost")
         self.assertEqual(caught.exception.outcome, "reopen_refused")
 
@@ -1887,9 +1886,7 @@ class StopHookTest(unittest.TestCase):
             mock.patch.object(sys, "stderr", stderr),
             mock.patch.object(M, "session_row", return_value=self._row()),
             mock.patch.object(M, "cached_letter", return_value="AA"),
-            mock.patch.object(
-                M, "update_title", side_effect=ValueError("secret_detected")
-            ),
+            mock.patch.object(M, "update_title", side_effect=ValueError("secret_detected")),
         ):
             self.assertEqual(M.hook_stop(), 2)
         self.assertIn("secret_detected", stderr.getvalue())
