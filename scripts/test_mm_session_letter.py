@@ -1575,10 +1575,9 @@ class MmReopenStrictTouchTest(unittest.TestCase):
                     "error": "no Operator registry on this host",
                     "code": "no_registry",
                 },
-            ),
+            ),self.assertRaises(M.RegistryError) as caught
         ):
-            with self.assertRaises(M.RegistryError) as caught:
-                M.reopen_closed("r1")
+            M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "no_registry")
 
 
@@ -1663,7 +1662,9 @@ class RemoteRegistryHopTest(unittest.TestCase):
             mock.patch.object(
                 M.subprocess,
                 "run",
-                return_value=subprocess.CompletedProcess([], 0, stdout='{"label": "AA"}', stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout='{"label": "AA"}', stderr=""
+                ),
             ) as run,
         ):
             M.remote_registry_call(["update", "--title=two words"])

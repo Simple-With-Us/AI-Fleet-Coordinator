@@ -1412,7 +1412,6 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
         self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-7"), [])
 
 
-
 class RegistryGuardTest(unittest.TestCase):
     """The CLI never brings a registry into being (AFC-593).
 
