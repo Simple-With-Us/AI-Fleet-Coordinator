@@ -2,9 +2,12 @@
 
 `OperatorClient` signs and sends one call (notes_wire.py);  `operator_client` builds one for this host from the
 fleet knob OPERATOR_API_URL and the principal's key in Infisical (`fleet-secrets get`, AI Fleet Coordinator, prod,
-/operator), held in memory only.  `call`, `status` and `log` are what simple-notes and the stdio MCP run, the same
-code on every host:  on a Mac they run apple-notes-coding.sh directly, anywhere else they send the request to the
-Operator and wait for the Mac runner's result, so the answer has the same shape either way.
+/operator), held in memory only.  That shared service credential is for the backend (the Mac runner's claims and
+reports, the doctor's health check), never for a caller's notes action.  `call`, `status` and `log` are what
+simple-notes and the stdio MCP run, the same code on every host:  on a Mac they run apple-notes-coding.sh
+directly, anywhere else they go to the hosted gateway as the calling bot's own fleet bearer (the explicit
+--fleet-bearer-file, else that seat's own private file;  no shared-credential fallback), and the gateway's queue
+and the Mac runner answer in the same shape either way.
 
 Python 3.11+, standard library only.
 """
@@ -507,7 +510,7 @@ def operator_client(
 
 class Host:
     """Where this process stands:  the environment, the home folder, the seat's idempotency rows and, off a Mac, the
-    Operator client (made on first use, so a Mac never reads the knob or a key)."""
+    calling bot's own fleet bearer (resolved on first use, so a Mac never looks for one)."""
 
     def __init__(
         self,
@@ -516,9 +519,9 @@ class Host:
         store: Any,
         *,
         caller: str,
-        client_factory: Callable[[], OperatorClient] | None = None,
         bearer_file: str | None = None,
         script_finder: Callable[[Mapping[str, str], Path], Path | None] | None = None,
+        own_seat: str | None = None,
     ) -> None:
         self._fleet_client = None
         self.bearer_file = bearer_file
@@ -526,7 +529,9 @@ class Host:
         self.home = home
         self.store = store
         self.caller = caller
-        self._client_factory = client_factory or (lambda: operator_client(env))
+        # The seat a one-seat process acts as (the stdio server's own seat):  lets a seat-less operation such as
+        # the action log find the bot's own bearer off a Mac.  The CLI passes each request's seat instead.
+        self.own_seat = own_seat
         self._client: OperatorClient | None = None
         # Looked up when the host is made, not bound as a default argument at import:  notes.direct_available is the
         # one seam that says "this is a Mac", for the CLI, the stdio tools and their tests alike.
@@ -534,86 +539,29 @@ class Host:
             None if bearer_file is not None else (script_finder or N.direct_available)(env, home)
         )
 
-    @property
-    def client(self) -> OperatorClient:
-        if self._client is None:
-            self._client = self._client_factory()
-        return self._client
+    def own_bearer(self, seat: str | None) -> str:
+        """Off a Mac, the calling bot's own fleet bearer file:  the explicit one, else this seat's conventional
+        private file.  A caller's notes action never uses the shared service credential:  that key is the Mac
+        runner's and the doctor's, and a bot off a Mac must already have its own bearer for the other fleet
+        tools, so there is no fallback to it here."""
+        if self.bearer_file is None:
+            seat = seat or self.own_seat
+            if seat is None:
+                raise N.NotesError(
+                    "not_configured",
+                    "off a Mac, simple-notes runs only as the calling bot's own fleet bearer:  pass "
+                    "--fleet-bearer-file PATH, or set AGENT_SEAT or pass --identity so this bot's own bearer "
+                    "file is used;  the shared service credential is not used",
+                )
+            from . import fleet_bearer as F
 
+            try:
+                self.bearer_file = str(F.default_bearer_path(self.home, seat))
+            except F.FleetError as exc:
+                raise N.NotesError(exc.code, str(exc)) from None
+        return self.bearer_file
 
 _CODE_RE = re.compile(r"[a-z_]{1,40}")
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]+")
-
-
-def _record_error(record: Mapping[str, Any]) -> dict[str, str]:
-    """A record's error as {code, message}:  a code of the contract's shape (else empty), and the message as one line
-    of at most 400 characters with no control character, since the CLI prints it to a terminal."""
-    error = record.get("error") if isinstance(record.get("error"), Mapping) else {}
-    code = str(error.get("code") or "")
-    message = " ".join(_CONTROL_RE.sub(" ", str(error.get("message") or "")).split())
-    return {"code": code if _CODE_RE.fullmatch(code) else "", "message": message[:400]}
-
-
-def _shape(record: Mapping[str, Any], duplicate: bool) -> dict[str, Any]:
-    """A tool's answer from an Operator record:  the same keys the direct path answers with."""
-    state = str(record.get("state") or "")
-    request_id = str(record.get("request_id") or "")
-    action = record.get("action")
-    error = _record_error(record)
-    if state == "refused":
-        raise N.NotesError(
-            str(error.get("code") or "internal"),
-            str(error.get("message") or "the request was refused"),
-        )
-    if state == "unknown":
-        raise N.NotesError(
-            "outcome_unknown",
-            str(
-                error.get("message")
-                or "the outcome is unknown;  check the note, then send it again with a new request_id"
-            ),
-        )
-    if state == "expired":
-        # Final:  the queue answers this same record to the same request_id for 14 days, so the way on is a new one
-        # (nothing was written).  The Worker's outcomeError says the same.
-        raise N.NotesError(
-            "unavailable",
-            "nobody picked the request up within 24 hours (the Mac runner may be off), so nothing was written.  "
-            "Send it again with a new request_id.",
-        )
-    if state not in ("queued", "running", "done"):
-        # Not a state this client knows, so it cannot tell whether the note was written:  never a plain retry.
-        raise N.NotesError(
-            "outcome_unknown",
-            "the Operator answered a record in a state this client does not know, so the outcome is unknown;  "
-            "check the note before sending it again with a new request_id",
-        )
-    out: dict[str, Any] = {
-        "request_id": request_id,
-        "action": action,
-        "status": state,
-        "transport": "operator",
-    }
-    if record.get("title"):
-        out["title"] = record["title"]
-    result = record.get("result") if isinstance(record.get("result"), Mapping) else {}
-    if state == "done":
-        if action == "read":
-            out["note"] = result.get("note")
-        elif action == "list":
-            out.update(
-                notes=result.get("notes") or [],
-                total=result.get("total", 0),
-                truncated=bool(result.get("truncated")),
-            )
-        else:
-            for key in ("note_id", "pin_skipped"):
-                if result.get(key):
-                    out[key] = result[key]
-            out["duplicate"] = duplicate
-        if record.get("result_expired"):
-            out["result_expired"] = True
-    return out
 
 
 def call(
@@ -624,7 +572,7 @@ def call(
     wait: float,
     scan: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one request for `seat`:  directly on a Mac, through the Operator elsewhere.  `scan` checks a write's text
+    """Run one request for `seat`:  directly on a Mac, as that bot's own fleet bearer elsewhere.  `scan` checks a write's text
     first (it raises to refuse);  without one, notes.scan_write does, so no write is ever sent unscanned.  It runs
     before request_problem, whose refusals can name a part of the request.  Raises NotesError."""
     action = request["action"]
@@ -655,28 +603,13 @@ def call(
             N.remember_direct_read(host.store, request)
             return done
         return N.direct_once(host.store, request, send)
-    try:
-        record, duplicate = host.client.enqueue(seat, request)
-    except N.NotesError as exc:
-        if exc.code != "unavailable" or getattr(exc, "definite", False):
-            raise
-        # The request may have reached the Operator before the answer was lost (a timeout, a 5xx), so its outcome is
-        # unknown.  Checking it, or sending it again under the same request_id, is safe:  the Operator answers the
-        # record it has.  A new request_id could write the note twice.
-        rid = request["request_id"]
-        raise N.NotesError(
-            "outcome_unknown",
-            "%s, so the request may or may not be queued.  Check it with notes_status (simple-notes status %s), "
-            "or send it again with the same request_id, %s, never a new one"
-            % (exc.message.rstrip(". "), rid, rid),
-        ) from None
-    if wait > 0:
-        record = host.client.wait(seat, record, wait)
-    return _shape(record, duplicate)
+    # Off a Mac:  as the calling bot's own fleet bearer through the hosted gateway, never the shared key.
+    host.own_bearer(seat)
+    return _fleet_call(host, seat, request, wait)
 
 
 def status(host: Host, seat: str, request_id: str) -> dict[str, Any]:
-    """Where a request stands:  this Mac's own rows on a Mac, the Operator's record elsewhere."""
+    """Where a request stands:  this Mac's own rows on a Mac, the gateway's record elsewhere."""
     N.check_request_id(request_id)
     if host.bearer_file is not None:
         return _fleet_tool(host, seat, "notes_status", {"request_id": request_id})
@@ -688,35 +621,20 @@ def status(host: Host, seat: str, request_id: str) -> dict[str, Any]:
                 "this Mac ran no notes request with that request_id in the last 24 hours",
             )
         return found
-    record = host.client.record(seat, request_id)
-    out: dict[str, Any] = {
-        "request_id": request_id,
-        "status": record.get("state"),
-        "action": record.get("action"),
-        "transport": "operator",
-    }
-    for key in ("title", "queued_at", "finished_at"):
-        if record.get(key):
-            out[key] = record[key]
-    if record.get("error"):
-        out["error"] = _record_error(record)
-    result = record.get("result") if isinstance(record.get("result"), Mapping) else {}
-    for key in ("note_id", "pin_skipped", "note", "notes"):
-        if result.get(key):
-            out[key] = result[key]
-    return out
+    host.own_bearer(seat)
+    return _fleet_tool(host, seat, "notes_status", {"request_id": request_id})
 
 
 def log(host: Host, args: Mapping[str, Any]) -> dict[str, Any]:
-    """The action log:  the file itself on a Mac, the Operator's copy elsewhere."""
+    """The action log:  the file itself on a Mac, the gateway's copy elsewhere."""
     filters = N.check_log_args(args)
     if host.bearer_file is not None:
         return _fleet_tool(host, None, "notes_log", dict(args))
     if host.script is not None:
         entries = N.read_action_log(host.env, host.home, **filters)
         return {"entries": entries, "source": "mac", "count": len(entries)}
-    entries = host.client.log(filters)
-    return {"entries": entries, "source": "operator", "count": len(entries)}
+    host.own_bearer(None)
+    return _fleet_tool(host, None, "notes_log", dict(args))
 
 
 def _fleet_tool(host, seat, tool, args, write=False):

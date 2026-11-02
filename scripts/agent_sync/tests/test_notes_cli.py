@@ -2,8 +2,8 @@
 twin of the notes_* tools, run through agent_sync.cli.main as the wrapper runs it.
 
 On a "Mac" (notes.direct_available patched to a path, the helper patched to FakeRun) a command runs the script
-directly;  off one (the default here, whatever host runs the tests) it goes to a fake Operator through a patched
-notes_client.operator_client.  The fleet knob is never read for real.
+directly;  off one (the default here, whatever host runs the tests) it goes to the hosted gateway as the bot's own
+fleet bearer through a fake fleet client.  No bearer file, the fleet knob and fleet-secrets are never read for real.
 
 Run:  cd scripts && python3 -m unittest agent_sync.tests.test_notes_cli
 """
@@ -24,7 +24,8 @@ from agent_sync import notes_wire as W
 from agent_sync.mcp import guide as G
 from agent_sync.tests.harness import SESSION, Harness
 from agent_sync.tests.test_notes import STORED_CONTENT_HTML, STORED_CONTENT_TEXT, STORED_TITLE, FakeRun, read_answer
-from agent_sync.tests.test_notes_client import FakeOperator, record
+from agent_sync import fleet_bearer as F
+from agent_sync.tests.test_notes_client import FakeFleet, FakeOperator, record
 
 TITLE = "[AFC, Claude] Cli Check"
 MASTER = "⭐️ Background Jobs Master List"
@@ -49,12 +50,27 @@ class NotesCliHarness(Harness):
         """A Mac:  the script is found and the helper is `run`."""
         return mock.patch.object(N, "direct_available", return_value=self.script), mock.patch.object(N, "_run_helper", run)
 
-    def operator(self, op=None):
-        """Off a Mac, through `op` (a FakeOperator).  Returns (op, the sleeps the wait took, the patch)."""
-        op = op or FakeOperator()
+    def gateway(self, gw=None):
+        """Off a Mac, through the hosted gateway as the bot's own fleet bearer (FakeFleet, no file is read).
+        Returns (gw, the sleeps the wait took, the patchers):  the fleet client, a fake sleep and a fake clock
+        advanced by it, so a wait's deadline is exact."""
+        gw = gw or FakeFleet()
+        now = [1000.0]
         sleeps: list[float] = []
-        client = op.client(sleeps)
-        return op, sleeps, mock.patch.object(NC, "operator_client", lambda env, principal=W.SERVER, **kw: client)
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        return (
+            gw,
+            sleeps,
+            (
+                mock.patch("agent_sync.fleet_bearer.Client", gw.factory),
+                mock.patch.object(NC.time, "sleep", fake_sleep),
+                mock.patch.object(NC.time, "monotonic", lambda: now[0]),
+            ),
+        )
 
     def notes(self, *argv, **kw):
         return self.run_cli(*argv, prog="simple-notes", **kw)
@@ -460,45 +476,34 @@ class MacTests(NotesCliHarness):
         self.assertEqual(result.code, 3)
 
 
-class OperatorTests(NotesCliHarness):
-    def test_an_update_off_a_mac_goes_through_the_operator_and_waits(self):
-        op, sleeps, patch = self.operator()
-        op.records[("CLAUDE", "cli-update-0001")] = [
-            record("running", "cli-update-0001", action="update", title=MASTER),
-            record("done", "cli-update-0001", action="update", title=MASTER, result={"note_id": "x-coredata://n9"}),
-        ]
-        with patch:
+class GatewayTests(NotesCliHarness):
+    def test_an_update_off_a_mac_goes_through_the_gateway_and_waits(self):
+        gw, sleeps, patches = self.gateway()
+        gw.queue("notes_update", {"request_id": "cli-update-0001", "action": "update", "status": "running", "transport": "operator", "title": MASTER})
+        gw.queue("notes_status", {"request_id": "cli-update-0001", "action": "update", "status": "done", "transport": "operator", "title": MASTER, "note_id": "x-coredata://n9"})
+        with patches[0], patches[1], patches[2]:
             result = self.notes("update", MASTER, "--request-id", "cli-update-0001", stdin="the new body")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(result.out, "cli-update-0001:  done (operator), note x-coredata://n9\n")
-        self.assertEqual(sleeps, [1.0, 1.0])
-        sent = op.calls[0]
-        self.assertEqual((sent["method"], sent["path"]), ("POST", "/notes/v1/requests"))
-        self.assertEqual(
-            sent["payload"],
-            {
-                "seat": "CLAUDE",
-                "request": {
-                    "v": 2,
-                    "action": "update",
-                    "request_id": "cli-update-0001",
-                    "identity": "CLAUDE",
-                    "title": MASTER,
-                    "markdown": "the new body",
-                    "flags": {},
-                    "session": SESSION,
-                },
-            },
-        )
-        self.assertEqual([c["method"] for c in op.calls], ["POST", "GET", "GET"])
+        self.assertEqual(sleeps, [2.0])
+        name, sent, write = gw.calls[0]
+        self.assertEqual((name, write), ("notes_update", True))
+        self.assertEqual(sent["title"], MASTER)
+        self.assertEqual(sent["markdown"], "the new body")
+        self.assertEqual(sent["session"], SESSION)
+        self.assertEqual(sent["request_id"], "cli-update-0001")
+        self.assertEqual(sent["wait_seconds"], 0)
+        self.assertNotIn("identity", sent, "the gateway derives the seat from the bearer")
+        self.assertEqual([c[0] for c in gw.calls], ["notes_update", "notes_status"])
+        self.assertEqual(gw.constructed, [(str(self.home / ".secrets" / "fleet-tools" / "claude"), "CLAUDE")])
         self.assertEqual(self.fake.messages, [], "no Zulip message")
         self.assertEqual([(r["tool"], r["outcome"]) for r in self.audit_rows()], [("notes update", "ok")])
-
     def test_no_wait_answers_queued_at_once(self):
         for argv in (("--no-wait",), ("--wait", "0")):
             with self.subTest(argv):
-                op, sleeps, patch = self.operator()
-                with patch:
+                gw, sleeps, patches = self.gateway()
+                gw.queue("notes_pin", {"request_id": "cli-queued-0001", "action": "pin", "status": "queued", "transport": "operator"})
+                with patches[0], patches[1], patches[2]:
                     result = self.notes("pin", MASTER, "--request-id", "cli-queued-0001", *argv)
                 self.assertEqual(result.code, 0, result.err)
                 self.assertEqual(
@@ -506,85 +511,80 @@ class OperatorTests(NotesCliHarness):
                     "cli-queued-0001:  queued (operator);  the Mac runner has not finished it:  "
                     "simple-notes status cli-queued-0001\n",
                 )
-                self.assertEqual((sleeps, [c["method"] for c in op.calls]), ([], ["POST"]))
+                self.assertEqual((sleeps, [c[0] for c in gw.calls]), ([], ["notes_pin"]))
         self.assertEqual(self.notes("pin", MASTER, "--wait", "301").code, 2)
-
     def test_a_wait_that_runs_out_answers_where_the_request_stands(self):
-        op, sleeps, patch = self.operator()
-        op.records[("CLAUDE", "cli-slow-00001")] = [record("running", "cli-slow-00001", action="pin", title=MASTER)]
-        with patch:
+        gw, sleeps, patches = self.gateway()
+        running = {"request_id": "cli-slow-00001", "action": "pin", "status": "running", "transport": "operator", "title": MASTER}
+        gw.queue("notes_pin", dict(running))
+        gw.queue("notes_status", dict(running), dict(running), dict(running), dict(running))
+        with patches[0], patches[1], patches[2]:
             result = self.notes("pin", MASTER, "--request-id", "cli-slow-00001", "--wait", "3", "--json")
         info = json.loads(result.out)
-        self.assertEqual((info["status"], info["transport"]), ("running", "operator"))
+        self.assertEqual(info["status"], "running")
         self.assertEqual(sum(sleeps), 3)
-
     def test_status_read_list_and_log_off_a_mac(self):
-        op, sleeps, patch = self.operator()
-        op.records[("CLAUDE", "cli-status-0001")] = [
-            record("refused", "cli-status-0001", error={"code": "not_found", "message": "no note with that title"})
-        ]
-        op.records[("CLAUDE", "cli-read-00001")] = [
-            record("done", "cli-read-00001", action="read", title=MASTER, result={"note": {"title": MASTER, "body": "<div>Jobs</div>", "format": "html"}})
-        ]
-        op.log_entries = [{"id": "e1", "ts": "2026-10-22T22:03:00Z", "mode": "update", "outcome": "ok", "seat": "CODEX", "caller": "runner", "title": MASTER}]
-        with patch:
+        gw, _, patches = self.gateway()
+        gw.queue("notes_status", {"request_id": "cli-status-0001", "status": "refused", "error": {"code": "not_found", "message": "no note with that title"}})
+        gw.queue("notes_read", {"request_id": "cli-read-00001", "action": "read", "status": "done", "transport": "operator", "note": {"title": MASTER, "body": "<div>Jobs</div>", "format": "html"}})
+        gw.queue("notes_log", {"entries": [{"id": "e1", "ts": "2026-10-22T22:03:00Z", "mode": "update", "outcome": "ok", "seat": "CODEX", "caller": "runner", "title": MASTER}], "source": "operator", "count": 1})
+        with patches[0], patches[1], patches[2]:
             status = self.notes("status", "cli-status-0001")
             read = self.notes("read", MASTER, "--request-id", "cli-read-00001")
             log = self.notes("log", "--by-seat", "CODEX", "--limit", "5")
         self.assertEqual(status.code, 0, status.err)
-        self.assertEqual(status.out, "cli-status-0001:  refused (operator), not_found:  no note with that title\n")
+        self.assertEqual(status.out, "cli-status-0001:  refused, not_found:  no note with that title\n")
         self.assertEqual(read.out, "<div>Jobs</div>\n")
         self.assertEqual(log.out, "Thu, Oct 22, 5:03pm  update  ok  CODEX  runner  %s\n(1 entries from the operator log)\n" % MASTER)
-        self.assertEqual(op.calls[-1]["query"], "since_hours=24&limit=5&by_seat=CODEX")
+        self.assertEqual(gw.calls[-1][:2], ("notes_log", {"limit": 5, "by_seat": "CODEX"}))
         self.assertEqual(self.audit_rows(), [], "status, read and log leave no audit row")
-
     def test_exit_codes(self):
         # 2 usage
         self.assertEqual(self.notes("create", TITLE, "--wait", "x").code, 2)
-        # 3 not configured:  no Operator origin on this host (the knob cannot be read)
+        # 3 not configured:  off a Mac with no bearer file of the bot's own, the shared service credential is not used
         missing = self.notes("pin", MASTER)
         self.assertEqual(missing.code, 3)
-        self.assertIn("OPERATOR_API_URL", missing.err)
-        # 3 not configured:  the Operator does not accept this host's key
-        op, _, patch = self.operator()
-        op.answers[("POST", "/notes/v1/requests")] = (401, {"error": "unauthorized"})
-        with patch:
-            self.assertEqual(self.notes("pin", MASTER).code, 3)
-        # 5 the Operator or the note refused
-        op, _, patch = self.operator()
-        op.records[("CLAUDE", "cli-refused-001")] = [record("refused", "cli-refused-001", action="pin", error={"code": "not_found", "message": "no note with that title"})]
-        with patch:
+        self.assertIn("fleet bearer file", missing.err)
+        self.assertIn("no fallback", missing.err)
+        # 5 the gateway refused this bearer
+        gw, _, patches = self.gateway()
+        gw.queue("notes_pin", F.FleetError("not_authorized", "gateway HTTP 401"))
+        with patches[0]:
+            self.assertEqual(self.notes("pin", MASTER).code, 5)
+        # 5 the note was refused;  the error itself is one status check away, under the same request id
+        gw, _, patches = self.gateway()
+        gw.queue("notes_pin", {"request_id": "cli-refused-001", "action": "pin", "status": "refused", "error": {"code": "not_found", "message": "no note with that title"}})
+        with patches[0]:
             refused = self.notes("pin", MASTER, "--request-id", "cli-refused-001")
         self.assertEqual(refused.code, 5)
-        self.assertIn("no note with that title", refused.err)
-        op, _, patch = self.operator()
-        op.records[("CLAUDE", "cli-unknown-001")] = [record("unknown", "cli-unknown-001", action="pin", error={"code": "outcome_unknown", "message": "the lease ran out"})]
-        with patch:
+        self.assertIn("notes request was refused", refused.err)
+        self.assertIn("simple-notes status cli-refused-001", refused.err)
+        gw, _, patches = self.gateway()
+        gw.queue("notes_pin", {"request_id": "cli-unknown-001", "action": "pin", "status": "unknown", "error": {"code": "outcome_unknown", "message": "the lease ran out"}})
+        with patches[0]:
             unknown = self.notes("pin", MASTER, "--request-id", "cli-unknown-001")
         self.assertEqual(unknown.code, 5)
-        self.assertIn("the lease ran out", unknown.err)
-        # 6 network
-        op, _, patch = self.operator()
-        op.fail = urllib.error.URLError("connection refused")
-        with patch:
+        self.assertIn("cli-unknown-001", unknown.err)
+        # 5 the gateway cannot be reached
+        gw, _, patches = self.gateway()
+        gw.queue("notes_pin", F.FleetError("unavailable", "gateway transport or response failed"))
+        with patches[0]:
             down = self.notes("pin", MASTER)
-        self.assertEqual(down.code, 6)
-        self.assertIn("could not be reached", down.err)
-
+        self.assertEqual(down.code, 5)
+        self.assertIn("gateway transport", down.err)
     def test_a_secret_or_a_missing_session_sends_nothing(self):
-        op, _, patch = self.operator()
-        with patch:
+        gw, _, patches = self.gateway()
+        with patches[0]:
             leak = self.notes("update", MASTER, stdin="token " + "ghp_" + "EXAMPLE0" * 5)
             nosession = self.notes("update", MASTER, stdin="x", env=self.env(CLAUDE_CODE_SESSION_ID=None))
         self.assertEqual((leak.code, nosession.code), (2, 2))
-        self.assertEqual(op.calls, [])
-
-    def test_an_interrupted_or_broken_operator_write_is_audited_once(self):
-        def interrupted(self, seat, request):
+        self.assertEqual(gw.calls, [])
+    def test_an_interrupted_or_broken_gateway_write_is_audited_once(self):
+        def interrupted(self, name, arguments, write=False):
             raise KeyboardInterrupt()
 
-        def broken(self, seat, request):
-            raise UnicodeEncodeError("ascii", "café secret-looking", 3, 4, "ordinal not in range")
+        def broken(self, name, arguments, write=False):
+            raise UnicodeEncodeError("ascii", "caf\xe9 secret-looking", 3, 4, "ordinal not in range")
 
         for label, replacement, code, outcome in (
             ("interrupted", interrupted, 130, "interrupted"),
@@ -592,14 +592,13 @@ class OperatorTests(NotesCliHarness):
         ):
             with self.subTest(label):
                 before = len(self.audit_rows())
-                op, _, patch = self.operator()
-                with patch, mock.patch.object(NC.OperatorClient, "enqueue", replacement):
+                gw, _, patches = self.gateway()
+                with patches[0], mock.patch.object(FakeFleet, "call", replacement):
                     result = self.notes("create", TITLE, "--request-id", "op-%s-001" % label, stdin="body")
                 self.assertEqual(result.code, code, result.err)
                 rows = self.audit_rows()[before:]
                 self.assertEqual([(r["tool"], r["outcome"]) for r in rows], [("notes create", outcome)], "exactly one row")
                 self.assertNotIn("secret-looking", json.dumps(rows))
-
     def test_a_status_check_that_fails_or_is_interrupted_leaves_no_audit_row(self):
         failed = self.notes("status", "nobody-asked-01")
         self.assertEqual(failed.code, 3, failed.err)

@@ -19,6 +19,23 @@ ENDPOINT = "https://agents.simplewithus.com/mcp"
 MAX_BYTES = 4_000_000
 TOKEN = re.compile(r"(?:sbt_([a-z][a-z0-9-]{1,19})|gbb_([a-z][a-z0-9]{1,19}))_([A-Za-z0-9_-]{43})")
 
+# The per-seat bearer files the assigned stdio connectors and the fleet CLIs read (mcp/bearer_gate.py,
+# fleet_rag/seat_auth.py):  a bearer comes from this one private place, never an environment
+# value, a launcher claim or another seat's file.
+BEARER_DIR = (".secrets", "fleet-tools")
+SEAT_FILE = re.compile(r"[a-z][a-z0-9-]{1,19}")
+
+
+def default_bearer_path(home, seat):
+    """This seat's own fleet bearer file, or FleetError not_configured when `seat` cannot name one."""
+    stem = str(seat or "").strip().lower()
+    if not SEAT_FILE.fullmatch(stem):
+        raise FleetError(
+            "not_configured", "%r is not a seat a fleet bearer file can belong to" % (seat,)
+        )
+    return Path(home).joinpath(*BEARER_DIR, stem)
+
+
 
 class FleetError(Exception):
     def __init__(self, code, message):
