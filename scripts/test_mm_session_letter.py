@@ -1494,6 +1494,27 @@ class MmReLetterTitleTest(unittest.TestCase):
 class MmReopenStrictTouchTest(unittest.TestCase):
     """The sweep sees a reopen that could not be done, so it keeps the session for a retry."""
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        # The script never brings a registry into being, so the file is created here.  A
+        # test that reads the registry of the host it runs on passes for the wrong
+        # reason on the seat's own Mac and fails on a runner that keeps none.
+        from agent_sync import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "AGENT_SYNC_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+        )
+
     def test_a_reopen_that_cannot_be_done_is_raised_when_strict_touch_is_set(self):
         with (
             mock.patch.object(
@@ -1532,7 +1553,17 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         # caller handles it the same way.
         from agent_sync import operator_registry as OR
 
-        with mock.patch.object(OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")):
+        with self._env(), mock.patch.object(
+            OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")
+        ):
             with self.assertRaises(M.RegistryError) as caught:
                 M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "reopen_failed")
+
+    def test_a_reopen_without_a_registry_is_a_registry_error_too(self):
+        # A host that keeps no registry answers no_registry, and that travels as one
+        # error type as well.
+        with mock.patch.object(M, "registry_db", return_value=""):
+            with self.assertRaises(M.RegistryError) as caught:
+                M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "no_registry")
