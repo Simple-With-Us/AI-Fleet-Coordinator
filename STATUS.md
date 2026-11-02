@@ -1,5 +1,9 @@
 # Status
 
+## 2026-11-02 MC — Muster live-pass fixes (AFC-592)
+
+Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
+
 ## 2026-11-01 MC — Muster Fleet Overhaul Sweep
 
 Ten audited fix batches plus a follow-up: hosted board identity, recall and backup correctness, Muster performance and control breadth (Settings scene, wake confirmations, knob unset, Secret Names and masked Recall panels), relay secret hardening, CI and site honesty, and hosted chat/board parity.  All gates green in the lane (Muster 617, agent-sync-mcp 1080, relay 199, knobs 113, board 30, visual 17).  Next action: merge, then file the Linear issue the broken hosted board blocked at claim time.  Rollout: `docs/rollouts/2026-11-01-muster-fleet-overhaul-sweep.md`.

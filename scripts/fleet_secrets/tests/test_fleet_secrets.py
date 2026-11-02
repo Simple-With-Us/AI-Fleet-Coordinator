@@ -241,10 +241,16 @@ class UnresolvedReferenceTests(Base):
         self.assertEqual((code, out), (5, ""))
         self.assertIn("BROKEN", err)
 
-    def test_names_fails_closed_too(self):
+    def test_names_lists_keys_despite_an_unresolved_value(self):
+        # Listing keys uses no value, so one key whose value is an unexpanded
+        # reference must not take the whole listing down (AFC-592).  `get` and
+        # `run` still fail closed on that key (covered above).
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${x}"}))
         code, out, _err = self.call("names")
-        self.assertEqual((code, out), (5, ""))
+        self.assertEqual(code, 0)
+        self.assertEqual(out.split(), ["ALPHA", "BROKEN"])
+        self.assertNotIn(VAL_A, out)
+        self.assertNotIn("${x}", out)
 
     def test_a_value_that_merely_contains_a_reference_is_fine(self):
         self.use(World(secrets={"ALPHA": "prefix-${x}-suffix"}))

@@ -172,7 +172,9 @@ def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
     opts = _parse(rest, False, 0)
     secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project)
-    core.reject_unresolved(secrets)
+    # No value is used here, so none is rejected:  one key whose value is an
+    # unexpanded reference must not hide every key name at the path (AFC-592).
+    # `doctor` still reports the unresolved count, and `get`/`run` fail closed.
     out.write("".join(n + "\n" for n in sorted(secrets)))
     out.flush()
     return 0
