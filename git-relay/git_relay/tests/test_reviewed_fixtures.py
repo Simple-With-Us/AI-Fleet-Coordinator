@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from git_relay.reviewed_fixtures import _REVIEWED_FIXTURES, unreviewed_file_secret
 from git_relay.secret_scan import find_secret
-from git_relay.workflow_verbs import Refused, WorkflowVerbs
 from git_relay.tests import test_workflow_verbs as support
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
 Multi, REPO, SHA = support.Multi, support.REPO, support.SHA
 
@@ -49,13 +49,23 @@ class ReviewedFixturesTests(TestCase):
         self.assertIsNone(unreviewed_file_secret(REPO, self.path, b"ordinary source"))
 
     def args(self):
-        return {"repo": REPO, "branch": "feat/x", "message": "test", "expected_head_sha": SHA,
-                "files": [{"path": self.path, "content_b64": base64.b64encode(self.raw).decode()}]}
+        return {
+            "repo": REPO,
+            "branch": "feat/x",
+            "message": "test",
+            "expected_head_sha": SHA,
+            "files": [{"path": self.path, "content_b64": base64.b64encode(self.raw).decode()}],
+        }
 
     def test_both_file_actions_preflight_and_every_byte_still_checked(self):
         multi = self.args()
-        single = {"repo": REPO, "branch": "feat/x", "message": "test", "path": self.path,
-                  "content_b64": multi["files"][0]["content_b64"]}
+        single = {
+            "repo": REPO,
+            "branch": "feat/x",
+            "message": "test",
+            "path": self.path,
+            "content_b64": multi["files"][0]["content_b64"],
+        }
         for action, args in [("wf_file_put", single), ("wf_files_put", multi)]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(action, args, REPO)

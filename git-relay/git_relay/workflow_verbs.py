@@ -34,8 +34,8 @@ import zlib
 from urllib.parse import quote, urlsplit
 
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
-from .secret_scan import find_secret
 from .reviewed_fixtures import unreviewed_file_secret
+from .secret_scan import find_secret
 from .server import PreReadUnavailable, _perm_within_ceiling
 
 
