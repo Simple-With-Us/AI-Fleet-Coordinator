@@ -58,7 +58,6 @@ jobs:
       uses: actions/setup-python@v7
       with:
         python-version: '3.15'
-        cache: pip
     # A repeated mapping key still loads in a Hash-backed YAML parser, and GitHub's
     # workflow parser rejects it.  The file then registers under its path and every
     # push gets a red suite with zero jobs (AFC-529).  Ruby's Psych AST keeps both
