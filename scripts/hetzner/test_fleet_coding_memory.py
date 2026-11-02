@@ -707,7 +707,7 @@ class ExcludeTests(unittest.TestCase):
             warnings = []
             got = m.load_excluded_units(f, expected_uid=os.geteuid(), warn=warnings.append)
             self.assertEqual(got, {"botfleet-server.service", "user.slice", "foo@bar.service"})
-            self.assertEqual(warnings, [])
+            self.assertEqual(len(warnings), 2)
 
     def test_missing_file_is_empty_and_silent(self):
         with tempfile.TemporaryDirectory() as d:
@@ -837,6 +837,92 @@ class ExcludeTests(unittest.TestCase):
             self.assertEqual(state["owned"], {})
             self.assertEqual(status["coding_groups"], 0)
             self.assertEqual(status["control_reasserted"], 0)
+
+    def test_step_with_discovered_resolves_excluded_units(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            excluded_group = cg(root / "system.slice" / "botfleet-server.service", high="max")
+            coding = cg(root / "system.slice" / "coding.service")
+            state = {"owned": {}}
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
+                self.assertTrue(m.write_owned(excluded_group, "memory.high", 256 * M, state))
+                with mock.patch.object(
+                    m, "resolve_unit_cgroups", return_value=[excluded_group]
+                ) as resolver:
+                    status = m.step(
+                        policy(),
+                        root,
+                        state,
+                        proc(root / "proc"),
+                        1,
+                        ([excluded_group, coding], []),
+                        excluded_units={"botfleet-server.service"},
+                        excluded_cgroups=set(),
+                    )
+            resolver.assert_called()
+            self.assertEqual((excluded_group / "memory.high").read_text(), "max")
+            self.assertNotIn(f"{excluded_group}:memory.high", state["owned"])
+            self.assertEqual(status["coding_groups"], 1)
+            self.assertEqual(status["excluded_units"], 1)
+
+    def test_parent_directory_group_or_world_writable_is_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = Path(d)
+            parent.chmod(0o777)
+            f = self._write_exclude(
+                parent / "exclude-units", "botfleet-server.service\n", mode=0o600
+            )
+            warnings = []
+            got = m.load_excluded_units(f, expected_uid=os.geteuid(), warn=warnings.append)
+            self.assertEqual(got, set())
+            self.assertEqual(len(warnings), 1)
+
+    def test_restore_excluded_counts_failed_handback_and_step_reports_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            p = cg(root / "unit", high="max")
+            state = {"owned": {}}
+            with mock.patch.object(
+                m, "write_control", side_effect=lambda path, value: path.write_text(value)
+            ):
+                m.write_owned(p, "memory.high", 256 * M, state)
+            with mock.patch.object(m, "write_control", side_effect=OSError("refused")):
+                failures = m.restore_excluded(state, {p})
+            self.assertEqual(failures, 1)
+            self.assertIn(f"{p}:memory.high", state["owned"])
+            self.assertEqual((p / "memory.high").read_text(), str(256 * M))
+            with mock.patch.object(m, "write_control", side_effect=OSError("refused")):
+                status = m.step(
+                    policy(),
+                    root,
+                    state,
+                    proc(root / "proc"),
+                    1,
+                    ([p], []),
+                    excluded_units={"botfleet-server.service"},
+                    excluded_cgroups={p},
+                )
+            self.assertEqual(status["control_write_failures"], 1)
+            self.assertIn(f"{p}:memory.high", state["owned"])
+
+    def test_invalid_lines_warn_per_line_with_number_and_truncated_repr(self):
+        with tempfile.TemporaryDirectory() as d:
+            long_line = "bad/" + "x" * 100
+            f = self._write_exclude(
+                Path(d) / "exclude-units",
+                f"good.service\n{long_line}\nhas space.service\n",
+                mode=0o600,
+            )
+            warnings = []
+            got = m.load_excluded_units(f, expected_uid=os.geteuid(), warn=warnings.append)
+            self.assertEqual(got, {"good.service"})
+            self.assertEqual(len(warnings), 2)
+            self.assertIn("line 2", warnings[0])
+            self.assertIn(repr(long_line)[:80], warnings[0])
+            self.assertNotIn("x" * 100, warnings[0])
+            self.assertIn("line 3", warnings[1])
 
     def test_external_edit_on_excluded_cgroup_respected(self):
         with tempfile.TemporaryDirectory() as d:

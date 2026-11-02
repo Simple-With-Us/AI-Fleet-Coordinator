@@ -62,15 +62,32 @@ def load_excluded_units(path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, war
         if not stat.S_ISREG(info.st_mode) or info.st_uid != expected_uid or info.st_mode & 0o022:
             warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
             return set()
+        try:
+            parent_info = os.stat(path.parent)
+        except OSError:
+            warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+            return set()
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != expected_uid
+            or parent_info.st_mode & 0o022
+        ):
+            warn(f"fleet-coding-memory: ignoring untrusted exclude file {path}")
+            return set()
         with os.fdopen(fd, "r", encoding="utf-8") as f:
             fd = -1  # fdopen owns it now
             units = set()
-            for line in f:
+            for lineno, line in enumerate(f, start=1):
                 name = line.strip()
                 if not name or name.startswith("#"):
                     continue
                 if UNIT_NAME_RE.match(name):
                     units.add(name)
+                else:
+                    warn(
+                        f"fleet-coding-memory: ignoring invalid exclude unit "
+                        f"on line {lineno}: {repr(name)[:80]}"
+                    )
             return units
     except UnicodeDecodeError:
         warn(f"fleet-coding-memory: ignoring unreadable exclude file {path} (not UTF-8)")
@@ -683,10 +700,11 @@ def restore_owned(state: dict[str, Any], persist=None) -> None:
 
 def restore_excluded(
     state: dict[str, Any], excluded_cgroups, persist=None, suspended=None
-) -> None:
+) -> int:
     """Hand back owned controls on now-excluded cgroups (external edit wins)."""
     if not excluded_cgroups:
-        return
+        return 0
+    failures = 0
     excluded = set(excluded_cgroups)
     for name, rec in list(state.get("owned", {}).items()):
         try:
@@ -706,7 +724,15 @@ def restore_excluded(
             f = p / key
             current = f.read_text().strip()
             if current == rec["last"] and current != rec["baseline"]:
-                write_control(f, str(rec["baseline"]))
+                try:
+                    write_control(f, str(rec["baseline"]))
+                except OSError:
+                    failures += 1
+                    print(
+                        f"fleet-coding-memory: failed to hand back {name}",
+                        file=sys.stderr,
+                    )
+                    continue
                 del state["owned"][name]
                 if persist:
                     persist()
@@ -721,6 +747,7 @@ def restore_excluded(
                     persist()
         except (OSError, ValueError, KeyError):
             continue
+    return failures
 
 
 def oom_kill_delta(paths: list[Path], state: dict[str, Any]) -> int:
@@ -822,14 +849,15 @@ def step(
     if discovered is None:
         containers, prod, production_limits = docker_groups(policy, root)
         code = unit_cgroups(policy, root, excluded=excluded_units) + containers
-        if excluded_units and not excluded_cgroups:
-            excluded_cgroups = set(resolve_unit_cgroups(sorted(excluded_units), root))
     else:
         code, prod = discovered[:2]
         production_limits = discovered[2] if len(discovered) > 2 else {}
+    if excluded_units and not excluded_cgroups:
+        excluded_cgroups = set(resolve_unit_cgroups(sorted(excluded_units), root))
     suspended = suspended_controls(state_dir if state_dir is not None else STATE_DIR)
+    restore_failures = 0
     if excluded_cgroups:
-        restore_excluded(state, excluded_cgroups, persist, suspended)
+        restore_failures = restore_excluded(state, excluded_cgroups, persist, suspended)
         code = [p for p in code if not _is_excluded_path(p, excluded_cgroups)]
     code = dedupe_nested(code)
     mode = state.get("mode", "normal")
@@ -886,7 +914,7 @@ def step(
     # instead of staying off until the next restart.
     reasserted = reconcile_owned(state, persist, suspended)
     allocations = allocate(target, code, state)
-    write_failures = sum(
+    write_failures = restore_failures + sum(
         not write_owned(p, "memory.high", n, state, persist, suspended)
         for p, n in allocations.items()
     )

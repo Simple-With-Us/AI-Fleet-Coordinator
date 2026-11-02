@@ -15,7 +15,7 @@ A host can opt a unit out without an Infisical policy change via `/etc/fleet-cod
 botfleet-server.service
 ```
 
-Trust rules: the file is used only if it is a regular file opened with `O_NOFOLLOW` (symlinks are rejected), owned by uid 0, and not group- or world-writable. Otherwise it is ignored entirely and one warning line goes to stderr per refresh. A missing file means an empty list and is silent.
+Trust rules: the file is used only if it is a regular file opened with `O_NOFOLLOW` (symlinks are rejected), owned by uid 0, and not group- or world-writable, and its parent directory is a directory owned by uid 0 and not group- or world-writable. Otherwise it is ignored entirely and one warning line goes to stderr per refresh. A missing file means an empty list and is silent.
 
 The file is reloaded on the same cadence as the policy (startup, background refresh, SIGHUP). Excluded units are skipped when `coding_units` are resolved, and an excluded unit's cgroup is never used as a coding root when reached via another route (for example docker discovery or user-slice nesting); exact and descendant cgroups are filtered. Limitation: if a configured coding root is an ancestor of an excluded unit (for example a whole slice), the excluded unit still shares that ancestor's limit — the controller does not carve out nested exceptions.
 
