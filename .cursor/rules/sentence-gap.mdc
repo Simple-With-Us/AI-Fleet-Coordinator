@@ -7,7 +7,7 @@ alwaysApply: true
 
 Follow the portable protocol exactly.  Do not weaken it.  Generate the U+00A0 in the shell rather than typing it.
 
-**Full protocol and code-aware converter:** `~/.cursor/skills/sentence-gap/SKILL.md` (repo: `docs/fleet-skills/sentence-gap/SKILL.md`), `docs/SENTENCE-GAP-PORTABLE-SKILL.md`, and `scripts/sentence_gap_convert.pl`.  Run the program for any body that carries code; the one-liner below is prose-only.
+**Full protocol and code-aware converter:** `~/.cursor/skills/sentence-gap/SKILL.md` (repo: `docs/fleet-skills/sentence-gap/SKILL.md`), and `docs/SENTENCE-GAP-PORTABLE-SKILL.md`, which work from any repo.  The skill embeds the converter as the `cat > gap.pl` heredoc, and `scripts/sentence_gap_convert.pl` is the same program, but only inside an AI-Fleet-Coordinator checkout.  Run the program for any body that carries code; the one-liner below is prose-only.
 
 Cursor Agent chat is a Markdown-rendering pane.  Like every surface since the owner ruling of 2026-10-23, it takes a real U+00A0 plus a normal space; only use the `&nbsp;` entity in the two exception panes.  Cursor is not one of the two exception panes (the Claude Code Code tab and the MiniMax Code chat pane), which normalize a raw U+00A0 away.  If the pane strips the U+00A0, leave the text as it is and report it in #Work-In-Progress.
 
@@ -85,7 +85,7 @@ grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"
 
 ### Code-aware conversion
 
-The one-liner is not safe on a body that carries fenced code, indented code, inline spans, or a `repo:` header.  Use `perl -CSDA -0777 -p scripts/sentence_gap_convert.pl` (and `--entity` for the two chat panes); idempotency, entity leftover, and the full recipe are in the skill.
+The one-liner is not safe on a body that carries fenced code, indented code, inline spans, or a `repo:` header.  From any repo, write the program from the `cat > gap.pl <<'PERL'` heredoc in `~/.cursor/skills/sentence-gap/SKILL.md` and run `perl -CSDA -0777 -p gap.pl body.txt` (add `--entity` for the two chat panes).  Inside an AI-Fleet-Coordinator checkout, `perl -CSDA -0777 -p scripts/sentence_gap_convert.pl body.txt` runs the same program.  Idempotency, entity leftover, and the full recipe are in the skill.
 
 **Source files are a different surface and are NOT affected.**  Code (Swift, TypeScript,
 shell), code comments, identifiers and machine-readable config never get a U+00A0:  a U+00A0
