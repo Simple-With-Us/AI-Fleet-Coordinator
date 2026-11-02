@@ -17,7 +17,7 @@ The only write path for knobs.  What it promises:
   * After a write the last-known-good copy is refreshed, so a reader that cannot reach
     Infisical sees the new value at once.  A live re-read refreshes it the usual way; when that
     read fails, the copy is patched for this one key and keeps its own age.
-  * Every ``--yes`` appends one row to ``~/.agent-sync/listener/knobs.jsonl`` (0600): time,
+  * Every ``--yes`` appends one row to ``~/.simple-tools/listener/knobs.jsonl`` (0600): time,
     seat, key, old and new value and the result.
 
 Every outside effect (the CLI, the keychain, the live read, the copy) is a parameter, so the
@@ -193,7 +193,7 @@ def refresh_lkg(
 
 
 def audit_path() -> str:
-    return os.path.join(os.path.expanduser("~"), ".agent-sync", "listener", "knobs.jsonl")
+    return os.path.join(os.path.expanduser("~"), ".simple-tools", "listener", "knobs.jsonl")
 
 
 def audit(path: str, row: dict[str, Any]) -> bool:

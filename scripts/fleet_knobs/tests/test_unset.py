@@ -19,7 +19,7 @@ class UnsetTests(KnobTestCase):
     def setUp(self):
         super().setUp()
         self.fake.set(secrets=LIVE)
-        self.audit_file = str(self.home / ".agent-sync" / "listener" / "knobs.jsonl")
+        self.audit_file = str(self.home / ".simple-tools" / "listener" / "knobs.jsonl")
 
     def run_unset(self, name, mode, environ=None, **kw):
         env = dict(os.environ)

@@ -86,7 +86,7 @@ value and the CLI argv and writes nothing; `--yes` runs `infisical secrets set N
 `fleet-knobs-write` (account `INFISICAL_TOKEN`); without one the answer is `no write token`. 
 After a write the last-known-good copy is refreshed (or, when the re-read fails, patched for
 that key with its age kept), and every `--yes` appends a row to
-`~/.agent-sync/listener/knobs.jsonl` (0600): time, seat, key, old and new value, result.  Exit 0
+`~/.simple-tools/listener/knobs.jsonl` (0600): time, seat, key, old and new value, result.  Exit 0
 planned or done, 1 failed, 2 refused.
 
 ## Packaging
