@@ -1345,9 +1345,7 @@ class MmLetterReopenTest(unittest.TestCase):
     def _write_cache(self, session_id, letter, topic=""):
         os.makedirs(self.scope, exist_ok=True)
         with open(os.path.join(self.scope, session_id + ".json"), "w", encoding="utf-8") as fh:
-            json.dump(
-                {"letter": letter, "topic": topic, "host": "mac", "space": "double"}, fh
-            )
+            json.dump({"letter": letter, "topic": topic, "host": "mac", "space": "double"}, fh)
 
     def _register(self, session_id):
         with self._env(), mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts):
@@ -1464,16 +1462,12 @@ class MmReLetterTitleTest(unittest.TestCase):
         # letter and it goes before the new one.
         held = ("CE", "CD")
         self.assertEqual(M.title_topic("CD: Topic", "CE", held), "Topic")
-        self.assertEqual(
-            M.wanted_title("CE", M.title_topic("CD: Topic", "CE", held)), "CE: Topic"
-        )
+        self.assertEqual(M.wanted_title("CE", M.title_topic("CD: Topic", "CE", held)), "CE: Topic")
 
     def test_a_doubled_pair_title_keeps_one_prefix_too(self):
         held = ("CC", "AA")
         self.assertEqual(M.title_topic("AA: Topic", "CC", held), "Topic")
-        self.assertEqual(
-            M.wanted_title("CC", M.title_topic("AA: Topic", "CC", held)), "CC: Topic"
-        )
+        self.assertEqual(M.wanted_title("CC", M.title_topic("AA: Topic", "CC", held)), "CC: Topic")
 
     def test_a_title_whose_prefix_this_session_never_held_keeps_its_acronym(self):
         # The session held only AA, so "AI:" is a topic that begins with an acronym and

@@ -448,8 +448,7 @@ class SessionRegistry:
         with an acronym.
         """
         rows = self._conn.execute(
-            "SELECT letter FROM alias_assignments WHERE record_id = ?"
-            " ORDER BY assigned_at DESC",
+            "SELECT letter FROM alias_assignments WHERE record_id = ? ORDER BY assigned_at DESC",
             (record_id,),
         ).fetchall()
         held: list[str] = []
