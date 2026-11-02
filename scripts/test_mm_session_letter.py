@@ -1295,3 +1295,276 @@ class MmSessionLetterTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MmLetterReopenTest(unittest.TestCase):
+    """A session the registry swept while its chat was live gets its letter back.
+
+    The sweep ends a session's letter when the session has not been seen for the stale
+    window and another session for the same seat has taken over since.  The MiniMax
+    path has to reopen the session when the chat comes back to life:  without it the
+    registry keeps no letter for a live chat, so a reply addressed to this seat by its
+    pair has nothing to resolve to, and the next chat can take the same pair a second
+    time.
+
+    These tests use the real registry and the real registry CLI against a temporary
+    registry file, so the whole path is exercised rather than a stand-in for it.
+    """
+
+    # Synthetic:  the accepted session-ID shape, never a real native session.
+    OTHER_SESSION_ID = "mvs_test0000000000000000000000000002"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        self.scripts = os.path.dirname(os.path.abspath(M.__file__))
+        self.scope = os.path.join(self.tmp.name, "v2", "hook-data", "user", "session-letters")
+        # The script never brings a registry into being, so the file is created here.
+        from agent_sync import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "AGENT_SYNC_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+        )
+
+    def _registry(self):
+        from agent_sync import operator_registry as R
+
+        reg = R.SessionRegistry(self.db)
+        self.addCleanup(reg.close_db)
+        return reg
+
+    def _write_cache(self, session_id, letter, topic=""):
+        os.makedirs(self.scope, exist_ok=True)
+        with open(os.path.join(self.scope, session_id + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"letter": letter, "topic": topic, "host": "mac", "space": "double"}, fh)
+
+    def _register(self, session_id):
+        with self._env(), mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts):
+            return M.register(session_id, "AA: Swept thread", "")
+
+    def _letter_for(self, session_id):
+        with self._env(), mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts):
+            return M.letter_for(session_id, "AA: Swept thread", "")
+
+    def test_a_swept_session_that_comes_back_to_life_gets_its_letter_back(self):
+        first = self._register(SESSION_ID)
+        self.assertEqual(first["label"], "AA")
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        self.assertIsNotNone(reg._get(first["record_id"])["closed_at"])
+        # The cache still holds the letter the live chat had.
+        self._write_cache(SESSION_ID, "AA")
+        self.assertEqual(self._letter_for(SESSION_ID), "AA")
+        # The registry holds it again, so a reply addressed to the pair resolves.
+        self.assertIsNone(reg._get(first["record_id"])["closed_at"])
+
+    def test_a_reopened_session_holds_a_pair_again_when_its_letter_went_to_another_chat(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        # Another chat takes AA while the first one is away.
+        second = self._register(self.OTHER_SESSION_ID)
+        self.assertEqual(second["label"], "AA")
+        self._write_cache(SESSION_ID, "AA")
+        letter = self._letter_for(SESSION_ID)
+        # The chat comes back with a pair, never with a single letter.
+        self.assertEqual(len(letter), 2)
+        self.assertNotEqual(letter, "AA")
+        # The cache is this seat's own copy of the letter, so it follows what the
+        # registry now says.
+        with self._env():
+            self.assertEqual(M.cached_letter(SESSION_ID), letter)
+
+    def test_the_reopened_letter_keeps_the_topic_the_cache_held(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        # Another chat takes AA while the first one is away.
+        second = self._register(self.OTHER_SESSION_ID)
+        self.assertEqual(second["label"], "AA")
+        self._write_cache(SESSION_ID, "AA", "The topic this thread holds")
+        letter = self._letter_for(SESSION_ID)
+        self.assertNotEqual(letter, "AA")
+        with self._env():
+            self.assertEqual(M.cached_topic(SESSION_ID), "The topic this thread holds")
+            self.assertEqual(M.cached_letter(SESSION_ID), letter)
+
+    def test_a_cache_write_that_fails_with_an_oserror_still_returns_the_letter(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(M, "reopen_closed", return_value={"label": "BB"}),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(M, "cached_topic", return_value="A topic"),
+            mock.patch.object(M, "cache_letter", side_effect=OSError("the disk is full")),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "BB")
+        self.assertIn("Could not cache the reopened letter", err.getvalue())
+
+    def test_a_reopen_that_cannot_be_done_keeps_the_cached_letter(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "AA")
+        self.assertIn("Could not reopen", err.getvalue())
+
+    def test_the_letter_command_reopens_a_closed_session(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        out = io.StringIO()
+        with (
+            self._env(),
+            mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts),
+            mock.patch.object(M, "sessions", return_value=[]),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.main(["letter", "--session-id", SESSION_ID])
+        self.assertEqual(code, 0)
+        answer = json.loads(out.getvalue())
+        self.assertEqual(answer["label"], "AA")
+        self.assertIsNone(reg._get(first["record_id"])["closed_at"])
+
+
+class MmReLetterTitleTest(unittest.TestCase):
+    """A thread that is re-lettered keeps one prefix, and a bare topic keeps its acronym.
+
+    A letter on this platform is a pair that need not be doubled:  a child of CC holds
+    CD.  A title starts with the letter the thread holds, so the first two capitals of a
+    title are that letter.  A bare topic is not a title, so an acronym at the start of one
+    is left alone.
+    """
+
+    def test_a_title_keeps_one_prefix_when_the_letter_changes(self):
+        # The session held CD and now holds CE, so the prefix of its title is its old
+        # letter and it goes before the new one.
+        held = ("CE", "CD")
+        self.assertEqual(M.title_topic("CD: Topic", "CE", held), "Topic")
+        self.assertEqual(M.wanted_title("CE", M.title_topic("CD: Topic", "CE", held)), "CE: Topic")
+
+    def test_a_doubled_pair_title_keeps_one_prefix_too(self):
+        held = ("CC", "AA")
+        self.assertEqual(M.title_topic("AA: Topic", "CC", held), "Topic")
+        self.assertEqual(M.wanted_title("CC", M.title_topic("AA: Topic", "CC", held)), "CC: Topic")
+
+    def test_a_title_whose_prefix_this_session_never_held_keeps_its_acronym(self):
+        # The session held only AA, so "AI:" is a topic that begins with an acronym and
+        # not a letter of this thread.
+        self.assertEqual(M.title_topic("AI: the model", "AA", ("AA",)), "AI: the model")
+        self.assertEqual(
+            M.wanted_title("AA", M.title_topic("AI: the model", "AA", ("AA",))),
+            "AA: AI: the model",
+        )
+
+    def test_a_title_with_no_prefix_keeps_its_topic(self):
+        self.assertEqual(M.title_topic("Topic", "CC"), "Topic")
+
+    def test_a_session_that_held_nothing_still_keeps_an_acronym(self):
+        # With no history the shape rules apply, and an acronym is not a letter shape
+        # this platform issues for a thread that never held one.
+        self.assertEqual(M.title_topic("AI: the model", "CC"), "AI: the model")
+
+    def test_a_bare_topic_that_starts_with_an_acronym_keeps_it(self):
+        # The topic is not a title, so the acronym is not a letter and stays.
+        self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
+
+
+class MmReopenStrictTouchTest(unittest.TestCase):
+    """The sweep sees a reopen that could not be done, so it keeps the session for a retry."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        # The script never brings a registry into being, so the file is created here.  A
+        # test that reads the registry of the host it runs on passes for the wrong
+        # reason on the seat's own Mac and fails on a runner that keeps none.
+        from agent_sync import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "AGENT_SYNC_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+        )
+
+    def test_a_reopen_that_cannot_be_done_is_raised_when_strict_touch_is_set(self):
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(M.RegistryError),
+        ):
+            M.letter_for(SESSION_ID, "AA: Swept thread", "", strict_touch=True)
+
+    def test_a_reopen_that_cannot_be_done_is_quiet_without_strict_touch(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "AA")
+        self.assertIn("Could not reopen", err.getvalue())
+
+    def test_a_reopen_that_fails_on_the_registry_is_a_registry_error(self):
+        # A raw storage failure out of the reopen travels as a RegistryError, so every
+        # caller handles it the same way.
+        from agent_sync import operator_registry as OR
+
+        with (
+            self._env(),
+            mock.patch.object(OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")),
+        ):
+            with self.assertRaises(M.RegistryError) as caught:
+                M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "reopen_failed")
+
+    def test_a_reopen_without_a_registry_is_a_registry_error_too(self):
+        # A host that keeps no registry answers no_registry, and that travels as one
+        # error type as well.
+        with mock.patch.object(M, "registry_db", return_value=""):
+            with self.assertRaises(M.RegistryError) as caught:
+                M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "no_registry")
