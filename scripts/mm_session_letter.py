@@ -720,29 +720,45 @@ def _refuse_symlink_chain(root: str, *parts: str) -> str:
     return current
 
 
-def _project_scope_dirs() -> list[str]:
+# The project scopes are listed once per change of the scope root, and the
+# listing is revalidated by the lookup that misses in it.  A hit then costs a
+# stat, and a scope that appeared after the listing is still found.
+_SCOPE_LISTINGS: dict[str, tuple[int, list[str]]] = {}
+
+
+def _project_scope_dirs(revalidate: bool = False) -> list[str]:
     """The letter-cache directories of the project scopes, in a stable order.
 
-    The listing is not remembered:  a listing remembered against the scope root's
-    mtime went stale inside one tick, so a scope that appeared after the first
-    listing was invisible until the tick changed.  The callers that ask once per
-    session enumerate once and pass the list on, so the listing costs nothing there.
+    The listing is remembered against the scope root's mtime, so a lookup costs a
+    stat instead of a listing.  A listing that is only refreshed when it changes
+    went stale inside one tick, so a scope that appeared after it was invisible
+    until the tick changed:  revalidate forces the listing again, and the callers
+    revalidate on a miss, so a hit stays cheap and a miss is never wrong.
     """
     projects = _refuse_symlink_chain(data_dir(), "v2", "hook-data", "projects")
     try:
-        names = sorted(os.listdir(projects))
+        stamp = os.stat(projects).st_mtime_ns
     except OSError:
-        names = []
+        stamp = -1
+    cached = _SCOPE_LISTINGS.get(projects)
+    if cached is not None and cached[0] == stamp and not revalidate:
+        names = cached[1]
+    else:
+        try:
+            names = sorted(os.listdir(projects))
+        except OSError:
+            names = []
+        _SCOPE_LISTINGS[projects] = (stamp, names)
     return [
         _refuse_symlink_chain(data_dir(), "v2", "hook-data", "projects", name, "session-letters")
         for name in names
     ]
 
 
-def _scope_dirs() -> Iterator[str]:
+def _scope_dirs(revalidate: bool = False) -> Iterator[str]:
     """The letter-cache directories of the runtime's scopes, the user scope first."""
     yield _refuse_symlink_chain(data_dir(), "v2", "hook-data", "user", "session-letters")
-    for directory in _project_scope_dirs():
+    for directory in _project_scope_dirs(revalidate):
         yield directory
 
 
@@ -756,7 +772,7 @@ def _legacy_cache_dir() -> str:
     return _refuse_symlink_chain(data_dir(), "hook-state", "session-letters")
 
 
-def letter_cache_dirs() -> list[str]:
+def letter_cache_dirs(revalidate: bool = False) -> list[str]:
     """Every letter-cache directory this host may hold, in the order it is read.
 
     A hook knows its scope:  the runtime hands it that scope in MINIMAX_HOOKS_DATA,
@@ -774,7 +790,7 @@ def letter_cache_dirs() -> list[str]:
         # The override is the scope the runtime names, and it is refused on the read
         # path too:  letter_cache_dir refuses that base for a write.
         return [_refuse_symlink_chain(override, "session-letters")]
-    directories = list(_scope_dirs())
+    directories = list(_scope_dirs(revalidate))
     directories.append(_legacy_cache_dir())
     return directories
 
@@ -870,9 +886,25 @@ def cached_letter(session_id: str, directories: list[str] | None = None) -> str:
     primary cache uses, and is never followed.
 
     The caller that asks once per session passes the list it enumerated, so the
-    scopes are listed once for the whole run rather than once per session.
+    scopes are listed once for the whole run rather than once per session.  A miss
+    re-enumerates once, so a scope that appeared after the snapshot is still found.
     """
-    for directory in directories if directories is not None else letter_cache_dirs():
+    if directories is None:
+        letter = _cached_letter_in_directories(letter_cache_dirs(), session_id)
+        if letter:
+            return letter
+        # The listing missed:  a scope may have appeared after it was taken.
+        return _cached_letter_in_directories(letter_cache_dirs(True), session_id)
+    letter = _cached_letter_in_directories(directories, session_id)
+    if letter:
+        return letter
+    # The snapshot missed:  a scope may have been created while the run was going.
+    return _cached_letter_in_directories(letter_cache_dirs(True), session_id)
+
+
+def _cached_letter_in_directories(directories: list[str], session_id: str) -> str:
+    """The letter in the first of these directories that holds one, or ""."""
+    for directory in directories:
         letter = _cached_letter_in(directory, session_id)
         if letter:
             return letter

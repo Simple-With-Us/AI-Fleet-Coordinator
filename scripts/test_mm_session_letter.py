@@ -302,6 +302,39 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(session_id, "mvs_sweep")
             self.assertIsNotNone(directories)
 
+    def test_a_scope_created_after_the_snapshot_is_still_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            scope = os.path.join(projects, "abc123", "session-letters")
+            with self._shell_env(tmp):
+                snapshot = M.letter_cache_dirs()
+                self.assertEqual(M.cached_letter("sid", snapshot), "")
+                self._write_cache(scope, "sid", "CD")
+                # A miss re-enumerates once, so a scope created while the run was
+                # going is found.
+                self.assertEqual(M.cached_letter("sid", snapshot), "CD")
+
+    def test_a_hook_lookup_does_not_list_the_scopes_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "sid", "BB")
+            with self._shell_env(tmp):
+                calls = []
+                real = os.listdir
+
+                def counting_listdir(path):
+                    calls.append(str(path))
+                    return real(path)
+
+                with mock.patch.object(os, "listdir", side_effect=counting_listdir):
+                    self.assertEqual(M.cached_letter("sid"), "BB")
+                    self.assertEqual(M.cached_letter("sid"), "BB")
+                # The scopes are listed once and the listing is remembered, so a hook
+                # that finds its letter pays a stat and not a listing.
+                listings = [c for c in calls if c.endswith("projects")]
+                self.assertLessEqual(len(listings), 1)
+
     def test_a_caller_can_pass_the_scopes_it_enumerated(self):
         with tempfile.TemporaryDirectory() as tmp:
             other = os.path.join(tmp, "elsewhere")
