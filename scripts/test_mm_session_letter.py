@@ -1553,8 +1553,9 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         # caller handles it the same way.
         from agent_sync import operator_registry as OR
 
-        with self._env(), mock.patch.object(
-            OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")
+        with (
+            self._env(),
+            mock.patch.object(OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")),
         ):
             with self.assertRaises(M.RegistryError) as caught:
                 M.reopen_closed("r1")
