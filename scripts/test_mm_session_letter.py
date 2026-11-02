@@ -1714,6 +1714,23 @@ class RemoteRegistryHopTest(unittest.TestCase):
                 self.assertEqual(answer["code"], "remote_unparseable")
                 self.assertEqual(answer["outcome"], "outcome_unknown")
 
+    def test_a_far_host_that_exits_non_zero_with_a_success_answer_is_a_failure(self):
+        # The far side's exit code counts:  a call that failed with a non-zero exit is
+        # not a success, whatever its answer looks like.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 2, stdout='{"label": "AA"}', stderr=""
+                ),
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertIn("error", answer)
+        self.assertNotIn("label", answer)
+
     def test_the_local_registry_is_used_when_this_host_has_one(self):
         # A host that keeps its own registry never goes over the wire.
         with (

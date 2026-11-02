@@ -1727,6 +1727,28 @@ class RegistryModuleDispatchTest(Base):
         answer = json.loads(out.getvalue().splitlines()[-1])
         self.assertIn("error", answer)
 
+    def test_the_module_cli_answers_the_stream_the_caller_gave_it(self) -> None:
+        # The module's CLI writes to stdout itself, so the answer has to be redirected
+        # into the stream the caller passed:  an answer goes where the caller reads it.
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"AGENT_SYNC_STATE_DIR": self.state}):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0011",
+                    "--seat=MM",
+                    "--source=a test",
+                ],
+                stdout=out,
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["label"], "AA")
+
     def test_the_module_cli_never_brings_a_registry_into_being(self) -> None:
         # A host with no registry must not grow one:  a second registry hands out
         # letters that collide with the ones the Operator keeps.

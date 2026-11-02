@@ -363,6 +363,11 @@ def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> d
             "code": "remote_unparseable",
             "outcome": "outcome_unknown",
         }
+    if proc.returncode and "error" not in answer:
+        # The far side's exit code counts:  a call that failed with a non-zero exit is
+        # not a success, whatever its answer looks like.  This is the same rule the
+        # local path applies.
+        answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
     return answer
 
 
