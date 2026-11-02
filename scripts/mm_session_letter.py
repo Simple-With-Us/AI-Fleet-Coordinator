@@ -545,10 +545,14 @@ def apply_title(session_id: str, letter: str, topic: str) -> str:
             return ""
     try:
         update_title(session_id, title)
-    except (RegistryError, ValueError):
+    except RegistryError:
         # The thread carries the title in the store;  the registry copy is a
         # second copy, and the sweep carries it later.
         pass
+    except ValueError:
+        # The title carried a credential.  Nothing is printed back, because
+        # the caller prints what this returns.
+        return ""
     return title
 
 
