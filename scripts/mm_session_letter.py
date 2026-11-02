@@ -748,9 +748,7 @@ def _project_scope_dirs() -> list[str]:
             names = []
         _SCOPE_LISTINGS[projects] = (stamp, names)
     return [
-        _refuse_symlink_chain(
-            data_dir(), "v2", "hook-data", "projects", name, "session-letters"
-        )
+        _refuse_symlink_chain(data_dir(), "v2", "hook-data", "projects", name, "session-letters")
         for name in names
     ]
 
