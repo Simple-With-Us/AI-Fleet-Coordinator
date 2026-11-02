@@ -262,10 +262,11 @@ enum ChatLocator {
     /// here,  and Jay's own account is not a seat.  A launcher that started the app
     /// cannot change this,  because the child environment carries neither
     /// `AGENT_LAUNCHER` nor `AGENT_LAUNCH_SEAT`.
-    static func readingSeat(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
-        let override = (environment["MUSTER_ZULIP_SEAT"] ?? "").trimmingCharacters(in: .whitespaces)
-        if !override.isEmpty { return override }
-        return defaultSeat
+    static func readingSeat(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        MusterSettings.zulipSeat(defaults: defaults, environment: environment)
     }
 
     /// The CLI,  or nil when it is not on this Mac.

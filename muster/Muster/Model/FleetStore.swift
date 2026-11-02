@@ -250,11 +250,27 @@ final class FleetStore: ObservableObject {
             }
     }
 
-    /// Run the engine again.
+    /// The one engine run in flight, and the lock that guards it.
+    private final class RefreshBox {}
+
+    private let refreshLock = NSLock()
+    private var refreshBox: RefreshBox?
+
+    /// Whether a refresh is already in flight (single-flight).
+    private var refreshInFlight: Bool {
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
+        return refreshBox != nil
+    }
+
+    /// Run the engine again. Single-flight: a call while a run is in flight
+    /// shares that run instead of starting a second engine, like
+    /// `engineAnswer()` above.
     ///
     /// The old results go before the run starts, so a run that dies halfway leaves the
     /// grid unknown rather than showing the last good answer.
     func refresh() {
+        guard !refreshInFlight else { return }
         guard let location = location else {
             results = []
             summary = nil
@@ -274,10 +290,23 @@ final class FleetStore: ObservableObject {
         generatedAt = nil
         rebuild()
         phase = .running
+        let box = RefreshBox()
+        refreshLock.lock()
+        // A caller on another thread may have started a run since the guard.
+        if refreshBox != nil {
+            refreshLock.unlock()
+            return
+        }
+        refreshBox = box
+        refreshLock.unlock()
         let runner = EngineRunner(location: location)
         runner.run { [weak self] run in
             DispatchQueue.main.async {
-                self?.apply(run)
+                guard let self else { return }
+                self.refreshLock.lock()
+                if self.refreshBox === box { self.refreshBox = nil }
+                self.refreshLock.unlock()
+                self.apply(run)
             }
         }
     }

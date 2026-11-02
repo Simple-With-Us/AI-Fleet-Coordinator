@@ -102,6 +102,8 @@ struct KnobRegistry {
         /// The panel puts the note on a line of its own,  because the notes are far
         /// longer than a column of a table can hold.
         let note: String
+        /// The registry default, shown so Reset To Default can restore it in the editor.
+        var defaultValue: String = ""
         /// The editor the knob gets,  or nil for a secret,  which is never edited here.
         var editor: KnobEditorKind? = nil
         /// The value an editor starts from.
@@ -134,6 +136,7 @@ struct KnobRegistry {
                 nowIsSecret: knob.isSecret,
                 localMay: knob.localMay,
                 note: knob.note,
+                defaultValue: knob.defaultValue,
                 editor: knob.editor,
                 editValue: knob.isSecret ? "" : knob.editValue
             )

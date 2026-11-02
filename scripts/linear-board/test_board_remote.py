@@ -145,11 +145,26 @@ class Remote(unittest.TestCase):
         it = iter(answers)
         return it
 
+    IDANS = {
+        "default_identity": "CODEX",
+        "authenticated_seat": "CODEX",
+        "identities": [{"identity": "CODEX"}],
+    }
+
     def run_writes(self, argv, answers, env=None):
         calls, it = [], iter(answers)
 
         def fake(url, headers, body, timeout):
-            calls.append(json.loads(body)["params"])
+            params = json.loads(body)["params"]
+            calls.append(params)
+            args = params.get("arguments") or {}
+            if params["name"] in (
+                "linear_file",
+                "linear_claim",
+                "linear_comment",
+                "linear_status",
+            ) and not args.get("identity"):
+                return rpc({"code": "identity_required"}, is_error=True)
             return next(it)
 
         out, err = io.StringIO(), io.StringIO()
@@ -166,8 +181,6 @@ class Remote(unittest.TestCase):
                 code = e.code
         return code, out.getvalue(), err.getvalue(), calls
 
-    WHO = {"seat": "CODEX", "authenticated_seat": "CODEX", "app": "Codex"}
-
     def test_writes_need_their_own_switch(self):
         code, _, err, calls = self.run_cli(
             ["comment", "AFC-1", "--by", "CODEX", "--text", "x"], rpc({})
@@ -175,35 +188,27 @@ class Remote(unittest.TestCase):
         self.assertEqual((code, calls), (2, []))
         self.assertIn("SIMPLE_BOARD_REMOTE_WRITES", err)
 
-    def test_a_usage_error_is_refused_before_any_network_call(self):
-        #  The seat check costs a hosted round trip, so a per-command usage error
-        #  must be reported locally instead of behind a transport failure.
-        code, _, err, calls = self.run_writes(["comment", "AFC-1", "--by", "CODEX"], [])
-        self.assertEqual(code, 2)
-        self.assertEqual(calls, [])
-        self.assertIn("--text", err)
-
     def test_comment_claim_status_file_map_to_hosted_tools_after_the_seat_check(self):
         cases = [
             (
                 ["comment", "AFC-1", "--by", "codex", "--text", "hi"],
                 "linear_comment",
-                {"id": "AFC-1", "body": "hi"},
+                {"id": "AFC-1", "body": "hi", "identity": "CODEX"},
             ),
             (
                 ["claim", "AFC-1", "--by", "CODEX", "--comment", "on it"],
                 "linear_claim",
-                {"id": "AFC-1", "comment": "on it"},
+                {"id": "AFC-1", "comment": "on it", "identity": "CODEX"},
             ),
             (
                 ["status", "AFC-1", "done", "--by", "CODEX"],
                 "linear_status",
-                {"id": "AFC-1", "status": "done"},
+                {"id": "AFC-1", "status": "done", "identity": "CODEX"},
             ),
             (
                 ["status", "AFC-1", "duplicate", "--of", "AFC-2"],
                 "linear_status",
-                {"id": "AFC-1", "status": "duplicate", "of": "AFC-2"},
+                {"id": "AFC-1", "status": "duplicate", "of": "AFC-2", "identity": "CODEX"},
             ),
             (
                 [
@@ -227,39 +232,99 @@ class Remote(unittest.TestCase):
                     "severity": "P2",
                     "description": "d",
                     "label": ["needs-owner"],
+                    "identity": "CODEX",
                 },
             ),
         ]
         for argv, tool, args in cases:
             with self.subTest(argv=argv):
-                answers = [rpc(self.WHO), rpc({"id": "1"}, text="done")]
+                answers = [rpc(self.IDANS), rpc({"id": "1"}, text="done")]
                 code, out, err, calls = self.run_writes(argv, answers)
                 self.assertEqual(code, 0, err)
-                self.assertEqual(
-                    calls[-1], {"name": tool, "arguments": {**args, "identity": "CODEX"}}
-                )
+                self.assertEqual(calls[-1], {"name": tool, "arguments": args})
 
     def test_by_that_is_not_the_bearers_seat_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(
-            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)]
+            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.IDANS)]
         )
         self.assertEqual(code, 2)
-        self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
+        self.assertEqual([c["name"] for c in calls], ["identities"])
 
     def test_by_mismatch_names_the_seat_the_server_reported(self):
         _, _, err, _ = self.run_writes(
-            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)]
+            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.IDANS)]
         )
         self.assertIn("(CODEX)", err)
 
     def test_a_credential_shaped_comment_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(
             ["comment", "AFC-1", "--by", "CODEX", "--text", "token ghp_" + "A1b2C3d4E5" * 4],
-            [rpc(self.WHO)],
+            [rpc(self.IDANS)],
         )
-        self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
+        # The scan runs before even the identities lookup:  nothing is sent.
+        self.assertEqual([c["name"] for c in calls], [])
         self.assertIn("secret_scan:body", err)
         self.assertNotIn("ghp_", err)
+
+    def test_identity_answer_mismatch_refuses_before_the_write(self):
+        bad = {
+            "default_identity": "ECHO",
+            "authenticated_seat": "CODEX",
+            "identities": [{"identity": "ECHO"}],
+        }
+        code, _, err, calls = self.run_writes(
+            ["comment", "AFC-1", "--by", "CODEX", "--text", "x"], [rpc(bad)]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual([c["name"] for c in calls], ["identities"])
+
+    def test_list_single_label_maps_and_multiple_or_combined_are_refused(self):
+        code, _, err, calls = self.run_cli(
+            ["list", "--label", "needs-owner"], rpc({"count": 0, "ids": []})
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[0][2]["params"]["arguments"], {"label": "needs-owner", "limit": 60})
+        for argv in (
+            ["list", "--label", "needs-owner", "--label", "ask-capture"],
+            ["list", "--label", "needs-owner,ask-capture"],
+        ):
+            code, _, err, calls = self.run_cli(argv, rpc({"count": 0, "ids": []}))
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, [])
+            self.assertIn("single", err)
+
+    def test_list_comma_status_and_severity_are_refused_naming_single_value(self):
+        for argv, flag in (
+            (["list", "--status", "open,completed"], "--status"),
+            (["list", "--severity", "P0,P1"], "--severity"),
+        ):
+            code, _, err, calls = self.run_cli(argv, rpc({"count": 0, "ids": []}))
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, [])
+            self.assertIn(flag, err)
+            self.assertIn("single value", err)
+
+    def test_file_comma_severity_is_refused_before_any_call(self):
+        code, _, err, calls = self.run_writes(
+            ["file", "--title", "T", "--severity", "P0,P1"], [rpc(self.IDANS)]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("single value", err)
+
+    def test_remote_error_hints_are_static_and_do_not_echo_server_text(self):
+        for code_name in (
+            "identity_required",
+            "session_required",
+            "writes_disabled",
+            "not_configured",
+        ):
+            code, _, err, _ = self.run_cli(
+                ["list"], rpc({"code": code_name}, is_error=True, text="server-private-word")
+            )
+            self.assertEqual(code, board.EXIT_ERROR)
+            self.assertIn(code_name, err)
+            self.assertNotIn("server-private-word", err)
 
     def test_show_with_no_text_prints_the_structured_result_and_text_is_escaped(self):
         code, out, _, _ = self.run_cli(["show", "AFC-1"], rpc({"id": "AFC-1"}))
@@ -278,7 +343,7 @@ class Remote(unittest.TestCase):
             ["file", "--title", "T", "--by", "X"],
         ):
             with self.subTest(argv=argv):
-                code, _, _, calls = self.run_writes(argv, [rpc(self.WHO)] * 2)
+                code, _, _, calls = self.run_writes(argv, [rpc(self.IDANS)] * 2)
                 self.assertEqual(code, 2)
                 self.assertNotIn("linear_comment", [c["name"] for c in calls])
 
@@ -402,9 +467,16 @@ class NativeEcho(unittest.TestCase):
         def run(argv, **kwargs):
             call = json.loads(kwargs["input"].splitlines()[-1])
             name = call["params"]["name"]
-            result = (
-                {"seat": "ECHO", "app": "FleetOPS"} if name == "linear_whoami" else {"ok": True}
-            )
+            if name == "identities":
+                result = {
+                    "default_identity": "ECHO",
+                    "authenticated_seat": "ECHO",
+                    "identities": [{"identity": "ECHO"}],
+                }
+            elif name == "linear_whoami":
+                result = {"seat": "ECHO", "app": "FleetOPS"}
+            else:
+                result = {"ok": True}
             response = {
                 "jsonrpc": "2.0",
                 "id": 1,

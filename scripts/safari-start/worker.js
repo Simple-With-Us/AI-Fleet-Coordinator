@@ -49,6 +49,6 @@ export default {
       });
     }
     if (['/apple-touch-icon.png', '/robots.txt'].includes(url.pathname)) return env.ASSETS.fetch(request);
-    return new Response('Not found', { status: 404 });
+    return new Response('Not found', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
   },
 };

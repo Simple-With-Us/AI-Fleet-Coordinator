@@ -139,6 +139,12 @@ class InfisicalSettings:
         self._login_lock = threading.Lock()
         self._identity_lock = threading.Lock()
         self._cache: dict[str, str] = {}
+        # Keys some Infisical fetch actually returned.  The env backfill is a
+        # migration bridge for keys that have only ever lived in the process
+        # environment; once Infisical has owned a key, a later delete must
+        # propagate instead of the backfill resurrecting the env copy.
+        # (A dict, not a set: this module's own set() API shadows the builtin.)
+        self._infisical_keys: dict[str, None] = {}
         self._access_token: str | None = None
         self._credential_source: str | None = None
         self._identity: tuple[str | None, str | None] | None = None
@@ -367,6 +373,27 @@ class InfisicalSettings:
 
     # -- lifecycle ----------------------------------------------------------
 
+    def _backfill_from_env(self, fetched: dict[str, str]) -> dict[str, str]:
+        """Fill managed keys missing from a fetch from the process environment.
+
+        The migration bridge shared by init() and refresh(): without it in
+        refresh(), an env-only key would vanish at the first background refresh.
+        Backfilled key names are logged (never values) so the fallback stays
+        visible."""
+        backfilled = [
+            k
+            for k in self.managed_keys
+            if k not in fetched and k not in self._infisical_keys and os.environ.get(k)
+        ]
+        for k in backfilled:
+            fetched[k] = os.environ[k]
+        if backfilled:
+            logger.warning(
+                "infisical-settings: backfilled from environment (not in Infisical): "
+                + ", ".join(backfilled)
+            )
+        return fetched
+
     def init(self) -> None:
         """Populate the cache at startup.  Fails fast on missing required keys.
 
@@ -390,14 +417,8 @@ class InfisicalSettings:
                 "machine identity); populating managed keys from the process environment"
             )
             fetched = {}
-        backfilled = [k for k in self.managed_keys if k not in fetched and os.environ.get(k)]
-        for k in backfilled:
-            fetched[k] = os.environ[k]
-        if backfilled:
-            logger.warning(
-                "infisical-settings: backfilled from environment (not in Infisical): "
-                + ", ".join(backfilled)
-            )
+        self._infisical_keys.update(dict.fromkeys(fetched.keys()))
+        fetched = self._backfill_from_env(fetched)
         with self._lock:
             self._cache = dict(fetched)
         missing = [k for k in self.required_keys if not self._cache.get(k)]
@@ -454,6 +475,20 @@ class InfisicalSettings:
                 "infisical-settings: refresh failed (%s); keeping last-known-good "
                 "cache of %d key(s)",
                 type(e).__name__,
+                len(self._cache),
+            )
+            return False
+        self._infisical_keys.update(dict.fromkeys(fetched.keys()))
+        fetched = self._backfill_from_env(fetched)
+        missing = [k for k in self.required_keys if not fetched.get(k)]
+        if missing:
+            # A successful fetch that drops a required key to empty is not applied:
+            # the last-known-good cache keeps serving (an empty fetch must not wipe
+            # the settings), and the dropped keys are named in the log.
+            logger.error(
+                "infisical-settings: refresh dropped required key(s) %s; keeping "
+                "last-known-good cache of %d key(s)",
+                ", ".join(missing),
                 len(self._cache),
             )
             return False
@@ -589,6 +624,10 @@ class InfisicalSettings:
         """Mirror non-empty cached values into os.environ (for backend libraries that
         read the environment).  Returns the key names that were exported -- never values.
 
+        A key whose cached value is empty or absent is DELETED from os.environ, so a
+        secret removed or emptied in Infisical does not stay live in the process
+        environment after a refresh.
+
         The service token is never mirrored:  it is a credential, not a setting, so it
         stays out of the export path."""
         exported = []
@@ -599,6 +638,8 @@ class InfisicalSettings:
             if val:
                 os.environ[key] = val
                 exported.append(key)
+            else:
+                os.environ.pop(key, None)
         return exported
 
     def admin_listing(self) -> dict[str, dict]:

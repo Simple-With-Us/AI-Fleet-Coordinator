@@ -81,3 +81,7 @@ ef42f132ad746c13dbe89c058d9e895ef64790a8:scripts/agent-sync-mcp/wrangler.jsonc:g
 # Built at runtime from the next commit on, so these silence the historical commit only.
 c3917b4bf6b2b045fa4089ab3ae8f725922d4396:git-relay/git_relay/tests/test_assertion.py:generic-api-key:36
 c3917b4bf6b2b045fa4089ab3ae8f725922d4396:scripts/agent-sync-mcp/test/gr-assert.test.mjs:generic-api-key:25
+# Dummy long token-shaped fixture in the relay audit redaction tests, squashed-commit of
+# the Muster overhaul PR (#1239). The value is made up to prove the audit log hashes
+# credential-shaped strings; assembled at runtime from the next commit on.
+49c3d7345030419da934356240448c7ac9c45622:git-relay/git_relay/tests/test_b9_hardening.py:generic-api-key:112

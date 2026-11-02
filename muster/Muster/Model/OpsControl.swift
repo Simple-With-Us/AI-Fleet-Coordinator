@@ -85,12 +85,14 @@ enum OpsAction: Equatable {
     case coolifyRedeploy(uuid: String, name: String)
     /// `fleet_knobs set KEY VALUE`,  run on this Mac.
     case knobSet(key: String, value: String)
+    /// `fleet_knobs unset KEY`,  run on this Mac:  removes the override so the default applies.
+    case knobUnset(key: String)
 
     /// True when the action runs on the server,  over ssh.
     var runsOnServer: Bool {
         switch self {
         case .serverUnit, .serverUpdate, .coolifyRedeploy: return true
-        case .macAgent, .knobSet: return false
+        case .macAgent, .knobSet, .knobUnset: return false
         }
     }
 
@@ -102,6 +104,7 @@ enum OpsAction: Equatable {
         case .serverUpdate(let name): return "Run the \(name) update on the server"
         case .coolifyRedeploy(_, let name): return "Redeploy \(name) on Coolify"
         case .knobSet(let key, let value): return "Set \(key) to \"\(value)\""
+        case .knobUnset(let key): return "Reset \(key) to the default"
         }
     }
 
@@ -113,6 +116,7 @@ enum OpsAction: Equatable {
         case .serverUpdate: return "server update"
         case .coolifyRedeploy: return "server redeploy"
         case .knobSet: return "knob set"
+        case .knobUnset: return "knob unset"
         }
     }
 
@@ -127,6 +131,7 @@ enum OpsAction: Equatable {
         case .serverUpdate(let name): return name
         case .coolifyRedeploy(_, let name): return name
         case .knobSet(let key, _): return key
+        case .knobUnset(let key): return key
         }
     }
 
@@ -138,6 +143,7 @@ enum OpsAction: Equatable {
         case .serverUpdate(let name): return ["server", "update", name]
         case .coolifyRedeploy(let uuid, _): return ["server", "redeploy", uuid]
         case .knobSet(let key, let value): return ["set", key, value]
+        case .knobUnset(let key): return ["unset", key]
         }
     }
 }
@@ -267,6 +273,8 @@ struct OpsCommandBuilder {
         case .knobSet(let key, let value):
             guard isKnobKey(key) else { throw OpsControlError.invalidArgument("knob name") }
             guard isSafeKnobValue(value) else { throw OpsControlError.invalidArgument("knob value") }
+        case .knobUnset(let key):
+            guard isKnobKey(key) else { throw OpsControlError.invalidArgument("knob name") }
         }
     }
 
@@ -279,7 +287,7 @@ struct OpsCommandBuilder {
     func requiredFile(for action: OpsAction) -> URL? {
         switch action {
         case .macAgent: return helperURL
-        case .knobSet: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
+        case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
         case .serverUnit, .serverUpdate, .coolifyRedeploy: return nil
         }
     }
@@ -332,6 +340,9 @@ struct OpsCommandBuilder {
             // even when it starts with `-`.
             tail = ["set", mode.flag, "--json", "--", key, value]
         }
+        if case .knobUnset(let key) = action {
+            tail = ["unset", mode.flag, "--json", "--", key]
+        }
         switch action {
         case .macAgent:
             return OpsInvocation(
@@ -341,7 +352,7 @@ struct OpsCommandBuilder {
                 environment: localEnvironment,
                 timeout: timeout
             )
-        case .knobSet:
+        case .knobSet, .knobUnset:
             return OpsInvocation(
                 executable: OpsControlRoute.interpreter,
                 arguments: ["-s", "-m", "fleet_knobs"] + tail,
@@ -545,6 +556,8 @@ struct OpsKnobChange: Equatable {
     var oldSource: String?
     /// The value the write sets.
     var new: String?
+    /// True when the action removes the override instead of setting a value.
+    var removesValue: Bool = false
     /// After a write:  `refreshed`,  `patched` or `not-refreshed:<note>`.
     var lkg: String?
 
@@ -555,7 +568,7 @@ struct OpsKnobChange: Equatable {
     }
 
     /// The new value for the plan sheet.
-    var newText: String { new.map { "\"\($0)\"" } ?? "unknown" }
+    var newText: String { removesValue ? "unset" : (new.map { "\"\($0)\"" } ?? "unknown") }
 
     /// Where the old value came from,  in a sentence.
     var sourceText: String {
@@ -677,9 +690,16 @@ enum OpsResultParser {
         }
         var knobChange: OpsKnobChange?
         // Only a knob answer that got as far as naming a value carries a change.
-        if case .knobSet = action, answer.new != nil || answer.oldSource != nil {
+        let isKnobAction: Bool
+        if case .knobSet = action { isKnobAction = true }
+        else if case .knobUnset = action { isKnobAction = true }
+        else { isKnobAction = false }
+        if isKnobAction, answer.new != nil || answer.oldSource != nil {
+            var removes = false
+            if case .knobUnset = action { removes = true }
             knobChange = OpsKnobChange(
-                old: answer.old, oldSource: answer.oldSource, new: answer.new, lkg: answer.lkg
+                old: answer.old, oldSource: answer.oldSource, new: answer.new,
+                removesValue: removes, lkg: answer.lkg
             )
         }
         return OpsOutcome(

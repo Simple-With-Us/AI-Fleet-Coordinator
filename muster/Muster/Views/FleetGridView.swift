@@ -89,6 +89,9 @@ struct FleetGridView: View {
 
     @EnvironmentObject private var store: FleetStore
     @State private var selectedCell: GridCell?
+    /// Artifacts for the selected cell, read off the main thread by `.task`.
+    @State private var loadedArtifacts: FleetStore.CellArtifacts?
+    @State private var loadedArtifactsCellID: String?
     @State private var gridFilter: GridFilter = .all
     @State private var searchText: String = ""
     /// The height of the detail panel,  which the operator drags and which survives
@@ -140,13 +143,30 @@ struct FleetGridView: View {
             }
             if let cell = selectedCell {
                 PanelResizeHandle(height: panelHeightBinding)
-                ConfigFilePanel(
-                    cell: cell,
-                    artifacts: store.artifacts(for: cell),
-                    sources: store.ruleSources(seat: cell.seat, kind: cell.kind),
-                    onClose: { selectedCell = nil }
-                )
+                Group {
+                    if let artifacts = loadedArtifacts, loadedArtifactsCellID == cell.id {
+                        ConfigFilePanel(
+                            cell: cell,
+                            artifacts: artifacts,
+                            sources: store.ruleSources(seat: cell.seat, kind: cell.kind),
+                            onClose: { selectedCell = nil }
+                        )
+                    } else {
+                        ProgressView("Reading the artifact\u{2026}")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
                 .frame(height: CGFloat(panelHeight))
+                .task(id: cell.id) {
+                    loadedArtifacts = nil
+                    loadedArtifactsCellID = nil
+                    let loaded = await Task.detached(priority: .userInitiated) {
+                        store.artifacts(for: cell)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    loadedArtifacts = loaded
+                    loadedArtifactsCellID = cell.id
+                }
             }
         }
     }

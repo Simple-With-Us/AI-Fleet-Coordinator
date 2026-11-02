@@ -133,7 +133,11 @@ def main(
             _bootstrap()
             from fleet_lanes import guard
         decision = guard.evaluate(payload)
-    except Exception:
+    except Exception as exc:  # fail open, but leave a one-line trace
+        try:
+            stderr.write("lane_guard_hook: fail-open (%s)\n" % type(exc).__name__)
+        except Exception:
+            pass
         return 0
     if decision.action != guard.DENY or not decision.reason:
         return 0

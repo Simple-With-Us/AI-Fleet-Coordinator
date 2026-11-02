@@ -6,15 +6,38 @@ wrapper holds only the seat's own bearer token;  every call is forwarded to
 git-relay over HTTP, where policy, rate caps and the audit log apply.
 
 Config:  GIT_RELAY_URL (default http://127.0.0.1:8471), GIT_RELAY_SEAT_TOKEN.
+The seat token rides every call, so a non-loopback relay URL must be https -
+plaintext http is accepted only for loopback relays.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
+
+
+def _validate_relay_url(relay_url: str) -> None:
+    parsed = urllib.parse.urlparse(relay_url)
+    host = parsed.hostname or ""
+    loopback = host == "localhost"
+    if not loopback:
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    if parsed.scheme == "https" and host:
+        return
+    if parsed.scheme == "http" and loopback:
+        return
+    raise ValueError(
+        "GIT_RELAY_URL must be https (plaintext http is allowed only for loopback relays)"
+    )
+
 
 PROTOCOL_VERSION = "2025-06-18"
 MAX_LINE = 1024 * 1024
@@ -186,6 +209,7 @@ class RelayMcp:
     def __init__(self, relay_url: str, seat_token: str, opener=None):
         if not seat_token:
             raise ValueError("GIT_RELAY_SEAT_TOKEN is required")
+        _validate_relay_url(relay_url)
         self._url = relay_url.rstrip("/")
         self._token = seat_token
         self._opener = opener or urllib.request.urlopen
@@ -306,6 +330,60 @@ def _error(message: dict, code: int, text: str) -> dict:
     return {"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": code, "message": text}}
 
 
+_NO_ID = object()
+_ID_PREFIX = re.compile(r'"id"\s*:\s*("(?:[^"\\]|\\.){0,128}"|-?\d{1,19})')
+
+
+def _recover_id(text: str):
+    """Best-effort JSON-RPC id from a line too broken to parse, prefix only."""
+    match = _ID_PREFIX.search(text[:8192])
+    if not match:
+        return _NO_ID
+    try:
+        return json.loads(match.group(1))
+    except ValueError:
+        return _NO_ID
+
+
+def process_line(line: str, server: RelayMcp, log) -> dict | None:
+    """Handle one raw stdin line; malformed input is never silently dropped.
+
+    A recoverable id gets a JSON-RPC error (-32700 parse error, -32600
+    oversized or invalid request);  otherwise a bounded stderr note via
+    `log`, carrying only a kind and a byte count - never line content,
+    which may hold a credential pasted into a tool argument.
+    """
+    if len(line) > MAX_LINE:
+        recovered = _recover_id(line)
+        if recovered is not _NO_ID:
+            return {
+                "jsonrpc": "2.0",
+                "id": recovered,
+                "error": {"code": -32600, "message": "request too large"},
+            }
+        log(f"GR-MCP: dropped oversized line ({len(line)} bytes)")
+        return None
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        message = json.loads(stripped)
+    except json.JSONDecodeError:
+        recovered = _recover_id(stripped)
+        if recovered is not _NO_ID:
+            return {
+                "jsonrpc": "2.0",
+                "id": recovered,
+                "error": {"code": -32700, "message": "parse error"},
+            }
+        log(f"GR-MCP: dropped malformed line ({len(stripped)} bytes)")
+        return None
+    if not isinstance(message, dict):
+        log("GR-MCP: dropped non-object line")
+        return None
+    return server.handle(message)
+
+
 def main() -> None:
     import sys
 
@@ -313,19 +391,13 @@ def main() -> None:
         os.environ.get("GIT_RELAY_URL", "http://127.0.0.1:8471"),
         os.environ.get("GIT_RELAY_SEAT_TOKEN", ""),
     )
+
+    def log(text: str) -> None:
+        sys.stderr.write(text + "\n")
+        sys.stderr.flush()
+
     for line in sys.stdin:
-        if len(line) > MAX_LINE:
-            continue
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(message, dict):
-            continue
-        reply = server.handle(message)
+        reply = process_line(line, server, log)
         if reply is not None:
             sys.stdout.write(json.dumps(reply) + "\n")
             sys.stdout.flush()
