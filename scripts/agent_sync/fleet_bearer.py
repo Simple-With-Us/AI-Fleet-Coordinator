@@ -36,7 +36,6 @@ def default_bearer_path(home, seat):
     return Path(home).joinpath(*BEARER_DIR, stem)
 
 
-
 class FleetError(Exception):
     def __init__(self, code, message):
         self.code = code

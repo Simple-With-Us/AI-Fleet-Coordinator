@@ -561,6 +561,7 @@ class Host:
                 raise N.NotesError(exc.code, str(exc)) from None
         return self.bearer_file
 
+
 _CODE_RE = re.compile(r"[a-z_]{1,40}")
 
 
