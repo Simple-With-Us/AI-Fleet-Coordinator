@@ -9,7 +9,7 @@ import Foundation
 //
 // The sources are:
 //
-//   * the listener's own published state,  `~/.agent-sync/listener/status.json`,  which
+//   * the listener's own published state,  `~/.simple-tools/listener/status.json`,  which
 //     holds the open sessions (the leases it holds alive)  and the listener's state for
 //     each seat
 //   * the fleet chat CLI (`simple-chat`),  which holds the seat's Zulip presence and the
@@ -53,7 +53,7 @@ enum SeatFact<Value: Equatable & Sendable>: Equatable, Sendable {
 
 // MARK: - The listener's own state
 
-/// The listener's published state,  as `~/.agent-sync/listener/status.json` holds it.
+/// The listener's published state,  as `~/.simple-tools/listener/status.json` holds it.
 ///
 /// The file is the listener's own account of itself,  rewritten every two seconds while
 /// it runs.  It is not the CLI's envelope:  the CLI wraps this document in

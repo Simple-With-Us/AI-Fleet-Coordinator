@@ -1,6 +1,6 @@
 import Foundation
 
-// The listener's own configuration file:  `~/.agent-sync/listener.toml`.
+// The listener's own configuration file:  `~/.simple-tools/listener.toml`.
 //
 // This is not a general TOML implementation.  It reads and writes the shape the listener
 // actually uses:  scalars,  string arrays,  and inline tables such as

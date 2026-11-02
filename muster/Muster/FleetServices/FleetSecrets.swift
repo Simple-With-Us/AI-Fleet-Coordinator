@@ -15,6 +15,11 @@ public enum FleetSecretError: LocalizedError, Equatable {
     case invalidName(String)
     case missing(String)
     case unavailable(String)
+    /// The command ran and refused (a non-zero exit that is not "absent").
+    /// Kept apart from `unavailable`, which is the timeout/no-answer case:
+    /// calling a refusal "in time" sent the owner hunting a slow read that
+    /// never happened (AFC-592).
+    case refused(String)
 
     public var errorDescription: String? {
         switch self {
@@ -24,7 +29,25 @@ public enum FleetSecretError: LocalizedError, Equatable {
             return "\(name) is not in Infisical.  Add it there:  Muster keeps no copy of it."
         case .unavailable(let name):
             return "fleet-secrets could not read \(name) in time."
+        case .refused(let name):
+            return "fleet-secrets refused to read \(name), so nothing is shown."
         }
+    }
+
+    /// Map a key-read failure:  fleet-secrets exit 3 is "absent", any other
+    /// exit is a refusal, and anything else is the no-answer case.
+    static func from(_ error: Error, name: String) -> FleetSecretError {
+        if let exit = error as? CommandExitError {
+            return exit.status == 3 ? .missing(name) : .refused(name)
+        }
+        return .unavailable(name)
+    }
+
+    /// Map a failure of a read that has no key of its own (names, doctor):
+    /// an exit is a refusal, never "absent" — there is no key to be absent.
+    static func fromNonKeyRead(_ error: Error, name: String) -> FleetSecretError {
+        if error is CommandExitError { return .refused(name) }
+        return .unavailable(name)
     }
 }
 
@@ -63,11 +86,9 @@ public struct FleetSecrets: SecretResolving {
         do {
             value = try commands.run(bin.appendingPathComponent("fleet-secrets").path, ["get", name],
                                      environment: environment, timeout: 20)
-        } catch is CommandExitError {
-            // `fleet-secrets get` exits non-zero when the key is absent.
-            throw FleetSecretError.missing(name)
         } catch {
-            throw FleetSecretError.unavailable(name)
+            // Exit 3 is "absent";  any other failure is not (AFC-592).
+            throw FleetSecretError.from(error, name: name)
         }
         guard !value.isEmpty else { throw FleetSecretError.missing(name) }
         return value
@@ -114,14 +135,28 @@ public extension FleetSecrets {
         }
     }
 
+    /// True when a line from a `names` answer may be shown as a name.
+    ///
+    /// Listing is metadata only:  the line is displayed, never passed to a
+    /// command, so a real Infisical key with lowercase letters (live data
+    /// carries one) is listable even though `isValidName` rightly refuses it
+    /// as a command argument.  The fail-closed half is unchanged:  anything
+    /// value-shaped — an `=`, whitespace, a leading dash or digit — refuses
+    /// the whole answer rather than being rendered as a name.
+    static func isListableName(_ name: String) -> Bool {
+        guard let first = name.unicodeScalars.first, name.count <= 128 else { return false }
+        guard CharacterSet.letters.contains(first) || first == "_" else { return false }
+        return name.range(of: "[^A-Za-z0-9_]", options: .regularExpression) == nil
+    }
+
     /// Parse `names` answers grouped by path.  Any line that is not exactly a
-    /// valid secret name refuses the whole answer (fail closed):  a value-shaped
+    /// listable secret name refuses the whole answer (fail closed):  a value-shaped
     /// line is never rendered as a name.
     static func parseNamesByPath(_ answers: [(path: String, text: String)]) throws -> [SecretNameGroup] {
         try answers.map { answer in
             guard isValidPath(answer.path) else { throw FleetSecretError.invalidName(answer.path) }
             let lines = answer.text.split(whereSeparator: \.isNewline).map(String.init)
-            for line in lines where !isValidName(line) { throw FleetSecretError.invalidName(line) }
+            for line in lines where !isListableName(line) { throw FleetSecretError.invalidName(line) }
             return SecretNameGroup(path: answer.path, names: lines.sorted())
         }
     }
@@ -141,8 +176,7 @@ public extension FleetSecrets {
         do {
             text = try commands.run(secretsExecutable, ["names", "--path", path],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch is CommandExitError { throw FleetSecretError.unavailable(path) }
-        catch { throw FleetSecretError.unavailable(path) }
+        } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
         return try Self.parseNamesByPath([(path, text)]).first?.names ?? []
     }
 
@@ -156,7 +190,7 @@ public extension FleetSecrets {
         do {
             return try commands.run(secretsExecutable, ["names", "--path", path],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.unavailable(path) }
+        } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
     }
 
     /// Parse `doctor --json`:  only booleans, counts and short token strings
@@ -189,7 +223,7 @@ public extension FleetSecrets {
         do {
             text = try commands.run(secretsExecutable, ["doctor", "--json"],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.unavailable("doctor") }
+        } catch { throw FleetSecretError.fromNonKeyRead(error, name: "doctor") }
         return try Self.parseDoctor(text)
     }
 }
