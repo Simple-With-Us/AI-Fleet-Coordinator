@@ -682,9 +682,10 @@ def placeholder_title(letter: str) -> str:
 # gives every thread now) and a single capital (the shape it gave them before).  Two
 # capitals that are not a pair are not a letter:  a topic that starts with an acronym
 # ("AI: the model") keeps it.
-DOUBLED_PAIR_RE = re.compile(r"^([A-Z]{2}):[ ]*")
-# The letter prefix of a title:  a pair, doubled or not.
-TITLE_PREFIX_RE = re.compile(r"^[A-Z]{2}:[ ]*")
+# A pair prefix:  two capitals and a colon.  A letter on this platform is a pair, and
+# a pair need not be doubled, so the same pattern serves the doubled rule below and
+# the title rule in title_topic.
+PAIR_PREFIX_RE = re.compile(r"^([A-Z]{2}):[ ]*")
 SINGLE_LETTER_RE = re.compile(r"^[A-Z]:[ ]*")
 
 
@@ -709,7 +710,7 @@ def topic_without_letter(title: str, letters: tuple[str, ...] = ()) -> str:
         prefix = letter + ":"
         if letter and text.startswith(prefix):
             return text[len(prefix) :].strip()
-    match = DOUBLED_PAIR_RE.match(text)
+    match = PAIR_PREFIX_RE.match(text)
     if match and match.group(1)[0] == match.group(1)[1]:
         return text[match.end() :].strip()
     match = SINGLE_LETTER_RE.match(text)
@@ -770,7 +771,7 @@ def title_topic(title: str, letter: str = "", held: tuple[str, ...] = ()) -> str
     is what topic_without_letter does, and this is the title form of it.
     """
     text = (title or "").strip()
-    match = TITLE_PREFIX_RE.match(text)
+    match = PAIR_PREFIX_RE.match(text)
     if match:
         prefix = text[:2]
         if prefix == letter or prefix in held:
