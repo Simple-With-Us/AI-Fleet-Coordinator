@@ -2,10 +2,10 @@
 """mm_session_letter.py — the MM seat's session letter, and the thread title it belongs to.
 
 One MiniMax Code conversation is one session, and the Operator issues it a letter.  The
-letter is the tagged address Jay scans ("@**MiniMax** B"), so three things have to agree
+letter is the tagged address Jay scans ("@**MiniMax** AA"), so three things have to agree
 and this file is where they agree:
 
-  1. the thread is named in English and starts with the letter ("B: Memory sync");
+  1. the thread is named in English and starts with the letter ("AA: Memory sync");
   2. a Zulip post or a board item states the letter early, so a reply knows where it
      is going;
   3. the registry carries the same title the thread carries, found by the session id.
@@ -14,9 +14,11 @@ The store is MiniMax Code's own session table; the letter lives in the Operator
 registry, which is one file for the fleet.  This host reads that file locally when the
 deployment points at the shared store — there is no SSH fallback with a private alias.
 
-Subthreads do not get a letter:  a session with a parent is part of its parent's
-thread, and a session that is not a conversation (a task, a peek, a cron run) has no
-thread to name.
+A thread and its child both hold a letter, and they are placed the way every other platform
+places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
+(AA, BB ... ZZ) and a child takes the first free pair after its parent's in the same row
+(parent CC: CD, CE;  parent XX: XY, XZ, XA, XB).  A session that is neither a conversation nor
+a child of one (a cron run) has no thread to name.
 
 Usage:
   mm_session_letter.py hook-session-start      # stdin: the hook JSON
@@ -24,7 +26,8 @@ Usage:
   mm_session_letter.py hook-stop               # stdin: the hook JSON
   mm_session_letter.py sweep [--apply]         # name the sessions this host already has
   mm_session_letter.py letter --session-id ID  # the letter for one session
-  mm_session_letter.py rename --session-id ID --title "B: Topic"
+  mm_session_letter.py rename --session-id ID --title "AA: Topic"
+  mm_session_letter.py migrate-pairs          # move the live sessions into the pair space
 """
 
 from __future__ import annotations
@@ -41,12 +44,22 @@ import tempfile
 import unicodedata
 
 from agent_sync import secretscan
-from agent_sync.operator_registry import registry_db_path
+from agent_sync.operator_registry import (
+    letter_space_of,
+    pairs_after,
+    registry_db_path,
+)
 
 SEAT = "MM"
 PLATFORM = "minimax"
 PROFILE_SCOPE = "default"
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# The letter space every MiniMax session holds its letter in (owner ruling, Nov 1 2026).
+# A MiniMax thread reads like a Claude one ("AA: Topic"), so it takes a pair:  a main chat
+# takes the next doubled pair in order (AA, BB ... ZZ) and a child takes the first free pair
+# after its parent's in the same row (parent CC: CD, CE;  parent XX: XY, XZ, XA, XB).
+LETTER_SPACE = "double"
+LETTER_PICK = "primary"
 TITLE_MAX = 120
 HOOK_INPUT_MAX = 1_048_576
 HOOK_JSON_MAX_DEPTH = 32
@@ -397,9 +410,13 @@ def _report_registry_fault(exc: Exception) -> None:
     sys.stderr.write("Operator registry fault (%s): %s\n" % (shown, exc))
 
 
-def register(session_id: str, title: str = "", space: str = "single") -> dict:
+def register(session_id: str, title: str = "", parent_session_id: str = "") -> dict:
     """Ask the Operator for this session's letter.  Idempotent: the same session id
-    always answers with the same letter."""
+    always answers with the same letter.
+
+    The pair space and the main-chat order are asked for by name, and the parent is named
+    when there is one, so the Operator places a child in its parent's row.
+    """
     args = [
         "register",
         "--platform=" + PLATFORM,
@@ -407,14 +424,39 @@ def register(session_id: str, title: str = "", space: str = "single") -> dict:
         "--session-id=" + session_id,
         "--seat=" + SEAT,
         "--source=the MM seat's session-letter hook",
+        "--letter-space=" + LETTER_SPACE,
+        "--letter-pick=" + LETTER_PICK,
     ]
-    if space != "single":
-        # Only the double space is asked for:  the single space is the default of every
-        # registry CLI, so a conversation's registration still answers an older one.
-        args += ["--letter-space=" + space]
+    if parent_session_id:
+        args += ["--parent-session-id=" + parent_session_id]
     if title:
         _scan_title(title)
         args += ["--title=" + title]
+    return _require_registry(registry_call(args))
+
+
+def relabel(session_id: str, parent_session_id: str = "", force: bool = False) -> dict:
+    """Move a live session's letter into the pair space, in place.
+
+    A session id always answers with the letter its registry record holds, so a session that
+    was lettered under the old single-letter rule cannot be moved by registering it again:
+    the registry's own relabel path is what moves it, and it keeps the old letter in the
+    history.
+    """
+    args = [
+        "relabel",
+        "--platform=" + PLATFORM,
+        *_registry_identity_args(),
+        "--session-id=" + session_id,
+        "--seat=" + SEAT,
+        "--source=the MM seat's session-letter hook (the pair migration)",
+        "--letter-space=" + LETTER_SPACE,
+        "--letter-pick=" + LETTER_PICK,
+    ]
+    if parent_session_id:
+        args += ["--parent-session-id=" + parent_session_id]
+    if force:
+        args += ["--force"]
     return _require_registry(registry_call(args))
 
 
@@ -572,15 +614,43 @@ def placeholder_title(letter: str) -> str:
     return "%s: Session %s" % (letter, letter)
 
 
-def wanted_title(letter: str, topic: str) -> str:
-    """The title form:  the letter, then the topic, in Title Case English."""
-    topic = (topic or "").strip()
-    if letter:
+# The letter shapes a thread title carries:  a doubled pair (AA, the shape this platform
+# gives every thread now) and a single capital (the shape it gave them before).  Two
+# capitals that are not a pair are not a letter:  a topic that starts with an acronym
+# ("AI: the model") keeps it.
+DOUBLED_PAIR_RE = re.compile(r"^([A-Z]{2}):[ ]*")
+SINGLE_LETTER_RE = re.compile(r"^[A-Z]:[ ]*")
+
+
+def topic_without_letter(title: str, letters: tuple[str, ...] = ()) -> str:
+    """The topic in a title, without the letter prefix a thread already carries.
+
+    A thread that is re-lettered keeps its topic, so the old prefix is dropped before the
+    new one is put in front:  "A: Fix the sweep" under the letter "AA" is "AA: Fix the
+    sweep", never "AA: A: Fix the sweep".
+
+    Only the letters the thread actually holds are dropped, and the shapes a thread title
+    carries:  a doubled pair, and the single capital this platform used before it moved to
+    pairs.  Two capitals that are not a pair are an acronym, so a topic that starts with one
+    keeps it.
+    """
+    text = (title or "").strip()
+    for letter in letters:
         prefix = letter + ":"
-        if topic.startswith(prefix):
-            topic = topic[len(prefix) :].lstrip()
-    else:
-        topic = re.sub(r"^\s*[A-Z]{1,2}:\s*", "", topic, count=1)
+        if letter and text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    match = DOUBLED_PAIR_RE.match(text)
+    if match and match.group(1)[0] == match.group(1)[1]:
+        return text[match.end() :].strip()
+    match = SINGLE_LETTER_RE.match(text)
+    if match:
+        return text[match.end() :].strip()
+    return text
+
+
+def wanted_title(letter: str, topic: str, previous_letters: tuple[str, ...] = ()) -> str:
+    """The title form:  the letter, then the topic, in Title Case English."""
+    topic = topic_without_letter(topic, tuple(previous_letters) + (letter,))
     topic = " ".join(topic.split())
     if not topic or not is_english(topic):
         topic = "Session " + (letter or "?")
@@ -624,8 +694,10 @@ def letter_cache_dir() -> str:
     return path
 
 
-def cache_letter(session_id: str, letter: str, topic: str = "", space: str = "single") -> None:
-    if letter not in LETTERS and len(letter) != 2:
+def cache_letter(session_id: str, letter: str, topic: str = "", space: str = LETTER_SPACE) -> None:
+    if not (
+        letter in LETTERS or (len(letter) == 2 and letter[0] in LETTERS and letter[1] in LETTERS)
+    ):
         raise ValueError("invalid letter for cache")
     payload = {"letter": letter, "topic": topic, "host": location(), "space": space}
     path = os.path.join(letter_cache_dir(), session_id + ".json")
@@ -666,19 +738,23 @@ def cached_letter(session_id: str) -> str:
     return ""
 
 
-def space_for_row(row: dict) -> str:
-    """The letter space a session belongs in:  single for a conversation, double for a
-    subthread, so a subthread never takes the letter a conversation holds.
+def parent_for_row(row: dict) -> str:
+    """The session that started this one, as the Operator knows it, or "" for a main chat.
 
-    It reads the row the caller already fetched, so a hook reads the session table
-    and scans its titles once per call."""
-    if row.get("parent_session_id") or row.get("session_kind") == "task":
-        return "double"
-    return "single"
+    It is the parent's own session id, so the Operator places the child in its parent's row:
+    the first free pair after the parent's, in the same row (parent CC: CD, CE;  parent XX:
+    XY, XZ, XA, XB).  It reads the row the caller already fetched, so a hook reads the session
+    table and scans its titles once per call."""
+    parent = str(row.get("parent_session_id") or "").strip()
+    return parent if SESSION_ID_RE.fullmatch(parent) else ""
 
 
 def letter_for(
-    session_id: str, topic: str = "", space: str = "single", *, strict_touch: bool = False
+    session_id: str,
+    topic: str = "",
+    parent_session_id: str = "",
+    *,
+    strict_touch: bool = False,
 ) -> str:
     """The letter for a session:  the cache first, the Operator otherwise.
 
@@ -702,10 +778,10 @@ def letter_for(
             if getattr(exc, "code", "") != "no_registry":
                 sys.stderr.write("Could not stamp the session as seen: %s\n" % exc)
         return letter
-    answer = _require_registry(register(session_id, topic, space), needs_label=True)
+    answer = _require_registry(register(session_id, topic, parent_session_id), needs_label=True)
     letter = str(answer.get("label") or "")
     if letter:
-        cache_letter(session_id, letter, topic, space)
+        cache_letter(session_id, letter, topic, LETTER_SPACE)
     return letter
 
 
@@ -761,9 +837,9 @@ def hook_session_start() -> int:
     if not session_id:
         return 0
     row = session_row(session_id) or {}
-    space = space_for_row(row)
+    parent = parent_for_row(row)
     try:
-        letter = letter_for(session_id, str(row.get("title") or ""), space)
+        letter = letter_for(session_id, str(row.get("title") or ""), parent)
     except (RegistryError, ValueError) as exc:
         _report_registry_fault(exc)
         print(NO_LETTER)
@@ -812,16 +888,14 @@ def hook_pre_tool_use() -> int:
     if not session_id:
         return 0
     row = session_row(session_id) or {}
-    if row.get("parent_session_id"):
-        return 0  # a subthread posts under its parent's letter
-    if row.get("session_kind") not in (None, "conversation"):
+    if row.get("session_kind") not in (None, "conversation", "task"):
         return 0
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id, "", space_for_row(row))
+        letter = cached_letter(session_id) or letter_for(session_id, "", parent_for_row(row))
     except (RegistryError, ValueError) as exc:
         _report_registry_fault(exc)
         return 0
@@ -868,10 +942,10 @@ def hook_stop() -> int:
     row = session_row(session_id)
     if row is None:
         return 0
-    if row.get("parent_session_id") or row.get("session_kind") not in (None, "conversation"):
+    if row.get("session_kind") not in (None, "conversation", "task"):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id, "", space_for_row(row))
+        letter = cached_letter(session_id) or letter_for(session_id, "", parent_for_row(row))
     except (RegistryError, ValueError) as exc:
         _report_registry_fault(exc)
         return 0
@@ -1058,9 +1132,8 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         # file names one of them on purpose, so the operator's own list rescues it.
         if looks_like_prompt(title) and session_id not in topics:
             continue
-        space = "single" if kind == "conversation" else "double"
         try:
-            letter = letter_for(session_id, title, space, strict_touch=True)
+            letter = letter_for(session_id, title, parent_for_row(row), strict_touch=True)
         except RegistryError as exc:
             out.append(_failure_entry(session_id, exc))
             continue
@@ -1199,6 +1272,107 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
     return exit_code
 
 
+def migrate_pairs() -> int:
+    """Move this host's live MiniMax sessions into the pair space.
+
+    A MiniMax thread is a pair (owner ruling, Nov 1 2026), and a session id always answers
+    with the letter its registry record already holds, so the sessions that were lettered
+    under the old single-letter rule are moved by the registry's own relabel path.
+
+    Only a session that is not where the rule puts it is moved:  a session that already
+    holds a pair keeps it, and so does a child that already holds a pair in its parent's
+    row.  So the migration is idempotent:  a second run finds nothing to move and changes
+    no letter, no generation and no reference.  A main chat goes first, because a child is
+    placed after its parent's pair.
+    """
+    rows = [
+        row for row in sessions() if str(row.get("session_kind") or "") in ("conversation", "task")
+    ]
+    mains = sorted(
+        (row for row in rows if not parent_for_row(row)),
+        key=lambda row: int(row.get("created_at_ms") or 0),
+    )
+    children = sorted(
+        (row for row in rows if parent_for_row(row)),
+        key=lambda row: int(row.get("created_at_ms") or 0),
+    )
+    letters: dict[str, str] = {}
+    out = []
+    for row in mains + children:
+        session_id = row["session_id"]
+        parent = parent_for_row(row)
+        title = str(row.get("title") or "")
+        current = cached_letter(session_id)
+        if not current:
+            # This host never lettered it, so there is no letter here to move.
+            continue
+        parent_letter = letters.get(parent, "")
+        in_a_pair = letter_space_of(current) == LETTER_SPACE
+        out_of_place = not in_a_pair
+        if not out_of_place and parent_letter and current not in pairs_after(parent_letter):
+            # A child that holds a pair but not in its parent's row is placed again.
+            out_of_place = True
+        if not out_of_place:
+            letters[session_id] = current
+            out.append({"session_id": session_id, "letter": current, "outcome": "unchanged"})
+            continue
+        try:
+            answer = relabel(session_id, parent, force=in_a_pair)
+        except RegistryError as exc:
+            code = str(getattr(exc, "code", "") or "")
+            if code == "closed_session":
+                # The session is over:  its letter ended with it, and there is nothing to move.
+                out.append({"session_id": session_id, "letter": current, "outcome": "closed"})
+                continue
+            if code == "not_registered":
+                # The registry has never seen this session, so it holds no letter to move.
+                # It is registered here, and the cache is not asked:  the cache still holds
+                # the old single letter, and letter_for would hand that back.
+                try:
+                    answer = _require_registry(
+                        register(session_id, title, parent), needs_label=True
+                    )
+                except (RegistryError, ValueError) as inner:
+                    out.append({"session_id": session_id, "error": str(inner), "outcome": "failed"})
+                    continue
+                letter = str(answer.get("label") or "")
+                if not letter:
+                    out.append({"session_id": session_id, "skipped": "no letter"})
+                    continue
+                letters[session_id] = letter
+                cache_letter(session_id, letter, title, LETTER_SPACE)
+                out.append({"session_id": session_id, "letter": letter, "outcome": "registered"})
+                continue
+            out.append(_failure_entry(session_id, exc))
+            continue
+        letter = str(answer.get("label") or "")
+        if not letter:
+            out.append({"session_id": session_id, "skipped": "no letter"})
+            continue
+        letters[session_id] = letter
+        cache_letter(session_id, letter, title, LETTER_SPACE)
+        entry = {
+            "session_id": session_id,
+            "letter": letter,
+            "previous": answer.get("previous", ""),
+            "outcome": answer.get("outcome", ""),
+            "placed_after": answer.get("placed_after", ""),
+        }
+        topic = topic_without_letter(title, (current,))
+        if topic and is_english(topic):
+            wanted = wanted_title(letter, topic)
+            try:
+                if set_title(session_id, wanted):
+                    update_title(session_id, wanted)
+                    entry["title"] = wanted
+            except (RegistryError, ValueError) as exc:
+                entry["error"] = str(exc)
+        out.append(entry)
+    failed = [e for e in out if e.get("error")]
+    print(json.dumps(out, indent=2))
+    return _sweep_exit_code(failed)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1215,6 +1389,10 @@ def main(argv: list[str] | None = None) -> int:
     rn = sub.add_parser("rename")
     rn.add_argument("--session-id", required=True)
     rn.add_argument("--title", required=True)
+    mp = sub.add_parser(
+        "migrate-pairs",
+        help="move this host's live MiniMax sessions into the pair space",
+    )
     args = parser.parse_args(argv)
     if args.command == "hook-session-start":
         return hook_session_start()
@@ -1225,10 +1403,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sweep":
         return sweep(args.apply, args.live_hours, args.topics_file)
     if args.command == "letter":
+        # The parent is named here too, so a child lettered through this path lands in its
+        # parent's row and not in the main-chat order.
+        parent = parent_for_row(session_row(args.session_id) or {})
         try:
             print(
                 json.dumps(
-                    _require_registry(register(args.session_id, args.title), needs_label=True)
+                    _require_registry(
+                        register(args.session_id, args.title, parent), needs_label=True
+                    )
                 )
             )
         except RegistryError as exc:
@@ -1240,9 +1423,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": str(exc)}))
             return 2
         return 0
+    if args.command == "migrate-pairs":
+        return migrate_pairs()
     if args.command == "rename":
+        parent = parent_for_row(session_row(args.session_id) or {})
         try:
-            answer = _require_registry(register(args.session_id))
+            answer = _require_registry(register(args.session_id, "", parent))
         except RegistryError as exc:
             print(json.dumps({"error": str(exc)}))
             return _registry_exit_code(exc)
