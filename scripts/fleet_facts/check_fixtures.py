@@ -45,7 +45,7 @@ def real_team_keys() -> tuple[str, ...]:
 
 
 def _scanner():
-    path = HERE.parent / "agent_sync" / "secretscan.py"
+    path = HERE.parent / "simple_tools" / "secretscan.py"
     if not path.is_file():
         return None
     spec = importlib.util.spec_from_file_location("_ff_check_secretscan", path)

@@ -35,8 +35,8 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_FILES = 146
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
-# The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
-# (exported from scripts/agent-sync-mcp by scripts/export-linear-catalog.mjs).
+# The simple-tools Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
+# (exported from scripts/simple-tools-mcp by scripts/export-linear-catalog.mjs).
 LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inputs.json")
 # `recall` runs from these fleet_rag modules only (its static import closure).  `recall eval` and
 # `recall ingest` import eval/ingest lazily;  they are Mac and Hetzner-box jobs and are not shipped.
@@ -60,8 +60,8 @@ KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")
 AFC331_FILES = (
-    "scripts/agent_sync/mcp/notes-tools.json",
-    "scripts/agent_sync/mcp/recall-tools.json",
+    "scripts/simple_tools/mcp/notes-tools.json",
+    "scripts/simple_tools/mcp/recall-tools.json",
     "scripts/linear-board/catalog/core-tools.json",
     "docs/protocols/simple-tools-guide.md",
 )
@@ -76,19 +76,19 @@ EXACT = frozenset(
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",
-        "docs/protocols/agent-sync-partition.toml",
+        "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
-        "scripts/agent_sync/mcp/tools.json",
-        "scripts/agent_sync/mcp/fixtures.jsonl",
+        "scripts/simple_tools/mcp/tools.json",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok Bot personas).
-        "scripts/agent_sync/mcp/eavesdropper-tools.json",
-        "scripts/agent_sync/mcp/renamed-tools.json",
-        "scripts/agent_sync/mcp/gb-identities.json",
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
+        "scripts/simple_tools/mcp/renamed-tools.json",
+        "scripts/simple_tools/mcp/gb-identities.json",
         # AFC-331:  the notes_* and recall_* tool contracts, the core Linear tools the stdio server serves
         # through board, and the guide tool's text.
         *AFC331_FILES,
-        "scripts/agent_sync/wake/wake-schema.json",
+        "scripts/simple_tools/wake/wake-schema.json",
         *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
         "scripts/recall",
         *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
@@ -98,35 +98,35 @@ EXACT = frozenset(
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
         # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `simple-chat mcp` reads it at startup.
-        "scripts/agent_sync/mcp/fleetlink-tools.json",
+        "scripts/simple_tools/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
-        "scripts/agent_sync/operator_sheets_export.mjs",
+        "scripts/simple_tools/operator_sheets_export.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
-        "scripts/agent_sync/opencode_letter_plugin/index.js",
+        "scripts/simple_tools/opencode_letter_plugin/index.js",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
 # release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
-# The renamed entry points are NOT here:  a retained pre-rename release carries scripts/agent-sync instead,
+# The renamed entry points are NOT here:  a retained pre-rename release carries the previous entry point instead,
 # so demanding the new names would make status and rollback refuse exactly the rollback targets they exist for.
 BASE_REQUIRED = frozenset(
     {
         "scripts/linear-board/board",
         "fleet-apps.json",
         *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
-        "scripts/agent_sync/__init__.py",
-        "scripts/agent_sync/cli.py",
-        "scripts/agent_sync/mcp/stdio.py",
-        "scripts/agent_sync/mcp/tools.json",
+        "scripts/simple_tools/__init__.py",
+        "scripts/simple_tools/cli.py",
+        "scripts/simple_tools/mcp/stdio.py",
+        "scripts/simple_tools/mcp/tools.json",
         "scripts/fleet-cli-release.py",
     }
 )
 # The recall, lane and fleet-mode files (AFC-331).  A new bundle must carry them;  an older retained one need not.
 TOOL_REQUIRED = frozenset(
     {
-        # The hard-cutover entry points (rename of scripts/agent-sync):  a new bundle must carry them, but a
-        # retained older release carries scripts/agent-sync instead and stays a valid rollback target.
+        # The hard-cutover entry points (rename of the previous entry point):  a new bundle must carry them, but a
+        # retained older release carries the previous entry point instead and stays a valid rollback target.
         "scripts/simple-chat",
         "scripts/simple-notes",
         "scripts/simple-board",
@@ -142,21 +142,21 @@ TOOL_REQUIRED = frozenset(
         "docs/FLEET-MODE.md",
         *AFC331_FILES,
         # The eavesdropper_* MCP tools (AFC-330):  `simple-chat mcp` reads it at startup.
-        "scripts/agent_sync/mcp/eavesdropper-tools.json",
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
-        "scripts/agent_sync/mcp/fleetlink-tools.json",
+        "scripts/simple_tools/mcp/fleetlink-tools.json",
         # The fleet secret scanner (standard library only):  every remote transport scans its arguments with it
         # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
         # built before it stays a valid rollback target.
-        "scripts/agent_sync/secretscan.py",
+        "scripts/simple_tools/secretscan.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
-        "scripts/agent_sync/notes_service_reader.py",
-        "scripts/agent_sync/fleet_bearer.py",
+        "scripts/simple_tools/notes_service_reader.py",
+        "scripts/simple_tools/fleet_bearer.py",
         # New stdio bundles must carry the hard-imported own-bearer gate. Older rollback targets stay valid.
-        "scripts/agent_sync/mcp/bearer_gate.py",
+        "scripts/simple_tools/mcp/bearer_gate.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
@@ -177,8 +177,8 @@ def allowed_path(path: str) -> bool:
     if path in EXACT:
         return True
     return bool(
-        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
-        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py")
+        re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
+        or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")
     )
 
 
@@ -517,8 +517,6 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
     }
 
 
-LEGACY_CODEX_MCP = "agent-sync-codex-mcp"
-LEGACY_CODEX_KEY = "agent-sync"  # the retired registration key; migrated, never written
 CODEX_KEY = (
     "simple-chat"  # local stdio MCP mode of the simple-chat CLI (the hosted server is ST-MCP)
 )
@@ -537,15 +535,11 @@ def codex_mcp_expected(bin_dir: Path) -> dict:
     }
 
 
-def migrate_codex_mcp(home: Path, files: dict) -> None:
-    """Rewrite a host's pre-rename Codex registration to `[mcp_servers.simple-chat]`, in `files` if it applies.
+def migrate_codex_mcp(home: Path, files: dict, replacement: tuple[str, str] | None = None) -> None:
+    """Validate the current registration and optionally replace an explicitly selected managed entry.
 
-    Hosts installed before the rename carry `[mcp_servers.agent-sync]`, whose command is either the
-    legacy wrapper `<bin>/agent-sync-codex-mcp` (it execs `scripts/agent-sync`, a path this release does
-    not ship) or the renamed wrapper under the old key.  The table header and the one command line are
-    rewritten, and only when the host's table is exactly the registration this tool wrote (same
-    `env_vars`, command one of those two wrappers).  The old key is not kept.  Anything else is still a
-    conflict and still refused:  this never rewrites a hand-edited registration.
+    The caller supplies the source table key and wrapper basename. Only an exact managed
+    command/environment shape can be rewritten; custom or ambiguous tables are refused.
     """
     bin_dir = home / ".local/bin"
     expected = codex_mcp_expected(bin_dir)
@@ -565,31 +559,36 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
     current = servers.get(CODEX_KEY)
     if current is not None and current != expected:
         raise Refused("existing_simple_chat_mcp_conflict")
-    present = servers.get(LEGACY_CODEX_KEY)
+    if replacement is None:
+        return
+    source_key, source_wrapper = replacement
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", source_key) or not re.fullmatch(r"[A-Za-z0-9_-]+", source_wrapper) or source_key == CODEX_KEY:
+        raise Refused("invalid_codex_replacement")
+    present = servers.get(source_key)
     if present is None:
         return
     if not isinstance(present, dict):
-        raise Refused("existing_agent_sync_mcp_conflict")
-    legacy_command = str(bin_dir / LEGACY_CODEX_MCP)
+        raise Refused("existing_simple_tools_mcp_conflict")
+    legacy_command = str(bin_dir / source_wrapper)
     if (
         set(present) != {"command", "env_vars"}
         or present.get("command") not in (legacy_command, expected["command"])
         or present.get("env_vars") != expected["env_vars"]
     ):
-        raise Refused("existing_agent_sync_mcp_conflict")
-    old_header = ("[mcp_servers." + LEGACY_CODEX_KEY + "]").encode()
+        raise Refused("existing_simple_tools_mcp_conflict")
+    old_header = ("[mcp_servers." + source_key + "]").encode()
     new_header = ("[mcp_servers." + CODEX_KEY + "]").encode()
     old_line = ("command = " + json.dumps(present["command"])).encode()
     new_line = ("command = " + json.dumps(expected["command"])).encode()
     # Exactly one of each:  an ambiguous file is not one this tool wrote, so do not guess.
     if original.count(old_header) != 1 or original.count(old_line) != 1:
-        raise Refused("existing_agent_sync_mcp_conflict")
+        raise Refused("existing_simple_tools_mcp_conflict")
     if current is not None:
         # Both keys present: not a state this tool wrote, so do not guess which to keep.
-        raise Refused("existing_agent_sync_mcp_conflict")
+        raise Refused("existing_simple_tools_mcp_conflict")
     after_raw = original.replace(old_header, new_header).replace(old_line, new_line)
     desired = copy.deepcopy(before)
-    del desired["mcp_servers"][LEGACY_CODEX_KEY]
+    del desired["mcp_servers"][source_key]
     desired["mcp_servers"][CODEX_KEY] = expected
     if tomllib.loads(after_raw.decode()) != desired:
         raise Refused("codex_config_semantics_changed")
@@ -597,7 +596,7 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
     files[config] = (after_raw, mode)
 
 
-def new_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+def new_wrapper_plan(home: Path, replacement: tuple[str, str] | None = None) -> dict[Path, tuple[bytes, int]]:
     """On a routine update (no --install), the wrappers a newer release added that this host lacks.
     Only absent paths are written:  an existing file, managed or not, and a symlink are left alone.
     Without this, a command added after the first install (recall, lane, fleet-mode) would ship in
@@ -610,11 +609,11 @@ def new_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         for path, entry in wrapper_files(home).items()
         if not path.exists() and not path.is_symlink()
     }
-    migrate_codex_mcp(home, files)
+    migrate_codex_mcp(home, files, replacement)
     return files
 
 
-def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+def install_plan(home: Path, replacement: tuple[str, str] | None = None) -> dict[Path, tuple[bytes, int]]:
     bin_dir = home / ".local/bin"
     files = wrapper_files(home)
     for path in files:
@@ -623,7 +622,7 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         ):
             raise Refused("existing_unmanaged_wrapper")
     expected = codex_mcp_expected(bin_dir)
-    migrate_codex_mcp(home, files)
+    migrate_codex_mcp(home, files, replacement)
     config = home / ".codex/config.toml"
     original = config.read_bytes() if config.exists() else b""
     try:
@@ -669,6 +668,32 @@ def verify_existing(release: Path, files: dict) -> None:
             raise Refused("existing_release_changed")
 
 
+def retained_paths(files: dict) -> dict[str, str]:
+    """Map a retained manifest's package root to the current contract for validation only.
+
+    This never changes retained bytes or accepts a new bundle. One package root must contain
+    the full base contract; all remaining paths still pass the current strict allowlist.
+    """
+    suffixes = ("/__init__.py", "/cli.py", "/mcp/stdio.py", "/mcp/tools.json")
+    roots = {name[:-len("/cli.py")] for name in files
+             if isinstance(name, str) and re.fullmatch(r"scripts/[a-z][a-z0-9_]*/cli\.py", name)}
+    roots = {root for root in roots if all(root + tail in files for tail in suffixes)}
+    if len(roots) != 1:
+        raise Refused("invalid_release_metadata")
+    root = next(iter(roots))
+    result = {}
+    for name in files:
+        if not isinstance(name, str):
+            raise Refused("invalid_release_metadata")
+        mapped = "scripts/simple_tools/" + name[len(root) + 1:] if name.startswith(root + "/") else name
+        if re.fullmatch(r"docs/protocols/[a-z][a-z0-9-]*-partition\.toml", mapped):
+            mapped = "docs/protocols/simple-tools-partition.toml"
+        if mapped in result.values():
+            raise Refused("invalid_release_metadata")
+        result[name] = mapped
+    return result
+
+
 def verify_retained(release: Path) -> dict:
     metadata = release / "release.json"
     if (
@@ -680,9 +705,12 @@ def verify_retained(release: Path) -> dict:
     try:
         record = json.loads(metadata.read_bytes())
         files = record["files"]
+        if not isinstance(files, dict):
+            raise Refused("invalid_release_metadata")
+        normalized = retained_paths(files)
         if (
             not isinstance(files, dict)
-            or not BASE_REQUIRED.issubset(files)
+            or not BASE_REQUIRED.issubset(normalized.values())
             or len(files) > MAX_FILES
             or not re.fullmatch(r"[0-9a-f]{40}", record["source_commit"])
             or record["bundle_sha256"] != release.name
@@ -691,7 +719,7 @@ def verify_retained(release: Path) -> dict:
             raise Refused("invalid_release_metadata")
         for name, entry in files.items():
             if (
-                not allowed_path(name)
+                not allowed_path(normalized[name])
                 or set(entry) != {"mode", "sha256"}
                 or type(entry["mode"]) is not int
                 or entry["mode"] not in (0o644, 0o755)
@@ -704,7 +732,7 @@ def verify_retained(release: Path) -> dict:
     return record
 
 
-def receive(raw: bytes, home: Path, install: bool = False) -> dict:
+def receive(raw: bytes, home: Path, install: bool = False, replacement: tuple[str, str] | None = None) -> dict:
     bundle, decoded = decode_bundle(raw)
     base = home / ".local/share/fleet-cli"
     safe_dir(base)
@@ -726,7 +754,7 @@ def receive(raw: bytes, home: Path, install: bool = False) -> dict:
         old = release_at(base, "current")
         if old is None and not install:
             raise Refused("initial_install_required")
-        plan = install_plan(home) if install else new_wrapper_plan(home)
+        plan = install_plan(home, replacement) if install else new_wrapper_plan(home, replacement)
         new = base / "releases" / bundle["bundle_sha256"]
         if new.is_symlink():
             raise Refused("unsafe_release")
@@ -850,10 +878,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["receive", "status", "pause", "resume", "rollback"])
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--replace-codex-server", nargs=2, metavar=("KEY", "WRAPPER"), help="explicit managed Codex entry to replace with simple-chat")
     args = parser.parse_args(argv)
     try:
         if args.command == "receive":
-            result = receive(sys.stdin.buffer.read(MAX_BUNDLE_BYTES + 1), args.home, args.install)
+            result = receive(sys.stdin.buffer.read(MAX_BUNDLE_BYTES + 1), args.home, args.install, tuple(args.replace_codex_server) if args.replace_codex_server else None)
         else:
             result = control(args.home, args.command)
         print(json.dumps(result, sort_keys=True))

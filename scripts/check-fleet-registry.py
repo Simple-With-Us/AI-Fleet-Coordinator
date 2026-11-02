@@ -36,8 +36,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry
-from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
+from simple_tools.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry
+from simple_tools.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
 from public_activity_repos import PUBLIC_REPOS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,12 +76,12 @@ def zulip_errors(data: dict) -> list[str]:
     errors: list[str] = []
     if data.get("zulipRealm") != REALM:
         errors.append(
-            f"zulipRealm {data.get('zulipRealm')!r} must be {REALM!r} (scripts/agent_sync/zulip.py REALM)"
+            f"zulipRealm {data.get('zulipRealm')!r} must be {REALM!r} (scripts/simple_tools/zulip.py REALM)"
         )
     if data.get("zulipChannel") != DEFAULT_CHANNEL:
         errors.append(
             f"zulipChannel {data.get('zulipChannel')!r} must be {DEFAULT_CHANNEL!r} "
-            "(scripts/agent_sync/zulip.py DEFAULT_CHANNEL)"
+            "(scripts/simple_tools/zulip.py DEFAULT_CHANNEL)"
         )
     host = urlparse(REALM).hostname or ""
     seats = [s for s in data.get("seats", []) if isinstance(s, dict)]
@@ -114,7 +114,7 @@ def zulip_errors(data: dict) -> list[str]:
             )
         if code and seat.get("tag") and code != credential_file_name(tag).removesuffix("-zuliprc"):
             errors.append(
-                f"seat {tag} zulipFileCode {code!r} disagrees with the agent-sync file-name rule "
+                f"seat {tag} zulipFileCode {code!r} disagrees with the simple-tools file-name rule "
                 f"({credential_file_name(tag).removesuffix('-zuliprc')!r})"
             )
         if email:
@@ -140,7 +140,7 @@ def seat_apps_errors(data: dict) -> list[str]:
     """`seatApps` (F2, open-loops plan 2026-10-11) says which app each seat runs in, so code that counts apps
     instead of models (a consult quorum) never reads a seat's model off its tag.  It lives beside `seats`, not
     in it, because a dozen tools read `seats` and a BF-* or GB-* row there would make lanes, skill copies and
-    listener seats.  Checked:  the key parses the way scripts/agent_sync/identity.py reads it;  every live
+    listener seats.  Checked:  the key parses the way scripts/simple_tools/identity.py reads it;  every live
     `seats` row has an app in `bySeat`, and `bySeat` names no other tag;  `extraSeats` holds only tags with no
     `seats` row;  no `seats` row (live or retired) also matches a `patterns` row;  tags are written upper case;
     each pattern's `zulipEmail` is a bot email on the realm with one <role> in it."""
@@ -207,7 +207,7 @@ def seat_apps_errors(data: dict) -> list[str]:
 
 def alias_pattern_errors(seats: list[dict]) -> list[str]:
     """A seat's `aliasPattern` (owner 2026-10-10:  GROK-BUILD in any spelling is the GROK seat) must compile,
-    equal the CLI's own copy (agent_sync.identity.GROK_ALIAS_PATTERN), sit on a live seat, match the tag of
+    equal the CLI's own copy (simple_tools.identity.GROK_ALIAS_PATTERN), sit on a live seat, match the tag of
     every retired row that is an alias of that seat, and match no other seat tag.  The lane tool and the
     board scripts read it from here, so a pattern that is broken or too wide would sign the wrong seat."""
     errors: list[str] = []
@@ -231,7 +231,7 @@ def alias_pattern_errors(seats: list[dict]) -> list[str]:
             continue
         if raw != GROK_ALIAS_PATTERN:
             errors.append(
-                f"seat {tag} aliasPattern {raw!r} disagrees with scripts/agent_sync/identity.py GROK_ALIAS_PATTERN "
+                f"seat {tag} aliasPattern {raw!r} disagrees with scripts/simple_tools/identity.py GROK_ALIAS_PATTERN "
                 f"({GROK_ALIAS_PATTERN!r}); change both"
             )
         aliases = [
@@ -254,13 +254,13 @@ def alias_pattern_errors(seats: list[dict]) -> list[str]:
     return errors
 
 
-def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
+def engine_only_errors(data: dict, simple_tools: str) -> list[str]:
     """No live seat may sit in FLEET-PROTOCOL.md's "Engine-only CLIs" row (Platform Defaults).
 
     That row lists the CLIs that are not seats.  Owner 2026-10-10 made OpenCode a seat, and a merge that
     keeps the old row would put it back (two PRs edit that row).  A retired seat may be listed.
     """
-    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", agent_sync)
+    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", simple_tools)
     if not row:
         return []
     errors: list[str] = []
@@ -288,7 +288,7 @@ def strip_generated_header(text: str) -> str:
     return _GENERATED_HEADER.sub("", text, count=1)
 
 
-def agent_sync_errors(
+def simple_tools_errors(
     apps: list[dict], text: str, where: str, *, fold_repo: bool = False
 ) -> list[str]:
     """Every registry repo and acronym must appear in the body of an FLEET-PROTOCOL.md copy.  `fold_repo` ignores case in
@@ -374,7 +374,7 @@ def main() -> int:
         # CI and in stale lanes, and both need the message, not a stack trace.
         print(f"missing required mirror: {ROOT / doc_names[0]}")
         return 1
-    agent_sync = mirror.read_text()
+    simple_tools = mirror.read_text()
     live_sync = next((APPS / n for n in doc_names if (APPS / n).is_file()), APPS / doc_names[0])
     live_checks = APPS.is_dir() if _board_home_env else live_sync.is_file()
     if _board_home_env and not live_checks:
@@ -407,17 +407,17 @@ def main() -> int:
             ):
                 errors.append(f"missing app icon {icon}")
 
-    errors.extend(agent_sync_errors(apps, agent_sync, "coordinator FLEET-PROTOCOL.md"))
+    errors.extend(simple_tools_errors(apps, simple_tools, "coordinator FLEET-PROTOCOL.md"))
     if live_sync.is_file():
         errors.extend(
-            agent_sync_errors(
+            simple_tools_errors(
                 apps, live_sync.read_text(), "~/apps/FLEET-PROTOCOL.md", fold_repo=True
             )
         )
 
     errors.extend(zulip_errors(data))
     errors.extend(seat_apps_errors(data))
-    errors.extend(engine_only_errors(data, strip_generated_header(agent_sync)))
+    errors.extend(engine_only_errors(data, strip_generated_header(simple_tools)))
 
     if MANIFEST.is_file():
         errors.extend(manifest_errors())

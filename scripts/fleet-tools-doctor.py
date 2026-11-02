@@ -46,8 +46,7 @@ Checks:
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
   mcp:codex   Codex registers the fleet's stdio server (simple-chat) and FleetLink when a
-              token exists;  a host that still carries the retired agent-sync name still
-              serves the seat, and is reported as the drift it is
+              token exists; the current registration is required
   mcp:claude  Claude Code registers the same two (the stdio server, FleetLink)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
@@ -101,7 +100,7 @@ COMMANDS = (*FLEET_TOOLS, "fleetlink")
 # The Mac keeps lane and fleet-mode in ~/apps rather than on PATH.
 COMMAND_FALLBACK_DIRS = (HOME / "apps",)
 # Where a Mac finds the published runtime (the server reads RUNTIME/current).
-MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/agent-sync-runtime"
+MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/simple-tools-runtime"
 # The simple-tools commands the Mac links into the managed runtime:  command name -> entry script.
 MAC_SIMPLE_TOOLS = (
     ("simple-chat", "simple-chat"),
@@ -122,10 +121,10 @@ SHIPPED = (
     # The git tools CLI entry wrapper and implementation (mirrors the release policy).
     "scripts/simple-git",
     "scripts/git-tools/",
-    "scripts/agent_sync/",
+    "scripts/simple_tools/",
     "scripts/linear-board/",
     "fleet-apps.json",
-    "docs/protocols/agent-sync-partition.toml",
+    "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
     "scripts/recall",
     "scripts/fleet_rag/",
@@ -151,23 +150,23 @@ SHIPPED_EXACT = frozenset(
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",
-        "docs/protocols/agent-sync-partition.toml",
+        "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
-        "scripts/agent_sync/mcp/tools.json",
-        "scripts/agent_sync/mcp/fixtures.jsonl",
-        "scripts/agent_sync/mcp/eavesdropper-tools.json",
-        "scripts/agent_sync/mcp/renamed-tools.json",
-        "scripts/agent_sync/mcp/gb-identities.json",
-        "scripts/agent_sync/mcp/notes-tools.json",
-        "scripts/agent_sync/mcp/recall-tools.json",
+        "scripts/simple_tools/mcp/tools.json",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
+        "scripts/simple_tools/mcp/renamed-tools.json",
+        "scripts/simple_tools/mcp/gb-identities.json",
+        "scripts/simple_tools/mcp/notes-tools.json",
+        "scripts/simple_tools/mcp/recall-tools.json",
         "scripts/linear-board/catalog/core-tools.json",
-        "scripts/agent_sync/mcp/fleetlink-tools.json",
+        "scripts/simple_tools/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
-        "scripts/agent_sync/operator_sheets_export.mjs",
+        "scripts/simple_tools/operator_sheets_export.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
-        "scripts/agent_sync/opencode_letter_plugin/index.js",
+        "scripts/simple_tools/opencode_letter_plugin/index.js",
         "docs/protocols/simple-tools-guide.md",
-        "scripts/agent_sync/wake/wake-schema.json",
+        "scripts/simple_tools/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
         "scripts/linear-board/catalog/official-mcp-tools.json",
         "scripts/linear-board/catalog/public-inputs.json",
@@ -202,7 +201,7 @@ SHIPPED_EXACT = frozenset(
 )
 STATE = HOME / ".local/state/fleet-tools-doctor.json"
 CATALOGS = (
-    ("scripts/agent_sync/mcp/tools.json", True),
+    ("scripts/simple_tools/mcp/tools.json", True),
     ("scripts/linear-board/catalog/named-commands.json", False),
     ("scripts/linear-board/catalog/official-mcp-tools.json", False),
 )
@@ -228,7 +227,7 @@ GITHUB_TIMEOUT = 8
 # more try afterwards, on its own.
 REGISTRY_WORKERS = 4
 GRACE_MINUTES = 70  # an hourly timer that fired within this window is still on schedule
-MAC_UPDATER_LABEL = "com.jay.agent-sync-runtime-sync"
+MAC_UPDATER_LABEL = "com.jay.simple-tools-runtime-sync"
 SERVER_TIMERS = ("fleet-cli-git-update.timer", "fleet-tools-doctor.timer")
 # The collector is a systemd user unit for the forced-command user (scripts/systemd), so it
 # runs only while that user's manager does:  with linger on, or while someone is logged in.
@@ -465,8 +464,8 @@ def is_shipped(path: str) -> bool:
     if policy is not None and callable(getattr(policy, "allowed_path", None)):
         return bool(policy.allowed_path(path))
     return path in SHIPPED_EXACT or bool(
-        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
-        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py")
+        re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
+        or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")
     )
 
 
@@ -987,7 +986,7 @@ def check_mac_updater(
     previous: dict | None = None,
     clock: Callable = time.time,
 ) -> dict:
-    """com.jay.agent-sync-runtime-sync:  loaded, not paused, exiting cleanly, and still being started
+    """com.jay.simple-tools-runtime-sync:  loaded, not paused, exiting cleanly, and still being started
     (its launchd run counter moved since the previous report)."""
     job = launchd_job(MAC_UPDATER_LABEL, runner) or {"label": MAC_UPDATER_LABEL, "loaded": None}
     prev = previous_host(previous, "mac")
@@ -997,7 +996,7 @@ def check_mac_updater(
     judged = prev_at is not None and clock() - prev_at >= 270 and isinstance(prev_runs, int)
     runs = job.get("runs")
     advanced = (runs != prev_runs) if (judged and runs is not None) else None
-    paused = (HOME / ".agent-sync/runtime-sync.pause").exists()
+    paused = (HOME / ".simple-tools/runtime-sync.pause").exists()
     info = dict(job, paused=paused, previousRuns=prev_runs, advanced=advanced)
     check = f"updater:{MAC_UPDATER_LABEL}"
     fields = {"category": "fleet-tool", "tool": None}
@@ -1016,7 +1015,7 @@ def check_mac_updater(
             **fields,
         )
     elif paused:
-        why = "paused by ~/.agent-sync/runtime-sync.pause"
+        why = "paused by ~/.simple-tools/runtime-sync.pause"
         report.add(
             check, "FAIL", f"{why} (remove it to resume)", state="stale", reason=why, **fields
         )
@@ -1025,7 +1024,7 @@ def check_mac_updater(
         report.add(
             check,
             "FAIL",
-            f"{why}:  see ~/apps/logs/agent-sync-runtime-sync.log",
+            f"{why}:  see ~/apps/logs/simple-tools-runtime-sync.log",
             state="stale",
             reason=why,
             **fields,
@@ -1091,7 +1090,7 @@ def check_mac_runtime(
     count = "count unknown" if rt["behind"] is None else f"{rt['behind']} commits behind"
     blocking = []
     if updater.get("paused"):
-        blocking.append("the updater is paused (~/.agent-sync/runtime-sync.pause)")
+        blocking.append("the updater is paused (~/.simple-tools/runtime-sync.pause)")
     tracked = git_try(MAC_RUNTIME, "status", "--porcelain", "--untracked-files=no", runner=runner)
     if tracked:
         blocking.append("tracked changes in the runtime block the updater")
@@ -1102,7 +1101,7 @@ def check_mac_runtime(
     if updater.get("advanced") is False:
         blocking.append("the updater's run counter has not moved since the previous report")
     try:
-        bad = (HOME / ".agent-sync/runtime-sync.bad-sha").read_text().strip()
+        bad = (HOME / ".simple-tools/runtime-sync.bad-sha").read_text().strip()
     except OSError:
         bad = ""
     prev_rt = next(
@@ -1418,7 +1417,7 @@ def check_fleet_mode_doc(report: Report, rt: dict | None = None) -> None:
         )
 
 
-# The Zulip key prefix where it differs from the seat (agent_sync/zulip.py SEAT_FILE_OVERRIDES).
+# The Zulip key prefix where it differs from the seat (simple_tools/zulip.py SEAT_FILE_OVERRIDES).
 ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
 _names_cache: dict[str, frozenset[str] | None] = {}
 _UNSET = object()
@@ -1581,12 +1580,8 @@ def client_servers(seat: str, home: Path = HOME) -> dict:
     return servers
 
 
-# The stdio MCP server the seats register is the fleet's own local Agent-Sync server.  The name
-# the fleet writes is "simple-chat":  fleet-cli-release.py writes that key into a host's Codex
-# config and install_mcp.py installs the server under it.  "agent-sync" is the retired
-# pre-rename registration key;  a host installed before the rename may still carry it and it
-# still serves the seat, but it is not the name to write, and the next apply retires it.
-MCP_STDIO_NAMES = ("simple-chat", "agent-sync")
+# Only the current local stdio registration is recognized.
+MCP_STDIO_NAMES = ("simple-chat",)
 MCP_CANONICAL_NAME = "simple-chat"
 
 
@@ -1677,7 +1672,6 @@ def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None]) -> None:
             report.add(label, "FAIL", str(exc))
             continue
         registered = [name for name in MCP_STDIO_NAMES if name in names]
-        retired = [name for name in registered if name != MCP_CANONICAL_NAME]
         lacking = []
         unreadable = []
         if not registered:
@@ -1696,12 +1690,6 @@ def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None]) -> None:
         if unreadable:
             status = "WARN"
             detail += ";  " + ", ".join(unreadable) + " token names could not be read"
-        if retired:
-            # The retired pre-rename key alone still serves the seat, but it is not the name the
-            # fleet writes and the next apply retires it, so it is reported as drift.
-            status = "WARN"
-            retired_names = ", ".join(retired)
-            detail += ";  pre-rename name %s, canonical %s" % (retired_names, MCP_CANONICAL_NAME)
         report.add(label, status, detail)
 
 
@@ -2560,7 +2548,7 @@ NOTES_POLL_STALE_S = (
 NOTES_QUEUE_STALE_S = 600  # a request waiting ten minutes means the runner is not taking work
 NOTES_LOG_STALE_S = 1800  # unsent log lines older than this mean the runner stopped sending them
 NOTES_LOG_ROTATIONS = (
-    5  # apple-notes-coding.sh keeps .1 to .5 (agent_sync.notes.ACTION_LOG_ROTATIONS)
+    5  # apple-notes-coding.sh keeps .1 to .5 (simple_tools.notes.ACTION_LOG_ROTATIONS)
 )
 
 
@@ -2640,7 +2628,7 @@ def notes_health(env: dict[str, str]) -> dict:
     scripts = str(Path(__file__).resolve().parent)
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
-    from agent_sync import (
+    from simple_tools import (
         notes_client as NC,
     )  # the shipped runtime carries it;  imported only on the server
 

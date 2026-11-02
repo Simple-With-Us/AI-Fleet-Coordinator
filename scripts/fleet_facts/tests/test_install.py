@@ -47,9 +47,9 @@ class Install(unittest.TestCase):
                     "fleet_facts/interfaces.py", "fleet_facts/safety.py", "fleet_facts/runner.py", "fleet_facts/gather.py",
                     "fleet_facts/signing.py", "fleet_facts/publish.py", "fleet_facts/repo.py", "fleet_facts/minimize.py", "fleet_facts/localtime.py",
                     "fleet_knobs/__init__.py", "fleet_knobs/knobs.py", "fleet_knobs/registry.py", "fleet_knobs/source.py",
-                    "agent_sync/__init__.py", "agent_sync/textsafe.py", "agent_sync/secretscan.py"):
+                    "simple_tools/__init__.py", "simple_tools/textsafe.py", "simple_tools/secretscan.py"):
             self.assertTrue((self.stable / rel).is_file(), rel)
-        self.assertEqual((self.stable / "agent_sync" / "__init__.py").read_text(), "")
+        self.assertEqual((self.stable / "simple_tools" / "__init__.py").read_text(), "")
         self.assertFalse((self.stable / "fleet_facts" / "tests").exists())            # no tests in the stable copy
         self.assertFalse((self.stable / "fleet_facts" / "check_fixtures.py").exists())   # nor the CI checker
         self.assertFalse((self.stable / "fleet_facts" / "README.md").exists())
@@ -66,7 +66,7 @@ class Install(unittest.TestCase):
             proc = self.isolated(program, "--help")
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("gather", proc.stdout)
-        # A real gather, which loads the F3 helpers by path from the stable copy's own agent_sync folder.
+        # A real gather, which loads the F3 helpers by path from the stable copy's own simple_tools folder.
         proc = self.isolated(self.link, "gather", "--no-mac", "--part", "lanes", "--part", "backup", "--json")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         doc = json.loads(proc.stdout)
@@ -113,6 +113,9 @@ class Install(unittest.TestCase):
         """A fake `infisical` first on PATH, so K1 finds it before any real CLI."""
         bin_dir = Path(self.tmp.name) / "bin"
         bin_dir.mkdir(exist_ok=True)
+        python = bin_dir / "python3"
+        if not python.exists():
+            python.symlink_to(sys.executable)
         path = bin_dir / "infisical"
         path.write_text("#!/bin/sh\n" + body + "\n")
         path.chmod(0o755)
