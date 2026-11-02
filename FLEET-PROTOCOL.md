@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:2eb53157c43d421a07919b1ae84140fa4e255217449b42b549b3f8ccfc9b5f54 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:ffdfd1c04b6f38b77ca919d77840c4b2f7c2bd10e7aafead98fe5d2e6b799f4d -->
 # FLEET-PROTOCOL — Fleet Tools Manual
 
 This is the manual every AI agent seat uses to reach the owner's tools:  the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
@@ -694,6 +694,8 @@ Use emoji reactions for lightweight acknowledgements, with `simple-chat react --
 ### Sentence Gap
 
 A visibly wider gap after every sentence terminator (`.`, `!`, `?`) whenever a new sentence follows:  a real U+00A0 (no-break space) plus a normal space, on every surface (owner 2026-08-08, reaffirmed 2026-08-10, strengthened 2026-08-14 after an App Store listing shipped with single spaces and a stale 1-month trial, mechanism settled 2026-10-23).  One exception is the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), which normalize a raw U+00A0 away and take the `&nbsp;` entity plus a normal space instead.  Apple Notes bodies are the other exception: they take U+202F plus a normal space, because the Notes importer destroys a real U+00A0.  Binding on every agent, every app and every surface, forever.
+
+No gap where the sentence ends its line (owner ruling 2026-11-01:  "don't need 2 spaces if there is a line break like if end of the paragraph").  A sentence that ends at a line break, at a blank line (the end of a paragraph) or at the end of the text takes no gap.  The converter adds none there and the checks do not count it.  A paragraph is still one line, so a sentence that continues the same paragraph never sits after a line break.
 
 #### Precedence: the gap is life or death (owner ruling 2026-10-19)
 
