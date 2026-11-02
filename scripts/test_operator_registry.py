@@ -1414,3 +1414,56 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReopenCommandTest(unittest.TestCase):
+    """The reopen verb of the registry's own CLI.
+
+    A host that keeps no registry asks the host that holds one, so the reopen has to
+    be a verb the CLI answers, not a call into the registry from inside a hook.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        self.reg = R.SessionRegistry(self.db)
+
+    def tearDown(self):
+        self.reg.close_db()
+        self.tmp.cleanup()
+
+    def test_the_reopen_command_gives_a_closed_chat_its_letter_back(self):
+        made = self.reg.resolve_or_register(ident(platform="minimax", native="n-9"))
+        self.reg.close(made["record_id"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(
+                [
+                    "reopen",
+                    "--db",
+                    self.db,
+                    "--record-id",
+                    made["record_id"],
+                    "--actor",
+                    "MM",
+                    "--source",
+                    "test",
+                    "--letter-pick",
+                    "oldest",
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["outcome"], "reopened")
+        self.assertEqual(answer["label"], made["label"])
+        self.assertIsNone(self.reg._get(made["record_id"])["closed_at"])
+
+    def test_the_reopen_command_answers_a_refusal_as_json(self):
+        # A record that is not there is a readable answer, never a traceback.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", self.db, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["code"], "reopen_failed")
+        self.assertEqual(answer["outcome"], "reopen_refused")

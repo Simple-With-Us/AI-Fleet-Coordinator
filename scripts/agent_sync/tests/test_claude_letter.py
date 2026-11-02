@@ -1726,3 +1726,80 @@ class RegistryModuleDispatchTest(Base):
         self.assertEqual(code, 2)
         answer = json.loads(out.getvalue().splitlines()[-1])
         self.assertIn("error", answer)
+
+    def test_the_module_cli_never_brings_a_registry_into_being(self) -> None:
+        # A host with no registry must not grow one:  a second registry hands out
+        # letters that collide with the ones the Operator keeps.
+        missing = os.path.join(self.tmp.name, "no-registry-here")
+        out = io.StringIO()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "AGENT_SYNC_STATE_DIR": missing,
+                    "AGENT_SYNC_OPERATOR_REGISTRY": "",
+                },
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0009",
+                    "--seat=MM",
+                    "--source=a test",
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 3)
+        self.assertIn("no Operator registry", answer["error"])
+        self.assertFalse(os.path.exists(os.path.join(missing, "operator", "registry.sqlite3")))
+
+    def test_the_module_cli_reopens_a_closed_session(self) -> None:
+        # The far host runs the reopen, so a chat that comes back to life gets its
+        # letter back on the host that holds the registry.
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"AGENT_SYNC_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0010",
+                    "--seat=MM",
+                    "--source=a test",
+                ]
+            )
+        self.assertEqual(code, 0)
+        made = json.loads(out.getvalue().splitlines()[-1])
+        reg = OR.SessionRegistry(self.db)
+        reg.close(made["record_id"], actor="MM", source="the test", reason="stale")
+        reg.close_db()
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"AGENT_SYNC_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "reopen",
+                    "--record-id=" + made["record_id"],
+                    "--actor=MM",
+                    "--source=a test",
+                    "--letter-pick=oldest",
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["outcome"], "reopened")
+        self.assertEqual(answer["label"], made["label"])

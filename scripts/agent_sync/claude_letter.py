@@ -1417,6 +1417,12 @@ def main(
         # speaks, and it is the one a remote host runs for another platform.
         from . import operator_registry as OR
 
+        db = OR.registry_db_path(L.state_root(env), env)
+        if not os.path.isfile(db):
+            # Never create one:  a second registry would hand out letters that collide
+            # with the ones the Operator keeps.
+            sys.stdout.write(json.dumps({"error": "no Operator registry on this host"}) + "\n")
+            return 3
         try:
             return OR.main(argv[1:])
         except SystemExit as exc:

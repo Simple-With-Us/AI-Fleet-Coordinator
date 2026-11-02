@@ -31,6 +31,7 @@ import pathlib
 import re
 import secrets
 import sqlite3
+import sys
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -2213,6 +2214,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     t.add_argument("--scope", required=True, help="the profile scope")
     t.add_argument("--session-id", required=True, help="the native session id")
+    rp = sub.add_parser(
+        "reopen",
+        help="give a closed session its letter again",
+    )
+    rp.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rp.add_argument("--record-id", required=True, help="the registry record of the closed session")
+    rp.add_argument("--actor", default="registry")
+    rp.add_argument("--source", default="registry")
+    rp.add_argument(
+        "--letter-pick",
+        default="primary",
+        choices=sorted(LETTER_PICKS),
+        help="how a free letter is chosen (default: the next main-chat pair)",
+    )
+    rp.add_argument(
+        "--parent-session-id",
+        default="",
+        help="the session that started this one: take the first free pair after its pair",
+    )
     args = parser.parse_args(argv)
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
@@ -2349,6 +2369,50 @@ def main(argv: list[str] | None = None) -> int:
             stale_after_minutes=args.stale_after_minutes,
         )
         print(json.dumps({"ended": ended, "count": len(ended)}))
+        return 0
+    if args.command == "reopen":
+        # The reopen shares the platform's own rule, the one every hook uses, so the
+        # pair space is kept the same way here as it is in the hook.  It lives behind
+        # this verb because a host that keeps no registry asks the host that holds one.
+        from . import platform_letter
+
+        db = args.db or _default_db()
+        reg = SessionRegistry(db)
+        try:
+            letter, generation, previous = platform_letter.operator_reopen(
+                sys.modules[__name__],
+                db,
+                reg,
+                args.record_id,
+                actor=args.actor,
+                source=args.source,
+                pick=args.letter_pick,
+                parent=args.parent_session_id,
+            )
+        except platform_letter.SpaceLost as exc:
+            # A chat that held a pair would come back with a single letter.  That is
+            # refused before anything is written.
+            print(json.dumps({"error": str(exc), "code": "space_lost", "outcome": "reopen_refused"}))
+            return 2
+        except LabelExhausted as exc:
+            print(json.dumps({"error": str(exc), "code": "labels_exhausted", "outcome": "reopen_refused"}))
+            return 2
+        except (UnknownRecord, KeyError, ValueError, OSError) as exc:
+            print(json.dumps({"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}))
+            return 2
+        finally:
+            reg.close_db()
+        print(
+            json.dumps(
+                {
+                    "record_id": args.record_id,
+                    "label": letter,
+                    "generation": generation,
+                    "previous": previous,
+                    "outcome": "reopened",
+                }
+            )
+        )
         return 0
     if args.command == "history":
         try:

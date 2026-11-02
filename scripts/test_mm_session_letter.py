@@ -1775,3 +1775,121 @@ class RemoteRegistryHopTest(unittest.TestCase):
         self.assertEqual(args[0], "register")
         self.assertIn("--platform=minimax", args)
         self.assertIn("--session-id=" + SESSION_ID, args)
+
+
+class ReopenOverTheHopTest(unittest.TestCase):
+    """A chat that comes back to life gets its letter back, wherever the registry is.
+
+    The sweep ends a session's letter while its chat is live.  When the chat returns,
+    the reopen has to reach the registry:  on a host that keeps no copy, that is the
+    host that holds one.
+    """
+
+    def test_the_reopen_goes_to_the_far_host_when_this_host_has_no_registry(self):
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={"record_id": "r1", "label": "AA", "outcome": "reopened"},
+            ) as hop,
+        ):
+            answer = M.reopen_closed("r1")
+        self.assertEqual(answer["label"], "AA")
+        args = hop.call_args.args[0]
+        self.assertEqual(args[0], "reopen")
+        self.assertIn("--record-id=r1", args)
+        self.assertIn("--letter-pick=" + M.LETTER_PICK, args)
+
+    def test_the_reopen_asks_for_the_parents_pair_when_there_is_one(self):
+        parent = "mvs_parent000000000000000000000000000001"
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M, "remote_registry_call", return_value={"record_id": "r1", "label": "BB"}
+            ) as hop,
+        ):
+            M.reopen_closed("r1", parent)
+        self.assertIn("--parent-session-id=" + parent, hop.call_args.args[0])
+
+    def test_a_refused_reopen_keeps_its_own_code_and_outcome(self):
+        # The far host answers a refusal with the code and the outcome, and the
+        # caller reads them the same way it reads a local refusal.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={
+                    "error": "the pair AA went to another chat",
+                    "code": "space_lost",
+                    "outcome": "reopen_refused",
+                },
+            ),
+        ):
+            with self.assertRaises(M.RegistryError) as caught:
+                M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "space_lost")
+        self.assertEqual(caught.exception.outcome, "reopen_refused")
+
+
+class ScriptsDirTest(unittest.TestCase):
+    """The helper and the CLI it calls have to be the same version."""
+
+    def test_the_checkout_the_helper_runs_in_comes_first(self):
+        # A verb the helper sends has to be a verb the CLI knows, so the CLI comes
+        # from the checkout the helper itself is in.
+        here = os.path.dirname(os.path.abspath(M.__file__))
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "/nowhere/at/all"}):
+            self.assertEqual(M.repo_scripts_dir(), here)
+
+    def test_a_host_that_names_no_checkout_still_finds_one(self):
+        here = os.path.dirname(os.path.abspath(M.__file__))
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": ""}):
+            self.assertEqual(M.repo_scripts_dir(), here)
+
+
+class StopHookTest(unittest.TestCase):
+    """The Stop hook never blocks the agent over a registry that cannot be reached."""
+
+    def _payload(self):
+        return json.dumps({"session_id": SESSION_ID}).encode()
+
+    def _row(self):
+        return {"session_id": SESSION_ID, "title": "AA: A topic", "session_kind": "conversation"}
+
+    def test_a_registry_that_cannot_be_reached_does_not_block_the_stop(self):
+        # A far host that is asleep is not the agent's fault, and a Stop hook that
+        # exits 2 keeps the agent in a loop.
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(self._payload())),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=self._row()),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(
+                M,
+                "update_title",
+                side_effect=M.RegistryError("the registry host did not answer", "timeout"),
+            ),
+        ):
+            self.assertEqual(M.hook_stop(), 0)
+        self.assertIn("registry host did not answer", stderr.getvalue())
+
+    def test_a_title_that_carries_a_credential_still_blocks_the_stop(self):
+        # A bad title is the agent's to fix, so that one still says so.
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(self._payload())),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=self._row()),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            mock.patch.object(
+                M, "update_title", side_effect=ValueError("secret_detected")
+            ),
+        ):
+            self.assertEqual(M.hook_stop(), 2)
+        self.assertIn("secret_detected", stderr.getvalue())
