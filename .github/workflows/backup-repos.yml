@@ -45,7 +45,7 @@ jobs:
             [ -z "$repo" ] && continue
             echo "=========================================="
             echo "Cloning Simple-With-Us/${repo}"
-            if git clone "https://x-access-token:${GH_TOKEN}@github.com/Simple-With-Us/${repo}.git" "backups/${repo}"; then
+            if gh repo clone "Simple-With-Us/${repo}" "backups/${repo}"; then
               (
                 cd "backups/${repo}"
                 zip -rq "../${repo}-backup-${DATE_STR}.zip" . \

@@ -167,7 +167,10 @@ enum FleetViewService {
                 _ = finished.wait(timeout: .now() + killGrace)
             }
         }
-        readers.wait()
+        // Bound the drain: grandchildren can inherit the pipes and hold EOF
+        // open long past the deadline, so after a grace period take whatever
+        // arrived and leave the drain threads to finish against the buffers.
+        _ = readers.wait(timeout: .now() + killGrace)
         return ProcessOutcome(
             status: process.terminationStatus,
             stdout: stdoutBuffer.data,

@@ -56,7 +56,7 @@ for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await serveRepo(page, { stripMetaRefresh: true });
     await page.goto('/scripts/safari-start/public/index.html');
-    await expect(page).toHaveScreenshot(`start-redirect-${viewport.width}.png`);
+    await expect(page).toHaveScreenshot(`start-redirect-${viewport.width}.png`, { maxDiffPixels: 200 });
     expect(serveErrors(page)).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });

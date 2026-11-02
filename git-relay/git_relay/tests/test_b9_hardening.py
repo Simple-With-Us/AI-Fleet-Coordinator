@@ -55,6 +55,19 @@ class TestUnauthenticatedAudit(unittest.TestCase):
             with open(path) as fh:
                 self.assertNotIn(wrong, fh.read())
 
+    def test_401_credential_shaped_action_is_never_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "a.jsonl")
+            relay = Relay(SeatPolicy(SEATS_JSON), StubClient(), AuditLog(path))
+            sprayed = "gh" + "p_" + "A" * 36
+            code, _ = relay.handle("wrong-token", sprayed, {})
+            self.assertEqual(code, 401)
+            with open(path) as fh:
+                raw = fh.read()
+            self.assertNotIn(sprayed, raw)
+            rows = _rows(path)
+            self.assertEqual(rows[0]["action"], "<credential-shaped>")
+
     def test_401_audit_is_rate_limited(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "a.jsonl")

@@ -4355,8 +4355,12 @@ class Daemon:
                             % (event[1].get("id"), len(INBOX_RETRY_BACKOFF)),
                             kind="inbox-delivery-gave-up",
                         )
-                    except Exception:  # noqa: BLE001 - notification must not break routing
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - notification must not break routing
+                        self.log.write(
+                            "inbox-delivery-notify-failed",
+                            seat=seat,
+                            error=type(exc).__name__,
+                        )
 
     def _start_due_inbox_retries(self, now: float) -> None:
         """Event thread only (tick):  start one retry thread per due message.

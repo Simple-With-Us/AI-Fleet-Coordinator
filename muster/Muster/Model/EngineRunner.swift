@@ -213,7 +213,9 @@ struct EngineRunner {
 
         process.terminationHandler = { finished in
             timeoutItem.cancel()
-            readers.wait()
+            // Bound the drain like FleetViewService: grandchildren inheriting
+            // the pipes must not hold completion hostage past the deadline.
+            _ = readers.wait(timeout: .now() + Self.killGrace)
             let output = outputBox.get()
             let errors = errorBox.get()
             let errorText = String(data: errors, encoding: .utf8) ?? ""

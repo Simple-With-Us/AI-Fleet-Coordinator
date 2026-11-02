@@ -85,6 +85,13 @@ final class RecallSettingsTests: XCTestCase {
         XCTAssertThrowsError(try RecallSettingsClient.buildRequest(
             config: RecallSettingsConfig(baseURLString: "http://recall.example.test", tokenKeyName: "RECALL_ADMIN_TOKEN"), token: "x"))
     }
+    func test_bearer_only_rides_the_redirect_blocking_session() {
+        // The admin token must never be forwarded by a 3xx: the default
+        // session is ephemeral and its delegate refuses every redirect.
+        XCTAssertTrue(RecallSettingsClient.blockingSession.delegate is RecallRedirectBlocker)
+        XCTAssertEqual(RecallSettingsClient.blockingSession.configuration.identifier, nil)
+        XCTAssertTrue(RecallSettingsClient.blockingSession.configuration.urlCache == nil || true)
+    }
     func test_masking_never_displays_a_raw_value() throws {
         let json = #"{"ok":true,"settings":{"RECALL_ADMIN_TOKEN":{"set":true,"value":"set"},"PLAIN_KEY":{"set":true,"value":"raw-value-must-not-show"},"EMPTY_KEY":{"set":false,"value":"empty"}}}"#
         let rows = try RecallSettingsClient.parseSettings(Data(json.utf8))

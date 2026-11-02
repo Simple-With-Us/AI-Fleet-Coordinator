@@ -139,6 +139,12 @@ class InfisicalSettings:
         self._login_lock = threading.Lock()
         self._identity_lock = threading.Lock()
         self._cache: dict[str, str] = {}
+        # Keys some Infisical fetch actually returned.  The env backfill is a
+        # migration bridge for keys that have only ever lived in the process
+        # environment; once Infisical has owned a key, a later delete must
+        # propagate instead of the backfill resurrecting the env copy.
+        # (A dict, not a set: this module's own set() API shadows the builtin.)
+        self._infisical_keys: dict[str, None] = {}
         self._access_token: str | None = None
         self._credential_source: str | None = None
         self._identity: tuple[str | None, str | None] | None = None
@@ -374,7 +380,11 @@ class InfisicalSettings:
         refresh(), an env-only key would vanish at the first background refresh.
         Backfilled key names are logged (never values) so the fallback stays
         visible."""
-        backfilled = [k for k in self.managed_keys if k not in fetched and os.environ.get(k)]
+        backfilled = [
+            k
+            for k in self.managed_keys
+            if k not in fetched and k not in self._infisical_keys and os.environ.get(k)
+        ]
         for k in backfilled:
             fetched[k] = os.environ[k]
         if backfilled:
@@ -407,6 +417,7 @@ class InfisicalSettings:
                 "machine identity); populating managed keys from the process environment"
             )
             fetched = {}
+        self._infisical_keys.update(dict.fromkeys(fetched.keys()))
         fetched = self._backfill_from_env(fetched)
         with self._lock:
             self._cache = dict(fetched)
@@ -467,6 +478,7 @@ class InfisicalSettings:
                 len(self._cache),
             )
             return False
+        self._infisical_keys.update(dict.fromkeys(fetched.keys()))
         fetched = self._backfill_from_env(fetched)
         missing = [k for k in self.required_keys if not fetched.get(k)]
         if missing:

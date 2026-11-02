@@ -304,6 +304,19 @@ class RefreshTests(_SettingsCase):
             self.assertTrue(s.refresh())
             self.assertEqual(s.get("BACKEND_URL"), "http://env-only")
 
+    def test_refresh_does_not_resurrect_a_deleted_infisical_key(self):
+        # BACKEND_URL came from Infisical at init and the env still holds the
+        # exported copy; deleting it in Infisical must propagate, while the
+        # env-only bridge above keeps working for never-Infisical keys.
+        self.world.secrets = {"API_TOKEN": "tok", "BACKEND_URL": "http://infisical"}
+        s = self.make()
+        with mock.patch.dict(os.environ, {"BACKEND_URL": "http://infisical"}, clear=False):
+            s.init()
+            self.assertEqual(s.get("BACKEND_URL"), "http://infisical")
+            self.world.secrets = {"API_TOKEN": "tok"}
+            self.assertTrue(s.refresh())
+            self.assertIsNone(s.get("BACKEND_URL"))
+
     def test_refresh_dropping_required_key_keeps_last_known_good(self):
         self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
         s = self.make()

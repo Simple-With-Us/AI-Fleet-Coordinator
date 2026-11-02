@@ -71,6 +71,28 @@ final class ProcessSafetyTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 8)
     }
 
+    func test_fleetView_returns_when_a_grandchild_holds_the_pipe() throws {
+        // The child exits at once but its background grandchild inherits
+        // stdout, so EOF is 20s away; the bounded drain must not wait for it.
+        let script = try makeScript("#!/bin/sh\n(sleep 20 &)\necho done\n")
+        let start = Date()
+        _ = try? FleetViewService.fetch(
+            executable: script, arguments: [], currentDirectory: nil,
+            environment: [:], timeout: 5
+        )
+        XCTAssertLessThan(Date().timeIntervalSince(start), 9)
+    }
+
+    func test_engineRunner_returns_when_a_grandchild_holds_the_pipe() throws {
+        let script = try makeScript("#!/bin/sh\n(sleep 20 &)\necho done\n")
+        let runner = EngineRunner(location: makeLocation(interpreter: script), timeout: 5)
+        let done = expectation(description: "run completes")
+        let start = Date()
+        runner.run { _ in done.fulfill() }
+        wait(for: [done], timeout: 10)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 9)
+    }
+
     func test_fleetView_kills_a_child_that_ignores_SIGTERM() throws {
         let script = try makeScript("#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 1; done\n")
         let start = Date()

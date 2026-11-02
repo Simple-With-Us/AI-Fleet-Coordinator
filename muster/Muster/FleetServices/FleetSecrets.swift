@@ -238,7 +238,21 @@ public enum RecallSettingsError: LocalizedError, Equatable {
     }
 }
 
+/// Refuses every redirect: the recall request carries a bearer [REDACTED], and a
+/// 3xx must never forward it to another origin (or downgrade the scheme).
+final class RecallRedirectBlocker: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 public enum RecallSettingsClient {
+    /// The only session the bearer rides on: ephemeral, redirect-blocking.
+    public static let blockingSession: URLSession = URLSession(
+        configuration: .ephemeral, delegate: RecallRedirectBlocker(), delegateQueue: nil)
     /// Build the admin request.  The token goes only in the Authorization
     /// header, in memory:  never in the URL, never logged, never persisted.
     public static func buildRequest(config: RecallSettingsConfig, token: String) throws -> URLRequest {
@@ -279,7 +293,7 @@ public enum RecallSettingsClient {
     /// Fetch masked rows.  The token is read by key name into memory for this
     /// one request and released with it.
     public static func fetch(config: RecallSettingsConfig, secrets: SecretResolving,
-                             session: URLSession = .shared) async throws -> [RecallSettingRow] {
+                             session: URLSession = RecallSettingsClient.blockingSession) async throws -> [RecallSettingRow] {
         let token = try await awaitOffThePool { try secrets.secret(named: config.tokenKeyName) }
         let request = try buildRequest(config: config, token: token)
         let (data, response) = try await session.data(for: request)
