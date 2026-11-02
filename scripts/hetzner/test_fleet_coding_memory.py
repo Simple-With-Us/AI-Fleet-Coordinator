@@ -609,9 +609,7 @@ class ControllerTests(unittest.TestCase):
             self.assertNotEqual(int((groups[0] / "memory.low").read_text()), 0)
             # A container recreation puts the container's own value back.
             (groups[0] / "memory.low").write_text("0")
-            status = run_step(
-                policy(), root, state, proc(root / "proc2"), 2, ([], groups, limits)
-            )
+            status = run_step(policy(), root, state, proc(root / "proc2"), 2, ([], groups, limits))
             self.assertNotEqual(int((groups[0] / "memory.low").read_text()), 0)
             self.assertEqual(status["control_write_failures"], 0)
 
