@@ -291,7 +291,7 @@ def login():
 
 # fleet-secrets' read-only project slugs, and the variables it resolves each
 # slug's id from first (scripts/fleet_secrets/core.py PROJECT_SOURCES).  The
-# child gets the ids below, so no ~/.agent-sync file can point a read elsewhere.
+# child gets the ids below, so no ~/.simple-tools file can point a read elsewhere.
 FLEET_SECRETS_PROJECT = {AFC: "ai-fleet-coordinator", FLEETOPS: "fleet-ops"}
 FLEET_SECRETS_PROJECT_ID_ENV = {
     AFC: "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
