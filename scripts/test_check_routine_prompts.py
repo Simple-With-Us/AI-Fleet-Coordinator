@@ -90,7 +90,7 @@ class FixtureTests(unittest.TestCase):
 
     def test_findings_never_echo_the_text(self):
         _, out, _ = run(str(FIXTURES / "bad"))
-        for needle in ("Some Person", "Sample-Repo", "agent-sync-websocket"):
+        for needle in ("Some Person", "Sample-Repo", "obsolete-websocket"):
             self.assertNotIn(needle, out)
 
 
@@ -146,7 +146,7 @@ class MentionPathSlackTests(unittest.TestCase):
             self.assertNotIn("code-path", rules("a.md", clean("Open %s.\n" % fine)), fine)
 
     def test_slack_helper(self):
-        for bad in ("agent-sync-websocket.py", "agent-sync-push", "slack-post", "slack_post",
+        for bad in ("obsolete-websocket.py", "obsolete-push", "slack-post", "slack_post",
                     "https://hooks.slack.com/services/x", "https://slack.com/api/chat.postMessage"):
             self.assertIn("slack-helper", rules("a.md", clean("Use %s.\n" % bad)), bad)
         self.assertNotIn("slack-helper", rules("a.md", clean("Slack was retired on Oct 7.\n")))
@@ -403,7 +403,7 @@ class UsageTests(unittest.TestCase):
         self.assertIn("1 file(s), 0 pasted pair(s)", out)
 
     def test_secretscan_is_loaded_from_the_repo_copy(self):
-        self.assertIsNotNone(chk._SCAN, "scripts/agent_sync/secretscan.py should load by path")
+        self.assertIsNotNone(chk._SCAN, "scripts/simple_tools/secretscan.py should load by path")
 
 
 if __name__ == "__main__":
