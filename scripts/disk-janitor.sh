@@ -118,7 +118,7 @@ REPOS=(
 # Suffixed per-lane trees (trading-grok-litestream-cascade) remain reaped
 # when merged+idle.  Retired-KIMI seat trees reap when idle (not on a "kimi"
 # substring, and never by skipping the idle check).
-KEEP_RE="^(/Users/jay/Code/Socratic.Trade|/Users/jay/Code/Congress.Trade|/Users/jay/Code/Usage-Monitor|/Users/jay/Code/congress-trading-shared|/Users/jay/Code/DealDex|/Users/jay/Code/Personal-Site|/Users/jay/Code/Autorotate|/Users/jay/Code/ContactLogo|/Users/jay/Code/AI-Fleet-Coordinator|/Users/jay/Code/BotFleet|/Users/jay/Code/fleet-ops|/Users/jay/Code/botfleet-site|/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)|/Users/jay/apps/(grok-acp-runtime|agy-acp-runtime|shellular-runtime|_retired/mac-collab-20261019|seat-mcp|KIMI-SALVAGE-2026-08-22|botfleet-server|agent-sync|agent-sync-push|clutch-runtime|xcode-health))$"
+KEEP_RE="^(/Users/jay/Code/Socratic.Trade|/Users/jay/Code/Congress.Trade|/Users/jay/Code/Usage-Monitor|/Users/jay/Code/congress-trading-shared|/Users/jay/Code/DealDex|/Users/jay/Code/Personal-Site|/Users/jay/Code/Autorotate|/Users/jay/Code/ContactLogo|/Users/jay/Code/AI-Fleet-Coordinator|/Users/jay/Code/BotFleet|/Users/jay/Code/fleet-ops|/Users/jay/Code/botfleet-site|/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)|/Users/jay/apps/(grok-acp-runtime|agy-acp-runtime|shellular-runtime|_retired/mac-collab-20261019|seat-mcp|KIMI-SALVAGE-2026-08-22|botfleet-server|clutch-runtime|xcode-health))$"
 
 # Retired-KIMI seat, nested agent scratch, or /tmp.  Not a substring:
 # branch cursor/kimi-audit-def (ST #3044, owner-kept) must not match.
@@ -391,6 +391,18 @@ EOF
 # 0 = KEEP_RE protects this checkout by git's spelling or by the on-disk one.  Case-insensitive: on this volume
 # Code/Fleet-OPS and Code/fleet-ops are one directory, and a wider match only keeps more.
 janitor_keep_match() {
+  # Unknown flat app roots and hidden state are not proven managed lanes.
+  # Preserve both typed and canonical paths; nested lanes retain their doctor gate.
+  local candidate app_root
+  app_root="${HOME}/apps/"
+  for candidate in "$1" "$(janitor_canon "$1")"; do
+    case "$candidate" in
+      "$HOME"/.*|"${HOME}/apps/lanes/_managed"|"${HOME}/apps/lanes/_managed/"*) return 0 ;;
+      "$app_root"*)
+        candidate="${candidate#"$app_root"}"
+        case "$candidate" in */*) ;; *) return 0 ;; esac ;;
+    esac
+  done
   printf '%s\n%s\n' "$1" "$(janitor_canon "$1")" | grep -qiE "$KEEP_RE"
 }
 

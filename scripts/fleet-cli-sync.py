@@ -23,7 +23,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
+DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The reviewed allowlisted runtime contains 146 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
@@ -449,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", type=Path, default=Path(DEFAULT_SOURCE))
     parser.add_argument(
-        "--state-dir", type=Path, default=Path.home() / ".agent-sync/coolify-cli-sync"
+        "--state-dir", type=Path, default=Path.home() / ".simple-tools/coolify-cli-sync"
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")

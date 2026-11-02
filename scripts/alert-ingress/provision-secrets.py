@@ -31,7 +31,7 @@ The values live in this process's memory for the length of the run.
 
 `fleet-secrets set` cannot write these names (its allowlist covers CACHE_*
 under /linear and the CLI logins), so the write goes through the automation
-identity's API, the pattern scripts/agent-sync-mcp/scripts/populate-scoped-folders.py
+identity's API, the pattern scripts/simple-tools-mcp/scripts/populate-scoped-folders.py
 already uses.
 """
 
