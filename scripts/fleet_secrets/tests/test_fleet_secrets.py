@@ -241,10 +241,16 @@ class UnresolvedReferenceTests(Base):
         self.assertEqual((code, out), (5, ""))
         self.assertIn("BROKEN", err)
 
-    def test_names_fails_closed_too(self):
+    def test_names_lists_keys_despite_an_unresolved_value(self):
+        # Listing keys uses no value, so one key whose value is an unexpanded
+        # reference must not take the whole listing down (AFC-592).  `get` and
+        # `run` still fail closed on that key (covered above).
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${x}"}))
         code, out, _err = self.call("names")
-        self.assertEqual((code, out), (5, ""))
+        self.assertEqual(code, 0)
+        self.assertEqual(out.split(), ["ALPHA", "BROKEN"])
+        self.assertNotIn(VAL_A, out)
+        self.assertNotIn("${x}", out)
 
     def test_a_value_that_merely_contains_a_reference_is_fine(self):
         self.use(World(secrets={"ALPHA": "prefix-${x}-suffix"}))
@@ -682,9 +688,9 @@ class NoValueInErrorsTests(Base):
 
 class ConfigTests(Base):
     def test_project_id_env_beats_file(self):
-        (self.home / ".agent-sync").mkdir()
+        (self.home / ".simple-tools").mkdir()
         other = "00000000-0000-4000-8000-0000000000ff"
-        (self.home / ".agent-sync" / "fleet-ops-project-id").write_text(other + "\n")
+        (self.home / ".simple-tools" / "fleet-ops-project-id").write_text(other + "\n")
         self.assertEqual(core.infisical_project_id({core.ENV_PROJECT: PROJECT}, self.home), PROJECT)
         self.assertEqual(core.infisical_project_id({}, self.home), other)
 
@@ -695,7 +701,7 @@ class ConfigTests(Base):
         self.assertEqual((code, out), (4, ""))
         self.assertIn(
             "the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID "
-            "or put it in ~/.agent-sync/fleet-ops-project-id "
+            "or put it in ~/.simple-tools/fleet-ops-project-id "
             "(it lives in the private fleet-ops inventory)",
             err,
         )
