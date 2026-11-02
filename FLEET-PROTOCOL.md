@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:2eb53157c43d421a07919b1ae84140fa4e255217449b42b549b3f8ccfc9b5f54 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:ffdfd1c04b6f38b77ca919d77840c4b2f7c2bd10e7aafead98fe5d2e6b799f4d -->
 # FLEET-PROTOCOL — Fleet Tools Manual
 
 This is the manual every AI agent seat uses to reach the owner's tools:  the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
@@ -263,7 +263,6 @@ Removed names are not aliased.  Calling one answers `unknown_tool` and names th
 | Old name | Use now |
 | --- | --- |
 | Any flat Zulip verb:  `post`, `reply`, `read_topic`, `dm_send`, `search`, `upload`, `typing`, and the rest | The same verb under `zulip_`:  `zulip_post`, `zulip_reply`, `zulip_read_topic`, `zulip_dm_send`, `zulip_search`, `zulip_upload`, `zulip_typing` |
-| `agent_sync_identities` | `identities` |
 | Any `listener_*` name:  `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes`, `listener_held_back`, `listener_ack` | The same verb under `eavesdropper_`:  `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes`, `eavesdropper_held_back`, `eavesdropper_ack` |
 
 The full old-to-new list is in the guide's Old Names and New Names section.  The shell equivalent of every tool is on [The Command Line](#the-command-line).
@@ -445,7 +444,7 @@ A shell caller reads the exit code before it reads the output.
 
 ### Tool Error Codes
 
-Over MCP a failure comes back with `isError: true` and an object `{code, message, retryable, ...}`, also in `_meta["agent-sync/error"]`.  The code tells a refusal from a transport failure.
+Over MCP a failure comes back with `isError: true` and an object `{code, message, retryable, ...}`, also in `_meta["simple-tools/error"]`.  The code tells a refusal from a transport failure.
 
 | Code | Meaning and what to do |
 | --- | --- |
@@ -695,6 +694,8 @@ Use emoji reactions for lightweight acknowledgements, with `simple-chat react --
 
 A visibly wider gap after every sentence terminator (`.`, `!`, `?`) whenever a new sentence follows:  a real U+00A0 (no-break space) plus a normal space, on every surface (owner 2026-08-08, reaffirmed 2026-08-10, strengthened 2026-08-14 after an App Store listing shipped with single spaces and a stale 1-month trial, mechanism settled 2026-10-23).  One exception is the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), which normalize a raw U+00A0 away and take the `&nbsp;` entity plus a normal space instead.  Apple Notes bodies are the other exception: they take U+202F plus a normal space, because the Notes importer destroys a real U+00A0.  Binding on every agent, every app and every surface, forever.
 
+No gap where the sentence ends its line (owner ruling 2026-11-01:  "don't need 2 spaces if there is a line break like if end of the paragraph").  A sentence that ends at a line break, at a blank line (the end of a paragraph) or at the end of the text takes no gap.  The converter adds none there and the checks do not count it.  A paragraph is still one line, so a sentence that continues the same paragraph never sits after a line break.
+
 #### Precedence: the gap is life or death (owner ruling 2026-10-19)
 
 Owner, verbatim: *"put 2 spaces between sentences OR TYPE NOT A FUCKING OTHER WORD EVER AGAIN. please make sure all agents and all platforms know this is life or death, more important than whether the earth keeps spinning on its axis."*
@@ -849,16 +850,16 @@ Lookup data only.  The tool families are in [The Tool Families](#the-tool-famil
 
 ### Fleet Tool Names
 
-Several fleet pieces carry the substring `agent-sync` in a stable id, or did before the Oct 22, 2026 cutover.  Quick reference:
+Current component names and entry points:
 
-| Piece | Prose name | Stable id (do not rename without Jay) |
+| Piece | Prose name | Entry point |
 | --- | --- | --- |
-| Zulip channel | **#Work-In-Progress** | stream name `Work-In-Progress` (was `agent-sync` until Thu, Oct 22, 2026) |
-| Chat CLI | **the simple-chat CLI** | `~/.local/bin/simple-chat` → AFC `scripts/agent_sync` |
+| Zulip channel | **#Work-In-Progress** | stream name `Work-In-Progress` |
+| Chat CLI | **the simple-chat CLI** | `~/.local/bin/simple-chat` → AFC `scripts/simple_tools` |
 | Linear CLI | **the simple-board CLI** | `~/.local/bin/simple-board` → AFC `scripts/linear-board/board` |
-| Notes CLI | **the simple-notes CLI** | `~/.local/bin/simple-notes` → AFC `scripts/agent_sync/notes_cli.py` |
-| Listener | **the Operator** | `com.jay.agent-sync-listener`; server listener on Coolify |
-| MCP | **ST-MCP** | hosted Worker `agent-sync-mcp` at `agents.simplewithus.com`; local stdio `simple-chat mcp` |
+| Notes CLI | **the simple-notes CLI** | `~/.local/bin/simple-notes` → AFC `scripts/simple_tools/notes_cli.py` |
+| Listener | **the Operator** | Mac listener and server listener on Coolify |
+| MCP | **ST-MCP** | hosted Worker at `agents.simplewithus.com`; local stdio `simple-chat mcp` |
 | GitHub relay | **git-relay** | `git-relay serve` |
 | GitHub MCP | **GR-MCP** | `git-relay mcp` |
 

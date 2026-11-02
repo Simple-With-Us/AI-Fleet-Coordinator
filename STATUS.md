@@ -1,8 +1,14 @@
 # Status
 
+Retired identifiers are redacted in retained historical material. A redacted command, key, path or service label is not runnable guidance; verify its current source contract before use.
+
+## 2026-11-02 MC — Muster live-pass fixes (AFC-592)
+
+Follow-up to the overhaul's live verification: `fleet-secrets names` no longer fails fleet-wide on one unexpanded Infisical reference value, Muster tells a refused secret read from a timeout, the Settings window follows the stored theme, and the Fleet filter picker label no longer wraps letter by letter.  Next action: merge, re-run `scripts/install-fleet-secrets.sh`, and re-check Secret Names live.  Rollout: `docs/rollouts/2026-11-02-muster-live-pass-fixes.md`.
+
 ## 2026-11-01 MC — Muster Fleet Overhaul Sweep
 
-Ten audited fix batches plus a follow-up: hosted board identity, recall and backup correctness, Muster performance and control breadth (Settings scene, wake confirmations, knob unset, Secret Names and masked Recall panels), relay secret hardening, CI and site honesty, and hosted chat/board parity.  All gates green in the lane (Muster 617, agent-sync-mcp 1080, relay 199, knobs 113, board 30, visual 17).  Next action: merge, then file the Linear issue the broken hosted board blocked at claim time.  Rollout: `docs/rollouts/2026-11-01-muster-fleet-overhaul-sweep.md`.
+Ten audited fix batches plus a follow-up: hosted board identity, recall and backup correctness, Muster performance and control breadth (Settings scene, wake confirmations, knob unset, Secret Names and masked Recall panels), relay secret hardening, CI and site honesty, and hosted chat/board parity.  All gates green in the lane (Muster 617, [retired identifier] 1080, relay 199, knobs 113, board 30, visual 17).  Next action: merge, then file the Linear issue the broken hosted board blocked at claim time.  Rollout: `docs/rollouts/2026-11-01-muster-fleet-overhaul-sweep.md`.
 
 ## 2026-10-30 CODEX — Per-Repository Document Library (AFC-580)
 
@@ -50,7 +56,7 @@ Rollout: `docs/rollouts/2026-10-15-fleet-work-backup-mac-watch.md`.
 
 ## 2026-10-11 CODEX — Coolify fleet CLI distribution (OPS-933)
 
-Adds a bounded, code-only release receiver and pusher for the existing Coolify SSH route.  The existing Mac runtime updater can opt in to push published board and Agent-Sync runtime files; releases activate atomically after isolated smoke checks and support pause and rollback.  Initial installation preserves Codex configuration and adds a CODEX-scoped local MCP wrapper.  Installation receipts and current host status are tracked in OPS-933, with the source rollout in `docs/rollouts/2026-10-11-coolify-fleet-cli-sync.md`; authentication and wake routing remain separate work.
+Adds a bounded, code-only release receiver and pusher for the existing Coolify SSH route.  The existing Mac runtime updater can opt in to push published board and [retired identifier] runtime files; releases activate atomically after isolated smoke checks and support pause and rollback.  Initial installation preserves Codex configuration and adds a CODEX-scoped local MCP wrapper.  Installation receipts and current host status are tracked in OPS-933, with the source rollout in `docs/rollouts/2026-10-11-coolify-fleet-cli-sync.md`; authentication and wake routing remain separate work.
 
 Updated: 2026-10-10 (CLAUDE — Linear replaces THE BOARD)
 
@@ -65,8 +71,8 @@ Updated: 2026-10-08 (MM — top-level fleet docs moved from Slack to Zulip)
 `TEMPLATE-AGENTS.md`, `FLEET-UI-COPY.md`, `EFFORT-LOG-PROTOCOL.md`, `README.md`, and this
 file now describe Zulip (`https://simplewithus.zulipchat.com`) instead of Slack:  the
 `simple-chat` CLI (`~/.local/bin/simple-chat`), the `[SEAT·session8]` tag, and posting by
-channel plus topic.  The retired Slack path — `slack-sync.sh`, `agent-sync-poll.py`,
-`agent-sync-websocket.py`, the pm2 `agent-sync-push` relay, `consumer.mjs`, the
+channel plus topic.  The retired Slack path — `slack-sync.sh`, `[retired identifier]`,
+`[retired identifier]`, the pm2 `[retired identifier]` relay, `consumer.mjs`, the
 `slack-collab` MCP, and the Slack tokens they read — is no longer instructed anywhere in
 those five files.  Mechanics live in `FLEET-PROTOCOL.md` § Chat: The Zulip Contract and
 `docs/protocols/zulip-fleet-guide.md`.  Entries below are dated history and describe Slack
@@ -229,7 +235,7 @@ Updated: 2026-09-01 (GROK pickup — fleet RAG operational, `claude/fleet-rag-op
 
 ## 2026-09-01 GROK pickup — fleet RAG operational (Claude cap)
 
-Adopted Claude's uncommitted recall CLI + ingest + MCP + seat-mcp tools + `fleet-recall` skill pack on `claude/fleet-rag-operational` (worktree `~/apps/fleet-claude-rag`).  Boards `c799b564` / `9c75471c` / `0f9a13b1`.  Installer registers MCP configs and puts `recall` on PATH like `board`.  First full ingest and Oracle routines are operational follow-through after the code lands.  Do **not** restart `qdrant-st` during RTH.  Slack `#agent-sync` skipped (`account_inactive`).  Co-authored with Claude.
+Adopted Claude's uncommitted recall CLI + ingest + MCP + seat-mcp tools + `fleet-recall` skill pack on `claude/fleet-rag-operational` (worktree `~/apps/fleet-claude-rag`).  Boards `c799b564` / `9c75471c` / `0f9a13b1`.  Installer registers MCP configs and puts `recall` on PATH like `board`.  First full ingest and Oracle routines are operational follow-through after the code lands.  Do **not** restart `qdrant-st` during RTH.  Slack `[retired identifier]` skipped (`account_inactive`).  Co-authored with Claude.
 
 Updated: 2026-09-01 (GROK — Sentry fleet adoption standing split)
 
