@@ -1412,6 +1412,91 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
         self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-7"), [])
 
 
+
+class RegistryGuardTest(unittest.TestCase):
+    """The CLI never brings a registry into being (AFC-593).
+
+    The transport runs this CLI directly, so the guard belongs here and not only in
+    the passthrough that runs it through simple-chat:  a host that keeps no registry
+    refuses every op the same way, and a second registry never grows to hand out
+    letters that collide with the ones the Operator keeps.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.missing = os.path.join(self.tmp.name, "no-registry-here", "registry.sqlite3")
+
+    def _run(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(argv)
+        return code, json.loads(out.getvalue().splitlines()[-1])
+
+    def test_every_op_that_takes_a_database_refuses_on_a_host_without_one(self):
+        ops = [
+            ["pending-outbox"],
+            ["mark-exported", "1"],
+            [
+                "register",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+                "--seat=MM",
+                "--source=a test",
+            ],
+            [
+                "relabel",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+                "--seat=MM",
+                "--source=a test",
+            ],
+            ["resolve", "--platform=minimax", "--letter=AA"],
+            [
+                "update",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            [
+                "close",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            ["sweep", "--platform=minimax", "--seat=MM"],
+            ["history", "--platform=minimax"],
+            [
+                "touch",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            ["reopen", "--record-id=r1"],
+        ]
+        for argv in ops:
+            with self.subTest(op=argv[0]):
+                code, answer = self._run(argv + ["--db", self.missing])
+                self.assertEqual(code, 3)
+                self.assertEqual(answer, {"error": "no Operator registry on this host"})
+        self.assertFalse(os.path.exists(self.missing))
+
+    def test_a_host_that_keeps_a_registry_is_not_refused(self):
+        db = os.path.join(self.tmp.name, "registry.sqlite3")
+        reg = R.SessionRegistry(db)
+        reg.close_db()
+        code, answer = self._run(["history", "--platform=minimax", "--db", db])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer, [])
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1470,7 +1555,7 @@ class ReopenCommandTest(unittest.TestCase):
 
     def test_the_reopen_command_never_brings_a_registry_into_being(self):
         # A host that keeps no registry must not grow one:  a second registry hands
-        # out letters that collide with the ones the Operator keeps, so the reopen
+        # out letters that collide with the ones the Operator keeps, so the CLI
         # refuses and the file is never created.
         missing = os.path.join(self.tmp.name, "no-registry-here", "registry.sqlite3")
         out = io.StringIO()
@@ -1478,9 +1563,7 @@ class ReopenCommandTest(unittest.TestCase):
             code = R.main(["reopen", "--db", missing, "--record-id", "no-such-record"])
         answer = json.loads(out.getvalue().splitlines()[-1])
         self.assertEqual(code, 3)
-        self.assertEqual(answer["code"], "no_registry")
-        self.assertEqual(answer["outcome"], "reopen_refused")
-        self.assertIn("no Operator registry", answer["error"])
+        self.assertEqual(answer, {"error": "no Operator registry on this host"})
         self.assertFalse(os.path.exists(missing))
 
     def test_the_reopen_command_answers_a_database_fault_as_json(self):

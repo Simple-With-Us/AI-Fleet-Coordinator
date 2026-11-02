@@ -13,8 +13,10 @@ and this file is where they agree:
 The store is MiniMax Code's own session table; the letter lives in the Operator
 registry, which is one file for the fleet.  This host reads that file locally when the
 deployment points at the shared store, and when it keeps no copy it asks the host that
-holds the registry over ssh, the same hop the Claude path makes.  The destination is
-this host's own configuration (MM_LETTER_REMOTE), never a guess.
+holds the registry through the transport command, the same hop the Claude path makes.
+The transport is host configuration:  the helper names the command
+(MM_OPERATOR_REGISTRY_CMD, default mm-operator-registry) and never names a host, a
+user, an alias, an ssh flag, a remote path or a remote interpreter itself.
 
 A thread and its child both hold a letter, and they are placed the way every other platform
 places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
@@ -38,7 +40,6 @@ import argparse
 import json
 import os
 import re
-import shlex
 import signal
 import sqlite3
 import subprocess
@@ -73,18 +74,21 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # The Mac's checkout of AI-Fleet-Coordinator, on the Operator host and here.
 REPO_REL = "AI-Fleet-Coordinator/scripts"
 
-# The ssh destination (a name from the host's own ssh config) that holds the
-# Operator's registry, for a host that keeps no copy of it.  It is configuration,
-# not source, and it is the same hop the Claude path makes.
-ENV_REMOTE = "MM_LETTER_REMOTE"
-REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat letter registry-module'
-CONNECT_TIMEOUT = (
-    4  # seconds for ssh to connect;  an asleep or unreachable Mac costs this much, not more
-)
+# The transport to the host that holds the Operator's registry:  a command, not a
+# host.  The command carries the host, the remote path and the remote interpreter, so
+# this helper names no host, no user, no alias, no ssh flag and no remote path
+# anywhere.  It is host configuration, never a guess.
+ENV_TRANSPORT = "MM_OPERATOR_REGISTRY_CMD"
+DEFAULT_TRANSPORT = "mm-operator-registry"
 # The whole hop, inside the hook's own timeout:  the hooks that call this run with eight
 # to ten seconds, so a hop that waits longer is a hook the runtime kills instead of one
 # that reports its own fault and goes on.
 REMOTE_TIMEOUT = 6
+
+# The registry's own guard answers this when the host that holds the registry keeps
+# none.  It is a configuration state, not a fault of this call, so it carries the code
+# the helper already used for it.
+NO_REGISTRY_ERROR = "no Operator registry on this host"
 
 
 class RegistryError(RuntimeError):
@@ -293,29 +297,36 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> dict | None:
-    """Ask the registry host over ssh, the way the Claude path does.
+def _with_registry_code(answer: dict) -> dict:
+    """A registry answer, with the code the helper uses for a host that keeps no registry.
 
-    None when this host names no destination, so the caller can report that the
-    registry is not available here rather than that it refused.  A destination that
-    is not a plain host name is refused, never run.
+    The registry's own guard answers one way when the host that holds it has no
+    registry file:  that is a configuration state, not a fault of this call, and the
+    helper keeps it quiet.
     """
-    dest = str(os.environ.get(ENV_REMOTE) or "").strip()
-    if not dest:
-        # This host names no registry host:  the caller reports that the registry is
-        # not available here.
-        return None
+    if answer.get("error") == NO_REGISTRY_ERROR and not answer.get("code"):
+        return dict(answer, code="no_registry")
+    return answer
+
+
+def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> dict:
+    """Ask the registry host through the transport command, the way the Claude path does.
+
+    The transport is host configuration:  the helper names the command and the command
+    carries the host, so this helper never names a host, a user, an alias, an ssh
+    flag, a remote path or a remote interpreter.  A transport command name that is not
+    a plain command name is refused, never run.
+    """
+    dest = str(os.environ.get(ENV_TRANSPORT) or "").strip() or DEFAULT_TRANSPORT
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
-        # Something ssh could read as an option or a second word:  refuse it rather
-        # than run it.  A refused destination is a fault of this host's configuration,
-        # never a call that never happened.
+        # Something the shell could read as an option or a second word:  refuse it
+        # rather than run it.  A refused transport is a fault of this host's
+        # configuration, never a call that never happened.
         return {
-            "error": "the configured registry host is not a plain host name",
+            "error": "the configured registry transport is not a plain command name",
             "code": "remote_refused",
         }
-    remote = REMOTE_COMMAND + " " + " ".join(shlex.quote(a) for a in args)
-    cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT]
-    cmd += ["--", dest, remote]
+    cmd = [dest] + list(args)
     try:
         proc = subprocess.run(
             cmd,
@@ -333,8 +344,8 @@ def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> d
             "outcome": "outcome_unknown",
         }
     except (OSError, subprocess.SubprocessError) as exc:
-        # A missing ssh is its own failure, the way a missing local registry tool is:
-        # the operator has to know which one.
+        # A missing command is errno 2:  it is its own failure, the way a missing
+        # local registry tool is:  the operator has to know which one.
         code = "missing_tool" if getattr(exc, "errno", None) == 2 else "remote_unreachable"
         return {
             "error": "the registry host did not answer (%s)" % type(exc).__name__,
@@ -371,7 +382,7 @@ def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> d
         # not a success, whatever its answer looks like.  This is the same rule the
         # local path applies.
         answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
-    return answer
+    return _with_registry_code(answer)
 
 
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
@@ -380,17 +391,11 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     scripts = repo_scripts_dir()
     if not local_db or not scripts:
         # This host keeps no registry of its own, so the Operator's one is on the host
-        # that holds it:  the same hop the Claude path makes, over ssh.  The registry's
+        # that holds it:  the transport command carries that host, and the registry's
         # own CLI runs there, so both sides speak one dialect.
         # The hop has its own bound:  it has to finish inside the hook's timeout, not
         # inside the timeout the local call would use.
-        answer = remote_registry_call(args)
-        if answer is not None:
-            return answer
-        return {
-            "error": "the operator registry is not available on this host",
-            "code": "no_registry",
-        }
+        return remote_registry_call(args)
     cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None
@@ -456,7 +461,7 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         }
     if proc.returncode and "error" not in answer:
         answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
-    return answer
+    return _with_registry_code(answer)
 
 
 def _require_registry(answer: dict, *, needs_label: bool = False) -> dict:

@@ -67,7 +67,7 @@ and the title moves to the new letter.
 
 The hook never blocks a chat:  every failure is a line of context, or nothing, and exit 0.  Only interactive chats
 take part (the `attach` rule:  CLAUDE_CODE_ENTRYPOINT cli or claude-desktop, and no launcher), and CLAUDE_LETTER=0
-turns it off.  A platform that runs Claude as its engine (BotFleet, the listener's wake) is a launcher:  it sets
+turns it off.  A platform that runs Claude as its engine (BotFleet, the Operator's eavesdropper's wake) is a launcher:  it sets
 AGENT_LAUNCHER, AGENT_LAUNCH_SEAT and AGENT_SYNC_ATTACH=0, takes no Claude letter, and asks the Operator for its own,
 under its own platform and session id.  AGENT_SYNC_ATTACH=0 turns this hook off for any session, as it does the attach
 hooks.  The location is the fleet location, never a guess:  darwin is the Mac, and any other host must say
@@ -203,7 +203,7 @@ def in_scope(env: Mapping[str, str]) -> bool:
     """Only interactive Claude Code chats take a letter:  the same surfaces `attach` serves.  A `claude -p`, SDK or
     launcher run never does, and CLAUDE_LETTER=0 turns the hook off for any session.
 
-    A platform that runs Claude as its engine (BotFleet, the listener's wake, Muster, OpenCode) is a launcher:  it sets
+    A platform that runs Claude as its engine (BotFleet, the Operator's eavesdropper's wake, Muster, OpenCode) is a launcher:  it sets
     AGENT_LAUNCHER and AGENT_LAUNCH_SEAT and AGENT_SYNC_ATTACH=0, so it is out of scope here and asks the Operator for
     its own letter, under its own platform and its own session id (owner, Oct 29, 2026).  AGENT_SYNC_ATTACH=0 turns
     the hook off for any session, as it does for the attach hooks."""

@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import pathlib
 import signal
 import subprocess
 import sys
@@ -1563,9 +1564,19 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "reopen_failed")
 
     def test_a_reopen_without_a_registry_is_a_registry_error_too(self):
-        # A host that keeps no registry answers no_registry, and that travels as one
-        # error type as well.
-        with mock.patch.object(M, "registry_db", return_value=""):
+        # A host that keeps no registry asks the host that holds one, and a host that
+        # holds none answers no_registry:  that travels as one error type as well.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(
+                M,
+                "remote_registry_call",
+                return_value={
+                    "error": "no Operator registry on this host",
+                    "code": "no_registry",
+                },
+            ),
+        ):
             with self.assertRaises(M.RegistryError) as caught:
                 M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "no_registry")
@@ -1574,9 +1585,10 @@ class MmReopenStrictTouchTest(unittest.TestCase):
 class RemoteRegistryHopTest(unittest.TestCase):
     """The hop to the host that holds the Operator's registry (AFC-412, server seat).
 
-    This host keeps no registry of its own, so it asks the host that holds one over
-    ssh, the way the Claude path does.  The destination is this host's own
-    configuration, never a guess.
+    This host keeps no registry of its own, so it asks the host that holds one
+    through the transport command.  The transport is host configuration:  the helper
+    names the command and the command carries the host, so the helper names no host,
+    no user, no alias, no ssh flag and no remote path anywhere.
     """
 
     def _hop(self, **env: str):
@@ -1597,74 +1609,82 @@ class RemoteRegistryHopTest(unittest.TestCase):
             answer = M.remote_registry_call(["history", "--platform=minimax"])
         return answer
 
-    def test_no_destination_means_the_hop_is_not_taken(self):
-        # The host names no registry host:  the hop is not taken at all, so the
-        # caller can report a missing registry rather than a refusal.
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop(M.ENV_REMOTE, None)
-            with mock.patch.object(M.subprocess, "run") as run:
-                self.assertIsNone(M.remote_registry_call(["history"]))
-        run.assert_not_called()
+    def test_the_transport_is_a_command_and_the_helper_names_nothing_else(self):
+        answer = self._hop(**{M.ENV_TRANSPORT: "mm-operator-registry"})
+        self.assertEqual(answer, {"label": "AA"})
+        # The whole command:  the transport and the registry CLI's own arguments.
+        # There is no host, no user, no alias, no ssh flag, no remote path and no
+        # remote interpreter in it.
+        self.assertEqual(self.cmd, ["mm-operator-registry", "history", "--platform=minimax"])
 
-    def test_a_destination_that_is_not_a_host_name_is_refused(self):
-        # ssh reads an option before a host, so a destination that is not a plain
-        # host name is refused rather than run.
-        for dest in ("-oProxyCommand=touch /tmp/x", "mac host", "mac;id", "a/b", "-mac"):
-            with self.subTest(dest=dest):
-                with mock.patch.dict(os.environ, {M.ENV_REMOTE: dest}):
+    def test_the_default_transport_is_the_one_the_house_keeps(self):
+        # The transport defaults to the wrapper the house already installs, so a host
+        # that names no transport of its own still has one.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(M.ENV_TRANSPORT, None)
+            with mock.patch.object(M.subprocess, "run") as run:
+                run.return_value = subprocess.CompletedProcess(
+                    [], 0, stdout='{"label": "AA"}', stderr=""
+                )
+                M.remote_registry_call(["history"])
+        self.assertEqual(M.DEFAULT_TRANSPORT, "mm-operator-registry")
+        self.assertEqual(run.call_args.args[0][0], M.DEFAULT_TRANSPORT)
+
+    def test_the_helper_names_no_host_and_no_ssh_in_its_source(self):
+        # The rule is about the source, not only about the command that comes out of
+        # it:  a host, a user, an alias or an ssh flag in this file is the thing the
+        # transport command exists to keep out.
+        source = pathlib.Path(M.__file__).read_text(encoding="utf-8")
+        for forbidden in ("BatchMode", "ConnectTimeout", "ProxyCommand"):
+            self.assertNotIn(forbidden, source)
+
+    def test_a_transport_that_is_not_a_plain_command_name_is_refused(self):
+        # The shell reads an option before a command, so a transport name that is not
+        # a plain command name is refused rather than run.
+        for name in ("-oProxyCommand=touch /tmp/x", "mac host", "mac;id", "a/b", "-mac"):
+            with self.subTest(name=name):
+                with mock.patch.dict(os.environ, {M.ENV_TRANSPORT: name}):
                     answer = M.remote_registry_call(["history"])
                 self.assertIsNotNone(answer)
                 self.assertEqual(answer["code"], "remote_refused")
 
-    def test_the_hop_runs_ssh_to_the_named_host(self):
-        answer = self._hop(**{M.ENV_REMOTE: "mac"})
-        self.assertEqual(answer, {"label": "AA"})
-        cmd = self.cmd
-        self.assertEqual(cmd[0], "ssh")
-        self.assertIn("-T", cmd)
-        self.assertIn("BatchMode=yes", cmd)
-        self.assertIn("--", cmd)
-        self.assertEqual(cmd[cmd.index("--") + 1], "mac")
+    def test_the_transport_runs_the_registry_cli_s_own_arguments(self):
+        self._hop(**{M.ENV_TRANSPORT: "mm-operator-registry"})
+        self.assertEqual(self.cmd[1:], ["history", "--platform=minimax"])
         # The hop has to finish inside the hook's own timeout.
         self.assertEqual(self.kwargs["timeout"], M.REMOTE_TIMEOUT)
         self.assertLess(M.REMOTE_TIMEOUT, 8)
 
-    def test_the_hop_runs_the_registry_module_on_the_far_host(self):
-        self._hop(**{M.ENV_REMOTE: "mac"})
-        remote = self.cmd[-1]
-        self.assertIn("letter registry-module", remote)
-        self.assertIn("history", remote)
-        self.assertIn("--platform=minimax", remote)
-
-    def test_an_argument_that_holds_a_space_is_quoted(self):
+    def test_an_argument_that_holds_a_space_is_one_argument(self):
         # The title is one argument on the far side, never two words the far shell
         # would read as two arguments.
-        self.stdout = '{"label": "AA"}\n'
         with (
-            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
             mock.patch.object(
                 M.subprocess,
                 "run",
-                return_value=subprocess.CompletedProcess([], 0, stdout=self.stdout, stderr=""),
+                return_value=subprocess.CompletedProcess([], 0, stdout='{"label": "AA"}', stderr=""),
             ) as run,
         ):
             M.remote_registry_call(["update", "--title=two words"])
-        remote = run.call_args.args[0][-1]
-        self.assertIn("'--title=two words'", remote)
+        cmd = run.call_args.args[0]
+        self.assertIn("--title=two words", cmd)
+        self.assertEqual(len([a for a in cmd if a.startswith("--title")]), 1)
 
-    def test_a_hop_that_cannot_start_is_unreachable(self):
+    def test_a_transport_that_cannot_start_is_unreachable(self):
         with (
-            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
-            mock.patch.object(M.subprocess, "run", side_effect=OSError("no ssh")),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(M.subprocess, "run", side_effect=OSError("no transport")),
         ):
             answer = M.remote_registry_call(["history"])
         self.assertEqual(answer["code"], "remote_unreachable")
 
-    def test_a_missing_ssh_is_its_own_failure(self):
-        # A host with no ssh at all is a different fault from one whose ssh cannot
-        # reach the Mac, and the operator has to be able to tell them apart.
+    def test_a_missing_transport_is_its_own_failure(self):
+        # A host with no transport command at all is a different fault from one whose
+        # transport cannot reach the registry host, and the operator has to be able to
+        # tell them apart.
         with (
-            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
             mock.patch.object(
                 M.subprocess, "run", side_effect=FileNotFoundError(2, "No such file")
             ),
@@ -1677,19 +1697,20 @@ class RemoteRegistryHopTest(unittest.TestCase):
         # The write may have landed before the answer was lost, so this is an
         # unknown outcome and never a call that never happened.
         with (
-            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
             mock.patch.object(
-                M.subprocess, "run", side_effect=subprocess.TimeoutExpired("ssh", 25)
+                M.subprocess, "run", side_effect=subprocess.TimeoutExpired("transport", 6)
             ),
         ):
             answer = M.remote_registry_call(["register"])
         self.assertEqual(answer["code"], "timeout")
         self.assertEqual(answer["outcome"], "outcome_unknown")
+        self.assertEqual(M._registry_exit_code(M.RegistryError("x", "timeout")), 124)
 
     def test_a_hop_that_answers_with_nothing_has_an_unknown_outcome(self):
         self.stdout = "   \n"
         with (
-            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
             mock.patch.object(
                 M.subprocess,
                 "run",
@@ -1705,7 +1726,7 @@ class RemoteRegistryHopTest(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.stdout = payload
                 with (
-                    mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+                    mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
                     mock.patch.object(
                         M.subprocess,
                         "run",
@@ -1720,7 +1741,7 @@ class RemoteRegistryHopTest(unittest.TestCase):
         # The far side's exit code counts:  a call that failed with a non-zero exit is
         # not a success, whatever its answer looks like.
         with (
-            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
             mock.patch.object(
                 M.subprocess,
                 "run",
@@ -1732,6 +1753,22 @@ class RemoteRegistryHopTest(unittest.TestCase):
             answer = M.remote_registry_call(["register"])
         self.assertIn("error", answer)
         self.assertNotIn("label", answer)
+
+    def test_a_far_host_that_keeps_no_registry_is_a_configuration_state(self):
+        # The registry's own guard answers that the host that holds it keeps no
+        # registry:  that is a configuration state, not a fault of this call.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "mm-operator-registry"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], 3, stdout='{"error": "no Operator registry on this host"}', stderr=""
+                ),
+            ),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "no_registry")
 
     def test_the_local_registry_is_used_when_this_host_has_one(self):
         # A host that keeps its own registry never goes over the wire.
@@ -1758,23 +1795,13 @@ class RemoteRegistryHopTest(unittest.TestCase):
         hop.assert_called_once()
         self.assertEqual(hop.call_args.args[0], ["history", "--platform=minimax"])
 
-    def test_a_missing_registry_is_reported_when_no_host_is_named(self):
-        with (
-            mock.patch.object(M, "registry_db", return_value=""),
-            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
-            mock.patch.dict(os.environ, {}, clear=False),
-        ):
-            os.environ.pop(M.ENV_REMOTE, None)
-            answer = M.registry_call(["history"])
-        self.assertEqual(answer["code"], "no_registry")
-
-    def test_a_refused_destination_is_a_fault_and_not_a_missing_registry(self):
-        # A host that names a destination ssh would read as an option has a
+    def test_a_refused_transport_is_a_fault_and_not_a_missing_registry(self):
+        # A host that names a transport the shell would read as an option has a
         # misconfiguration, and that is not the same as having no registry at all.
         with (
             mock.patch.object(M, "registry_db", return_value=""),
             mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
-            mock.patch.dict(os.environ, {M.ENV_REMOTE: "-oProxyCommand=touch /tmp/x"}),
+            mock.patch.dict(os.environ, {M.ENV_TRANSPORT: "-oProxyCommand=touch /tmp/x"}),
         ):
             answer = M.registry_call(["history"])
         self.assertEqual(answer["code"], "remote_refused")

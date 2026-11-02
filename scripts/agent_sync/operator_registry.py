@@ -2057,7 +2057,7 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
 
 
 def default_db(env: Mapping[str, str] | None = None) -> str:
-    """The shared registry location, from the same environment the listener reads.
+    """The shared registry location, from the same environment the Operator's eavesdropper reads.
 
     The env is the caller's:  a caller that hands in its own mapping is answered about
     the file its own CLI would open, so a guard and the CLI it guards can never name
@@ -2240,13 +2240,21 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         help="the session that started this one: take the first free pair after its pair",
     )
     args = parser.parse_args(argv)
+    db = getattr(args, "db", "") or default_db(env)
+    if not os.path.isfile(db):
+        # Never bring a registry into being:  a second registry would hand out letters
+        # that collide with the ones the Operator keeps.  Every op that takes a
+        # database refuses the same way, so the transport that runs this CLI directly
+        # is guarded as well as the passthrough that runs it through simple-chat.
+        print(json.dumps({"error": "no Operator registry on this host"}))
+        return 3
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
         return 0
     if args.command == "resolve":
         try:
             found = resolve_label(
-                args.db or default_db(env),
+                db,
                 args.platform,
                 args.letter,
                 args.generation,
@@ -2259,7 +2267,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     if args.command == "register":
         try:
             out = register_session(
-                args.db or default_db(env),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2289,7 +2297,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     if args.command == "relabel":
         try:
             out = relabel_session(
-                args.db or default_db(env),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2320,7 +2328,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     if args.command == "update":
         try:
             out = update_session(
-                args.db or default_db(env),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2339,7 +2347,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     if args.command == "close":
         try:
             out = close_session(
-                args.db or default_db(env),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2356,7 +2364,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     if args.command == "touch":
         try:
             out = touch_session(
-                args.db or default_db(env),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2369,7 +2377,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         return 0
     if args.command == "sweep":
         ended = sweep_stale(
-            args.db or default_db(env),
+            db,
             platform=args.platform,
             seat=args.seat,
             stale_after_minutes=args.stale_after_minutes,
@@ -2382,22 +2390,6 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         # this verb because a host that keeps no registry asks the host that holds one.
         from . import platform_letter
 
-        db = args.db or default_db(env)
-        if not os.path.isfile(db):
-            # Never bring a registry into being:  a host that keeps none refuses, so a
-            # second registry cannot grow here and hand out letters that collide with
-            # the ones the Operator keeps.  This is the last place before the file is
-            # opened, so it holds whatever path the CLI was given.
-            print(
-                json.dumps(
-                    {
-                        "error": "no Operator registry on this host",
-                        "code": "no_registry",
-                        "outcome": "reopen_refused",
-                    }
-                )
-            )
-            return 3
         reg = None
         try:
             reg = SessionRegistry(db)
@@ -2451,7 +2443,7 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         return 0
     if args.command == "history":
         try:
-            rows = letter_history(args.db or default_db(env), args.platform, args.limit)
+            rows = letter_history(db, args.platform, args.limit)
         except (ValueError, RegistryUnavailable) as exc:
             print(json.dumps({"error": str(exc)}))
             return 2
