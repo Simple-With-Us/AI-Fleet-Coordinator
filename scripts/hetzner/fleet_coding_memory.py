@@ -681,9 +681,7 @@ def restore_owned(state: dict[str, Any], persist=None) -> None:
             continue
 
 
-def restore_excluded(
-    state: dict[str, Any], excluded_cgroups, persist=None, suspended=None
-) -> None:
+def restore_excluded(state: dict[str, Any], excluded_cgroups, persist=None, suspended=None) -> None:
     """Hand back owned controls on now-excluded cgroups (external edit wins)."""
     if not excluded_cgroups:
         return
