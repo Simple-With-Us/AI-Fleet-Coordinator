@@ -444,7 +444,11 @@ class MmSessionLetterTest(unittest.TestCase):
 
     def test_a_thread_that_already_carries_its_letter_is_not_rewritten(self):
         payload = json.dumps({"session_id": SESSION_ID}).encode()
-        row = {"session_id": SESSION_ID, "title": "B: Fix The Build", "session_kind": "conversation"}
+        row = {
+            "session_id": SESSION_ID,
+            "title": "B: Fix The Build",
+            "session_kind": "conversation",
+        }
         with (
             mock.patch.object(sys, "stdin", _StdinBytes(payload)),
             mock.patch.object(M, "session_row", return_value=row),

@@ -770,7 +770,7 @@ def hook_session_start() -> int:
     title = apply_title(session_id, letter, str(row.get("title") or ""))
     if title:
         third = (
-            "3. The thread is titled \"%s\" now.  Rename it with the session-title tool to "
+            '3. The thread is titled "%s" now.  Rename it with the session-title tool to '
             '"%s: <a short topic in English>" once you know the work, and do it before you finish.\n'
             % (title, letter)
         )
@@ -783,12 +783,16 @@ def hook_session_start() -> int:
             % (letter,)
         )
     message = (
-        "Session letter: %s.  Three rules for this session:\n"
-        '1. Name this thread in English and start the title with the letter: "%s: <topic>".\n'
-        "2. State the letter early in every Zulip post and every board item you file — the "
-        'first line, for example "%s: what this post is about" — so a reply knows where it '
-        "is going.\n" % (letter, letter, letter)
-    ) + third + ("The registry carries the same title under the session id %s." % session_id)
+        (
+            "Session letter: %s.  Three rules for this session:\n"
+            '1. Name this thread in English and start the title with the letter: "%s: <topic>".\n'
+            "2. State the letter early in every Zulip post and every board item you file — the "
+            'first line, for example "%s: what this post is about" — so a reply knows where it '
+            "is going.\n" % (letter, letter, letter)
+        )
+        + third
+        + ("The registry carries the same title under the session id %s." % session_id)
+    )
     print(message)
     return 0
 
