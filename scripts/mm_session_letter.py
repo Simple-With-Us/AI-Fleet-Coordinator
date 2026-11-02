@@ -81,7 +81,10 @@ REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat letter registry-module'
 CONNECT_TIMEOUT = (
     4  # seconds for ssh to connect;  an asleep or unreachable Mac costs this much, not more
 )
-REMOTE_TIMEOUT = 25  # the whole ssh round trip, inside the hook's own timeout
+# The whole hop, inside the hook's own timeout:  the hooks that call this run with eight
+# to ten seconds, so a hop that waits longer is a hook the runtime kills instead of one
+# that reports its own fault and goes on.
+REMOTE_TIMEOUT = 6
 
 
 class RegistryError(RuntimeError):
@@ -379,7 +382,9 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         # This host keeps no registry of its own, so the Operator's one is on the host
         # that holds it:  the same hop the Claude path makes, over ssh.  The registry's
         # own CLI runs there, so both sides speak one dialect.
-        answer = remote_registry_call(args, timeout=timeout)
+        # The hop has its own bound:  it has to finish inside the hook's timeout, not
+        # inside the timeout the local call would use.
+        answer = remote_registry_call(args)
         if answer is not None:
             return answer
         return {

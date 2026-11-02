@@ -1625,7 +1625,9 @@ class RemoteRegistryHopTest(unittest.TestCase):
         self.assertIn("BatchMode=yes", cmd)
         self.assertIn("--", cmd)
         self.assertEqual(cmd[cmd.index("--") + 1], "mac")
-        self.assertEqual(self.kwargs["timeout"], 25)
+        # The hop has to finish inside the hook's own timeout.
+        self.assertEqual(self.kwargs["timeout"], M.REMOTE_TIMEOUT)
+        self.assertLess(M.REMOTE_TIMEOUT, 8)
 
     def test_the_hop_runs_the_registry_module_on_the_far_host(self):
         self._hop(**{M.ENV_REMOTE: "mac"})
