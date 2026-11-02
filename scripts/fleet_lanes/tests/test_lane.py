@@ -572,7 +572,7 @@ class ResolveTests(unittest.TestCase):
         # fleet-wide identity that opens no lanes (its GB-<ROLE> personas are the server seats), which had
         # CURSOR's cursor/ until F2 (2026-10-11) and so put one prefix on two seats.
         partition = tomllib.loads(
-            (SCRIPTS_DIR.parent / "docs" / "protocols" / "agent-sync-partition.toml").read_text(encoding="utf-8")
+            (SCRIPTS_DIR.parent / "docs" / "protocols" / "simple-tools-partition.toml").read_text(encoding="utf-8")
         )["seats"]
         for name in laneless:
             if name == "GROK-BOT":

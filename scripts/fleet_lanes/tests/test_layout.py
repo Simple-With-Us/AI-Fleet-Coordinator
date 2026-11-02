@@ -1417,7 +1417,7 @@ class LayoutStatusTests(HomeCase):
 
     def test_codex_managed_legacy_and_tool_managed(self) -> None:
         self.assertEqual(self.status(self.home / "apps" / "lanes" / "_codex" / "slug" / "BotFleet")[0], "codex-managed")
-        for rel in (("_managed", "fleet", "agent-sync-runtime"), ("_managed", "codecaps-cursor-163"),
+        for rel in (("_managed", "fleet", "simple-tools-runtime"), ("_managed", "codecaps-cursor-163"),
                     ("_review", "botfleet", "pr-12-claude")):
             self.assertEqual(self.status(self.home.joinpath("apps", "lanes", *rel))[0], "legacy", rel)
         for rel in ((".cursor", "worktrees", "x"), (".grok", "worktrees", "r", "w"), (".botfleet", "worktrees", "x"),

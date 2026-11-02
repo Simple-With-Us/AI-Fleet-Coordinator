@@ -4,7 +4,7 @@
 
 The contribute path and the search log sign GROK;  the recall_search seat FILTER does not map, so a
 legacy GROK-BUILD contribution stays findable.  search_log.py carries its own copy of the pattern
-(the recall service ships in a container without the agent_sync package), and the parity test keeps
+(the recall service ships in a container without the simple_tools package), and the parity test keeps
 it equal to the GROK row's aliasPattern in fleet-apps.json.
 """
 from __future__ import annotations

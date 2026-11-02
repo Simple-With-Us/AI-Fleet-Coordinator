@@ -711,7 +711,7 @@ def mirror_skip_reason(
     fleet_repos: Iterable[pathlib.Path] = (),
     live_basenames: Iterable[str] = (),
     ops_repos: Iterable[pathlib.Path] = (),
-    agent_sync_ingested: bool | None = None,
+    simple_tools_ingested: bool | None = None,
 ) -> str | None:
     """Why the doc walk drops this file, or None to keep it.
 
@@ -725,7 +725,7 @@ def mirror_skip_reason(
         The effort-log source ingests the live boards.
     (d) SKIP_HANDBOOK_MIRROR: in a fleet-ops checkout, anything under generated/ and every public page under
         handbook/ (handbook_page_is_public), but only when a copy of FLEET-PROTOCOL.md is really ingested
-        (`agent_sync_ingested`;  left as None it means the live file is among `live_basenames`).  The public pages are
+        (`simple_tools_ingested`;  left as None it means the live file is among `live_basenames`).  The public pages are
         the text of that file, so a recall query for a handbook rule would otherwise return each rule twice:  once
         from the file (the live copy, or the AI-Fleet-Coordinator mirror when there is no live copy) and once from
         the page.  With no ingested copy at all (a fresh host, or both copies rejected by _skip_doc) the pages are the
@@ -748,9 +748,9 @@ def mirror_skip_reason(
     if live and name in live and name not in DOC_ROOT_NAMES and _under(p, fleet_repos):
         return SKIP_APPS_MIRROR
     ops = list(ops_repos)
-    if agent_sync_ingested is None:
-        agent_sync_ingested = any(n in live for n in PROTOCOL_DOC_NAMES)
-    if ops and agent_sync_ingested:
+    if simple_tools_ingested is None:
+        simple_tools_ingested = any(n in live for n in PROTOCOL_DOC_NAMES)
+    if ops and simple_tools_ingested:
         rel = _rel_under(p, ops)
         if rel is not None and rel.parts:
             if rel.parts[0] == "generated":
@@ -914,7 +914,7 @@ def _doc_files(
         ):  # unreadable:  _dedupe_docs drops it too, so it cannot stand in for the pages
             return False
 
-    agent_sync_ingested = any(n in live_basenames for n in PROTOCOL_DOC_NAMES) or any(
+    simple_tools_ingested = any(n in live_basenames for n in PROTOCOL_DOC_NAMES) or any(
         _ingestable_mirror(f) for f in files
     )
     kept: list[pathlib.Path] = []
@@ -924,7 +924,7 @@ def _doc_files(
             fleet_repos=fleet_repos,
             live_basenames=live_basenames,
             ops_repos=ops_repos,
-            agent_sync_ingested=agent_sync_ingested,
+            simple_tools_ingested=simple_tools_ingested,
         )
         if reason:
             DOC_SKIPS.append((reason, str(f)))
