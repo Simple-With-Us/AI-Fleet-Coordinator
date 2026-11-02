@@ -734,7 +734,9 @@ def held_letters(session_id: str) -> tuple[str, ...]:
         return ()
     from agent_sync import operator_registry as OR
 
-    reg = OR.SessionRegistry(db)
+    # The read-only handle:  it never writes, never creates the file, and never takes
+    # a write lock against the Operator's registration writes.
+    reg = OR.SessionRegistry(db, read_only=True)
     try:
         row = reg.session_by_identity(
             platform=PLATFORM,
