@@ -70,7 +70,14 @@ enum ConfigFileReader {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.sorted() ?? []
             return .directory(path: target, entries: names)
         }
-        guard let data = try? Data(contentsOf: url) else {
+        // Read at most one byte past the limit, so a huge file is never
+        // loaded whole just to be truncated (mirrors OpsControl's read).
+        let data: Data
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            data = try handle.read(upToCount: byteLimit + 1) ?? Data()
+        } catch {
             return .missing(path: target)
         }
         let truncated = data.count > byteLimit

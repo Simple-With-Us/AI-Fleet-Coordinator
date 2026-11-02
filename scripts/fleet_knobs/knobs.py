@@ -152,7 +152,7 @@ def _load() -> None:
             )
             return
         try:
-            live = source.fetch([s.name for s in REGISTRY])
+            live = source.fetch_named([s.name for s in REGISTRY], project_id=source.PROJECT_ID, path="/")
             _refuse_empty_export(live, previous)
             st.live = live
             st.fetch = "ok"

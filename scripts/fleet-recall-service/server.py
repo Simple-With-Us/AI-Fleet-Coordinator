@@ -853,6 +853,14 @@ def env_report() -> tuple[list[str], list[str]]:
     return present, missing
 
 
+def _on_settings_refresh() -> None:
+    """Refresh listener: mirror the new cache into os.environ, then drop recall_api's
+    cached backend config so rotated Qdrant/TEI credentials take effect on the next
+    tool call instead of only at restart."""
+    infisical_settings.export_env(BACKEND_ENV_KEYS)
+    recall_api.reset_config_cache()
+
+
 def main(argv: list[str] | None = None) -> int:
     # Infisical is the source of truth for every managed key (INFISICAL.md).  The settings
     # module needs the project + environment before anything else; the machine identity
@@ -879,7 +887,7 @@ def main(argv: list[str] | None = None) -> int:
     # The fleet_rag backend reads its QDRANT_*/TEI_* config from the environment; mirror
     # the cache into os.environ now and again on every refresh so the two never diverge.
     infisical_settings.export_env(BACKEND_ENV_KEYS)
-    infisical_settings.add_refresh_listener(lambda: infisical_settings.export_env(BACKEND_ENV_KEYS))
+    infisical_settings.add_refresh_listener(_on_settings_refresh)
     infisical_settings.start_refresh()
     try:
         import signal as _signal

@@ -370,7 +370,7 @@ class TestHttpSurface(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["number"], 1)
 
-    def test_unauthenticated_gets_401_and_no_audit_row(self):
+    def test_unauthenticated_gets_401(self):
         status, _ = self._post(
             "/v1/comment_pr",
             {"repo": "example/other-repo", "number": 1, "body": "x"},
@@ -571,7 +571,7 @@ class TestMcpWrapper(unittest.TestCase):
 
         if opener is None:
             opener = FakeOpener(payload or {"number": 9})
-        return RelayMcp("http://relay.test", SEAT_TOKEN, opener=opener)
+        return RelayMcp("https://relay.test", SEAT_TOKEN, opener=opener)
 
     def test_initialize_and_tools_list(self):
         server = self._server()
@@ -613,7 +613,7 @@ class TestMcpWrapper(unittest.TestCase):
             }
         )
         req = opener.requests[0]
-        self.assertEqual(req.full_url, "http://relay.test/v1/open_pr")
+        self.assertEqual(req.full_url, "https://relay.test/v1/open_pr")
         self.assertEqual(req.get_header("Authorization"), "Bearer " + SEAT_TOKEN)
         self.assertIn('"number": 9', reply["result"]["content"][0]["text"])
 
@@ -657,7 +657,7 @@ class TestMcpWriteUncertainty(unittest.TestCase):
     def call(self, opener):
         from git_relay.mcp_server import RelayMcp
 
-        return RelayMcp("http://relay.test", "private-seat-token", opener=opener).handle(
+        return RelayMcp("https://relay.test", "private-seat-token", opener=opener).handle(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -2060,7 +2060,7 @@ class TestMcpSchemaEnforcement(unittest.TestCase):
     def _server(self):
         from git_relay.mcp_server import RelayMcp
 
-        return RelayMcp("http://relay.test", "seat-token", opener=None)
+        return RelayMcp("https://relay.test", "seat-token", opener=None)
 
     def _call(self, name, args):
         return self._server().handle(

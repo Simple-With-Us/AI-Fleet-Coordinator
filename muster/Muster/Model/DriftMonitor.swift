@@ -361,7 +361,13 @@ final class DriftMonitor: ObservableObject {
         let found = DriftTransitionFinder.transitions(previous: baseline, current: cells)
         baseline = DriftTransitionFinder.states(of: cells)
         for transition in found {
-            record(transition)
+            keep(transition)
+        }
+        if !found.isEmpty {
+            saveHistory()
+            for transition in found {
+                notify(transition)
+            }
         }
     }
 
@@ -373,21 +379,38 @@ final class DriftMonitor: ObservableObject {
 
     // MARK: Recording
 
-    /// Keep a turn,  and say so.
-    ///
-    /// The history is written before the notice goes out,  so a notice that the
-    /// system refuses never costs the record.
-    private func record(_ transition: DriftTransition) {
+    /// Keep a turn in memory. The disk write is batched by the caller, so a
+    /// run that turns many cells red writes the history once, not per cell.
+    private func keep(_ transition: DriftTransition) {
         transitions.insert(transition, at: 0)
         if transitions.count > DriftHistoryStore.limit {
             transitions.removeLast(transitions.count - DriftHistoryStore.limit)
         }
+    }
+
+    /// Consecutive history-write failures and when the next attempt is due.
+    ///
+    /// A disk that stays unwritable must not be retried on every run: the
+    /// delay doubles from a second to a five-minute cap, and any success
+    /// resets it. The in-memory history and `historyProblem` still update
+    /// on every turn, so nothing is hidden while writes are backed off.
+    private var historyFailureCount = 0
+    private var nextHistorySaveAt: Date?
+
+    /// Write the history once, before any notice goes out, so a notice that
+    /// the system refuses never costs the record.
+    private func saveHistory() {
+        if let nextHistorySaveAt, Date() < nextHistorySaveAt { return }
         if history.save(transitions) {
             historyProblem = nil
+            historyFailureCount = 0
+            nextHistorySaveAt = nil
         } else {
             historyProblem = "The drift history could not be written to \(history.url.path)."
+            historyFailureCount += 1
+            let delay = min(300.0, pow(2.0, Double(min(historyFailureCount - 1, 8))))
+            nextHistorySaveAt = Date().addingTimeInterval(delay)
         }
-        notify(transition)
     }
 
     /// Post the notice for a turn.

@@ -28,24 +28,30 @@ struct MiniMaxDetailView: View {
         // The panel reads the disk and the engine, and the engine run finishes after
         // the window appears.  Reading once at appear time would leave the proof column
         // empty on every launch, which is the one thing that column exists to prevent.
-        .task(id: store.phase) { reload() }
+        .task(id: store.phase) { await reload() }
     }
 
-    private func reload() {
+    private func reload() async {
         let live = Set(store.roster)
         let home = FileManager.default.homeDirectoryForCurrentUser
-        // The MiniMax runtime names its own seat agent `mavis`, while the fleet calls
-        // that seat `MM`, so a route that names `mavis` names a live seat.
-        var aliases: [String: String] = [:]
-        if let runtimeAgent = MiniMaxReader.seatRuntimeAgentName(home: home) {
-            aliases[runtimeAgent] = seat
-        }
-        surface = MiniMaxReader.read(
-            home: home,
-            liveSeats: live,
-            seatAliases: aliases,
-            proofs: store.hookProofs(seat: seat)
-        )
+        let proofs = store.hookProofs(seat: seat)
+        let seat = seat
+        let loaded = await Task.detached(priority: .userInitiated) {
+            // The MiniMax runtime names its own seat agent `mavis`, while the fleet calls
+            // that seat `MM`, so a route that names `mavis` names a live seat.
+            var aliases: [String: String] = [:]
+            if let runtimeAgent = MiniMaxReader.seatRuntimeAgentName(home: home) {
+                aliases[runtimeAgent] = seat
+            }
+            return MiniMaxReader.read(
+                home: home,
+                liveSeats: live,
+                seatAliases: aliases,
+                proofs: proofs
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        surface = loaded
     }
 
     // MARK: - the engine's own answers for this seat

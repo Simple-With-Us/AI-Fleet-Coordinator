@@ -307,7 +307,7 @@ def set_knob(
         token = ""
     if mode == "yes":
         secret = spec is None or spec.secret
-        audit(
+        answer["audit"] = "written" if audit(
             audit_file or audit_path(),
             {
                 "time": now().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -318,5 +318,100 @@ def set_knob(
                 "new": None if secret else answer["new"],
                 "result": answer["result"],
             },
-        )
+        ) else "failed"
+    return answer, code
+
+
+def delete_argv(cli: str, name: str) -> list[str]:
+    return [cli, "secrets", "delete", name, f"--env={source.ENVIRONMENT}",
+            f"--path={KNOB_PATH}", f"--projectId={source.PROJECT_ID}", "--type=shared", "--silent"]
+
+
+def check_unset(name: str) -> Spec:
+    spec = BY_NAME.get(name)
+    if spec is None:
+        raise Refused(f"unknown knob {name}")
+    if spec.secret:
+        raise Refused(f"{name} is a secret and is never written here")
+    return spec
+
+
+def refresh_lkg_unset(name: str, reader) -> str:
+    """Remove the knob from the last-known-good copy after a delete."""
+    try:
+        _value, where = reader(name)
+    except Exception:  # noqa: BLE001
+        where = "error"
+    doc, note = lkg.read()
+    if doc is None:
+        return "refreshed" if where == "infisical" else f"not-refreshed:{note}"
+    if name not in doc["knobs"]:
+        return "refreshed"
+    copy = dict(doc["knobs"]); copy.pop(name, None)
+    try:
+        lkg.write(copy, now=float(doc["saved_epoch"]))
+    except (OSError, ValueError) as exc:
+        return f"not-refreshed:{type(exc).__name__}"
+    return "patched"
+
+
+def unset_knob(name, mode, *, environ=None, platform=None, runner=None, reader=None,
+               find_cli=None, audit_file=None, now=None):
+    """(answer, exit) for `unset`: Infisical delete first, then the local copy."""
+    environ = dict(os.environ if environ is None else environ)
+    platform = platform or sys.platform
+    runner = runner or run
+    reader = reader or current
+    find_cli = find_cli or source.find_cli
+    now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
+    answer = {"ok": False, "verb": "unset", "target": name, "old": None, "new": None,
+              "commands": [], "result": "refused", "detail": ""}
+    spec = None; code = 2; token = ""
+    try:
+        if mode not in ("plan", "yes"):
+            raise Refused("pass --plan to see the write or --yes to make it")
+        refusal = source.environment_refusal()
+        if refusal:
+            raise Refused(refusal)
+        spec = check_unset(name)
+        try:
+            old_value, old_source = reader(name)
+            answer["old"] = values.render(spec, old_value) if old_value is not None else None
+            answer["old_source"] = old_source
+        except Exception:  # noqa: BLE001
+            answer["old_source"] = "unknown"
+        cli = find_cli()
+        if not cli:
+            raise Failed("the infisical CLI is not installed")
+        argv = delete_argv(cli, name)
+        answer["commands"] = [["infisical"] + argv[1:]]
+        if mode == "plan":
+            answer.update(ok=True, result="planned", detail="nothing written"); code = 0
+        else:
+            token = read_token(environ, platform, runner)
+            if not token:
+                raise Refused("no write token")
+            env = child_env(environ, token)
+            try:
+                status, _ = runner(argv, timeout=WRITE_TIMEOUT, env=env)
+            finally:
+                env = {}; token = ""
+            if status != 0:
+                raise Failed(f"infisical secrets delete exited {status}")
+            answer["lkg"] = refresh_lkg_unset(name, reader)
+            answer.update(ok=True, result="done", detail="deleted; the default applies"); code = 0
+    except Refused as exc:
+        answer.update(ok=False, result="refused", detail=str(exc)); code = 2
+    except Failed as exc:
+        answer.update(ok=False, result="failed", detail=str(exc)); code = 1
+    finally:
+        token = ""
+    if mode == "yes":
+        secret = spec is None or spec.secret
+        answer["audit"] = "written" if audit(audit_file or audit_path(), {
+            "time": now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "seat": (environ.get("AGENT_SEAT") or "owner").strip()[:32] or "owner",
+            "key": name if name in BY_NAME else "unknown",
+            "old": None if secret else answer["old"], "new": None,
+            "result": answer["result"]}) else "failed"
     return answer, code

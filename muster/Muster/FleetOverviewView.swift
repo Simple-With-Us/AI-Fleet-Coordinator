@@ -4,7 +4,7 @@ import SwiftUI
 /// shared run.
 struct FleetOverviewView: View {
     @EnvironmentObject private var store: FleetStore
-    @State private var theme: ThemeChoice = .system
+    @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
 
     var body: some View {
         VStack(spacing: 0) {

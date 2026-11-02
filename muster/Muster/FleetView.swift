@@ -82,6 +82,27 @@ struct FleetView: View {
         }
     }
 
+    private var isFiltering: Bool {
+        appFilter != .all || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func clearFilters() {
+        appFilter = .all
+        searchText = ""
+    }
+
+    private func emptyState(_ title: String, description: String) -> some View {
+        ContentUnavailableView {
+            Label(title, systemImage: "line.3.horizontal.decrease.circle")
+        } description: {
+            Text(description)
+        } actions: {
+            if isFiltering {
+                Button("Clear Filters") { clearFilters() }
+            }
+        }
+    }
+
     private func filteredClaims(_ claims: [FleetViewEnvelope.Claim]) -> [FleetViewEnvelope.Claim] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return claims }
@@ -194,6 +215,10 @@ struct FleetView: View {
                         }
                     }
 
+                    if filteredApps.isEmpty {
+                        emptyState("No Apps Match", description: "No production or fleet app matches the current filter.\u{00A0} Clear the filter to see every app.")
+                    }
+
                     if !filteredCodingApps.isEmpty {
                         HStack {
                             Text("Coding Apps & Harnesses (\(filteredCodingApps.count))").font(.headline)
@@ -234,8 +259,15 @@ struct FleetView: View {
                         }
                     }
 
+                    if filteredCodingApps.isEmpty {
+                        emptyState("No Coding Apps Match", description: "No coding app or harness matches the current filter.\u{00A0} Clear the filter to see every harness.")
+                    }
+
                     if let envelope {
                         sectionHeader("Lanes", section: envelope.sections.lanes)
+                        if filteredLanes(envelope.sections.lanes.items).isEmpty {
+                            emptyState("No Lanes Match", description: "No lane matches the current filter.\u{00A0} Clear the filter to see every lane.")
+                        }
                         ForEach(filteredLanes(envelope.sections.lanes.items)) { lane in
                             HStack {
                                 seatBadge(lane.seat)
@@ -256,6 +288,9 @@ struct FleetView: View {
                             }
                         }
 
+                        if filteredPRs(envelope.sections.pullRequests.items).isEmpty {
+                            emptyState("No Pull Requests Match", description: "No open pull request matches the current filter.\u{00A0} Clear the filter to see every pull request.")
+                        }
                         sectionHeader("Open Pull Requests", section: envelope.sections.pullRequests)
                         ForEach(filteredPRs(envelope.sections.pullRequests.items)) { pr in
                             HStack {
@@ -271,6 +306,9 @@ struct FleetView: View {
                             }
                         }
 
+                        if filteredClaims(envelope.sections.claims.items).isEmpty {
+                            emptyState("No Claims Match", description: "No claim in progress matches the current filter.\u{00A0} Clear the filter to see every claim.")
+                        }
                         sectionHeader("Linear Claims In Progress", section: envelope.sections.claims)
                         ForEach(filteredClaims(envelope.sections.claims.items)) { claim in
                             HStack {

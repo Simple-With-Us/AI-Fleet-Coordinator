@@ -293,6 +293,29 @@ class RefreshTests(_SettingsCase):
         self.assertTrue(s.refresh())
         self.assertEqual(s.get("TIMEOUT_S"), "11")
 
+    def test_refresh_backfills_env_only_key_like_init(self):
+        # BACKEND_URL lives only in the process environment (init backfills it); a
+        # refresh that still lacks it in Infisical must not make it vanish.
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make()
+        with mock.patch.dict(os.environ, {"BACKEND_URL": "http://env-only"}, clear=False):
+            s.init()
+            self.assertEqual(s.get("BACKEND_URL"), "http://env-only")
+            self.assertTrue(s.refresh())
+            self.assertEqual(s.get("BACKEND_URL"), "http://env-only")
+
+    def test_refresh_dropping_required_key_keeps_last_known_good(self):
+        self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
+        s = self.make()
+        s.init()
+        self.world.secrets = {"TIMEOUT_S": "11"}  # required key gone from Infisical
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("API_TOKEN", None)  # no env backfill can rescue it
+            with self.assertLogs("infisical_settings", level="ERROR"):
+                self.assertFalse(s.refresh())
+        self.assertEqual(s.get("API_TOKEN"), "tok")
+        self.assertEqual(s.get("TIMEOUT_S"), "9")
+
     def test_failed_refresh_keeps_last_known_good(self):
         self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
         s = self.make()
@@ -724,6 +747,19 @@ class AdminListingTests(_SettingsCase):
             self.assertEqual(sorted(exported), ["API_TOKEN", "BACKEND_URL"])
             self.assertEqual(os.environ["API_TOKEN"], "tok")
             self.assertNotIn("TIMEOUT_S", os.environ)
+
+    def test_export_env_deletes_revoked_key(self):
+        self.world.secrets = {"API_TOKEN": "tok", "BACKEND_URL": "http://x"}
+        s = self.make()
+        s.init()
+        with mock.patch.dict(os.environ, {"BACKEND_URL": "http://x"}, clear=False):
+            # Infisical now empties BACKEND_URL; refresh + export must delete it
+            # from os.environ so the revoked value does not stay live.
+            self.world.secrets = {"API_TOKEN": "tok", "BACKEND_URL": ""}
+            self.assertTrue(s.refresh())
+            exported = s.export_env(("API_TOKEN", "BACKEND_URL"))
+            self.assertEqual(exported, ["API_TOKEN"])
+            self.assertNotIn("BACKEND_URL", os.environ)
 
 
 class ModuleDefaultTests(_SettingsCase):

@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             "pattern in POLICY_BAN_RE if the wording changed on purpose.",
             file=sys.stderr,
         )
-        return 0
+        return 1
 
     if not args.inventory.exists():
         print(

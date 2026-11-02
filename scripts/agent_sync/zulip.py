@@ -1504,6 +1504,7 @@ class ZulipClient:
             headers["Content-Type"] = content_type
         rate_retries = 0
         net_retries = 0
+        rate_deadline: float | None = None  # overall cap for 429 retries, separate from per-request timeout
 
         def pause(seconds: float) -> None:
             if deadline is not None:
@@ -1531,8 +1532,12 @@ class ZulipClient:
                 finally:
                     exc.close()
                 if status == 429 and rate_retries < MAX_RATE_LIMIT_RETRIES:
+                    if rate_deadline is None:
+                        rate_deadline = time.monotonic() + RETRY_AFTER_CAP * MAX_RATE_LIMIT_RETRIES
+                    if time.monotonic() >= rate_deadline:
+                        raise self._api_error(status, body) from None
                     rate_retries += 1
-                    pause(self._retry_after(exc.headers, body))
+                    pause(min(self._retry_after(exc.headers, body), max(0.0, rate_deadline - time.monotonic())))
                     continue
                 if (
                     method == "GET"

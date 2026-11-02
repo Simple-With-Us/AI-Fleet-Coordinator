@@ -180,6 +180,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           NOTIFY_URL: ${{ vars.SWU_AUTOFIX_NOTIFY_URL }}
+          ALLOWED_BOTS: ${{ inputs.allowed_bots }}
         run: |
           set -euo pipefail
           # Owner rule 2026-10-20:  one autofix run per bot per PR;  the owner
@@ -264,9 +265,49 @@ jobs:
               > /dev/null
             exit 0
           fi
+          # Allowlist before any marker work (Kody on cts #394):  the action
+          # filters disallowed actors downstream,  but without a gate-side check
+          # their request still writes a marker and leaves a misleading
+          # "run started" comment.  Normalised as the action normalises:
+          # lowercased,  [bot] stripped.  Only the normalised allowlisted
+          # requester reaches the marker below.
+          #
+          # The allowlist gates bot reviewers.  A workflow_dispatch run is
+          # requested by a human,  whose login is not a bot login;  requiring it
+          # to be on a bot list would silently skip every manual dispatch,  which
+          # the event handling above deliberately supports.  The dispatch itself
+          # already needs write access to the repository,  so the bot list has
+          # nothing to add there.
+          allowed=true
+          if [ "$GITHUB_EVENT_NAME" = "pull_request_review" ]; then
+            allowed=false
+            IFS=',' read -ra swu_bots <<< "$ALLOWED_BOTS"
+            for swu_bot in "${swu_bots[@]}"; do
+              swu_bot=$(printf '%s' "$swu_bot" | tr -d '[:space:]' | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+              if [ "$swu_bot" = "$requester" ]; then allowed=true; break; fi
+            done
+          fi
+          if [ "$allowed" != "true" ]; then
+            echo "::notice::$author is not in allowed_bots, skipping before any marker write"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Anchored exact marker text, github-actions[bot] comments only: an
+          # unanchored contains() lets bot=swu-cursor match bot=swu-cursor-cloud's
+          # marker, and without an author filter any commenter could forge a
+          # marker to block a bot's one run (Sentry on cts #395).
           marker="swu-autofix-run: bot=$requester"
-          prior=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
-            --jq ".[].body | select(contains(\"$marker\"))" 2> /dev/null | head -1 || true)
+          # Fail closed:  without the lookup result the one-run-per-bot record is
+          # unknown,  and a swallowed gh api error would let a bot run twice (Kody
+          # on cts #394).  The result goes through a file so pipefail cannot turn
+          # head's early close into a fake gh failure.
+          if ! gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\") | .body | select(contains(\"<!-- $marker -->\"))" \
+            > "$RUNNER_TEMP/prior_markers.txt"; then
+            echo "::error::marker lookup failed (gh api error) - refusing to run without the one-run-per-bot record;  retry the run"
+            exit 1
+          fi
+          prior=$(head -1 "$RUNNER_TEMP/prior_markers.txt")
           accepted=true
           if [ -n "$prior" ]; then accepted=false; fi
           if [ -n "${NOTIFY_URL:-}" ]; then
@@ -284,9 +325,15 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+          # The marker must land before the model starts,  so a write failure
+          # stops the run here with an actionable error instead of a raw gh
+          # abort (Kody on cts #394) - before any model spend.
+          if ! gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
             -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset." \
-            > /dev/null
+            > /dev/null; then
+            echo "::error::could not record the one-run marker comment - the calling job must grant issues: write and the issues API must be reachable;  the run stops before billing the model"
+            exit 1
+          fi
 
       # The handbook sync job owns handbook-sync/mirror and refuses a pull request whose head it did not push
       # (AFC-402).  A review event is filtered in the caller;  a workflow_dispatch run names its pull request

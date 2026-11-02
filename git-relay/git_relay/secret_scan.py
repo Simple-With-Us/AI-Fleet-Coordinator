@@ -20,7 +20,45 @@ _PATTERNS = (
         re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"),
     ),
     ("infisical_service_token", re.compile(r"\bst\.[A-Za-z0-9]{20,}")),
+    ("aws_access_key_id", re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}|\bxapp-[A-Za-z0-9-]{10,}")),
+    (
+        "jwt",
+        re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    ),
+    ("bearer_credential", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}")),
 )
+
+_SAFE_VALUE_SHAPES = (
+    re.compile(r"^[0-9a-f]{7,64}$"),  # commit SHAs and hex digests
+    re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I),
+    re.compile(r"^PRRT_[A-Za-z0-9_-]{6,128}$"),  # review-thread ids
+    re.compile(r"^https?://", re.I),
+)
+_TOKEN_LIKE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
+
+
+def looks_like_credential(value: object) -> bool:
+    """Audit-side heuristic for values under keys nobody classified.
+
+    Long, space-free, mixed-class token-shaped strings are treated as
+    plausibly credential and hashed by the audit log;  known identifier
+    shapes (hex SHAs and digests, UUIDs, thread ids, URLs) stay readable.
+    This never gates outbound text - find_secret alone does that - so a
+    false positive here only hashes one audit field.
+    """
+    if not isinstance(value, str) or len(value) < 40:
+        return False
+    if any(shape.search(value) for shape in _SAFE_VALUE_SHAPES):
+        return False
+    if not _TOKEN_LIKE.match(value):
+        return False
+    classes = sum(
+        bool(re.search(pattern, value))
+        for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[._~+/=-]")
+    )
+    return classes >= 3
+
 
 
 def find_secret(text: object) -> str | None:

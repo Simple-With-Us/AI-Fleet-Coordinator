@@ -300,7 +300,7 @@ def agent_sync_errors(
         repo = app["repo"]
         if (repo.casefold() if fold_repo else repo) not in haystack:
             errors.append(f"{where} missing repo {repo}")
-        if app["acronym"] not in body:
+        if not re.search(r"(?<![A-Za-z0-9])" + re.escape(app["acronym"]) + r"(?![A-Za-z0-9])", body):
             errors.append(f"{where} missing acronym {app['acronym']}")
     return errors
 

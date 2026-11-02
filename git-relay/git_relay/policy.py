@@ -94,8 +94,9 @@ class SeatPolicy:
     )
     # Workflow verbs (workflow_verbs.SPECS): policy names a seat config may list, each
     # authorized once per call by WorkflowVerbs.for_action and minted at the least
-    # permission in SPECS.  They need the seat's own App, like APP_ACTIONS, but are not
-    # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
+    # permission in SPECS.  They need the seat's own App, like APP_ACTIONS.  HTTP
+    # dispatch is gated by GIT_RELAY_ENABLE_WORKFLOW_VERBS=1 (server.py; default off):
+    # with it unset or any other value the server refuses them as registered-not-wired.
     WORKFLOW_ACTIONS = (
         "wf_git_blob_binary_get",
         "wf_issue_events",

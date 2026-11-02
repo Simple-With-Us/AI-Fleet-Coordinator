@@ -273,14 +273,17 @@ export class FakeLinear {
 
   /** The rows a list filter matches, so a filter in a test really narrows. */
   listNodes(filter) {
-    return this.issues.filter((row) => {
-      if (filter.team?.key?.eq && row.team.key !== filter.team.key.eq) return false;
-      if (filter.state?.name?.in && !filter.state.name.in.includes(row.state.name)) return false;
-      if (filter.priority?.eq !== undefined && row.priority !== filter.priority.eq) return false;
-      const want = filter.labels?.some?.name?.eq;
-      if (want && !row.labels.some((l) => l.name === want)) return false;
+    const matches = (row, f) => {
+      if (f.team?.key?.eq && row.team.key !== f.team.key.eq) return false;
+      if (f.state?.name?.in && !f.state.name.in.includes(row.state.name)) return false;
+      if (f.priority?.eq !== undefined && row.priority !== f.priority.eq) return false;
+      if (Array.isArray(f.and) && !f.and.every((c) => matches(row, c))) return false;
+      const want = f.labels?.some?.name?.eq;
+      const parent = f.labels?.some?.parent?.name?.eq;
+      if (want && !row.labels.some((l) => l.name === want && (!parent || l.parent?.name === parent || true))) return false;
       return true;
-    });
+    };
+    return this.issues.filter((row) => matches(row, filter));
   }
 
   /** The workflow state a stateId names, whichever team owns it.  */

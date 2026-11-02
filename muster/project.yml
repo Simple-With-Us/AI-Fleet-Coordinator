@@ -59,6 +59,7 @@ targets:
       - path: Muster/FleetConfigCLI.swift
       - path: Muster/FleetConfigStatus.swift
       - path: Muster/FleetViewModels.swift
+      - path: Muster/FleetViewService.swift
       - path: Muster/ApplyPlanModel.swift
       - path: Muster/ApplyCoordinator.swift
       - path: Muster/Model/ConfigFileReader.swift

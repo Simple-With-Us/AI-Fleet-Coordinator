@@ -1,5 +1,9 @@
 # Status
 
+## 2026-11-01 MC — Muster Fleet Overhaul Sweep
+
+Ten audited fix batches plus a follow-up: hosted board identity, recall and backup correctness, Muster performance and control breadth (Settings scene, wake confirmations, knob unset, Secret Names and masked Recall panels), relay secret hardening, CI and site honesty, and hosted chat/board parity.  All gates green in the lane (Muster 617, agent-sync-mcp 1080, relay 199, knobs 113, board 30, visual 17).  Next action: merge, then file the Linear issue the broken hosted board blocked at claim time.  Rollout: `docs/rollouts/2026-11-01-muster-fleet-overhaul-sweep.md`.
+
 ## 2026-10-30 CODEX — Per-Repository Document Library (AFC-580)
 
 Adds an on-demand tracked-document collector, a shared report-storage convention and per-repository report entry points.  The central layout uses `Code/Docs/<Exact-GitHub-Repo-Name>/`; existing historical paths remain canonical.  Collection previews and validation run from owned lanes, with no background job or integration-checkout edits.  The owner-approved Docs-only lane-guard exception is installed and tested; sibling Git checkouts remain protected.

@@ -113,6 +113,11 @@ struct EngineRun {
 
 /// Runs the engine as a subprocess with a pinned interpreter and an explicit environment.
 struct EngineRunner {
+    /// Most bytes kept from either pipe, mirroring OpsControl's cap.
+    static let maximumOutputBytes = 4 * 1024 * 1024
+    /// Grace between SIGTERM and SIGKILL at the deadline.
+    static let killGrace: TimeInterval = 2
+
     let location: EngineLocation
     let home: URL
     let timeout: TimeInterval
@@ -180,12 +185,14 @@ struct EngineRunner {
         let readers = DispatchGroup()
         readers.enter()
         outputQueue.async {
-            outputBox.set(outputPipe.fileHandleForReading.readDataToEndOfFile() ?? Data())
+            let capped = Self.readCapped(outputPipe.fileHandleForReading)
+            outputBox.set(capped.data, exceeded: capped.exceeded)
             readers.leave()
         }
         readers.enter()
         errorQueue.async {
-            errorBox.set(errorPipe.fileHandleForReading.readDataToEndOfFile() ?? Data())
+            let capped = Self.readCapped(errorPipe.fileHandleForReading)
+            errorBox.set(capped.data, exceeded: capped.exceeded)
             readers.leave()
         }
 
@@ -194,6 +201,10 @@ struct EngineRunner {
             guard process.isRunning else { return }
             state.markTimedOut()
             process.terminate()
+            let pid = process.processIdentifier
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.killGrace) {
+                if process.isRunning { _ = kill(pid, SIGKILL) }
+            }
         }
         DispatchQueue.global(qos: .utility).asyncAfter(
             deadline: .now() + timeout,
@@ -206,6 +217,18 @@ struct EngineRunner {
             let output = outputBox.get()
             let errors = errorBox.get()
             let errorText = String(data: errors, encoding: .utf8) ?? ""
+            if outputBox.exceeded || errorBox.exceeded {
+                completion(
+                    EngineRun(
+                        envelope: nil,
+                        exitCode: finished.terminationStatus,
+                        standardError: errorText,
+                        failure: "the engine printed more than \(Self.maximumOutputBytes) bytes",
+                        timedOut: state.timedOut
+                    )
+                )
+                return
+            }
             if state.timedOut {
                 completion(
                     EngineRun(
@@ -271,15 +294,40 @@ struct EngineRunner {
     }
 }
 
+extension EngineRunner {
+    /// What a capped pipe read kept, and whether the pipe carried more.
+    fileprivate struct CappedRead {
+        let data: Data
+        let exceeded: Bool
+    }
+
+    /// Read a pipe to its end, keeping only the first capped bytes while
+    /// still draining, so an over-long child never blocks on a full pipe.
+    fileprivate static func readCapped(_ handle: FileHandle) -> CappedRead {
+        var collected = Data()
+        var exceeded = false
+        while true {
+            let chunk = handle.readData(ofLength: 64 * 1024)
+            if chunk.isEmpty { break }
+            let room = maximumOutputBytes - collected.count
+            if room > 0 { collected.append(chunk.prefix(room)) }
+            if chunk.count > max(room, 0) { exceeded = true }
+        }
+        return CappedRead(data: collected, exceeded: exceeded)
+    }
+}
+
 /// A box that carries bytes from the thread that reads a pipe to the thread that waits
 /// for the run to end.
 private final class DataBox {
     private let lock = NSLock()
     private var data = Data()
+    private(set) var exceeded = false
 
-    func set(_ newData: Data) {
+    func set(_ newData: Data, exceeded newExceeded: Bool = false) {
         lock.lock()
         data = newData
+        exceeded = newExceeded
         lock.unlock()
     }
 

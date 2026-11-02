@@ -22,6 +22,7 @@ struct WakeSettingsView: View {
     @StateObject private var store = WakeSettingsStore()
     @State private var seatFilter: SeatFilter = .all
     @State private var searchText: String = ""
+    @State private var pendingWakeAction: PendingWakeAction?
 
     private var filteredSeats: [WakeSeat] {
         let base: [WakeSeat]
@@ -67,6 +68,28 @@ struct WakeSettingsView: View {
         }
         .task {
             await store.refresh(roster: fleet.roster)
+        }
+        .confirmationDialog(
+            pendingWakeAction?.title ?? "",
+            isPresented: Binding(get: { pendingWakeAction != nil }, set: { if !$0 { pendingWakeAction = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingWakeAction
+        ) { action in
+            Button(action.confirmTitle, role: .destructive) {
+                pendingWakeAction = nil
+                Task { await perform(action) }
+            }
+            Button("Cancel", role: .cancel) { pendingWakeAction = nil }
+        } message: { action in
+            Text(action.message)
+        }
+    }
+
+    private func perform(_ action: PendingWakeAction) async {
+        switch action.kind {
+        case .apply: await store.apply(seat: action.seat)
+        case .testWake: await store.testWake(seat: action.seat, runtime: action.runtime)
+        case .pin: await store.pin(seat: action.seat, runtime: action.runtime)
         }
     }
 
@@ -319,20 +342,20 @@ struct WakeSettingsView: View {
             recentWakes(seat)
             HStack(spacing: 8) {
                 Button {
-                    Task { await store.apply(seat: seat.seat) }
+                    pendingWakeAction = PendingWakeAction(kind: .apply, seat: seat.seat, runtime: nil)
                 } label: {
                     Label("Apply", systemImage: "square.and.arrow.down")
                 }
                 .disabled(store.isBusy)
                 Button {
-                    Task { await store.testWake(seat: seat.seat, runtime: runtimeArgument(for: seat)) }
+                    pendingWakeAction = PendingWakeAction(kind: .testWake, seat: seat.seat, runtime: runtimeArgument(for: seat))
                 } label: {
                     Label("Test wake", systemImage: "play.and.pause")
                 }
                 .disabled(store.isBusy)
                 .help("Runs the seat's wake for real.  A failed run never pins.")
                 Button {
-                    Task { await store.pin(seat: seat.seat, runtime: runtimeArgument(for: seat)) }
+                    pendingWakeAction = PendingWakeAction(kind: .pin, seat: seat.seat, runtime: runtimeArgument(for: seat))
                 } label: {
                     Label("Pin", systemImage: "pin")
                 }
@@ -572,4 +595,37 @@ private extension WakeSettingState {
 #Preview {
     WakeSettingsView()
         .environmentObject(FleetStore())
+}
+
+/// A wake action waiting for the owner's confirmation, with its concrete effect.
+private struct PendingWakeAction: Identifiable {
+    enum Kind { case apply, testWake, pin }
+    let kind: Kind
+    let seat: String
+    let runtime: String?
+    var id: String { "\(kind)-\(seat)-\(runtime ?? "")" }
+    var title: String {
+        switch kind {
+        case .apply: return "Apply Settings For \(seat)?"
+        case .testWake: return "Run A Test Wake For \(seat)?"
+        case .pin: return "Pin The Wake Binary For \(seat)?"
+        }
+    }
+    var confirmTitle: String {
+        switch kind {
+        case .apply: return "Apply"
+        case .testWake: return "Run Test Wake"
+        case .pin: return "Pin"
+        }
+    }
+    var message: String {
+        switch kind {
+        case .apply:
+            return "This writes \(seat)'s edited settings to the listener configuration file and asks the listener to re-read it.\u{00A0} The change takes effect in the running listener."
+        case .testWake:
+            return "This runs \(seat)'s wake for real, exactly as a live wake would run.\u{00A0} It can spend wake budget and start a worker session."
+        case .pin:
+            return "This pins the binary whose test wake passed for \(seat) as the proved binary.\u{00A0} A failed run never pins."
+        }
+    }
 }

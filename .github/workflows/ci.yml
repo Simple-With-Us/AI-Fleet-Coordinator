@@ -6,6 +6,17 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# A newer push makes older runs on the same ref stale,  so superseded runs stop
+# instead of racing the newest one to the required check.
+concurrency:
+  group: ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: every job below only reads the checkout and the toolchains,  so the
+# workflow grants contents read and nothing else.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -47,6 +58,7 @@ jobs:
       uses: actions/setup-python@v7
       with:
         python-version: '3.15'
+        cache: pip
     # A repeated mapping key still loads in a Hash-backed YAML parser, and GitHub's
     # workflow parser rejects it.  The file then registers under its path and every
     # push gets a red suite with zero jobs (AFC-529).  Ruby's Psych AST keeps both
@@ -105,8 +117,13 @@ jobs:
     # by test_workflow_static.py.
     - name: hold-guard tests
       run: |
-        pip install PyYAML
+        pip install "PyYAML==6.0.3"
         cd scripts/hold-guard && python3 -m unittest discover -s . -t . -v
+    # ECHO Linux custody (assigned-echo-mcp): the ingress gate that keeps
+    # untrusted stdin out of every other fd and the encrypted exclusive
+    # output write.  Fakes only;  no native command, secret or service is touched.
+    - name: ECHO custody tests
+      run: python3 scripts/assigned-echo-mcp/test_linux_custody.py -v
     # pr-sweep (docs/PR-SWEEP.md):  a fake gh, fake agents and a fake lane tool, so nothing reaches GitHub or runs
     # an agent;  includes the check that no adapter, skill or doc carries a copy of a rule from rules.md.
     - name: pr-sweep tests
@@ -428,6 +445,10 @@ jobs:
       uses: actions/setup-node@v7
       with:
         node-version: '26'
+        cache: npm
+        cache-dependency-path: |
+          visual-tests/package-lock.json
+          scripts/agent-sync-mcp/package-lock.json
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
     # The alert-ingress secret provisioner (AFC-351):  the batched read against a

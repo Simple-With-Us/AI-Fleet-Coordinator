@@ -102,6 +102,72 @@ class PublicActivityTests(unittest.TestCase):
         self.assertIn(pr["url"], rendered[0])
         self.assertIn(pr["url"], rendered[1])
 
+    def test_html_day_cards_use_content_visibility_and_details_for_older_days(self) -> None:
+        days = [
+            digest.DayBucket(day=date(2026, 9, 27), merged_prs=[{"repo": "BotFleet", "number": 1, "title": "One", "url": "https://example.com/1", "user": "jay"}]),
+            digest.DayBucket(day=date(2026, 9, 26), merged_prs=[{"repo": "BotFleet", "number": 2, "title": "Two", "url": "https://example.com/2", "user": "jay"}]),
+        ]
+        rendered = digest.build_html(days, datetime(2026, 9, 27, tzinfo=timezone.utc), ZoneInfo("America/Chicago"), "https://example.com")
+        self.assertIn("content-visibility", rendered)
+        self.assertIn("<details", rendered)
+        # newest day stays a plain expanded section; older days collapse
+        self.assertIn('<section class="day"', rendered)
+        self.assertIn('id="2026-09-26"', rendered)
+
+    def test_html_links_underlined_focus_visible_and_dark_mode(self) -> None:
+        rendered = digest.build_html([], datetime(2026, 9, 27, tzinfo=timezone.utc), ZoneInfo("America/Chicago"), "https://example.com")
+        self.assertIn("a:focus-visible", rendered)
+        self.assertIn("prefers-color-scheme: dark", rendered)
+        self.assertNotIn("text-decoration: none", rendered)
+
+    def test_main_copies_only_referenced_logo_basenames(self) -> None:
+        day = date(2026, 9, 26)
+        pr = {"repo": "BotFleet", "number": 123, "title": "[CODEX] Fix onboarding", "url": "https://github.com/Simple-With-Us/BotFleet/pull/123", "user": "jay"}
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {key: value for key, value in os.environ.items() if key not in {"FLEET_OWNER", "SITE_BASE_URL", "FLEET_REPOS"}}
+            env.update({"SITE_OUT": str(Path(tmp) / "site"), "ICS_OUT": str(Path(tmp) / "daily.ics")})
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with patch.dict(os.environ, env, clear=True), \
+                        patch.object(digest, "token", return_value="fixture"), \
+                        patch.object(digest, "select_public_repos", return_value=["BotFleet"]), \
+                        patch.object(digest, "fetch_merged_prs", return_value=[(day, pr)]), \
+                        patch.object(digest, "fetch_issue_churn", return_value=([], [])), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(digest.main(), 0)
+            finally:
+                os.chdir(cwd)
+            copied = {q.name for q in (Path(tmp) / "site" / "agent-logos").iterdir()}
+            self.assertIn("app-bf.png", copied)
+            self.assertIn("codex.svg", copied)
+            # the legend references every repo icon, so app-dd.png ships too
+            self.assertIn("app-dd.png", copied)
+            # non-image extras and unused seat marks stay out of the published tree
+            self.assertNotIn("README.md", copied)
+            self.assertNotIn("badges", copied)
+            self.assertNotIn("owner.png", copied)
+            self.assertNotIn("xai.svg", copied)
+
+    def test_badge_backgrounds_meet_aa_contrast_with_white_text(self) -> None:
+        def lum(hexcolor: str) -> float:
+            hexcolor = hexcolor.lstrip("#")
+            r, g, b = (int(hexcolor[i:i + 2], 16) / 255 for i in (0, 2, 4))
+            f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+            return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+        rendered = digest.build_html([], datetime(2026, 9, 26, tzinfo=timezone.utc), ZoneInfo("America/Chicago"), "https://example.com")
+        palette = dict(re.findall(r"--(st|ct|um|dd|ps|ar|cl|shared|fleet|bf|hh|clutch|cc):\s*(#[0-9a-fA-F]{6})", rendered))
+        self.assertEqual(len(palette), 13)
+        white = lum("#ffffff")
+        for name, bg in sorted(palette.items()):
+            ratio = (white + 0.05) / (lum(bg) + 0.05)
+            self.assertGreaterEqual(ratio, 4.5, f"--{name} {bg} fails AA with white text")
+
+    def test_day_cards_wrap_long_tokens(self) -> None:
+        rendered = digest.build_html([], datetime(2026, 9, 26, tzinfo=timezone.utc), ZoneInfo("America/Chicago"), "https://example.com")
+        self.assertIn("overflow-wrap", rendered)
+
     def test_default_owner_is_the_org_and_never_the_retired_pages_host(self) -> None:
         """A manual run with no FLEET_OWNER or SITE_BASE_URL must not emit jaywedgeworth22.github.io."""
         self.assertEqual(DEFAULT_FLEET_OWNER, "Simple-With-Us")

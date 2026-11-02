@@ -67,7 +67,7 @@ jobs:
             echo "No artifact changes."
           else
             git commit -m "chore(site): refresh fleet daily digest + calendars [skip ci]"
-            git push || echo "Direct push to main skipped (branch rules require PR); proceeding to deploy Pages artifact."
+            git push
           fi
 
       - name: Setup Pages

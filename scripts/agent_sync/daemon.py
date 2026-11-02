@@ -4344,6 +4344,19 @@ class Daemon:
         # JsonLog.write is blocking I/O: it must not run under _fanout_lock.
         if event is not None:
             self.log.write(event[0], **event[1])
+            if event[0] == "inbox-delivery-gave-up":
+                self._inbox_gave_up_count = getattr(self, "_inbox_gave_up_count", 0) + 1
+                for seat in event[1].get("seats") or []:
+                    try:
+                        self.notifier.notify(
+                            seat,
+                            "simple-chat inbox delivery",
+                            "inbox delivery gave up for message %s after %d attempts"
+                            % (event[1].get("id"), len(INBOX_RETRY_BACKOFF)),
+                            kind="inbox-delivery-gave-up",
+                        )
+                    except Exception:  # noqa: BLE001 - notification must not break routing
+                        pass
 
     def _start_due_inbox_retries(self, now: float) -> None:
         """Event thread only (tick):  start one retry thread per due message.

@@ -36,10 +36,12 @@ class FetchTests(KnobTestCase):
         calls = self.fake.calls()
         self.assertEqual(len(calls), 1, "one fetch per process")
         argv = calls[0]
-        self.assertEqual(argv[0], "export")
+        self.assertEqual(argv[:2], ["secrets", "get"])
+        self.assertIn("FLEET_AUTOPUSH_MODE", argv)
+        self.assertNotIn("QDRANT_API_KEY", argv)
         self.assertIn("--env=prod", argv)
         self.assertIn(f"--projectId={source.PROJECT_ID}", argv)
-        self.assertIn("--format=json", argv)
+        self.assertIn("--output=json", argv)
         self.assertFalse([a for a in argv if "dev" in a or "staging" in a])
         rep = knobs.report()
         self.assertEqual(rep["fetch"], "ok")
@@ -163,7 +165,7 @@ class UnreachableTests(KnobTestCase):
         self.assertEqual(knobs.report()["fetch_reason"], "cli-missing")
 
     def test_an_unexpected_fetch_error_is_a_failed_fetch_not_a_crash(self):
-        with mock.patch.object(source, "fetch", side_effect=RuntimeError("secret-in-message")):
+        with mock.patch.object(source, "fetch_named", side_effect=RuntimeError("secret-in-message")):
             knob = knobs.resolve("CLAIM_EXPIRY_MODE")
         self.assertEqual((knob.value, knob.stale), ("dry-run", True))
         self.assertEqual(knobs.report()["fetch_reason"], "error-RuntimeError")
