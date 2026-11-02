@@ -227,7 +227,9 @@ class Remote(unittest.TestCase):
                 answers = [rpc(self.WHO), rpc({"id": "1"}, text="done")]
                 code, out, err, calls = self.run_writes(argv, answers)
                 self.assertEqual(code, 0, err)
-                self.assertEqual(calls[-1], {"name": tool, "arguments": {**args, "identity": "CODEX"}})
+                self.assertEqual(
+                    calls[-1], {"name": tool, "arguments": {**args, "identity": "CODEX"}}
+                )
 
     def test_by_that_is_not_the_bearers_seat_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(
