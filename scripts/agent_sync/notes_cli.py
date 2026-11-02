@@ -419,7 +419,11 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
             # Off a Mac the log is read as the calling bot's own bearer, so a seat is needed to find its
             # file;  a Mac's log is a local file and acts as no one.  A launcher that assigns no seat, or a
             # shell with none, gets notes_client's refusal, which names this.
-            own_seat = I.resolve_seat(rt.env, flag=None, default=None).seat
+            own_seat = I.resolve_seat(
+                rt.env,
+                flag=getattr(args, "as_seat", None) or getattr(args, "identity", None),
+                default=getattr(args, "default_seat", None),
+            ).seat
         host = _host(rt, None, bearer_file, own_seat=own_seat)
         try:
             info = NC.log(

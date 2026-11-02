@@ -538,6 +538,33 @@ class GatewayTests(NotesCliHarness):
         self.assertEqual(log.out, "Thu, Oct 22, 5:03pm  update  ok  CODEX  runner  %s\n(1 entries from the operator log)\n" % MASTER)
         self.assertEqual(gw.calls[-1][:2], ("notes_log", {"limit": 5, "by_seat": "CODEX"}))
         self.assertEqual(self.audit_rows(), [], "status, read and log leave no audit row")
+    def test_log_honors_explicit_seat_and_platform_default_without_env_seat(self):
+        for argv in (("--as", "CODEX"), ("--default-seat", "CODEX")):
+            with self.subTest(argv=argv):
+                gw, _, patches = self.gateway()
+                gw.queue("notes_log", {"entries": [], "source": "operator", "count": 0})
+                env = {k: v for k, v in self.env().items() if k not in ("AGENT_SEAT", "AGENT_TAG")}
+                with patches[0], patches[1], patches[2]:
+                    result = self.notes("log", *argv, env=env)
+                self.assertEqual(result.code, 0, result.err)
+                self.assertEqual(gw.constructed, [(str(self.home / ".secrets" / "fleet-tools" / "codex"), None)])
+
+    def test_log_cannot_override_or_fill_an_unassigned_launcher_seat(self):
+        cases = (
+            ({"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "CLAUDE"}, ("--as", "CODEX")),
+            ({"AGENT_LAUNCHER": "botfleet"}, ("--default-seat", "CODEX")),
+        )
+        for launch, argv in cases:
+            with self.subTest(launch=launch, argv=argv):
+                gw, _, patches = self.gateway()
+                env = {k: v for k, v in self.env().items() if k not in ("AGENT_SEAT", "AGENT_TAG")}
+                env.update(launch)
+                with patches[0], patches[1], patches[2]:
+                    result = self.notes("log", *argv, env=env)
+                self.assertEqual(result.code, 3, result.err)
+                self.assertEqual(gw.constructed, [])
+                self.assertEqual(gw.calls, [])
+
     def test_exit_codes(self):
         # 2 usage
         self.assertEqual(self.notes("create", TITLE, "--wait", "x").code, 2)

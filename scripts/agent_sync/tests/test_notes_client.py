@@ -927,7 +927,12 @@ class HostTests(unittest.TestCase):
         self.assertIn("no fallback", caught.exception.message)
     def test_off_a_mac_a_bearer_naming_another_seat_is_refused_before_anything_is_sent(self):
         path = self.home / ".secrets" / "fleet-tools" / "claude"
-        path.parent.mkdir(parents=True)
+        for directory in (path.parent.parent, path.parent):
+            if directory.is_symlink():
+                raise AssertionError(f"refusing symlinked private directory: {directory}")
+            previous_mode = directory.stat().st_mode & 0o777 if directory.exists() else None
+            directory.mkdir(mode=0o700, exist_ok=True)
+            self.assertEqual(directory.stat().st_mode & 0o777, previous_mode if previous_mode is not None else 0o700)
         path.write_text("sbt_clutch_" + "x" * 43)
         path.chmod(0o600)
         host = NC.Host(self.env, self.home, self.store, caller="cli", script_finder=lambda env, home: None)
