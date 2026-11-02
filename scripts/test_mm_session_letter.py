@@ -597,9 +597,7 @@ class MmSessionLetterTest(unittest.TestCase):
         out = io.StringIO()
         with (
             mock.patch.object(M, "sessions", return_value=self._migration_rows()),
-            mock.patch.object(
-                M, "cached_letter", side_effect=lambda sid, directories=None: "A"
-            ),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid, directories=None: "A"),
             mock.patch.object(M, "relabel", side_effect=fake_relabel),
             mock.patch.object(M, "register", side_effect=fake_register),
             mock.patch.object(M, "cache_letter"),
