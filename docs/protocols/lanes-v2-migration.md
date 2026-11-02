@@ -78,13 +78,13 @@ A skip is never a failure: it is printed with its reason, nothing is changed, an
 | Git refuses | `worktree move` refuses a worktree with submodules, for example.  The message is shown. |
 | Cannot place it | A full clone with no GitHub `origin`, or a repo outside `~/Code` that is not a clone. |
 | A symlink or a non-checkout | A symlink (already migrated, or not ours) is not followed.  A folder that is not a checkout and is not empty is left alone. |
-| `agent-sync-runtime` | Always: see the next section. |
+| `simple-tools-runtime` | Always: see the next section. |
 
 The only git commands the script can run are the read-only ones it needs plus `worktree move OLD NEW` and `worktree repair PATH...`.  There is no `--force`, no `remove`, no `prune`, no `reset`, no `push`, and no `rm -rf`; a unit test pins that list.
 
 ### The Runtime Checkout Is Not Moved
 
-`~/apps/lanes/_managed/fleet/agent-sync-runtime` is a locked, detached worktree of this repo that the always-on Zulip listener runs from.  The `~/.local/bin/simple-chat` symlink, the `RUNTIME` default in `~/apps/agent-sync-runtime-sync.sh` (the `com.jay.agent-sync-runtime-sync` LaunchAgent, every 120 seconds), `~/.claude/settings.json` (the `afc` marketplace path), `scripts/agent_sync/install.sh` and its test, and the process list rows all hard-code that path.  Moving it breaks the listener for every Mac seat, and v2 names no new home for it.  The script skips it by name even if the lock is gone.  **Owner decision pending:** pick its path (outside the lanes tree, or `~/apps/lanes/AI-Fleet-Coordinator/agent-sync-runtime`, which makes it a lane-like object the doctor and the cleaners can see), then change all the couplings together and restart `com.jay.agent-sync-listener` and `com.jay.agent-sync-runtime-sync`.  Until then `_managed` keeps that one folder.
+`~/apps/lanes/_managed/fleet/simple-tools-runtime` is a locked, detached worktree of this repo that the always-on Zulip listener runs from.  The `~/.local/bin/simple-chat` symlink, the `RUNTIME` default in `~/apps/simple-tools-runtime-sync.sh` (the `com.jay.simple-tools-runtime-sync` LaunchAgent, every 120 seconds), `~/.claude/settings.json` (the `afc` marketplace path), `scripts/simple_tools/install.sh` and its test, and the process list rows all hard-code that path.  Moving it breaks the listener for every Mac seat, and v2 names no new home for it.  The script skips it by name even if the lock is gone.  **Owner decision pending:** pick its path (outside the lanes tree, or `~/apps/lanes/AI-Fleet-Coordinator/simple-tools-runtime`, which makes it a lane-like object the doctor and the cleaners can see), then change all the couplings together and restart `com.jay.simple-tools-listener` and `com.jay.simple-tools-runtime-sync`.  Until then `_managed` keeps that one folder.
 
 ## An Example Plan
 
@@ -102,7 +102,7 @@ The disk on Fri, Oct 9, 2026, from a dry run of the script (lanes are being crea
 | `hoghunter`, `clutch`, `dealdex`, `autorotate`, `contactlogo`, `codecaps`, `fleet-ops` | `HogHunter`, `Clutch`, `DealDex`, `Autorotate`, `ContactLogo`, `CodeCaps`, `Fleet-OPS` | case-only folder rename | one rename each, when every lane in it is safe |
 | `fleetlink` | `FleetLink` (the `minimax-zulip-stanza-FleetLink` worktree, renamed `minimax-zulip-stanza`) and `fleetlink-legacy` (the `claude-legacy-hotfix` clone) | the clone moves out first, then the folder is renamed | 2 |
 | `_managed/codecaps-cursor-163` | `CodeCaps/codecaps-cursor-163` | move + symlink (the name is kept; it does not read as `<seat>-<slug>`, so the doctor will call it a name problem) | 1 |
-| `_managed/fleet/agent-sync-runtime` | stays | skipped by name | 1 |
+| `_managed/fleet/simple-tools-runtime` | stays | skipped by name | 1 |
 | ten empty `_managed/<tool>` folders, `_review`, `_notes` | removed | `rmdir` | 12 |
 | `~/.codex/worktrees/*/*` | `_codex/<slug>/<Repo>` | with `--include-codex` only | 6 (5 CodeCaps, 1 BotFleet) |
 
