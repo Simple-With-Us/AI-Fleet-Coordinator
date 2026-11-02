@@ -1,4 +1,4 @@
-"""Tests for agent_sync.operator_registry (AFC-412 PR1).  Run:  python3 scripts/test_operator_registry.py"""
+"""Tests for simple_tools.operator_registry (AFC-412 PR1).  Run:  python3 scripts/test_operator_registry.py"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agent_sync import operator_registry as R
+from simple_tools import operator_registry as R
 
 # A synthetic credential for the positive scan cases:  32 mixed-case characters with no
 # provider prefix, so the scanner still trips on it while the file carries no real token's
