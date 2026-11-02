@@ -11,15 +11,17 @@ an error.  Nothing here changes any other command.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 from .. import fleet_bearer as F
 from .. import identity as I
 
-# The per-seat bearer files the assigned stdio connectors and the fleet CLI read;  the convention lives in
-# fleet_bearer so every reader resolves the same one private place.
-BEARER_DIR = F.BEARER_DIR
+# The per-seat bearer files the assigned stdio connectors and the fleet CLI read;  no environment or
+# other store supplies a bearer.
+BEARER_DIR = (".secrets", "fleet-tools")
+SEAT_FILE = re.compile(r"[a-z][a-z0-9-]{1,19}")
 
 
 # Longest the gateway may hold one whoami before the call is refused.  It is the HTTP connection's socket
@@ -51,10 +53,10 @@ class Refused(Exception):
 
 
 def bearer_path(home: Path, seat: str) -> Path:
-    try:
-        return F.default_bearer_path(home, seat)
-    except F.FleetError:
-        raise Refused("%r is not a seat name this server can authenticate" % seat, 2) from None
+    stem = seat.lower()
+    if not SEAT_FILE.fullmatch(stem):
+        raise Refused("%r is not a seat name this server can authenticate" % seat, 2)
+    return home.joinpath(*BEARER_DIR, stem)
 
 
 def verify(rt: Any, args: Any, *, client_factory: Any = None) -> str:

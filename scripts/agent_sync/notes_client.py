@@ -553,13 +553,25 @@ class Host:
                     "--fleet-bearer-file PATH, or set AGENT_SEAT or pass --identity so this bot's own bearer "
                     "file is used;  the shared service credential is not used",
                 )
-            from . import fleet_bearer as F
-
-            try:
-                self.bearer_file = str(F.default_bearer_path(self.home, seat))
-            except F.FleetError as exc:
-                raise N.NotesError(exc.code, str(exc)) from None
+            self.bearer_file = str(_default_bearer_path(self.home, seat))
         return self.bearer_file
+
+
+# This seat's own fleet bearer file lives in the same one private place every fleet tool reads
+# (mcp/bearer_gate.py, fleet_rag/seat_auth.py):  the convention is kept Notes-local here so the
+# public client (fleet_bearer.py, vendored byte-for-byte into fleet_rag) stays unchanged.
+_BEARER_DIR = (".secrets", "fleet-tools")
+_SEAT_FILE = re.compile(r"[a-z][a-z0-9-]{1,19}")
+
+
+def _default_bearer_path(home, seat):
+    """This seat's own fleet bearer file, or NotesError not_configured when `seat` cannot name one."""
+    stem = str(seat or "").strip().lower()
+    if not _SEAT_FILE.fullmatch(stem):
+        raise N.NotesError(
+            "not_configured", "%r is not a seat a fleet bearer file can belong to" % (seat,)
+        )
+    return Path(home).joinpath(*_BEARER_DIR, stem)
 
 
 _CODE_RE = re.compile(r"[a-z_]{1,40}")
