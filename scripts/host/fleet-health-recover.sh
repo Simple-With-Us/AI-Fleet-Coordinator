@@ -20,6 +20,19 @@ set -euo pipefail
 # Top-level health only.  ST /api/health is {ok:true, checks.dependencies.*.ok}
 # and a nested "ok":false (congress.trade dependency) must not count as down —
 # that substring used to docker-restart production during RTH.
+# Build a curl -K config for Pushover creds.  Values are escaped for curl's
+# quoted config syntax (backslash, then double quote); values with CR/LF are
+# rejected because they cannot be represented safely on one config line.
+pushover_curl_config() {
+  local t="${PUSHOVER_APP_TOKEN:-}" u="${PUSHOVER_USER_KEY:-}"
+  case "$t$u" in
+    *$'\n'*|*$'\r'*) return 1 ;;
+  esac
+  t=${t//\\/\\\\}; t=${t//\"/\\\"}
+  u=${u//\\/\\\\}; u=${u//\"/\\\"}
+  printf 'form-string = "token=%s"\nform-string = "user=%s"\n' "$t" "$u"
+}
+
 health_body_ok() {
   python3 -c '
 import json, sys
@@ -105,13 +118,18 @@ notify() {
     return 0
   fi
   now > "$stamp_file"
+  local _po_cfg
+  if ! _po_cfg=$(pushover_curl_config); then
+    log "warn: pushover config rejected (token/user contains CR/LF); notify skipped"
+    return 0
+  fi
   curl -sS -m 15 -o /dev/null \
-    -K <(printf 'form-string = "token=%s"\nform-string = "user=%s"\n' "$PUSHOVER_APP_TOKEN" "$PUSHOVER_USER_KEY") \
+    -K <(printf '%s\n' "$_po_cfg") \
     --form-string "title=${title}" \
     --form-string "message=${msg}" \
     --form-string "priority=1" \
     https://api.pushover.net/1/messages.json >/dev/null 2>&1 \
-    || log "warn: pushover notify failed"
+    || log "warn: pushover notify failed (curl exit $?; bad config or network)"
 }
 
 is_coolify_deploy_active() {
