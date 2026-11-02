@@ -26,9 +26,9 @@ needs-owner notify [--dry-run] [--json]        the fallback notifier (CLAUDE onl
 | `ledger.py` | the notifier's state (caps, once-only marks, notes due, the pause), its lock and the file for CLAUDE's own items |
 | `comment_keys.py` | the comment-key store, one outcome per (item, record) pair, so a record is written once;  it lives in its own directory beside the notifier's state, because the filing seat writes it too |
 | `text.py`, `links.py`, `safety.py`, `seat.py`, `proc.py` | cleaning and the uid, topic links, secret and personal-data refusals, the verified seat, running the children |
-| `f3.py` | loads `agent_sync/textsafe.py`, `secretscan.py` and `identity.py` by file path |
+| `f3.py` | loads `simple_tools/textsafe.py`, `secretscan.py` and `identity.py` by file path |
 
-`needs_owner` never runs `import agent_sync`:  that would pull in the whole Zulip client, and the stable copy
+`needs_owner` never runs `import simple_tools`:  that would pull in the whole Zulip client, and the stable copy
 (`~/apps/needs-owner`, installed by `install.sh`) holds only those three files, plus `fleet_knobs/` for `notify`.  To change a record format or
 a state, change `records.py` or `items.py` once:  the notifier imports them.  The LaunchAgent is `scripts/launchd/com.jay.needs-owner-notify.plist`;
 the contract (what counts as an answer, the caps, the pause, the Grok Bot block) is `docs/protocols/needs-owner.md` § The Fallback Notifier.
@@ -41,7 +41,7 @@ cd scripts && python3 -m unittest discover -s needs_owner/tests -t . -v
 
 `tests/fake_board.py` and `tests/fake_simple_tools.py` stand in for `simple-board` and `simple-chat` on PATH (the fake `simple-chat` also answers `read`, `whoami`,
 `verify-owner-msg`, `topics` and `channels`, with the real reaction shape and the real `verify-owner-msg` rule;  it logs each call's exit code).  They parse
-argv with the real parsers (`scripts/linear-board/board`, `agent_sync.cli`), so a wrong flag, or a flag in
+argv with the real parsers (`scripts/linear-board/board`, `simple_tools.cli`), so a wrong flag, or a flag in
 the wrong place, fails in the tests as it would for real.  The fake `read --json` prints the
 keys of the real `message_json` (`is_bot`, `seat`, `sender_id`, ...;  a test compares the two key sets), and
 `World.add_message` puts a person's or another bot's message in a topic.  The fake board stores descriptions as Linear hands
