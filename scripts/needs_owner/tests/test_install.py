@@ -61,7 +61,7 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(self.link.is_symlink())
         self.assertEqual(os.readlink(self.link), str(self.dest / "needs-owner"))
         self.assertTrue(os.access(self.dest / "needs-owner", os.X_OK))
-        self.assertEqual(sorted(p.name for p in (self.dest / "agent_sync").iterdir() if p.suffix == ".py"),
+        self.assertEqual(sorted(p.name for p in (self.dest / "simple_tools").iterdir() if p.suffix == ".py"),
                          ["identity.py", "secretscan.py", "textsafe.py"])
         self.assertFalse((self.dest / "needs_owner" / "tests").exists())
         self.assertTrue((self.dest / "needs_owner" / "cli.py").exists())
@@ -99,19 +99,19 @@ class InstallTests(unittest.TestCase):
         fails them (it used to exit inside argparse, before the package reached its helpers)."""
         self.assertEqual(self.install("--apply").returncode, 0)
         for name in ("textsafe.py", "secretscan.py", "identity.py"):
-            moved = self.dest / "agent_sync" / (name + ".gone")
-            (self.dest / "agent_sync" / name).rename(moved)
+            moved = self.dest / "simple_tools" / (name + ".gone")
+            (self.dest / "simple_tools" / name).rename(moved)
             for argv in (["--help"], ["--version"], ["list", "--help"]):
                 ran = self.isolated(*argv)
                 self.assertEqual(ran.returncode, 1, (name, argv, ran.stdout))
                 self.assertIn("incomplete", ran.stderr, (name, argv))
                 self.assertIn(name, ran.stderr, (name, argv))
-            moved.rename(self.dest / "agent_sync" / name)
+            moved.rename(self.dest / "simple_tools" / name)
         self.assertEqual(self.isolated("--help").returncode, 0)
 
     def test_a_damaged_f3_file_is_reported_not_a_traceback(self) -> None:
         self.assertEqual(self.install("--apply").returncode, 0)
-        (self.dest / "agent_sync" / "secretscan.py").write_text("def broken(:\n")
+        (self.dest / "simple_tools" / "secretscan.py").write_text("def broken(:\n")
         ran = self.isolated("--version")
         self.assertEqual(ran.returncode, 1)
         self.assertNotIn("Traceback", ran.stderr)

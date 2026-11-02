@@ -5,7 +5,7 @@ a hit refuses the whole request with the field's name and the kind of thing foun
 The tool's own strings (message ids, uuids, the Linear URL) are not checked:  they are not typed by
 the filer.
 
-The secret scan is F3's (`agent_sync/secretscan.py`).  The personal-data pass is the open-loops C3 list:
+The secret scan is F3's (`simple_tools/secretscan.py`).  The personal-data pass is the open-loops C3 list:
 email addresses, phone numbers, runs of six or more digits and dollar amounts.  A decision that is
 really about a price or a person can say so in words ("the monthly plan", "the contact") and link the
 Linear issue;  it never has to carry the number.
