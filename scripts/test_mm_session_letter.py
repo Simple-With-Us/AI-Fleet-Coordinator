@@ -1417,3 +1417,77 @@ class MmLetterReopenTest(unittest.TestCase):
         answer = json.loads(out.getvalue())
         self.assertEqual(answer["label"], "AA")
         self.assertIsNone(reg._get(first["record_id"])["closed_at"])
+
+
+class MmReLetterTitleTest(unittest.TestCase):
+    """A thread that is re-lettered keeps one prefix, and a bare topic keeps its acronym.
+
+    A letter on this platform is a pair that need not be doubled:  a child of CC holds
+    CD.  A title starts with the letter the thread holds, so the first two capitals of a
+    title are that letter.  A bare topic is not a title, so an acronym at the start of one
+    is left alone.
+    """
+
+    def test_a_title_keeps_one_prefix_when_the_letter_changes(self):
+        self.assertEqual(M.title_topic("CD: Topic", "CE"), "Topic")
+        self.assertEqual(M.wanted_title("CE", M.title_topic("CD: Topic", "CE")), "CE: Topic")
+
+    def test_a_doubled_pair_title_keeps_one_prefix_too(self):
+        self.assertEqual(M.title_topic("AA: Topic", "CC"), "Topic")
+        self.assertEqual(M.wanted_title("CC", M.title_topic("AA: Topic", "CC")), "CC: Topic")
+
+    def test_a_title_with_no_prefix_keeps_its_topic(self):
+        self.assertEqual(M.title_topic("Topic", "CC"), "Topic")
+
+    def test_a_bare_topic_that_starts_with_an_acronym_keeps_it(self):
+        # The topic is not a title, so the acronym is not a letter and stays.
+        self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
+
+
+class MmReopenStrictTouchTest(unittest.TestCase):
+    """The sweep sees a reopen that could not be done, so it keeps the session for a retry."""
+
+    def test_a_reopen_that_cannot_be_done_is_raised_when_strict_touch_is_set(self):
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            with self.assertRaises(M.RegistryError):
+                M.letter_for(SESSION_ID, "AA: Swept thread", "", strict_touch=True)
+
+    def test_a_reopen_that_cannot_be_done_is_quiet_without_strict_touch(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "AA")
+        self.assertIn("Could not reopen", err.getvalue())
+
+    def test_a_reopen_that_fails_on_the_registry_is_a_registry_error(self):
+        # A raw storage failure out of the reopen travels as a RegistryError, so every
+        # caller handles it the same way.
+        from agent_sync import operator_registry as OR
+
+        with mock.patch.object(
+            OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")
+        ):
+            with self.assertRaises(M.RegistryError) as caught:
+                M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "reopen_failed")

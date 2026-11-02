@@ -518,6 +518,11 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     except OR.LabelExhausted as exc:
         # Every letter in the space is live, so there is nothing to hand back.
         raise RegistryError(str(exc), "label_exhausted", "reopen_refused")
+    except (OR.UnknownRecord, KeyError, ValueError, OSError) as exc:
+        # A record that is not there, or a registry file that cannot be read or written.
+        # Both are a registry fault, so both travel as one:  a caller never has to know
+        # which storage failure it was.
+        raise RegistryError(str(exc), "reopen_failed", "reopen_refused")
     finally:
         reg.close_db()
     return {
@@ -632,7 +637,9 @@ def apply_title(session_id: str, letter: str, topic: str) -> str:
     topic = (topic or "").strip()
     if not letter or not topic:
         return ""
-    title = wanted_title(letter, topic)
+    # The caller passes the thread's current title, so the title rule applies:  the
+    # letter it already carries is dropped before the new one goes on.
+    title = wanted_title(letter, title_topic(topic, letter))
     if topic != title:
         try:
             if not set_title(session_id, title):
@@ -675,6 +682,8 @@ def placeholder_title(letter: str) -> str:
 # capitals that are not a pair are not a letter:  a topic that starts with an acronym
 # ("AI: the model") keeps it.
 DOUBLED_PAIR_RE = re.compile(r"^([A-Z]{2}):[ ]*")
+# The letter prefix of a title:  a pair, doubled or not.
+TITLE_PREFIX_RE = re.compile(r"^[A-Z]{2}:[ ]*")
 SINGLE_LETTER_RE = re.compile(r"^[A-Z]:[ ]*")
 
 
@@ -689,6 +698,10 @@ def topic_without_letter(title: str, letters: tuple[str, ...] = ()) -> str:
     carries:  a doubled pair, and the single capital this platform used before it moved to
     pairs.  Two capitals that are not a pair are an acronym, so a topic that starts with one
     keeps it.
+
+    A title and a bare topic are different inputs, so they have different rules:  a title
+    starts with the letter the thread holds, and that letter is a pair that need not be
+    doubled.  title_topic is the title form of this.
     """
     text = (title or "").strip()
     for letter in letters:
@@ -702,6 +715,24 @@ def topic_without_letter(title: str, letters: tuple[str, ...] = ()) -> str:
     if match:
         return text[match.end() :].strip()
     return text
+
+
+def title_topic(title: str, letter: str = "") -> str:
+    """The topic of a thread TITLE, without the letter the title already carries.
+
+    A title in this seat's form starts with its letter, and a letter on this platform is
+    a pair that need not be doubled:  a child of CC holds CD.  So the first two capitals
+    of a title are its letter, and they are dropped before a new letter goes on.  Without
+    this, a thread that is re-lettered ends up with two prefixes:  "CE: CD: Topic".
+
+    A bare topic is not a title, so an acronym at the start of one is left alone:  that
+    is what topic_without_letter does, and this is the title form of it.
+    """
+    text = (title or "").strip()
+    match = TITLE_PREFIX_RE.match(text)
+    if match:
+        return text[match.end() :].strip()
+    return topic_without_letter(text, (letter,) if letter else ())
 
 
 def wanted_title(letter: str, topic: str, previous_letters: tuple[str, ...] = ()) -> str:
@@ -913,7 +944,12 @@ def cache_letter(
             os.unlink(tmp)
 
 
-def _cached_letter_in(directory: str, session_id: str) -> str:
+def _cached_payload_in(directory: str, session_id: str) -> dict:
+    """The whole cached record for a session, or {} when there is none.
+
+    A cache path that is a symlink is refused here too, so the record is never read
+    from outside the data directory.
+    """
     path = os.path.join(directory, session_id + ".json")
     _refuse_symlink(directory)
     _refuse_symlink(path)
@@ -921,9 +957,26 @@ def _cached_letter_in(directory: str, session_id: str) -> str:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError, json.JSONDecodeError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def cached_topic(session_id: str, directories: list[str] | None = None) -> str:
+    """The topic this host cached for a session, or "".
+
+    The cache carries the topic beside the letter, and a re-lettering has to keep it:
+    a thread that keeps its topic keeps its identity.
+    """
+    scopes = directories if directories is not None else letter_cache_dirs()
+    for directory in scopes:
+        topic = str(_cached_payload_in(directory, session_id).get("topic") or "")
+        if topic:
+            return topic
+    return ""
+
+
+def _cached_letter_in(directory: str, session_id: str) -> str:
+    data = _cached_payload_in(directory, session_id)
     letter = str(data.get("letter") or "")
     if len(letter) == 1 and letter in LETTERS:
         return letter
@@ -1040,6 +1093,7 @@ def letter_for(
                     letter,
                     parent_session_id,
                     directories,
+                    strict_touch=strict_touch,
                 )
         return letter
     answer = _require_registry(register(session_id, topic, parent_session_id), needs_label=True)
@@ -1055,15 +1109,20 @@ def _reopen_after_sweep(
     cached: str,
     parent_session_id: str,
     directories: list[str] | None,
+    *,
+    strict_touch: bool = False,
 ) -> str:
     """The registry swept this live session's letter; give it a letter back.
 
     The letter it gets back is usually the one it held, but it is a new one when that
     letter has since gone to another chat.  The cache is this seat's own copy of the
-    letter, so it has to follow what the registry now says.
+    letter, so it has to follow what the registry now says, and it keeps the topic it
+    held, because a thread that changes its letter keeps its identity.
 
     A reopen that cannot be done is not a reason to lose the letter the cache holds:
-    the chat keeps working, and the fault is reported.
+    the chat keeps working, and the fault is reported.  With strict_touch the fault is
+    raised instead, because the sweep keeps the failed session for a retry and needs
+    to see it.
     """
     if not record_id:
         sys.stderr.write("The registry gave no record id for the closed session %s\n" % session_id)
@@ -1071,6 +1130,8 @@ def _reopen_after_sweep(
     try:
         answer = reopen_closed(record_id, parent_session_id)
     except (RegistryError, ValueError) as exc:
+        if strict_touch:
+            raise
         sys.stderr.write("Could not reopen the closed session %s: %s\n" % (session_id, exc))
         return cached
     letter = str(answer.get("label") or "")
@@ -1078,8 +1139,15 @@ def _reopen_after_sweep(
         return cached
     if letter != cached:
         try:
-            cache_letter(session_id, letter, "", LETTER_SPACE, directories)
-        except (RegistryError, ValueError) as exc:
+            topic = cached_topic(session_id, directories)
+        except RegistryError as exc:
+            # The topic cannot be read, so the cache is left as it is rather than
+            # written with an empty topic.
+            sys.stderr.write("Could not read the cached topic: %s\n" % exc)
+            topic = ""
+        try:
+            cache_letter(session_id, letter, topic, LETTER_SPACE, directories)
+        except (RegistryError, ValueError, OSError) as exc:
             # The registry holds the letter, so the chat still answers to it.  The cache
             # is the seat's own copy, and a refusal to write it is reported.
             sys.stderr.write("Could not cache the reopened letter: %s\n" % exc)
@@ -1270,7 +1338,7 @@ def hook_stop() -> int:
             '"%s: <topic in English>" with the session-title tool, then finish.' % (why, letter)
         )
         return 2
-    fallback = wanted_title(letter, title)
+    fallback = wanted_title(letter, title_topic(title, letter))
     try:
         renamed = set_title(session_id, fallback)
     except ValueError as exc:
@@ -1477,7 +1545,14 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 {"session_id": session_id, "letter": letter, "skipped": "needs an English topic"}
             )
             continue
-        wanted = wanted_title(letter, topic)
+        if session_id in topics:
+            # The operator's list names a topic, not a title, so the bare-topic rule
+            # applies and an acronym at the start of it is left alone.
+            wanted = wanted_title(letter, topic)
+        else:
+            # The topic came from the thread's own title, so the letter that title
+            # carries is dropped before the new one goes on.
+            wanted = wanted_title(letter, title_topic(title, letter))
         already_ok = title_ok(title, letter)[0]
         entry = {
             "session_id": session_id,
