@@ -6,6 +6,8 @@ Normal operation lends coding workloads idle memory while retaining the configur
 
 Configured production containers with finite hard limits receive best-effort `memory.low` protection within an ancestor protection budget.  Coding roots include the configured user slice, native coding services, and shared coding containers; nested groups are counted once.  Docker scopes are rediscovered after recreation.  The controller leaves `memory.max`, swap limits and existing narrower limits intact.
 
+Ownership is reconciled on every tick.  A systemd daemon-reload re-applies each managed unit's own memory settings, and a container recreation re-applies the container's, so a control this controller owns can be reset to the platform default with nobody asking for it.  Such a control is re-asserted on the next tick, and the status counts the re-assertions under `control_reasserted`.  A control that holds any other value keeps its ownership record, so an outside edit stays refused and is counted as a control-write failure.
+
 Settings load at startup and refresh on a background thread; SIGHUP requests a refresh.  A protected last-known-good cache keeps the last valid policy during settings outages, and status marks it stale.  The dedicated settings bridge requires its own read-only service token, scoped to prod `/coding-memory`, through systemd `LoadCredential`.  Infisical root `CODING_MEMORY_READ_TOKEN` is the token source of truth; its deployed binding is `/etc/fleet-coding-memory/read-token` (root-owned, mode 0600, parent 0700).  The installer copies code and nonsecret project metadata; it does not copy credentials.  The reader validates the returned secret folder and refuses ambient or bootstrap authentication.
 
 ## Install And Verify

@@ -486,9 +486,33 @@ def write_owned(path: Path, key: str, value: int, state: dict[str, Any], persist
         return landed
 
 
-def reconcile_owned(state: dict[str, Any], persist=None) -> None:
-    """Drop stale records for vanished cgroups and writes that never took effect."""
+def platform_default(key: str, value: str) -> bool:
+    """The value a platform puts on a control it manages itself.
+
+    systemd writes its own unit memory settings on every daemon-reload, and
+    Docker writes the container's own settings whenever the container is
+    recreated, so a control this controller owns can be reset to the platform
+    default without anybody asking for it.  A memory.high of "max" is no limit
+    and a memory.low of "0" is no protection.
+    """
+    if key == "memory.high":
+        return value == "max"
+    if key == "memory.low":
+        return value == "0"
+    return False
+
+
+def reconcile_owned(state: dict[str, Any], persist=None) -> int:
+    """Drop stale records for vanished cgroups and writes that never took effect.
+
+    Returns how many controls were reset to a value this controller did not
+    write:  the platform default, or the value the control had before this
+    controller owned it.  Those records are dropped, so the next write takes
+    the control over again and re-asserts the policy.  A control that holds
+    some other value keeps its record, so an outside edit stays refused.
+    """
     changed = False
+    reasserted = 0
     for name, rec in list(state.get("owned", {}).items()):
         try:
             pth, key = name.rsplit(":", 1)
@@ -514,14 +538,18 @@ def reconcile_owned(state: dict[str, Any], persist=None) -> None:
                     rec.pop("pending", None)
                     rec.pop("observed", None)
                 changed = True
-            elif current == rec["baseline"] and current != rec.get("last"):
+            elif current != rec.get("last") and (
+                current == rec["baseline"] or platform_default(key, current)
+            ):
                 del state["owned"][name]
                 changed = True
+                reasserted += 1
         except OSError:
             del state["owned"][name]
             changed = True
     if changed and persist:
         persist()
+    return reasserted
 
 
 def restore_owned(state: dict[str, Any], persist=None) -> None:
@@ -688,6 +716,11 @@ def step(
             else min(total, budget)
         )
     )
+    # Ownership is reconciled on every tick, not only at start:  a systemd
+    # daemon-reload or a container recreation resets a control this controller
+    # owns to the platform default, and the limit has to come back on its own
+    # instead of staying off until the next restart.
+    reasserted = reconcile_owned(state, persist)
     allocations = allocate(target, code, state)
     write_failures = sum(
         not write_owned(p, "memory.high", n, state, persist) for p, n in allocations.items()
@@ -720,6 +753,7 @@ def step(
         "production_unprotected_groups": production_unprotected,
         "oom_kill_delta": oom_delta,
         "control_write_failures": write_failures,
+        "control_reasserted": reasserted,
     }
     return state["last_status"]
 
