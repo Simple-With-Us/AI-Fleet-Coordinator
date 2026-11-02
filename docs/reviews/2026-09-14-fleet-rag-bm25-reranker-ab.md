@@ -1,5 +1,7 @@
 # Fleet RAG: BM25 and bge-reranker-v2-m3 A/B — 2026-09-14
 
+Historical identifiers have been redacted. These records do not certify current deployment state.
+
 **Author:** CLAUDE, owner-requested.  **Board:** af4d7bb6.  **Scope:** measurement only — nothing
 in this document changed production retrieval, the recall API, the MCP server, or the collection
 schema, and nothing here made an LLM call or wrote to `fleet-agents`.
@@ -142,7 +144,7 @@ production lesson-prefetch leg (`LESSON_SCORE_THRESHOLD`, a dedicated agent-cont
 exist to close.  Full list of the 11 BM25-alone misses is in
 `experiments/.cache/results/bm25_alone_full.json` (gitignored; re-run
 `python3 -m fleet_rag.experiments.run_offline_bm25` to reproduce) — 8 of the 11 are
-agent-contribution or AGENT-SYNC-doc rows without a strong unique keyword.
+agent-contribution or [retired identifier] rows without a strong unique keyword.
 
 **Not measured — three variants blocked:**
 

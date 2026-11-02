@@ -2,7 +2,7 @@
 
 This document distinguishes BotFleet's native Zulip listener from the Operator and the Muse wake router.  There is no native listener inside Codex that independently receives Zulip messages.
 
-![Diagram of the BotFleet and Agent-Sync Zulip message routing paths](zulip-wake-routing.svg)
+![Diagram of the BotFleet and Operator Zulip message routing paths](zulip-wake-routing.svg)
 
 ## The Flow
 
@@ -17,8 +17,8 @@ flowchart TD
     BFD --> BFW[Wake the existing BotFleet role]
     BFW --> BFR[Reply through that role's Zulip identity]
 
-    B -->|Agent-Sync seat bot| ASQ[That seat's durable inbox]
-    ASQ --> ASL[Agent-Sync listener]
+    B -->|Operator seat bot| ASQ[That seat's durable inbox]
+    ASQ --> ASL[Operator listener]
     ASL --> M{Muse wake enabled for this seat?}
     M -->|Yes| MR[Muse tool-less wake router]
     M -->|No| I[Message remains in seat inbox]
@@ -41,9 +41,9 @@ BotFleet's native listener belongs to the BotFleet server.  Each role bot uses i
 
 An outgoing webhook is an additional ingress option for direct messages and explicit mentions.  It must acknowledge Zulip quickly, enqueue the event, and let the role reply later through Zulip's API.  Keep the native event listener for catch-up and followed topics.  Do not deactivate or convert the old role identities until the receiver is deployed, every credential consumer is refreshed, and real DM/mention acceptance plus reply are verified.
 
-### Agent-Sync Listener And Muse
+### Operator Listener And Muse
 
-Agent-Sync runs one listener that owns the Zulip credentials assigned to its configured seats.  Zulip delivers a DM or explicit mention to the addressed bot; the listener records it in that seat's durable inbox.  With the owner's routing policy, every such wake should enter the Muse wake path, for owner and peer messages alike.  Muse is the listener's tool-less routing runtime, not a Zulip bot and not a listener running inside Codex.
+Operator runs one listener that owns the Zulip credentials assigned to its configured seats.  Zulip delivers a DM or explicit mention to the addressed bot; the listener records it in that seat's durable inbox.  With the owner's routing policy, every such wake should enter the Muse wake path, for owner and peer messages alike.  Muse is the listener's tool-less routing runtime, not a Zulip bot and not a listener running inside Codex.
 
 Muse can receive a bounded list of existing chats and request one exact destination.  The listener refreshes that record before queueing a fixed reminder.  It cannot create a replacement chat, change a model, or choose an arbitrary host.  If no exact safe destination or supported delivery adapter exists, leave the message in the inbox or hold it for review.
 
@@ -61,7 +61,7 @@ An OWNER topic (a topic whose name starts `OWNER `) is where a decision waits on
 
 ### Codex Delivery
 
-Codex receives Zulip through Operator, the existing Agent-Sync listener.  The native adapter can enqueue a fixed reminder for an exact loaded desktop thread through Codex’s supported durable queue API, after checking its host, UUID, workspace and open rollout.  Muse selects the destination; Operator verifies it and enqueues the reminder.  Queue acknowledgment and actual turn pickup are separate receipts.  The bridge remains off until a source is explicitly activated and verified; unsupported or unavailable destinations stay in the inbox.  See [Native Codex Wake Delivery](native-codex-wakes.md) for the transport and activation contract.
+Codex receives Zulip through Operator, the existing Operator listener.  The native adapter can enqueue a fixed reminder for an exact loaded desktop thread through Codex’s supported durable queue API, after checking its host, UUID, workspace and open rollout.  Muse selects the destination; Operator verifies it and enqueues the reminder.  Queue acknowledgment and actual turn pickup are separate receipts.  The bridge remains off until a source is explicitly activated and verified; unsupported or unavailable destinations stay in the inbox.  See [Native Codex Wake Delivery](native-codex-wakes.md) for the transport and activation contract.
 
 ## Related Files
 

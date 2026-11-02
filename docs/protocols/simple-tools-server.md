@@ -131,7 +131,7 @@ Every GB persona's routine is a Grok Bot routine webhook at `https://api2.cursor
 
 | File | Role |
 |---|---|
-| `Dockerfile` | `python:3.14-slim`, non-root user `agentsync` (uid 10001), copies `scripts/simple-chat`, `scripts/simple_tools` and the partition file under `/app`.  `HEALTHCHECK` runs `healthcheck.py`.  `ENTRYPOINT` is `entrypoint.sh`; `CMD` is `daemon run --wait-lock` |
+| `Dockerfile` | `python:3.14-slim`, non-root user `eavesdropper` (uid 10001), copies `scripts/simple-chat`, `scripts/simple_tools` and the partition file under `/app`.  `HEALTHCHECK` runs `healthcheck.py`.  `ENTRYPOINT` is `entrypoint.sh`; `CMD` is `daemon run --wait-lock` |
 | `Dockerfile.dockerignore` | Keeps only those paths in the build context (BuildKit); the tests stay out |
 | `entrypoint.sh` | On first start, copies the sample config onto the volume as `$SIMPLE_TOOLS_CONFIG`, never overwriting one.  With the Infisical machine identity set, it execs `infisical_env.py`, which execs `simple-chat`; otherwise it execs `simple-chat` directly.  Exec form all the way, so `simple-tools` is PID 1 and SIGTERM reaches the daemon, which deletes its queues |
 | `infisical_env.py` | Loads the listener's variables from Infisical at start (see [Infisical at Start](#infisical-at-start)), standard library only |
@@ -145,7 +145,7 @@ Every GB persona's routine is a Grok Bot routine webhook at `https://api2.cursor
 - `SIMPLE_TOOLS_STATE_DIR=/data`
 - `SIMPLE_TOOLS_CONFIG=/data/listener.toml`
 - `SIMPLE_TOOLS_LOG_STDOUT=1`, which writes every log line to stdout as well as to `/data/logs/listener.log`
-- `HOME=/home/agentsync`
+- `HOME=/home/eavesdropper`
 
 Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) holds every seat variable below except `ZULIP_SITE`, `JET_ROUTINE_URL` and `JET_ROUTINE_KEY`.  With the machine identity set, the entrypoint loads them at every start; without it, Coolify holds runtime-only copies.  Coolify always sets these itself:
 
@@ -231,7 +231,7 @@ grep -A6 '^\[seat\.GB-FIXER\]$' /data/listener.toml      # check the result
 
 GNU sed keeps the file's owner and mode 600.  For a larger change, edit the file on the host instead, at the volume's path (`docker volume inspect <volume> --format '{{.Mountpoint}}'`), keeping owner 10001 and mode 600.
 
-**A section added to the sample does not reach a live volume.**  The entrypoint copies the sample only when `/data/listener.toml` does not exist, so merging a new `[seat.X]` section changes fresh volumes and nothing else.  For JET and the GB personas, run `apply_live_config.py` (see [Activation Checklist](#activation-checklist-one-restart)):  it replaces or appends exactly those sections, appends `[listener_api]` and `[notes_queue]` when the volume has none (and never changes one it has:  turning either on is a live edit), and leaves the rest byte for byte.  For another seat, append it, never replace the file (a replacement loses the pinned `owner_user_id` and any extra `eligible_user_ids`).  `docker exec` runs as `agentsync`, so an append keeps the owner and mode 600:
+**A section added to the sample does not reach a live volume.**  The entrypoint copies the sample only when `/data/listener.toml` does not exist, so merging a new `[seat.X]` section changes fresh volumes and nothing else.  For JET and the GB personas, run `apply_live_config.py` (see [Activation Checklist](#activation-checklist-one-restart)):  it replaces or appends exactly those sections, appends `[listener_api]` and `[notes_queue]` when the volume has none (and never changes one it has:  turning either on is a live edit), and leaves the rest byte for byte.  For another seat, append it, never replace the file (a replacement loses the pinned `owner_user_id` and any extra `eligible_user_ids`).  `docker exec` runs as `eavesdropper`, so an append keeps the owner and mode 600:
 ```
 docker exec -i "$C" sh -c 'cat >> /data/listener.toml' < section.toml
 docker exec "$C" grep -A4 '^\[seat\.MA\]$' /data/listener.toml      # check it landed once
