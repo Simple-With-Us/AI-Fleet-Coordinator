@@ -1575,7 +1575,8 @@ class MmReopenStrictTouchTest(unittest.TestCase):
                     "error": "no Operator registry on this host",
                     "code": "no_registry",
                 },
-            ),self.assertRaises(M.RegistryError) as caught
+            ),
+            self.assertRaises(M.RegistryError) as caught,
         ):
             M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "no_registry")
