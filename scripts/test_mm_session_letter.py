@@ -1732,9 +1732,7 @@ class RemoteRegistryHopTest(unittest.TestCase):
         with (
             mock.patch.object(M, "registry_db", return_value=""),
             mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
-            mock.patch.object(
-                M, "remote_registry_call", return_value={"label": "AA"}
-            ) as hop,
+            mock.patch.object(M, "remote_registry_call", return_value={"label": "AA"}) as hop,
         ):
             answer = M.registry_call(["history", "--platform=minimax"])
         self.assertEqual(answer, {"label": "AA"})

@@ -78,7 +78,9 @@ REPO_REL = "AI-Fleet-Coordinator/scripts"
 # not source, and it is the same hop the Claude path makes.
 ENV_REMOTE = "MM_LETTER_REMOTE"
 REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat letter registry-module'
-CONNECT_TIMEOUT = 4  # seconds for ssh to connect;  an asleep or unreachable Mac costs this much, not more
+CONNECT_TIMEOUT = (
+    4  # seconds for ssh to connect;  an asleep or unreachable Mac costs this much, not more
+)
 REMOTE_TIMEOUT = 25  # the whole ssh round trip, inside the hook's own timeout
 
 
