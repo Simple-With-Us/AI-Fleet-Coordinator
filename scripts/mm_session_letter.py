@@ -1319,9 +1319,22 @@ def migrate_pairs() -> int:
         try:
             answer = relabel(session_id, parent, force=in_a_pair)
         except RegistryError as exc:
-            if str(getattr(exc, "code", "") or "") == "closed_session":
+            code = str(getattr(exc, "code", "") or "")
+            if code == "closed_session":
                 # The session is over:  its letter ended with it, and there is nothing to move.
                 out.append({"session_id": session_id, "letter": current, "outcome": "closed"})
+                continue
+            if code == "not_registered":
+                # The registry has never seen this session, so it holds no letter to move:
+                # registering it gives it a pair from the start.
+                try:
+                    letter = letter_for(session_id, title, parent)
+                except (RegistryError, ValueError) as inner:
+                    out.append({"session_id": session_id, "error": str(inner), "outcome": "failed"})
+                    continue
+                letters[session_id] = letter
+                cache_letter(session_id, letter, title, LETTER_SPACE)
+                out.append({"session_id": session_id, "letter": letter, "outcome": "registered"})
                 continue
             out.append(_failure_entry(session_id, exc))
             continue
@@ -1383,10 +1396,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sweep":
         return sweep(args.apply, args.live_hours, args.topics_file)
     if args.command == "letter":
+        # The parent is named here too, so a child lettered through this path lands in its
+        # parent's row and not in the main-chat order.
+        parent = parent_for_row(session_row(args.session_id) or {})
         try:
             print(
                 json.dumps(
-                    _require_registry(register(args.session_id, args.title), needs_label=True)
+                    _require_registry(
+                        register(args.session_id, args.title, parent), needs_label=True
+                    )
                 )
             )
         except RegistryError as exc:
@@ -1401,8 +1419,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "migrate-pairs":
         return migrate_pairs()
     if args.command == "rename":
+        parent = parent_for_row(session_row(args.session_id) or {})
         try:
-            answer = _require_registry(register(args.session_id))
+            answer = _require_registry(register(args.session_id, "", parent))
         except RegistryError as exc:
             print(json.dumps({"error": str(exc)}))
             return _registry_exit_code(exc)

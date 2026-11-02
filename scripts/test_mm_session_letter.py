@@ -343,6 +343,49 @@ class MmSessionLetterTest(unittest.TestCase):
         # It already holds a pair, so it has to be placed again rather than moved space.
         self.assertTrue(calls[0][2])
 
+    def test_the_migration_registers_a_session_the_registry_has_never_seen(self):
+        calls = []
+
+        def fake_relabel(session_id, parent="", force=False):
+            calls.append((session_id, parent, force))
+            raise M.RegistryError(
+                "session mvs_main is not registered on minimax at mac/default",
+                "not_registered",
+                "failed",
+            )
+
+        out = io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid: "A"),
+            mock.patch.object(M, "relabel", side_effect=fake_relabel),
+            mock.patch.object(M, "letter_for", return_value="AA"),
+            mock.patch.object(M, "cache_letter"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.migrate_pairs()
+        self.assertEqual(code, 0)
+        # The session the registry never saw is registered, so it gets a pair from the start.
+        self.assertIn('"outcome": "registered"', out.getvalue())
+
+    def test_the_letter_command_names_the_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "CD"}
+
+        row = {"session_id": "mvs_child", "session_kind": "task", "parent_session_id": "mvs_main"}
+        with (
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "registry_call", side_effect=fake),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            M.main(["letter", "--session-id", "mvs_child"])
+        self.assertIn("--parent-session-id=mvs_main", seen["args"])
+
     def test_a_secret_shaped_topic_answers_with_a_stable_code(self):
         secret = FIXTURE_SECRET
         with tempfile.TemporaryDirectory() as tmp:

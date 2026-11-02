@@ -174,6 +174,15 @@ class SessionClosed(ValueError):
     """
 
 
+class SessionUnknown(ValueError):
+    """A session this registry has never seen cannot be given a letter.
+
+    It is a ValueError, so a caller that catches ValueError still catches it, and it is
+    its own type, so a caller that cares can tell it from another refusal:  a session
+    that is unknown is registered, and a session that is closed is not.
+    """
+
+
 class LabelExhausted(RuntimeError):
     """Every letter of one space on this platform has an active assignment.
 
@@ -1163,7 +1172,7 @@ def relabel_session(
             native_session_id=native,
         )
         if row is None:
-            raise ValueError(
+            raise SessionUnknown(
                 f"session {native} is not registered on {platform} at {verified_host}/{profile_scope}"
             )
         if str(row["seat"]) != str(seat):
@@ -2254,6 +2263,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         except SessionClosed as exc:
             print(json.dumps({"error": str(exc), "code": "closed_session"}))
+            return 2
+        except SessionUnknown as exc:
+            print(json.dumps({"error": str(exc), "code": "not_registered"}))
             return 2
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))
