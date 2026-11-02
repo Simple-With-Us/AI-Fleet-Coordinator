@@ -1458,10 +1458,9 @@ class MmReopenStrictTouchTest(unittest.TestCase):
                 side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
             ),
             mock.patch.object(M, "cached_letter", return_value="AA"),
-            contextlib.redirect_stderr(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),self.assertRaises(M.RegistryError)
         ):
-            with self.assertRaises(M.RegistryError):
-                M.letter_for(SESSION_ID, "AA: Swept thread", "", strict_touch=True)
+            M.letter_for(SESSION_ID, "AA: Swept thread", "", strict_touch=True)
 
     def test_a_reopen_that_cannot_be_done_is_quiet_without_strict_touch(self):
         err = io.StringIO()
@@ -1485,9 +1484,7 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         # caller handles it the same way.
         from agent_sync import operator_registry as OR
 
-        with mock.patch.object(
-            OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")
-        ):
+        with mock.patch.object(OR.SessionRegistry, "reopen", side_effect=OR.UnknownRecord("r1")):
             with self.assertRaises(M.RegistryError) as caught:
                 M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "reopen_failed")
