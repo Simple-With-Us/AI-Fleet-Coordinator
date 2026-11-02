@@ -15,6 +15,11 @@ public enum FleetSecretError: LocalizedError, Equatable {
     case invalidName(String)
     case missing(String)
     case unavailable(String)
+    /// The command ran and refused (a non-zero exit that is not "absent").
+    /// Kept apart from `unavailable`, which is the timeout/no-answer case:
+    /// calling a refusal "in time" sent the owner hunting a slow read that
+    /// never happened (AFC-592).
+    case refused(String)
 
     public var errorDescription: String? {
         switch self {
@@ -24,7 +29,18 @@ public enum FleetSecretError: LocalizedError, Equatable {
             return "\(name) is not in Infisical.  Add it there:  Muster keeps no copy of it."
         case .unavailable(let name):
             return "fleet-secrets could not read \(name) in time."
+        case .refused(let name):
+            return "fleet-secrets refused to read \(name), so nothing is shown."
         }
+    }
+
+    /// Map a command failure:  fleet-secrets exit 3 is "absent", any other
+    /// exit is a refusal, and anything else is the no-answer case.
+    static func from(_ error: Error, name: String) -> FleetSecretError {
+        if let exit = error as? CommandExitError {
+            return exit.status == 3 ? .missing(name) : .refused(name)
+        }
+        return .unavailable(name)
     }
 }
 
@@ -63,11 +79,9 @@ public struct FleetSecrets: SecretResolving {
         do {
             value = try commands.run(bin.appendingPathComponent("fleet-secrets").path, ["get", name],
                                      environment: environment, timeout: 20)
-        } catch is CommandExitError {
-            // `fleet-secrets get` exits non-zero when the key is absent.
-            throw FleetSecretError.missing(name)
         } catch {
-            throw FleetSecretError.unavailable(name)
+            // Exit 3 is "absent";  any other failure is not (AFC-592).
+            throw FleetSecretError.from(error, name: name)
         }
         guard !value.isEmpty else { throw FleetSecretError.missing(name) }
         return value
@@ -141,8 +155,7 @@ public extension FleetSecrets {
         do {
             text = try commands.run(secretsExecutable, ["names", "--path", path],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch is CommandExitError { throw FleetSecretError.unavailable(path) }
-        catch { throw FleetSecretError.unavailable(path) }
+        } catch { throw FleetSecretError.from(error, name: path) }
         return try Self.parseNamesByPath([(path, text)]).first?.names ?? []
     }
 
@@ -156,7 +169,7 @@ public extension FleetSecrets {
         do {
             return try commands.run(secretsExecutable, ["names", "--path", path],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.unavailable(path) }
+        } catch { throw FleetSecretError.from(error, name: path) }
     }
 
     /// Parse `doctor --json`:  only booleans, counts and short token strings
@@ -189,7 +202,7 @@ public extension FleetSecrets {
         do {
             text = try commands.run(secretsExecutable, ["doctor", "--json"],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.unavailable("doctor") }
+        } catch { throw FleetSecretError.from(error, name: "doctor") }
         return try Self.parseDoctor(text)
     }
 }

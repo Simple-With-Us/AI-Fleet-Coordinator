@@ -60,6 +60,33 @@ final class SecretNamesTests: XCTestCase {
         XCTAssertEqual(fake.calls.first?.1.first, "names")
         XCTAssertFalse(fake.calls.flatMap(\.1).contains("get"))
     }
+    func test_names_exit_failure_is_refused_not_a_timeout() {
+        // AFC-592: a non-zero exit (here 5, an unexpanded reference elsewhere
+        // at the path) is not a timeout and must not be reported as one.
+        let fake = B3bCommands(); fake.failure = CommandExitError(output: "", status: 5)
+        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        XCTAssertThrowsError(try secrets.secretNames(path: "/")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .refused("/"))
+            XCTAssertFalse(FleetSecretError.refused("/").localizedDescription.contains("in time"))
+        }
+    }
+    func test_names_timeout_stays_unavailable() {
+        let fake = B3bCommands(); fake.failure = StartupPolicyError.commandFailed
+        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        XCTAssertThrowsError(try secrets.secretNames(path: "/")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .unavailable("/"))
+        }
+    }
+    func test_get_exit_3_is_missing_and_other_exits_are_refused() {
+        let absent = B3bCommands(); absent.failure = CommandExitError(output: "", status: 3)
+        XCTAssertThrowsError(try FleetSecrets(commands: absent, home: b3bHome).secret(named: "A_KEY")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .missing("A_KEY"))
+        }
+        let refused = B3bCommands(); refused.failure = CommandExitError(output: "", status: 5)
+        XCTAssertThrowsError(try FleetSecrets(commands: refused, home: b3bHome).secret(named: "A_KEY")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .refused("A_KEY"))
+        }
+    }
     func test_doctor_parse_keeps_only_booleans_counts_and_short_tokens() throws {
         let json = #"{"ok":true,"cli_present":true,"names_count":3,"auth_mode":"machine","failure_reason":null,"cli_version":"1.2.3","secret_value":"should-not-pass"}"#
         let report = try FleetSecrets.parseDoctor(json)

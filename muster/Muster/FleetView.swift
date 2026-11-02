@@ -145,6 +145,11 @@ struct FleetView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                // The segmented options name themselves;  a visible label
+                // was squeezed into a 16pt column and wrapped letter by
+                // letter beside them (AFC-592).  The title stays as the
+                // accessibility label.
+                .labelsHidden()
                 .frame(maxWidth: 380)
                 TextField("Filter apps, coding harnesses, seats, lanes, PRs, or claims…", text: $searchText)
                     .textFieldStyle(.roundedBorder)

@@ -19,6 +19,14 @@ public protocol CommandRunning {
 
 public struct CommandExitError: LocalizedError {
     public let output: String
+    /// The exit status, when the runner knows it.  Callers that must tell a
+    /// refused command from an absent one (fleet-secrets exit 3) read this;
+    /// a fake that only knows the command failed leaves it 0.
+    public let status: Int32
+    public init(output: String, status: Int32 = 0) {
+        self.output = output
+        self.status = status
+    }
     public var errorDescription: String? { "The system command failed." }
 }
 
@@ -54,7 +62,7 @@ public struct ProcessCommandRunner: CommandRunning {
     }
     public func run(_ executable: String, _ arguments: [String], environment: [String: String], timeout: TimeInterval) throws -> String {
         let (result, status) = try execute(executable, arguments, environment: environment, timeout: timeout)
-        guard status == 0 else { throw CommandExitError(output: result) }
+        guard status == 0 else { throw CommandExitError(output: result, status: status) }
         return result
     }
     public func runKeepingOutput(_ executable: String, _ arguments: [String]) -> String {
