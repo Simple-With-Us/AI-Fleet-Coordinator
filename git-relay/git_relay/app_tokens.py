@@ -141,7 +141,7 @@ class FleetSecretsSource:
     child with an allowlist environment (INFISICAL_FLEET_OPS_PROJECT_ID
     required, INFISICAL_ENVIRONMENT=prod set, no HOME), so no co-located
     secret in the relay's own environment is ever inherited and the CLI
-    cannot fall through to ~/.agent-sync file resolution.  When unset the
+    cannot fall through to ~/.simple-tools file resolution.  When unset the
     child inherits the process environment - the legacy shape the fleet's
     other local tooling still uses.
     """
@@ -222,7 +222,7 @@ class FleetSecretsSource:
     # Matches the supported fleet-secrets core:  ENV_PROJECT /
     # ENV_NAMES in scripts/fleet_secrets/core.py.  The required
     # INFISICAL_FLEET_OPS_PROJECT_ID binding is what keeps the CLI off
-    # its ~/.agent-sync project-file fallback (expanduser reaches the
+    # its ~/.simple-tools project-file fallback (expanduser reaches the
     # runtime user's home regardless of HOME), and HOME is simply not
     # forwarded.
     _CHILD_ENV_KEYS = (
@@ -248,7 +248,7 @@ class FleetSecretsSource:
             raise AppTokenError(
                 "INFISICAL_FLEET_OPS_PROJECT_ID is not set:  without it the "
                 "CLI would resolve the Fleet-OPS project from the runtime "
-                "user's ~/.agent-sync file instead of the explicit binding"
+                "user's ~/.simple-tools file instead of the explicit binding"
             )
         env = {k: self._environ[k] for k in self._CHILD_ENV_KEYS if k in self._environ}
         env["INFISICAL_TOKEN"] = token
