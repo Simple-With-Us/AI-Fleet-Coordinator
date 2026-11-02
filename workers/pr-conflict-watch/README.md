@@ -4,7 +4,7 @@ Cloudflare Worker that receives GitHub `pull_request` and `check_suite`/`check_r
 
 The conflict alert names the seat that owns the PR branch, so the seat hears about its own conflict instead of every seat watching `#Alerts` for it.  The seat comes from the branch prefix before the first `/` (`gb-deployer/afc-123-fix` → `@**GB-Deployer**`).  A branch whose prefix is not a known seat gets no mention, and the alert falls back to naming the author's login and branch.  Alerts never mention `@all` or `@everyone`.  A mention that a PR title, head ref, base ref or login carries is neutralized with a zero-width space before the message is built, so a PR cannot ping the stream; the seat mention the Worker adds itself stays intact.
 
-This replaces the retired Slack `#agent-sync` channel, which no longer receives conflict alerts, and it replaces BF-Deployer's per-PR conflict watching.
+This replaces the retired Slack `[retired identifier]` channel, which no longer receives conflict alerts, and it replaces BF-Deployer's per-PR conflict watching.
 
 ## Deployed
 
@@ -68,7 +68,7 @@ No secret value is ever written to this repo, to a log, or to a pull request.
 
 ### The config step comes first
 
-Merging main does not deploy this Worker today:  `.github/workflows/worker-deploy.yml` builds only `agent-sync-mcp`, and `scripts/worker-targets.json` gives `pr-conflict-watch` no health probe, so the mapped deploy refuses it.  The deploy is the manual `wrangler deploy` below, and the Infisical folder and the service token must exist **before** it:  a live Worker without them answers `503` and posts nothing.
+Merging main does not deploy this Worker today:  `.github/workflows/worker-deploy.yml` builds only `[retired identifier]`, and `scripts/worker-targets.json` gives `pr-conflict-watch` no health probe, so the mapped deploy refuses it.  The deploy is the manual `wrangler deploy` below, and the Infisical folder and the service token must exist **before** it:  a live Worker without them answers `503` and posts nothing.
 
 The Zulip bot is the fleet alerts bot that already posts to `#Alerts`, so it needs no new bot and no new stream subscription.  The same bot reads the fleet's alert topics, so the conflict alerts land beside the other fleet alerts.
 
