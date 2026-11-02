@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Install the simple-tools CLIs for the current user.  Idempotent.
 #
-#   scripts/agent_sync/install.sh [--dry-run] [CHECKOUT]
+#   scripts/simple_tools/install.sh [--dry-run] [CHECKOUT]
 #
 # Symlinks ~/.local/bin/simple-chat, ~/.local/bin/simple-notes and ~/.local/bin/simple-board to
-# CHECKOUT/scripts/, and creates ~/.agent-sync (mode 700, the state directory).  CHECKOUT defaults
+# CHECKOUT/scripts/, and creates ~/.simple-tools (mode 700, the state directory).  CHECKOUT defaults
 # to the managed runtime checkout
-# /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime,
-# a detached worktree on origin/main that LaunchAgent com.jay.agent-sync-runtime-sync keeps current.
+# /Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime,
+# a detached worktree on origin/main that LaunchAgent com.jay.simple-tools-runtime-sync keeps current.
 # Never point it at the human integration tree ~/Code/AI-Fleet-Coordinator:  a daemon resets that tree,
 # and a stuck merge there stops it updating.  With --dry-run it only prints what it would do.
 #
@@ -24,7 +24,7 @@
 # Credentials come from Infisical Fleet-OPS /zulip through fleet-secrets; see README.md (AFC-359).
 set -euo pipefail
 
-DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
+DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime"
 dry_run=0
 checkout=""
 
@@ -48,7 +48,7 @@ fi
 checkout="$resolved"
 
 bin_dir="$HOME/.local/bin"
-state_dir="$HOME/.agent-sync"
+state_dir="$HOME/.simple-tools"
 # The commands installed from this checkout, in the order they are linked.
 commands="simple-chat simple-notes simple-board"
 
