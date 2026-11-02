@@ -238,7 +238,7 @@ class Tests(unittest.TestCase):
         self.assertIn("workflow_run:", text)
         self.assertIn("workflows: [CI]", text)
         self.assertNotIn("WORKER_DEPLOY_ENABLED", text)
-        self.assertNotIn("agent-sync-mcp/wrangler", text)
+        self.assertNotIn("simple-tools-mcp/wrangler", text)
         self.assertIn("17,47 * * * *", text)
 
     def test_numeric_receipt_not_boolean(self):
@@ -375,7 +375,7 @@ class Tests(unittest.TestCase):
         ):
             result = m.credential_receipt()
             self.assertIn("scripts/worker-targets.json", git.call_args.args)
-            self.assertIn("scripts/agent-sync-mcp/package-lock.json", git.call_args.args)
+            self.assertIn("scripts/simple-tools-mcp/package-lock.json", git.call_args.args)
             return result
 
     def test_qualified_receipt_passes(self):

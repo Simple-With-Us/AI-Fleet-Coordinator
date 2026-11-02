@@ -17,7 +17,7 @@ function fixture(scopes = ['zulip:read', 'zulip:write']) {
     async call(query, variables) {
       requests.push({ query, variables });
       if (linear.result) return linear.result;
-      if (query.includes('AgentSyncLabel')) return { issueLabel: { id: variables.id, name: variables.id === 'claimed' ? 'claimed:CODEX' : 'ordinary' } };
+      if (query.includes('SimpleToolsLabel')) return { issueLabel: { id: variables.id, name: variables.id === 'claimed' ? 'claimed:CODEX' : 'ordinary' } };
       const root = parse(query).definitions.find((d) => d.kind === 'OperationDefinition').selectionSet.selections[0].name.value;
       return { [root]: { success: true, id: 'resource', project: { id: 'resource' } } };
     },

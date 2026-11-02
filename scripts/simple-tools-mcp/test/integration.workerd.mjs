@@ -77,13 +77,13 @@ const linear = new FakeLinear();
 const linearGraphqlResponse = linear.graphqlResponse.bind(linear);
 linear.graphqlResponse = (entry) => {
   const op = opOf(entry.body?.query);
-  if (op?.name === "AgentSyncIntegrationQuery") {
+  if (op?.name === "SimpleToolsIntegrationQuery") {
     return linear.json(200, { data: { viewer: { id: "grok-web-viewer", name: "Grok Web" } } });
   }
-  if (op?.name === "AgentSyncIntegrationMutation") {
+  if (op?.name === "SimpleToolsIntegrationMutation") {
     return linear.json(200, { data: { projectUpdate: { success: true, project: { id: "project-1", name: "Fleet integration fixture", description: entry.body?.variables?.input?.description ?? "" } } } });
   }
-  if (op?.name === "AgentSyncNamed") {
+  if (op?.name === "SimpleToolsNamed") {
     const root = parseGraphql(entry.body.query).definitions[0].selectionSet.selections[0].name.value;
     if (root === "projects") return linear.json(200, { data: { projects: { nodes: [{ id: "project-named", name: "Named API fixture" }], pageInfo: { hasNextPage: false, endCursor: null } } } });
     if (root === "projectCreate") return linear.json(200, { data: { projectCreate: { success: true, project: { id: "project-named", name: entry.body.variables.input.name } } } });
@@ -1156,7 +1156,7 @@ try {
     await step("hosted Linear query and mutation use GROK-WEB credentials, with a durable idempotent replay", async () => {
       linear.requests.length = 0;
       const queried = await call(t.body.access_token, "linear_query", {
-        query: "query AgentSyncIntegrationQuery { viewer { id name } }",
+        query: "query SimpleToolsIntegrationQuery { viewer { id name } }",
         variables: {},
       });
       assert.equal(queried.status, 200, JSON.stringify(queried.json));
@@ -1166,12 +1166,12 @@ try {
       assert.equal(linear.calls().length, 2, "cold quota identity proof and requested query are separate provider requests");
       assert.match(linear.calls()[0].body.query, /viewer/);
       assert.match(linear.calls()[0].body.query, /organization/);
-      assert.match(linear.calls()[1].body.query, /AgentSyncIntegrationQuery/);
+      assert.match(linear.calls()[1].body.query, /SimpleToolsIntegrationQuery/);
       assert.match(linear.calls()[0].authorization, /^Bearer fake-linear-token-/);
       assert.equal(linear.calls()[0].authorization, linear.calls()[1].authorization, "proof and query use the same actual token");
 
       const mutationArgs = {
-        mutation: "mutation AgentSyncIntegrationMutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success project { id name description } } }",
+        mutation: "mutation SimpleToolsIntegrationMutation($id: String!, $input: ProjectUpdateInput!) { projectUpdate(id: $id, input: $input) { success project { id name description } } }",
         variables: { id: "project-1", input: { description: "Updated through hosted simple-tools." } },
         idempotency_key: "workerd-linear-project-update-1",
         identity: "GROK-WEB",

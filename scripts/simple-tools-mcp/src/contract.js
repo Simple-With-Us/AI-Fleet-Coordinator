@@ -194,20 +194,20 @@ export function envelope(tool, args, summary, items, nonce = newNonce()) {
 
 // ---------------------------------------------------------------- errors
 
-export class AgentSyncError extends Error {}
-export class UsageError extends AgentSyncError {
+export class SimpleToolsError extends Error {}
+export class UsageError extends SimpleToolsError {
   constructor(message) {
     super(message);
     this.name = "UsageError";
   }
 }
-export class CredentialError extends AgentSyncError {
+export class CredentialError extends SimpleToolsError {
   constructor(message) {
     super(message);
     this.name = "CredentialError";
   }
 }
-export class ApiError extends AgentSyncError {
+export class ApiError extends SimpleToolsError {
   constructor(message, { code = null, status = null, data = null } = {}) {
     super(message);
     this.name = "ApiError";
@@ -216,7 +216,7 @@ export class ApiError extends AgentSyncError {
     this.data = data ?? {};
   }
 }
-export class NetworkError extends AgentSyncError {
+export class NetworkError extends SimpleToolsError {
   constructor(message, { timeout = false, maybeSent = false } = {}) {
     super(message);
     this.name = "NetworkError";
@@ -231,7 +231,7 @@ export class NetworkError extends AgentSyncError {
  * participation is the authenticated Zulip user id.  `code` is the machine-readable reason, the
  * same shape the Python guard uses.
  */
-export class DmGuardRefused extends AgentSyncError {
+export class DmGuardRefused extends SimpleToolsError {
   constructor(message, { code = "dm_owner_not_participant" } = {}) {
     super(message);
     this.name = "DmGuardRefused";

@@ -14,7 +14,7 @@ FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HOME=/home/agentsync \
+    HOME=/home/eavesdropper \
     SIMPLE_TOOLS_INSTANCE=server \
     SIMPLE_TOOLS_STATE_DIR=/data \
     SIMPLE_TOOLS_CONFIG=/data/listener.toml \
@@ -24,11 +24,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # each is disabled unless listener.toml opts in.
 EXPOSE 8787 8788
 
-RUN groupadd --system --gid 10001 agentsync \
- && useradd --system --uid 10001 --gid agentsync --home-dir /home/agentsync --create-home \
-        --shell /usr/sbin/nologin agentsync \
+RUN groupadd --system --gid 10001 eavesdropper \
+ && useradd --system --uid 10001 --gid eavesdropper --home-dir /home/eavesdropper --create-home \
+        --shell /usr/sbin/nologin eavesdropper \
  && mkdir -p /data \
- && chown agentsync:agentsync /data \
+ && chown eavesdropper:eavesdropper /data \
  && chmod 0700 /data
 
 WORKDIR /app
@@ -46,7 +46,7 @@ RUN chmod 0755 /app/scripts/simple-chat /app/scripts/simple_tools/server/entrypo
         /app/scripts/simple_tools/server/apply_live_config.py \
  && ln -s /app/scripts/simple-chat /usr/local/bin/simple-chat
 
-USER agentsync
+USER eavesdropper
 
 # Healthy while the daemon rewrites /data/listener/status.json (every 2 seconds); unhealthy when
 # the file is older than 60 seconds or missing (a refused start never writes it).

@@ -1775,7 +1775,7 @@ class ContainerTests(unittest.TestCase):
         ]
         self.assertEqual(lines[0], "FROM python:3.14-slim")
         users = [l.split()[1] for l in lines if l.startswith("USER ")]
-        self.assertEqual(users, ["agentsync"], "the daemon runs as a non-root user")
+        self.assertEqual(users, ["eavesdropper"], "the daemon runs as a non-root user (renamed service user)")
         self.assertIn("COPY scripts/simple_tools /app/scripts/simple_tools", lines)
         self.assertIn("COPY scripts/simple-chat /app/scripts/simple-chat", lines)
         self.assertIn(
