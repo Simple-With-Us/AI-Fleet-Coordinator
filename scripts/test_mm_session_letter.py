@@ -226,9 +226,124 @@ class MmSessionLetterTest(unittest.TestCase):
             with self._shell_env(tmp):
                 self.assertEqual(M.cached_letter("sid"), "")
                 self._write_cache(scope, "sid", "CD")
-                # The scope list is remembered, but a scope that appears after the
-                # listing is still picked up.
+                # The scopes are not remembered:  a scope that appears after the
+                # first listing is picked up straight away, with no tick to wait for.
                 self.assertEqual(M.cached_letter("sid"), "CD")
+
+    def test_a_write_never_lands_in_the_pre_v2_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "hook-state", "session-letters")
+            self._write_cache(legacy, "sid", "A")
+            # The host has a v2 scope, so the pre-v2 directory is a read fallback
+            # and never the place a letter is written.
+            os.makedirs(os.path.join(tmp, "v2", "hook-data", "user"))
+            with self._shell_env(tmp):
+                directories = M.letter_cache_dirs()
+                self.assertIn(legacy, directories)
+                M.cache_letter("sid", "BB", "Topic", "double", directories)
+                # The pre-v2 directory is a read fallback and never a write target, so
+                # a letter does not stay in a place no hook reads.
+                with open(os.path.join(legacy, "sid.json"), encoding="utf-8") as fh:
+                    self.assertEqual(json.load(fh)["letter"], "A")
+                written = os.path.join(
+                    tmp, "v2", "hook-data", "user", "session-letters", "sid.json"
+                )
+                self.assertTrue(os.path.isfile(written))
+
+    def test_the_migration_reports_a_refused_scope_instead_of_aborting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            real = os.path.join(tmp, "real")
+            os.makedirs(real)
+            os.symlink(real, os.path.join(projects, "abc123"))
+            out = io.StringIO()
+            with (
+                mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+                mock.patch.object(
+                    M, "relabel", side_effect=AssertionError("no session may be moved")
+                ),
+                mock.patch.object(M, "set_title", return_value=True),
+                mock.patch.object(M, "update_title"),
+                self._shell_env(tmp),
+                contextlib.redirect_stdout(out),
+            ):
+                code = M.migrate_pairs()
+            # The refusal is reported per session, and the run does not abort with a
+            # traceback and no entries.
+            self.assertNotEqual(code, 0)
+            self.assertIn("symlink", out.getvalue())
+            self.assertIn("mvs_main", out.getvalue())
+
+    def test_the_sweep_passes_the_enumerated_scopes_to_every_title_write(self):
+        seen = []
+
+        def fake_update_title(session_id, title, directories=None):
+            seen.append((session_id, directories))
+            return {}
+
+        row = {
+            "session_id": "mvs_sweep",
+            "title": "BB: Topic",
+            "session_kind": "conversation",
+        }
+        with (
+            mock.patch.object(M, "sessions", return_value=[row]),
+            mock.patch.object(M, "letter_for", return_value="BB"),
+            mock.patch.object(M, "update_title", side_effect=fake_update_title),
+            self._shell_env(tempfile.gettempdir()),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            M.sweep(True)
+        # The already_ok branch writes the title too, and it passes the scopes on, so
+        # a sweep does not re-list them for every session.
+        self.assertTrue(seen)
+        for session_id, directories in seen:
+            self.assertEqual(session_id, "mvs_sweep")
+            self.assertIsNotNone(directories)
+
+    def test_a_scope_created_after_the_snapshot_is_still_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            scope = os.path.join(projects, "abc123", "session-letters")
+            with self._shell_env(tmp):
+                snapshot = M.letter_cache_dirs()
+                self.assertEqual(M.cached_letter("sid", snapshot), "")
+                self._write_cache(scope, "sid", "CD")
+                # A miss re-enumerates once, so a scope created while the run was
+                # going is found.
+                self.assertEqual(M.cached_letter("sid", snapshot), "CD")
+
+    def test_a_hook_lookup_does_not_list_the_scopes_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "sid", "BB")
+            with self._shell_env(tmp):
+                calls = []
+                real = os.listdir
+
+                def counting_listdir(path):
+                    calls.append(str(path))
+                    return real(path)
+
+                with mock.patch.object(os, "listdir", side_effect=counting_listdir):
+                    self.assertEqual(M.cached_letter("sid"), "BB")
+                    self.assertEqual(M.cached_letter("sid"), "BB")
+                # The scopes are listed once and the listing is remembered, so a hook
+                # that finds its letter pays a stat and not a listing.
+                listings = [c for c in calls if c.endswith("projects")]
+                self.assertLessEqual(len(listings), 1)
+
+    def test_a_caller_can_pass_the_scopes_it_enumerated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            other = os.path.join(tmp, "elsewhere")
+            self._write_cache(other, "sid", "CD")
+            with self._shell_env(tmp):
+                # The sweep and the migration enumerate the scopes once and pass the
+                # list on, so the listing is not repeated for every session.
+                self.assertEqual(M.cached_letter("sid", [other]), "CD")
+                self.assertEqual(M.cached_letter("sid"), "")
 
     def test_a_symlinked_legacy_directory_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -533,7 +648,9 @@ class MmSessionLetterTest(unittest.TestCase):
 
         with (
             mock.patch.object(M, "sessions", return_value=self._migration_rows()),
-            mock.patch.object(M, "cached_letter", side_effect=lambda sid: letters[sid]),
+            mock.patch.object(
+                M, "cached_letter", side_effect=lambda sid, directories=None: letters[sid]
+            ),
             mock.patch.object(M, "relabel", side_effect=fake_relabel),
             mock.patch.object(M, "cache_letter"),
             mock.patch.object(M, "set_title", return_value=True),
@@ -585,7 +702,7 @@ class MmSessionLetterTest(unittest.TestCase):
         out = io.StringIO()
         with (
             mock.patch.object(M, "sessions", return_value=self._migration_rows()),
-            mock.patch.object(M, "cached_letter", side_effect=lambda sid: "A"),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid, directories=None: "A"),
             mock.patch.object(M, "relabel", side_effect=fake_relabel),
             mock.patch.object(M, "register", side_effect=fake_register),
             mock.patch.object(M, "cache_letter"),

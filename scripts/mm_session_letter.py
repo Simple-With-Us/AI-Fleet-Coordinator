@@ -474,10 +474,10 @@ def touch_session(session_id: str) -> dict:
     )
 
 
-def update_title(session_id: str, title: str) -> dict:
+def update_title(session_id: str, title: str, directories: list[str] | None = None) -> dict:
     """Carry the thread topic into the registry (topic only — not the letter prefix)."""
     _scan_title(title)
-    letter = cached_letter(session_id)
+    letter = cached_letter(session_id, directories)
     topic = registry_topic_from_display(letter, title)
     return _require_registry(
         registry_call(
@@ -720,18 +720,20 @@ def _refuse_symlink_chain(root: str, *parts: str) -> str:
     return current
 
 
-# The project scopes are listed once per change of the scope root.  The migration
-# asks for the scope list once per session, so a lookup costs a stat instead of a
-# listing, and a scope that appears later is still picked up.
+# The project scopes are listed once per change of the scope root, and the
+# listing is revalidated by the lookup that misses in it.  A hit then costs a
+# stat, and a scope that appeared after the listing is still found.
 _SCOPE_LISTINGS: dict[str, tuple[int, list[str]]] = {}
 
 
-def _project_scope_dirs() -> list[str]:
+def _project_scope_dirs(revalidate: bool = False) -> list[str]:
     """The letter-cache directories of the project scopes, in a stable order.
 
     The listing is remembered against the scope root's mtime, so a lookup costs a
-    stat instead of a listing, and the chain is walked every time, so a link that
-    appears after the listing is still refused.
+    stat instead of a listing.  A listing that is only refreshed when it changes
+    went stale inside one tick, so a scope that appeared after it was invisible
+    until the tick changed:  revalidate forces the listing again, and the callers
+    revalidate on a miss, so a hit stays cheap and a miss is never wrong.
     """
     projects = _refuse_symlink_chain(data_dir(), "v2", "hook-data", "projects")
     try:
@@ -739,7 +741,7 @@ def _project_scope_dirs() -> list[str]:
     except OSError:
         stamp = -1
     cached = _SCOPE_LISTINGS.get(projects)
-    if cached is not None and cached[0] == stamp:
+    if cached is not None and cached[0] == stamp and not revalidate:
         names = cached[1]
     else:
         try:
@@ -753,11 +755,16 @@ def _project_scope_dirs() -> list[str]:
     ]
 
 
-def _scope_dirs() -> Iterator[str]:
+def _scope_dirs(revalidate: bool = False) -> Iterator[str]:
     """The letter-cache directories of the runtime's scopes, the user scope first."""
     yield _refuse_symlink_chain(data_dir(), "v2", "hook-data", "user", "session-letters")
-    for directory in _project_scope_dirs():
+    for directory in _project_scope_dirs(revalidate):
         yield directory
+
+
+def _legacy_cache_path() -> str:
+    """The pre-v2 letter cache path, without the chain refusal."""
+    return os.path.join(data_dir(), "hook-state", "session-letters")
 
 
 def _legacy_cache_dir() -> str:
@@ -765,7 +772,7 @@ def _legacy_cache_dir() -> str:
     return _refuse_symlink_chain(data_dir(), "hook-state", "session-letters")
 
 
-def letter_cache_dirs() -> Iterator[str]:
+def letter_cache_dirs(revalidate: bool = False) -> list[str]:
     """Every letter-cache directory this host may hold, in the order it is read.
 
     A hook knows its scope:  the runtime hands it that scope in MINIMAX_HOOKS_DATA,
@@ -774,16 +781,18 @@ def letter_cache_dirs() -> Iterator[str]:
     scope, then the project scopes, then the pre-v2 directory.  A session lettered
     under one scope is then still found from another, which is what the migration
     needs when it runs from a plain shell.
+
+    The caller that asks once per session enumerates once and passes the list on,
+    so the listing is not repeated for every session.
     """
     override = os.environ.get("MINIMAX_HOOKS_DATA")
     if override:
         # The override is the scope the runtime names, and it is refused on the read
         # path too:  letter_cache_dir refuses that base for a write.
-        yield _refuse_symlink_chain(override, "session-letters")
-        return
-    for directory in _scope_dirs():
-        yield directory
-    yield _legacy_cache_dir()
+        return [_refuse_symlink_chain(override, "session-letters")]
+    directories = list(_scope_dirs(revalidate))
+    directories.append(_legacy_cache_dir())
+    return directories
 
 
 def letter_cache_dir() -> str:
@@ -815,13 +824,19 @@ def letter_cache_dir() -> str:
     return path
 
 
-def cache_letter(session_id: str, letter: str, topic: str = "", space: str = LETTER_SPACE) -> None:
+def cache_letter(
+    session_id: str,
+    letter: str,
+    topic: str = "",
+    space: str = LETTER_SPACE,
+    directories: list[str] | None = None,
+) -> None:
     if not (
         letter in LETTERS or (len(letter) == 2 and letter[0] in LETTERS and letter[1] in LETTERS)
     ):
         raise ValueError("invalid letter for cache")
     payload = {"letter": letter, "topic": topic, "host": location(), "space": space}
-    home = _cache_home(session_id)
+    home = _cache_home(session_id, directories)
     path = os.path.join(home, session_id + ".json")
     fd, tmp = tempfile.mkstemp(dir=home, prefix=".letter-", suffix=".tmp")
     try:
@@ -862,22 +877,41 @@ def _cached_letter_in(directory: str, session_id: str) -> str:
     return ""
 
 
-def cached_letter(session_id: str) -> str:
+def cached_letter(session_id: str, directories: list[str] | None = None) -> str:
     """The letter this host cached for a session, or "".
 
     Every scope is read, in the order letter_cache_dirs gives, so a shell finds a
     session lettered under a project scope and a hook finds the letter its own
     scope wrote.  A cache path that is a symlink is refused with the same code the
     primary cache uses, and is never followed.
+
+    The caller that asks once per session passes the list it enumerated, so the
+    scopes are listed once for the whole run rather than once per session.  A miss
+    re-enumerates once, so a scope that appeared after the snapshot is still found.
     """
-    for directory in letter_cache_dirs():
+    if directories is None:
+        letter = _cached_letter_in_directories(letter_cache_dirs(), session_id)
+        if letter:
+            return letter
+        # The listing missed:  a scope may have appeared after it was taken.
+        return _cached_letter_in_directories(letter_cache_dirs(True), session_id)
+    letter = _cached_letter_in_directories(directories, session_id)
+    if letter:
+        return letter
+    # The snapshot missed:  a scope may have been created while the run was going.
+    return _cached_letter_in_directories(letter_cache_dirs(True), session_id)
+
+
+def _cached_letter_in_directories(directories: list[str], session_id: str) -> str:
+    """The letter in the first of these directories that holds one, or ""."""
+    for directory in directories:
         letter = _cached_letter_in(directory, session_id)
         if letter:
             return letter
     return ""
 
 
-def _cache_home(session_id: str) -> str:
+def _cache_home(session_id: str, directories: list[str] | None = None) -> str:
     """The directory a session's letter is written to.
 
     The scope that already holds the file keeps it, so a letter does not split into
@@ -885,7 +919,12 @@ def _cache_home(session_id: str) -> str:
     """
     if os.environ.get("MINIMAX_HOOKS_DATA"):
         return letter_cache_dir()
-    for directory in _scope_dirs():
+    legacy = _legacy_cache_path()
+    for directory in directories if directories is not None else list(_scope_dirs()):
+        if directory == legacy:
+            # The pre-v2 directory is a read fallback and never a write target, so a
+            # letter never stays in a place no hook reads.
+            continue
         if os.path.isfile(os.path.join(directory, session_id + ".json")):
             return directory
     return letter_cache_dir()
@@ -908,14 +947,18 @@ def letter_for(
     parent_session_id: str = "",
     *,
     strict_touch: bool = False,
+    directories: list[str] | None = None,
 ) -> str:
     """The letter for a session:  the cache first, the Operator otherwise.
 
     With strict_touch, a touch that did not land raises RegistryError:  the sweep is
     a batch job whose caller keeps the failed session for a retry, so it has to see
     the failure.  A hook keeps the cached letter instead, below.
+
+    The caller that asks once per session passes the scopes it enumerated, so the
+    listing is not repeated for every session.
     """
-    letter = cached_letter(session_id)
+    letter = cached_letter(session_id, directories)
     if letter:
         try:
             touch_session(session_id)
@@ -934,7 +977,7 @@ def letter_for(
     answer = _require_registry(register(session_id, topic, parent_session_id), needs_label=True)
     letter = str(answer.get("label") or "")
     if letter:
-        cache_letter(session_id, letter, topic, LETTER_SPACE)
+        cache_letter(session_id, letter, topic, LETTER_SPACE, directories)
     return letter
 
 
@@ -1275,6 +1318,14 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             print("cannot read the topic file: %s" % exc, file=sys.stderr)
             return 2
     out = []
+    # The scopes are enumerated once for the whole sweep, so the listing is not
+    # repeated for every session.  A refused path leaves the enumeration to the
+    # per-session path, so every session reports the refusal instead of the run
+    # aborting with a traceback.
+    try:
+        directories = letter_cache_dirs()
+    except RegistryError:
+        directories = None
     for row in sessions():
         kind = str(row.get("session_kind") or "")
         if kind not in ("conversation", "task"):
@@ -1286,7 +1337,13 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         if looks_like_prompt(title) and session_id not in topics:
             continue
         try:
-            letter = letter_for(session_id, title, parent_for_row(row), strict_touch=True)
+            letter = letter_for(
+                session_id,
+                title,
+                parent_for_row(row),
+                strict_touch=True,
+                directories=directories,
+            )
         except RegistryError as exc:
             out.append(_failure_entry(session_id, exc))
             continue
@@ -1338,7 +1395,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                     out.append(entry)
                     continue
                 try:
-                    update_title(session_id, wanted)
+                    update_title(session_id, wanted, directories)
                 except RegistryError as exc:
                     entry.update(_failure_entry(session_id, exc))
                     out.append(entry)
@@ -1350,7 +1407,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 entry["applied"] = True
             else:
                 try:
-                    update_title(session_id, title)
+                    update_title(session_id, title, directories)
                     entry["registry_synced"] = True
                 except RegistryError as exc:
                     failure = _failure_entry(session_id, exc)
@@ -1444,6 +1501,14 @@ def migrate_pairs() -> int:
     rows = [
         row for row in sessions() if str(row.get("session_kind") or "") in ("conversation", "task")
     ]
+    # The scopes are enumerated once for the whole migration, so the listing is not
+    # repeated for every session.  A refused path leaves the enumeration to the
+    # per-session path, so every session reports the refusal instead of the run
+    # aborting with a traceback.
+    try:
+        directories = letter_cache_dirs()
+    except RegistryError:
+        directories = None
     mains = sorted(
         (row for row in rows if not parent_for_row(row)),
         key=lambda row: int(row.get("created_at_ms") or 0),
@@ -1459,7 +1524,7 @@ def migrate_pairs() -> int:
         parent = parent_for_row(row)
         title = str(row.get("title") or "")
         try:
-            current = cached_letter(session_id)
+            current = cached_letter(session_id, directories)
         except RegistryError as exc:
             # A cache path that is a symlink is refused here too, so the migration
             # reports the refusal rather than reading outside the data directory.
@@ -1504,7 +1569,7 @@ def migrate_pairs() -> int:
                 letters[session_id] = letter
                 out.append({"session_id": session_id, "letter": letter, "outcome": "registered"})
                 try:
-                    cache_letter(session_id, letter, title, LETTER_SPACE)
+                    cache_letter(session_id, letter, title, LETTER_SPACE, directories)
                 except RegistryError as exc:
                     # The registry holds the letter, so the migration is done even
                     # when the cache refuses to write it.
@@ -1518,7 +1583,7 @@ def migrate_pairs() -> int:
             continue
         letters[session_id] = letter
         try:
-            cache_letter(session_id, letter, title, LETTER_SPACE)
+            cache_letter(session_id, letter, title, LETTER_SPACE, directories)
         except RegistryError as exc:
             # The registry holds the letter, so the migration is done even when the
             # cache refuses to write it.
@@ -1537,7 +1602,7 @@ def migrate_pairs() -> int:
             wanted = wanted_title(letter, topic)
             try:
                 if set_title(session_id, wanted):
-                    update_title(session_id, wanted)
+                    update_title(session_id, wanted, directories)
                     entry["title"] = wanted
             except (RegistryError, ValueError) as exc:
                 entry["error"] = str(exc)
