@@ -704,49 +704,67 @@ def _refuse_symlink(path: str) -> None:
         raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
 
 
+def _refuse_symlink_chain(root: str, *parts: str) -> str:
+    """The path from the root down, with every component refused when it is a link.
+
+    A link one level up is followed by the kernel, so a check of the leaf alone is
+    not enough:  a planted link at any level of the chain would carry a read or a
+    write out of the data directory.  The walk is lexical, the way
+    chat_catalog._within does it.
+    """
+    current = root
+    _refuse_symlink(current)
+    for part in parts:
+        current = os.path.join(current, part)
+        _refuse_symlink(current)
+    return current
+
+
 # The project scopes are listed once per change of the scope root.  The migration
 # asks for the scope list once per session, so a lookup costs a stat instead of a
 # listing, and a scope that appears later is still picked up.
 _SCOPE_LISTINGS: dict[str, tuple[int, list[str]]] = {}
 
 
-def _project_scope_dirs(projects: str) -> list[str]:
-    """The letter-cache directories of the project scopes, in a stable order."""
+def _project_scope_dirs() -> list[str]:
+    """The letter-cache directories of the project scopes, in a stable order.
+
+    The listing is remembered against the scope root's mtime, so a lookup costs a
+    stat instead of a listing, and the chain is walked every time, so a link that
+    appears after the listing is still refused.
+    """
+    projects = _refuse_symlink_chain(data_dir(), "v2", "hook-data", "projects")
     try:
         stamp = os.stat(projects).st_mtime_ns
     except OSError:
         stamp = -1
     cached = _SCOPE_LISTINGS.get(projects)
     if cached is not None and cached[0] == stamp:
-        return cached[1]
-    try:
-        names = sorted(os.listdir(projects))
-    except OSError:
-        names = []
-    dirs = []
-    for name in names:
-        scope = os.path.join(projects, name)
-        _refuse_symlink(scope)
-        leaf = os.path.join(scope, "session-letters")
-        _refuse_symlink(leaf)
-        dirs.append(leaf)
-    _SCOPE_LISTINGS[projects] = (stamp, dirs)
-    return dirs
+        names = cached[1]
+    else:
+        try:
+            names = sorted(os.listdir(projects))
+        except OSError:
+            names = []
+        _SCOPE_LISTINGS[projects] = (stamp, names)
+    return [
+        _refuse_symlink_chain(
+            data_dir(), "v2", "hook-data", "projects", name, "session-letters"
+        )
+        for name in names
+    ]
 
 
 def _scope_dirs() -> Iterator[str]:
     """The letter-cache directories of the runtime's scopes, the user scope first."""
-    root = hooks_data_root()
-    user = os.path.join(root, "user")
-    _refuse_symlink(user)
-    yield os.path.join(user, "session-letters")
-    for directory in _project_scope_dirs(os.path.join(root, "projects")):
+    yield _refuse_symlink_chain(data_dir(), "v2", "hook-data", "user", "session-letters")
+    for directory in _project_scope_dirs():
         yield directory
 
 
 def _legacy_cache_dir() -> str:
     """The pre-v2 letter cache:  read as a fallback, never written to."""
-    return os.path.join(data_dir(), "hook-state", "session-letters")
+    return _refuse_symlink_chain(data_dir(), "hook-state", "session-letters")
 
 
 def letter_cache_dirs() -> Iterator[str]:
@@ -761,7 +779,9 @@ def letter_cache_dirs() -> Iterator[str]:
     """
     override = os.environ.get("MINIMAX_HOOKS_DATA")
     if override:
-        yield os.path.join(override, "session-letters")
+        # The override is the scope the runtime names, and it is refused on the read
+        # path too:  letter_cache_dir refuses that base for a write.
+        yield _refuse_symlink_chain(override, "session-letters")
         return
     for directory in _scope_dirs():
         yield directory
@@ -774,10 +794,10 @@ def letter_cache_dir() -> str:
     cleanly instead of failing with a traceback."""
     override = os.environ.get("MINIMAX_HOOKS_DATA")
     if override:
-        base = override
+        base = _refuse_symlink_chain(override)
     else:
         root = hooks_data_root()
-        base = os.path.join(root, "user")
+        base = _refuse_symlink_chain(data_dir(), "v2", "hook-data", "user")
         legacy = os.path.join(data_dir(), "hook-state")
         if (
             not os.path.isdir(base)
@@ -788,7 +808,7 @@ def letter_cache_dir() -> str:
             # live one.  A host with a project scope is a v2 host, even when the user
             # scope has not been created yet, and a letter written to the old layout
             # there is one no hook ever reads.
-            base = legacy
+            base = _refuse_symlink_chain(data_dir(), "hook-state")
     path = os.path.join(base, "session-letters")
     for candidate in (base, path):
         _refuse_symlink(candidate)
@@ -1484,8 +1504,13 @@ def migrate_pairs() -> int:
                     out.append({"session_id": session_id, "skipped": "no letter"})
                     continue
                 letters[session_id] = letter
-                cache_letter(session_id, letter, title, LETTER_SPACE)
                 out.append({"session_id": session_id, "letter": letter, "outcome": "registered"})
+                try:
+                    cache_letter(session_id, letter, title, LETTER_SPACE)
+                except RegistryError as exc:
+                    # The registry holds the letter, so the migration is done even
+                    # when the cache refuses to write it.
+                    out[-1]["cache_error"] = str(exc)
                 continue
             out.append(_failure_entry(session_id, exc))
             continue
@@ -1494,7 +1519,14 @@ def migrate_pairs() -> int:
             out.append({"session_id": session_id, "skipped": "no letter"})
             continue
         letters[session_id] = letter
-        cache_letter(session_id, letter, title, LETTER_SPACE)
+        try:
+            cache_letter(session_id, letter, title, LETTER_SPACE)
+        except RegistryError as exc:
+            # The registry holds the letter, so the migration is done even when the
+            # cache refuses to write it.
+            cache_error = str(exc)
+        else:
+            cache_error = ""
         entry = {
             "session_id": session_id,
             "letter": letter,
@@ -1511,6 +1543,10 @@ def migrate_pairs() -> int:
                     entry["title"] = wanted
             except (RegistryError, ValueError) as exc:
                 entry["error"] = str(exc)
+        if cache_error:
+            entry["cache_error"] = cache_error
+        if cache_error:
+            entry["cache_error"] = cache_error
         out.append(entry)
     failed = [e for e in out if e.get("error")]
     print(json.dumps(out, indent=2))

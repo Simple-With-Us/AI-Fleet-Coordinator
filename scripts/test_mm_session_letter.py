@@ -230,6 +230,70 @@ class MmSessionLetterTest(unittest.TestCase):
                 # listing is still picked up.
                 self.assertEqual(M.cached_letter("sid"), "CD")
 
+    def test_a_symlinked_legacy_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            os.symlink(real, os.path.join(tmp, "hook-state"))
+            with self._shell_env(tmp):
+                # The pre-v2 directory is the last place a letter is read from, and a
+                # link one level up is refused there too.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_ancestor_of_the_scope_root_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(os.path.join(real, "user", "session-letters"), "sid", "BB")
+            os.makedirs(os.path.join(tmp, "v2"))
+            os.symlink(real, os.path.join(tmp, "v2", "hook-data"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_override_root_is_refused_on_the_read_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(os.path.join(real, "session-letters"), "sid", "BB")
+            scope = os.path.join(tmp, "scope")
+            os.symlink(real, scope)
+            with mock.patch.dict(
+                os.environ, {"MINIMAX_HOOKS_DATA": scope, "MINIMAX_DATA_DIR": tmp}
+            ):
+                # The scope the runtime names is refused on the read path too:  the
+                # write path already refused that base.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_user_scope_leaf_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            user = os.path.join(tmp, "v2", "hook-data", "user")
+            os.makedirs(user)
+            os.symlink(real, os.path.join(user, "session-letters"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_write_into_a_symlinked_scope_leaf_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            os.makedirs(real)
+            user = os.path.join(tmp, "v2", "hook-data", "user")
+            os.makedirs(user)
+            os.symlink(real, os.path.join(user, "session-letters"))
+            with self._shell_env(tmp):
+                # The letter must not land in the link's target.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cache_letter("sid", "BB", "Topic", "double")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+                self.assertEqual(os.listdir(real), [])
+
     def test_the_pre_v2_layout_is_used_when_the_runtime_has_no_v2_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
             legacy = os.path.join(tmp, "hook-state")
