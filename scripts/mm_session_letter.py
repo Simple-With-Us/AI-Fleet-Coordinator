@@ -687,8 +687,7 @@ def letter_cache_dir() -> str:
 
 def cache_letter(session_id: str, letter: str, topic: str = "", space: str = LETTER_SPACE) -> None:
     if not (
-        letter in LETTERS
-        or (len(letter) == 2 and letter[0] in LETTERS and letter[1] in LETTERS)
+        letter in LETTERS or (len(letter) == 2 and letter[0] in LETTERS and letter[1] in LETTERS)
     ):
         raise ValueError("invalid letter for cache")
     payload = {"letter": letter, "topic": topic, "host": location(), "space": space}
@@ -1276,9 +1275,7 @@ def migrate_pairs(rounds: int = 2) -> int:
     gives that pair to the main chat that was pushed past it.
     """
     rows = [
-        row
-        for row in sessions()
-        if str(row.get("session_kind") or "") in ("conversation", "task")
+        row for row in sessions() if str(row.get("session_kind") or "") in ("conversation", "task")
     ]
     mains = sorted(
         (row for row in rows if not parent_for_row(row)),
@@ -1304,20 +1301,16 @@ def migrate_pairs(rounds: int = 2) -> int:
             except RegistryError as exc:
                 out.append(_failure_entry(session_id, exc))
                 continue
-            except ValueError as exc:
+            except ValueError:
                 # A session the registry has never seen has no letter to move:  registering
                 # it gives it a pair from the start.
                 try:
                     letter = letter_for(session_id, title, parent)
                 except (RegistryError, ValueError) as inner:
-                    out.append(
-                        {"session_id": session_id, "error": str(inner), "outcome": "failed"}
-                    )
+                    out.append({"session_id": session_id, "error": str(inner), "outcome": "failed"})
                     continue
                 cache_letter(session_id, letter, title, LETTER_SPACE)
-                out.append(
-                    {"session_id": session_id, "letter": letter, "outcome": "registered"}
-                )
+                out.append({"session_id": session_id, "letter": letter, "outcome": "registered"})
                 continue
             letter = str(answer.get("label") or "")
             if not letter:
@@ -1380,9 +1373,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             print(
                 json.dumps(
-                    _require_registry(
-                        register(args.session_id, args.title), needs_label=True
-                    )
+                    _require_registry(register(args.session_id, args.title), needs_label=True)
                 )
             )
         except RegistryError as exc:

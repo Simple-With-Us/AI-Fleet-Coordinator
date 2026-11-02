@@ -703,8 +703,7 @@ class RegistryTest(unittest.TestCase):
         ).fetchone()
         self.assertIsNotNone(retired["retired_at"])
         live = self.reg._conn.execute(
-            "SELECT letter FROM alias_assignments"
-            " WHERE platform = 'minimax' AND retired_at IS NULL"
+            "SELECT letter FROM alias_assignments WHERE platform = 'minimax' AND retired_at IS NULL"
         ).fetchall()
         self.assertEqual([row["letter"] for row in live], ["AA"])
 

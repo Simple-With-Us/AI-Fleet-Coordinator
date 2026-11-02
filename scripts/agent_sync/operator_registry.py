@@ -1159,9 +1159,7 @@ def relabel_session(
                 f"session {native} is not registered on {platform} at {verified_host}/{profile_scope}"
             )
         if str(row["seat"]) != str(seat):
-            raise ValueError(
-                f"session {native} belongs to seat {row['seat']}, not {seat}"
-            )
+            raise ValueError(f"session {native} belongs to seat {row['seat']}, not {seat}")
         out = registry.relabel(
             str(row["record_id"]),
             space=letter_space,
