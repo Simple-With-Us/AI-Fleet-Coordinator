@@ -12,7 +12,9 @@ and this file is where they agree:
 
 The store is MiniMax Code's own session table; the letter lives in the Operator
 registry, which is one file for the fleet.  This host reads that file locally when the
-deployment points at the shared store — there is no SSH fallback with a private alias.
+deployment points at the shared store, and when it keeps no copy it asks the host that
+holds the registry over ssh, the same hop the Claude path makes.  The destination is
+this host's own configuration (MM_LETTER_REMOTE), never a guess.
 
 A thread and its child both hold a letter, and they are placed the way every other platform
 places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
@@ -36,6 +38,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import signal
 import sqlite3
 import subprocess
@@ -69,6 +72,14 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 # The Mac's checkout of AI-Fleet-Coordinator, on the Operator host and here.
 REPO_REL = "AI-Fleet-Coordinator/scripts"
+
+# The ssh destination (a name from the host's own ssh config) that holds the
+# Operator's registry, for a host that keeps no copy of it.  It is configuration,
+# not source, and it is the same hop the Claude path makes.
+ENV_REMOTE = "MM_LETTER_REMOTE"
+REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat letter registry-module'
+CONNECT_TIMEOUT = 4  # seconds for ssh to connect;  an asleep or unreachable Mac costs this much, not more
+REMOTE_TIMEOUT = 25  # the whole ssh round trip, inside the hook's own timeout
 
 
 class RegistryError(RuntimeError):
@@ -276,11 +287,93 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
+def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> dict | None:
+    """Ask the registry host over ssh, the way the Claude path does.
+
+    None when this host names no destination, so the caller can report that the
+    registry is not available here rather than that it refused.  A destination that
+    is not a plain host name is refused, never run.
+    """
+    dest = str(os.environ.get(ENV_REMOTE) or "").strip()
+    if not dest:
+        # This host names no registry host:  the caller reports that the registry is
+        # not available here.
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
+        # Something ssh could read as an option or a second word:  refuse it rather
+        # than run it.  A refused destination is a fault of this host's configuration,
+        # never a call that never happened.
+        return {
+            "error": "the configured registry host is not a plain host name",
+            "code": "remote_refused",
+        }
+    remote = REMOTE_COMMAND + " " + " ".join(shlex.quote(a) for a in args)
+    cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT]
+    cmd += ["--", dest, remote]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        # The hop started, so the write may have landed before the answer was lost:
+        # an unknown outcome, never a call that never happened.
+        return {
+            "error": "the registry host did not answer in time",
+            "code": "timeout",
+            "outcome": "outcome_unknown",
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        # A missing ssh is its own failure, the way a missing local registry tool is:
+        # the operator has to know which one.
+        code = "missing_tool" if getattr(exc, "errno", None) == 2 else "remote_unreachable"
+        return {
+            "error": "the registry host did not answer (%s)" % type(exc).__name__,
+            "code": code,
+        }
+    out = (proc.stdout or "").strip()
+    if not out:
+        # The host answered with nothing:  the call may have landed, so the outcome
+        # is unknown rather than never.  The far side's own words are not copied
+        # here:  they can echo an argument the caller built, and a title is not
+        # something to write into an error message.
+        return {
+            "error": "the registry host answered with no result (status %s)"
+            % (proc.returncode if proc.returncode is not None else "none"),
+            "code": "remote_empty",
+            "outcome": "outcome_unknown",
+        }
+    try:
+        answer = json.loads(out.splitlines()[-1])
+    except json.JSONDecodeError:
+        return {
+            "error": "the registry host answered with something else",
+            "code": "remote_unparseable",
+            "outcome": "outcome_unknown",
+        }
+    if not isinstance(answer, dict):
+        return {
+            "error": "the registry host answered with something else",
+            "code": "remote_unparseable",
+            "outcome": "outcome_unknown",
+        }
+    return answer
+
+
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
     local_db = registry_db()
     scripts = repo_scripts_dir()
     if not local_db or not scripts:
+        # This host keeps no registry of its own, so the Operator's one is on the host
+        # that holds it:  the same hop the Claude path makes, over ssh.  The registry's
+        # own CLI runs there, so both sides speak one dialect.
+        answer = remote_registry_call(args, timeout=timeout)
+        if answer is not None:
+            return answer
         return {
             "error": "the operator registry is not available on this host",
             "code": "no_registry",

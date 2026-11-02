@@ -3,6 +3,7 @@ The registry side runs against a temporary registry;  the hook runs in process, 
 that hands the remote command to the same registry side."""
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -1655,3 +1656,73 @@ class HookTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RegistryModuleDispatchTest(Base):
+    """`simple-chat letter registry-module` runs the registry's own CLI.
+
+    The `letter registry` verb above is the Claude hook's shape.  The registry's own
+    CLI is the canonical one, with the per-op arguments every platform's helper
+    speaks, and it is what a remote host runs for another platform (AFC-412).
+    """
+
+    def test_the_module_cli_registers_a_session_through_the_letter_command(self) -> None:
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"AGENT_SYNC_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0001",
+                    "--seat=MM",
+                    "--source=a test",
+                ]
+            )
+        self.assertEqual(code, 0)
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(answer["label"], "AA")
+        self.assertEqual(answer["created"], True)
+
+    def test_the_module_cli_speaks_the_same_dialect_the_minimax_helper_speaks(self) -> None:
+        # The MiniMax helper asks for a letter with these exact arguments, so the
+        # dialect a remote host runs has to accept them.
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"AGENT_SYNC_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0002",
+                    "--seat=MM",
+                    "--source=the MM seat's session-letter hook",
+                    "--letter-space=double",
+                    "--letter-pick=primary",
+                ]
+            )
+        self.assertEqual(code, 0)
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertTrue(answer["label"])
+
+    def test_the_module_cli_reports_a_refusal_as_an_answer(self) -> None:
+        # A refusal is a readable answer with an error, never a traceback.
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"AGENT_SYNC_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(["registry-module", "register", "--platform=minimax"])
+        self.assertEqual(code, 2)
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertIn("error", answer)

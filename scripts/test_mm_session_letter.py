@@ -7,6 +7,7 @@ import io
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1568,3 +1569,211 @@ class MmReopenStrictTouchTest(unittest.TestCase):
             with self.assertRaises(M.RegistryError) as caught:
                 M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "no_registry")
+
+
+class RemoteRegistryHopTest(unittest.TestCase):
+    """The hop to the host that holds the Operator's registry (AFC-412, server seat).
+
+    This host keeps no registry of its own, so it asks the host that holds one over
+    ssh, the way the Claude path does.  The destination is this host's own
+    configuration, never a guess.
+    """
+
+    def _hop(self, **env: str):
+        """Run the hop with the environment given, and hand back the answer."""
+
+        def fake_run(cmd, **kwargs):
+            self.cmd = cmd
+            self.kwargs = kwargs
+            return subprocess.CompletedProcess(cmd, 0, stdout=self.stdout, stderr="")
+
+        self.stdout = '{"label": "AA"}\n'
+        self.cmd = []
+        self.kwargs = {}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(M.subprocess, "run", side_effect=fake_run),
+        ):
+            answer = M.remote_registry_call(["history", "--platform=minimax"])
+        return answer
+
+    def test_no_destination_means_the_hop_is_not_taken(self):
+        # The host names no registry host:  the hop is not taken at all, so the
+        # caller can report a missing registry rather than a refusal.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(M.ENV_REMOTE, None)
+            with mock.patch.object(M.subprocess, "run") as run:
+                self.assertIsNone(M.remote_registry_call(["history"]))
+        run.assert_not_called()
+
+    def test_a_destination_that_is_not_a_host_name_is_refused(self):
+        # ssh reads an option before a host, so a destination that is not a plain
+        # host name is refused rather than run.
+        for dest in ("-oProxyCommand=touch /tmp/x", "mac host", "mac;id", "a/b", "-mac"):
+            with self.subTest(dest=dest):
+                with mock.patch.dict(os.environ, {M.ENV_REMOTE: dest}):
+                    answer = M.remote_registry_call(["history"])
+                self.assertIsNotNone(answer)
+                self.assertEqual(answer["code"], "remote_refused")
+
+    def test_the_hop_runs_ssh_to_the_named_host(self):
+        answer = self._hop(**{M.ENV_REMOTE: "mac"})
+        self.assertEqual(answer, {"label": "AA"})
+        cmd = self.cmd
+        self.assertEqual(cmd[0], "ssh")
+        self.assertIn("-T", cmd)
+        self.assertIn("BatchMode=yes", cmd)
+        self.assertIn("--", cmd)
+        self.assertEqual(cmd[cmd.index("--") + 1], "mac")
+        self.assertEqual(self.kwargs["timeout"], 25)
+
+    def test_the_hop_runs_the_registry_module_on_the_far_host(self):
+        self._hop(**{M.ENV_REMOTE: "mac"})
+        remote = self.cmd[-1]
+        self.assertIn("letter registry-module", remote)
+        self.assertIn("history", remote)
+        self.assertIn("--platform=minimax", remote)
+
+    def test_an_argument_that_holds_a_space_is_quoted(self):
+        # The title is one argument on the far side, never two words the far shell
+        # would read as two arguments.
+        self.stdout = '{"label": "AA"}\n'
+        with (
+            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=self.stdout, stderr=""),
+            ) as run,
+        ):
+            M.remote_registry_call(["update", "--title=two words"])
+        remote = run.call_args.args[0][-1]
+        self.assertIn("'--title=two words'", remote)
+
+    def test_a_hop_that_cannot_start_is_unreachable(self):
+        with (
+            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.object(M.subprocess, "run", side_effect=OSError("no ssh")),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "remote_unreachable")
+
+    def test_a_missing_ssh_is_its_own_failure(self):
+        # A host with no ssh at all is a different fault from one whose ssh cannot
+        # reach the Mac, and the operator has to be able to tell them apart.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.object(
+                M.subprocess, "run", side_effect=FileNotFoundError(2, "No such file")
+            ),
+        ):
+            answer = M.remote_registry_call(["history"])
+        self.assertEqual(answer["code"], "missing_tool")
+        self.assertEqual(M._registry_exit_code(M.RegistryError("x", "missing_tool")), 127)
+
+    def test_a_hop_that_times_out_has_an_unknown_outcome(self):
+        # The write may have landed before the answer was lost, so this is an
+        # unknown outcome and never a call that never happened.
+        with (
+            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.object(
+                M.subprocess, "run", side_effect=subprocess.TimeoutExpired("ssh", 25)
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertEqual(answer["code"], "timeout")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_hop_that_answers_with_nothing_has_an_unknown_outcome(self):
+        self.stdout = "   \n"
+        with (
+            mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+            mock.patch.object(
+                M.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=self.stdout, stderr=""),
+            ),
+        ):
+            answer = M.remote_registry_call(["register"])
+        self.assertEqual(answer["code"], "remote_empty")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_hop_that_answers_with_something_else_is_refused(self):
+        for payload in ("not json at all", "[1, 2, 3]", '"a string"'):
+            with self.subTest(payload=payload):
+                self.stdout = payload
+                with (
+                    mock.patch.dict(os.environ, {M.ENV_REMOTE: "mac"}),
+                    mock.patch.object(
+                        M.subprocess,
+                        "run",
+                        return_value=subprocess.CompletedProcess([], 0, stdout=payload, stderr=""),
+                    ),
+                ):
+                    answer = M.remote_registry_call(["register"])
+                self.assertEqual(answer["code"], "remote_unparseable")
+                self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_the_local_registry_is_used_when_this_host_has_one(self):
+        # A host that keeps its own registry never goes over the wire.
+        with (
+            mock.patch.object(M, "registry_db", return_value="/tmp/registry.sqlite3"),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(M.subprocess, "Popen") as popen,
+            mock.patch.object(M.subprocess, "run") as run,
+        ):
+            popen.return_value.communicate.return_value = ('{"label": "AA"}', "")
+            popen.return_value.returncode = 0
+            answer = M.registry_call(["history"])
+        self.assertEqual(answer, {"label": "AA"})
+        run.assert_not_called()
+
+    def test_the_far_host_is_asked_when_this_host_has_no_registry(self):
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M, "remote_registry_call", return_value={"label": "AA"}
+            ) as hop,
+        ):
+            answer = M.registry_call(["history", "--platform=minimax"])
+        self.assertEqual(answer, {"label": "AA"})
+        hop.assert_called_once()
+        self.assertEqual(hop.call_args.args[0], ["history", "--platform=minimax"])
+
+    def test_a_missing_registry_is_reported_when_no_host_is_named(self):
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop(M.ENV_REMOTE, None)
+            answer = M.registry_call(["history"])
+        self.assertEqual(answer["code"], "no_registry")
+
+    def test_a_refused_destination_is_a_fault_and_not_a_missing_registry(self):
+        # A host that names a destination ssh would read as an option has a
+        # misconfiguration, and that is not the same as having no registry at all.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.dict(os.environ, {M.ENV_REMOTE: "-oProxyCommand=touch /tmp/x"}),
+        ):
+            answer = M.registry_call(["history"])
+        self.assertEqual(answer["code"], "remote_refused")
+
+    def test_a_letter_is_issued_over_the_hop(self):
+        # The whole path a MiniMax chat walks when it has no local registry.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(
+                M, "remote_registry_call", return_value={"label": "AA", "created": True}
+            ) as hop,
+        ):
+            answer = M.register(SESSION_ID)
+        self.assertEqual(answer["label"], "AA")
+        args = hop.call_args.args[0]
+        self.assertEqual(args[0], "register")
+        self.assertIn("--platform=minimax", args)
+        self.assertIn("--session-id=" + SESSION_ID, args)

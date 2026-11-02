@@ -1410,6 +1410,26 @@ def main(
             return 0
     if argv[0] == "registry":
         return registry_main(argv[1:], env=env, stdout=stdout)
+    if argv[0] == "registry-module":
+        # The registry's own CLI, for a platform that does not run Claude.  The
+        # `registry` above is the Claude hook's shape;  the module's CLI is the
+        # canonical interface, with the per-op arguments every platform's helper
+        # speaks, and it is the one a remote host runs for another platform.
+        from . import operator_registry as OR
+
+        try:
+            return OR.main(argv[1:])
+        except SystemExit as exc:
+            # argparse exits on a usage error.  A far host that asked wrongly gets a
+            # readable answer, never an empty line and a traceback:  the caller reads
+            # the answer the same way it reads every other one.
+            code = exc.code if isinstance(exc.code, int) else 2
+            if code == 0:
+                return 0
+            sys.stdout.write(
+                json.dumps({"error": "the registry refused the request", "code": "usage"}) + "\n"
+            )
+            return code
     if argv[0] == "show":
         return show(argv[1:], env, stdout)
     if argv[0] == "install":
