@@ -3430,7 +3430,9 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
             tool = "zulip_search"
         elif cmd == "dm-read":
             if getattr(args, "new", False):
-                raise RemoteError("--new uses a local cursor and has no hosted equivalent in remote mode")
+                raise RemoteError(
+                    "--new uses a local cursor and has no hosted equivalent in remote mode"
+                )
             raw = list(getattr(args, "with_", None) or [])
             ids = [x for x in raw if re.fullmatch(r"[0-9]+", x)]
             emails = [x for x in raw if "@" in x]

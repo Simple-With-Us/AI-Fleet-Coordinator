@@ -38,6 +38,7 @@ def _validate_relay_url(relay_url: str) -> None:
         "GIT_RELAY_URL must be https (plaintext http is allowed only for loopback relays)"
     )
 
+
 PROTOCOL_VERSION = "2025-06-18"
 MAX_LINE = 1024 * 1024
 TIMEOUT_SECONDS = 30

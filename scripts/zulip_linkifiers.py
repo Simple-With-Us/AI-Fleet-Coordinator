@@ -229,7 +229,9 @@ def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str
     if not path:
         seat = (os.environ.get("AGENT_LAUNCH_SEAT") or os.environ.get("AGENT_SEAT") or "").strip()
         if not seat:
-            sys.exit("no verified seat:  set AGENT_SEAT (or pass --rc / Zulip env) so this run uses its own credential")
+            sys.exit(
+                "no verified seat:  set AGENT_SEAT (or pass --rc / Zulip env) so this run uses its own credential"
+            )
         bot = seat.upper().replace("-", "_")
         email, key, site = (
             _fleet_secret(f"{bot}_ZULIP_{part}") for part in ("EMAIL", "KEY", "SITE")
@@ -358,7 +360,9 @@ def linear_team_keys() -> list[str] | None:
 def check_linear() -> int:
     keys = linear_team_keys()
     if keys is None:
-        print("FAIL  Linear team drift:  the board CLI is missing or could not read Linear (pass --skip-linear to waive)")
+        print(
+            "FAIL  Linear team drift:  the board CLI is missing or could not read Linear (pass --skip-linear to waive)"
+        )
         return 1
     missing, extra = team_drift(keys)
     for key in missing:
@@ -429,7 +433,9 @@ def main(argv: list[str] | None = None) -> int:
         "--apply", action="store_true", help="apply the plan (realm administrator only)"
     )
     parser.add_argument("--check", action="store_true", help="render CHECKS and report")
-    parser.add_argument("--skip-linear", action="store_true", help="with --check, skip the Linear team drift check")
+    parser.add_argument(
+        "--skip-linear", action="store_true", help="with --check, skip the Linear team drift check"
+    )
     parser.add_argument(
         "--delete-unlisted",
         action="store_true",

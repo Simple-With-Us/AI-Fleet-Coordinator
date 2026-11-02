@@ -95,7 +95,10 @@ def _skill_copies() -> list:
     try:
         out = subprocess.run(
             ["git", "-C", str(ROOT), "ls-files", "--", "*SKILL.md"],
-            capture_output=True, text=True, timeout=30, check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
         names = out.stdout.splitlines() if out.returncode == 0 else []
     except (OSError, subprocess.SubprocessError):

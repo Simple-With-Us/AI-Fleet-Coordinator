@@ -906,7 +906,9 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
             sections.append(
                 f'<details class="day" id="{day.day.isoformat()}">'
                 f"<summary><h2>{day_label}</h2>"
-                f'<p class="meta">{esc(day.counts_line())}</p></summary>' + "".join(blocks) + "</details>"
+                f'<p class="meta">{esc(day.counts_line())}</p></summary>'
+                + "".join(blocks)
+                + "</details>"
             )
 
     body = "\n".join(sections) if sections else "<p>No activity in the lookback window.</p>"

@@ -140,9 +140,14 @@ def _unset(args, out) -> int:
     mode = "plan" if args.plan else "yes" if args.yes else None
     answer, code = setter.unset_knob(args.name, mode)
     if args.json:
-        json.dump(answer, out, sort_keys=True); out.write("\n")
+        json.dump(answer, out, sort_keys=True)
+        out.write("\n")
     else:
-        out.write(f"{answer['result']}: {args.name} ({answer['detail']})\n" if answer["detail"] else f"{answer['result']}: {args.name}\n")
+        out.write(
+            f"{answer['result']}: {args.name} ({answer['detail']})\n"
+            if answer["detail"]
+            else f"{answer['result']}: {args.name}\n"
+        )
     return code
 
 
@@ -185,7 +190,9 @@ def main(argv: list[str] | None = None, out=None) -> int:
     group.add_argument("--plan", action="store_true", help="show the write and change nothing")
     group.add_argument("--yes", action="store_true", help="make the write")
     p.add_argument("--json", action="store_true")
-    p = sub.add_parser("unset", help="delete one non-secret knob so its default applies (--plan first, then --yes)")
+    p = sub.add_parser(
+        "unset", help="delete one non-secret knob so its default applies (--plan first, then --yes)"
+    )
     p.add_argument("name")
     group = p.add_mutually_exclusive_group()
     group.add_argument("--plan", action="store_true", help="show the delete and change nothing")
@@ -193,9 +200,13 @@ def main(argv: list[str] | None = None, out=None) -> int:
     p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        return {"status": _status, "get": _get, "inventory": _inventory, "set": _set, "unset": _unset}[args.cmd](
-            args, out
-        )
+        return {
+            "status": _status,
+            "get": _get,
+            "inventory": _inventory,
+            "set": _set,
+            "unset": _unset,
+        }[args.cmd](args, out)
     except knobs.KnobError as exc:
         sys.stderr.write(f"fleet_knobs: {exc}\n")
         return 2
