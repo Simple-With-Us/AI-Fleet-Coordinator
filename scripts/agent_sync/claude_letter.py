@@ -1438,7 +1438,9 @@ def main(
             code = exc.code if isinstance(exc.code, int) else 2
             if code == 0:
                 return 0
-            stdout.write(json.dumps({"error": "the registry refused the request", "code": "usage"}) + "\n")
+            stdout.write(
+                json.dumps({"error": "the registry refused the request", "code": "usage"}) + "\n"
+            )
             return code
     if argv[0] == "show":
         return show(argv[1:], env, stdout)
