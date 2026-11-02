@@ -42,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+from collections.abc import Iterator
 
 from agent_sync import secretscan
 from agent_sync.operator_registry import (
@@ -679,18 +680,120 @@ def first_line_states_letter(text: str, letter: str) -> bool:
 # ---- the letter cache -------------------------------------------------------------
 
 
+def hooks_data_root() -> str:
+    """Where the runtime keeps its hook scopes.
+
+    The runtime (MiniMax Code v2) runs a hook with its scope's own directory in
+    MINIMAX_HOOKS_DATA:  the user scope is <data>/v2/hook-data/user and a project
+    scope is <data>/v2/hook-data/projects/<hash>.  The pre-v2 layout kept the same
+    directory under <data>/hook-state, which is now the last place a letter is read
+    from, never the first.
+    """
+    return os.path.join(data_dir(), "v2", "hook-data")
+
+
+def _refuse_symlink(path: str) -> None:
+    """A cache path that is a symlink is refused, never followed.
+
+    The refusal is a RegistryError with its own code, so every hook and the sweep,
+    which already handle RegistryError, refuse it cleanly instead of failing with a
+    traceback.  It applies to every scope, not only to the primary cache:  a
+    planted symlink must not carry a read or a write outside the data directory.
+    """
+    if os.path.islink(path):
+        raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
+
+
+# The project scopes are listed once per change of the scope root.  The migration
+# asks for the scope list once per session, so a lookup costs a stat instead of a
+# listing, and a scope that appears later is still picked up.
+_SCOPE_LISTINGS: dict[str, tuple[int, list[str]]] = {}
+
+
+def _project_scope_dirs(projects: str) -> list[str]:
+    """The letter-cache directories of the project scopes, in a stable order."""
+    try:
+        stamp = os.stat(projects).st_mtime_ns
+    except OSError:
+        stamp = -1
+    cached = _SCOPE_LISTINGS.get(projects)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        names = sorted(os.listdir(projects))
+    except OSError:
+        names = []
+    dirs = []
+    for name in names:
+        scope = os.path.join(projects, name)
+        _refuse_symlink(scope)
+        leaf = os.path.join(scope, "session-letters")
+        _refuse_symlink(leaf)
+        dirs.append(leaf)
+    _SCOPE_LISTINGS[projects] = (stamp, dirs)
+    return dirs
+
+
+def _scope_dirs() -> Iterator[str]:
+    """The letter-cache directories of the runtime's scopes, the user scope first."""
+    root = hooks_data_root()
+    user = os.path.join(root, "user")
+    _refuse_symlink(user)
+    yield os.path.join(user, "session-letters")
+    for directory in _project_scope_dirs(os.path.join(root, "projects")):
+        yield directory
+
+
+def _legacy_cache_dir() -> str:
+    """The pre-v2 letter cache:  read as a fallback, never written to."""
+    return os.path.join(data_dir(), "hook-state", "session-letters")
+
+
+def letter_cache_dirs() -> Iterator[str]:
+    """Every letter-cache directory this host may hold, in the order it is read.
+
+    A hook knows its scope:  the runtime hands it that scope in MINIMAX_HOOKS_DATA,
+    and it reads that scope alone.  A shell knows no scope -- the migration, the
+    sweep and an operator command all run outside the runtime -- so it reads the user
+    scope, then the project scopes, then the pre-v2 directory.  A session lettered
+    under one scope is then still found from another, which is what the migration
+    needs when it runs from a plain shell.
+    """
+    override = os.environ.get("MINIMAX_HOOKS_DATA")
+    if override:
+        yield os.path.join(override, "session-letters")
+        return
+    for directory in _scope_dirs():
+        yield directory
+    yield _legacy_cache_dir()
+
+
 def letter_cache_dir() -> str:
     """The letter cache directory.  An unsafe path is a RegistryError with its own
     code, so every hook and the sweep, which already handle RegistryError, refuse it
     cleanly instead of failing with a traceback."""
-    base = os.environ.get("MINIMAX_HOOKS_DATA") or os.path.join(data_dir(), "hook-state")
+    override = os.environ.get("MINIMAX_HOOKS_DATA")
+    if override:
+        base = override
+    else:
+        root = hooks_data_root()
+        base = os.path.join(root, "user")
+        legacy = os.path.join(data_dir(), "hook-state")
+        if (
+            not os.path.isdir(base)
+            and not os.path.isdir(os.path.join(root, "projects"))
+            and os.path.isdir(legacy)
+        ):
+            # A pre-v2 runtime:  it has no v2 scope at all, so the old layout is the
+            # live one.  A host with a project scope is a v2 host, even when the user
+            # scope has not been created yet, and a letter written to the old layout
+            # there is one no hook ever reads.
+            base = legacy
     path = os.path.join(base, "session-letters")
     for candidate in (base, path):
-        if os.path.islink(candidate):
-            raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
+        _refuse_symlink(candidate)
     os.makedirs(path, mode=0o700, exist_ok=True)
-    if os.path.islink(path):
-        raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
+    _refuse_symlink(path)
     return path
 
 
@@ -700,8 +803,9 @@ def cache_letter(session_id: str, letter: str, topic: str = "", space: str = LET
     ):
         raise ValueError("invalid letter for cache")
     payload = {"letter": letter, "topic": topic, "host": location(), "space": space}
-    path = os.path.join(letter_cache_dir(), session_id + ".json")
-    fd, tmp = tempfile.mkstemp(dir=letter_cache_dir(), prefix=".letter-", suffix=".tmp")
+    home = _cache_home(session_id)
+    path = os.path.join(home, session_id + ".json")
+    fd, tmp = tempfile.mkstemp(dir=home, prefix=".letter-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
@@ -711,7 +815,7 @@ def cache_letter(session_id: str, letter: str, topic: str = "", space: str = LET
             os.fchmod(fh.fileno(), 0o600)
             os.fsync(fh.fileno())
         os.replace(tmp, path)
-        dir_fd = os.open(letter_cache_dir(), os.O_RDONLY | os.O_DIRECTORY)
+        dir_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(dir_fd)
         finally:
@@ -721,8 +825,10 @@ def cache_letter(session_id: str, letter: str, topic: str = "", space: str = LET
             os.unlink(tmp)
 
 
-def cached_letter(session_id: str) -> str:
-    path = os.path.join(letter_cache_dir(), session_id + ".json")
+def _cached_letter_in(directory: str, session_id: str) -> str:
+    path = os.path.join(directory, session_id + ".json")
+    _refuse_symlink(directory)
+    _refuse_symlink(path)
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -736,6 +842,35 @@ def cached_letter(session_id: str) -> str:
     if len(letter) == 2 and letter[0] in LETTERS and letter[1] in LETTERS:
         return letter
     return ""
+
+
+def cached_letter(session_id: str) -> str:
+    """The letter this host cached for a session, or "".
+
+    Every scope is read, in the order letter_cache_dirs gives, so a shell finds a
+    session lettered under a project scope and a hook finds the letter its own
+    scope wrote.  A cache path that is a symlink is refused with the same code the
+    primary cache uses, and is never followed.
+    """
+    for directory in letter_cache_dirs():
+        letter = _cached_letter_in(directory, session_id)
+        if letter:
+            return letter
+    return ""
+
+
+def _cache_home(session_id: str) -> str:
+    """The directory a session's letter is written to.
+
+    The scope that already holds the file keeps it, so a letter does not split into
+    two copies that drift apart;  otherwise the primary directory takes it.
+    """
+    if os.environ.get("MINIMAX_HOOKS_DATA"):
+        return letter_cache_dir()
+    for directory in _scope_dirs():
+        if os.path.isfile(os.path.join(directory, session_id + ".json")):
+            return directory
+    return letter_cache_dir()
 
 
 def parent_for_row(row: dict) -> str:
@@ -1284,6 +1419,9 @@ def migrate_pairs() -> int:
     row.  So the migration is idempotent:  a second run finds nothing to move and changes
     no letter, no generation and no reference.  A main chat goes first, because a child is
     placed after its parent's pair.
+
+    The letters are read from every scope the runtime keeps, so the migration finds the
+    live ones when it runs from a plain shell, where the runtime names no scope.
     """
     rows = [
         row for row in sessions() if str(row.get("session_kind") or "") in ("conversation", "task")
@@ -1302,7 +1440,13 @@ def migrate_pairs() -> int:
         session_id = row["session_id"]
         parent = parent_for_row(row)
         title = str(row.get("title") or "")
-        current = cached_letter(session_id)
+        try:
+            current = cached_letter(session_id)
+        except RegistryError as exc:
+            # A cache path that is a symlink is refused here too, so the migration
+            # reports the refusal rather than reading outside the data directory.
+            out.append(_failure_entry(session_id, exc))
+            continue
         if not current:
             # This host never lettered it, so there is no letter here to move.
             continue

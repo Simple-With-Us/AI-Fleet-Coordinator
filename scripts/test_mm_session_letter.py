@@ -109,6 +109,168 @@ class MmSessionLetterTest(unittest.TestCase):
             with self.assertRaises(M.RegistryError):
                 M.letter_cache_dir()
 
+    # --- the letter cache follows the runtime's scopes ---
+
+    def _write_cache(self, directory, session_id, letter):
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, session_id + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"letter": letter, "host": "mac", "space": "double"}, fh)
+
+    def _shell_env(self, tmp):
+        """A shell that is not a hook:  the runtime names no scope, and MINIMAX_DATA_DIR
+        points at a temporary data directory, so the real one is never touched."""
+        return mock.patch.dict(os.environ, {"MINIMAX_HOOKS_DATA": "", "MINIMAX_DATA_DIR": tmp})
+
+    def test_the_letter_cache_reads_the_runtime_user_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "sid", "BB")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_the_letter_cache_prefers_the_live_scope_over_the_pre_v2_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            live = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            legacy = os.path.join(tmp, "hook-state", "session-letters")
+            self._write_cache(live, "sid", "BB")
+            self._write_cache(legacy, "sid", "A")
+            with self._shell_env(tmp):
+                # The runtime writes the live scope, so the live letter wins over the
+                # stale one the pre-v2 layout still holds.
+                self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_a_project_scope_letter_is_found_from_a_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = os.path.join(tmp, "v2", "hook-data", "projects", "abc123", "session-letters")
+            self._write_cache(project, "sid", "CD")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "CD")
+
+    def test_a_letter_written_from_a_shell_lands_in_the_runtime_user_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self._shell_env(tmp):
+                M.cache_letter("sid", "BB", "Topic", "double")
+                written = os.path.join(tmp, "v2", "hook-data", "user", "session-letters", "sid.json")
+                self.assertTrue(os.path.isfile(written))
+                self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_a_letter_stays_in_the_scope_that_already_holds_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = os.path.join(tmp, "v2", "hook-data", "projects", "abc123", "session-letters")
+            self._write_cache(project, "sid", "CC")
+            with self._shell_env(tmp):
+                M.cache_letter("sid", "DD", "Topic", "double")
+                # The scope that holds the letter keeps it, so the letter does not split
+                # into two copies that drift apart.
+                self.assertEqual(M.cached_letter("sid"), "DD")
+                user_scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+                self.assertFalse(os.path.isfile(os.path.join(user_scope, "sid.json")))
+
+    def test_a_symlinked_scope_is_refused_rather_than_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            os.symlink(real, os.path.join(projects, "abc123"))
+            with self._shell_env(tmp):
+                # The same rule the primary cache follows:  a symlinked cache path is
+                # refused with its own code, never followed.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_user_scope_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            hook_data = os.path.join(tmp, "v2", "hook-data")
+            os.makedirs(hook_data)
+            os.symlink(real, os.path.join(hook_data, "user"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_letter_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            os.makedirs(scope)
+            target = os.path.join(tmp, "target.json")
+            with open(target, "w", encoding="utf-8") as fh:
+                json.dump({"letter": "BB"}, fh)
+            os.symlink(target, os.path.join(scope, "sid.json"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_project_scope_makes_this_a_v2_host(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "hook-state")
+            os.makedirs(legacy)
+            os.makedirs(os.path.join(tmp, "v2", "hook-data", "projects", "abc123"))
+            with self._shell_env(tmp):
+                # A host with a project scope is a v2 host even when the user scope
+                # is not there yet, so a new letter does not go to the old layout,
+                # where no hook ever reads it.
+                self.assertEqual(
+                    M.letter_cache_dir(),
+                    os.path.join(tmp, "v2", "hook-data", "user", "session-letters"),
+                )
+
+    def test_a_scope_that_appears_later_is_still_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            scope = os.path.join(projects, "abc123", "session-letters")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "")
+                self._write_cache(scope, "sid", "CD")
+                # The scope list is remembered, but a scope that appears after the
+                # listing is still picked up.
+                self.assertEqual(M.cached_letter("sid"), "CD")
+
+    def test_the_pre_v2_layout_is_used_when_the_runtime_has_no_v2_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "hook-state")
+            os.makedirs(legacy)
+            with self._shell_env(tmp):
+                self.assertEqual(
+                    M.letter_cache_dir(), os.path.join(legacy, "session-letters")
+                )
+
+    def test_the_migration_finds_the_live_letters_from_a_plain_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "mvs_main", "A")
+            self._write_cache(scope, "mvs_child", "A")
+            calls = []
+
+            def fake_relabel(session_id, parent="", force=False):
+                calls.append((session_id, parent, force))
+                return {
+                    "label": "BB",
+                    "previous": "A",
+                    "outcome": "relabelled",
+                    "placed_after": "",
+                }
+
+            with (
+                mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+                mock.patch.object(M, "relabel", side_effect=fake_relabel),
+                mock.patch.object(M, "cache_letter"),
+                mock.patch.object(M, "set_title", return_value=True),
+                mock.patch.object(M, "update_title"),
+                self._shell_env(tmp),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                code = M.migrate_pairs()
+            self.assertEqual(code, 0)
+            # The letters are found in the runtime's scope without a scope in the
+            # environment, so the migration moves the sessions instead of skipping them.
+            self.assertEqual([call[0] for call in calls], ["mvs_main", "mvs_child"])
+
     def test_require_registry_rejects_an_empty_label(self):
         with self.assertRaises(M.RegistryError):
             M._require_registry({"label": ""}, needs_label=True)
