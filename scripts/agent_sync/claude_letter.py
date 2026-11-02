@@ -1388,6 +1388,24 @@ USAGE = (
 )
 
 
+def _registry_module_db(argv: list[str], env: Mapping[str, str]) -> str:
+    """The registry file the registry's own CLI will open for these arguments.
+
+    The CLI honours an explicit ``--db`` and takes the shared path otherwise, so the
+    guard that refuses to create a registry has to look at the same file the CLI will
+    open:  a guard that checks another one passes, and the CLI opens or creates a
+    second registry that hands out letters colliding with the Operator's.
+    """
+    from . import operator_registry as OR
+
+    for index, arg in enumerate(argv):
+        if arg == "--db" and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--db="):
+            return arg.split("=", 1)[1]
+    return OR.default_db(env)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -1419,7 +1437,7 @@ def main(
 
         from . import operator_registry as OR
 
-        db = OR.registry_db_path(L.state_root(env), env)
+        db = _registry_module_db(argv[1:], env)
         if not os.path.isfile(db):
             # Never create one:  a second registry would hand out letters that collide
             # with the ones the Operator keeps.
@@ -1428,9 +1446,10 @@ def main(
         try:
             # The module's CLI writes its answer to stdout itself, so it is redirected
             # into the stream the caller gave:  an answer goes where the caller reads
-            # it, not where the process happens to write.
+            # it, not where the process happens to write.  The env goes with it, so the
+            # CLI opens the file this guard just checked.
             with redirect_stdout(stdout):
-                return OR.main(argv[1:])
+                return OR.main(argv[1:], env=env)
         except SystemExit as exc:
             # argparse exits on a usage error.  A far host that asked wrongly gets a
             # readable answer, never an empty line and a traceback:  the caller reads

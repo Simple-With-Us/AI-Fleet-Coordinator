@@ -1467,3 +1467,33 @@ class ReopenCommandTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(answer["code"], "reopen_failed")
         self.assertEqual(answer["outcome"], "reopen_refused")
+
+    def test_the_reopen_command_never_brings_a_registry_into_being(self):
+        # A host that keeps no registry must not grow one:  a second registry hands
+        # out letters that collide with the ones the Operator keeps, so the reopen
+        # refuses and the file is never created.
+        missing = os.path.join(self.tmp.name, "no-registry-here", "registry.sqlite3")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", missing, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 3)
+        self.assertEqual(answer["code"], "no_registry")
+        self.assertEqual(answer["outcome"], "reopen_refused")
+        self.assertIn("no Operator registry", answer["error"])
+        self.assertFalse(os.path.exists(missing))
+
+    def test_the_reopen_command_answers_a_database_fault_as_json(self):
+        # A database that faults is a refusal the caller can read, never a traceback:
+        # the far host would answer with something unparseable and the hop would
+        # report an unknown outcome instead of the refusal it owes.
+        broken = os.path.join(self.tmp.name, "broken.sqlite3")
+        with open(broken, "wb") as handle:
+            handle.write(b"this is not a database")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", broken, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["code"], "reopen_failed")
+        self.assertEqual(answer["outcome"], "reopen_refused")

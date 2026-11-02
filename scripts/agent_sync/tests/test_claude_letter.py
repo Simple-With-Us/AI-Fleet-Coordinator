@@ -1781,6 +1781,35 @@ class RegistryModuleDispatchTest(Base):
         self.assertIn("no Operator registry", answer["error"])
         self.assertFalse(os.path.exists(os.path.join(missing, "operator", "registry.sqlite3")))
 
+    def test_the_module_cli_checks_the_file_the_cli_will_open(self) -> None:
+        # The guard has to look at the file the CLI will open:  an explicit --db names
+        # it, and a guard that checked another one would pass while the CLI opened or
+        # created a second registry.
+        missing = os.path.join(self.tmp.name, "named-by-the-caller.sqlite3")
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"AGENT_SYNC_STATE_DIR": self.state}),
+            contextlib.redirect_stdout(out),
+        ):
+            code = CL.main(
+                [
+                    "registry-module",
+                    "register",
+                    "--platform=minimax",
+                    "--location=server",
+                    "--scope=default",
+                    "--session-id=s-0012",
+                    "--seat=MM",
+                    "--source=a test",
+                    "--db",
+                    missing,
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 3)
+        self.assertIn("no Operator registry", answer["error"])
+        self.assertFalse(os.path.exists(missing))
+
     def test_the_module_cli_reopens_a_closed_session(self) -> None:
         # The far host runs the reopen, so a chat that comes back to life gets its
         # letter back on the host that holds the registry.

@@ -2056,15 +2056,21 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
         conn.close()
 
 
-def _default_db() -> str:
-    """The shared registry location, from the same environment the listener reads."""
-    root = os.environ.get("AGENT_SYNC_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".agent-sync"
-    )
-    return registry_db_path(root, os.environ)
+def default_db(env: Mapping[str, str] | None = None) -> str:
+    """The shared registry location, from the same environment the listener reads.
+
+    The env is the caller's:  a caller that hands in its own mapping is answered about
+    the file its own CLI would open, so a guard and the CLI it guards can never name
+    two different registries.
+    """
+    env = os.environ if env is None else env
+    home = env.get("HOME") or os.path.expanduser("~")
+    root = env.get("AGENT_SYNC_STATE_DIR") or os.path.join(home, ".agent-sync")
+    return registry_db_path(root, env)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
+    env = os.environ if env is None else env
     parser = argparse.ArgumentParser(prog="operator-registry")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pending-outbox")
@@ -2240,7 +2246,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "resolve":
         try:
             found = resolve_label(
-                args.db or _default_db(),
+                args.db or default_db(env),
                 args.platform,
                 args.letter,
                 args.generation,
@@ -2253,7 +2259,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "register":
         try:
             out = register_session(
-                args.db or _default_db(),
+                args.db or default_db(env),
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2283,7 +2289,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "relabel":
         try:
             out = relabel_session(
-                args.db or _default_db(),
+                args.db or default_db(env),
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2314,7 +2320,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "update":
         try:
             out = update_session(
-                args.db or _default_db(),
+                args.db or default_db(env),
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2333,7 +2339,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "close":
         try:
             out = close_session(
-                args.db or _default_db(),
+                args.db or default_db(env),
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2350,7 +2356,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "touch":
         try:
             out = touch_session(
-                args.db or _default_db(),
+                args.db or default_db(env),
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2363,7 +2369,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "sweep":
         ended = sweep_stale(
-            args.db or _default_db(),
+            args.db or default_db(env),
             platform=args.platform,
             seat=args.seat,
             stale_after_minutes=args.stale_after_minutes,
@@ -2376,9 +2382,25 @@ def main(argv: list[str] | None = None) -> int:
         # this verb because a host that keeps no registry asks the host that holds one.
         from . import platform_letter
 
-        db = args.db or _default_db()
-        reg = SessionRegistry(db)
+        db = args.db or default_db(env)
+        if not os.path.isfile(db):
+            # Never bring a registry into being:  a host that keeps none refuses, so a
+            # second registry cannot grow here and hand out letters that collide with
+            # the ones the Operator keeps.  This is the last place before the file is
+            # opened, so it holds whatever path the CLI was given.
+            print(
+                json.dumps(
+                    {
+                        "error": "no Operator registry on this host",
+                        "code": "no_registry",
+                        "outcome": "reopen_refused",
+                    }
+                )
+            )
+            return 3
+        reg = None
         try:
+            reg = SessionRegistry(db)
             letter, generation, previous = platform_letter.operator_reopen(
                 sys.modules[__name__],
                 db,
@@ -2403,7 +2425,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 2
-        except (UnknownRecord, KeyError, ValueError, OSError) as exc:
+        except (UnknownRecord, KeyError, ValueError, OSError, sqlite3.Error) as exc:
+            # A database that faults is a refusal, not a traceback:  the far host has
+            # to answer with something the caller can read.
             print(
                 json.dumps(
                     {"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}
@@ -2411,7 +2435,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         finally:
-            reg.close_db()
+            if reg is not None:
+                reg.close_db()
         print(
             json.dumps(
                 {
@@ -2426,7 +2451,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "history":
         try:
-            rows = letter_history(args.db or _default_db(), args.platform, args.limit)
+            rows = letter_history(args.db or default_db(env), args.platform, args.limit)
         except (ValueError, RegistryUnavailable) as exc:
             print(json.dumps({"error": str(exc)}))
             return 2
