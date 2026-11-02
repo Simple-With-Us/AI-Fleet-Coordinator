@@ -44,8 +44,8 @@ import tempfile
 import unicodedata
 from collections.abc import Iterator
 
-from agent_sync import secretscan
-from agent_sync.operator_registry import (
+from simple_tools import secretscan
+from simple_tools.operator_registry import (
     letter_space_of,
     pairs_after,
     registry_db_path,
@@ -122,12 +122,12 @@ def location() -> str:
 
 def registry_db() -> str:
     """The local registry file, or "" when this host keeps no copy."""
-    override = os.environ.get("AGENT_SYNC_OPERATOR_REGISTRY")
+    override = os.environ.get("SIMPLE_TOOLS_OPERATOR_REGISTRY")
     if override:
         path = os.path.expanduser(override)
         return path if os.path.isfile(path) else ""
-    root = os.environ.get("AGENT_SYNC_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".agent-sync"
+    root = os.environ.get("SIMPLE_TOOLS_STATE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".simple-tools"
     )
     path = registry_db_path(root, os.environ)
     return path if os.path.isfile(path) else ""
@@ -157,7 +157,7 @@ def repo_scripts_dir() -> str:
     candidates.append(os.path.dirname(os.path.realpath(__file__)))
     for candidate in candidates:
         if os.path.isdir(candidate) and os.path.isfile(
-            os.path.join(candidate, "agent_sync", "operator_registry.py")
+            os.path.join(candidate, "simple_tools", "operator_registry.py")
         ):
             return candidate
     return ""
@@ -285,7 +285,7 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
             "error": "the operator registry is not available on this host",
             "code": "no_registry",
         }
-    cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
+    cmd = [sys.executable, "-m", "simple_tools.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None
     try:
@@ -496,8 +496,8 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     db = registry_db()
     if not db:
         raise RegistryError("the operator registry is not available on this host", "no_registry")
-    from agent_sync import operator_registry as OR
-    from agent_sync import platform_letter
+    from simple_tools import operator_registry as OR
+    from simple_tools import platform_letter
 
     reg = OR.SessionRegistry(db)
     try:
@@ -733,7 +733,7 @@ def held_letters(session_id: str) -> tuple[str, ...]:
     db = registry_db()
     if not db:
         return ()
-    from agent_sync import operator_registry as OR
+    from simple_tools import operator_registry as OR
 
     # The read-only handle:  it never writes, never creates the file, and never takes
     # a write lock against the Operator's registration writes.

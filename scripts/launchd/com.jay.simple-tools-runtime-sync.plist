@@ -3,20 +3,20 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.jay.agent-sync-runtime-sync</string>
+  <string>com.jay.simple-tools-runtime-sync</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/jay/apps/agent-sync-runtime-sync.sh</string>
+    <string>/Users/jay/apps/simple-tools-runtime-sync.sh</string>
   </array>
   <key>StartInterval</key>
   <integer>120</integer>
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Users/jay/apps/logs/agent-sync-runtime-sync.launchd.out.log</string>
+  <string>/Users/jay/apps/logs/simple-tools-runtime-sync.launchd.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/jay/apps/logs/agent-sync-runtime-sync.launchd.err.log</string>
+  <string>/Users/jay/apps/logs/simple-tools-runtime-sync.launchd.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>

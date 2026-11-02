@@ -1,10 +1,10 @@
 """The F3 helpers, loaded by file path.
 
-`agent_sync/textsafe.py`, `secretscan.py` and `identity.py` import nothing from their package, so this
-tool loads them as plain files.  It never runs `import agent_sync`, which would pull in the Zulip
+`simple_tools/textsafe.py`, `secretscan.py` and `identity.py` import nothing from their package, so this
+tool loads them as plain files.  It never runs `import simple_tools`, which would pull in the Zulip
 client and the whole CLI, and a stable copy (`~/apps/needs-owner`, run with `python3 -I`) holds only
 these three files next to the `needs_owner` package.  In a checkout the same relative place is
-`scripts/agent_sync/`.
+`scripts/simple_tools/`.
 
     f3.textsafe.render_untrusted(text, cap, code_span=False)
     f3.secretscan.scan(text)
@@ -17,7 +17,7 @@ import os
 import sys
 from types import ModuleType
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the directory holding needs_owner/ and agent_sync/
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the directory holding needs_owner/ and simple_tools/
 FILES = ("textsafe", "secretscan", "identity")
 
 
@@ -26,7 +26,7 @@ class F3Missing(RuntimeError):
 
 
 def _load(name: str) -> ModuleType:
-    path = os.path.join(ROOT, "agent_sync", name + ".py")
+    path = os.path.join(ROOT, "simple_tools", name + ".py")
     if not os.path.isfile(path):
         raise F3Missing("needs-owner cannot find %s (the stable copy is incomplete;  run scripts/needs_owner/install.sh --apply)" % path)
     spec = importlib.util.spec_from_file_location("_needs_owner_f3_" + name, path)

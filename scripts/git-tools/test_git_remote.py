@@ -83,7 +83,7 @@ DEFAULT_PAGE = [
 
 
 class FakeScanner:
-    """Stands in for scripts/agent_sync/secretscan.py:  flags any string containing a known token."""
+    """Stands in for scripts/simple_tools/secretscan.py:  flags any string containing a known token."""
 
     def scan(self, value, known=()):
         for token in known:
@@ -825,9 +825,9 @@ class TestValidationAndScanning(unittest.TestCase):
         self.assertEqual([c[0] for c in t.calls], ["identities"])  # the target call never left
 
     def test_scanner_missing_fails_closed(self):
-        # The real scripts/agent_sync/secretscan.py is not in this repository:  loading must fail closed.
+        # The real scripts/simple_tools/secretscan.py is not in this repository:  loading must fail closed.
         scanner_path = (
-            Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
+            Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
         )
         if scanner_path.is_file():
             self.skipTest("the real scanner is present here; the fail-closed path is unreachable")
@@ -1835,10 +1835,10 @@ class TestReview1199(unittest.TestCase):
         self.assertTrue(git._type_ok({"type": "array", "minItems": 0, "maxItems": 2}, [1]))
 
 
-REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "agent_sync" / "secretscan.py"
+REAL_SCANNER = Path(os.path.realpath(str(IMPL))).parent.parent / "simple_tools" / "secretscan.py"
 
 
-@unittest.skipUnless(REAL_SCANNER.is_file(), "scripts/agent_sync/secretscan.py not available here")
+@unittest.skipUnless(REAL_SCANNER.is_file(), "scripts/simple_tools/secretscan.py not available here")
 class TestRealSharedScanner(unittest.TestCase):
     """The actual fleet scanner, loaded exactly the way the implementation loads it."""
 
