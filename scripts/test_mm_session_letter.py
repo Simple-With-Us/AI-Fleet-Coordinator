@@ -149,9 +149,7 @@ class MmSessionLetterTest(unittest.TestCase):
     def test_a_letter_written_from_a_shell_lands_in_the_runtime_user_scope(self):
         with tempfile.TemporaryDirectory() as tmp, self._shell_env(tmp):
             M.cache_letter("sid", "BB", "Topic", "double")
-            written = os.path.join(
-                tmp, "v2", "hook-data", "user", "session-letters", "sid.json"
-            )
+            written = os.path.join(tmp, "v2", "hook-data", "user", "session-letters", "sid.json")
             self.assertTrue(os.path.isfile(written))
             self.assertEqual(M.cached_letter("sid"), "BB")
 
