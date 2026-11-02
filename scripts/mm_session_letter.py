@@ -44,7 +44,11 @@ import tempfile
 import unicodedata
 
 from agent_sync import secretscan
-from agent_sync.operator_registry import registry_db_path
+from agent_sync.operator_registry import (
+    letter_space_of,
+    pairs_after,
+    registry_db_path,
+)
 
 SEAT = "MM"
 PLATFORM = "minimax"
@@ -610,38 +614,43 @@ def placeholder_title(letter: str) -> str:
     return "%s: Session %s" % (letter, letter)
 
 
-# A letter prefix on a title:  one or two capitals and a colon, the shape every
-# platform's thread titles take.
-LETTER_PREFIX_RE = re.compile(r"^[A-Z]{1,2}:[ ]*")
+# The letter shapes a thread title carries:  a doubled pair (AA, the shape this platform
+# gives every thread now) and a single capital (the shape it gave them before).  Two
+# capitals that are not a pair are not a letter:  a topic that starts with an acronym
+# ("AI: the model") keeps it.
+DOUBLED_PAIR_RE = re.compile(r"^([A-Z]{2}):[ ]*")
+SINGLE_LETTER_RE = re.compile(r"^[A-Z]:[ ]*")
 
 
-def topic_without_letter(title: str) -> str:
+def topic_without_letter(title: str, letters: tuple[str, ...] = ()) -> str:
     """The topic in a title, without the letter prefix a thread already carries.
 
     A thread that is re-lettered keeps its topic, so the old prefix is dropped before the
     new one is put in front:  "A: Fix the sweep" under the letter "AA" is "AA: Fix the
     sweep", never "AA: A: Fix the sweep".
+
+    Only the letters the thread actually holds are dropped, and the shapes a thread title
+    carries:  a doubled pair, and the single capital this platform used before it moved to
+    pairs.  Two capitals that are not a pair are an acronym, so a topic that starts with one
+    keeps it.
     """
-    return LETTER_PREFIX_RE.sub("", (title or "").strip(), count=1).strip()
-
-
-def wanted_title(letter: str, topic: str) -> str:
-    """The title form:  the letter, then the topic, in Title Case English."""
-    topic = topic_without_letter(topic)
-    topic = " ".join(topic.split())
-    if not topic or not is_english(topic):
-        topic = "Session " + (letter or "?")
-    return "%s: %s" % (letter, topic[:TITLE_MAX])
-
-def wanted_title(letter: str, topic: str) -> str:
-    """The title form:  the letter, then the topic, in Title Case English."""
-    topic = topic_without_letter(topic)
-    if letter:
+    text = (title or "").strip()
+    for letter in letters:
         prefix = letter + ":"
-        if topic.startswith(prefix):
-            topic = topic[len(prefix) :].lstrip()
-    else:
-        topic = re.sub(r"^\s*[A-Z]{1,2}:\s*", "", topic, count=1)
+        if letter and text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    match = DOUBLED_PAIR_RE.match(text)
+    if match and match.group(1)[0] == match.group(1)[1]:
+        return text[match.end() :].strip()
+    match = SINGLE_LETTER_RE.match(text)
+    if match:
+        return text[match.end() :].strip()
+    return text
+
+
+def wanted_title(letter: str, topic: str, previous_letters: tuple[str, ...] = ()) -> str:
+    """The title form:  the letter, then the topic, in Title Case English."""
+    topic = topic_without_letter(topic, tuple(previous_letters) + (letter,))
     topic = " ".join(topic.split())
     if not topic or not is_english(topic):
         topic = "Session " + (letter or "?")
@@ -1263,16 +1272,18 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
     return exit_code
 
 
-def migrate_pairs(rounds: int = 2) -> int:
+def migrate_pairs() -> int:
     """Move this host's live MiniMax sessions into the pair space.
 
     A MiniMax thread is a pair (owner ruling, Nov 1 2026), and a session id always answers
-    with the letter its registry record already holds, so the live sessions that were
-    lettered under the old single-letter rule are moved by the registry's own relabel path.
+    with the letter its registry record already holds, so the sessions that were lettered
+    under the old single-letter rule are moved by the registry's own relabel path.
 
-    A main chat goes first, because a child is placed after its parent's pair.  The rounds
-    repeat the two passes:  a child that moves frees the pair it held, and the next round
-    gives that pair to the main chat that was pushed past it.
+    Only a session that is not where the rule puts it is moved:  a session that already
+    holds a pair keeps it, and so does a child that already holds a pair in its parent's
+    row.  So the migration is idempotent:  a second run finds nothing to move and changes
+    no letter, no generation and no reference.  A main chat goes first, because a child is
+    placed after its parent's pair.
     """
     rows = [
         row for row in sessions() if str(row.get("session_kind") or "") in ("conversation", "task")
@@ -1285,55 +1296,58 @@ def migrate_pairs(rounds: int = 2) -> int:
         (row for row in rows if parent_for_row(row)),
         key=lambda row: int(row.get("created_at_ms") or 0),
     )
+    letters: dict[str, str] = {}
     out = []
-    seen = set()
-    for round_no in range(max(1, rounds)):
-        for row in mains + children:
-            session_id = row["session_id"]
-            parent = parent_for_row(row)
-            title = str(row.get("title") or "")
-            key = (session_id, round_no)
-            if key in seen:
+    for row in mains + children:
+        session_id = row["session_id"]
+        parent = parent_for_row(row)
+        title = str(row.get("title") or "")
+        current = cached_letter(session_id)
+        if not current:
+            # This host never lettered it, so there is no letter here to move.
+            continue
+        parent_letter = letters.get(parent, "")
+        in_a_pair = letter_space_of(current) == LETTER_SPACE
+        out_of_place = not in_a_pair
+        if not out_of_place and parent_letter and current not in pairs_after(parent_letter):
+            # A child that holds a pair but not in its parent's row is placed again.
+            out_of_place = True
+        if not out_of_place:
+            letters[session_id] = current
+            out.append({"session_id": session_id, "letter": current, "outcome": "unchanged"})
+            continue
+        try:
+            answer = relabel(session_id, parent, force=in_a_pair)
+        except RegistryError as exc:
+            if str(getattr(exc, "code", "") or "") == "closed_session":
+                # The session is over:  its letter ended with it, and there is nothing to move.
+                out.append({"session_id": session_id, "letter": current, "outcome": "closed"})
                 continue
-            seen.add(key)
+            out.append(_failure_entry(session_id, exc))
+            continue
+        letter = str(answer.get("label") or "")
+        if not letter:
+            out.append({"session_id": session_id, "skipped": "no letter"})
+            continue
+        letters[session_id] = letter
+        cache_letter(session_id, letter, title, LETTER_SPACE)
+        entry = {
+            "session_id": session_id,
+            "letter": letter,
+            "previous": answer.get("previous", ""),
+            "outcome": answer.get("outcome", ""),
+            "placed_after": answer.get("placed_after", ""),
+        }
+        topic = topic_without_letter(title, (current,))
+        if topic and is_english(topic):
+            wanted = wanted_title(letter, topic)
             try:
-                answer = relabel(session_id, parent, force=True)
-            except RegistryError as exc:
-                out.append(_failure_entry(session_id, exc))
-                continue
-            except ValueError:
-                # A session the registry has never seen has no letter to move:  registering
-                # it gives it a pair from the start.
-                try:
-                    letter = letter_for(session_id, title, parent)
-                except (RegistryError, ValueError) as inner:
-                    out.append({"session_id": session_id, "error": str(inner), "outcome": "failed"})
-                    continue
-                cache_letter(session_id, letter, title, LETTER_SPACE)
-                out.append({"session_id": session_id, "letter": letter, "outcome": "registered"})
-                continue
-            letter = str(answer.get("label") or "")
-            if not letter:
-                out.append({"session_id": session_id, "skipped": "no letter"})
-                continue
-            cache_letter(session_id, letter, title, LETTER_SPACE)
-            entry = {
-                "session_id": session_id,
-                "letter": letter,
-                "previous": answer.get("previous", ""),
-                "outcome": answer.get("outcome", ""),
-                "placed_after": answer.get("placed_after", ""),
-            }
-            topic = topic_without_letter(title)
-            if topic and is_english(topic):
-                wanted = wanted_title(letter, topic)
-                try:
-                    if set_title(session_id, wanted):
-                        update_title(session_id, wanted)
-                        entry["title"] = wanted
-                except (RegistryError, ValueError) as exc:
-                    entry["error"] = str(exc)
-            out.append(entry)
+                if set_title(session_id, wanted):
+                    update_title(session_id, wanted)
+                    entry["title"] = wanted
+            except (RegistryError, ValueError) as exc:
+                entry["error"] = str(exc)
+        out.append(entry)
     failed = [e for e in out if e.get("error")]
     print(json.dumps(out, indent=2))
     return _sweep_exit_code(failed)
@@ -1359,7 +1373,6 @@ def main(argv: list[str] | None = None) -> int:
         "migrate-pairs",
         help="move this host's live MiniMax sessions into the pair space",
     )
-    mp.add_argument("--rounds", type=int, default=2)
     args = parser.parse_args(argv)
     if args.command == "hook-session-start":
         return hook_session_start()
@@ -1386,7 +1399,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return 0
     if args.command == "migrate-pairs":
-        return migrate_pairs(args.rounds)
+        return migrate_pairs()
     if args.command == "rename":
         try:
             answer = _require_registry(register(args.session_id))

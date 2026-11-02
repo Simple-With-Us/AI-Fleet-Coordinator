@@ -279,6 +279,70 @@ class MmSessionLetterTest(unittest.TestCase):
             code = M.sweep(True, topics_file=topic_file)
         return code, out.getvalue(), err.getvalue()
 
+    # --- the pair migration ---
+
+    def _migration_rows(self):
+        return [
+            {
+                "session_id": "mvs_main",
+                "title": "A: Fix the sweep",
+                "session_kind": "conversation",
+                "created_at_ms": 1,
+            },
+            {
+                "session_id": "mvs_child",
+                "title": "explore: look",
+                "session_kind": "task",
+                "parent_session_id": "mvs_main",
+                "created_at_ms": 2,
+            },
+        ]
+
+    def _run_migration(self, letters, calls):
+        def fake_relabel(session_id, parent="", force=False):
+            calls.append((session_id, parent, force))
+            return {
+                "label": "BB",
+                "previous": "A",
+                "outcome": "relabelled",
+                "placed_after": "",
+            }
+
+        with (
+            mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid: letters[sid]),
+            mock.patch.object(M, "relabel", side_effect=fake_relabel),
+            mock.patch.object(M, "cache_letter"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            return M.migrate_pairs()
+
+    def test_the_migration_moves_a_session_that_holds_a_single_letter(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "A", "mvs_child": "A"}, calls)
+        self.assertEqual(code, 0)
+        # The main chat goes first, and the child names it as its parent.
+        self.assertEqual([call[0] for call in calls], ["mvs_main", "mvs_child"])
+        self.assertEqual(calls[1][1], "mvs_main")
+
+    def test_the_migration_leaves_a_session_that_already_holds_a_pair(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "AA", "mvs_child": "AB"}, calls)
+        self.assertEqual(code, 0)
+        # The main chat holds a pair and the child holds a pair in its parent's row:  a
+        # second run of the migration finds nothing to move.
+        self.assertEqual(calls, [])
+
+    def test_the_migration_moves_a_child_that_is_not_in_its_parents_row(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "AA", "mvs_child": "BB"}, calls)
+        self.assertEqual(code, 0)
+        self.assertEqual([call[0] for call in calls], ["mvs_child"])
+        # It already holds a pair, so it has to be placed again rather than moved space.
+        self.assertTrue(calls[0][2])
+
     def test_a_secret_shaped_topic_answers_with_a_stable_code(self):
         secret = FIXTURE_SECRET
         with tempfile.TemporaryDirectory() as tmp:
@@ -543,6 +607,13 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertEqual(M.wanted_title("AA", "A: Fix the sweep"), "AA: Fix the sweep")
         self.assertEqual(M.wanted_title("AA", "AA: Fix the sweep"), "AA: Fix the sweep")
         self.assertEqual(M.wanted_title("AA", "Fix the sweep"), "AA: Fix the sweep")
+        # A letter the thread does not hold is dropped when the thread says which one it was.
+        self.assertEqual(M.wanted_title("AA", "A: Fix the sweep", ("A",)), "AA: Fix the sweep")
+
+    def test_a_topic_that_starts_with_an_acronym_keeps_it(self):
+        # Two capitals that are not a pair are an acronym, not a letter.
+        self.assertEqual(M.wanted_title("AA", "HTTP: the protocol"), "AA: HTTP: the protocol")
+        self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
 
     def test_the_registration_asks_for_a_pair_and_names_the_parent(self):
         seen = {}

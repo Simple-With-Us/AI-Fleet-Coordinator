@@ -166,6 +166,14 @@ EVENTS_HEADERS = (
 )
 
 
+class SessionClosed(ValueError):
+    """A session that is closed cannot be given another letter.
+
+    It is a ValueError, so a caller that catches ValueError still catches it, and it is
+    its own type, so a caller that cares can tell this refusal from another one.
+    """
+
+
 class LabelExhausted(RuntimeError):
     """Every letter of one space on this platform has an active assignment.
 
@@ -934,7 +942,7 @@ class SessionRegistry:
             now = _utcnow()
             row = self._get(record_id)
             if row["closed_at"]:
-                raise ValueError(
+                raise SessionClosed(
                     "session %s is closed; open a new registration instead" % record_id
                 )
             current, generation = self._active_alias(conn, record_id)
@@ -2243,6 +2251,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         except LabelExhausted as exc:
             print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
+            return 2
+        except SessionClosed as exc:
+            print(json.dumps({"error": str(exc), "code": "closed_session"}))
             return 2
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))
