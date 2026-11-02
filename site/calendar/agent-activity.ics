@@ -3190,9 +3190,9 @@ UID:1ca3c99161b510c99ed9448d88fe0dab8f8a73d4-AI-Fleet-Coordinator@AI-Fleet-
 DTSTAMP:20260927T002535Z
 DTSTART:20260923T231335Z
 DTEND:20260923T233335Z
-SUMMARY:[AI-Fleet-Coordinator] docs(agent-sync): no merge while Codex revie
+SUMMARY:[AI-Fleet-Coordinator] docs(retired name): no merge while Codex revie
  w is pending (owner ruling 2026-09-23) (#281)
-DESCRIPTION:Repo: AI-Fleet-Coordinator\nCommit: 1ca3c991\ndocs(agent-sync):
+DESCRIPTION:Repo: AI-Fleet-Coordinator\nCommit: 1ca3c991\ndocs(retired name):
   no merge while Codex review is pending (owner ruling 2026-09-23) (#281)\n
  https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/commit/1ca3c99161b
  510c99ed9448d88fe0dab8f8a73d4
@@ -6190,7 +6190,7 @@ UID:a95046133f888925d841c3fe61aa287c25927d5f-AI-Fleet-Coordinator@AI-Fleet-
 DTSTAMP:20260927T002535Z
 DTSTART:20260917T180748Z
 DTEND:20260917T182748Z
-SUMMARY:[AI-Fleet-Coordinator] docs: sync AGENT-SYNC.md mirror to live (Mac
+SUMMARY:[AI-Fleet-Coordinator] docs: sync retired name.md mirror to live (Mac
   app builds\, Fleet mode/delegation) (#255)
 DESCRIPTION:Repo: AI-Fleet-Coordinator\nCommit: a9504613\ndocs: sync AGENT-
  SYNC.md mirror to live (Mac app builds\, Fleet mode/delegation) (#255)\nht
@@ -6262,9 +6262,9 @@ DTSTAMP:20260927T002535Z
 DTSTART:20260917T161330Z
 DTEND:20260917T163330Z
 SUMMARY:[AI-Fleet-Coordinator] docs: name needs-mac label and request-mac-s
- eat.sh in AGENT-SYNC.md (#250)
+ eat.sh in retired name.md (#250)
 DESCRIPTION:Repo: AI-Fleet-Coordinator\nCommit: 0f1b87c8\ndocs: name needs-
- mac label and request-mac-seat.sh in AGENT-SYNC.md (#250)\nhttps://github.
+ mac label and request-mac-seat.sh in retired name.md (#250)\nhttps://github.
  com/jaywedgeworth22/AI-Fleet-Coordinator/commit/0f1b87c82d03bef7d1eb5f06ff
  9af0bec326a440
 URL:https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/commit/0f1b87c8

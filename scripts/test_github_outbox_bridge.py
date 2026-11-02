@@ -277,13 +277,13 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(bridge.parse_concat_json(""), [])
 
     def test_no_credential_is_read_into_this_process(self):
-        # The bridge used to parse SLACK_BOT_TOKEN / AGENT_SYNC_POST_TOKEN out of a
+        # The bridge used to parse retired Slack / relay credentials out of a
         # KEY=value file.  It now holds no credential at all: the simple-chat CLI and
         # the --rc file path resolve the seat's own Zulip key.  This test pins that.
         self.assertEqual(bridge.TOKEN_NAMES, ())
         with tempfile.TemporaryDirectory() as tmp:
-            env = Path(tmp) / "agent-sync.env"
-            env.write_text('export SLACK_BOT_TOKEN="xoxb-abc"\nAGENT_SYNC_POST_TOKEN=post-1\n')
+            env = Path(tmp) / "retired-relay.env"
+            env.write_text('export SLACK_BOT_TOKEN="xoxb-abc"\nRETIRED_POST_TOKEN=post-1\n')
             self.assertEqual(bridge.load_env_tokens(env), {})
             self.assertEqual(bridge.load_env_tokens(Path(tmp) / "missing.env"), {})
 

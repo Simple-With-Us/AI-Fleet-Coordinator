@@ -67,8 +67,8 @@ const REQUEST_TIMEOUT_MS = 20_000;
 // recurring post, so it threads in a single standing topic.
 const DIGEST_TOPIC = "fleet-mode digest";
 // cron and launchd run with a minimal PATH, so call the CLI by absolute path.
-const AGENT_SYNC_BIN =
-  process.env.AGENT_SYNC_BIN || `${process.env.HOME}/.local/bin/agent-sync`;
+const SIMPLE_CHAT_BIN =
+  process.env.SIMPLE_CHAT_BIN || `${process.env.HOME}/.local/bin/simple-chat`;
 
 // Claude-family tier vocabulary, mirroring
 // ~/.claude/hooks/subagent-economy-pretooluse.py's resolve_tier: bare tier
@@ -407,7 +407,7 @@ function postToZulip(text) {
   // Zulip needs a channel AND a topic on every message, so the topic is passed
   // explicitly rather than left to the transport.
   const result = spawnSync(
-    AGENT_SYNC_BIN,
+    SIMPLE_CHAT_BIN,
     ["post", "--as", "CLAUDE", "--topic", DIGEST_TOPIC, text],
     {
       env: { ...process.env },
@@ -416,11 +416,11 @@ function postToZulip(text) {
     },
   );
   if (result.error) {
-    throw new Error(`agent-sync failed to launch: ${result.error.message}`);
+    throw new Error(`simple-chat failed to launch: ${result.error.message}`);
   }
   if (result.status !== 0) {
     throw new Error(
-      `agent-sync exited ${result.status}: ${(result.stderr || "").trim()}`,
+      `simple-chat exited ${result.status}: ${(result.stderr || "").trim()}`,
     );
   }
   return result.stdout;
@@ -462,7 +462,7 @@ async function main() {
     process.exit(0);
   }
 
-  log("posting via agent-sync, to the channel the CLI resolves");
+  log("posting via simple-chat, to the channel the CLI resolves");
   postToZulip(message);
   log("posted.");
 }

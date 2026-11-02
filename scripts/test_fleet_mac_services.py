@@ -416,7 +416,7 @@ class RepoTemplates(unittest.TestCase):
                 data = plistlib.load(handle)
             args = data["ProgramArguments"]
             self.assertEqual(args[:2], ["/usr/bin/python3", "-I"])
-            self.assertTrue(args[2].endswith("/agent-sync-runtime/scripts/" + script), args[2])
+            self.assertTrue(args[2].endswith("/simple-tools-runtime/scripts/" + script), args[2])
             self.assertTrue(os.path.isfile(os.path.join(HERE, script)))
             self.assertEqual(data["StartInterval"], interval)
             self.assertTrue(data["RunAtLoad"])

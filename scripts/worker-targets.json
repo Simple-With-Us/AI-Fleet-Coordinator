@@ -1,10 +1,10 @@
 {
-  "agent-sync-mcp": {
+  "simple-tools-mcp": {
     "command": [
-      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+      "scripts/simple-tools-mcp/node_modules/.bin/wrangler",
       "deploy",
       "--config",
-      "scripts/agent-sync-mcp/wrangler.jsonc"
+      "scripts/simple-tools-mcp/wrangler.jsonc"
     ],
     "health": "https://agents.simplewithus.com/health",
     "ok": true,
@@ -12,7 +12,7 @@
   },
   "alert-ingress": {
     "command": [
-      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+      "scripts/simple-tools-mcp/node_modules/.bin/wrangler",
       "deploy",
       "--config",
       "workers/alert-ingress/wrangler.toml"
@@ -23,7 +23,7 @@
   },
   "pr-conflict-watch": {
     "command": [
-      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
+      "scripts/simple-tools-mcp/node_modules/.bin/wrangler",
       "deploy",
       "--config",
       "workers/pr-conflict-watch/wrangler.toml"

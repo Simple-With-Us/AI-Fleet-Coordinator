@@ -52,10 +52,10 @@ class StripHeader(unittest.TestCase):
         )
 
 
-class AgentSyncRows(unittest.TestCase):
+class ProtocolRows(unittest.TestCase):
     def test_a_headered_copy_with_every_row_passes(self) -> None:
         text = HEADER.format(sha="b" * 64) + FULL_BODY
-        self.assertEqual(reg.agent_sync_errors(APPS, text, "coordinator FLEET-PROTOCOL.md"), [])
+        self.assertEqual(reg.simple_tools_errors(APPS, text, "coordinator FLEET-PROTOCOL.md"), [])
 
     def test_the_header_cannot_stand_in_for_a_missing_row(self) -> None:
         # The header holds "Fleet-OPS", so "OPS" and (case-folded) "fleet-ops" are both substrings of it.
@@ -63,14 +63,14 @@ class AgentSyncRows(unittest.TestCase):
         text = HEADER.format(sha="c" * 64) + body
         self.assertIn("OPS", text)
         self.assertEqual(
-            reg.agent_sync_errors(APPS, text, "coordinator FLEET-PROTOCOL.md"),
+            reg.simple_tools_errors(APPS, text, "coordinator FLEET-PROTOCOL.md"),
             [
                 "coordinator FLEET-PROTOCOL.md missing repo fleet-ops",
                 "coordinator FLEET-PROTOCOL.md missing acronym OPS",
             ],
         )
         self.assertEqual(
-            reg.agent_sync_errors(APPS, text, "~/apps/FLEET-PROTOCOL.md", fold_repo=True),
+            reg.simple_tools_errors(APPS, text, "~/apps/FLEET-PROTOCOL.md", fold_repo=True),
             [
                 "~/apps/FLEET-PROTOCOL.md missing repo fleet-ops",
                 "~/apps/FLEET-PROTOCOL.md missing acronym OPS",
@@ -80,10 +80,10 @@ class AgentSyncRows(unittest.TestCase):
     def test_live_copy_ignores_repo_case_but_not_acronym_case(self) -> None:
         text = "fleet-ops and ops, DEALDEX and DD\n"
         self.assertEqual(
-            reg.agent_sync_errors(APPS, text, "live", fold_repo=True), ["live missing acronym OPS"]
+            reg.simple_tools_errors(APPS, text, "live", fold_repo=True), ["live missing acronym OPS"]
         )
         self.assertEqual(
-            reg.agent_sync_errors(APPS, text, "coordinator"),
+            reg.simple_tools_errors(APPS, text, "coordinator"),
             ["coordinator missing acronym OPS", "coordinator missing repo DealDex"],
         )
 
