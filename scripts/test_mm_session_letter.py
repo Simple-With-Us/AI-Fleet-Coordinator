@@ -1295,3 +1295,125 @@ class MmSessionLetterTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MmLetterReopenTest(unittest.TestCase):
+    """A session the registry swept while its chat was live gets its letter back.
+
+    The sweep ends a session's letter when the session has not been seen for the stale
+    window and another session for the same seat has taken over since.  The MiniMax
+    path has to reopen the session when the chat comes back to life:  without it the
+    registry keeps no letter for a live chat, so a reply addressed to this seat by its
+    pair has nothing to resolve to, and the next chat can take the same pair a second
+    time.
+
+    These tests use the real registry and the real registry CLI against a temporary
+    registry file, so the whole path is exercised rather than a stand-in for it.
+    """
+
+    # Synthetic:  the accepted session-ID shape, never a real native session.
+    OTHER_SESSION_ID = "mvs_test0000000000000000000000000002"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        self.scripts = os.path.dirname(os.path.abspath(M.__file__))
+        self.scope = os.path.join(self.tmp.name, "v2", "hook-data", "user", "session-letters")
+        # The script never brings a registry into being, so the file is created here.
+        from agent_sync import operator_registry as R
+
+        R.SessionRegistry(self.db).close_db()
+
+    def _env(self):
+        return mock.patch.dict(
+            os.environ,
+            {
+                "AGENT_SYNC_OPERATOR_REGISTRY": self.db,
+                "MINIMAX_HOOKS_DATA": "",
+                "MINIMAX_DATA_DIR": self.tmp.name,
+            },
+        )
+
+    def _registry(self):
+        from agent_sync import operator_registry as R
+
+        reg = R.SessionRegistry(self.db)
+        self.addCleanup(reg.close_db)
+        return reg
+
+    def _write_cache(self, session_id, letter):
+        os.makedirs(self.scope, exist_ok=True)
+        with open(os.path.join(self.scope, session_id + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"letter": letter, "host": "mac", "space": "double"}, fh)
+
+    def _register(self, session_id):
+        with self._env(), mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts):
+            return M.register(session_id, "AA: Swept thread", "")
+
+    def _letter_for(self, session_id):
+        with self._env(), mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts):
+            return M.letter_for(session_id, "AA: Swept thread", "")
+
+    def test_a_swept_session_that_comes_back_to_life_gets_its_letter_back(self):
+        first = self._register(SESSION_ID)
+        self.assertEqual(first["label"], "AA")
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        self.assertIsNotNone(reg._get(first["record_id"])["closed_at"])
+        # The cache still holds the letter the live chat had.
+        self._write_cache(SESSION_ID, "AA")
+        self.assertEqual(self._letter_for(SESSION_ID), "AA")
+        # The registry holds it again, so a reply addressed to the pair resolves.
+        self.assertIsNone(reg._get(first["record_id"])["closed_at"])
+
+    def test_a_reopened_session_holds_a_pair_again_when_its_letter_went_to_another_chat(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        # Another chat takes AA while the first one is away.
+        second = self._register(self.OTHER_SESSION_ID)
+        self.assertEqual(second["label"], "AA")
+        self._write_cache(SESSION_ID, "AA")
+        letter = self._letter_for(SESSION_ID)
+        # The chat comes back with a pair, never with a single letter.
+        self.assertEqual(len(letter), 2)
+        self.assertNotEqual(letter, "AA")
+        # The cache is this seat's own copy of the letter, so it follows what the
+        # registry now says.
+        with self._env():
+            self.assertEqual(M.cached_letter(SESSION_ID), letter)
+
+    def test_a_reopen_that_cannot_be_done_keeps_the_cached_letter(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(
+                M, "touch_session", return_value={"record_id": "r1", "outcome": "closed"}
+            ),
+            mock.patch.object(
+                M,
+                "reopen_closed",
+                side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
+            ),
+            mock.patch.object(M, "cached_letter", return_value="AA"),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "AA")
+        self.assertIn("Could not reopen", err.getvalue())
+
+    def test_the_letter_command_reopens_a_closed_session(self):
+        first = self._register(SESSION_ID)
+        reg = self._registry()
+        reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
+        out = io.StringIO()
+        with (
+            self._env(),
+            mock.patch.object(M, "repo_scripts_dir", return_value=self.scripts),
+            mock.patch.object(M, "sessions", return_value=[]),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.main(["letter", "--session-id", SESSION_ID])
+        self.assertEqual(code, 0)
+        answer = json.loads(out.getvalue())
+        self.assertEqual(answer["label"], "AA")
+        self.assertIsNone(reg._get(first["record_id"])["closed_at"])

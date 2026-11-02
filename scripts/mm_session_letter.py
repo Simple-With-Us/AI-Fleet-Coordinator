@@ -433,7 +433,15 @@ def register(session_id: str, title: str = "", parent_session_id: str = "") -> d
     if title:
         _scan_title(title)
         args += ["--title=" + title]
-    return _require_registry(registry_call(args))
+    answer = _require_registry(registry_call(args))
+    if answer.get("outcome") == "resumed_closed":
+        # The registry swept this session's letter while the chat was live.  A resume of
+        # a closed registration is the cue to issue a letter again, so the chat does not
+        # come back empty-handed while a letter can be freed.
+        record_id = str(answer.get("record_id") or "")
+        if record_id:
+            answer = reopen_closed(record_id, parent_session_id)
+    return answer
 
 
 def relabel(session_id: str, parent_session_id: str = "", force: bool = False) -> dict:
@@ -472,6 +480,53 @@ def touch_session(session_id: str) -> dict:
             ]
         )
     )
+
+
+def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
+    """Give a closed session a letter again.
+
+    A resume of a closed registration is the Operator's cue to issue a letter again, so
+    a live chat never comes back empty-handed while a letter can be freed.  The shared
+    helper keeps the pair space:  a chat that held a pair comes back with a pair, and a
+    reopen that would hand it a single letter is refused before anything is written.
+
+    The registry is opened here rather than through the CLI, because the CLI has no
+    reopen verb.  It is the same file the CLI is pointed at, and the same writer.
+    """
+    db = registry_db()
+    if not db:
+        raise RegistryError("the operator registry is not available on this host", "no_registry")
+    from agent_sync import operator_registry as OR
+    from agent_sync import platform_letter
+
+    reg = OR.SessionRegistry(db)
+    try:
+        letter, generation, previous = platform_letter.operator_reopen(
+            OR,
+            db,
+            reg,
+            record_id,
+            actor=SEAT,
+            source="the MM seat's session-letter hook",
+            pick=LETTER_PICK,
+            parent=parent_session_id,
+        )
+    except platform_letter.SpaceLost as exc:
+        # A chat that held a pair would come back with a single letter.  That is refused
+        # before anything is written, and the chat waits for a pair instead.
+        raise RegistryError(str(exc), "space_lost", "reopen_refused")
+    except OR.LabelExhausted as exc:
+        # Every letter in the space is live, so there is nothing to hand back.
+        raise RegistryError(str(exc), "label_exhausted", "reopen_refused")
+    finally:
+        reg.close_db()
+    return {
+        "record_id": record_id,
+        "label": letter,
+        "generation": generation,
+        "previous": previous,
+        "outcome": "reopened",
+    }
 
 
 def update_title(session_id: str, title: str, directories: list[str] | None = None) -> dict:
@@ -961,7 +1016,7 @@ def letter_for(
     letter = cached_letter(session_id, directories)
     if letter:
         try:
-            touch_session(session_id)
+            touched = touch_session(session_id)
         except RegistryError as exc:
             if strict_touch:
                 raise
@@ -973,11 +1028,61 @@ def letter_for(
             # quiet.
             if getattr(exc, "code", "") != "no_registry":
                 sys.stderr.write("Could not stamp the session as seen: %s\n" % exc)
+        else:
+            if touched.get("outcome") == "closed":
+                # The sweep ended this session's letter while the chat was live, and the
+                # cache still holds the letter it had.  The registry has to hold it too,
+                # or a reply addressed to this seat by its pair has nothing to resolve
+                # to and the next chat can take the same pair a second time.
+                letter = _reopen_after_sweep(
+                    session_id,
+                    str(touched.get("record_id") or ""),
+                    letter,
+                    parent_session_id,
+                    directories,
+                )
         return letter
     answer = _require_registry(register(session_id, topic, parent_session_id), needs_label=True)
     letter = str(answer.get("label") or "")
     if letter:
         cache_letter(session_id, letter, topic, LETTER_SPACE, directories)
+    return letter
+
+
+def _reopen_after_sweep(
+    session_id: str,
+    record_id: str,
+    cached: str,
+    parent_session_id: str,
+    directories: list[str] | None,
+) -> str:
+    """The registry swept this live session's letter; give it a letter back.
+
+    The letter it gets back is usually the one it held, but it is a new one when that
+    letter has since gone to another chat.  The cache is this seat's own copy of the
+    letter, so it has to follow what the registry now says.
+
+    A reopen that cannot be done is not a reason to lose the letter the cache holds:
+    the chat keeps working, and the fault is reported.
+    """
+    if not record_id:
+        sys.stderr.write("The registry gave no record id for the closed session %s\n" % session_id)
+        return cached
+    try:
+        answer = reopen_closed(record_id, parent_session_id)
+    except (RegistryError, ValueError) as exc:
+        sys.stderr.write("Could not reopen the closed session %s: %s\n" % (session_id, exc))
+        return cached
+    letter = str(answer.get("label") or "")
+    if not letter:
+        return cached
+    if letter != cached:
+        try:
+            cache_letter(session_id, letter, "", LETTER_SPACE, directories)
+        except (RegistryError, ValueError) as exc:
+            # The registry holds the letter, so the chat still answers to it.  The cache
+            # is the seat's own copy, and a refusal to write it is reported.
+            sys.stderr.write("Could not cache the reopened letter: %s\n" % exc)
     return letter
 
 
