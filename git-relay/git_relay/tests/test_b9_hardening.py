@@ -109,7 +109,7 @@ class TestAuditKeyMeaning(unittest.TestCase):
         self.assertEqual(row["branch"], "feature/x")
 
     def test_long_token_like_value_hashes_but_identifiers_stay(self):
-        token_like = "Zx9Qw8Er7Ty6Ui5Op4As3Df2Gh1Jk0LzXcVbNmQa"
+        token_like = "T0k_" + "aB3-" * 9 + "Zz9"
         row, raw = self._record(
             {"note": token_like, "sha": "a" * 40, "clientSecret": "camel-secret-1"}
         )
