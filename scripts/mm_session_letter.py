@@ -522,6 +522,40 @@ def set_title(session_id: str, title: str) -> bool:
     return True
 
 
+def apply_title(session_id: str, letter: str, topic: str) -> str:
+    """Put "<letter>: <topic>" on the thread and carry the topic to the registry.
+
+    The title in the seat's form is written in the session store and the topic
+    (never the prefix) goes to the Operator registry.  A thread that already
+    carries the letter is left as it is, so a call is safe to repeat.  Returns
+    the title now in place, or "" when there is no topic yet or nothing could
+    be written:  a hook never fails a session over a title.
+    """
+    topic = (topic or "").strip()
+    if not letter or not topic:
+        return ""
+    title = wanted_title(letter, topic)
+    if topic != title:
+        try:
+            if not set_title(session_id, title):
+                return ""
+        except ValueError:
+            # The title carried a credential:  the refusal names the problem and
+            # never the value.
+            return ""
+    try:
+        update_title(session_id, title)
+    except RegistryError:
+        # The thread carries the title in the store;  the registry copy is a
+        # second copy, and the sweep carries it later.
+        pass
+    except ValueError:
+        # The title carried a credential.  Nothing is printed back, because
+        # the caller prints what this returns.
+        return ""
+    return title
+
+
 # ---- the title form ---------------------------------------------------------------
 
 
@@ -531,6 +565,11 @@ def is_english(text: str) -> bool:
         if unicodedata.category(ch).startswith("L") and ord(ch) > 127:
             return False
     return True
+
+
+def placeholder_title(letter: str) -> str:
+    """The title a thread carries while it has no topic of its own yet."""
+    return "%s: Session %s" % (letter, letter)
 
 
 def wanted_title(letter: str, topic: str) -> str:
@@ -709,8 +748,14 @@ def hook_session_id(payload: dict) -> str:
     return text if SESSION_ID_RE.fullmatch(text) else ""
 
 
+NO_LETTER = (
+    "Session letter: none yet (the Operator could not be reached).  Name this thread "
+    "in English; if a letter arrives later, prefix the title with it."
+)
+
+
 def hook_session_start() -> int:
-    """Give the session its letter, and tell the agent the two forms it must use."""
+    """Give the session its letter, title the thread, and tell the agent the forms it must use."""
     payload = read_hook_input()
     session_id = hook_session_id(payload)
     if not session_id:
@@ -721,26 +766,38 @@ def hook_session_start() -> int:
         letter = letter_for(session_id, str(row.get("title") or ""), space)
     except (RegistryError, ValueError) as exc:
         _report_registry_fault(exc)
-        print(
-            "Session letter: none yet (the Operator could not be reached).  Name this thread "
-            "in English; if a letter arrives later, prefix the title with it."
-        )
+        print(NO_LETTER)
         return 0
     if not letter:
-        print(
-            "Session letter: none yet (the Operator could not be reached).  Name this thread "
-            "in English; if a letter arrives later, prefix the title with it."
-        )
+        print(NO_LETTER)
         return 0
-    print(
-        "Session letter: %s.  Two rules for this session:\n"
-        '1. Name this thread in English and start the title with the letter: "%s: <topic>".\n'
-        "2. State the letter early in every Zulip post and every board item you file — the "
-        'first line, for example "%s: what this post is about" — so a reply knows where it '
-        "is going.\n"
-        "The registry carries the same title under the session id %s."
-        % (letter, letter, letter, session_id)
+    title = apply_title(session_id, letter, str(row.get("title") or ""))
+    if title:
+        third = (
+            '3. The thread is titled "%s" now.  Rename it with the session-title tool to '
+            '"%s: <a short topic in English>" once you know the work, and do it before you finish.\n'
+            % (title, letter)
+        )
+    else:
+        # A title that was refused, or none at all:  a title that was never
+        # written is never printed back.
+        third = (
+            "3. The thread has no usable title yet.  Rename it with the session-title tool to "
+            '"%s: <a short topic in English>" once you know the work, and do it before you finish.\n'
+            % (letter,)
+        )
+    message = (
+        (
+            "Session letter: %s.  Three rules for this session:\n"
+            '1. Name this thread in English and start the title with the letter: "%s: <topic>".\n'
+            "2. State the letter early in every Zulip post and every board item you file — the "
+            'first line, for example "%s: what this post is about" — so a reply knows where it '
+            "is going.\n" % (letter, letter, letter)
+        )
+        + third
+        + ("The registry carries the same title under the session id %s." % session_id)
     )
+    print(message)
     return 0
 
 
@@ -822,6 +879,8 @@ def hook_stop() -> int:
         return 0
     title = str(row.get("title") or "")
     ok, why = title_ok(title, letter)
+    if ok and title.strip() == placeholder_title(letter):
+        ok, why = False, "it still carries the placeholder topic"
     if ok:
         try:
             update_title(session_id, title)
