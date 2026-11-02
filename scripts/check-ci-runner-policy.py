@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """check-ci-runner-policy.py -- flag a live local Mac Actions runner that
-contradicts FLEET-PROTOCOL.md's local-Mac self-hosted runner ban (CI Runners section).
+contradicts the local-Mac self-hosted runner ban in AGENTS.md (CI runners section).
 
 Compares the live process inventory (default ~/apps/MAC-LOCAL-PROCESSES.md,
 which is NOT tracked in this repo) against the ban stated in this repo's
-FLEET-PROTOCOL.md § CI Runner Infrastructure Policy. Exits 1 and prints one line
+AGENTS.md § CI runners.  The ban lived in FLEET-PROTOCOL.md until the Fleet-OPS
+handbook rewrite made that file a tools manual and moved policy to AGENTS.md. Exits 1 and prints one line
 per offender if any inventory row looks like a self-hosted GitHub Actions
 runner (an `actions.runner...` label, or a `mac-xcode*` / `trading-live-mac*`
 process) whose status column says it is live (Always-on / Up / Running /
@@ -31,13 +32,10 @@ import re
 import sys
 
 DEFAULT_INVENTORY = pathlib.Path("~/apps/MAC-LOCAL-PROCESSES.md").expanduser()
-# The protocol document is being renamed;  the mirror holds it under exactly one of the two names (check-generated-mirror.py).
-# Remove the old name when the rename is complete.
+# The ban lives in AGENTS.md:  the Fleet-OPS handbook rewrite (Fleet-OPS #203) made the
+# FLEET-PROTOCOL.md mirror a tools manual and moved policy prose to AGENTS.md.
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-DEFAULT_POLICY = next(
-    (p for p in (_ROOT / "FLEET-PROTOCOL.md",) if p.is_file()),
-    _ROOT / "FLEET-PROTOCOL.md",
-)
+DEFAULT_POLICY = _ROOT / "AGENTS.md"
 
 RUNNER_ROW_RE = re.compile(
     r"actions\.runner|self-hosted runner|mac-xcode|trading-live-mac", re.IGNORECASE
@@ -83,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     policy_text = args.policy.read_text()
     if not policy_states_ban(policy_text):
         print(
-            "WARNING: FLEET-PROTOCOL.md no longer states the local-Mac-runner ban "
+            "WARNING: AGENTS.md no longer states the local-Mac-runner ban "
             "verbatim; this lint has nothing to check against. Update the "
             "pattern in POLICY_BAN_RE if the wording changed on purpose.",
             file=sys.stderr,

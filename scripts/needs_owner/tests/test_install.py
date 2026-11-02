@@ -120,9 +120,7 @@ class InstallTests(unittest.TestCase):
     def test_the_stable_copy_does_real_work(self) -> None:
         """A dry run through the stable copy reaches the F3 helpers it loaded by path (identity, secretscan, textsafe)."""
         self.assertEqual(self.install("--apply").returncode, 0)
-        probe = unittest.TestCase()
-        world = World(probe)
-        self.addCleanup(shutil.rmtree, world.root, True)
+        world = World(self)
         env = world.env()
         env["HOME"] = str(self.home)
         ran = self.isolated("file", "--by", "CLAUDE", "--app", "AFC", "--question", "Is the copy complete?", "--option", "Yes",

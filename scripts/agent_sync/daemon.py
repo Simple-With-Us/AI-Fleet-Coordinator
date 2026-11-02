@@ -4526,7 +4526,10 @@ class Daemon:
             if not hasattr(self, "_chat_catalog"):
                 from .chat_catalog import ChatCatalog
 
-                self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
+                # Four hundred newest rows (AFC-578):  the per-store scans stay bounded,
+                # recency only orders this window, and a tagged chat older than it is
+                # found by id in addressed_row instead of widening it further.
+                self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=400)
             return self._chat_catalog
 
     def chat_queue(self, seat: str) -> CN.ChatNudges:
@@ -4839,6 +4842,12 @@ class Daemon:
         asked, and the one whose holder matches a row is the answer.  A letter nobody
         holds names no row, and a registry that cannot be read names no row either;
         neither breaks the wake.
+
+        The rows are only the newest chats under the catalog cap, so a holder with no
+        row among them may still be a live chat that is simply older (AFC-578).  That
+        one chat is then looked up by its native id in the catalog's own store, and
+        the row it builds joins the wake exactly as a discovered row would.  Recency
+        still decides the order of every untagged list;  only who can be woken widens.
         """
         want = str(letter or "").strip().upper()
         if not want or not rows:
@@ -4849,6 +4858,7 @@ class Daemon:
             namespace = OR.normalize_platform(str(row.get("platform") or ""))
             if namespace and namespace not in namespaces:
                 namespaces.append(namespace)
+        resolved: list[tuple[str, str, str]] = []
         for namespace in namespaces:
             try:
                 found = OR.resolve_label(db_path, namespace, want)
@@ -4860,7 +4870,28 @@ class Daemon:
             seat = str(found.get("seat") or "").upper()
             if not native:
                 continue
+            resolved.append((namespace, native, seat))
             for row in rows:
+                if str(row.get("session_id") or "") != native:
+                    continue
+                if seat and str(row.get("seat") or "").upper() != seat:
+                    continue
+                return row
+        # No discovered row holds the letter, so look each resolved chat up by id.  A
+        # catalog with no by-id lookup, or a lookup that fails, names no row and the
+        # wake goes on without it, exactly as it did before this fallback existed.
+        try:
+            finder = getattr(self.chat_catalog(), "find", None)
+        except Exception:
+            finder = None
+        if callable(finder):
+            for namespace, native, seat in resolved:
+                try:
+                    row = finder(namespace, native)
+                except Exception:
+                    continue
+                if not isinstance(row, dict):
+                    continue
                 if str(row.get("session_id") or "") != native:
                     continue
                 if seat and str(row.get("seat") or "").upper() != seat:

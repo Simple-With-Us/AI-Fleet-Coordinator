@@ -215,6 +215,20 @@ SHAPES = (
 
 NBSP = " "
 
+# AFC-510 (owner Nov 1 2026):  no gap when a sentence ends at a line break, a blank line,
+# or the end of the text.  The composite body holds (a) a newline between sentences,
+# (b) a blank line between paragraphs, and a same-line pair that must still convert.
+LINE_END_UNCHANGED_PREFIX = (
+    "First sentence.\nNext sentence.\n\nEnd of paragraph.\n\nNew paragraph.\n"
+)
+LINE_END_SAME_LINE_PAIR = "Same line.  Gapped here.\n"
+LINE_END_COMPOSITE_BODY = LINE_END_UNCHANGED_PREFIX + LINE_END_SAME_LINE_PAIR
+
+EOF_LINE_END_BODIES = (
+    ("no_trailing_newline", "Ends at text."),
+    ("trailing_newline", "Ends at text.\n"),
+)
+
 # The converter runs through perl, because that is how the fleet produces the gap.
 HAVE_PERL = shutil.which("perl") is not None
 HAVE_BASH = shutil.which("bash") is not None
@@ -433,6 +447,61 @@ class ConverterBehaviourTests(unittest.TestCase):
     def test_a_body_with_no_gaps_at_all_still_converts(self) -> None:
         out = convert(self.pattern, "First.  Second.  Third.\n")
         self.assertEqual(out.count(NBSP), 2)
+
+    def test_line_end_closes_stay_byte_for_byte_and_same_line_still_gaps(self) -> None:
+        """AFC-510:  newline and blank-line sentence ends take no gap;  same-line still does."""
+        body = LINE_END_COMPOSITE_BODY
+        out = convert(self.pattern, body)
+        self.assertEqual(
+            out[: len(LINE_END_UNCHANGED_PREFIX)],
+            LINE_END_UNCHANGED_PREFIX,
+            "line-break and paragraph-end closes must stay byte for byte",
+        )
+        self.assertEqual(out.count(NBSP), 1, "only the same-line pair may gain a gap")
+        self.assertIn(
+            "Same line." + NBSP + " Gapped here.",
+            out,
+            "the same-line pair in the same body must still convert",
+        )
+
+    def test_eof_sentence_closes_stay_byte_for_byte(self) -> None:
+        """AFC-510:  a sentence at end of text, with or without a trailing newline, stays alone."""
+        for name, body in EOF_LINE_END_BODIES:
+            with self.subTest(case=name):
+                out = convert(self.pattern, body)
+                self.assertEqual(out, body, "end-of-text closes must not gain a gap")
+                self.assertNotIn(NBSP, out)
+
+
+@unittest.skipUnless(HAVE_PERL and HAVE_BASH, "perl or bash is not on PATH")
+class LineEndAssertionTests(unittest.TestCase):
+    """AFC-510:  the shipped leftover check must not flag line-end closes as missed gaps."""
+
+    def setUp(self) -> None:
+        with open(ONE_HOME, encoding="utf-8") as fh:
+            text = fh.read()
+        self.pattern = one_home_patterns()[0]
+        _, self.leftover_pattern = assertion_patterns(text)
+
+    def _leftover_command(self, path: Path) -> str:
+        return "grep -cE $'%s' '%s'" % (self.leftover_pattern, path)
+
+    def test_converted_line_end_bodies_carry_no_leftover(self) -> None:
+        bodies = (
+            LINE_END_COMPOSITE_BODY,
+            "First.\nSecond.\n\nThird.\n",
+        ) + tuple(body for _, body in EOF_LINE_END_BODIES)
+        for body in bodies:
+            with self.subTest(body=body.split("\n", 1)[0]):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "body.nbsp.txt"
+                    path.write_text(convert(self.pattern, body), encoding="utf-8")
+                    leftover = run_grep(self._leftover_command(path))
+                self.assertEqual(
+                    leftover,
+                    0,
+                    "line-end closes must not read as a missed same-line gap",
+                )
 
 
 @unittest.skipUnless(HAVE_GIT, "git is not on PATH")

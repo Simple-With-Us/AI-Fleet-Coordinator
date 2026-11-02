@@ -427,6 +427,91 @@ class MmSessionLetterTest(unittest.TestCase):
                 ):
                     self.assertEqual(M.hook_pre_tool_use(), 0)
 
+    def test_the_session_start_hook_titles_the_thread_with_its_letter(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "Fix The Build", "session_kind": "conversation"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}) as update_title,
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_called_once_with(SESSION_ID, "B: Fix The Build")
+        update_title.assert_called_once_with(SESSION_ID, "B: Fix The Build")
+
+    def test_a_thread_that_already_carries_its_letter_is_not_rewritten(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": "B: Fix The Build",
+            "session_kind": "conversation",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}),
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_not_called()
+
+    def test_a_thread_without_a_title_is_left_for_the_stop_path(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "", "session_kind": "conversation"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}),
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_not_called()
+
+    def test_a_title_with_a_credential_is_never_written_or_printed(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": "Deploy with " + FIXTURE_SECRET,
+            "session_kind": "conversation",
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stdout", stdout),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", side_effect=ValueError("secret_detected")),
+            mock.patch.object(M, "update_title", return_value={}) as update_title,
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        update_title.assert_not_called()
+        self.assertNotIn(FIXTURE_SECRET, stdout.getvalue())
+
+    def test_the_stop_hook_asks_for_a_real_topic_when_the_title_is_the_placeholder(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": M.placeholder_title("B"),
+            "session_kind": "conversation",
+        }
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+        ):
+            self.assertEqual(M.hook_stop(), 2)
+        self.assertIn("placeholder topic", stderr.getvalue())
+
     def test_hooks_read_the_session_table_once(self):
         payload = json.dumps(
             {"session_id": SESSION_ID, "tool_name": "zulip_post", "tool_input": {"body": "M: hi"}}

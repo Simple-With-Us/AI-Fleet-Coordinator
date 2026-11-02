@@ -21,6 +21,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -936,6 +937,61 @@ class AddressedRowTests(DaemonHarness):
         context = d.chat_context(r, p, None, "A")
         titles = [str(row.get("title")) for row in context]
         self.assertIn("Session 39", titles)
+
+    def test_a_tagged_older_chat_is_found_beyond_the_catalog_cap(self) -> None:
+        # Twenty real chats under a twenty-row catalog cap:  discover() keeps only
+        # the newest sessions, so the oldest chat is not among its rows at all.
+        # A message that tags that older chat by its letter still wakes with it,
+        # while an untagged wake keeps ranking by recency and never sees it.
+        d, r, p = self.setup_rows([self.row()])
+        project = Path(self.home) / ".claude/projects/project"
+        project.mkdir(parents=True)
+        for index in range(20):
+            events = [
+                {"type": "custom-title", "customTitle": "Session %d" % index},
+                {
+                    "type": "user",
+                    "cwd": "/repo",
+                    "timestamp": 1000 + index,
+                    "message": {"content": "question"},
+                },
+            ]
+            (project / ("session-%02d.jsonl" % index)).write_text(
+                "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+            )
+
+        class _EmptyTransport:
+            def discover(self, **_kwargs):
+                return []
+
+        catalog = CC.ChatCatalog(
+            home=self.home,
+            scrub=d.scrub,
+            max_records=20,
+            host="test-host",
+            grok_transport=_EmptyTransport(),
+            cursor_transport=_EmptyTransport(),
+            clock=lambda: 100.0,
+        )
+        d._chat_catalog = catalog
+        discovered = [str(row.get("title")) for row in catalog.discover()]
+        self.assertIn("Session 19", discovered)
+        self.assertNotIn("Session 0", discovered)
+        made = self.register(
+            d,
+            platform="claude",
+            seat="CLAUDE",
+            native_session_id="session-00",
+            title="Session 0",
+        )
+        letter = str(made["label"])
+        context = d.chat_context(r, p, None, letter)
+        self.assertEqual(context[0]["title"], "Session 0")
+        self.assertEqual(context[0]["label"], letter)
+        untagged = d.chat_context(r, p, None, "")
+        untagged_titles = [str(row.get("title")) for row in untagged]
+        self.assertNotIn("Session 0", untagged_titles)
+        self.assertEqual(untagged_titles[0], "Session 19")
 
     def test_no_letter_leaves_the_rows_alone(self) -> None:
         rows = [self.row(id="%064d" % i, session_id="mvs_%03d" % i) for i in range(40)]
