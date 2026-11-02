@@ -175,6 +175,14 @@ class Remote(unittest.TestCase):
         self.assertEqual((code, calls), (2, []))
         self.assertIn("SIMPLE_BOARD_REMOTE_WRITES", err)
 
+    def test_a_usage_error_is_refused_before_any_network_call(self):
+        #  The seat check costs a hosted round trip, so a per-command usage error
+        #  must be reported locally instead of behind a transport failure.
+        code, _, err, calls = self.run_writes(["comment", "AFC-1", "--by", "CODEX"], [])
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("--text", err)
+
     def test_comment_claim_status_file_map_to_hosted_tools_after_the_seat_check(self):
         cases = [
             (

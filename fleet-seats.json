@@ -676,7 +676,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "a93ee97fe2b2b7ccc41333998f776c7cd2560865af6d48fd7b7c60e16d91426b"
+            "sha256": "bbf8d661fc7f1d388c4b9ac82f1e212c424b95acbc3d82445b1c332aa1035257"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",

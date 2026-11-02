@@ -6,7 +6,7 @@ Once you have a seat, work is identified, claimed and resolved in Linear (`https
 
 ### Your Seat Credential
 
-Every fleet tool presents the same one bearer, the one your seat owns:  ~/.secrets/fleet-tools/<seat> (mode 600, yours alone).  `simple-chat`, `simple-board`, `simple-notes`, `recall` and the hosted MCP all read it, so there is no second credential to find and no secret to pass on a command line.  Never read, copy or print it, never open another seat's file, and never put a bearer in an argument.  The tool proves your seat from that bearer:  a write that names another seat is refused.
+Every fleet tool presents the same one bearer, the one your seat owns:  ~/.secrets/fleet-tools/<seat> (mode 600, yours alone).  `simple-chat`, `simple-board`, `simple-notes`, `recall` and the hosted MCP read it from that file, never from the environment.  Never read, copy or print it, never open another seat's file, and never put a bearer in an argument.  The tool proves your seat from that bearer:  a write that names another seat is refused.
 
 ### Name Your Thread
 
