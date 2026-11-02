@@ -61,6 +61,10 @@ The two MCP servers are **ST-MCP** (Simple-Tools MCP) and **GR-MCP**.  ST-MCP i
 
 The Operator, the fleet's chat listener service, records what arrived while no session held a lease, and those records are read with the `eavesdropper_*` tools: `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes`, `eavesdropper_held_back` and `eavesdropper_ack` (`eavesdropper_ack` is stdio only).
 
+## 2d.  Name your thread
+
+Your session carries a letter from the Operator registry.  Name this thread `<LETTER>: <short topic in English>` as soon as you know the work, not at the end:  the owner scans the letters, and a thread with no letter is invisible to that scan.  State the same letter in the first line of every Zulip post and every Linear item you file, so a reply knows where it is going.  Every fleet tool presents the seat's own bearer:  the tool runtime reads it from your seat's private file `~/.secrets/fleet-tools/<seat>` (mode 600, yours alone), and never from the environment.  That file is the tool's to read, never yours:  never read, copy or print it, never open another seat's file, and never put a bearer in an argument.  The tool names your seat from that bearer, so a write that names another seat is refused.
+
 ## 3. Use The Durable VM Checkout
 
 The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).

@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:af937161f9e21b4416cf91b676f41fe4d953f40cbad38afb9920c40804d470f1 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:2eb53157c43d421a07919b1ae84140fa4e255217449b42b549b3f8ccfc9b5f54 -->
 # FLEET-PROTOCOL — Fleet Tools Manual
 
 This is the manual every AI agent seat uses to reach the owner's tools:  the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
@@ -19,6 +19,7 @@ The working rules that used to live here -- how a seat claims work, lands it, cl
 - [Seats and Identity](#seats-and-identity)
 - [Posting](#posting)
 - [Writing for the Owner](#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy)
+- [App Version and Build Numbers](#app-version-and-build-numbers)
 - [Appendix A: Reference Tables](#appendix-a-reference-tables)
 ## How to Use This Document
 
@@ -813,7 +814,7 @@ One limit is worth knowing:  a sentence end inside an inline code span is still 
 - Never type CDT, CST or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT`, not `3:15 CT`, not `08:15Z`.  This covers chat, Linear issues and comments, `STATUS.md`, rollout notes, Zulip #Work-In-Progress and every other topic, GitHub issue and PR bodies, Apple Notes and release notes.  The abbreviations exist only so the writer can do the conversion; they are never part of the sentence.
 - When the calendar day matters, write `Mon, Oct 5, 2026 at 3:15am`.
 - Give only the Central time (owner 2026-10-18).  Convert every other zone before writing, and do not add the UTC stamp beside it:  a log line at `11:42Z` is `6:42am`, and the market opens at `8:30am`.  This includes times read from logs, APIs, CI and dashboards, which are usually UTC.  Quote a raw stamp only when the owner asks for one, or inside a code block that is itself machine output.
-- Never guess the conversion.  Use `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Offsets for checking:  [Appendix A](#central-time-offsets).
+- Never guess the conversion.  Use `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Offsets for checking:  [Appendix A](#appendix-a-reference-tables).
 - Machine-readable fields that are ISO-8601 by contract (API responses, JSON payloads, log lines, DB columns) stay UTC.  The rule is about prose a human reads, not wire formats.
 - **Exception (owner 2026-08-12):** in product UI, the iOS app and any browser or desktop UI render times in the viewer's device timezone.  A user in another zone seeing their own trade times in Central would be the bug.  The exception covers end-user product surfaces only.  It never relaxes the Central rule for agent-to-agent or agent-to-owner writing.  It also does not apply to server-side console pages that pin a market-day boundary: `app/console/lib/format.ts` pins `America/Chicago` on purpose to match `startOfDayInTimeZone` in `src/lib/db-execution.ts`, so "today's P&L" agrees with the accounting day boundary.
 
@@ -822,8 +823,26 @@ One limit is worth knowing:  a sentence end inside an inline code span is still 
 - Accuracy travels with the sentence-gap rule: store listing copy must match live product truth.
 - Congress.Trade covers House, Senate and Executive Branch (OGE 278-T).  Never describe the corpus as Congress-only.
 - Premium trial length in copy must match the live App Store Connect introductory offer (2 weeks as of 2026-08-14), never a leftover "1-month".  Fix on sight.
-- Copy detail lives in `/Users/jay/apps/FLEET-UI-COPY.md`.  A release note a seat publishes for one of the owner's apps is stamped the same way:  12-hour am/pm on the owner's clock, no timezone abbreviation, and no internal seat names in public text.
+- Copy detail lives in `/Users/jay/apps/FLEET-UI-COPY.md`.  A release note a seat publishes for one of the owner's apps is stamped the same way:  12-hour am/pm on the owner's clock, no timezone abbreviation, and no internal seat names in public text.  For timestamp conventions, see [Timestamps](#timestamps).
 
+## App Version and Build Numbers
+
+Owner rule, October 29, 2026.  This applies to all apps.
+
+### Standing version and build rule
+
+- Apps not on the App Store use marketing version `0.1.0`.
+- Congress.Trade (CT) uses marketing version `1.1.2`.
+- Other apps already on the App Store keep their current marketing-version rules; this instruction does not reset them to `0.1.0`.
+- Build numbers start at `1000`.  Apps already using four-digit build numbers, including CT, continue counting up from their current build number instead of restarting.
+- Version and build numbers are separate.  This rule replaces the earlier commit-count, dotted-build and three-digit-build schemes where they conflict with it.
+- Check the app's current uploaded build numbers and platform constraints before choosing the next number.  Do not repeat a build number or silently change the owner's version rule to get an upload through.  Report a conflict before uploading.
+
+### One-time TestFlight cleanup ordered October 29, 2026
+
+Expire every TestFlight build for every app except CT, including the newest build of each non-CT app.  CT is excluded from this cleanup.  The owner accepts that testers may lose all access to those builds while replacements are prepared.
+
+This is a one-time cleanup instruction, not a rule to expire future uploads automatically.  It does not claim the cleanup or any replacement upload is complete, change an App Store release, or change who may receive future builds.
 ## Appendix A: Reference Tables
 
 Lookup data only.  The tool families are in [The Tool Families](#the-tool-families) and the command line is in [The Command Line](#the-command-line).

@@ -2,10 +2,10 @@
 """mm_session_letter.py — the MM seat's session letter, and the thread title it belongs to.
 
 One MiniMax Code conversation is one session, and the Operator issues it a letter.  The
-letter is the tagged address Jay scans ("@**MiniMax** B"), so three things have to agree
+letter is the tagged address Jay scans ("@**MiniMax** AA"), so three things have to agree
 and this file is where they agree:
 
-  1. the thread is named in English and starts with the letter ("B: Memory sync");
+  1. the thread is named in English and starts with the letter ("AA: Memory sync");
   2. a Zulip post or a board item states the letter early, so a reply knows where it
      is going;
   3. the registry carries the same title the thread carries, found by the session id.
@@ -14,9 +14,11 @@ The store is MiniMax Code's own session table; the letter lives in the Operator
 registry, which is one file for the fleet.  This host reads that file locally when the
 deployment points at the shared store — there is no SSH fallback with a private alias.
 
-Subthreads do not get a letter:  a session with a parent is part of its parent's
-thread, and a session that is not a conversation (a task, a peek, a cron run) has no
-thread to name.
+A thread and its child both hold a letter, and they are placed the way every other platform
+places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
+(AA, BB ... ZZ) and a child takes the first free pair after its parent's in the same row
+(parent CC: CD, CE;  parent XX: XY, XZ, XA, XB).  A session that is neither a conversation nor
+a child of one (a cron run) has no thread to name.
 
 Usage:
   mm_session_letter.py hook-session-start      # stdin: the hook JSON
@@ -24,7 +26,8 @@ Usage:
   mm_session_letter.py hook-stop               # stdin: the hook JSON
   mm_session_letter.py sweep [--apply]         # name the sessions this host already has
   mm_session_letter.py letter --session-id ID  # the letter for one session
-  mm_session_letter.py rename --session-id ID --title "B: Topic"
+  mm_session_letter.py rename --session-id ID --title "AA: Topic"
+  mm_session_letter.py migrate-pairs          # move the live sessions into the pair space
 """
 
 from __future__ import annotations
@@ -39,14 +42,25 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+from collections.abc import Iterator
 
 from agent_sync import secretscan
-from agent_sync.operator_registry import registry_db_path
+from agent_sync.operator_registry import (
+    letter_space_of,
+    pairs_after,
+    registry_db_path,
+)
 
 SEAT = "MM"
 PLATFORM = "minimax"
 PROFILE_SCOPE = "default"
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# The letter space every MiniMax session holds its letter in (owner ruling, Nov 1 2026).
+# A MiniMax thread reads like a Claude one ("AA: Topic"), so it takes a pair:  a main chat
+# takes the next doubled pair in order (AA, BB ... ZZ) and a child takes the first free pair
+# after its parent's in the same row (parent CC: CD, CE;  parent XX: XY, XZ, XA, XB).
+LETTER_SPACE = "double"
+LETTER_PICK = "primary"
 TITLE_MAX = 120
 HOOK_INPUT_MAX = 1_048_576
 HOOK_JSON_MAX_DEPTH = 32
@@ -397,9 +411,13 @@ def _report_registry_fault(exc: Exception) -> None:
     sys.stderr.write("Operator registry fault (%s): %s\n" % (shown, exc))
 
 
-def register(session_id: str, title: str = "", space: str = "single") -> dict:
+def register(session_id: str, title: str = "", parent_session_id: str = "") -> dict:
     """Ask the Operator for this session's letter.  Idempotent: the same session id
-    always answers with the same letter."""
+    always answers with the same letter.
+
+    The pair space and the main-chat order are asked for by name, and the parent is named
+    when there is one, so the Operator places a child in its parent's row.
+    """
     args = [
         "register",
         "--platform=" + PLATFORM,
@@ -407,14 +425,39 @@ def register(session_id: str, title: str = "", space: str = "single") -> dict:
         "--session-id=" + session_id,
         "--seat=" + SEAT,
         "--source=the MM seat's session-letter hook",
+        "--letter-space=" + LETTER_SPACE,
+        "--letter-pick=" + LETTER_PICK,
     ]
-    if space != "single":
-        # Only the double space is asked for:  the single space is the default of every
-        # registry CLI, so a conversation's registration still answers an older one.
-        args += ["--letter-space=" + space]
+    if parent_session_id:
+        args += ["--parent-session-id=" + parent_session_id]
     if title:
         _scan_title(title)
         args += ["--title=" + title]
+    return _require_registry(registry_call(args))
+
+
+def relabel(session_id: str, parent_session_id: str = "", force: bool = False) -> dict:
+    """Move a live session's letter into the pair space, in place.
+
+    A session id always answers with the letter its registry record holds, so a session that
+    was lettered under the old single-letter rule cannot be moved by registering it again:
+    the registry's own relabel path is what moves it, and it keeps the old letter in the
+    history.
+    """
+    args = [
+        "relabel",
+        "--platform=" + PLATFORM,
+        *_registry_identity_args(),
+        "--session-id=" + session_id,
+        "--seat=" + SEAT,
+        "--source=the MM seat's session-letter hook (the pair migration)",
+        "--letter-space=" + LETTER_SPACE,
+        "--letter-pick=" + LETTER_PICK,
+    ]
+    if parent_session_id:
+        args += ["--parent-session-id=" + parent_session_id]
+    if force:
+        args += ["--force"]
     return _require_registry(registry_call(args))
 
 
@@ -522,6 +565,40 @@ def set_title(session_id: str, title: str) -> bool:
     return True
 
 
+def apply_title(session_id: str, letter: str, topic: str) -> str:
+    """Put "<letter>: <topic>" on the thread and carry the topic to the registry.
+
+    The title in the seat's form is written in the session store and the topic
+    (never the prefix) goes to the Operator registry.  A thread that already
+    carries the letter is left as it is, so a call is safe to repeat.  Returns
+    the title now in place, or "" when there is no topic yet or nothing could
+    be written:  a hook never fails a session over a title.
+    """
+    topic = (topic or "").strip()
+    if not letter or not topic:
+        return ""
+    title = wanted_title(letter, topic)
+    if topic != title:
+        try:
+            if not set_title(session_id, title):
+                return ""
+        except ValueError:
+            # The title carried a credential:  the refusal names the problem and
+            # never the value.
+            return ""
+    try:
+        update_title(session_id, title)
+    except RegistryError:
+        # The thread carries the title in the store;  the registry copy is a
+        # second copy, and the sweep carries it later.
+        pass
+    except ValueError:
+        # The title carried a credential.  Nothing is printed back, because
+        # the caller prints what this returns.
+        return ""
+    return title
+
+
 # ---- the title form ---------------------------------------------------------------
 
 
@@ -533,15 +610,48 @@ def is_english(text: str) -> bool:
     return True
 
 
-def wanted_title(letter: str, topic: str) -> str:
-    """The title form:  the letter, then the topic, in Title Case English."""
-    topic = (topic or "").strip()
-    if letter:
+def placeholder_title(letter: str) -> str:
+    """The title a thread carries while it has no topic of its own yet."""
+    return "%s: Session %s" % (letter, letter)
+
+
+# The letter shapes a thread title carries:  a doubled pair (AA, the shape this platform
+# gives every thread now) and a single capital (the shape it gave them before).  Two
+# capitals that are not a pair are not a letter:  a topic that starts with an acronym
+# ("AI: the model") keeps it.
+DOUBLED_PAIR_RE = re.compile(r"^([A-Z]{2}):[ ]*")
+SINGLE_LETTER_RE = re.compile(r"^[A-Z]:[ ]*")
+
+
+def topic_without_letter(title: str, letters: tuple[str, ...] = ()) -> str:
+    """The topic in a title, without the letter prefix a thread already carries.
+
+    A thread that is re-lettered keeps its topic, so the old prefix is dropped before the
+    new one is put in front:  "A: Fix the sweep" under the letter "AA" is "AA: Fix the
+    sweep", never "AA: A: Fix the sweep".
+
+    Only the letters the thread actually holds are dropped, and the shapes a thread title
+    carries:  a doubled pair, and the single capital this platform used before it moved to
+    pairs.  Two capitals that are not a pair are an acronym, so a topic that starts with one
+    keeps it.
+    """
+    text = (title or "").strip()
+    for letter in letters:
         prefix = letter + ":"
-        if topic.startswith(prefix):
-            topic = topic[len(prefix) :].lstrip()
-    else:
-        topic = re.sub(r"^\s*[A-Z]{1,2}:\s*", "", topic, count=1)
+        if letter and text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    match = DOUBLED_PAIR_RE.match(text)
+    if match and match.group(1)[0] == match.group(1)[1]:
+        return text[match.end() :].strip()
+    match = SINGLE_LETTER_RE.match(text)
+    if match:
+        return text[match.end() :].strip()
+    return text
+
+
+def wanted_title(letter: str, topic: str, previous_letters: tuple[str, ...] = ()) -> str:
+    """The title form:  the letter, then the topic, in Title Case English."""
+    topic = topic_without_letter(topic, tuple(previous_letters) + (letter,))
     topic = " ".join(topic.split())
     if not topic or not is_english(topic):
         topic = "Session " + (letter or "?")
@@ -570,27 +680,150 @@ def first_line_states_letter(text: str, letter: str) -> bool:
 # ---- the letter cache -------------------------------------------------------------
 
 
+def hooks_data_root() -> str:
+    """Where the runtime keeps its hook scopes.
+
+    The runtime (MiniMax Code v2) runs a hook with its scope's own directory in
+    MINIMAX_HOOKS_DATA:  the user scope is <data>/v2/hook-data/user and a project
+    scope is <data>/v2/hook-data/projects/<hash>.  The pre-v2 layout kept the same
+    directory under <data>/hook-state, which is now the last place a letter is read
+    from, never the first.
+    """
+    return os.path.join(data_dir(), "v2", "hook-data")
+
+
+def _refuse_symlink(path: str) -> None:
+    """A cache path that is a symlink is refused, never followed.
+
+    The refusal is a RegistryError with its own code, so every hook and the sweep,
+    which already handle RegistryError, refuse it cleanly instead of failing with a
+    traceback.  It applies to every scope, not only to the primary cache:  a
+    planted symlink must not carry a read or a write outside the data directory.
+    """
+    if os.path.islink(path):
+        raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
+
+
+def _refuse_symlink_chain(root: str, *parts: str) -> str:
+    """The path from the root down, with every component refused when it is a link.
+
+    A link one level up is followed by the kernel, so a check of the leaf alone is
+    not enough:  a planted link at any level of the chain would carry a read or a
+    write out of the data directory.  The walk is lexical, the way
+    chat_catalog._within does it.
+    """
+    current = root
+    _refuse_symlink(current)
+    for part in parts:
+        current = os.path.join(current, part)
+        _refuse_symlink(current)
+    return current
+
+
+# The project scopes are listed once per change of the scope root.  The migration
+# asks for the scope list once per session, so a lookup costs a stat instead of a
+# listing, and a scope that appears later is still picked up.
+_SCOPE_LISTINGS: dict[str, tuple[int, list[str]]] = {}
+
+
+def _project_scope_dirs() -> list[str]:
+    """The letter-cache directories of the project scopes, in a stable order.
+
+    The listing is remembered against the scope root's mtime, so a lookup costs a
+    stat instead of a listing, and the chain is walked every time, so a link that
+    appears after the listing is still refused.
+    """
+    projects = _refuse_symlink_chain(data_dir(), "v2", "hook-data", "projects")
+    try:
+        stamp = os.stat(projects).st_mtime_ns
+    except OSError:
+        stamp = -1
+    cached = _SCOPE_LISTINGS.get(projects)
+    if cached is not None and cached[0] == stamp:
+        names = cached[1]
+    else:
+        try:
+            names = sorted(os.listdir(projects))
+        except OSError:
+            names = []
+        _SCOPE_LISTINGS[projects] = (stamp, names)
+    return [
+        _refuse_symlink_chain(data_dir(), "v2", "hook-data", "projects", name, "session-letters")
+        for name in names
+    ]
+
+
+def _scope_dirs() -> Iterator[str]:
+    """The letter-cache directories of the runtime's scopes, the user scope first."""
+    yield _refuse_symlink_chain(data_dir(), "v2", "hook-data", "user", "session-letters")
+    for directory in _project_scope_dirs():
+        yield directory
+
+
+def _legacy_cache_dir() -> str:
+    """The pre-v2 letter cache:  read as a fallback, never written to."""
+    return _refuse_symlink_chain(data_dir(), "hook-state", "session-letters")
+
+
+def letter_cache_dirs() -> Iterator[str]:
+    """Every letter-cache directory this host may hold, in the order it is read.
+
+    A hook knows its scope:  the runtime hands it that scope in MINIMAX_HOOKS_DATA,
+    and it reads that scope alone.  A shell knows no scope -- the migration, the
+    sweep and an operator command all run outside the runtime -- so it reads the user
+    scope, then the project scopes, then the pre-v2 directory.  A session lettered
+    under one scope is then still found from another, which is what the migration
+    needs when it runs from a plain shell.
+    """
+    override = os.environ.get("MINIMAX_HOOKS_DATA")
+    if override:
+        # The override is the scope the runtime names, and it is refused on the read
+        # path too:  letter_cache_dir refuses that base for a write.
+        yield _refuse_symlink_chain(override, "session-letters")
+        return
+    for directory in _scope_dirs():
+        yield directory
+    yield _legacy_cache_dir()
+
+
 def letter_cache_dir() -> str:
     """The letter cache directory.  An unsafe path is a RegistryError with its own
     code, so every hook and the sweep, which already handle RegistryError, refuse it
     cleanly instead of failing with a traceback."""
-    base = os.environ.get("MINIMAX_HOOKS_DATA") or os.path.join(data_dir(), "hook-state")
+    override = os.environ.get("MINIMAX_HOOKS_DATA")
+    if override:
+        base = _refuse_symlink_chain(override)
+    else:
+        root = hooks_data_root()
+        base = _refuse_symlink_chain(data_dir(), "v2", "hook-data", "user")
+        legacy = os.path.join(data_dir(), "hook-state")
+        if (
+            not os.path.isdir(base)
+            and not os.path.isdir(os.path.join(root, "projects"))
+            and os.path.isdir(legacy)
+        ):
+            # A pre-v2 runtime:  it has no v2 scope at all, so the old layout is the
+            # live one.  A host with a project scope is a v2 host, even when the user
+            # scope has not been created yet, and a letter written to the old layout
+            # there is one no hook ever reads.
+            base = _refuse_symlink_chain(data_dir(), "hook-state")
     path = os.path.join(base, "session-letters")
     for candidate in (base, path):
-        if os.path.islink(candidate):
-            raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
+        _refuse_symlink(candidate)
     os.makedirs(path, mode=0o700, exist_ok=True)
-    if os.path.islink(path):
-        raise RegistryError("the letter cache path must not be a symlink", "unsafe_cache")
+    _refuse_symlink(path)
     return path
 
 
-def cache_letter(session_id: str, letter: str, topic: str = "", space: str = "single") -> None:
-    if letter not in LETTERS and len(letter) != 2:
+def cache_letter(session_id: str, letter: str, topic: str = "", space: str = LETTER_SPACE) -> None:
+    if not (
+        letter in LETTERS or (len(letter) == 2 and letter[0] in LETTERS and letter[1] in LETTERS)
+    ):
         raise ValueError("invalid letter for cache")
     payload = {"letter": letter, "topic": topic, "host": location(), "space": space}
-    path = os.path.join(letter_cache_dir(), session_id + ".json")
-    fd, tmp = tempfile.mkstemp(dir=letter_cache_dir(), prefix=".letter-", suffix=".tmp")
+    home = _cache_home(session_id)
+    path = os.path.join(home, session_id + ".json")
+    fd, tmp = tempfile.mkstemp(dir=home, prefix=".letter-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
@@ -600,7 +833,7 @@ def cache_letter(session_id: str, letter: str, topic: str = "", space: str = "si
             os.fchmod(fh.fileno(), 0o600)
             os.fsync(fh.fileno())
         os.replace(tmp, path)
-        dir_fd = os.open(letter_cache_dir(), os.O_RDONLY | os.O_DIRECTORY)
+        dir_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(dir_fd)
         finally:
@@ -610,8 +843,10 @@ def cache_letter(session_id: str, letter: str, topic: str = "", space: str = "si
             os.unlink(tmp)
 
 
-def cached_letter(session_id: str) -> str:
-    path = os.path.join(letter_cache_dir(), session_id + ".json")
+def _cached_letter_in(directory: str, session_id: str) -> str:
+    path = os.path.join(directory, session_id + ".json")
+    _refuse_symlink(directory)
+    _refuse_symlink(path)
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -627,19 +862,52 @@ def cached_letter(session_id: str) -> str:
     return ""
 
 
-def space_for_row(row: dict) -> str:
-    """The letter space a session belongs in:  single for a conversation, double for a
-    subthread, so a subthread never takes the letter a conversation holds.
+def cached_letter(session_id: str) -> str:
+    """The letter this host cached for a session, or "".
 
-    It reads the row the caller already fetched, so a hook reads the session table
-    and scans its titles once per call."""
-    if row.get("parent_session_id") or row.get("session_kind") == "task":
-        return "double"
-    return "single"
+    Every scope is read, in the order letter_cache_dirs gives, so a shell finds a
+    session lettered under a project scope and a hook finds the letter its own
+    scope wrote.  A cache path that is a symlink is refused with the same code the
+    primary cache uses, and is never followed.
+    """
+    for directory in letter_cache_dirs():
+        letter = _cached_letter_in(directory, session_id)
+        if letter:
+            return letter
+    return ""
+
+
+def _cache_home(session_id: str) -> str:
+    """The directory a session's letter is written to.
+
+    The scope that already holds the file keeps it, so a letter does not split into
+    two copies that drift apart;  otherwise the primary directory takes it.
+    """
+    if os.environ.get("MINIMAX_HOOKS_DATA"):
+        return letter_cache_dir()
+    for directory in _scope_dirs():
+        if os.path.isfile(os.path.join(directory, session_id + ".json")):
+            return directory
+    return letter_cache_dir()
+
+
+def parent_for_row(row: dict) -> str:
+    """The session that started this one, as the Operator knows it, or "" for a main chat.
+
+    It is the parent's own session id, so the Operator places the child in its parent's row:
+    the first free pair after the parent's, in the same row (parent CC: CD, CE;  parent XX:
+    XY, XZ, XA, XB).  It reads the row the caller already fetched, so a hook reads the session
+    table and scans its titles once per call."""
+    parent = str(row.get("parent_session_id") or "").strip()
+    return parent if SESSION_ID_RE.fullmatch(parent) else ""
 
 
 def letter_for(
-    session_id: str, topic: str = "", space: str = "single", *, strict_touch: bool = False
+    session_id: str,
+    topic: str = "",
+    parent_session_id: str = "",
+    *,
+    strict_touch: bool = False,
 ) -> str:
     """The letter for a session:  the cache first, the Operator otherwise.
 
@@ -663,10 +931,10 @@ def letter_for(
             if getattr(exc, "code", "") != "no_registry":
                 sys.stderr.write("Could not stamp the session as seen: %s\n" % exc)
         return letter
-    answer = _require_registry(register(session_id, topic, space), needs_label=True)
+    answer = _require_registry(register(session_id, topic, parent_session_id), needs_label=True)
     letter = str(answer.get("label") or "")
     if letter:
-        cache_letter(session_id, letter, topic, space)
+        cache_letter(session_id, letter, topic, LETTER_SPACE)
     return letter
 
 
@@ -709,38 +977,56 @@ def hook_session_id(payload: dict) -> str:
     return text if SESSION_ID_RE.fullmatch(text) else ""
 
 
+NO_LETTER = (
+    "Session letter: none yet (the Operator could not be reached).  Name this thread "
+    "in English; if a letter arrives later, prefix the title with it."
+)
+
+
 def hook_session_start() -> int:
-    """Give the session its letter, and tell the agent the two forms it must use."""
+    """Give the session its letter, title the thread, and tell the agent the forms it must use."""
     payload = read_hook_input()
     session_id = hook_session_id(payload)
     if not session_id:
         return 0
     row = session_row(session_id) or {}
-    space = space_for_row(row)
+    parent = parent_for_row(row)
     try:
-        letter = letter_for(session_id, str(row.get("title") or ""), space)
+        letter = letter_for(session_id, str(row.get("title") or ""), parent)
     except (RegistryError, ValueError) as exc:
         _report_registry_fault(exc)
-        print(
-            "Session letter: none yet (the Operator could not be reached).  Name this thread "
-            "in English; if a letter arrives later, prefix the title with it."
-        )
+        print(NO_LETTER)
         return 0
     if not letter:
-        print(
-            "Session letter: none yet (the Operator could not be reached).  Name this thread "
-            "in English; if a letter arrives later, prefix the title with it."
-        )
+        print(NO_LETTER)
         return 0
-    print(
-        "Session letter: %s.  Two rules for this session:\n"
-        '1. Name this thread in English and start the title with the letter: "%s: <topic>".\n'
-        "2. State the letter early in every Zulip post and every board item you file — the "
-        'first line, for example "%s: what this post is about" — so a reply knows where it '
-        "is going.\n"
-        "The registry carries the same title under the session id %s."
-        % (letter, letter, letter, session_id)
+    title = apply_title(session_id, letter, str(row.get("title") or ""))
+    if title:
+        third = (
+            '3. The thread is titled "%s" now.  Rename it with the session-title tool to '
+            '"%s: <a short topic in English>" once you know the work, and do it before you finish.\n'
+            % (title, letter)
+        )
+    else:
+        # A title that was refused, or none at all:  a title that was never
+        # written is never printed back.
+        third = (
+            "3. The thread has no usable title yet.  Rename it with the session-title tool to "
+            '"%s: <a short topic in English>" once you know the work, and do it before you finish.\n'
+            % (letter,)
+        )
+    message = (
+        (
+            "Session letter: %s.  Three rules for this session:\n"
+            '1. Name this thread in English and start the title with the letter: "%s: <topic>".\n'
+            "2. State the letter early in every Zulip post and every board item you file — the "
+            'first line, for example "%s: what this post is about" — so a reply knows where it '
+            "is going.\n" % (letter, letter, letter)
+        )
+        + third
+        + ("The registry carries the same title under the session id %s." % session_id)
     )
+    print(message)
     return 0
 
 
@@ -755,16 +1041,14 @@ def hook_pre_tool_use() -> int:
     if not session_id:
         return 0
     row = session_row(session_id) or {}
-    if row.get("parent_session_id"):
-        return 0  # a subthread posts under its parent's letter
-    if row.get("session_kind") not in (None, "conversation"):
+    if row.get("session_kind") not in (None, "conversation", "task"):
         return 0
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id, "", space_for_row(row))
+        letter = cached_letter(session_id) or letter_for(session_id, "", parent_for_row(row))
     except (RegistryError, ValueError) as exc:
         _report_registry_fault(exc)
         return 0
@@ -811,10 +1095,10 @@ def hook_stop() -> int:
     row = session_row(session_id)
     if row is None:
         return 0
-    if row.get("parent_session_id") or row.get("session_kind") not in (None, "conversation"):
+    if row.get("session_kind") not in (None, "conversation", "task"):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id, "", space_for_row(row))
+        letter = cached_letter(session_id) or letter_for(session_id, "", parent_for_row(row))
     except (RegistryError, ValueError) as exc:
         _report_registry_fault(exc)
         return 0
@@ -822,6 +1106,8 @@ def hook_stop() -> int:
         return 0
     title = str(row.get("title") or "")
     ok, why = title_ok(title, letter)
+    if ok and title.strip() == placeholder_title(letter):
+        ok, why = False, "it still carries the placeholder topic"
     if ok:
         try:
             update_title(session_id, title)
@@ -999,9 +1285,8 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         # file names one of them on purpose, so the operator's own list rescues it.
         if looks_like_prompt(title) and session_id not in topics:
             continue
-        space = "single" if kind == "conversation" else "double"
         try:
-            letter = letter_for(session_id, title, space, strict_touch=True)
+            letter = letter_for(session_id, title, parent_for_row(row), strict_touch=True)
         except RegistryError as exc:
             out.append(_failure_entry(session_id, exc))
             continue
@@ -1140,6 +1425,132 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
     return exit_code
 
 
+def migrate_pairs() -> int:
+    """Move this host's live MiniMax sessions into the pair space.
+
+    A MiniMax thread is a pair (owner ruling, Nov 1 2026), and a session id always answers
+    with the letter its registry record already holds, so the sessions that were lettered
+    under the old single-letter rule are moved by the registry's own relabel path.
+
+    Only a session that is not where the rule puts it is moved:  a session that already
+    holds a pair keeps it, and so does a child that already holds a pair in its parent's
+    row.  So the migration is idempotent:  a second run finds nothing to move and changes
+    no letter, no generation and no reference.  A main chat goes first, because a child is
+    placed after its parent's pair.
+
+    The letters are read from every scope the runtime keeps, so the migration finds the
+    live ones when it runs from a plain shell, where the runtime names no scope.
+    """
+    rows = [
+        row for row in sessions() if str(row.get("session_kind") or "") in ("conversation", "task")
+    ]
+    mains = sorted(
+        (row for row in rows if not parent_for_row(row)),
+        key=lambda row: int(row.get("created_at_ms") or 0),
+    )
+    children = sorted(
+        (row for row in rows if parent_for_row(row)),
+        key=lambda row: int(row.get("created_at_ms") or 0),
+    )
+    letters: dict[str, str] = {}
+    out = []
+    for row in mains + children:
+        session_id = row["session_id"]
+        parent = parent_for_row(row)
+        title = str(row.get("title") or "")
+        try:
+            current = cached_letter(session_id)
+        except RegistryError as exc:
+            # A cache path that is a symlink is refused here too, so the migration
+            # reports the refusal rather than reading outside the data directory.
+            out.append(_failure_entry(session_id, exc))
+            continue
+        if not current:
+            # This host never lettered it, so there is no letter here to move.
+            continue
+        parent_letter = letters.get(parent, "")
+        in_a_pair = letter_space_of(current) == LETTER_SPACE
+        out_of_place = not in_a_pair
+        if not out_of_place and parent_letter and current not in pairs_after(parent_letter):
+            # A child that holds a pair but not in its parent's row is placed again.
+            out_of_place = True
+        if not out_of_place:
+            letters[session_id] = current
+            out.append({"session_id": session_id, "letter": current, "outcome": "unchanged"})
+            continue
+        try:
+            answer = relabel(session_id, parent, force=in_a_pair)
+        except RegistryError as exc:
+            code = str(getattr(exc, "code", "") or "")
+            if code == "closed_session":
+                # The session is over:  its letter ended with it, and there is nothing to move.
+                out.append({"session_id": session_id, "letter": current, "outcome": "closed"})
+                continue
+            if code == "not_registered":
+                # The registry has never seen this session, so it holds no letter to move.
+                # It is registered here, and the cache is not asked:  the cache still holds
+                # the old single letter, and letter_for would hand that back.
+                try:
+                    answer = _require_registry(
+                        register(session_id, title, parent), needs_label=True
+                    )
+                except (RegistryError, ValueError) as inner:
+                    out.append({"session_id": session_id, "error": str(inner), "outcome": "failed"})
+                    continue
+                letter = str(answer.get("label") or "")
+                if not letter:
+                    out.append({"session_id": session_id, "skipped": "no letter"})
+                    continue
+                letters[session_id] = letter
+                out.append({"session_id": session_id, "letter": letter, "outcome": "registered"})
+                try:
+                    cache_letter(session_id, letter, title, LETTER_SPACE)
+                except RegistryError as exc:
+                    # The registry holds the letter, so the migration is done even
+                    # when the cache refuses to write it.
+                    out[-1]["cache_error"] = str(exc)
+                continue
+            out.append(_failure_entry(session_id, exc))
+            continue
+        letter = str(answer.get("label") or "")
+        if not letter:
+            out.append({"session_id": session_id, "skipped": "no letter"})
+            continue
+        letters[session_id] = letter
+        try:
+            cache_letter(session_id, letter, title, LETTER_SPACE)
+        except RegistryError as exc:
+            # The registry holds the letter, so the migration is done even when the
+            # cache refuses to write it.
+            cache_error = str(exc)
+        else:
+            cache_error = ""
+        entry = {
+            "session_id": session_id,
+            "letter": letter,
+            "previous": answer.get("previous", ""),
+            "outcome": answer.get("outcome", ""),
+            "placed_after": answer.get("placed_after", ""),
+        }
+        topic = topic_without_letter(title, (current,))
+        if topic and is_english(topic):
+            wanted = wanted_title(letter, topic)
+            try:
+                if set_title(session_id, wanted):
+                    update_title(session_id, wanted)
+                    entry["title"] = wanted
+            except (RegistryError, ValueError) as exc:
+                entry["error"] = str(exc)
+        if cache_error:
+            entry["cache_error"] = cache_error
+        if cache_error:
+            entry["cache_error"] = cache_error
+        out.append(entry)
+    failed = [e for e in out if e.get("error")]
+    print(json.dumps(out, indent=2))
+    return _sweep_exit_code(failed)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1156,6 +1567,10 @@ def main(argv: list[str] | None = None) -> int:
     rn = sub.add_parser("rename")
     rn.add_argument("--session-id", required=True)
     rn.add_argument("--title", required=True)
+    mp = sub.add_parser(
+        "migrate-pairs",
+        help="move this host's live MiniMax sessions into the pair space",
+    )
     args = parser.parse_args(argv)
     if args.command == "hook-session-start":
         return hook_session_start()
@@ -1166,10 +1581,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sweep":
         return sweep(args.apply, args.live_hours, args.topics_file)
     if args.command == "letter":
+        # The parent is named here too, so a child lettered through this path lands in its
+        # parent's row and not in the main-chat order.
+        parent = parent_for_row(session_row(args.session_id) or {})
         try:
             print(
                 json.dumps(
-                    _require_registry(register(args.session_id, args.title), needs_label=True)
+                    _require_registry(
+                        register(args.session_id, args.title, parent), needs_label=True
+                    )
                 )
             )
         except RegistryError as exc:
@@ -1181,9 +1601,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": str(exc)}))
             return 2
         return 0
+    if args.command == "migrate-pairs":
+        return migrate_pairs()
     if args.command == "rename":
+        parent = parent_for_row(session_row(args.session_id) or {})
         try:
-            answer = _require_registry(register(args.session_id))
+            answer = _require_registry(register(args.session_id, "", parent))
         except RegistryError as exc:
             print(json.dumps({"error": str(exc)}))
             return _registry_exit_code(exc)

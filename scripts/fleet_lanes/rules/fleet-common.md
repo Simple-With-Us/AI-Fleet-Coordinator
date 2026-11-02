@@ -4,6 +4,14 @@ Once you have a seat, work is identified, claimed and resolved in Linear (`https
 
 **Pass your session id.**  Every `simple-board` write, every `notes_create` / `notes_update` call (and `simple-notes`) and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `CURSOR_CONVERSATION_ID`, `GROK_SESSION_ID`, `OPENCODE_SESSION_ID`, `__MAVIS_RUNTIME_SESSION_ID`); Clutch and the engine-only CLIs set none that is known, so pass `--session <id>` or export `AGENT_SESSION` with the id your app shows for this chat.  Exempt, because they have one thread with the owner: every Grok bot persona, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id: `apple-notes-coding.sh` refuses it, so pass the real one everywhere.
 
+### Your Seat Credential
+
+Every fleet tool presents the same one bearer, the one your seat owns:  ~/.secrets/fleet-tools/<seat> (mode 600, yours alone).  `simple-chat`, `simple-board`, `simple-notes`, `recall` and the hosted MCP read it from that file, never from the environment.  Never read, copy or print it, never open another seat's file, and never put a bearer in an argument.  The tool proves your seat from that bearer:  a write that names another seat is refused.
+
+### Name Your Thread
+
+Your session carries a letter from the Operator registry.  Name this thread `<LETTER>: <short topic in English>` as soon as you know the work, not at the end:  the owner scans the letters, and a thread with no letter is invisible to that scan.  State the same letter in the first line of every post and every board item you file, so a reply knows where it is going.
+
 ### Land Your Work
 
 After each finished unit: commit, push the branch, open a PR, arm auto-merge (`gh pr merge <n> --squash --auto`) and drive it to merged.  Pause only for a destructive operation such as a force-push, a production data wipe or a secret revoke.

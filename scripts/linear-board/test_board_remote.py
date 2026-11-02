@@ -175,6 +175,14 @@ class Remote(unittest.TestCase):
         self.assertEqual((code, calls), (2, []))
         self.assertIn("SIMPLE_BOARD_REMOTE_WRITES", err)
 
+    def test_a_usage_error_is_refused_before_any_network_call(self):
+        #  The seat check costs a hosted round trip, so a per-command usage error
+        #  must be reported locally instead of behind a transport failure.
+        code, _, err, calls = self.run_writes(["comment", "AFC-1", "--by", "CODEX"], [])
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("--text", err)
+
     def test_comment_claim_status_file_map_to_hosted_tools_after_the_seat_check(self):
         cases = [
             (
@@ -224,12 +232,12 @@ class Remote(unittest.TestCase):
         ]
         for argv, tool, args in cases:
             with self.subTest(argv=argv):
-                answers = ([rpc(self.WHO)] if "--by" in argv else []) + [
-                    rpc({"id": "1"}, text="done")
-                ]
+                answers = [rpc(self.WHO), rpc({"id": "1"}, text="done")]
                 code, out, err, calls = self.run_writes(argv, answers)
                 self.assertEqual(code, 0, err)
-                self.assertEqual(calls[-1], {"name": tool, "arguments": args})
+                self.assertEqual(
+                    calls[-1], {"name": tool, "arguments": {**args, "identity": "CODEX"}}
+                )
 
     def test_by_that_is_not_the_bearers_seat_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(

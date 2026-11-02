@@ -109,6 +109,229 @@ class MmSessionLetterTest(unittest.TestCase):
             with self.assertRaises(M.RegistryError):
                 M.letter_cache_dir()
 
+    # --- the letter cache follows the runtime's scopes ---
+
+    def _write_cache(self, directory, session_id, letter):
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, session_id + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"letter": letter, "host": "mac", "space": "double"}, fh)
+
+    def _shell_env(self, tmp):
+        """A shell that is not a hook:  the runtime names no scope, and MINIMAX_DATA_DIR
+        points at a temporary data directory, so the real one is never touched."""
+        return mock.patch.dict(os.environ, {"MINIMAX_HOOKS_DATA": "", "MINIMAX_DATA_DIR": tmp})
+
+    def test_the_letter_cache_reads_the_runtime_user_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "sid", "BB")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_the_letter_cache_prefers_the_live_scope_over_the_pre_v2_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            live = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            legacy = os.path.join(tmp, "hook-state", "session-letters")
+            self._write_cache(live, "sid", "BB")
+            self._write_cache(legacy, "sid", "A")
+            with self._shell_env(tmp):
+                # The runtime writes the live scope, so the live letter wins over the
+                # stale one the pre-v2 layout still holds.
+                self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_a_project_scope_letter_is_found_from_a_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = os.path.join(tmp, "v2", "hook-data", "projects", "abc123", "session-letters")
+            self._write_cache(project, "sid", "CD")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "CD")
+
+    def test_a_letter_written_from_a_shell_lands_in_the_runtime_user_scope(self):
+        with tempfile.TemporaryDirectory() as tmp, self._shell_env(tmp):
+            M.cache_letter("sid", "BB", "Topic", "double")
+            written = os.path.join(tmp, "v2", "hook-data", "user", "session-letters", "sid.json")
+            self.assertTrue(os.path.isfile(written))
+            self.assertEqual(M.cached_letter("sid"), "BB")
+
+    def test_a_letter_stays_in_the_scope_that_already_holds_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = os.path.join(tmp, "v2", "hook-data", "projects", "abc123", "session-letters")
+            self._write_cache(project, "sid", "CC")
+            with self._shell_env(tmp):
+                M.cache_letter("sid", "DD", "Topic", "double")
+                # The scope that holds the letter keeps it, so the letter does not split
+                # into two copies that drift apart.
+                self.assertEqual(M.cached_letter("sid"), "DD")
+                user_scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+                self.assertFalse(os.path.isfile(os.path.join(user_scope, "sid.json")))
+
+    def test_a_symlinked_scope_is_refused_rather_than_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            os.symlink(real, os.path.join(projects, "abc123"))
+            with self._shell_env(tmp):
+                # The same rule the primary cache follows:  a symlinked cache path is
+                # refused with its own code, never followed.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_user_scope_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            hook_data = os.path.join(tmp, "v2", "hook-data")
+            os.makedirs(hook_data)
+            os.symlink(real, os.path.join(hook_data, "user"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_letter_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            os.makedirs(scope)
+            target = os.path.join(tmp, "target.json")
+            with open(target, "w", encoding="utf-8") as fh:
+                json.dump({"letter": "BB"}, fh)
+            os.symlink(target, os.path.join(scope, "sid.json"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_project_scope_makes_this_a_v2_host(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "hook-state")
+            os.makedirs(legacy)
+            os.makedirs(os.path.join(tmp, "v2", "hook-data", "projects", "abc123"))
+            with self._shell_env(tmp):
+                # A host with a project scope is a v2 host even when the user scope
+                # is not there yet, so a new letter does not go to the old layout,
+                # where no hook ever reads it.
+                self.assertEqual(
+                    M.letter_cache_dir(),
+                    os.path.join(tmp, "v2", "hook-data", "user", "session-letters"),
+                )
+
+    def test_a_scope_that_appears_later_is_still_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = os.path.join(tmp, "v2", "hook-data", "projects")
+            os.makedirs(projects)
+            scope = os.path.join(projects, "abc123", "session-letters")
+            with self._shell_env(tmp):
+                self.assertEqual(M.cached_letter("sid"), "")
+                self._write_cache(scope, "sid", "CD")
+                # The scope list is remembered, but a scope that appears after the
+                # listing is still picked up.
+                self.assertEqual(M.cached_letter("sid"), "CD")
+
+    def test_a_symlinked_legacy_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            os.symlink(real, os.path.join(tmp, "hook-state"))
+            with self._shell_env(tmp):
+                # The pre-v2 directory is the last place a letter is read from, and a
+                # link one level up is refused there too.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_ancestor_of_the_scope_root_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(os.path.join(real, "user", "session-letters"), "sid", "BB")
+            os.makedirs(os.path.join(tmp, "v2"))
+            os.symlink(real, os.path.join(tmp, "v2", "hook-data"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_override_root_is_refused_on_the_read_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(os.path.join(real, "session-letters"), "sid", "BB")
+            scope = os.path.join(tmp, "scope")
+            os.symlink(real, scope)
+            with mock.patch.dict(
+                os.environ, {"MINIMAX_HOOKS_DATA": scope, "MINIMAX_DATA_DIR": tmp}
+            ):
+                # The scope the runtime names is refused on the read path too:  the
+                # write path already refused that base.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_symlinked_user_scope_leaf_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            self._write_cache(real, "sid", "BB")
+            user = os.path.join(tmp, "v2", "hook-data", "user")
+            os.makedirs(user)
+            os.symlink(real, os.path.join(user, "session-letters"))
+            with self._shell_env(tmp):
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cached_letter("sid")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+
+    def test_a_write_into_a_symlinked_scope_leaf_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "real")
+            os.makedirs(real)
+            user = os.path.join(tmp, "v2", "hook-data", "user")
+            os.makedirs(user)
+            os.symlink(real, os.path.join(user, "session-letters"))
+            with self._shell_env(tmp):
+                # The letter must not land in the link's target.
+                with self.assertRaises(M.RegistryError) as caught:
+                    M.cache_letter("sid", "BB", "Topic", "double")
+                self.assertEqual(getattr(caught.exception, "code", ""), "unsafe_cache")
+                self.assertEqual(os.listdir(real), [])
+
+    def test_the_pre_v2_layout_is_used_when_the_runtime_has_no_v2_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "hook-state")
+            os.makedirs(legacy)
+            with self._shell_env(tmp):
+                self.assertEqual(M.letter_cache_dir(), os.path.join(legacy, "session-letters"))
+
+    def test_the_migration_finds_the_live_letters_from_a_plain_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = os.path.join(tmp, "v2", "hook-data", "user", "session-letters")
+            self._write_cache(scope, "mvs_main", "A")
+            self._write_cache(scope, "mvs_child", "A")
+            calls = []
+
+            def fake_relabel(session_id, parent="", force=False):
+                calls.append((session_id, parent, force))
+                return {
+                    "label": "BB",
+                    "previous": "A",
+                    "outcome": "relabelled",
+                    "placed_after": "",
+                }
+
+            with (
+                mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+                mock.patch.object(M, "relabel", side_effect=fake_relabel),
+                mock.patch.object(M, "cache_letter"),
+                mock.patch.object(M, "set_title", return_value=True),
+                mock.patch.object(M, "update_title"),
+                self._shell_env(tmp),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                code = M.migrate_pairs()
+            self.assertEqual(code, 0)
+            # The letters are found in the runtime's scope without a scope in the
+            # environment, so the migration moves the sessions instead of skipping them.
+            self.assertEqual([call[0] for call in calls], ["mvs_main", "mvs_child"])
+
     def test_require_registry_rejects_an_empty_label(self):
         with self.assertRaises(M.RegistryError):
             M._require_registry({"label": ""}, needs_label=True)
@@ -279,6 +502,121 @@ class MmSessionLetterTest(unittest.TestCase):
             code = M.sweep(True, topics_file=topic_file)
         return code, out.getvalue(), err.getvalue()
 
+    # --- the pair migration ---
+
+    def _migration_rows(self):
+        return [
+            {
+                "session_id": "mvs_main",
+                "title": "A: Fix the sweep",
+                "session_kind": "conversation",
+                "created_at_ms": 1,
+            },
+            {
+                "session_id": "mvs_child",
+                "title": "explore: look",
+                "session_kind": "task",
+                "parent_session_id": "mvs_main",
+                "created_at_ms": 2,
+            },
+        ]
+
+    def _run_migration(self, letters, calls):
+        def fake_relabel(session_id, parent="", force=False):
+            calls.append((session_id, parent, force))
+            return {
+                "label": "BB",
+                "previous": "A",
+                "outcome": "relabelled",
+                "placed_after": "",
+            }
+
+        with (
+            mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid: letters[sid]),
+            mock.patch.object(M, "relabel", side_effect=fake_relabel),
+            mock.patch.object(M, "cache_letter"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            return M.migrate_pairs()
+
+    def test_the_migration_moves_a_session_that_holds_a_single_letter(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "A", "mvs_child": "A"}, calls)
+        self.assertEqual(code, 0)
+        # The main chat goes first, and the child names it as its parent.
+        self.assertEqual([call[0] for call in calls], ["mvs_main", "mvs_child"])
+        self.assertEqual(calls[1][1], "mvs_main")
+
+    def test_the_migration_leaves_a_session_that_already_holds_a_pair(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "AA", "mvs_child": "AB"}, calls)
+        self.assertEqual(code, 0)
+        # The main chat holds a pair and the child holds a pair in its parent's row:  a
+        # second run of the migration finds nothing to move.
+        self.assertEqual(calls, [])
+
+    def test_the_migration_moves_a_child_that_is_not_in_its_parents_row(self):
+        calls = []
+        code = self._run_migration({"mvs_main": "AA", "mvs_child": "BB"}, calls)
+        self.assertEqual(code, 0)
+        self.assertEqual([call[0] for call in calls], ["mvs_child"])
+        # It already holds a pair, so it has to be placed again rather than moved space.
+        self.assertTrue(calls[0][2])
+
+    def test_the_migration_registers_a_session_the_registry_has_never_seen(self):
+        calls = []
+        registered = []
+
+        def fake_relabel(session_id, parent="", force=False):
+            calls.append((session_id, parent, force))
+            raise M.RegistryError(
+                "session mvs_main is not registered on minimax at mac/default",
+                "not_registered",
+                "failed",
+            )
+
+        def fake_register(session_id, title="", parent_session_id=""):
+            registered.append((session_id, title, parent_session_id))
+            return {"label": "AA"}
+
+        out = io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=self._migration_rows()),
+            mock.patch.object(M, "cached_letter", side_effect=lambda sid: "A"),
+            mock.patch.object(M, "relabel", side_effect=fake_relabel),
+            mock.patch.object(M, "register", side_effect=fake_register),
+            mock.patch.object(M, "cache_letter"),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(M, "update_title"),
+            contextlib.redirect_stdout(out),
+        ):
+            code = M.migrate_pairs()
+        self.assertEqual(code, 0)
+        # The session the registry never saw is registered, so it gets a pair from the start.
+        # The cache is not asked:  it still holds the old single letter.
+        self.assertIn('"outcome": "registered"', out.getvalue())
+        self.assertIn('"letter": "AA"', out.getvalue())
+        self.assertTrue(registered)
+
+    def test_the_letter_command_names_the_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "CD"}
+
+        row = {"session_id": "mvs_child", "session_kind": "task", "parent_session_id": "mvs_main"}
+        with (
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "registry_call", side_effect=fake),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            M.main(["letter", "--session-id", "mvs_child"])
+        self.assertIn("--parent-session-id=mvs_main", seen["args"])
+
     def test_a_secret_shaped_topic_answers_with_a_stable_code(self):
         secret = FIXTURE_SECRET
         with tempfile.TemporaryDirectory() as tmp:
@@ -427,6 +765,91 @@ class MmSessionLetterTest(unittest.TestCase):
                 ):
                     self.assertEqual(M.hook_pre_tool_use(), 0)
 
+    def test_the_session_start_hook_titles_the_thread_with_its_letter(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "Fix The Build", "session_kind": "conversation"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}) as update_title,
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_called_once_with(SESSION_ID, "B: Fix The Build")
+        update_title.assert_called_once_with(SESSION_ID, "B: Fix The Build")
+
+    def test_a_thread_that_already_carries_its_letter_is_not_rewritten(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": "B: Fix The Build",
+            "session_kind": "conversation",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}),
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_not_called()
+
+    def test_a_thread_without_a_title_is_left_for_the_stop_path(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "", "session_kind": "conversation"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", return_value=True) as set_title,
+            mock.patch.object(M, "update_title", return_value={}),
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        set_title.assert_not_called()
+
+    def test_a_title_with_a_credential_is_never_written_or_printed(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": "Deploy with " + FIXTURE_SECRET,
+            "session_kind": "conversation",
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stdout", stdout),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value=""),
+            mock.patch.object(M, "letter_for", return_value="B"),
+            mock.patch.object(M, "set_title", side_effect=ValueError("secret_detected")),
+            mock.patch.object(M, "update_title", return_value={}) as update_title,
+        ):
+            self.assertEqual(M.hook_session_start(), 0)
+        update_title.assert_not_called()
+        self.assertNotIn(FIXTURE_SECRET, stdout.getvalue())
+
+    def test_the_stop_hook_asks_for_a_real_topic_when_the_title_is_the_placeholder(self):
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": M.placeholder_title("B"),
+            "session_kind": "conversation",
+        }
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+        ):
+            self.assertEqual(M.hook_stop(), 2)
+        self.assertIn("placeholder topic", stderr.getvalue())
+
     def test_hooks_read_the_session_table_once(self):
         payload = json.dumps(
             {"session_id": SESSION_ID, "tool_name": "zulip_post", "tool_input": {"body": "M: hi"}}
@@ -441,10 +864,108 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(M.hook_pre_tool_use(), 0)
         self.assertEqual(read.call_count, 1)
 
-    def test_space_for_row_reads_the_given_row(self):
-        self.assertEqual(M.space_for_row({"session_kind": "task"}), "double")
-        self.assertEqual(M.space_for_row({"parent_session_id": "p"}), "double")
-        self.assertEqual(M.space_for_row({"session_kind": "conversation"}), "single")
+    def test_parent_for_row_names_the_parent(self):
+        self.assertEqual(M.parent_for_row({"parent_session_id": "mvs_parent"}), "mvs_parent")
+        self.assertEqual(M.parent_for_row({"session_kind": "task"}), "")
+        self.assertEqual(M.parent_for_row({"parent_session_id": "not a session id"}), "")
+
+    # ---- a MiniMax thread is a pair, like every other platform (AFC-586) ----
+
+    def test_a_pair_letter_is_a_valid_prefix(self):
+        self.assertTrue(M.first_line_states_letter("AA: hello\nmore", "AA"))
+        self.assertTrue(M.title_ok("AA: Topic", "AA")[0])
+        self.assertFalse(M.title_ok("A: Topic", "AA")[0])
+
+    def test_wanted_title_drops_the_letter_the_title_already_carries(self):
+        # A thread that is re-lettered keeps its topic:  the old prefix goes, the new one comes.
+        self.assertEqual(M.wanted_title("AA", "A: Fix the sweep"), "AA: Fix the sweep")
+        self.assertEqual(M.wanted_title("AA", "AA: Fix the sweep"), "AA: Fix the sweep")
+        self.assertEqual(M.wanted_title("AA", "Fix the sweep"), "AA: Fix the sweep")
+        # A letter the thread does not hold is dropped when the thread says which one it was.
+        self.assertEqual(M.wanted_title("AA", "A: Fix the sweep", ("A",)), "AA: Fix the sweep")
+
+    def test_a_topic_that_starts_with_an_acronym_keeps_it(self):
+        # Two capitals that are not a pair are an acronym, not a letter.
+        self.assertEqual(M.wanted_title("AA", "HTTP: the protocol"), "AA: HTTP: the protocol")
+        self.assertEqual(M.wanted_title("AA", "AI: the model"), "AA: AI: the model")
+
+    def test_the_registration_asks_for_a_pair_and_names_the_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "CD"}
+
+        with mock.patch.object(M, "registry_call", side_effect=fake):
+            M.register("sid", "Topic", "mvs_parent")
+        self.assertIn("--letter-space=double", seen["args"])
+        self.assertIn("--letter-pick=primary", seen["args"])
+        self.assertIn("--parent-session-id=mvs_parent", seen["args"])
+
+    def test_a_main_chat_registration_names_no_parent(self):
+        seen = {}
+
+        def fake(args, **kwargs):
+            seen["args"] = list(args)
+            return {"label": "AA"}
+
+        with mock.patch.object(M, "registry_call", side_effect=fake):
+            M.register("sid")
+        self.assertIn("--letter-space=double", seen["args"])
+        self.assertNotIn("--parent-session-id=mvs_parent", seen["args"])
+        self.assertFalse([a for a in seen["args"] if a.startswith("--parent-session-id=")])
+
+    def test_a_child_states_its_own_letter(self):
+        # A child has a letter of its own, one row after its parent's, so it states that one.
+        payload = json.dumps(
+            {
+                "session_id": SESSION_ID,
+                "tool_name": "zulip_post",
+                "tool_input": {"body": "AA: hi"},
+            }
+        ).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "session_kind": "task",
+            "parent_session_id": "mvs_parent",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="CD"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 2)
+
+    def test_a_child_states_its_own_letter_and_passes_when_it_does(self):
+        payload = json.dumps(
+            {
+                "session_id": SESSION_ID,
+                "tool_name": "zulip_post",
+                "tool_input": {"body": "CD: hi"},
+            }
+        ).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "session_kind": "task",
+            "parent_session_id": "mvs_parent",
+        }
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="CD"),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
+
+    def test_a_cron_session_has_no_thread_and_is_not_blocked(self):
+        payload = json.dumps(
+            {"session_id": SESSION_ID, "tool_name": "zulip_post", "tool_input": {"body": "hi"}}
+        ).encode()
+        row = {"session_id": SESSION_ID, "session_kind": "cron"}
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(M, "session_row", return_value=row),
+        ):
+            self.assertEqual(M.hook_pre_tool_use(), 0)
 
     # ---- the Kody pass of Oct 29 ----
 
