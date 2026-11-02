@@ -561,7 +561,10 @@ class Host:
 # (mcp/bearer_gate.py, fleet_rag/seat_auth.py):  the convention is kept Notes-local here so the
 # public client (fleet_bearer.py, vendored byte-for-byte into fleet_rag) stays unchanged.
 _BEARER_DIR = (".secrets", "fleet-tools")
-_SEAT_FILE = re.compile(r"[a-z][a-z0-9-]{1,19}")
+# The same seat-token contract as identity._SEAT_RE (1-32 chars, leading digit and
+# underscore allowed), lowered:  this helper lowercases the seat before matching, so a
+# seat identity.valid_seat accepts always names its bearer file here.
+_SEAT_FILE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 
 
 def _default_bearer_path(home, seat):

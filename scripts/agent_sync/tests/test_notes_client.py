@@ -941,6 +941,42 @@ class HostTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "not_authorized")
         self.assertNotIn("sbt_", caught.exception.message)
 
+    def test_the_bearer_file_seat_rule_matches_the_fleet_identity_contract(self):
+        # identity.valid_seat accepts 1-32 chars, leading digits and underscores, after
+        # canonical upper-casing;  the Notes-local rule is that contract lowered, so every
+        # valid seat names its own bearer file.
+        accepted = {
+            "a": "a",                      # single character
+            "1": "1",                      # a leading digit, also single-character
+            "9lives": "9lives",
+            "bf_engineer": "bf_engineer",  # underscore
+            "BF-ENGINEER": "bf-engineer",  # canonical case folds
+            "Claude": "claude",
+            "gb-publisher": "gb-publisher",
+            "a" * 32: "a" * 32,            # longest valid seat
+        }
+        for seat, stem in accepted.items():
+            with self.subTest(seat=seat):
+                path = NC._default_bearer_path(self.home, seat)
+                self.assertEqual(path, self.home / ".secrets" / "fleet-tools" / stem)
+        refused = (
+            "",
+            "a" * 33,          # over the 32-char contract
+            "..",                # traversal
+            "../secrets",
+            "sub/dir",
+            ".hidden",
+            "-leading-hyphen",
+            "_leading_underscore",
+            "bad seat",
+            "seat!",
+        )
+        for seat in refused:
+            with self.subTest(seat=seat):
+                with self.assertRaises(N.NotesError) as caught:
+                    NC._default_bearer_path(self.home, seat)
+                self.assertEqual(caught.exception.code, "not_configured")
+
     def test_off_a_mac_a_gateway_error_keeps_its_code_and_a_write_names_how_to_recover(self):
         from agent_sync import fleet_bearer as F
 
