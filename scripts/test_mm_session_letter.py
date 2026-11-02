@@ -226,9 +226,19 @@ class MmSessionLetterTest(unittest.TestCase):
             with self._shell_env(tmp):
                 self.assertEqual(M.cached_letter("sid"), "")
                 self._write_cache(scope, "sid", "CD")
-                # The scope list is remembered, but a scope that appears after the
-                # listing is still picked up.
+                # The scopes are not remembered:  a scope that appears after the
+                # first listing is picked up straight away, with no tick to wait for.
                 self.assertEqual(M.cached_letter("sid"), "CD")
+
+    def test_a_caller_can_pass_the_scopes_it_enumerated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            other = os.path.join(tmp, "elsewhere")
+            self._write_cache(other, "sid", "CD")
+            with self._shell_env(tmp):
+                # The sweep and the migration enumerate the scopes once and pass the
+                # list on, so the listing is not repeated for every session.
+                self.assertEqual(M.cached_letter("sid", [other]), "CD")
+                self.assertEqual(M.cached_letter("sid"), "")
 
     def test_a_symlinked_legacy_directory_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -533,7 +543,9 @@ class MmSessionLetterTest(unittest.TestCase):
 
         with (
             mock.patch.object(M, "sessions", return_value=self._migration_rows()),
-            mock.patch.object(M, "cached_letter", side_effect=lambda sid: letters[sid]),
+            mock.patch.object(
+                M, "cached_letter", side_effect=lambda sid, directories=None: letters[sid]
+            ),
             mock.patch.object(M, "relabel", side_effect=fake_relabel),
             mock.patch.object(M, "cache_letter"),
             mock.patch.object(M, "set_title", return_value=True),
@@ -585,7 +597,9 @@ class MmSessionLetterTest(unittest.TestCase):
         out = io.StringIO()
         with (
             mock.patch.object(M, "sessions", return_value=self._migration_rows()),
-            mock.patch.object(M, "cached_letter", side_effect=lambda sid: "A"),
+            mock.patch.object(
+                M, "cached_letter", side_effect=lambda sid, directories=None: "A"
+            ),
             mock.patch.object(M, "relabel", side_effect=fake_relabel),
             mock.patch.object(M, "register", side_effect=fake_register),
             mock.patch.object(M, "cache_letter"),
