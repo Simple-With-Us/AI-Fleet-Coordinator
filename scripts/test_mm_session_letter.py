@@ -147,12 +147,13 @@ class MmSessionLetterTest(unittest.TestCase):
                 self.assertEqual(M.cached_letter("sid"), "CD")
 
     def test_a_letter_written_from_a_shell_lands_in_the_runtime_user_scope(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self._shell_env(tmp):
-                M.cache_letter("sid", "BB", "Topic", "double")
-                written = os.path.join(tmp, "v2", "hook-data", "user", "session-letters", "sid.json")
-                self.assertTrue(os.path.isfile(written))
-                self.assertEqual(M.cached_letter("sid"), "BB")
+        with tempfile.TemporaryDirectory() as tmp, self._shell_env(tmp):
+            M.cache_letter("sid", "BB", "Topic", "double")
+            written = os.path.join(
+                tmp, "v2", "hook-data", "user", "session-letters", "sid.json"
+            )
+            self.assertTrue(os.path.isfile(written))
+            self.assertEqual(M.cached_letter("sid"), "BB")
 
     def test_a_letter_stays_in_the_scope_that_already_holds_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -236,9 +237,7 @@ class MmSessionLetterTest(unittest.TestCase):
             legacy = os.path.join(tmp, "hook-state")
             os.makedirs(legacy)
             with self._shell_env(tmp):
-                self.assertEqual(
-                    M.letter_cache_dir(), os.path.join(legacy, "session-letters")
-                )
+                self.assertEqual(M.letter_cache_dir(), os.path.join(legacy, "session-letters"))
 
     def test_the_migration_finds_the_live_letters_from_a_plain_shell(self):
         with tempfile.TemporaryDirectory() as tmp:
