@@ -1325,12 +1325,19 @@ def migrate_pairs() -> int:
                 out.append({"session_id": session_id, "letter": current, "outcome": "closed"})
                 continue
             if code == "not_registered":
-                # The registry has never seen this session, so it holds no letter to move:
-                # registering it gives it a pair from the start.
+                # The registry has never seen this session, so it holds no letter to move.
+                # It is registered here, and the cache is not asked:  the cache still holds
+                # the old single letter, and letter_for would hand that back.
                 try:
-                    letter = letter_for(session_id, title, parent)
+                    answer = _require_registry(
+                        register(session_id, title, parent), needs_label=True
+                    )
                 except (RegistryError, ValueError) as inner:
                     out.append({"session_id": session_id, "error": str(inner), "outcome": "failed"})
+                    continue
+                letter = str(answer.get("label") or "")
+                if not letter:
+                    out.append({"session_id": session_id, "skipped": "no letter"})
                     continue
                 letters[session_id] = letter
                 cache_letter(session_id, letter, title, LETTER_SPACE)

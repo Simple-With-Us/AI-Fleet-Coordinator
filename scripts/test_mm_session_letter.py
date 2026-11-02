@@ -345,6 +345,7 @@ class MmSessionLetterTest(unittest.TestCase):
 
     def test_the_migration_registers_a_session_the_registry_has_never_seen(self):
         calls = []
+        registered = []
 
         def fake_relabel(session_id, parent="", force=False):
             calls.append((session_id, parent, force))
@@ -354,12 +355,16 @@ class MmSessionLetterTest(unittest.TestCase):
                 "failed",
             )
 
+        def fake_register(session_id, title="", parent_session_id=""):
+            registered.append((session_id, title, parent_session_id))
+            return {"label": "AA"}
+
         out = io.StringIO()
         with (
             mock.patch.object(M, "sessions", return_value=self._migration_rows()),
             mock.patch.object(M, "cached_letter", side_effect=lambda sid: "A"),
             mock.patch.object(M, "relabel", side_effect=fake_relabel),
-            mock.patch.object(M, "letter_for", return_value="AA"),
+            mock.patch.object(M, "register", side_effect=fake_register),
             mock.patch.object(M, "cache_letter"),
             mock.patch.object(M, "set_title", return_value=True),
             mock.patch.object(M, "update_title"),
@@ -368,7 +373,10 @@ class MmSessionLetterTest(unittest.TestCase):
             code = M.migrate_pairs()
         self.assertEqual(code, 0)
         # The session the registry never saw is registered, so it gets a pair from the start.
+        # The cache is not asked:  it still holds the old single letter.
         self.assertIn('"outcome": "registered"', out.getvalue())
+        self.assertIn('"letter": "AA"', out.getvalue())
+        self.assertTrue(registered)
 
     def test_the_letter_command_names_the_parent(self):
         seen = {}
