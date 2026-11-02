@@ -26,3 +26,7 @@ The live verification of the Muster overhaul (PR 1239, AFC-590) drove the merged
 
 - The `BF_BUILDER_LINEAR_CLIENT_ID` value in Infisical is still an unexpanded reference.  Correcting a secret value is the owner's call; names no longer depends on it, and `get` on that key still fails closed.
 - Test Wake accept spends wake budget and can start a worker, and knob writes end at Touch ID.  Both remain owner-only; their dialogs, plans and cancel paths were verified live under AFC-590.
+
+## Second live pass (same day)
+
+Re-verifying the merged build live found the Secret Names panel still down, now on Muster's own parse: exactly one of the 679 root names, a legacy mixed-case key, failed the command-argument pattern the listing reused.  The listing parse now accepts real Infisical names of any case for display (`isListableName`) while still refusing value-shaped lines whole-answer, and the strict pattern still guards every name passed to a command.  Covered by `test_names_parse_accepts_mixed_case_names_but_still_refuses_value_shapes` (red first on the live name); full Muster suite 625 tests, 0 failures.

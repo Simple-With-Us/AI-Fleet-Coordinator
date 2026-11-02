@@ -135,14 +135,28 @@ public extension FleetSecrets {
         }
     }
 
+    /// True when a line from a `names` answer may be shown as a name.
+    ///
+    /// Listing is metadata only:  the line is displayed, never passed to a
+    /// command, so a real Infisical key with lowercase letters (live data
+    /// carries one) is listable even though `isValidName` rightly refuses it
+    /// as a command argument.  The fail-closed half is unchanged:  anything
+    /// value-shaped — an `=`, whitespace, a leading dash or digit — refuses
+    /// the whole answer rather than being rendered as a name.
+    static func isListableName(_ name: String) -> Bool {
+        guard let first = name.unicodeScalars.first, name.count <= 128 else { return false }
+        guard CharacterSet.letters.contains(first) || first == "_" else { return false }
+        return name.range(of: "[^A-Za-z0-9_]", options: .regularExpression) == nil
+    }
+
     /// Parse `names` answers grouped by path.  Any line that is not exactly a
-    /// valid secret name refuses the whole answer (fail closed):  a value-shaped
+    /// listable secret name refuses the whole answer (fail closed):  a value-shaped
     /// line is never rendered as a name.
     static func parseNamesByPath(_ answers: [(path: String, text: String)]) throws -> [SecretNameGroup] {
         try answers.map { answer in
             guard isValidPath(answer.path) else { throw FleetSecretError.invalidName(answer.path) }
             let lines = answer.text.split(whereSeparator: \.isNewline).map(String.init)
-            for line in lines where !isValidName(line) { throw FleetSecretError.invalidName(line) }
+            for line in lines where !isListableName(line) { throw FleetSecretError.invalidName(line) }
             return SecretNameGroup(path: answer.path, names: lines.sorted())
         }
     }
