@@ -1458,7 +1458,8 @@ class MmReopenStrictTouchTest(unittest.TestCase):
                 side_effect=M.RegistryError("no letter", "space_lost", "reopen_refused"),
             ),
             mock.patch.object(M, "cached_letter", return_value="AA"),
-            contextlib.redirect_stderr(io.StringIO()),self.assertRaises(M.RegistryError)
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(M.RegistryError),
         ):
             M.letter_for(SESSION_ID, "AA: Swept thread", "", strict_touch=True)
 
