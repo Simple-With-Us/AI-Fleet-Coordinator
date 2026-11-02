@@ -38,11 +38,9 @@ SESSION = "11112222-3333-4444-5555-666677778888"
 TITLE = "[AFC, Claude] Client Check"
 MASTER = "⭐️ Background Jobs Master List"
 
-
 def hdr(request: Any, name: str) -> str | None:
     """urllib stores header names capitalized ("X-agent-sync-principal")."""
     return request.get_header(name.capitalize())
-
 
 def record(state: str, rid: str = "requestid-0001", *, action: str = "create", seat: str = "CLAUDE", title: str | None = TITLE, **fields: Any) -> dict[str, Any]:
     out: dict[str, Any] = {
@@ -59,7 +57,6 @@ def record(state: str, rid: str = "requestid-0001", *, action: str = "create", s
     out.update(fields)
     return out
 
-
 class FakeResponse:
     def __init__(self, status: int, data: Any) -> None:
         self.status = status
@@ -73,7 +70,6 @@ class FakeResponse:
 
     def __exit__(self, *exc: object) -> None:
         return None
-
 
 class FakeOperator:
     """The Operator notes API as an opener:  every request's signature is recomputed from the documented string and
@@ -163,7 +159,6 @@ class FakeOperator:
             opener=self,
         )
 
-
 class WireTests(unittest.TestCase):
     """The signing string the Operator, the Python clients and the hosted Worker (src/notes.js) all compute."""
 
@@ -211,7 +206,6 @@ class WireTests(unittest.TestCase):
         self.assertNotIn("Content-Type", W.headers(TEST_KEY, "GET", "/notes/v1/log", "", "WORKER", b"", NOW))
         self.assertEqual(W.KEY_NAMES, {"WORKER": "OPERATOR_NOTES_WORKER_KEY", "SERVER": "OPERATOR_NOTES_SERVER_KEY", "RUNNER": "OPERATOR_NOTES_RUNNER_KEY"})
         self.assertEqual((W.MAX_SKEW_S, W.MIN_KEY_LEN, W.MAX_BODY, W.CLAIM_WAIT_MAX), (300, 32, 4 * 1024 * 1024, 25))
-
 
 class BaseUrlTests(unittest.TestCase):
     def test_the_environment_names_an_https_origin(self):
@@ -283,7 +277,6 @@ class BaseUrlTests(unittest.TestCase):
         self.assertEqual((client.base, client.principal, client.key.name), ("https://ops.example.test", "RUNNER", "OPERATOR_NOTES_RUNNER_KEY"))
         self.assertEqual(NC.operator_client({"OPERATOR_API_URL": "https://ops.example.test"}).principal, "SERVER")
 
-
 class KeySourceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -354,7 +347,6 @@ class KeySourceTests(unittest.TestCase):
         with mock.patch.object(NC.os.path, "expanduser", return_value=str(empty / "nope")):
             self.assertIsNone(self.source({"PATH": str(empty)}).get())
         self.assertEqual(self.runs, [], "nothing to run")
-
 
 class ClientTests(unittest.TestCase):
     def setUp(self):
@@ -534,7 +526,6 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(hits, ["/notes/v1/requests"], "the redirect target was never asked")
         self.assertTrue(any(isinstance(h, NC._NoRedirect) for h in NC._OPENER.handlers))
 
-
 class WaitTests(unittest.TestCase):
     def setUp(self):
         self.op = FakeOperator()
@@ -582,31 +573,42 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(self.client.wait("CLAUDE", done, 300), done)
         self.assertEqual((self.sleeps, self.op.calls), ([], []))
 
+class FakeFleet:
+    """A fleet_bearer.Client stand-in for `call`, `status` and `log` off a Mac:  it records the bearer file path
+    and expected seat it was constructed with and each (tool, arguments, write) call, and answers
+    structuredContent from replies queued per tool (an exception reply raises it instead)."""
 
-class FakeClient:
-    """An OperatorClient stand-in for `call`, `status` and `log` off a Mac."""
+    def __init__(self, *, seat: str = "CLAUDE") -> None:
+        self.seat = seat
+        self.constructed: list[tuple[str, Any]] = []
+        self.calls: list[tuple[str, dict[str, Any], bool]] = []
+        self.replies: dict[str, list[Any]] = {}
 
-    def __init__(self, enqueued: dict[str, Any], *, duplicate: bool = False, waited: dict[str, Any] | None = None) -> None:
-        self.enqueued, self.duplicate, self.waited = enqueued, duplicate, waited
-        self.calls: list[tuple[Any, ...]] = []
-        self.entries: list[dict[str, Any]] = []
+    def factory(self, path: Any, expected_seat: Any = None, identity_env: Any = None) -> "FakeFleet":
+        self.constructed.append((str(path), expected_seat))
+        if expected_seat is not None:
+            self.seat = expected_seat
+        return self
 
-    def enqueue(self, seat, request):
-        self.calls.append(("enqueue", seat, dict(request)))
-        return dict(self.enqueued), self.duplicate
+    def queue(self, tool: str, *replies: Any) -> None:
+        self.replies.setdefault(tool, []).extend(replies)
 
-    def wait(self, seat, current, seconds):
-        self.calls.append(("wait", seat, current["request_id"], seconds))
-        return dict(self.waited or current)
-
-    def record(self, seat, request_id):
-        self.calls.append(("record", seat, request_id))
-        return dict(self.waited or self.enqueued)
-
-    def log(self, filters):
-        self.calls.append(("log", dict(filters)))
-        return list(self.entries)
-
+    def call(self, name: str, arguments: Any, write: bool = False) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments), write))
+        queued = self.replies.get(name) or []
+        out = (
+            queued.pop(0)
+            if queued
+            else {
+                "status": "done",
+                "request_id": arguments.get("request_id"),
+                "action": name[len("notes_"):],
+                "transport": "operator",
+            }
+        )
+        if isinstance(out, BaseException):
+            raise out
+        return {"structuredContent": out}
 
 class HostTests(unittest.TestCase):
     SCRIPT = Path("/fake/apple-notes-coding.sh")
@@ -633,15 +635,23 @@ class HostTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return NC.Host(self.env, self.home, self.store, caller="mcp", script_finder=lambda env, home: self.SCRIPT)
 
-    def elsewhere(self, client):
-        made = []
-
-        def factory():
-            made.append(client)
-            return client
-
-        host = NC.Host(self.env, self.home, self.store, caller="cli", client_factory=factory, script_finder=lambda env, home: None)
-        return host, made
+    def fleet(self, own_seat: str | None = None, seat: str = "CLAUDE"):
+        """Off a Mac:  the hosted gateway is a fake, constructed with the seat's own bearer file path;  no file is
+        really read, because the fake replaces the whole client.  `own_seat` is what a one-seat process (the stdio
+        server) knows without a request."""
+        gw = FakeFleet(seat=seat)
+        patcher = mock.patch("agent_sync.fleet_bearer.Client", gw.factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        host = NC.Host(
+            self.env,
+            self.home,
+            self.store,
+            caller="cli",
+            own_seat=own_seat,
+            script_finder=lambda env, home: None,
+        )
+        return host, gw
 
     def req(self, action="create", rid="requestid-0001", **kwargs):
         defaults = {"title": TITLE if action == "create" else MASTER, "session": SESSION if action in N.BODY_ACTIONS else None}
@@ -652,58 +662,6 @@ class HostTests(unittest.TestCase):
 
     def scan(self, request):
         self.scans.append(dict(request))
-
-    def test_the_queues_own_503_is_a_definite_refusal_and_a_bare_5xx_is_unknown(self):
-        op = FakeOperator()
-        host, _ = self.elsewhere(op.client([]))
-        op.answers[("POST", "/notes/v1/requests")] = (503, {"error": "unavailable", "message": "the notes queue is full;  try again later"})
-        with self.assertRaises(N.NotesError) as caught:
-            NC.call(host, "CLAUDE", self.req(rid="requestid-0043"), wait=0, scan=self.scan)
-        self.assertEqual(caught.exception.code, "unavailable")  # nothing was queued
-        self.assertIn("the notes queue is full", caught.exception.message)
-        # So is a 429:  a rate limit turns the request away before anything is queued, as the Worker reads it too.
-        op.answers[("POST", "/notes/v1/requests")] = (429, b"Too Many Requests")
-        with self.assertRaises(N.NotesError) as caught:
-            NC.call(host, "CLAUDE", self.req(rid="requestid-0048"), wait=0, scan=self.scan)
-        self.assertEqual(caught.exception.code, "unavailable")
-        # A refused connection or a name that does not resolve sent nothing:  a plain, retryable unavailable.
-        for reason in (ConnectionRefusedError(111, "refused"), socket.gaierror(-2, "Name or service not known")):
-            with self.subTest(type(reason).__name__):
-                op.fail = urllib.error.URLError(reason)
-                with self.assertRaises(N.NotesError) as caught:
-                    NC.call(host, "CLAUDE", self.req(rid="requestid-0046"), wait=0, scan=self.scan)
-                self.assertEqual(caught.exception.code, "unavailable")
-        op.fail = urllib.error.URLError(ConnectionResetError(104, "reset"))  # may have been sent
-        with self.assertRaises(N.NotesError) as caught:
-            NC.call(host, "CLAUDE", self.req(rid="requestid-0047"), wait=0, scan=self.scan)
-        self.assertEqual(caught.exception.code, "outcome_unknown")
-        op.fail = None
-        # An enqueue answered with another request's record may still have queued this one:  outcome_unknown.
-        op.answers[("POST", "/notes/v1/requests")] = (202, record("queued", "someone-else-01"))
-        with self.assertRaises(N.NotesError) as caught:
-            NC.call(host, "CLAUDE", self.req(rid="requestid-0045"), wait=0, scan=self.scan)
-        self.assertEqual(caught.exception.code, "outcome_unknown")
-        self.assertIn("another request", caught.exception.message)
-        for answer in ((503, b"<html>no available server</html>"), (502, None)):
-            with self.subTest(answer[0]):
-                op.answers[("POST", "/notes/v1/requests")] = answer
-                with self.assertRaises(N.NotesError) as caught:
-                    NC.call(host, "CLAUDE", self.req(rid="requestid-0044"), wait=0, scan=self.scan)
-                self.assertEqual(caught.exception.code, "outcome_unknown")  # a proxy's 5xx may have queued it
-
-    def test_a_lost_answer_to_the_post_tells_the_caller_to_resend_with_the_same_request_id(self):
-        class Unreachable(FakeClient):
-            def enqueue(self, seat, request):
-                raise N.NotesError("unavailable", "the Operator notes API could not be reached (TimeoutError)")
-
-        host, _ = self.elsewhere(Unreachable(record("queued")))
-        with self.assertRaises(N.NotesError) as caught:
-            NC.call(host, "CLAUDE", self.req(rid="requestid-0042"), wait=30, scan=self.scan)
-        # The request may have reached the queue before the answer was lost:  its outcome is unknown, not retryable.
-        self.assertEqual(caught.exception.code, "outcome_unknown")
-        self.assertIn("may or may not be queued", caught.exception.message)
-        self.assertIn("simple-notes status requestid-0042", caught.exception.message)
-        self.assertIn("same request_id, requestid-0042, never a new one", caught.exception.message)
 
     def test_the_mac_seam_is_notes_direct_available_looked_up_when_the_host_is_made(self):
         with mock.patch.object(N, "direct_available", return_value=self.SCRIPT) as found:
@@ -787,21 +745,21 @@ class HostTests(unittest.TestCase):
 
     def test_who_may_send_is_checked_before_anything_runs_or_is_sent(self):
         host = self.mac()
-        client = FakeClient(record("queued"))
-        off, made = self.elsewhere(client)
-        for target in (host, off):
-            with self.subTest(mac=target is host):
-                with self.assertRaises(N.NotesError) as caught:
-                    NC.call(target, "CLAUDE", self.req(title="[AFC, Codex] Not Mine"), wait=90, scan=self.scan)
-                self.assertEqual(caught.exception.code, "invalid_argument")
-                with self.assertRaises(N.NotesError) as caught:
-                    NC.call(target, "CLAUDE", self.req(session=None), wait=90, scan=self.scan)
-                self.assertEqual(caught.exception.code, "session_required")
-                with self.assertRaises(N.NotesError):
-                    NC.call(target, "CODEX", self.req(), wait=90, scan=self.scan)
+        gw = FakeFleet()
+        with mock.patch("agent_sync.fleet_bearer.Client", gw.factory):
+            off = NC.Host(self.env, self.home, self.store, caller="cli", script_finder=lambda env, home: None)
+            for target in (host, off):
+                with self.subTest(mac=target is host):
+                    with self.assertRaises(N.NotesError) as caught:
+                        NC.call(target, "CLAUDE", self.req(title="[AFC, Codex] Not Mine"), wait=90, scan=self.scan)
+                    self.assertEqual(caught.exception.code, "invalid_argument")
+                    with self.assertRaises(N.NotesError) as caught:
+                        NC.call(target, "CLAUDE", self.req(session=None), wait=90, scan=self.scan)
+                    self.assertEqual(caught.exception.code, "session_required")
+                    with self.assertRaises(N.NotesError):
+                        NC.call(target, "CODEX", self.req(), wait=90, scan=self.scan)
         # The scan runs first (it sends nothing, and it keeps a refusal below from naming a secret);  nothing ran.
-        self.assertEqual((self.runs, client.calls, made), ([], [], []))
-
+        self.assertEqual((self.runs, gw.calls, gw.constructed), ([], [], []))
     def test_a_write_is_scanned_even_when_the_caller_brings_no_scan(self):
         host = self.mac()
         leak = "token " + "ghp_" + "EXAMPLE0" * 5
@@ -824,11 +782,15 @@ class HostTests(unittest.TestCase):
         self.assertEqual(self.runs, [])
         self.assertIsNone(self.store.row("k:notes-direct:requestid-0001"))
 
-    def test_off_a_mac_the_operator_answers_in_the_same_shape(self):
-        done = record("done", result={"note_id": "x-coredata://n2", "pin_skipped": "the Shortcut failed"})
-        client = FakeClient(record("queued"), waited=done)
-        host, made = self.elsewhere(client)
-        out = NC.call(host, "CLAUDE", self.req(), wait=300, scan=self.scan)
+    def test_off_a_mac_the_gateway_answers_in_the_same_shape(self):
+        host, gw = self.fleet()
+        gw.queue("notes_create", {"request_id": "requestid-0001", "action": "create", "status": "queued", "transport": "operator"})
+        gw.queue(
+            "notes_status",
+            {"request_id": "requestid-0001", "action": "create", "status": "done", "transport": "operator", "note_id": "x-coredata://n2", "pin_skipped": "the Shortcut failed"},
+        )
+        with mock.patch.object(NC.time, "sleep") as sleep:
+            out = NC.call(host, "CLAUDE", self.req(), wait=300, scan=self.scan)
         self.assertEqual(
             out,
             {
@@ -839,107 +801,58 @@ class HostTests(unittest.TestCase):
                 "title": TITLE,
                 "note_id": "x-coredata://n2",
                 "pin_skipped": "the Shortcut failed",
-                "duplicate": False,
             },
         )
-        self.assertEqual([c[0] for c in client.calls], ["enqueue", "wait"])
-        self.assertEqual(client.calls[1][3], 300)
-        self.assertEqual(len(made), 1)
+        self.assertEqual([c[0] for c in gw.calls], ["notes_create", "notes_status"])
+        self.assertEqual(sleep.call_count, 1)
         self.assertEqual(len(self.scans), 1)
-        self.assertIsNone(self.store.row("k:notes-direct:requestid-0001"), "the Operator keeps its own rows")
-
-    def test_the_operator_states_map_to_answers_and_errors(self):
-        for state, extra, expected in (
-            ("queued", {}, ("queued", None)),
-            ("running", {}, ("running", None)),
-            ("refused", {"error": {"code": "not_found", "message": "no note with that title"}}, (None, "not_found")),
-            ("refused", {}, (None, "internal")),
-            ("unknown", {"error": {"code": "outcome_unknown", "message": "the lease ran out"}}, (None, "outcome_unknown")),
-            ("expired", {}, (None, "unavailable")),
-            ("lost", {}, (None, "outcome_unknown")),  # a state this client does not know is never read as done
-        ):
-            with self.subTest(state=state, extra=bool(extra)):
-                host, _ = self.elsewhere(FakeClient(record(state, **extra)))
-                if expected[1] is None:
-                    out = NC.call(host, "CLAUDE", self.req(), wait=0)
-                    self.assertEqual((out["status"], out["transport"]), (expected[0], "operator"))
-                    self.assertNotIn("duplicate", out)
-                else:
-                    with self.assertRaises(N.NotesError) as caught:
-                        NC.call(host, "CLAUDE", self.req(), wait=0)
-                    self.assertEqual(caught.exception.code, expected[1])
-                    if extra:
-                        self.assertEqual(caught.exception.message, extra["error"]["message"])
-                    if state == "expired":
-                        # Final:  the same request_id answers this record again, so the way on is a new one.
-                        self.assertIn("nothing was written", caught.exception.message)
-                        self.assertIn("new request_id", caught.exception.message)
-
-    def test_the_duplicate_flag_and_a_wait_of_zero(self):
-        client = FakeClient(record("done", result={"note_id": "x-coredata://n3"}), duplicate=True)
-        host, _ = self.elsewhere(client)
-        out = NC.call(host, "CLAUDE", self.req(), wait=0)
-        self.assertEqual((out["status"], out["duplicate"], out["note_id"]), ("done", True, "x-coredata://n3"))
-        self.assertEqual([c[0] for c in client.calls], ["enqueue"], "wait 0 polls nothing")
-
+        self.assertIsNone(self.store.row("k:notes-direct:requestid-0001"), "the gateway keeps its own rows")
     def test_off_a_mac_a_read_and_a_list_answer_their_results(self):
         note = {"title": MASTER, "body": "<div>x</div>", "format": "html"}
-        host, _ = self.elsewhere(FakeClient(record("done", action="read", title=MASTER, result={"note": note}, result_expired=True)))
-        out = NC.call(host, "CLAUDE", self.req("read"), wait=0, scan=self.scan)
-        self.assertEqual((out["note"], out["result_expired"], out["action"]), (note, True, "read"))
+        host, gw = self.fleet()
+        gw.queue(
+            "notes_read",
+            {"request_id": "readrequest-01", "action": "read", "status": "done", "note": note},
+        )
+        out = NC.call(host, "CLAUDE", self.req("read", rid="readrequest-01"), wait=0, scan=self.scan)
+        self.assertEqual((out["note"], out["action"]), (note, "read"))
         rows = [{"title": TITLE, "id": "n1", "created": "", "modified": ""}]
-        host, _ = self.elsewhere(FakeClient(record("done", action="list", title=None, result={"notes": rows, "total": 9, "truncated": True})))
-        out = NC.call(host, "CLAUDE", self.req("list"), wait=0, scan=self.scan)
+        host, gw = self.fleet()
+        gw.queue(
+            "notes_list",
+            {"request_id": "listrequest-01", "action": "list", "status": "done", "notes": rows, "total": 9, "truncated": True},
+        )
+        out = NC.call(host, "CLAUDE", self.req("list", rid="listrequest-01"), wait=0, scan=self.scan)
         self.assertEqual((out["notes"], out["total"], out["truncated"]), (rows, 9, True))
         self.assertNotIn("title", out)
         self.assertEqual(self.scans, [], "a read is never scanned")
-
-    def test_status_and_log_off_a_mac_read_the_operator(self):
-        finished = record(
-            "refused",
-            finished_at="2026-10-22T22:05:00Z",
-            error={"code": "not_found", "message": "no note"},
+    def test_status_and_log_off_a_mac_read_the_gateway(self):
+        host, gw = self.fleet(own_seat="CLAUDE")
+        gw.queue(
+            "notes_status",
+            {"request_id": "requestid-0001", "status": "refused", "error": {"code": "not_found", "message": "no note"}},
         )
-        client = FakeClient(finished)
-        host, _ = self.elsewhere(client)
         self.assertEqual(
             NC.status(host, "CLAUDE", "requestid-0001"),
             {
                 "request_id": "requestid-0001",
                 "status": "refused",
-                "action": "create",
-                "transport": "operator",
-                "title": TITLE,
-                "queued_at": "2026-10-22T22:00:00Z",
-                "finished_at": "2026-10-22T22:05:00Z",
                 "error": {"code": "not_found", "message": "no note"},
             },
         )
-        done = FakeClient(record("done", result={"note_id": "x-coredata://n4", "pin_skipped": "busy"}))
-        host, _ = self.elsewhere(done)
-        info = NC.status(host, "CLAUDE", "requestid-0001")
-        self.assertEqual((info["note_id"], info["pin_skipped"]), ("x-coredata://n4", "busy"))
-        # The CLI prints a record's error to a terminal:  one line, no control character, a code of the contract's shape.
-        odd = record("refused", error={"code": "Not A Code", "message": "line one\n\x1b[31mred\x1b[0m\x00 " + "x" * 500})
-        host, _ = self.elsewhere(FakeClient(odd))
-        error = NC.status(host, "CLAUDE", "requestid-0001")["error"]
-        self.assertEqual(error["code"], "")
-        self.assertTrue(error["message"].startswith("line one [31mred [0m x"), error["message"][:40])
-        self.assertEqual(len(error["message"]), 400)
-        with self.assertRaises(N.NotesError) as caught:
-            NC.call(host, "CLAUDE", self.req(rid="requestid-0001"), wait=0)
-        self.assertEqual(caught.exception.code, "internal")
-        self.assertNotIn("\x1b", caught.exception.message)
-        client.entries = [{"id": "e1", "ts": "2026-10-22T22:00:00Z"}]
-        host, _ = self.elsewhere(client)
+        self.assertEqual(gw.calls[-1], ("notes_status", {"request_id": "requestid-0001"}, False))
+        gw.queue(
+            "notes_log",
+            {"entries": [{"id": "e1", "ts": "2026-10-22T22:00:00Z"}], "source": "operator", "count": 1},
+        )
         self.assertEqual(
             NC.log(host, {"by_seat": "codex"}),
             {"entries": [{"id": "e1", "ts": "2026-10-22T22:00:00Z"}], "source": "operator", "count": 1},
         )
-        self.assertEqual(client.calls[-1], ("log", {"since_hours": 24, "limit": 50, "seat": "CODEX", "action": None, "title": None}))
+        self.assertEqual(gw.calls[-1][0], "notes_log")
+        self.assertEqual(gw.constructed[0], (str(self.home / ".secrets" / "fleet-tools" / "claude"), "CLAUDE"))
         with self.assertRaises(N.NotesError):
             NC.log(host, {"since_hours": 0})
-
     def test_log_on_a_mac_reads_the_file(self):
         log = self.home / "actions.jsonl"
         from datetime import datetime, timezone
@@ -951,23 +864,101 @@ class HostTests(unittest.TestCase):
         self.assertEqual(NC.log(host, {}), {"entries": [{"id": "e1", "ts": ts, "mode": "update", "seat": "CLAUDE"}], "source": "mac", "count": 1})
         self.assertEqual(NC.log(host, {"action": "create"})["count"], 0)
 
-    def test_a_mac_never_makes_an_operator_client(self):
-        made = []
-        host = NC.Host(self.env, self.home, self.store, caller="cli", client_factory=lambda: made.append(1), script_finder=lambda env, home: self.SCRIPT)
-        with mock.patch.object(N, "run_direct", self.fake_run):
+    def test_a_mac_never_looks_for_a_bearer_file(self):
+        host = NC.Host(self.env, self.home, self.store, caller="cli", script_finder=lambda env, home: self.SCRIPT)
+        with mock.patch.object(N, "run_direct", self.fake_run), mock.patch(
+            "agent_sync.fleet_bearer.Client",
+            side_effect=AssertionError("a Mac reads no fleet bearer"),
+        ):
             NC.call(host, "CLAUDE", self.req(), wait=90)
             NC.status(host, "CLAUDE", "requestid-0001")
-        self.assertEqual(made, [])
+        self.assertIsNone(host.bearer_file)
+    def test_off_a_mac_the_callers_own_bearer_file_is_used(self):
+        host, gw = self.fleet()
+        out = NC.call(host, "CLAUDE", self.req(), wait=0, scan=self.scan)
+        self.assertEqual(out["status"], "done")
+        self.assertEqual(
+            gw.constructed,
+            [(str(self.home / ".secrets" / "fleet-tools" / "claude"), "CLAUDE")],
+        )
+        name, arguments, write = gw.calls[0]
+        self.assertEqual((name, write), ("notes_create", True))
+        self.assertEqual(arguments["request_id"], "requestid-0001")
+        self.assertNotIn("identity", arguments, "the gateway derives the seat from the bearer")
 
-    def test_the_real_client_end_to_end_off_a_mac(self):
-        op = FakeOperator()
-        sleeps: list[float] = []
-        op.records[("CLAUDE", "requestid-0001")] = [record("running"), record("done", result={"note_id": "x-coredata://n5"})]
-        host, _ = self.elsewhere(op.client(sleeps))
-        out = NC.call(host, "CLAUDE", self.req(), wait=300)
-        self.assertEqual((out["status"], out["note_id"], out["duplicate"]), ("done", "x-coredata://n5", False))
-        self.assertEqual(sleeps, [1.0, 1.0])
-        self.assertEqual([c["method"] for c in op.calls], ["POST", "GET", "GET"])
+    def test_off_a_mac_the_shared_key_is_never_read(self):
+        gw = FakeFleet()
+        with mock.patch("agent_sync.fleet_bearer.Client", gw.factory), mock.patch.object(
+            NC, "operator_client", side_effect=AssertionError("the shared credential is not built")
+        ), mock.patch.object(
+            NC.SR, "load", side_effect=AssertionError("the service reader is not asked")
+        ), mock.patch.object(
+            NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")
+        ):
+            host = NC.Host(
+                self.env,
+                self.home,
+                self.store,
+                caller="cli",
+                own_seat="CLAUDE",
+                script_finder=lambda env, home: None,
+            )
+            NC.call(host, "CLAUDE", self.req(), wait=0)
+            NC.status(host, "CLAUDE", "requestid-0001")
+            NC.log(host, {})
+    def test_off_a_mac_without_the_bots_own_bearer_file_nothing_is_sent(self):
+        host = NC.Host(
+            self.env,
+            self.home,
+            self.store,
+            caller="cli",
+            script_finder=lambda env, home: None,
+        )
+        with mock.patch.object(NC, "operator_client", side_effect=AssertionError("no shared fallback")):
+            for run in (
+                lambda: NC.call(host, "CLAUDE", self.req(rid="requestid-0071"), wait=0),
+                lambda: NC.status(host, "CLAUDE", "requestid-0071"),
+            ):
+                with self.subTest(run=run):
+                    with self.assertRaises(N.NotesError) as caught:
+                        run()
+                    self.assertEqual(caught.exception.code, "not_configured")
+        self.assertIn("fleet bearer file", caught.exception.message)
+        self.assertIn("no fallback", caught.exception.message)
+    def test_off_a_mac_a_bearer_naming_another_seat_is_refused_before_anything_is_sent(self):
+        path = self.home / ".secrets" / "fleet-tools" / "claude"
+        for directory in (path.parent.parent, path.parent):
+            if directory.is_symlink():
+                raise AssertionError(f"refusing symlinked private directory: {directory}")
+            previous_mode = directory.stat().st_mode & 0o777 if directory.exists() else None
+            directory.mkdir(mode=0o700, exist_ok=True)
+            self.assertEqual(directory.stat().st_mode & 0o777, previous_mode if previous_mode is not None else 0o700)
+        path.write_text("sbt_clutch_" + "x" * 43)
+        path.chmod(0o600)
+        host = NC.Host(self.env, self.home, self.store, caller="cli", script_finder=lambda env, home: None)
+        with self.assertRaises(N.NotesError) as caught:
+            NC.call(host, "CLAUDE", self.req(), wait=0)
+        self.assertEqual(caught.exception.code, "not_authorized")
+        self.assertNotIn("sbt_", caught.exception.message)
+
+    def test_off_a_mac_a_gateway_error_keeps_its_code_and_a_write_names_how_to_recover(self):
+        from agent_sync import fleet_bearer as F
+
+        host, gw = self.fleet()
+        gw.queue("notes_pin", F.FleetError("not_found", "no note with that title"))
+        with self.assertRaises(N.NotesError) as caught:
+            NC.call(host, "CLAUDE", self.req("pin", rid="requestid-0061"), wait=0, scan=self.scan)
+        self.assertEqual(caught.exception.code, "not_found")
+        self.assertIn("simple-notes status requestid-0061", caught.exception.message)
+        self.assertIn("same fleet bearer file", caught.exception.message)
+
+    def test_log_off_a_mac_without_any_seat_names_how_to_fix_it(self):
+        host = NC.Host(self.env, self.home, self.store, caller="cli", script_finder=lambda env, home: None)
+        with self.assertRaises(N.NotesError) as caught:
+            NC.log(host, {})
+        self.assertEqual(caught.exception.code, "not_configured")
+        self.assertIn("--fleet-bearer-file", caught.exception.message)
+        self.assertIn("shared service credential is not used", caught.exception.message)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -3,8 +3,9 @@
 The CLI twin of the notes_* tools:  one verb per tool and one option per argument (mcp/notes-tools.json is the
 contract;  tests/test_notes_parity.py keeps them equal).  It runs the same code as the tools (notes_client.call), so
 it works the same on every host:  on a Mac apple-notes-coding.sh runs directly and no credential is needed;
-anywhere else the request goes to the Operator's notes queue and the command waits for the Mac runner's result
-(up to --wait seconds, 300 by default).  No Zulip message is involved.  The body never reaches a command line of
+anywhere else the request goes to the hosted gateway as this bot's own fleet bearer (--fleet-bearer-file, or the
+bot's own private file from its seat) and the command waits for the Mac runner's result (up to --wait seconds,
+300 by default) - never the shared service credential.  No Zulip message is involved.  The body never reaches a command line of
 ours:  it comes from standard input or --body-file (or --html for an HTML file), and is handed to the script on stdin.
 
 `runner` is the Mac runner itself (notes_runner.py), run by the LaunchAgent com.jay.operator-notes-runner.
@@ -226,7 +227,7 @@ def add_parsers(
         default=None,
         help="how long one claim waits for work (default 25)",
     )
-    q = add(sub, "status", "where a request sent through the Operator stands")
+    q = add(sub, "status", "where a request sent off this Mac stands")
     q.add_argument("request_id", metavar="REQUEST_ID")
     identity_opt(q)
 
@@ -325,12 +326,14 @@ def _home(rt: Any) -> Path:
     )
 
 
-def _host(rt: Any, identity: str | None, bearer_file: str | None = None) -> NC.Host:
+def _host(
+    rt: Any, identity: str | None, bearer_file: str | None = None, own_seat: str | None = None
+) -> NC.Host:
     home = _home(rt)
     store = (
         IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json")) if identity else None
     )
-    return NC.Host(rt.env, home, store, caller="cli", bearer_file=bearer_file)
+    return NC.Host(rt.env, home, store, caller="cli", bearer_file=bearer_file, own_seat=own_seat)
 
 
 def _wait(args: argparse.Namespace) -> int:
@@ -410,7 +413,18 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
         raise Z.CredentialError("fleet bearer file path is empty; no fallback was used")
     use_json = bool(getattr(args, "json", False))
     if action == "log":
-        host = _host(rt, None, getattr(args, "fleet_bearer_file", None))
+        bearer_file = getattr(args, "fleet_bearer_file", None)
+        own_seat = None
+        if bearer_file is None:
+            # Off a Mac the log is read as the calling bot's own bearer, so a seat is needed to find its
+            # file;  a Mac's log is a local file and acts as no one.  A launcher that assigns no seat, or a
+            # shell with none, gets notes_client's refusal, which names this.
+            own_seat = I.resolve_seat(
+                rt.env,
+                flag=getattr(args, "as_seat", None) or getattr(args, "identity", None),
+                default=getattr(args, "default_seat", None),
+            ).seat
+        host = _host(rt, None, bearer_file, own_seat=own_seat)
         try:
             info = NC.log(
                 host,
