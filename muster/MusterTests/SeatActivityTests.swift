@@ -57,7 +57,7 @@ final class SeatActivityTests: XCTestCase {
 
     /// One message,  as `search --json` prints it.
     private let messageJSON = """
-    {"id": 1001, "sender_id": 9001, "client": "agent-sync", "channel": "Work-In-Progress", "topic": "fleet tools doctor", "dm": false, "sender_email": "claude-bot@example.test", "sender_full_name": "Claude", "is_bot": true, "seat": "CLAUDE", "seat_app": "claude-code", "timestamp": 1792821027, "content": "[CLAUDE] fleet-tools-doctor on worker-01.example.test:  5 failing checks.", "flags": [], "sibling": false, "mentioned": false, "reactions": []}
+    {"id": 1001, "sender_id": 9001, "client": "simple-chat", "channel": "Work-In-Progress", "topic": "fleet tools doctor", "dm": false, "sender_email": "claude-bot@example.test", "sender_full_name": "Claude", "is_bot": true, "seat": "CLAUDE", "seat_app": "claude-code", "timestamp": 1792821027, "content": "[CLAUDE] fleet-tools-doctor on worker-01.example.test:  5 failing checks.", "flags": [], "sibling": false, "mentioned": false, "reactions": []}
     """
 
     /// A presence answer,  as `presence --json` prints it.
@@ -129,7 +129,7 @@ final class SeatActivityTests: XCTestCase {
             .appendingPathComponent("muster-seat-activity-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         var location = ListenerStateLocation(home: root)
-        location.root = root.appendingPathComponent(".agent-sync", isDirectory: true)
+        location.root = root.appendingPathComponent(".simple-tools", isDirectory: true)
         if let state {
             let listener = location.root.appendingPathComponent("listener", isDirectory: true)
             try fileManager.createDirectory(at: listener, withIntermediateDirectories: true)

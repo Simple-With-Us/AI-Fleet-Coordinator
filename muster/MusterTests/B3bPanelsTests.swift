@@ -53,12 +53,66 @@ final class SecretNamesTests: XCTestCase {
         XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\nnot a name\n")]))
         XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY=somevalue\n")]))
     }
+    func test_names_parse_accepts_mixed_case_names_but_still_refuses_value_shapes() throws {
+        // Live root data carries a legacy mixed-case key name;  listing it is
+        // metadata only, so the parse accepts it while value-shaped lines
+        // keep failing closed (AFC-592).
+        let grouped = try FleetSecrets.parseNamesByPath(
+            [("/", "MAYBE_OLD_not_sure_SLACK_MCP_XOXB_TOKEN\nA_KEY\n")])
+        XCTAssertEqual(grouped[0].names, ["A_KEY", "MAYBE_OLD_not_sure_SLACK_MCP_XOXB_TOKEN"])
+        XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\n-sneaky\n")]))
+        XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\n1LEADING_DIGIT\n")]))
+        XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\nHAS SPACE\n")]))
+        XCTAssertThrowsError(try FleetSecrets.parseNamesByPath([("/", "A_KEY\nKEY=value\n")]))
+        // The command-argument check stays strict:  a mixed-case name is
+        // listable metadata, never something `get` will be called with.
+        XCTAssertFalse(FleetSecrets.isValidName("MAYBE_OLD_not_sure_SLACK_MCP_XOXB_TOKEN"))
+    }
     func test_names_uses_names_verb_only_never_get() throws {
         let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
         let secrets = FleetSecrets(commands: fake, home: b3bHome)
         XCTAssertEqual(try secrets.secretNames(path: "/"), ["A_KEY"])
         XCTAssertEqual(fake.calls.first?.1.first, "names")
         XCTAssertFalse(fake.calls.flatMap(\.1).contains("get"))
+    }
+    func test_names_exit_failure_is_refused_not_a_timeout() {
+        // AFC-592: a non-zero exit (here 5, an unexpanded reference elsewhere
+        // at the path) is not a timeout and must not be reported as one.
+        let fake = B3bCommands(); fake.failure = CommandExitError(output: "", status: 5)
+        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        XCTAssertThrowsError(try secrets.secretNames(path: "/")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .refused("/"))
+            XCTAssertFalse(FleetSecretError.refused("/").localizedDescription.contains("in time"))
+        }
+    }
+    func test_names_timeout_stays_unavailable() {
+        let fake = B3bCommands(); fake.failure = StartupPolicyError.commandFailed
+        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        XCTAssertThrowsError(try secrets.secretNames(path: "/")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .unavailable("/"))
+        }
+    }
+    func test_get_exit_3_is_missing_and_other_exits_are_refused() {
+        let absent = B3bCommands(); absent.failure = CommandExitError(output: "", status: 3)
+        XCTAssertThrowsError(try FleetSecrets(commands: absent, home: b3bHome).secret(named: "A_KEY")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .missing("A_KEY"))
+        }
+        let refused = B3bCommands(); refused.failure = CommandExitError(output: "", status: 5)
+        XCTAssertThrowsError(try FleetSecrets(commands: refused, home: b3bHome).secret(named: "A_KEY")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .refused("A_KEY"))
+        }
+    }
+    func test_names_and_doctor_exits_are_never_missing() {
+        // Names and doctor have no key of their own, so even exit 3 is a
+        // refusal, never "absent" (Kody finding on PR 1249).
+        let names = B3bCommands(); names.failure = CommandExitError(output: "", status: 3)
+        XCTAssertThrowsError(try FleetSecrets(commands: names, home: b3bHome).secretNames(path: "/")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .refused("/"))
+        }
+        let doctor = B3bCommands(); doctor.failure = CommandExitError(output: "", status: 3)
+        XCTAssertThrowsError(try FleetSecrets(commands: doctor, home: b3bHome).doctorReport()) { error in
+            XCTAssertEqual(error as? FleetSecretError, .refused("doctor"))
+        }
     }
     func test_doctor_parse_keeps_only_booleans_counts_and_short_tokens() throws {
         let json = #"{"ok":true,"cli_present":true,"names_count":3,"auth_mode":"machine","failure_reason":null,"cli_version":"1.2.3","secret_value":"should-not-pass"}"#

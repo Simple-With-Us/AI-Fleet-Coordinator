@@ -3,7 +3,7 @@ import Foundation
 // The seat wake settings,  as the panel shows them.
 //
 // The panel has two sources and never mixes them:  the configuration file
-// (`~/.agent-sync/listener.toml`) holds what the operator wrote,  and the running listener
+// (`~/.simple-tools/listener.toml`) holds what the operator wrote,  and the running listener
 // holds what is actually in effect.  A setting where the two disagree is DRIFT,  and it is
 // never shown as a quiet green.
 //

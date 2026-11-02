@@ -100,6 +100,10 @@ struct MusterSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        // The Settings window follows the same stored theme as the main
+        // window;  without this it stayed on the system scheme while Dark
+        // was chosen (AFC-592).
+        .preferredColorScheme(theme.colorScheme)
         .frame(width: 520)
         .fileImporter(isPresented: $pickingRepoRoot, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { repoRoot = url.path }

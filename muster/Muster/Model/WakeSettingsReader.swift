@@ -9,11 +9,11 @@ import Foundation
 
 /// Where the listener keeps its state on this Mac.
 struct ListenerStateLocation: Equatable {
-    /// The listener's state directory:  `~/.agent-sync`.
+    /// The listener's state directory:  `~/.simple-tools`.
     var root: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        self.root = home.appendingPathComponent(".agent-sync", isDirectory: true)
+        self.root = home.appendingPathComponent(".simple-tools", isDirectory: true)
     }
 
     /// The configuration file.
@@ -55,7 +55,7 @@ struct WakeSettingsReader {
     /// Where the state lives.
     var location: ListenerStateLocation
     /// The command line,  for the listener's own account of itself.
-    var runner: AgentSyncRunning
+    var runner: ListenerRunning
     /// The seats to show.
     var roster: [String]
     /// The clock.
@@ -63,7 +63,7 @@ struct WakeSettingsReader {
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
-        runner: AgentSyncRunning = AgentSyncCLI(),
+        runner: ListenerRunning = ListenerCLI(),
         roster: [String] = [],
         now: @escaping () -> Date = { Date() }
     ) {
@@ -96,7 +96,7 @@ struct WakeSettingsReader {
         // The listener's own account of itself.
         var status: ListenerStatus?
         do {
-            let result = try await runner.run(AgentSyncInvocation.status())
+            let result = try await runner.run(ListenerInvocation.status())
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {

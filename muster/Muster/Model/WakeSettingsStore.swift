@@ -26,7 +26,7 @@ final class WakeSettingsStore: ObservableObject {
     /// Where the listener's state lives.
     private let location: ListenerStateLocation
     /// The listener's own command line.
-    private let runner: AgentSyncRunning
+    private let runner: ListenerRunning
     /// The writer,  when the panel may write.
     private let writer: WakeSettingsWriter?
 
@@ -42,7 +42,7 @@ final class WakeSettingsStore: ObservableObject {
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
-        runner: AgentSyncRunning = AgentSyncCLI(),
+        runner: ListenerRunning = ListenerCLI(),
         writes: Bool = true
     ) {
         self.location = location
@@ -155,7 +155,7 @@ final class WakeSettingsStore: ObservableObject {
     @discardableResult
     func reload() async -> Bool {
         do {
-            let result = try await runner.run(AgentSyncInvocation.reload())
+            let result = try await runner.run(ListenerInvocation.reload())
             if result.exitCode != 0 {
                 message = "The listener did not re-read the configuration file:  \(result.stderrTail)"
                 return false
@@ -171,7 +171,7 @@ final class WakeSettingsStore: ObservableObject {
 
     /// Stops a seat's wakes.
     func pause(seat: String) async {
-        guard let invocation = try? AgentSyncInvocation.pause(seat: seat) else {
+        guard let invocation = try? ListenerInvocation.pause(seat: seat) else {
             message = "The seat tag is not a plain token,  so nothing was paused."
             return
         }
@@ -180,7 +180,7 @@ final class WakeSettingsStore: ObservableObject {
 
     /// Lifts the kill switch.
     func resume(seat: String) async {
-        guard let invocation = try? AgentSyncInvocation.resume(seat: seat) else {
+        guard let invocation = try? ListenerInvocation.resume(seat: seat) else {
             message = "The seat tag is not a plain token,  so nothing was resumed."
             return
         }
@@ -194,7 +194,7 @@ final class WakeSettingsStore: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do {
-            let result = try await runner.run(AgentSyncInvocation.testWakeRun(seat: seat, runtime: runtime))
+            let result = try await runner.run(ListenerInvocation.testWakeRun(seat: seat, runtime: runtime))
             if result.exitCode == 0 {
                 message = "The test wake ran.  Read its result before you pin it."
             } else {
@@ -210,7 +210,7 @@ final class WakeSettingsStore: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do {
-            let result = try await runner.run(AgentSyncInvocation.testWakePin(seat: seat, runtime: runtime))
+            let result = try await runner.run(ListenerInvocation.testWakePin(seat: seat, runtime: runtime))
             if result.exitCode == 0 {
                 message = "The binary was pinned.  A failed run never pins."
             } else {
@@ -223,7 +223,7 @@ final class WakeSettingsStore: ObservableObject {
     }
 
     /// Runs a command line and says what it did.
-    private func run(_ invocation: AgentSyncInvocation, success: String) async {
+    private func run(_ invocation: ListenerInvocation, success: String) async {
         isBusy = true
         defer { isBusy = false }
         do {
