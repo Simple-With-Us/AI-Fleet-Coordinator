@@ -87,6 +87,18 @@ final class SecretNamesTests: XCTestCase {
             XCTAssertEqual(error as? FleetSecretError, .refused("A_KEY"))
         }
     }
+    func test_names_and_doctor_exits_are_never_missing() {
+        // Names and doctor have no key of their own, so even exit 3 is a
+        // refusal, never "absent" (Kody finding on PR 1249).
+        let names = B3bCommands(); names.failure = CommandExitError(output: "", status: 3)
+        XCTAssertThrowsError(try FleetSecrets(commands: names, home: b3bHome).secretNames(path: "/")) { error in
+            XCTAssertEqual(error as? FleetSecretError, .refused("/"))
+        }
+        let doctor = B3bCommands(); doctor.failure = CommandExitError(output: "", status: 3)
+        XCTAssertThrowsError(try FleetSecrets(commands: doctor, home: b3bHome).doctorReport()) { error in
+            XCTAssertEqual(error as? FleetSecretError, .refused("doctor"))
+        }
+    }
     func test_doctor_parse_keeps_only_booleans_counts_and_short_tokens() throws {
         let json = #"{"ok":true,"cli_present":true,"names_count":3,"auth_mode":"machine","failure_reason":null,"cli_version":"1.2.3","secret_value":"should-not-pass"}"#
         let report = try FleetSecrets.parseDoctor(json)

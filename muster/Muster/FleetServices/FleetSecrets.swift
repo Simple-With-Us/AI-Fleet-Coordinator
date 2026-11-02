@@ -34,12 +34,19 @@ public enum FleetSecretError: LocalizedError, Equatable {
         }
     }
 
-    /// Map a command failure:  fleet-secrets exit 3 is "absent", any other
+    /// Map a key-read failure:  fleet-secrets exit 3 is "absent", any other
     /// exit is a refusal, and anything else is the no-answer case.
     static func from(_ error: Error, name: String) -> FleetSecretError {
         if let exit = error as? CommandExitError {
             return exit.status == 3 ? .missing(name) : .refused(name)
         }
+        return .unavailable(name)
+    }
+
+    /// Map a failure of a read that has no key of its own (names, doctor):
+    /// an exit is a refusal, never "absent" — there is no key to be absent.
+    static func fromNonKeyRead(_ error: Error, name: String) -> FleetSecretError {
+        if error is CommandExitError { return .refused(name) }
         return .unavailable(name)
     }
 }
@@ -155,7 +162,7 @@ public extension FleetSecrets {
         do {
             text = try commands.run(secretsExecutable, ["names", "--path", path],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.from(error, name: path) }
+        } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
         return try Self.parseNamesByPath([(path, text)]).first?.names ?? []
     }
 
@@ -169,7 +176,7 @@ public extension FleetSecrets {
         do {
             return try commands.run(secretsExecutable, ["names", "--path", path],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.from(error, name: path) }
+        } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
     }
 
     /// Parse `doctor --json`:  only booleans, counts and short token strings
@@ -202,7 +209,7 @@ public extension FleetSecrets {
         do {
             text = try commands.run(secretsExecutable, ["doctor", "--json"],
                                     environment: secretsEnvironment, timeout: 20)
-        } catch { throw FleetSecretError.from(error, name: "doctor") }
+        } catch { throw FleetSecretError.fromNonKeyRead(error, name: "doctor") }
         return try Self.parseDoctor(text)
     }
 }
