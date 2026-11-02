@@ -3,7 +3,7 @@
 
 Healthy (exit 0) while the listener keeps rewriting <state>/listener/status.json, which it does
 every 2 seconds from its main loop.  Unhealthy (exit 1) when the file is older than 60 seconds
-(AGENT_SYNC_HEALTH_MAX_AGE overrides) or missing:  a stuck main loop, a daemon that has not
+(SIMPLE_TOOLS_HEALTH_MAX_AGE overrides) or missing:  a stuck main loop, a daemon that has not
 started, or one that refused to start over the seat partition (that path never writes it).  It
 reads only the file's modification time, never its contents.
 
@@ -20,11 +20,11 @@ DEFAULT_MAX_AGE = 60.0
 def main(env=None, now=None, out=None):
     env = os.environ if env is None else env
     out = out or sys.stdout
-    root = env.get("AGENT_SYNC_STATE_DIR") or os.path.join(
-        env.get("HOME") or os.path.expanduser("~"), ".agent-sync"
+    root = env.get("SIMPLE_TOOLS_STATE_DIR") or os.path.join(
+        env.get("HOME") or os.path.expanduser("~"), ".simple-tools"
     )
     try:
-        max_age = float(env.get("AGENT_SYNC_HEALTH_MAX_AGE") or DEFAULT_MAX_AGE)
+        max_age = float(env.get("SIMPLE_TOOLS_HEALTH_MAX_AGE") or DEFAULT_MAX_AGE)
     except ValueError:
         max_age = DEFAULT_MAX_AGE
     path = os.path.join(root, "listener", "status.json")
