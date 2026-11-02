@@ -38,7 +38,7 @@ Owner, Oct 29 2026 (AFC-577):  a mild resource issue alerts both Housekeepers an
 | Tier | When | Tags | Then |
 | --- | --- | --- | --- |
 | Mild | A filesystem at least 80% used or under 40 GB free;  load, RAM, swap or CPU past a warning line (not Datadog's high-CPU alert);  a database growing fast;  Litestream staging ballooning or replication blocked | `@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**` | The Housekeeper that owns the host reclaims (above), the other stands by |
-| Critical | A filesystem at least 90% used or under 20 GB free (a small tmpfs such as `/tmp` by percent only) | `@**all**` | The sending bot DMs Jay why, as every bot `@all` must (`scripts/agent_sync/broadcast_audit.py`) |
+| Critical | A filesystem at least 90% used or under 20 GB free (a small tmpfs such as `/tmp` by percent only) | `@**all**` | The sending bot DMs Jay why, as every bot `@all` must (`scripts/simple_tools/broadcast_audit.py`) |
 
 Load is never a space issue, so even the simulator reaper's emergency post stays mild.  Datadog raises high CPU all the time, so its CPU alert tags no one (owner, Oct 29 2026);  its memory, load and disk alerts are tagged like any mild alert by the alert-ingress work in AFC-566.  Datadog's own posts come from an incoming-webhook bot, which the fleet routers never let wake anyone.
 
