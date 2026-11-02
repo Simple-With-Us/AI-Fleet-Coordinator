@@ -6497,17 +6497,24 @@ def remote_write(a) -> dict:
     sessions = getattr(a, "session_ids", None) or []
     if len(sessions) > 1:
         die("remote mode accepts at most one --session", EXIT_USAGE)
+    # The seat is the one the hosted server reports for this bearer, and the
+    # bearer comes from the seat's own file.  The write names that seat as its
+    # identity, so the server checks the claim against the same bearer.
+    who = remote_call("linear_whoami", {})["structured"]
+    got = str(who.get("authenticated_seat") or who.get("seat") or "")
+    if not got:
+        die(
+            "the hosted server did not report a seat for this bearer; refusing to write",
+            EXIT_USAGE,
+        )
     claimed = getattr(a, "addressed_by", None) or getattr(a, "author", None)
-    if claimed:
-        who = remote_call("linear_whoami", {})["structured"]
-        got = str(who.get("authenticated_seat") or who.get("seat") or "")
-        if not got or got.lower() != str(claimed).lower():
-            shown = _remote_visible(got)[:40] if got else "none reported"
-            die(
-                f"--by {claimed} does not match the seat the hosted server reports for this bearer ({shown}); "
-                "remote mode never acts as another seat",
-                EXIT_USAGE,
-            )
+    if claimed and got.lower() != str(claimed).lower():
+        shown = _remote_visible(got)[:40] if got else "none reported"
+        die(
+            f"--by {claimed} does not match the seat the hosted server reports for this bearer ({shown}); "
+            "remote mode never acts as another seat",
+            EXIT_USAGE,
+        )
     if a.cmd == "claim":
         args = {"id": a.id}
         if a.comment:
@@ -6533,6 +6540,7 @@ def remote_write(a) -> dict:
                 args[key] = val
     if sessions:
         args["session"] = sessions[0]
+    args["identity"] = got
     return remote_call(tool, args, write=True)
 
 
