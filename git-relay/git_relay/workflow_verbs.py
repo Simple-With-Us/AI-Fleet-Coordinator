@@ -34,6 +34,7 @@ import zlib
 from urllib.parse import quote, urlsplit
 
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
+from .reviewed_fixtures import unreviewed_file_secret
 from .secret_scan import find_secret
 from .server import PreReadUnavailable, _perm_within_ceiling
 
@@ -5796,7 +5797,7 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if len(raw) > MAX_FILE_RAW:
             raise Refused("file too large")
-        if find_secret(message) or find_secret(raw.decode("utf-8", "replace")):
+        if find_secret(message) or unreviewed_file_secret(repo, path, raw):
             raise Refused("credential-shaped content refused")
         payload = {"message": message, "content": content, "branch": branch}
         if "prior_sha" in args:
@@ -5883,7 +5884,7 @@ class WorkflowVerbs:
             total_raw += len(raw)
             if len(raw) > MAX_FILE_RAW or total_raw > MAX_FILES_RAW:
                 raise Refused("files too large")
-            if find_secret(raw.decode("utf-8", "replace")):
+            if unreviewed_file_secret(repo, path, raw):
                 raise Refused("credential-shaped content refused")
             plan.append((path, content))
         if find_secret(message):
