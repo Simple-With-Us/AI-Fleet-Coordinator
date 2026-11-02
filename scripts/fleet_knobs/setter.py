@@ -307,24 +307,37 @@ def set_knob(
         token = ""
     if mode == "yes":
         secret = spec is None or spec.secret
-        answer["audit"] = "written" if audit(
-            audit_file or audit_path(),
-            {
-                "time": now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "seat": (environ.get("AGENT_SEAT") or "owner").strip()[:32] or "owner",
-                "key": name if name in BY_NAME else "unknown",
-                # A value is only ever recorded for a registered non-secret knob.
-                "old": None if secret else answer["old"],
-                "new": None if secret else answer["new"],
-                "result": answer["result"],
-            },
-        ) else "failed"
+        answer["audit"] = (
+            "written"
+            if audit(
+                audit_file or audit_path(),
+                {
+                    "time": now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "seat": (environ.get("AGENT_SEAT") or "owner").strip()[:32] or "owner",
+                    "key": name if name in BY_NAME else "unknown",
+                    # A value is only ever recorded for a registered non-secret knob.
+                    "old": None if secret else answer["old"],
+                    "new": None if secret else answer["new"],
+                    "result": answer["result"],
+                },
+            )
+            else "failed"
+        )
     return answer, code
 
 
 def delete_argv(cli: str, name: str) -> list[str]:
-    return [cli, "secrets", "delete", name, f"--env={source.ENVIRONMENT}",
-            f"--path={KNOB_PATH}", f"--projectId={source.PROJECT_ID}", "--type=shared", "--silent"]
+    return [
+        cli,
+        "secrets",
+        "delete",
+        name,
+        f"--env={source.ENVIRONMENT}",
+        f"--path={KNOB_PATH}",
+        f"--projectId={source.PROJECT_ID}",
+        "--type=shared",
+        "--silent",
+    ]
 
 
 def check_unset(name: str) -> Spec:
@@ -347,7 +360,8 @@ def refresh_lkg_unset(name: str, reader) -> str:
         return "refreshed" if where == "infisical" else f"not-refreshed:{note}"
     if name not in doc["knobs"]:
         return "refreshed"
-    copy = dict(doc["knobs"]); copy.pop(name, None)
+    copy = dict(doc["knobs"])
+    copy.pop(name, None)
     try:
         lkg.write(copy, now=float(doc["saved_epoch"]))
     except (OSError, ValueError) as exc:
@@ -355,8 +369,18 @@ def refresh_lkg_unset(name: str, reader) -> str:
     return "patched"
 
 
-def unset_knob(name, mode, *, environ=None, platform=None, runner=None, reader=None,
-               find_cli=None, audit_file=None, now=None):
+def unset_knob(
+    name,
+    mode,
+    *,
+    environ=None,
+    platform=None,
+    runner=None,
+    reader=None,
+    find_cli=None,
+    audit_file=None,
+    now=None,
+):
     """(answer, exit) for `unset`: Infisical delete first, then the local copy."""
     environ = dict(os.environ if environ is None else environ)
     platform = platform or sys.platform
@@ -364,9 +388,19 @@ def unset_knob(name, mode, *, environ=None, platform=None, runner=None, reader=N
     reader = reader or current
     find_cli = find_cli or source.find_cli
     now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
-    answer = {"ok": False, "verb": "unset", "target": name, "old": None, "new": None,
-              "commands": [], "result": "refused", "detail": ""}
-    spec = None; code = 2; token = ""
+    answer = {
+        "ok": False,
+        "verb": "unset",
+        "target": name,
+        "old": None,
+        "new": None,
+        "commands": [],
+        "result": "refused",
+        "detail": "",
+    }
+    spec = None
+    code = 2
+    token = ""
     try:
         if mode not in ("plan", "yes"):
             raise Refused("pass --plan to see the write or --yes to make it")
@@ -386,7 +420,8 @@ def unset_knob(name, mode, *, environ=None, platform=None, runner=None, reader=N
         argv = delete_argv(cli, name)
         answer["commands"] = [["infisical"] + argv[1:]]
         if mode == "plan":
-            answer.update(ok=True, result="planned", detail="nothing written"); code = 0
+            answer.update(ok=True, result="planned", detail="nothing written")
+            code = 0
         else:
             token = read_token(environ, platform, runner)
             if not token:
@@ -395,23 +430,36 @@ def unset_knob(name, mode, *, environ=None, platform=None, runner=None, reader=N
             try:
                 status, _ = runner(argv, timeout=WRITE_TIMEOUT, env=env)
             finally:
-                env = {}; token = ""
+                env = {}
+                token = ""
             if status != 0:
                 raise Failed(f"infisical secrets delete exited {status}")
             answer["lkg"] = refresh_lkg_unset(name, reader)
-            answer.update(ok=True, result="done", detail="deleted; the default applies"); code = 0
+            answer.update(ok=True, result="done", detail="deleted; the default applies")
+            code = 0
     except Refused as exc:
-        answer.update(ok=False, result="refused", detail=str(exc)); code = 2
+        answer.update(ok=False, result="refused", detail=str(exc))
+        code = 2
     except Failed as exc:
-        answer.update(ok=False, result="failed", detail=str(exc)); code = 1
+        answer.update(ok=False, result="failed", detail=str(exc))
+        code = 1
     finally:
         token = ""
     if mode == "yes":
         secret = spec is None or spec.secret
-        answer["audit"] = "written" if audit(audit_file or audit_path(), {
-            "time": now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "seat": (environ.get("AGENT_SEAT") or "owner").strip()[:32] or "owner",
-            "key": name if name in BY_NAME else "unknown",
-            "old": None if secret else answer["old"], "new": None,
-            "result": answer["result"]}) else "failed"
+        answer["audit"] = (
+            "written"
+            if audit(
+                audit_file or audit_path(),
+                {
+                    "time": now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "seat": (environ.get("AGENT_SEAT") or "owner").strip()[:32] or "owner",
+                    "key": name if name in BY_NAME else "unknown",
+                    "old": None if secret else answer["old"],
+                    "new": None,
+                    "result": answer["result"],
+                },
+            )
+            else "failed"
+        )
     return answer, code

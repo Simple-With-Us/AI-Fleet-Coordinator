@@ -266,7 +266,11 @@ class Remote(unittest.TestCase):
         self.assertNotIn("ghp_", err)
 
     def test_identity_answer_mismatch_refuses_before_the_write(self):
-        bad = {"default_identity": "ECHO", "authenticated_seat": "CODEX", "identities": [{"identity": "ECHO"}]}
+        bad = {
+            "default_identity": "ECHO",
+            "authenticated_seat": "CODEX",
+            "identities": [{"identity": "ECHO"}],
+        }
         code, _, err, calls = self.run_writes(
             ["comment", "AFC-1", "--by", "CODEX", "--text", "x"], [rpc(bad)]
         )
@@ -308,7 +312,12 @@ class Remote(unittest.TestCase):
         self.assertIn("single value", err)
 
     def test_remote_error_hints_are_static_and_do_not_echo_server_text(self):
-        for code_name in ("identity_required", "session_required", "writes_disabled", "not_configured"):
+        for code_name in (
+            "identity_required",
+            "session_required",
+            "writes_disabled",
+            "not_configured",
+        ):
             code, _, err, _ = self.run_cli(
                 ["list"], rpc({"code": code_name}, is_error=True, text="server-private-word")
             )

@@ -25,9 +25,25 @@ from .secret_scan import find_secret, looks_like_credential
 # "key" covers api_key, access_key and private_key spellings alike.
 _SENSITIVE_SEGMENTS = frozenset(
     {
-        "title", "body", "token", "secret", "secrets", "password", "passwd",
-        "pwd", "apikey", "key", "authorization", "auth", "credential",
-        "credentials", "private", "session", "cookie", "cookies", "bearer",
+        "title",
+        "body",
+        "token",
+        "secret",
+        "secrets",
+        "password",
+        "passwd",
+        "pwd",
+        "apikey",
+        "key",
+        "authorization",
+        "auth",
+        "credential",
+        "credentials",
+        "private",
+        "session",
+        "cookie",
+        "cookies",
+        "bearer",
     }
 )
 # Exact keys whose values are already safe by construction: the masked
@@ -51,6 +67,8 @@ def _key_is_sensitive(key: str) -> bool:
 
 def _hash_of(text: str) -> dict:
     return {"_sha256": hashlib.sha256(text.encode()).hexdigest(), "_len": len(text)}
+
+
 MAX_DEPTH = 8
 MAX_ENTRIES_PER_LEVEL = 64
 MAX_NODES = 2000
@@ -115,7 +133,7 @@ class UnauthorizedAuditor:
         self._stamps: list[float] = []
         self._lock = threading.Lock()
 
-    def record(self, audit: "AuditLog", action: object) -> bool:
+    def record(self, audit: AuditLog, action: object) -> bool:
         now = self._clock()
         with self._lock:
             self._stamps = [t for t in self._stamps if now - t < self._window_s]

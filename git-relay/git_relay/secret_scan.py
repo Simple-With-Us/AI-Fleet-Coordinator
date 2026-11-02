@@ -31,9 +31,9 @@ _PATTERNS = (
 
 _SAFE_VALUE_SHAPES = (
     re.compile(r"^[0-9a-f]{7,64}$"),  # commit SHAs and hex digests
-    re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I),
+    re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE),
     re.compile(r"^PRRT_[A-Za-z0-9_-]{6,128}$"),  # review-thread ids
-    re.compile(r"^https?://", re.I),
+    re.compile(r"^https?://", re.IGNORECASE),
 )
 _TOKEN_LIKE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
 
@@ -54,11 +54,9 @@ def looks_like_credential(value: object) -> bool:
     if not _TOKEN_LIKE.match(value):
         return False
     classes = sum(
-        bool(re.search(pattern, value))
-        for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[._~+/=-]")
+        bool(re.search(pattern, value)) for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[._~+/=-]")
     )
     return classes >= 3
-
 
 
 def find_secret(text: object) -> str | None:

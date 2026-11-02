@@ -967,7 +967,6 @@ def check_usage_monitor_garage_backup(state: dict, now: float, dsn: str | None) 
     )
 
 
-
 def run_checks(checks, state: dict, now: float) -> list[str]:
     """Run each (name, callable) check in its own try block.
 
@@ -993,6 +992,7 @@ def run_checks(checks, state: dict, now: float) -> list[str]:
             else:
                 print(f"[fleet-sentry-monitor] check {name} raised: {exc}")
     return failed
+
 
 def main() -> int:
     dsn = load_dsn()
