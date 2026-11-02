@@ -90,7 +90,7 @@ final class RecallSettingsTests: XCTestCase {
         // session is ephemeral and its delegate refuses every redirect.
         XCTAssertTrue(RecallSettingsClient.blockingSession.delegate is RecallRedirectBlocker)
         XCTAssertEqual(RecallSettingsClient.blockingSession.configuration.identifier, nil)
-        XCTAssertTrue(RecallSettingsClient.blockingSession.configuration.urlCache == nil || true)
+        XCTAssertNil(RecallSettingsClient.blockingSession.configuration.urlCache)
     }
     func test_masking_never_displays_a_raw_value() throws {
         let json = #"{"ok":true,"settings":{"RECALL_ADMIN_TOKEN":{"set":true,"value":"set"},"PLAIN_KEY":{"set":true,"value":"raw-value-must-not-show"},"EMPTY_KEY":{"set":false,"value":"empty"}}}"#

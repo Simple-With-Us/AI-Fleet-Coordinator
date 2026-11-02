@@ -297,7 +297,7 @@ export class FakeLinear {
     const number = 300 + this.issues.length;
     const row = this.addIssue({ identifier: `${team.key}-${number}`, title: input.title, team, description: input.description ?? "", priority: input.priority ?? 0 });
     if (input.stateId) row.state = this.stateById(input.stateId);
-    if (input.labelIds?.length) row.labels = input.labelIds.map((id) => { const node = this.labels.find((l) => l.id === id); return { id, name: node.name, parent: node.parent ?? null }; });
+    if (input.labelIds?.length) row.labels = input.labelIds.map((id) => { const node = this.labels.find((l) => l.id === id); return { id, name: node?.name ?? String(id), parent: node?.parent ?? null }; });
     return { success: true, issue: this.issueNode(row) };
   }
 

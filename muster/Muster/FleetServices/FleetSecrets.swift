@@ -251,8 +251,12 @@ final class RecallRedirectBlocker: NSObject, URLSessionTaskDelegate {
 
 public enum RecallSettingsClient {
     /// The only session the bearer rides on: ephemeral, redirect-blocking.
-    public static let blockingSession: URLSession = URLSession(
-        configuration: .ephemeral, delegate: RecallRedirectBlocker(), delegateQueue: nil)
+    public static let blockingSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration, delegate: RecallRedirectBlocker(), delegateQueue: nil)
+    }()
     /// Build the admin request.  The token goes only in the Authorization
     /// header, in memory:  never in the URL, never logged, never persisted.
     public static func buildRequest(config: RecallSettingsConfig, token: String) throws -> URLRequest {
