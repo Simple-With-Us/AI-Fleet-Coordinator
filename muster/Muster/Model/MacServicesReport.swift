@@ -267,6 +267,21 @@ enum MacServicesReportReader {
     }
 }
 
+/// Retains refresh requests before deciding whether another metadata reader owns them.
+struct OperationsRefreshRequests {
+    private(set) var metadataRequested = false
+    private(set) var agentsRequested = false
+
+    mutating func request(collectAgents: Bool, metadataBusy: Bool) -> Bool {
+        metadataRequested = true
+        agentsRequested = agentsRequested || collectAgents
+        return !metadataBusy
+    }
+
+    mutating func beginMetadataRead() { metadataRequested = false }
+    mutating func beginAgentRead() { agentsRequested = false }
+}
+
 /// --dry-run reads launchd and prints JSON without writing a report, installing an
 /// agent, or starting or stopping a service.
 struct MacServicesCollector {

@@ -134,6 +134,33 @@ final class MacServicesReportTests: XCTestCase {
     }
 }
 
+final class OperationsRefreshRequestTests: XCTestCase {
+    func test_agent_refresh_during_cheap_metadata_read_is_retained() {
+        var requests = OperationsRefreshRequests()
+        XCTAssertTrue(requests.request(collectAgents: false, metadataBusy: false))
+        requests.beginMetadataRead()
+        XCTAssertFalse(requests.request(collectAgents: true, metadataBusy: true))
+        XCTAssertTrue(requests.metadataRequested)
+        XCTAssertTrue(requests.agentsRequested)
+        requests.beginMetadataRead()
+        XCTAssertFalse(requests.metadataRequested)
+        XCTAssertTrue(requests.agentsRequested)
+        requests.beginAgentRead()
+        XCTAssertFalse(requests.agentsRequested)
+    }
+
+    func test_server_refresh_keeps_pending_agent_request_without_inventing_a_rescan() {
+        var requests = OperationsRefreshRequests()
+        XCTAssertTrue(requests.request(collectAgents: true, metadataBusy: false))
+        requests.beginMetadataRead()
+        XCTAssertFalse(requests.request(collectAgents: false, metadataBusy: true))
+        XCTAssertTrue(requests.agentsRequested)
+        requests.beginAgentRead()
+        XCTAssertTrue(requests.request(collectAgents: false, metadataBusy: false))
+        XCTAssertFalse(requests.agentsRequested)
+    }
+}
+
 private struct MacCollectorRunner: OpsRunning {
     let result: OpsProcessResult
     func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult { result }

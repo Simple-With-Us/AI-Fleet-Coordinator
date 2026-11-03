@@ -12,8 +12,7 @@ struct OperationsView: View {
     @State private var audit: OpsAuditReading?
     @State private var loading = false
     @State private var collectingAgents = false
-    @State private var refreshAgentsAfterCollection = false
-    @State private var refreshMetadataAfterRead = false
+    @State private var refreshRequests = OperationsRefreshRequests()
     @ObservedObject private var controller = OpsController.shared
 
     var body: some View {
@@ -324,14 +323,12 @@ struct OperationsView: View {
 
     /// Read local operations data and, when requested, obtain a fresh agent snapshot.
     private func load(collectAgents: Bool = true) async {
-        refreshMetadataAfterRead = true
-        if collectAgents { refreshAgentsAfterCollection = true }
-        guard !loading else { return }
+        guard refreshRequests.request(collectAgents: collectAgents, metadataBusy: loading) else { return }
         do {
             loading = true
             defer { loading = false }
             repeat {
-                refreshMetadataAfterRead = false
+                refreshRequests.beginMetadataRead()
                 let servicesURL = MacServicesReportReader.reportURL()
                 let allowlistURL = OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
                 let auditURL = OpsAuditLog.logURL()
@@ -346,15 +343,15 @@ struct OperationsView: View {
                 allowlist = readAllowlist
                 allowlistPath = allowlistURL.path
                 audit = readAudit
-            } while refreshMetadataAfterRead
+            } while refreshRequests.metadataRequested
         }
-        guard refreshAgentsAfterCollection, !collectingAgents else { return }
+        guard refreshRequests.agentsRequested, !collectingAgents else { return }
         collectingAgents = true
         defer { collectingAgents = false }
         repeat {
-            refreshAgentsAfterCollection = false
+            refreshRequests.beginAgentRead()
             services = await MacServicesCollector(repoRoot: FleetConfigLocation.resolve().repoRoot).collect()
-        } while refreshAgentsAfterCollection
+        } while refreshRequests.agentsRequested
     }
 }
 
