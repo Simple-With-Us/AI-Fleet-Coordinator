@@ -25,7 +25,7 @@ from pathlib import Path
 
 DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-# The reviewed allowlisted runtime contains 146 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 150 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -34,7 +34,11 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
-MAX_FILES = 146
+# The 147th is simple_tools/operator_identity_reader.py (the letters' pinned identity read);  the 148th is
+# simple_tools/server/operator_registry_dispatch.py (the reviewed host registry route the managed wrappers
+# hand the exact registry argv shapes to);  the 149th and 150th are operator_sheets_export_run.mjs and
+# operator_sheets_adapter.mjs (the exporter's runner and its real AFC-428 adapter).
+MAX_FILES = 150
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
