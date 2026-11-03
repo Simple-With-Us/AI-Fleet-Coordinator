@@ -1401,17 +1401,48 @@ if __name__ == "__main__":
 class ScriptsDirTest(unittest.TestCase):
     """The helper and the CLI it calls have to be the same version."""
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.here = os.path.dirname(os.path.realpath(M.__file__))
+
+    def _checkout(self, root):
+        # A competing checkout that LOOKS like the fleet scripts:  the search accepts
+        # it, so only the order keeps it from winning.
+        scripts = os.path.join(root, "AI-Fleet-Coordinator", "scripts")
+        os.makedirs(os.path.join(scripts, "simple_tools"))
+        open(os.path.join(scripts, "simple_tools", "operator_registry.py"), "w").close()
+        return scripts
+
     def test_the_checkout_the_helper_runs_in_comes_first(self):
         # A verb the helper sends has to be a verb the CLI knows, so the CLI comes
-        # from the checkout the helper itself is in.
-        here = os.path.dirname(os.path.abspath(M.__file__))
-        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "/nowhere/at/all"}):
-            self.assertEqual(M.repo_scripts_dir(), here)
+        # from the checkout the helper itself is in, never from a stale checkout the
+        # environment happens to name.
+        stale = self._checkout(self.tmp.name)
+        with mock.patch.dict(
+            os.environ, {"FLEET_CODE_ROOT": self.tmp.name, "FLEET_APPS_ROOT": ""}
+        ):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
+        # The competing root is a real candidate:  without the running checkout in
+        # front of it, it is what the search returns.
+        self.assertNotEqual(stale, self.here)
+
+    def test_a_stale_checkout_in_the_home_layout_loses_too(self):
+        root = os.path.join(self.tmp.name, "home")
+        stale = self._checkout(os.path.join(root, "Code"))
+        with mock.patch.dict(
+            os.environ,
+            {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": "", "HOME": root},
+        ):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
+        self.assertNotEqual(stale, self.here)
 
     def test_a_host_that_names_no_checkout_still_finds_one(self):
-        here = os.path.dirname(os.path.abspath(M.__file__))
-        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": ""}):
-            self.assertEqual(M.repo_scripts_dir(), here)
+        with mock.patch.dict(
+            os.environ,
+            {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": "", "HOME": self.tmp.name},
+        ):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
 
 
 class MmLetterReopenTest(unittest.TestCase):
