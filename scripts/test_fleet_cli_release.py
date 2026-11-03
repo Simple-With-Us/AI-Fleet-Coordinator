@@ -13,9 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-spec = importlib.util.spec_from_file_location(
-    "release", Path(__file__).with_name("fleet-cli-release.py")
-)
+RELEASE_PATH = Path(__file__).with_name("fleet-cli-release.py")
+spec = importlib.util.spec_from_file_location("release", RELEASE_PATH)
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 
@@ -84,6 +83,179 @@ class ReleaseTests(unittest.TestCase):
             install,
             ("obsolete-tools", "obsolete-codex-mcp"),
         )
+
+    # -- the positively identified custom Codex transport (the Oct 29 batch) -----------------
+
+    FOREIGN_CONTENT = b"#!/bin/sh\n# the custom CODEX transport wrapper (Oct 29 batch)\n"
+
+    def _foreign_transport(
+        self,
+        *,
+        content=None,
+        command=None,
+        env_vars=None,
+        extra_line="",
+        mode=0o700,
+        symlink=False,
+        missing=False,
+    ):
+        content = self.FOREIGN_CONTENT if content is None else content
+        libexec = self.home / ".local/libexec"
+        libexec.mkdir(parents=True, exist_ok=True)
+        wrapper = libexec / "codex-simple-tools"
+        if symlink:
+            real = libexec / "real-transport"
+            real.write_bytes(content)
+            real.chmod(0o700)
+            if wrapper.exists() or wrapper.is_symlink():
+                wrapper.unlink()
+            wrapper.symlink_to(real)
+        elif not missing:
+            wrapper.write_bytes(content)
+            wrapper.chmod(mode)
+        five = release.codex_mcp_expected(self.home / ".local/bin")["env_vars"]
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir(exist_ok=True)
+        config.write_bytes(
+            (
+                "[mcp_servers.simple-chat]\ncommand = "
+                + json.dumps(command or str(wrapper))
+                + "\nenv_vars = "
+                + json.dumps(env_vars if env_vars is not None else five)
+                + "\n"
+                + extra_line
+            ).encode()
+        )
+        patcher = mock.patch.object(
+            release, "CUSTOM_TRANSPORT_SHA256", hashlib.sha256(self.FOREIGN_CONTENT).hexdigest()
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return config
+
+    def test_the_recognized_custom_transport_is_preserved_and_the_install_advances(self):
+        config = self._foreign_transport()
+        before = config.read_bytes()
+        self.receive()
+        self.assertEqual(config.read_bytes(), before)  # no overwrite, no delete, no migration
+        self.assertTrue((self.home / ".local/bin/platform-letter").exists())  # release advanced
+
+    def test_the_recognized_custom_transport_is_preserved_on_the_update_path(self):
+        self.receive()
+        config = self._foreign_transport()
+        before = config.read_bytes()
+        self.receive(make_bundle("two"), install=False)
+        self.assertEqual(config.read_bytes(), before)
+
+    def test_a_recognized_transport_still_blocks_a_replacement_onto_its_key(self):
+        libexec = self.home / ".local/libexec"
+        self._foreign_transport()
+        config = self.home / ".codex/config.toml"
+        before = config.read_bytes()
+        legacy = str(self.home / ".local/bin/obsolete-codex-mcp")
+        five = release.codex_mcp_expected(self.home / ".local/bin")["env_vars"]
+        with config.open("ab") as fh:
+            fh.write(
+                (
+                    "[mcp_servers.obsolete-tools]\ncommand = "
+                    + json.dumps(legacy)
+                    + "\nenv_vars = "
+                    + json.dumps(five)
+                    + "\n"
+                ).encode()
+            )
+        with self.assertRaisesRegex(release.Refused, "existing_simple_tools_mcp_conflict"):
+            self.receive()
+        self.assertEqual(config.read_bytes(), before + config.read_bytes()[len(before):])
+        self.assertIn("obsolete-tools", config.read_text())  # nothing migrated, nothing lost
+
+    def test_unrecognized_custom_lookalikes_keep_the_plain_refusal(self):
+        five = release.codex_mcp_expected(self.home / ".local/bin")["env_vars"]
+        for name, kwargs in (
+            ("content_mismatch", {"content": b"#!/bin/sh\n# some other wrapper\n"}),
+            ("wrong_path", {"command": str(self.home / ".local/bin/codex-simple-tools")}),
+            ("env_vars_differ", {"env_vars": five[:4]}),
+            ("extra_key", {"extra_line": "timeout = 30\n"}),
+            ("non_empty_env", {"extra_line": 'env = { X = "1" }\n'}),
+            ("symlink", {"symlink": True}),
+            ("group_writable", {"mode": 0o720}),
+            ("missing_file", {"missing": True}),
+        ):
+            with self.subTest(name=name):
+                config = self._foreign_transport(**kwargs)
+                before = config.read_bytes()
+                with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
+                    self.receive()
+                self.assertEqual(config.read_bytes(), before)  # refused, and never touched
+                config.unlink()
+                wrapper = self.home / ".local/libexec/codex-simple-tools"
+                if wrapper.is_symlink():
+                    wrapper.unlink()
+
+    def test_a_parent_without_custody_keeps_the_plain_refusal(self):
+        for name, rel in (
+            ("libexec_group_writable", ".local/libexec"),
+            ("local_group_writable", ".local"),
+            ("home_group_writable", ""),
+        ):
+            with self.subTest(name=name):
+                config = self._foreign_transport()
+                (self.home / rel if rel else self.home).chmod(0o770)
+                with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
+                    self.receive()
+                config.unlink()
+                (self.home / ".local/libexec/codex-simple-tools").unlink()
+
+    def test_a_linked_parent_directory_keeps_the_plain_refusal(self):
+        config = self._foreign_transport()
+        libexec = self.home / ".local/libexec"
+        real = self.home / "elsewhere"
+        real.mkdir()
+        moved = real / "codex-simple-tools"
+        moved.write_bytes(libexec.joinpath("codex-simple-tools").read_bytes())
+        moved.chmod(0o700)
+        libexec.joinpath("codex-simple-tools").unlink()
+        libexec.rmdir()
+        libexec.symlink_to(real)
+        with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
+            self.receive()
+
+    def test_a_directory_in_the_transports_place_keeps_the_plain_refusal(self):
+        config = self._foreign_transport()
+        wrapper = self.home / ".local/libexec/codex-simple-tools"
+        wrapper.unlink()
+        wrapper.mkdir()
+        with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
+            self.receive()
+
+    def test_a_fifo_in_the_transports_place_refuses_without_hanging(self):
+        self._foreign_transport()
+        wrapper = self.home / ".local/libexec/codex-simple-tools"
+        wrapper.unlink()
+        os.mkfifo(wrapper)
+        # The qualification runs in a bounded subprocess with an entry that is valid
+        # in every other respect, so the FIFO is what the open meets:  a hang here
+        # fails the test instead of holding a real updater forever.
+        probe = (
+            "import sys, importlib.util; "
+            "from pathlib import Path; "
+            "spec = importlib.util.spec_from_file_location('rel', sys.argv[1]); "
+            "rel = importlib.util.module_from_spec(spec); spec.loader.exec_module(rel); "
+            "home = Path(sys.argv[2]); "
+            "entry = {'command': sys.argv[3], "
+            "'env_vars': rel.codex_mcp_expected(home / '.local/bin')['env_vars']}; "
+            "print(rel.qualified_custom_transport(home, entry))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe, str(RELEASE_PATH), str(self.home), str(wrapper)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.stdout.strip(), "False", result.stderr)
+
+    def test_the_pinned_transport_digest_is_a_real_sha256_shape(self):
+        self.assertRegex(release.CUSTOM_TRANSPORT_SHA256, r"^[0-9a-f]{64}$")
 
     def test_default_receive_keeps_unrelated_servers(self):
         config = self.home / ".codex/config.toml"
