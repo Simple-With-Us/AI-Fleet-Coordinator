@@ -1,0 +1,104 @@
+# simple-chat listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08);
+# single-server consolidation directed by the owner on Mon, Nov 2 2026 ("the target is one
+# server eavesdropper, with the Operator's registry and wake functions there too").
+#
+# The listener now runs as ONE instance of the same package (scripts/simple_tools):
+#   server  the Coolify container on the Hetzner box:  every seat, including the nine seats
+#           whose execution tools live on the owner's Mac (AG, CLAUDE, CLUTCH, CODEX, CURSOR,
+#           FX, GROK, MC and MM) and the Operator service.  GB personas wake through their
+#           Grok Bot routine webhooks, JET through its hosted MCP routine.  The seats moved
+#           off the Mac hold a queue with inbox capture until each one's native exact-thread
+#           delivery binding is grounded per seat (no generic replacement runtime);  the Mac
+#           keeps only the thin wake alerter (scripts/simple_tools/wake_alerter.py) as a narrow
+#           execution actuator, not a polling eavesdropper.
+#   mac     no seats.  The Mac instance of the listener is retired once its pending state is
+#           carried over;  only the alerter and Mac-bound surfaces (Apple Notes runner,
+#           iMessage boundary, Muster) remain.
+#   none    no listener instance holds the seat.  BotFleet handles its BF bots natively.
+#
+# A seat must never be configured in two instances:  two listeners would each hold a queue for
+# the same bot and each wake it, and a reply could go out twice.  Every listener reads this file
+# (the container image carries one) and it fails closed.  A listener refuses to start when its
+# listener.toml configures a seat, enabled or not, that this file does not give to its own
+# instance:  a seat of another instance, a `none` seat, or a seat that is not listed here at
+# all.  It also refuses a section that reads another listed seat's credential (for example
+# [seat.GBC] with bot = "GB-Compiler"), and at connect it refuses a key whose users/me identity
+# is not the seat's own bot.  A missing file refuses every seat.
+#
+# Change an entry only with the owner's OK, in the PR that enables the seat.  Move a seat by
+# removing it from one instance's listener.toml before adding it to the other's.
+
+version = 1
+
+[seats]
+# The Operator:  a deterministic service, not an agent roster entry.  Its registry, wake
+# functions and voice live on the server instance (single-server consolidation, Nov 2 2026).
+OPERATOR = "server"
+
+# The nine seats whose execution tools live on the owner's Mac.  Their queues, cursors and
+# wake routing are the server instance's now;  each keeps inbox capture until its own native
+# exact-thread delivery binding is grounded and enabled per seat.
+CLAUDE = "server"
+CODEX = "server"
+AG = "server"
+CURSOR = "server"
+GROK = "server"
+CLUTCH = "server"
+FX = "server"
+MM = "server"
+MC = "server"
+
+# Cloud seats
+MA = "server"
+JET = "server"
+GROK-WEB = "server"
+WISE = "server"
+ECHO = "server"
+
+# Grok Bot personas.  GB-DIRECTOR is a realm member now (it was an admin earlier), and
+# the listener accepts moderator and member bots only (listener decision 7), so its key is
+# accepted.  Its seat stays disabled in the server sample until its routine key in Infisical is
+# fixed (docs/protocols/simple-tools-server.md, Open Questions).
+GB-DIRECTOR = "server"
+GB-FIXER = "server"
+GB-DESIGNER = "server"
+GB-COMPILER = "server"
+GB-HOUSEKEEPER = "server"
+GB-PUBLISHER = "server"
+GB-DEPLOYER = "server"
+GB-MONITOR = "server"
+GB-PLUMBER = "server"
+GB-ORACLE = "server"
+GB-TRADER = "server"
+# GB-ENGINEER holds a seat like the rest and is enabled in the server sample (see its listener.toml note).
+GB-ENGINEER = "server"
+
+# BotFleet role bots.  The ten seats below are "none" (no listener holds them).  Earlier versions
+# of this comment said BotFleet handled them natively; it does not yet.  BotFleet's source has no
+# wake path, no simple-chat reference and no Linear integration, so nothing wakes those ten today
+# and the owner has to prompt them by hand (owner, Mon, Oct 13).  BotFleet still assigns the
+# BF-<ROLE> seat at launch, which is the part that is native to it.
+#
+# The eleven BF seats are the ten role seats plus BF-DIRECTOR (FLEET-PROTOCOL.md, owner 2026-10-09).
+# BF-PRODUCER is not one of them.  It stays off this partition and off the eleven-seat
+# outgoing-webhook allowlist.  It stays on the board roster so its Linear app signs its writes.
+# All eleven are outgoing-webhook senders.  That allowlist does not hold a queue.
+BF-BUILDER = "none"
+BF-COMPILER = "none"
+BF-DEPLOYER = "none"
+BF-DESIGNER = "none"
+BF-FIXER = "none"
+BF-HOUSEKEEPER = "none"
+BF-MONITOR = "none"
+BF-ORACLE = "none"
+BF-PLUMBER = "none"
+BF-PUBLISHER = "none"
+# BF-DIRECTOR is the one BotFleet seat the server listener holds, so the owner can wake it rather
+# than prompt it by hand (owner, Mon, Oct 13).  Its server sample stays disabled until its routine
+# endpoint and key are in Infisical.
+BF-DIRECTOR = "server"
+
+# GROK-BUILD is the older code of the GROK seat (terminal Grok and Grok Build are one seat,
+# owner 2026-10-08); listed as none so neither name can be held twice.  Every input spelling of
+# it is canonicalized to GROK before the partition is read (owner 2026-10-10), so this row is inert.
+GROK-BUILD = "none"

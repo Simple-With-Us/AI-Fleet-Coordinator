@@ -286,7 +286,7 @@ enum ChatLocator {
         candidates.append(home.appendingPathComponent(".local/bin/simple-chat"))
         candidates.append(
             home.appendingPathComponent(
-                "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/simple-chat"
+                "apps/lanes/_managed/fleet/simple-tools-runtime/scripts/simple-chat"
             )
         )
         if let engine = EngineLocator.locate(environment: environment, home: home) {

@@ -300,7 +300,7 @@
       "notesName": "Grok Web",
       "worktreeSuffix": "grok-web",
       "branchPrefixes": [],
-      "notes": "Grok on the web and the iOS app: a cloud seat with no Mac lanes or checkouts (owner 2026-10-08).  Held by the server listener, not the Mac one (docs/protocols/agent-sync-partition.toml).  No branch prefix, as in the FLEET-PROTOCOL.md Active Seats table, so lane refuses it before it makes a worktree.  The tag GROK-WEB makes grok-web a seat token whatever the suffix is (layout.py derives an alias from the lowercase tag), so a GROK lane slug may not start with web-, as grok plus build is GROK-BUILD's.  GROK-WEB makes no lanes, so nothing else is affected.",
+      "notes": "Grok on the web and the iOS app: a cloud seat with no Mac lanes or checkouts (owner 2026-10-08).  Held by the server listener, not the Mac one (docs/protocols/simple-tools-partition.toml).  No branch prefix, as in the FLEET-PROTOCOL.md Active Seats table, so lane refuses it before it makes a worktree.  The tag GROK-WEB makes grok-web a seat token whatever the suffix is (layout.py derives an alias from the lowercase tag), so a GROK lane slug may not start with web-, as grok plus build is GROK-BUILD's.  GROK-WEB makes no lanes, so nothing else is affected.",
       "zulipBotEmail": "grok-web-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Grok-Web"
     },
@@ -367,12 +367,23 @@
     },
     {
       "tag": "KIMI",
-      "notesName": "Kimi (retired 2026-08-21)",
+      "notesName": "Kimi",
       "worktreeSuffix": "kimi",
       "branchPrefixes": [
         "kimi/"
       ],
-      "retired": true
+      "zulipBotEmail": "kimi-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Kimi"
+    },
+    {
+      "tag": "ZC",
+      "notesName": "ZCode",
+      "worktreeSuffix": "zc",
+      "branchPrefixes": [
+        "zc/"
+      ],
+      "zulipBotEmail": "zc-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Zcode"
     },
     {
       "tag": "MM",
@@ -428,7 +439,7 @@
       ],
       "zulipBotEmail": "instinct-bat-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Echo",
-      "notes": "Echo, shown as Echo (Instinct):  one of the two bots of the Instinct app (instinct.com), which runs on its own computer and reaches the fleet through the hosted ST-MCP bridge, not through a Mac lane.  Held by the server listener (docs/protocols/agent-sync-partition.toml).  Does PR troubleshooting and release work;  its merged Congress.Trade PRs so far were pushed on instinct/ branches under the owner's GitHub login, so GitHub cannot tell the two bots apart.  echo/ is its own prefix from now on.  Has its own Linear app, Echo (Instinct), key variables LINEAR_ECHO_CLIENT_ID and LINEAR_ECHO_CLIENT_SECRET.  Registered Sun, Oct 11, 2026 (owner: add the rows)."
+      "notes": "Echo, shown as Echo (Instinct):  one of the two bots of the Instinct app (instinct.com), which runs on its own computer and reaches the fleet through the hosted ST-MCP bridge, not through a Mac lane.  Held by the server listener (docs/protocols/simple-tools-partition.toml).  Does PR troubleshooting and release work;  its merged Congress.Trade PRs so far were pushed on instinct/ branches under the owner's GitHub login, so GitHub cannot tell the two bots apart.  echo/ is its own prefix from now on.  Has its own Linear app, Echo (Instinct), key variables LINEAR_ECHO_CLIENT_ID and LINEAR_ECHO_CLIENT_SECRET.  Registered Sun, Oct 11, 2026 (owner: add the rows)."
     },
     {
       "tag": "WISE",
@@ -440,11 +451,11 @@
       ],
       "zulipBotEmail": "instinct-owl-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Wise",
-      "notes": "The other bot of the Instinct app, shown as Wise (Instinct) since Sun, Oct 11, 2026 (the owner's name for what used to be called the Instinct version).  The seat tag is WISE (owner 2026-10-15);  INSTINCT is retired and stays as an accepted spelling so existing references keep resolving.  instinct/ remains a branch prefix alongside wise/ because its merged work is on instinct/ branches under the owner's GitHub login.  Held by the server listener (docs/protocols/agent-sync-partition.toml), reached through the hosted ST-MCP bridge, and makes no Mac lanes.  Has its own Linear app, Wise (Instinct), key variables LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
+      "notes": "The other bot of the Instinct app, shown as Wise (Instinct) since Sun, Oct 11, 2026 (the owner's name for what used to be called the Instinct version).  The seat tag is WISE (owner 2026-10-15);  INSTINCT is retired and stays as an accepted spelling so existing references keep resolving.  instinct/ remains a branch prefix alongside wise/ because its merged work is on instinct/ branches under the owner's GitHub login.  Held by the server listener (docs/protocols/simple-tools-partition.toml), reached through the hosted ST-MCP bridge, and makes no Mac lanes.  Has its own Linear app, Wise (Instinct), key variables LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
     }
   ],
   "seatApps": {
-    "notes": "The app each seat runs in, for code that counts apps instead of models (a consult quorum) or asks which product a seat tag belongs to.  Kept out of seats on purpose:  a dozen tools read seats and a row there makes lanes, skill copies and listener seats.  bySeat has one entry per live row of seats (check-fleet-registry.py enforces it).  extraSeats are real seats with no row in seats (hosted or owner-run).  patterns cover the families whose tags are made up of a role (BF-<ROLE> and GB-<ROLE>).  scripts/agent_sync/identity.py strict_seat() and seat_app() read it;  canonical_seat() does not.",
+    "notes": "The app each seat runs in, for code that counts apps instead of models (a consult quorum) or asks which product a seat tag belongs to.  Kept out of seats on purpose:  a dozen tools read seats and a row there makes lanes, skill copies and listener seats.  bySeat has one entry per live row of seats (check-fleet-registry.py enforces it).  extraSeats are real seats with no row in seats (hosted or owner-run).  patterns cover the families whose tags are made up of a role (BF-<ROLE> and GB-<ROLE>).  scripts/simple_tools/identity.py strict_seat() and seat_app() read it;  canonical_seat() does not.",
     "bySeat": {
       "CLAUDE": "claude-code",
       "CODEX": "codex",
@@ -458,6 +469,8 @@
       "CLUTCH": "clutch",
       "FX": "fx",
       "OPENCODE": "opencode",
+      "KIMI": "kimi",
+      "ZC": "zcode",
       "GROK-BOT": "grok-bot",
       "ECHO": "instinct",
       "WISE": "instinct"
@@ -482,7 +495,7 @@
     ]
   },
   "sessionIds": {
-    "notes": "AFC-361 (owner, Oct 19):  board writes, notes_create and notes_update, and apple-notes-coding.sh carry a session id, so resume-wake (docs/protocols/resume-wake-safety-design.md section 4) can find a seat's session for a topic.  A writer takes the id from its explicit flag or argument, then AGENT_SESSION, then its platform's variable in envBySeat (a seat with no entry there tries every variable in fallbackEnv, in order), and refuses when it finds none, unless the writer's resolved seat is exempt.  Exempt seats have one thread with the owner, so there is no session id or thread name to pass:  Grok bots (GROK-BOT and GB-*), MA (Rob), JET (Jet, OpenAI dot), WISE and ECHO (Instinct).  The exemption is decided from the resolved seat (AGENT_SEAT, a launcher's AGENT_LAUNCH_SEAT, the per-call identity, or a relay sender), never from a flag the caller sets.  scripts/linear-board/board, scripts/apple-notes-coding.sh, scripts/agent_sync/session_ids.py and scripts/agent-sync-mcp/src/session-ids.js carry copies of this block, and scripts/test_session_ids_parity.py keeps them equal.  Platforms with no variable of their own (FX, Clutch, AG, MC, GROK-WEB) pass --session or set AGENT_SESSION.",
+    "notes": "AFC-361 (owner, Oct 19):  board writes, notes_create and notes_update, and apple-notes-coding.sh carry a session id, so resume-wake (docs/protocols/resume-wake-safety-design.md section 4) can find a seat's session for a topic.  A writer takes the id from its explicit flag or argument, then AGENT_SESSION, then its platform's variable in envBySeat (a seat with no entry there tries every variable in fallbackEnv, in order), and refuses when it finds none, unless the writer's resolved seat is exempt.  Exempt seats have one thread with the owner, so there is no session id or thread name to pass:  Grok bots (GROK-BOT and GB-*), MA (Rob), JET (Jet, OpenAI dot), WISE and ECHO (Instinct).  The exemption is decided from the resolved seat (AGENT_SEAT, a launcher's AGENT_LAUNCH_SEAT, the per-call identity, or a relay sender), never from a flag the caller sets.  scripts/linear-board/board, scripts/apple-notes-coding.sh, scripts/simple_tools/session_ids.py and scripts/simple-tools-mcp/src/session-ids.js carry copies of this block, and scripts/test_session_ids_parity.py keeps them equal.  Platforms with no variable of their own (FX, Clutch, AG, MC, GROK-WEB) pass --session or set AGENT_SESSION.",
     "idPattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$",
     "genericEnv": "AGENT_SESSION",
     "exemptSeats": ["ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"],

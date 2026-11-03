@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: 26
       - run: npm ci --ignore-scripts
-        working-directory: scripts/agent-sync-mcp
+        working-directory: scripts/simple-tools-mcp
       - run: python3 scripts/test-deploy-alert-workers.py
       - name: Load existing scoped release credential
         env:

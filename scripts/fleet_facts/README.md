@@ -171,7 +171,7 @@ scripts/fleet_facts/install.sh --apply    # ~/apps/fleet-facts + ~/.local/bin/fl
 ```
 
 The stable copy holds the entry script, the package (no tests), the `mac-facts-publish` launcher that F7's
-LaunchAgent runs, `fleet_knobs/` (K1, no tests;  `publish` and `publish-mac` fetch the signing key through it), and `agent_sync/` with only `__init__.py`, `textsafe.py` and `secretscan.py`:  a tool
+LaunchAgent runs, `fleet_knobs/` (K1, no tests;  `publish` and `publish-mac` fetch the signing key through it), and `simple_tools/` with only `__init__.py`, `textsafe.py` and `secretscan.py`:  a tool
 run with `python3 -I` cannot import what it did not copy, and `-I` leaves the script's own folder off
 `sys.path`, so the entry script puts its real directory first.  A test installs into a temp HOME and runs
 `python3 -I <stable copy>/fleet-facts`.  The installer loads no LaunchAgent and touches nothing under

@@ -27,7 +27,7 @@ LOG_DIR="${HOME}/Library/Logs/mac-seat-claim"
 GROK_BIN="${GROK_BIN:-/Users/jay/.grok/bin/grok}"
 CURSOR_AGENT="${CURSOR_AGENT:-cursor-agent}"
 # Zulip posting needs no shared secret: the simple-chat CLI reads the seat's own
-# Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_ENV / AGENT_SYNC_POST_URL
+# Zulip credential (Infisical Fleet-OPS /zulip).  The old retired environment-file / relay URL
 # relay is retired and deliberately not referenced here.
 ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"
 
@@ -116,7 +116,7 @@ print("prompt=" + prompt.replace("\n", "\\n"))
 PY
 }
 
-post_agent_sync() {
+post_simple_chat() {
   # Post to Zulip with the seat's own bot via the simple-chat CLI.
   # The CLI resolves that seat's own Zulip credential (Infisical /zulip) itself, so
   # there is no shared bearer token to parse, rotate, or leak in this script.
@@ -173,7 +173,7 @@ spawn_local_agent() {
     echo $! >"${logfile}.pid"
   )
   echo "mac-seat-claim: spawned ${agent} pid $(cat "${logfile}.pid") log ${logfile}"
-  post_agent_sync "repo: ${issue_ref} | mac-seat claimed ${issue_ref}; spawned ${agent} -p (log ${logfile}).  Not claiming compile passed." "mac seat claims${REPO_FILTER:+ $REPO_FILTER}"
+  post_simple_chat "repo: ${issue_ref} | mac-seat claimed ${issue_ref}; spawned ${agent} -p (log ${logfile}).  Not claiming compile passed." "mac seat claims${REPO_FILTER:+ $REPO_FILTER}"
 }
 
 pick_issue() {

@@ -28,7 +28,7 @@ from git_relay.workflow_verbs import SPECS
 
 RELAY = Path(__file__).resolve().parents[2]
 ROOT = RELAY.parent
-WORKER = ROOT / "scripts" / "agent-sync-mcp" / "src"
+WORKER = ROOT / "scripts" / "simple-tools-mcp" / "src"
 
 _spec = importlib.util.spec_from_file_location("seat_policy", RELAY / "deploy" / "seat_policy.py")
 seat_policy = importlib.util.module_from_spec(_spec)
@@ -96,7 +96,7 @@ def worker_identities() -> set[str]:
     bearer = (WORKER / "bearer-identities.js").read_text(encoding="utf-8")
     row = r'^\s+"?([A-Z][A-Z0-9-]*)"?: Object\.freeze\(\{ prefix:'
     names |= set(re.findall(row, bearer, re.MULTILINE))
-    personas = ROOT / "scripts" / "agent_sync" / "mcp" / "gb-identities.json"
+    personas = ROOT / "scripts" / "simple_tools" / "mcp" / "gb-identities.json"
     names |= set(json.loads(personas.read_text(encoding="utf-8"))["enabled"])
     return names
 
@@ -284,7 +284,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "c8ba1a18e33ded34")
+        self.assertEqual(seat_policy.digest(SEATS), "6dc96d598b74ee8b")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))

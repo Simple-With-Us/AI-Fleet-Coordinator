@@ -172,7 +172,7 @@ struct ListenerStatus: Decodable, Equatable {
 // MARK: - The command line
 
 /// A run of the fleet's `simple-chat` command line.
-struct AgentSyncInvocation: Equatable {
+struct ListenerInvocation: Equatable {
     var arguments: [String]
     var timeout: TimeInterval
 
@@ -180,34 +180,34 @@ struct AgentSyncInvocation: Equatable {
     /// A test wake runs a real agent,  so it gets the engine's own long timeout.
     static let testWakeTimeout: TimeInterval = 900
 
-    init(_ arguments: [String], timeout: TimeInterval = AgentSyncInvocation.defaultTimeout) {
+    init(_ arguments: [String], timeout: TimeInterval = ListenerInvocation.defaultTimeout) {
         self.arguments = arguments
         self.timeout = timeout
     }
 
     /// `daemon status --json`:  the listener's own published state.
-    static func status() -> AgentSyncInvocation {
-        AgentSyncInvocation(["daemon", "status", "--json"])
+    static func status() -> ListenerInvocation {
+        ListenerInvocation(["daemon", "status", "--json"])
     }
 
     /// `daemon pause --seat S --wakes-only`:  the kill switch,  for wakes only.
-    static func pause(seat: String) throws -> AgentSyncInvocation {
-        AgentSyncInvocation([
+    static func pause(seat: String) throws -> ListenerInvocation {
+        ListenerInvocation([
             "daemon", "pause", "--seat", try checked(seat), "--wakes-only",
         ])
     }
 
     /// `daemon resume --seat S`:  lift the kill switch.
-    static func resume(seat: String) throws -> AgentSyncInvocation {
-        AgentSyncInvocation(["daemon", "resume", "--seat", try checked(seat)])
+    static func resume(seat: String) throws -> ListenerInvocation {
+        ListenerInvocation(["daemon", "resume", "--seat", try checked(seat)])
     }
 
     /// `daemon reload`:  re-read the configuration file.
     ///
     /// A reload does not re-read a seat's budget,  so a changed budget needs a listener
     /// restart.  The panel says so instead of pretending the reload was enough.
-    static func reload() -> AgentSyncInvocation {
-        AgentSyncInvocation(["daemon", "reload"])
+    static func reload() -> ListenerInvocation {
+        ListenerInvocation(["daemon", "reload"])
     }
 
     /// `daemon test-wake --seat S --runtime R --run`:  run the seat's wake for real.
@@ -216,15 +216,15 @@ struct AgentSyncInvocation: Equatable {
     /// (`claude`, `muse`, `mcode`, `fallback`).  Passing a wake type the CLI does not know
     /// -- `inbox` or `http` -- makes argparse exit 2 with "invalid choice",  so the flag is
     /// left off and the CLI's own default (`auto`) decides instead.
-    static func testWakeRun(seat: String, runtime: String?) throws -> AgentSyncInvocation {
-        AgentSyncInvocation([
+    static func testWakeRun(seat: String, runtime: String?) throws -> ListenerInvocation {
+        ListenerInvocation([
             "daemon", "test-wake", "--seat", try checked(seat),
         ] + runtimeArgument(runtime) + ["--run"], timeout: testWakeTimeout)
     }
 
     /// `daemon test-wake --seat S --runtime R --pin`:  pin the binary that passed.
-    static func testWakePin(seat: String, runtime: String?) throws -> AgentSyncInvocation {
-        AgentSyncInvocation([
+    static func testWakePin(seat: String, runtime: String?) throws -> ListenerInvocation {
+        ListenerInvocation([
             "daemon", "test-wake", "--seat", try checked(seat),
         ] + runtimeArgument(runtime) + ["--pin"], timeout: testWakeTimeout)
     }
@@ -245,7 +245,7 @@ struct AgentSyncInvocation: Equatable {
     /// process exists.
     private static func checked(_ value: String) throws -> String {
         guard FleetConfigInvocation.isSafeToken(value) else {
-            throw AgentSyncError.invalidArgument(value)
+            throw ListenerError.invalidArgument(value)
         }
         return value
     }
@@ -253,7 +253,7 @@ struct AgentSyncInvocation: Equatable {
 
 // MARK: - Results and errors
 
-struct AgentSyncCLIResult: Equatable {
+struct ListenerCLIResult: Equatable {
     var exitCode: Int32
     var stdout: String
     var stderr: String
@@ -269,7 +269,7 @@ struct AgentSyncCLIResult: Equatable {
     }
 }
 
-enum AgentSyncError: Error, Equatable, LocalizedError {
+enum ListenerError: Error, Equatable, LocalizedError {
     case invalidArgument(String)
     case commandNotFound(String)
     case launchFailed(String)
@@ -301,8 +301,8 @@ enum AgentSyncError: Error, Equatable, LocalizedError {
 
 // MARK: - The runner
 
-protocol AgentSyncRunning: Sendable {
-    func run(_ invocation: AgentSyncInvocation) async throws -> AgentSyncCLIResult
+protocol ListenerRunning: Sendable {
+    func run(_ invocation: ListenerInvocation) async throws -> ListenerCLIResult
 }
 
 /// Runs the fleet's `simple-chat` command line from the repository checkout.
@@ -310,7 +310,7 @@ protocol AgentSyncRunning: Sendable {
 /// The command line is the Operator's own,  at `scripts/simple-chat`,  so the app asks the
 /// same tool a person would ask.  The child environment keeps HOME and PATH,  and drops the
 /// variables that could point the command line at a stand-in.
-struct AgentSyncCLI: AgentSyncRunning {
+struct ListenerCLI: ListenerRunning {
     static let maximumOutputBytes = 8 * 1024 * 1024
 
     /// Where the checkout is.
@@ -337,17 +337,17 @@ struct AgentSyncCLI: AgentSyncRunning {
         return result
     }
 
-    static func processArguments(at location: EngineLocation, for invocation: AgentSyncInvocation) -> [String] {
+    static func processArguments(at location: EngineLocation, for invocation: ListenerInvocation) -> [String] {
         [commandURL(at: location).path] + invocation.arguments
     }
 
-    func run(_ invocation: AgentSyncInvocation) async throws -> AgentSyncCLIResult {
+    func run(_ invocation: ListenerInvocation) async throws -> ListenerCLIResult {
         guard let resolved = location() else {
-            throw AgentSyncError.commandNotFound("the repository checkout")
+            throw ListenerError.commandNotFound("the repository checkout")
         }
         let command = Self.commandURL(at: resolved)
         guard FileManager.default.isExecutableFile(atPath: command.path) else {
-            throw AgentSyncError.commandNotFound(command.path)
+            throw ListenerError.commandNotFound(command.path)
         }
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -373,10 +373,10 @@ struct AgentSyncCLI: AgentSyncRunning {
     }
 
     private static func runBlocking(
-        _ invocation: AgentSyncInvocation,
+        _ invocation: ListenerInvocation,
         at location: EngineLocation,
         command: URL
-    ) throws -> AgentSyncCLIResult {
+    ) throws -> ListenerCLIResult {
         let fileManager = FileManager.default
         // Output goes to files,  not pipes:  nothing can deadlock on a full pipe,  and a
         // child that outlives the app never takes a SIGPIPE when it prints its last line.
@@ -407,7 +407,7 @@ struct AgentSyncCLI: AgentSyncRunning {
         } catch {
             try? stdoutHandle.close()
             try? stderrHandle.close()
-            throw AgentSyncError.launchFailed(error.localizedDescription)
+            throw ListenerError.launchFailed(error.localizedDescription)
         }
 
         let flag = TimeoutFlag()
@@ -423,7 +423,7 @@ struct AgentSyncCLI: AgentSyncRunning {
         try? stdoutHandle.close()
         try? stderrHandle.close()
 
-        return AgentSyncCLIResult(
+        return ListenerCLIResult(
             exitCode: process.terminationStatus,
             stdout: try read(stdoutURL),
             stderr: try read(stderrURL),
@@ -435,7 +435,7 @@ struct AgentSyncCLI: AgentSyncRunning {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         let data = try handle.read(upToCount: maximumOutputBytes + 1) ?? Data()
-        if data.count > maximumOutputBytes { throw AgentSyncError.outputTooLarge }
+        if data.count > maximumOutputBytes { throw ListenerError.outputTooLarge }
         return String(decoding: data, as: UTF8.self)
     }
 }

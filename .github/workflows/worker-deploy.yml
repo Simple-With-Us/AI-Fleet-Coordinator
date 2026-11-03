@@ -29,10 +29,10 @@ jobs:
         with:
           node-version: 26
       - run: npm ci --ignore-scripts
-        working-directory: scripts/agent-sync-mcp
-      - run: echo "$GITHUB_WORKSPACE/scripts/agent-sync-mcp/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: scripts/simple-tools-mcp
+      - run: echo "$GITHUB_WORKSPACE/scripts/simple-tools-mcp/node_modules/.bin" >> "$GITHUB_PATH"
       - run: npm test
-        working-directory: scripts/agent-sync-mcp
+        working-directory: scripts/simple-tools-mcp
       # The pr-conflict-watch unit tests.  The test files are named explicitly:
       # the directory form (`node --test workers/pr-conflict-watch/`) resolves
       # index.js as a single module and reports one passing test without

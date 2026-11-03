@@ -11,7 +11,7 @@ description: >-
 > **Runtime (Muse Code).**  Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
-Every host has the same tool set: `simple-notes` (CLI) and the `notes_*` MCP tools, verb for verb: `create`, `update`, `pin`, `unpin`, `read`, `list`, `status`, `log` (AFC-486, `docs/protocols/operator-notes.md`).  On the Mac they run the helper below directly; on the server and from cloud seats they go through the Operator's notes queue to a runner on the Mac and wait for its answer.  No Notes request goes through Zulip.
+Every host has the same tool set: `simple-notes` (CLI) and the `notes_*` MCP tools, verb for verb: `create`, `update`, `pin`, `unpin`, `read`, `list`, `status`, `log` (AFC-486, `docs/protocols/operator-notes.md`).  On the Mac they run the helper directly, after confirming your own bot's fleet bearer; on the server and from cloud seats they go through the Operator's notes queue to a runner on the Mac and wait for its answer.  No Notes request goes through Zulip.
 
 ```bash
 simple-notes create "[AFC, Claude] Topic" --body-file body.md
@@ -39,18 +39,11 @@ Write the reference the way you would say it and the helper links it (owner 2026
 - The helper says what it linked on stderr (`notes: linkified:  2 project references and 1 pull request reference became links`) and logs the counts under `reformatted.links`.
 - `NOTES_LINKIFY=0` turns the step off for one run.
 
-## Helper (the Mac)
+## On the Mac
 
-```bash
-/Users/jay/apps/apple-notes-coding.sh "Title" "plain body"
-/Users/jay/apps/apple-notes-coding.sh "Title" --html /path/to/body.html
-/Users/jay/apps/apple-notes-coding.sh --update "Title" "body"
-/Users/jay/apps/apple-notes-coding.sh --update "Title" --html /path/to/body.html
-/Users/jay/apps/apple-notes-coding.sh --pin-only "Exact Title"
-/Users/jay/apps/apple-notes-coding.sh --unpin-only "Exact Title"
-```
+On the Mac the same tools run the helper (`apple-notes-coding.sh`) directly, after confirming the calling bot's own fleet bearer.  Never invoke the helper yourself:  every Notes action goes through `simple-notes` or the `notes_*` tools on every host, so the caller is authenticated the same way everywhere.  A raw helper run is off-guidance and shows in the action log as caller `script`.
 
-Also: `--notify` / `--pushover`, `--needs-owner` / `--action-required`, `--summary "one sentence"`, `--pr "18"`.
+The flags map one to one:  `--notify` / `--pushover`, `--needs-owner` / `--action-required`, `--summary "one sentence"`, `--pr "18"`.
 
 Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do not `APPLE_NOTES_ACTIVATE=1` unless the owner is sitting at the Mac.
 

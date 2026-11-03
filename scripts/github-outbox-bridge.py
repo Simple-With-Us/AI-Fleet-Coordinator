@@ -21,7 +21,7 @@ No token is read into this process: the simple-chat CLI resolves each seat's own
 Zulip credential, and the read side takes either an explicit --rc file of the caller's own or
 the fleet reader bot's key from Infisical Fleet-OPS /zulip (`fleet-secrets get`, AFC-359).
 State (last comment id, Zulip message-id cursor) lives in
-~/.agent-sync/outbox-bridge-<SEAT>.json.
+~/.simple-tools/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
     {"seats": [{"seat": "INSTINCT", "repo": "Simple-With-Us/fleet-ops", "issue": 12}]}
 or one seat from the CLI (--seat --repo --issue).  --once for a launchd
@@ -56,14 +56,14 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-CHANNEL_DEFAULT = "work-in-progress"  # the channel the owner renamed #agent-sync to on 2026-10-22
+CHANNEL_DEFAULT = "work-in-progress"  # the current fleet work channel
 TOPIC_DEFAULT = "outbox"
 READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
 FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or str(
     Path.home() / ".local" / "bin" / "fleet-secrets"
 )
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
-STATE_DIR_DEFAULT = Path.home() / ".agent-sync"
+STATE_DIR_DEFAULT = Path.home() / ".simple-tools"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
 URGENT = ("OBJECTION", "HALT", "PROD DOWN", "URGENT", "HEADS-UP", "DEPLOY CLAIM")
 MAX_OUTBOUND_CHARS = 12000  # keep the post well inside Zulip's message limit
@@ -696,7 +696,7 @@ def main(argv=None) -> int:
     seats = load_seats(args)
     # The simple-chat CLI resolves each seat's own Zulip credential for posting;  the read client
     # takes an explicit --rc file or the --read-as bot's key from Infisical /zulip (AFC-359).
-    # The old AGENT_SYNC_ENV / SLACK_BOT_TOKEN route is retired.
+    # The old environment-file / Slack token route is retired.
     zulip_read = ZulipClient(args.rc, bot=args.read_as) if args.read_history else None
     if args.read_history and zulip_read is None and not args.dry_run:
         log(

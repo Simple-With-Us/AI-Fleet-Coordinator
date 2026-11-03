@@ -21,7 +21,7 @@ class SetTestCase(KnobTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.fake.set(secrets=LIVE)
-        self.audit_file = str(self.home / ".agent-sync" / "listener" / "knobs.jsonl")
+        self.audit_file = str(self.home / ".simple-tools" / "listener" / "knobs.jsonl")
 
     def set_calls(self) -> list:
         return [c for c in self.fake.calls() if c[:2] == ["secrets", "set"]]

@@ -20,7 +20,7 @@
   <array>
     <string>/usr/bin/python3</string>
     <string>-I</string>
-    <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet-tools-doctor.py</string>
+    <string>/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet-tools-doctor.py</string>
     <string>--remote</string>
     <string>fleet-tools-ro</string>
     <string>--write</string>

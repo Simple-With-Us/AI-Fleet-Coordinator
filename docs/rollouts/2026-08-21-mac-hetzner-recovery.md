@@ -1,5 +1,7 @@
 # Mac + Hetzner recovery automation
 
+Historical identifiers have been redacted. These records do not certify current deployment state.
+
 Owner asked to automate recovery from the 2026-08-21 Mac collapse and for `host.jays.services`.
 
 ## Mac (launchd `com.jay.mac-process-watch` every 120s)
@@ -9,7 +11,7 @@ Already (Cursor, earlier today): poison dump → `pm2 start` ecosystem + `pm2 sa
 Added (Grok):
 
 - jlist-timeout kills God then `pm2_restore_bulk` (not raw `pm2 resurrect`)
-- local HTTP 200 required for mac-collab, xcode-health, agent-sync-push, senate-relay
+- local HTTP 200 required for mac-collab, xcode-health, [retired identifier], senate-relay
 - Shellular bounce on `ioreg` missing or Retrying with no Connected
 - ecosystem PATH includes `/usr/sbin` (live already; now tracked)
 

@@ -11,12 +11,11 @@ and this file is where they agree:
   3. the registry carries the same title the thread carries, found by the session id.
 
 The store is MiniMax Code's own session table; the letter lives in the Operator
-registry, which is one file for the fleet.  This host reads that file locally when the
-deployment points at the shared store, and when it keeps no copy it asks the host that
-holds the registry through the transport command, the same hop the Claude path makes.
-The transport is host configuration:  the helper names the command
-(MM_OPERATOR_REGISTRY_CMD, default mm-operator-registry) and never names a host, a
-user, an alias, an ssh flag, a remote path or a remote interpreter itself.
+registry, which is one file for the fleet.  A host that keeps no local copy - or that is
+given an explicit transport - asks the registry host through the transport command, the same
+kind of hop the other letter paths make.  An explicit MM_OPERATOR_REGISTRY_CMD always wins
+over a local file:  after the store moves, a retired local file left behind must never become
+a second allocator.
 
 A thread and its child both hold a letter, and they are placed the way every other platform
 places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
@@ -48,11 +47,11 @@ import tempfile
 import unicodedata
 from collections.abc import Iterator
 
-from agent_sync import secretscan
-from agent_sync.operator_registry import (
+from simple_tools import secretscan
+from simple_tools.operator_registry import (
+    default_db,
     letter_space_of,
     pairs_after,
-    registry_db_path,
 )
 
 SEAT = "MM"
@@ -73,22 +72,6 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 # The Mac's checkout of AI-Fleet-Coordinator, on the Operator host and here.
 REPO_REL = "AI-Fleet-Coordinator/scripts"
-
-# The transport to the host that holds the Operator's registry:  a command, not a
-# host.  The command carries the host, the remote path and the remote interpreter, so
-# this helper names no host, no user, no alias, no ssh flag and no remote path
-# anywhere.  It is host configuration, never a guess.
-ENV_TRANSPORT = "MM_OPERATOR_REGISTRY_CMD"
-DEFAULT_TRANSPORT = "mm-operator-registry"
-# The whole hop, inside the hook's own timeout:  the hooks that call this run with eight
-# to ten seconds, so a hop that waits longer is a hook the runtime kills instead of one
-# that reports its own fault and goes on.
-REMOTE_TIMEOUT = 6
-
-# The registry's own guard answers this when the host that holds the registry keeps
-# none.  It is a configuration state, not a fault of this call, so it carries the code
-# the helper already used for it.
-NO_REGISTRY_ERROR = "no Operator registry on this host"
 
 
 class RegistryError(RuntimeError):
@@ -142,14 +125,11 @@ def location() -> str:
 
 def registry_db() -> str:
     """The local registry file, or "" when this host keeps no copy."""
-    override = os.environ.get("AGENT_SYNC_OPERATOR_REGISTRY")
+    override = os.environ.get("SIMPLE_TOOLS_OPERATOR_REGISTRY")
     if override:
         path = os.path.expanduser(override)
         return path if os.path.isfile(path) else ""
-    root = os.environ.get("AGENT_SYNC_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".agent-sync"
-    )
-    path = registry_db_path(root, os.environ)
+    path = default_db()
     return path if os.path.isfile(path) else ""
 
 
@@ -178,7 +158,7 @@ def repo_scripts_dir() -> str:
     )
     for candidate in candidates:
         if os.path.isdir(candidate) and os.path.isfile(
-            os.path.join(candidate, "agent_sync", "operator_registry.py")
+            os.path.join(candidate, "simple_tools", "operator_registry.py")
         ):
             return candidate
     return ""
@@ -254,6 +234,106 @@ def _interrupt_on_signal(signum, frame):
     raise KeyboardInterrupt("interrupted by signal %s" % signum)
 
 
+# The transport to the host that holds the Operator's registry:  a command, not a
+# host.  The command carries the host, the remote path and the remote interpreter, so
+# this helper names no host, no user, no alias, no ssh flag and no remote path
+# anywhere.  It is host configuration, never a guess.  (Ported from PR #1255 by Jay
+# Wedgeworth;  the explicit-destination precedence over a local file is the cutover
+# requirement added with the port.)
+ENV_TRANSPORT = "MM_OPERATOR_REGISTRY_CMD"
+DEFAULT_TRANSPORT = "mm-operator-registry"
+# The whole hop, inside the hook's own timeout:  the hooks that call this run with eight
+# to ten seconds, so a hop that waits longer is a hook the runtime kills instead of one
+# that reports its own fault and goes on.
+REMOTE_TIMEOUT = 6
+
+# The registry's own guard answers this when the host that holds the registry keeps
+# none.  It is a configuration state, not a fault of this call, so it carries the code
+# the helper already used for it.
+NO_REGISTRY_ERROR = "no Operator registry on this host"
+
+
+def _with_registry_code(answer: dict) -> dict:
+    """A registry answer, with the code the helper uses for a host that keeps no registry."""
+    if answer.get("error") == NO_REGISTRY_ERROR and not answer.get("code"):
+        return dict(answer, code="no_registry")
+    return answer
+
+
+def remote_registry_call(args: list, transport: str = "", timeout: int = REMOTE_TIMEOUT) -> dict:
+    """Ask the registry host through the transport command.
+
+    The transport is host configuration:  the helper names the command and the command
+    carries the host, so this helper never names a host, a user, an alias, an ssh
+    flag, a remote path or a remote interpreter.  A transport command name that is not
+    a plain command name is refused, never run.
+    """
+    dest = transport or DEFAULT_TRANSPORT
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
+        # Something the shell could read as an option or a second word:  refuse it
+        # rather than run it.  A refused transport is a fault of this host's
+        # configuration, never a call that never happened.
+        return {
+            "error": "the configured registry transport is not a plain command name",
+            "code": "remote_refused",
+        }
+    cmd = [dest] + list(args)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        # The hop started, so the write may have landed before the answer was lost:
+        # an unknown outcome, never a call that never happened.
+        return {
+            "error": "the registry host did not answer in time",
+            "code": "timeout",
+            "outcome": "outcome_unknown",
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        # A missing command is errno 2:  it is its own failure, the way a missing
+        # local registry tool is:  the operator has to know which one.
+        code = "missing_tool" if getattr(exc, "errno", None) == 2 else "remote_unreachable"
+        return {
+            "error": "the registry host did not answer (%s)" % type(exc).__name__,
+            "code": code,
+        }
+    out = (proc.stdout or "").strip()
+    if not out:
+        return {
+            "error": "the registry host gave no answer",
+            "code": "remote_empty",
+            "outcome": "outcome_unknown",
+        }
+    try:
+        answer = json.loads(out.splitlines()[-1])
+    except json.JSONDecodeError:
+        return {
+            "error": "the registry host's answer was not readable",
+            "code": "remote_unparseable",
+            "outcome": "outcome_unknown",
+        }
+    if not isinstance(answer, dict):
+        return {
+            "error": "the registry host's answer was not an object",
+            "code": "remote_unparseable",
+            "outcome": "outcome_unknown",
+        }
+    if proc.returncode and "error" not in answer:
+        # A nonzero exit with a success-shaped answer is a contradiction:  the write may
+        # have landed before the exit, so this is an unknown outcome, never a success.
+        return {
+            "error": "the registry host exited %s after answering" % proc.returncode,
+            "code": "remote_failed",
+            "outcome": "outcome_unknown",
+        }
+    return _with_registry_code(answer)
+
+
 def _install_signal_handlers() -> dict:
     """Catch the signals that would end this process without unwinding.
 
@@ -297,106 +377,30 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def _with_registry_code(answer: dict) -> dict:
-    """A registry answer, with the code the helper uses for a host that keeps no registry.
-
-    The registry's own guard answers one way when the host that holds it has no
-    registry file:  that is a configuration state, not a fault of this call, and the
-    helper keeps it quiet.
-    """
-    if answer.get("error") == NO_REGISTRY_ERROR and not answer.get("code"):
-        return dict(answer, code="no_registry")
-    return answer
-
-
-def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> dict:
-    """Ask the registry host through the transport command, the way the Claude path does.
-
-    The transport is host configuration:  the helper names the command and the command
-    carries the host, so this helper never names a host, a user, an alias, an ssh
-    flag, a remote path or a remote interpreter.  A transport command name that is not
-    a plain command name is refused, never run.
-    """
-    dest = str(os.environ.get(ENV_TRANSPORT) or "").strip() or DEFAULT_TRANSPORT
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
-        # Something the shell could read as an option or a second word:  refuse it
-        # rather than run it.  A refused transport is a fault of this host's
-        # configuration, never a call that never happened.
-        return {
-            "error": "the configured registry transport is not a plain command name",
-            "code": "remote_refused",
-        }
-    cmd = [dest] + list(args)
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        # The hop started, so the write may have landed before the answer was lost:
-        # an unknown outcome, never a call that never happened.
-        return {
-            "error": "the registry host did not answer in time",
-            "code": "timeout",
-            "outcome": "outcome_unknown",
-        }
-    except (OSError, subprocess.SubprocessError) as exc:
-        # A missing command is errno 2:  it is its own failure, the way a missing
-        # local registry tool is:  the operator has to know which one.
-        code = "missing_tool" if getattr(exc, "errno", None) == 2 else "remote_unreachable"
-        return {
-            "error": "the registry host did not answer (%s)" % type(exc).__name__,
-            "code": code,
-        }
-    out = (proc.stdout or "").strip()
-    if not out:
-        # The host answered with nothing:  the call may have landed, so the outcome
-        # is unknown rather than never.  The far side's own words are not copied
-        # here:  they can echo an argument the caller built, and a title is not
-        # something to write into an error message.
-        return {
-            "error": "the registry host answered with no result (status %s)"
-            % (proc.returncode if proc.returncode is not None else "none"),
-            "code": "remote_empty",
-            "outcome": "outcome_unknown",
-        }
-    try:
-        answer = json.loads(out.splitlines()[-1])
-    except json.JSONDecodeError:
-        return {
-            "error": "the registry host answered with something else",
-            "code": "remote_unparseable",
-            "outcome": "outcome_unknown",
-        }
-    if not isinstance(answer, dict):
-        return {
-            "error": "the registry host answered with something else",
-            "code": "remote_unparseable",
-            "outcome": "outcome_unknown",
-        }
-    if proc.returncode and "error" not in answer:
-        # The far side's exit code counts:  a call that failed with a non-zero exit is
-        # not a success, whatever its answer looks like.  This is the same rule the
-        # local path applies.
-        answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
-    return _with_registry_code(answer)
+def transport() -> str:
+    """The configured registry transport, or the empty string for the local file."""
+    return str(os.environ.get(ENV_TRANSPORT) or "").strip()
 
 
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
+    transport_name = str(os.environ.get(ENV_TRANSPORT) or "").strip()
     local_db = registry_db()
     scripts = repo_scripts_dir()
+    if transport_name:
+        # An explicit transport IS the destination:  it wins over any local file, so a
+        # retired store left behind after the move can never become a second allocator.
+        return remote_registry_call(
+            args, transport=transport_name, timeout=min(timeout, REMOTE_TIMEOUT)
+        )
     if not local_db or not scripts:
         # This host keeps no registry of its own, so the Operator's one is on the host
         # that holds it:  the transport command carries that host, and the registry's
-        # own CLI runs there, so both sides speak one dialect.
-        # The hop has its own bound:  it has to finish inside the hook's timeout, not
-        # inside the timeout the local call would use.
-        return remote_registry_call(args)
-    cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
+        # own CLI runs there, so both sides speak one dialect.  The hop has its own
+        # bound:  it has to finish inside the hook's timeout, not inside the timeout
+        # the local call would use.
+        return remote_registry_call(args, timeout=min(timeout, REMOTE_TIMEOUT))
+    cmd = [sys.executable, "-m", "simple_tools.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None
     try:
@@ -461,7 +465,7 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         }
     if proc.returncode and "error" not in answer:
         answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
-    return _with_registry_code(answer)
+    return answer
 
 
 def _require_registry(answer: dict, *, needs_label: bool = False) -> dict:
@@ -601,20 +605,62 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     helper keeps the pair space:  a chat that held a pair comes back with a pair, and a
     reopen that would hand it a single letter is refused before anything is written.
 
-    The reopen goes through the registry's own CLI, the same call as every other verb:
-    a host that keeps no registry asks the host that holds one, so a chat that comes
-    back to life gets its letter back there too.
+    With the fleet transport set, the reopen runs against the canonical store even
+    while a local registry file is still on this host:  two allocator writes for the
+    same letter space would hand the same letter to two threads.  Without the
+    transport, a host that has no local registry file routes the same way.
     """
-    args = [
-        "reopen",
-        "--record-id=" + record_id,
-        "--actor=" + SEAT,
-        "--source=the MM seat's session-letter hook",
-        "--letter-pick=" + LETTER_PICK,
-    ]
-    if parent_session_id:
-        args += ["--parent-session-id=" + parent_session_id]
-    return _require_registry(registry_call(args))
+    db = registry_db()
+    if transport() or not db:
+        argv = [
+            "reopen",
+            "--record-id=" + record_id,
+            "--actor=" + SEAT,
+            "--source=the MM seat's session-letter hook",
+            "--letter-pick=" + LETTER_PICK,
+        ]
+        if parent_session_id:
+            argv.append("--parent-session-id=" + parent_session_id)
+        return _require_registry(registry_call(argv), needs_label=True)
+    from simple_tools import operator_registry as OR
+    from simple_tools import platform_letter
+
+    reg = None
+    try:
+        reg = OR.SessionRegistry(db)
+        letter, generation, previous = platform_letter.operator_reopen(
+            OR,
+            db,
+            reg,
+            record_id,
+            actor=SEAT,
+            source="the MM seat's session-letter hook",
+            pick=LETTER_PICK,
+            parent=parent_session_id,
+        )
+    except platform_letter.SpaceLost as exc:
+        # A chat that held a pair would come back with a single letter.  That is refused
+        # before anything is written, and the chat waits for a pair instead.
+        raise RegistryError(str(exc), "space_lost", "reopen_refused")
+    except OR.LabelExhausted as exc:
+        # Every letter in the space is live, so there is nothing to hand back.
+        raise RegistryError(str(exc), "label_exhausted", "reopen_refused")
+    except (OR.UnknownRecord, KeyError, ValueError, OSError, sqlite3.Error) as exc:
+        # A record that is not there, or a registry file that cannot be opened, read
+        # or written.  All of them are a registry fault, so they travel as one:  a
+        # caller never has to know which storage failure it was, and a faulting
+        # database is a refusal, never a traceback through the hook.
+        raise RegistryError(str(exc), "reopen_failed", "reopen_refused")
+    finally:
+        if reg is not None:
+            reg.close_db()
+    return {
+        "record_id": record_id,
+        "label": letter,
+        "generation": generation,
+        "previous": previous,
+        "outcome": "reopened",
+    }
 
 
 def update_title(session_id: str, title: str, directories: list[str] | None = None) -> dict:
@@ -814,9 +860,34 @@ def held_letters(session_id: str) -> tuple[str, ...]:
     is read and fixed again, while a title that loses an acronym is not.
     """
     db = registry_db()
-    if not db:
-        return ()
-    from agent_sync import operator_registry as OR
+    if transport() or not db:
+        # The canonical store answers.  A transport fault returns the empty history, and
+        # that empty history never stands in for a stale local file:  the caller falls
+        # back to the shape rules, which is the safe direction.
+        answer = registry_call(
+            [
+                "held",
+                "--platform=" + PLATFORM,
+                *_registry_identity_args(),
+                "--session-id=" + session_id,
+            ]
+        )
+        # Only a successful answer with a letters list of letter strings counts.  A
+        # bare string is not a one-letter list (it would split into characters), a
+        # non-iterable is not a list at all, and any malformed entry voids the whole
+        # answer:  the empty history keeps the conservative fallback.
+        if answer.get("error"):
+            return ()
+        letters = answer.get("letters")
+        if not isinstance(letters, list):
+            return ()
+        held: list[str] = []
+        for letter in letters:
+            if not isinstance(letter, str) or not re.fullmatch(r"[A-Z]{1,2}", letter):
+                return ()
+            held.append(letter)
+        return tuple(held)
+    from simple_tools import operator_registry as OR
 
     # The read-only handle:  it never writes, never creates the file, and never takes
     # a write lock against the Operator's registration writes.

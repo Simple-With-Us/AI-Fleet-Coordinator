@@ -203,7 +203,7 @@ function sentryFirst(...vals) {
  * and deliberately narrow: a Sentry identity is a short id such as `PROJ-1ABC`
  * or a numeric metric-alert id, so nothing ordinary matches, and an over-broad
  * pattern would refuse real alerts.  The patterns mirror the ones in
- * `scripts/agent-sync-mcp/src/contract.js`, which scans the same fleet's
+ * `scripts/simple-tools-mcp/src/contract.js`, which scans the same fleet's
  * credentials for the same reason.
  */
 const CREDENTIAL_SHAPES = [

@@ -52,14 +52,16 @@ import time
 from collections import deque
 from pathlib import Path
 
-# The secret scanner lives in the managed agent-sync runtime, which is a
+# The secret scanner lives in the managed simple-tools runtime, which is a
 # separate checkout and is not on the interpreter's path.  Add it before the
 # import, so the bridge does not depend on how it was launched.
-_AGENT_SYNC_SCRIPTS = os.path.expanduser("~/apps/lanes/_managed/fleet/agent-sync-runtime/scripts")
-if os.path.isdir(_AGENT_SYNC_SCRIPTS) and _AGENT_SYNC_SCRIPTS not in sys.path:
-    sys.path.insert(0, _AGENT_SYNC_SCRIPTS)
+_SIMPLE_TOOLS_SCRIPTS = os.path.expanduser(
+    "~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts"
+)
+if os.path.isdir(_SIMPLE_TOOLS_SCRIPTS) and _SIMPLE_TOOLS_SCRIPTS not in sys.path:
+    sys.path.insert(0, _SIMPLE_TOOLS_SCRIPTS)
 
-from agent_sync.secretscan import scan as scan_secret
+from simple_tools.secretscan import scan as scan_secret
 
 LARK_EVENT_KEY = "im.message.receive_v1"
 DEFAULT_LARK_CLI = os.path.expanduser("~/.local/npm-global/bin/lark-cli")
@@ -73,8 +75,8 @@ DEFAULT_TIMEOUT = 1200
 REPLY_TIMEOUT = 300
 # The owner watches Zulip, so every Lark exchange is mirrored there with the
 # MiniMax session id, which is the thread the answer came from.
-AGENT_SYNC = os.path.expanduser("~/.local/bin/simple-chat")
-AGENT_SYNC_ROOT = os.path.expanduser("~/.agent-sync")
+SIMPLE_CHAT = os.path.expanduser("~/.local/bin/simple-chat")
+SIMPLE_TOOLS_ROOT = os.path.expanduser("~/.simple-tools")
 ZULIP_TOPIC_PREFIX = "Lark"
 MAX_REPLY_CHARS = 4000
 # How many delivered message ids the dedup state remembers.  Rows that have
@@ -1195,7 +1197,7 @@ class Bridge:
             env["AGENT_SESSION"] = session_id
         try:
             run(
-                [AGENT_SYNC, "post", "--topic", topic, body],
+                [SIMPLE_CHAT, "post", "--topic", topic, body],
                 timeout=REPLY_TIMEOUT,
                 env=env,
             )
@@ -1217,12 +1219,12 @@ class Bridge:
         used, under its own lock, so the two writers cannot interleave.
         """
         try:
-            from agent_sync import live as L
+            from simple_tools import live as L
         except ImportError as exc:
             log("could not record the Lark exchange in the seat inbox: %s" % exc)
             return
         try:
-            paths = L.SeatPaths(self.args.agent_sync_root, self.args.seat)
+            paths = L.SeatPaths(self.args.simple_tools_root, self.args.seat)
             now = time.time()
             # The owner flag and the wake flags follow who sent it:  an
             # Operator signal is not the owner asking, so it must not wake the
@@ -1900,10 +1902,10 @@ def build_parser():
         help="the fleet seat whose inbox records the Lark exchange",
     )
     parser.add_argument(
-        "--agent-sync-root",
-        dest="agent_sync_root",
-        default=AGENT_SYNC_ROOT,
-        help="the agent-sync state root that holds the seat inbox",
+        "--simple-tools-root",
+        dest="simple_tools_root",
+        default=SIMPLE_TOOLS_ROOT,
+        help="the simple-tools state root that holds the seat inbox",
     )
     parser.add_argument(
         "--signal",

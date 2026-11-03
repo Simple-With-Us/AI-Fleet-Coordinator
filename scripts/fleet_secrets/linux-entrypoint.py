@@ -125,7 +125,7 @@ def cli_path(env):
     """The plain CLI to delegate to: an explicit CLI path, then the install home, then the default.
 
     `FLEET_SECRETS_BIN` is not read here:  fleet-wide it names the *fleet-secrets command*
-    (`scripts/agent_sync/zulip.py`), which on the server is this entry point itself.
+    (`scripts/simple_tools/zulip.py`), which on the server is this entry point itself.
     """
     explicit = (env.get("FLEET_SECRETS_CLI") or "").strip()
     if explicit:

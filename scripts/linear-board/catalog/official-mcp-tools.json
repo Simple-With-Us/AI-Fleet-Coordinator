@@ -1,6 +1,6 @@
 {
   "count": 11,
-  "generated_by": "scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs",
+  "generated_by": "scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs",
   "local_fields": [
     "idempotency_key",
     "max_chars",
@@ -8,7 +8,7 @@
   ],
   "prefix": "linear_",
   "protocol_version": "2025-03-26",
-  "regenerate": "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs",
+  "regenerate": "cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs",
   "sources": [
     "src/linear-mcp-specs.js",
     "src/linear-mcp-client.js"

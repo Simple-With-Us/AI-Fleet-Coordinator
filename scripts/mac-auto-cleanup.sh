@@ -882,7 +882,7 @@ fi
 
 # 3b. Reap node_modules and .next from suffixed/inactive feature worktrees in ~/apps/
 # Only reap from verified git worktrees that are clean (ignoring build junk) and idle (>4h).
-# Explicitly preserve standing runtimes like agent-sync-push, agy-acp-runtime, etc.
+# Explicitly preserve standing runtimes like agy-acp-runtime, etc.
 if [ "$PRESSURE" = "1" ]; then
 echo "Pruning duplicate build caches on suffixed feature worktrees (pressure mode)..."
 python3 <<'PY'
@@ -892,7 +892,7 @@ import os, glob, json, shutil, re, subprocess, time, fcntl
 # more.  Matched against the path as found AND its on-disk spelling (see canon below).
 KEEP_RE = re.compile(
     r"^/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)$|"
-    r"^/Users/jay/apps/(botfleet-server|agent-sync|agent-sync-push|grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|senate-relay-runtime|scout-runtime|dsh-runtime|clutch-runtime|seat-mcp|KIMI-SALVAGE-.*)$|"
+    r"^/Users/jay/apps/(botfleet-server|grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|senate-relay-runtime|scout-runtime|dsh-runtime|clutch-runtime|seat-mcp|KIMI-SALVAGE-.*)$|"
     r"^/Users/jay/Code/.*$",
     re.IGNORECASE,
 )
@@ -966,6 +966,15 @@ def is_nested_lane(path, cpath=None):
         c = canon(LANES_ROOT.rstrip("/"))
         _ROOTS = {LANES_ROOT.casefold()} | ({c.casefold().rstrip("/") + "/"} if c else set())
     return any(p and p.casefold().startswith(r) for p in (path, cpath) for r in _ROOTS)
+
+def unproven_app_root_or_hidden_state(path):
+    """Only nested managed lanes are eligible; unknown app roots/state survive."""
+    value = os.path.normpath(path)
+    apps = os.path.join(HOME_DIR, "apps")
+    managed = os.path.join(apps, "lanes", "_managed")
+    return (value == managed or value.startswith(managed + os.sep) or
+            os.path.dirname(value) == apps or
+            value.startswith(os.path.join(HOME_DIR, ".")))
 
 def born_recently(path):
     """The checkout dir OR its git admin dir was BORN < MIN_AGE_SEC ago.  Both, because `rsync -a seed/ lane/` or
@@ -1076,8 +1085,10 @@ for wt in sorted(set(glob.glob('/Users/jay/apps/*')) | registered_worktrees()):
     # (which only refuses a link as the FINAL component) then emptied the real tree's node_modules.
     if os.path.islink(wt) or not os.path.isdir(wt):
         continue
+    if unproven_app_root_or_hidden_state(wt):
+        continue
     cwt = canon(wt)
-    if cwt is None or KEEP_RE.match(wt) or KEEP_RE.match(cwt):
+    if cwt is None or unproven_app_root_or_hidden_state(cwt) or KEEP_RE.match(wt) or KEEP_RE.match(cwt):
         continue
     if os.path.exists(os.path.join(wt, ".janitor-keep")):
         continue

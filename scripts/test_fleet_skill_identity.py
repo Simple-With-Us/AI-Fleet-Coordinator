@@ -588,7 +588,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("GB-COMPILE", GB_ROLE_TAGS)
         gb = json.loads(
             (
-                Path(__file__).resolve().parent / "agent_sync" / "mcp" / "gb-identities.json"
+                Path(__file__).resolve().parent / "simple_tools" / "mcp" / "gb-identities.json"
             ).read_text()
         )
         self.assertEqual(list(GB_ROLE_TAGS), gb["enabled"], "one list:  the MCP servers' GB table")
@@ -644,7 +644,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("MiniMax: `[MINIMAX]`", coord)
         self.assertNotIn("DeepSeek: `[DEEPSEEK]`", coord)
 
-    def test_agent_sync_self_id_is_afc_not_fleet(self) -> None:
+    def test_simple_tools_self_id_is_afc_not_fleet(self) -> None:
         text = _protocol_doc_path().read_text(encoding="utf-8")
         self.assertIn("| `AFC` |", text)
         self.assertIn("Simple-With-Us/AI-Fleet-Coordinator", text)
@@ -1505,8 +1505,10 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         """TEMPORARY with RENAMED_SKILL_OLD_NAMES:  delete this test and the next one when the rename is complete."""
         from fleet_skill_identity import RENAMED_SKILL_OLD_NAMES
 
-        old = "agent-sync-tools-guide"
-        self.assertIn(old, RENAMED_SKILL_OLD_NAMES)
+        old = "obsolete-tools-guide"
+        self.assertFalse(RENAMED_SKILL_OLD_NAMES)
+        self.installer.RENAMED_SKILL_OLD_NAMES = frozenset({old})
+        self.addCleanup(setattr, self.installer, "RENAMED_SKILL_OLD_NAMES", RENAMED_SKILL_OLD_NAMES)
         dest = self.home / ".claude" / "skills"
         (dest / old).mkdir(parents=True)
         (dest / old / "SKILL.md").write_text("stale\n", encoding="utf-8")
@@ -1521,20 +1523,20 @@ class InstallerRepoOnlyTests(unittest.TestCase):
 
     def test_a_renamed_name_is_never_purged_from_the_source_pack(self) -> None:
         """TEMPORARY with RENAMED_SKILL_OLD_NAMES.  Removing a renamed skill from the repo is a git operation."""
-        old = "agent-sync-tools-guide"
+        old = "obsolete-tools-guide"
         docs = self.repo / "docs" / "fleet-skills"
         (docs / old).mkdir(parents=True)
         (docs / old / "SKILL.md").write_text("local edit\n", encoding="utf-8")
         self.installer._purge_retired(str(docs))
         self.assertTrue((docs / old / "SKILL.md").is_file())
         names = catalog_skill_names(str(docs))
-        self.assertNotIn(old, names)
+        self.assertIn(old, names)
 
     def test_the_live_pack_exposes_the_new_guide_name_only(self) -> None:
         """TEMPORARY with RENAMED_SKILL_OLD_NAMES."""
         names = catalog_skill_names(DOCS)
         self.assertIn("simple-tools-guide", names)
-        self.assertNotIn("agent-sync-tools-guide", names)
+        self.assertNotIn("obsolete-tools-guide", names)
 
     def test_repo_only_renders_platform_copies_and_skips_home(self) -> None:
         out = self._run(["--repo-only"])
@@ -1731,7 +1733,7 @@ class LinearTeamListTests(unittest.TestCase):
         self.assertGreater(checked, 10, "expected the team list in every rendered copy")
 
 
-class AgentSyncRosterTests(unittest.TestCase):
+class SimpleToolsRosterTests(unittest.TestCase):
     """The availability roster must agree with the seat table and registry.
 
     The Oct 7 rewrite replaced the old "## Agent availability" section and the
@@ -2022,9 +2024,9 @@ class PrivateInventoryTests(unittest.TestCase):
         "docs/reviews/2026-09-14-fleet-rag-bm25-reranker-ab.md": "history: a review record",
         "docs/rollouts/2026-09-01-dsh-tailscale-shellular-thinking.md": "history: a rollout record",
         "docs/rollouts/2026-09-02-fleet-rag-memory-platform.md": "history: a rollout record",
-        "scripts/agent_sync/tests/test_wake_alerter.py": "AFC-505: a fixture that names the address it alerts on",
+        "scripts/simple_tools/tests/test_wake_alerter.py": "AFC-505: a fixture that names the address it alerts on",
         "scripts/fleet_config/tests/test_compliance.py": "AFC-400: a fixture for the internal address shape the rule looks for",
-        "scripts/agent_sync/wake_alerter.py": "AFC-505: a live script that reads the address it alerts on",
+        "scripts/simple_tools/wake_alerter.py": "AFC-505: a live script that reads the address it alerts on",
         "scripts/fleet-recall-service/.env.example": "AFC-505: the service example names the address it points at",
         "scripts/fleet-recall-service/README.md": "AFC-505: the service readme names the address it points at",
         "scripts/fleet-recall-service/compose.example.yaml": "AFC-505: the service example names the address it points at",
@@ -2042,7 +2044,7 @@ class PrivateInventoryTests(unittest.TestCase):
         "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
         "docs/protocols/coolify-fleet-cli-sync.md": "AFC-505: the protocol for the sync that reaches the box",
         "fleet-sentry-monitor/monitor.py": "AFC-505: a live monitor that defaults to the alias",
-        "scripts/agent_sync/muse_bridge_mac.py": "AFC-505: the live bridge that defaults to the alias",
+        "scripts/simple_tools/muse_bridge_mac.py": "AFC-505: the live bridge that defaults to the alias",
         "scripts/fleet-cli-sync.py": "AFC-505: a live sync that names the receiver it ships to",
         "scripts/fleet_rag/doctor.py": "AFC-505: a live doctor that defaults to the alias",
         "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by alias and address",

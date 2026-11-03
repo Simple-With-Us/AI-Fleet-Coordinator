@@ -18,10 +18,10 @@
     },
     {
       "description": "The hosted ST-MCP Worker holds bot keys and runs its own OAuth server:  the fleet's two-week rule, and no automerge, because its path-filtered workerd check is not required and Renovate merged package.json bumps here without a matching lockfile (#408).",
-      "matchFileNames": ["scripts/agent-sync-mcp/**"],
+      "matchFileNames": ["scripts/simple-tools-mcp/**"],
       "minimumReleaseAge": "14 days",
       "automerge": false,
-      "labels": ["dependencies", "agent-sync-mcp"]
+      "labels": ["dependencies", "simple-tools-mcp"]
     }
   ],
   "vulnerabilityAlerts": { "labels": ["security"], "minimumReleaseAge": null }

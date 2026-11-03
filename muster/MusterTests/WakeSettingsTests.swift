@@ -386,36 +386,36 @@ final class WakeSettingsTests: XCTestCase {
     /// A test wake names a runtime only when the CLI knows that runtime.
     func test_a_test_wake_names_a_runtime_only_when_the_cli_knows_it() throws {
         XCTAssertEqual(
-            try AgentSyncInvocation.testWakeRun(seat: "MM", runtime: "muse").arguments,
+            try ListenerInvocation.testWakeRun(seat: "MM", runtime: "muse").arguments,
             ["daemon", "test-wake", "--seat", "MM", "--runtime", "muse", "--run"]
         )
         // `inbox` and `http` are wake types but not CLI runtimes:  naming one made argparse
         // exit 2 with "invalid choice",  so both buttons always failed.
         XCTAssertEqual(
-            try AgentSyncInvocation.testWakeRun(seat: "MM", runtime: nil).arguments,
+            try ListenerInvocation.testWakeRun(seat: "MM", runtime: nil).arguments,
             ["daemon", "test-wake", "--seat", "MM", "--run"]
         )
         XCTAssertEqual(
-            try AgentSyncInvocation.testWakePin(seat: "MM", runtime: nil).arguments,
+            try ListenerInvocation.testWakePin(seat: "MM", runtime: nil).arguments,
             ["daemon", "test-wake", "--seat", "MM", "--pin"]
         )
     }
 
-    /// The CLI executable and commandLine use `simple-chat` (never the retired `agent-sync` binary).
+    /// The CLI executable and commandLine use `simple-chat` (not a retired binary).
     func test_the_command_line_uses_simple_chat() {
         let root = URL(fileURLWithPath: "/tmp/fake-repo", isDirectory: true)
         let interpreter = URL(fileURLWithPath: "/usr/bin/python3")
         let location = EngineLocation(root: root, interpreter: interpreter)
         XCTAssertEqual(
-            AgentSyncCLI.commandURL(at: location).path,
+            ListenerCLI.commandURL(at: location).path,
             "/tmp/fake-repo/scripts/simple-chat"
         )
         XCTAssertEqual(
-            AgentSyncInvocation.status().commandLine,
+            ListenerInvocation.status().commandLine,
             "simple-chat daemon status --json"
         )
         XCTAssertTrue(
-            AgentSyncError.commandNotFound("/tmp/fake-repo/scripts/simple-chat")
+            ListenerError.commandNotFound("/tmp/fake-repo/scripts/simple-chat")
                 .errorDescription?
                 .contains("simple-chat") == true
         )

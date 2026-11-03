@@ -843,6 +843,8 @@ def step(
     some = psi_avg(proc / "pressure" / "memory", "some")
     full = psi_avg(proc / "pressure" / "memory", "full")
     excluded_units = set(excluded_units or set())
+    # None means no discovery result was supplied; an empty set is a valid cached result.
+    resolve_exclusions = excluded_cgroups is None
     excluded_cgroups = set(excluded_cgroups or set())
     if discovered is None:
         containers, prod, production_limits = docker_groups(policy, root)
@@ -850,7 +852,7 @@ def step(
     else:
         code, prod = discovered[:2]
         production_limits = discovered[2] if len(discovered) > 2 else {}
-    if excluded_units and not excluded_cgroups:
+    if excluded_units and resolve_exclusions:
         excluded_cgroups = set(resolve_unit_cgroups(sorted(excluded_units), root))
     suspended = suspended_controls(state_dir if state_dir is not None else STATE_DIR)
     restore_failures = 0

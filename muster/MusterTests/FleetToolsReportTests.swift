@@ -357,7 +357,7 @@ final class FleetToolsReportTests: XCTestCase {
                     checks: [
                         row("checkout:AI-Fleet-Coordinator", "FAIL", "stale", "human-tree"),
                         row("command:simple-chat", "FAIL", "missing", "presence"),
-                        row("updater:com.jay.agent-sync-runtime-sync", "FAIL", "missing", "harness"),
+                        row("updater:com.jay.simple-tools-runtime-sync", "FAIL", "missing", "harness"),
                         row("tool:recall"),
                     ]
                 ),

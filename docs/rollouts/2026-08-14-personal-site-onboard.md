@@ -1,16 +1,18 @@
 # 2026-08-14 — Register Personal-Site in the fleet
 
+Historical identifiers have been redacted. These records do not certify current deployment state.
+
 ## Context & Objective
 
 Owner asked to onboard Personal-Site using ONBOARDING-NEW-APP / ONBOARDING-NEW-AGENT
-and AGENT-SYNC.
+and [retired identifier]
 
 ## Changes Made
 
 - `fleet-apps.json` row: repo `Personal-Site`, acronym `PS`, board
   `PERSONAL-SITE-EFFORT-LOG.md`, prefix `personal`, Slack `Personal-Site`.
 - Digest + calendar `DEFAULT_REPOS`, badge `PS`, color `#be123c`, legend chip.
-- `AGENT-SYNC.md` acronym + Slack `repo:` list (live `~/apps` kept in lockstep).
+- `FLEET-PROTOCOL.md` acronym + Slack `repo:` list (live `~/apps` kept in lockstep).
 - `EFFORT-LOG-PROTOCOL.md` board registry + `AGENT-COORDINATION-QUICKSTART.md`.
 - `FLEET-UI-COPY.md` binding list.
 - `scripts/slack-sync.sh` canonical tag comment.

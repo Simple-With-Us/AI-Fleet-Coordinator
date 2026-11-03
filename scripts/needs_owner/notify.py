@@ -50,7 +50,7 @@ from .items import Item
 from .proc import Result, Runner
 
 SESSION = "needsown"  # simple-chat cuts a session label to 8 characters
-# The realm renamed #agent-sync, and the env var overrides it.  The name is read
+# The configured channel is read
 # through the links module, which casefolds it, so a mixed-case override still
 # compares with the casefolded channel names everywhere else.
 CHANNEL = linkmod.resolve_channel()
@@ -290,8 +290,8 @@ def find_notice(
 
     The channel comes from the caller's own `environ`, and from the runner's own
     environment when there is none:  never from the process environment, so an
-    ambient `AGENT_SYNC_CHANNEL` cannot decide where the notice is read."""
-    result = runner.agent_sync(
+    ambient `SIMPLE_TOOLS_CHANNEL` cannot decide where the notice is read."""
+    result = runner.simple_tools(
         "read",
         "--as",
         runner.seat,
@@ -652,7 +652,7 @@ def notify(
         earlier = find_notice(runner, topic, b.uid, filer=b.filed_by, channel=channel)
         if earlier is not None:
             return _announce(runner, item, earlier, topic)
-    result = runner.agent_sync(
+    result = runner.simple_tools(
         "post",
         "--as",
         runner.seat,
@@ -681,7 +681,7 @@ def notify(
             else _pending(runner, item, topic, "send_failed")
         )
     if result.missing:
-        return _pending(runner, item, topic, "no_agent_sync")
+        return _pending(runner, item, topic, "no_simple_tools")
     if result.timed_out or result.code in MAYBE_SENT_CODES:
         landed = find_notice(runner, topic, b.uid, filer=b.filed_by, channel=channel)
         if landed is not None:
@@ -700,7 +700,7 @@ def _mirror(runner: Runner, item: Item, link: linkmod.TopicLink) -> Notice:
         item.identifier,
         item.url,
     )
-    result = runner.agent_sync(
+    result = runner.simple_tools(
         "reply",
         "--as",
         runner.seat,

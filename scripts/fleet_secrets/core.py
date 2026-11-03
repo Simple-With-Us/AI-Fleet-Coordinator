@@ -76,7 +76,7 @@ KEYCHAIN_TIMEOUT = 10.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 ENV_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
-PROJECT_FILE = ".agent-sync/fleet-ops-project-id"
+PROJECT_FILE = ".simple-tools/fleet-ops-project-id"
 ENV_NAMES = ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV")
 # Read-only second project:  the FleetLink seat tokens (FLEETLINK_TOKEN_<SEAT>) live in AI Fleet Coordinator
 # prod /fleetlink, not in Fleet-OPS.  `names --project ai-fleet-coordinator` lists them (names only).
@@ -85,7 +85,7 @@ PROJECT_SOURCES = {
     "fleet-ops": (ENV_PROJECT, PROJECT_FILE),
     "ai-fleet-coordinator": (
         "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
-        ".agent-sync/ai-fleet-coordinator-project-id",
+        ".simple-tools/ai-fleet-coordinator-project-id",
     ),
 }
 
@@ -173,9 +173,9 @@ _LABELS = {"fleet-ops": "Fleet-OPS", "ai-fleet-coordinator": "AI Fleet Coordinat
 
 def infisical_project_id(env: Mapping[str, str], home: Path, project: str = DEFAULT_PROJECT) -> str:
     """The Fleet-OPS Infisical project id, from env INFISICAL_FLEET_OPS_PROJECT_ID or the first line of
-    ~/.agent-sync/fleet-ops-project-id.  Fails closed, naming both, and never echoes a malformed value.
+    ~/.simple-tools/fleet-ops-project-id.  Fails closed, naming both, and never echoes a malformed value.
 
-    Same sources and error text as ``scripts/agent_sync/zulip.py:infisical_project_id`` (PR #634);
+    Same sources and error text as ``scripts/simple_tools/zulip.py:infisical_project_id`` (PR #634);
     this copy exists so a stable install needs no sibling package.  The id lives in the private
     fleet-ops inventory and is never committed to this public repo."""
     env_name, project_file = PROJECT_SOURCES[project]

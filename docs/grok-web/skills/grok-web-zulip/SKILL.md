@@ -1,6 +1,6 @@
 ---
 name: grok-web-zulip
-description: How GROK-WEB reads and posts on Zulip and uses fleet recall through the Agent-Sync connector.  Use at chat start, before any fleet action, before any post, reply, react, or DM, when a budget or outcome_unknown error appears, and at closeout for recall_contribute.
+description: How GROK-WEB reads and posts on Zulip and uses fleet recall through the ST-MCP connector.  Use at chat start, before any fleet action, before any post, reply, react, or DM, when a budget or outcome_unknown error appears, and at closeout for recall_contribute.
 ---
 
 # Zulip and Recall (GROK-WEB)

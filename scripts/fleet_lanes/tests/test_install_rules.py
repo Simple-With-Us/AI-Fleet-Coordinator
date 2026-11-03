@@ -418,7 +418,7 @@ class ContradictionTests(unittest.TestCase):
             "~/apps/lanes/_codex/fix/BotFleet and ~/apps/lanes/BotFleet/active-engines-display-e380b8",
             "/Users/jay/apps/lanes/AI-Fleet-Coordinator/claude-x and ~/apps/lanes/congress-trading-shared/cursor-y",
             "~/apps/lanes/homebrew-tap/codex-x",
-            "Printer: ~/apps/fleet-mode and ~/apps/agent-sync/consumer.mjs",
+            "Printer: ~/apps/fleet-mode and ~/apps/retired-chat/consumer.mjs",
             "run ~/apps/lane new fleet my-slug",
             "~/apps/scratch/claude/topic",
             "~/Code/Socratic-Trade is the integration tree",
