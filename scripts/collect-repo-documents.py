@@ -509,6 +509,12 @@ def _select_blobs(
                 "docs/private-audits/"
             )
             if (
+                repo_catalog.is_vendor_path(target)
+                or repo_catalog.is_generated_path(target)
+                or repo_catalog.is_fixture_path(target)
+            ):
+                continue
+            if (
                 linked is None
                 or linked.object_type != "blob"
                 or linked.mode not in {"100644", "100755"}
@@ -1034,13 +1040,14 @@ def _repo_readme(
         parts = PurePosixPath(path).parts
         root = parts[0] if len(parts) > 1 else "Repository root"
         by_root.setdefault(root, []).append(path)
+    collection_policy_id = manifest.get("collection_policy_id", COLLECTION_POLICY_ID)
     lines = [
         MARKER,
         f"# {repo.name} document mirror",
         "",
         f"Source: `{repo.owner}/{repo.name}` at `{repo.ref}` commit `{repo.commit}`.",
         "",
-        f"Repository profile: `{catalog.get('repository_profile', 'unknown')}`; collection policy `{COLLECTION_POLICY_ID}`.",
+        f"Repository profile: `{catalog.get('repository_profile', 'unknown')}`; collection policy `{collection_policy_id}`.",
         "",
         "This index groups selected human documents and linked evidence by their exact repository paths.  The source repository remains authoritative.",
         "",
