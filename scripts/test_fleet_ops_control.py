@@ -888,9 +888,7 @@ class UpdateStatusTests(Base):
                 code, answer = self.status(capture=False)
             self.assertEqual(answer["result"], expected)
             if not capture:
-                self.assertEqual(
-                    (code, answer["errorCode"]), (2, "receipt_context_unavailable")
-                )
+                self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
             self.assertEqual(closed, list(reversed(opened)))
             self.assertGreater(len(closed), 1)
 
