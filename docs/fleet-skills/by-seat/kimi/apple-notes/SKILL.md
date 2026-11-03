@@ -6,7 +6,9 @@ description: >-
 
 # Apple Notes (Universal)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 Every host has the same tool set: `simple-notes` (CLI) and the `notes_*` MCP tools, verb for verb: `create`, `update`, `pin`, `unpin`, `read`, `list`, `status`, `log` (AFC-486, `docs/protocols/operator-notes.md`).  On the Mac they run the helper below directly; on the server and from cloud seats they go through the Operator's notes queue to a runner on the Mac and wait for its answer.  No Notes request goes through Zulip.

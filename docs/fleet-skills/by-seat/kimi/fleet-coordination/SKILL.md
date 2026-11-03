@@ -5,7 +5,9 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 Canonical reference: `/Users/jay/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  

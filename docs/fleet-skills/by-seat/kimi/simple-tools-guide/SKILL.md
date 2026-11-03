@@ -6,7 +6,7 @@ description: >-
 
 # Simple-Tools Guide
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 The one guide to the simple-tools (ST-MCP is the hosted server) lives in `docs/protocols/simple-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
