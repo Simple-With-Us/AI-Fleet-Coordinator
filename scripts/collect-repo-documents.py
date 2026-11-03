@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -165,6 +165,7 @@ def _run_git(
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_TERMINAL_PROMPT": "0",
+                "GIT_NO_LAZY_FETCH": "1",
             },
         )
     except subprocess.TimeoutExpired as exc:
@@ -327,7 +328,7 @@ def discover_repositories(
 
 
 def _parse_tree(repo: RepoInfo) -> dict[str, Blob]:
-    raw = _run_git(repo.path, "ls-tree", "-rlz", "--full-tree", repo.commit)
+    raw = _run_git(repo.path, "ls-tree", "-rz", "--full-tree", repo.commit)
     files: dict[str, Blob] = {}
     for record in raw.split(b"\0"):
         if not record:
@@ -341,17 +342,53 @@ def _parse_tree(repo: RepoInfo) -> dict[str, Blob]:
             continue
         if object_type not in {"blob", "commit"}:
             continue
-        size_text = fields[3] if len(fields) > 3 else ""
-        if object_type == "blob" and not size_text.isdigit():
-            raise CollectionError("Git tree blob size metadata is invalid")
         files[relative] = Blob(
             path=relative,
             mode=mode,
             object_id=object_id,
             object_type=object_type,
-            size_bytes=int(size_text) if object_type == "blob" else None,
         )
+    blob_ids = list(
+        dict.fromkeys(blob.object_id for blob in files.values() if blob.object_type == "blob")
+    )
+    if blob_ids:
+        sizes = _local_blob_sizes(repo, blob_ids)
+        files = {
+            path: replace(blob, size_bytes=sizes[blob.object_id])
+            if blob.object_type == "blob"
+            else blob
+            for path, blob in files.items()
+        }
     return files
+
+
+def _local_blob_sizes(repo: RepoInfo, object_ids: list[str]) -> dict[str, int | None]:
+    if any(not re.fullmatch(r"[0-9a-f]{40,64}", object_id) for object_id in object_ids):
+        raise CollectionError("Git tree contains an invalid object id")
+    output = _run_git(
+        repo.path,
+        "cat-file",
+        "--batch-check",
+        stdin_data=("\n".join(object_ids) + "\n").encode("ascii"),
+    )
+    lines = output.splitlines()
+    if len(lines) != len(object_ids):
+        raise CollectionError("Git local object size response is incomplete")
+    sizes: dict[str, int | None] = {}
+    for expected_id, line in zip(object_ids, lines, strict=True):
+        fields = line.split()
+        if fields == [expected_id.encode("ascii"), b"missing"]:
+            sizes[expected_id] = None
+        elif (
+            len(fields) == 3
+            and fields[0].decode("ascii", "ignore") == expected_id
+            and fields[1] == b"blob"
+            and fields[2].isdigit()
+        ):
+            sizes[expected_id] = int(fields[2])
+        else:
+            raise CollectionError("Git local object size response is invalid")
+    return sizes
 
 
 def _safe_relative(value: str) -> bool:

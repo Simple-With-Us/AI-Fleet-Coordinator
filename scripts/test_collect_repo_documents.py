@@ -343,6 +343,89 @@ class CollectorTests(unittest.TestCase):
                 any(item["target_path"] == path for item in manifest["missing_local_links"]), path
             )
 
+    def test_promised_excluded_blob_stays_unknown_without_lazy_fetch(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/guide.md", "eligible published guide")
+        repo.write("vendor/excluded.md", "excluded blob whose size is unknown")
+        commit = repo.commit_published()
+        excluded_oid = git(repo.path, "rev-parse", f"{commit}:vendor/excluded.md")
+        excluded_object = repo.path / ".git" / "objects" / excluded_oid[:2] / excluded_oid[2:]
+        self.assertTrue(excluded_object.is_file())
+        excluded_object.unlink()
+        git(repo.path, "config", "remote.origin.promisor", "true")
+        git(repo.path, "config", "remote.origin.partialclonefilter", "blob:none")
+        git(repo.path, "remote", "set-url", "origin", "test::offline")
+        git(repo.path, "config", "protocol.test.allow", "always")
+
+        helper_bin = self.base / "git-helper-bin"
+        helper_bin.mkdir()
+        helper_called = self.base / "lazy-fetch-helper-called"
+        helper = helper_bin / "git-remote-test"
+        helper.write_text(
+            f"#!/bin/sh\nprintf called > '{helper_called}'\nexit 1\n", encoding="utf-8"
+        )
+        helper.chmod(0o700)
+
+        with (
+            patch.dict(os.environ, {"PATH": f"{helper_bin}:{os.environ['PATH']}"}),
+            patch.object(
+                collector, "_github_owner_repo", return_value=("fixture-owner", "ExampleRepo")
+            ),
+        ):
+            collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        self.assertEqual(
+            (mirror / "documents/docs/guide.md").read_text(), "eligible published guide"
+        )
+        catalog = json.loads((mirror / "catalog.json").read_text())
+        excluded = next(row for row in catalog["files"] if row["path"] == "vendor/excluded.md")
+        self.assertEqual(excluded["object_id"], excluded_oid)
+        self.assertEqual(excluded["size_bytes"], None)
+        self.assertEqual(
+            excluded["size_unavailable_reason"],
+            "blob size is unavailable locally; lazy fetch is disabled",
+        )
+        self.assertEqual(excluded["role"], "third-party-vendor")
+        self.assertFalse(excluded["copied_to_documents"])
+        self.assertFalse(helper_called.exists())
+        self.assertFalse(excluded_object.exists())
+
+    def test_missing_selected_blob_fails_without_lazy_fetch_or_output_write(self) -> None:
+        repo = self.make_repo()
+        repo.write("docs/guide.md", "eligible guide whose object will be absent")
+        commit = repo.commit_published()
+        guide_oid = git(repo.path, "rev-parse", f"{commit}:docs/guide.md")
+        guide_object = repo.path / ".git" / "objects" / guide_oid[:2] / guide_oid[2:]
+        self.assertTrue(guide_object.is_file())
+        guide_object.unlink()
+        git(repo.path, "config", "remote.origin.promisor", "true")
+        git(repo.path, "config", "remote.origin.partialclonefilter", "blob:none")
+        git(repo.path, "remote", "set-url", "origin", "test::offline")
+        git(repo.path, "config", "protocol.test.allow", "always")
+
+        helper_bin = self.base / "selected-git-helper-bin"
+        helper_bin.mkdir()
+        helper_called = self.base / "selected-lazy-fetch-helper-called"
+        helper = helper_bin / "git-remote-test"
+        helper.write_text(
+            f"#!/bin/sh\nprintf called > '{helper_called}'\nexit 1\n", encoding="utf-8"
+        )
+        helper.chmod(0o700)
+
+        with (
+            patch.dict(os.environ, {"PATH": f"{helper_bin}:{os.environ['PATH']}"}),
+            patch.object(
+                collector, "_github_owner_repo", return_value=("fixture-owner", "ExampleRepo")
+            ),
+            self.assertRaisesRegex(collector.CollectionError, "Git metadata or object read failed"),
+        ):
+            collector.collect(self.code, self.output)
+
+        self.assertFalse(helper_called.exists())
+        self.assertFalse(guide_object.exists())
+        self.assertFalse((self.output / "ExampleRepo").exists())
+
     def test_v1_manifest_remains_readable_and_immutable_during_policy_migration(self) -> None:
         repo = self.make_repo()
         repo.write("README.md", "Root readme.\n")

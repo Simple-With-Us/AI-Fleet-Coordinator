@@ -7,8 +7,8 @@ from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Any
 
-CATALOG_SCHEMA_VERSION = 1
-CATALOG_POLICY_ID = "tracked-tree-roles-v1"
+CATALOG_SCHEMA_VERSION = 2
+CATALOG_POLICY_ID = "tracked-tree-roles-v2"
 COLLECTION_POLICY_ID = "human-docs-v3"
 
 HUMAN_DOCUMENT_SUFFIXES = {
@@ -452,6 +452,11 @@ def build_catalog(
                 "object_type": item["object_type"],
                 "object_id": item["object_id"],
                 "size_bytes": item.get("size_bytes"),
+                "size_unavailable_reason": (
+                    "blob size is unavailable locally; lazy fetch is disabled"
+                    if item["object_type"] == "blob" and item.get("size_bytes") is None
+                    else None
+                ),
                 "role": role,
                 "copied_to_documents": selected,
                 "exclusion_reason": exclusion_reason,
