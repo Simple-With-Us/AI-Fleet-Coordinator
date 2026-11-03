@@ -280,6 +280,10 @@ struct OperationsRefreshRequests {
 
     mutating func beginMetadataRead() { metadataRequested = false }
     mutating func beginAgentRead() { agentsRequested = false }
+
+    func shouldRepeatMetadataRead(completedPasses: Int) -> Bool {
+        metadataRequested && completedPasses < 2
+    }
 }
 
 /// --dry-run reads launchd and prints JSON without writing a report, installing an

@@ -159,6 +159,23 @@ final class OperationsRefreshRequestTests: XCTestCase {
         XCTAssertTrue(requests.request(collectAgents: false, metadataBusy: false))
         XCTAssertFalse(requests.agentsRequested)
     }
+
+    func test_continuous_metadata_requests_cannot_starve_a_pending_agent_snapshot() {
+        var requests = OperationsRefreshRequests()
+        XCTAssertTrue(requests.request(collectAgents: false, metadataBusy: false))
+        var passes = 0
+        repeat {
+            requests.beginMetadataRead()
+            passes += 1
+            for _ in 0..<20 {
+                XCTAssertFalse(requests.request(collectAgents: true, metadataBusy: true))
+            }
+        } while requests.shouldRepeatMetadataRead(completedPasses: passes)
+        XCTAssertEqual(passes, 2)
+        XCTAssertTrue(requests.agentsRequested)
+        requests.beginAgentRead()
+        XCTAssertFalse(requests.agentsRequested)
+    }
 }
 
 private struct MacCollectorRunner: OpsRunning {

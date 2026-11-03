@@ -327,8 +327,10 @@ struct OperationsView: View {
         do {
             loading = true
             defer { loading = false }
+            var metadataPasses = 0
             repeat {
                 refreshRequests.beginMetadataRead()
+                metadataPasses += 1
                 let servicesURL = MacServicesReportReader.reportURL()
                 let allowlistURL = OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
                 let auditURL = OpsAuditLog.logURL()
@@ -343,7 +345,7 @@ struct OperationsView: View {
                 allowlist = readAllowlist
                 allowlistPath = allowlistURL.path
                 audit = readAudit
-            } while refreshRequests.metadataRequested
+            } while refreshRequests.shouldRepeatMetadataRead(completedPasses: metadataPasses)
         }
         guard refreshRequests.agentsRequested, !collectingAgents else { return }
         collectingAgents = true
