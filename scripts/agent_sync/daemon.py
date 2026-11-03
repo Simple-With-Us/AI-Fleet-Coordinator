@@ -776,6 +776,12 @@ class Daemon:
         # (_configure_listener_api), None while [linear_projects] is off.
         self.linear_projects_hook: Any | None = None
         self._linear_projects_spec: tuple[Any, ...] | None = None
+        # The Operator's Zulip -> Linear living comments (operator_linear.py), the
+        # standalone relay hosted by this daemon:  rebuilt on every start and reload
+        # (_configure_linear_comments), None while [linear_comments] is off or no
+        # OPERATOR_LINEAR_TOKEN is bound.
+        self.linear_comments: Any | None = None
+        self._linear_comments_spec: tuple[Any, ...] | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {
@@ -785,6 +791,7 @@ class Daemon:
             "prune": -1e9,
             "held": -1e9,
             "muse_bridge": -1e9,
+            "linear_comments": -1e9,
         }
         self.muse_bridge_thread: threading.Thread | None = None
         self.config_notified = False
@@ -1171,6 +1178,121 @@ class Daemon:
         self._linear_projects_spec = (token,)
         return hook
 
+    def _configure_linear_comments(self) -> None:
+        """The Operator's Zulip -> Linear living comments (operator_linear.py), or None:
+        off unless [linear_comments] enabled is true and OPERATOR_LINEAR_TOKEN is bound
+        (the Operator's own Linear credential, loaded by the container from Infisical).
+        A reload that leaves the token as it was keeps the same engine object, so its
+        ledger lock and its (topic, issue) -> comment mapping survive;  a token change
+        builds a fresh engine on the same ledger file, which adopts the standing
+        comments by their marker instead of stacking new ones."""
+        old = getattr(self, "linear_comments", None)
+        old_spec = getattr(self, "_linear_comments_spec", None)
+        self.linear_comments = None
+        self._linear_comments_spec = None
+        if not getattr(self.config, "linear_comments_enabled", False):
+            return
+        token = Z._strip_quotes(self.env.get("OPERATOR_LINEAR_TOKEN") or "")
+        if not token:
+            self.log.write(
+                "linear-comments-off",
+                reason="OPERATOR_LINEAR_TOKEN is not set",
+                hint=ENV_RESTART_HINT,
+            )
+            return
+        self.hide_values([token])
+        if old is not None and old_spec == (token,):
+            self.linear_comments = old
+            self._linear_comments_spec = old_spec
+            return
+        if old is not None:
+            # The credential changed:  release the old engine's ledger lock before the
+            # new engine opens the same file, or its open fails closed.
+            close = getattr(old, "close", None)
+            if callable(close):
+                close()
+        try:
+            # Imported here, not at module load, so a missing module never stops the daemon.
+            from . import operator_linear as OPL
+        except ImportError as exc:
+            self.log.write("linear-comments-error", error=type(exc).__name__)
+            return
+        try:
+            engine = OPL.build(
+                self.env,
+                self.root,
+                log=lambda m: self.log.write("linear-comments", detail=self.scrub(m)),
+                clock=self.clock.time,
+                monotonic=self.clock.monotonic,
+            )
+        except SystemExit as exc:
+            # The ledger refused to open (another holder, or unreadable state):  this
+            # feature fails closed, the daemon does not.
+            self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            return
+        except Exception as exc:  # noqa: BLE001 - the engine must never stop the daemon
+            self.log.write("linear-comments-error", error=type(exc).__name__)
+            return
+        if engine is None:
+            self.log.write(
+                "linear-comments-off",
+                reason="OPERATOR_LINEAR_TOKEN is not set",
+                hint=ENV_RESTART_HINT,
+            )
+            return
+        self.linear_comments = engine
+        self._linear_comments_spec = (token,)
+
+    def _observe_linear_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Feed one routed message to the Operator's Zulip -> Linear living comments
+        (operator_linear.py).  Observation is best-effort by design:  a comments failure
+        is logged and never touches routing, and the worker deduplicates by message id,
+        so the same message routed for several seats counts once."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None or not isinstance(message, Mapping) or message.get("type") != "stream":
+            return
+        try:
+            engine.feed_message(runner.client, message)
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
+    def _observe_linear_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
+        """Feed one update_message event (a topic rename or a stream move) to the living
+        comments, so a standing comment follows its topic.  Best-effort, like the message
+        path."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None:
+            return
+        try:
+            engine.feed_event(runner.client, event)
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
+    def _observe_linear_stream_event(
+        self, runner: SeatRunner, event: Mapping[str, Any]
+    ) -> None:
+        """A stream create, update or delete: the living comments forget the public-stream
+        set and reload it on the next feed, as the standalone relay did."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None or event.get("op") not in ("create", "update", "delete"):
+            return
+        try:
+            engine.reload_streams(runner.client)
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def _configure_listener_api(self) -> None:
         """Start the optional signed read API (AFC-330) for the seats this instance holds, and with it the Operator's
         notes queue (AFC-486) under /notes/v1/ and the Linear project webhook (AFC-565) under /linear/v1/.  The server
@@ -1362,6 +1484,7 @@ class Daemon:
         self._apply_config()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_linear_comments()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
 
     def _recover_ledgers(self) -> None:
@@ -1625,10 +1748,12 @@ class Daemon:
                     self.route_message(runner, event["message"])
                 elif kind == "update_message":
                     self.handle_update(runner, event)
+                    self._observe_linear_event(runner, event)
                 elif kind == "user_topic":
                     runner.apply_user_topic(event)
                 elif kind == "stream":
                     self.handle_stream_event(runner, event)
+                    self._observe_linear_stream_event(runner, event)
                 elif kind == "subscription":
                     self.handle_subscription_event(runner, event)
                 elif kind == "realm_user":
@@ -1741,6 +1866,7 @@ class Daemon:
         runner.flush_cursor(force=True)
 
     def route_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        self._observe_linear_message(runner, message)
         self._route_message(runner, message, advance_cursor=True)
 
     def _route_message(
@@ -7273,6 +7399,22 @@ class Daemon:
             self.last_tick["grace"] = now
             for runner in self.seats.values():
                 self.release_grace(runner)
+        if now - self.last_tick["linear_comments"] >= 30:
+            self.last_tick["linear_comments"] = now
+            engine = getattr(self, "linear_comments", None)
+            if engine is not None:
+                # Any seat's client can load the public-stream set;  the tick itself only
+                # flushes edits whose batching interval has passed.
+                client = next(
+                    (r.client for r in self.seats.values() if r.client is not None), None
+                )
+                try:
+                    engine.tick(client)
+                except Exception as exc:  # the comments must never stop the tick
+                    self.log.write(
+                        "linear-comments-error",
+                        error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+                    )
         if now - self.last_tick["prune"] >= W.DAY:
             self.last_tick["prune"] = now
             for runner in self.seats.values():
@@ -8059,6 +8201,7 @@ class Daemon:
                 return self.refuse_start()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_linear_comments()
         for seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(seat).recover_interrupted()
         os.ftruncate(lock_fd, 0)

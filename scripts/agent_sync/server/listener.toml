@@ -23,7 +23,7 @@
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  A section changed here never reaches a live
 # volume by itself:  server/apply_live_config.py copies the JET and GB sections into /data/listener.toml, adds
-# [listener_api], [notes_queue] and [linear_projects] only where the live file has none (it never changes one that
+# [listener_api], [notes_queue], [linear_projects] and [linear_comments] only where the live file has none (it never changes one that
 # is there), and leaves [daemon] (the pins) untouched.  Never mount this file as a single file, because `daemon init` replaces it
 # atomically.  Every seat here must be "server" in docs/protocols/agent-sync-partition.toml:  a seat is never
 # configured in both instances.
@@ -108,6 +108,16 @@ server_seats = ["CLAUDE", "CODEX"]
 # OPERATOR_LINKIFIERS_INFISICAL_TOKEN.  Enable after that variable is set and the
 # reverse proxy routes /linear/v1/ to port 8788, then restart the app.
 [linear_projects]
+enabled = false
+
+# The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py):
+# one standing, edited-in-place comment per (Zulip topic, Linear issue mentioned in it),
+# covering the whole topic.  This replaces the standalone linear_relay process and its
+# own bot.  Its writes use the Operator's own Linear credential, bound as the Coolify
+# runtime-only variable OPERATOR_LINEAR_TOKEN (a dedicated Linear credential for the
+# Operator, held in Infisical;  see docs/operator-linear-comments.md).  Server instance
+# only.  Enable only after that variable is set, then restart the app.
+[linear_comments]
 enabled = false
 
 [seat.MA]

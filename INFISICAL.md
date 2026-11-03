@@ -131,6 +131,10 @@ The Operator's Linear project webhook keeps Zulip and the repo linkifiers equal 
 
 Each value is never printed, logged or written to a file.
 
+## Linear living comments (the Zulip -> Linear relay, folded into the Operator)
+
+The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py, design: docs/operator-linear-comments.md) write with the Operator's own Linear credential, bound to the server container as the runtime-only variable OPERATOR_LINEAR_TOKEN, the same route the retired standalone relay's LINEAR_RELAY_TOKEN used.  The credential itself is a dedicated Linear app for the Operator (scopes `read` + `comments:create`), created by the owner or an admin — it does not exist yet, and nothing reads the relay app's token or a seat's Linear credential for this job.  It lives in this project, `prod`, folder `/operator-linear-comments`, as `OPERATOR_LINEAR_TOKEN`.  No scoped Infisical service token is minted for it in this design: the container binding is the delivery route, as it was for the relay.
+
 ## Zulip Outgoing Wake Tokens
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
