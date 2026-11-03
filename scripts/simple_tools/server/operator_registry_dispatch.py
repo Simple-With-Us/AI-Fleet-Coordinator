@@ -69,6 +69,7 @@ everything else (relabel --force double-applies;  unproven writes may):  reconci
 reading the registry (resolve/history/show) before deciding, never by blind retry, and
 never by assuming failure or success.
 """
+
 from __future__ import annotations
 
 import json
@@ -88,10 +89,23 @@ RESOLVE_TIMEOUT = 1.5
 EXEC_TIMEOUT = 5.0  # the client's ssh budget is 8s for the whole round trip
 ALLOWED_REGISTRY_OPS = frozenset({"register", "title", "touch", "close"})
 ALLOWED_PLATFORM_OPS = frozenset({"register", "title", "touch", "close", "show"})
-ALLOWED_MODULE_VERBS = frozenset({
-    "register", "relabel", "resolve", "update", "close", "sweep", "touch",
-    "history", "pending-outbox", "mark-exported", "wake-target", "reopen", "held",
-})
+ALLOWED_MODULE_VERBS = frozenset(
+    {
+        "register",
+        "relabel",
+        "resolve",
+        "update",
+        "close",
+        "sweep",
+        "touch",
+        "history",
+        "pending-outbox",
+        "mark-exported",
+        "wake-target",
+        "reopen",
+        "held",
+    }
+)
 #: Verbs where an identical-argv retry after an uncertain outcome is PROVEN safe:
 #: the read-only verbs, and the writes the independent review verified idempotent
 #: (same-record/same-letter/no-second-effect).  Anything else - relabel --force increments
@@ -190,7 +204,9 @@ def _resolve_container(config: dict) -> str:
     """The one running managed app container's id, or ValueError(<reason>)."""
     proc = subprocess.run(
         ["docker", "ps", "--format", "{{.ID}}\t{{.Names}}"],
-        capture_output=True, text=True, timeout=RESOLVE_TIMEOUT,
+        capture_output=True,
+        text=True,
+        timeout=RESOLVE_TIMEOUT,
     )
     if proc.returncode != 0:
         raise ValueError("docker-unavailable")
@@ -207,7 +223,9 @@ def _resolve_container(config: dict) -> str:
     cid = matches[0]
     inspect = subprocess.run(
         ["docker", "inspect", "--format", "{{.Image}} {{json .Mounts}}", cid],
-        capture_output=True, text=True, timeout=RESOLVE_TIMEOUT,
+        capture_output=True,
+        text=True,
+        timeout=RESOLVE_TIMEOUT,
     )
     if inspect.returncode != 0:
         raise ValueError("docker-unavailable")
@@ -235,7 +253,7 @@ def _flag_value(argv: list[str], name: str) -> str | None:
         if word == name and i + 1 < len(argv):
             return argv[i + 1]
         if word.startswith(name + "="):
-            return word[len(name) + 1:]
+            return word[len(name) + 1 :]
     return None
 
 
@@ -256,7 +274,12 @@ def _container_command(config: dict, cid: str, argv: list[str]) -> list[str] | N
     """The in-container argv for an allowed route, else None."""
     if _redirects_db(argv):
         return None  # the canonical store is pinned here;  no caller picks another
-    if len(argv) >= 3 and argv[0] == "letter" and argv[1] == "registry" and argv[2] in ALLOWED_REGISTRY_OPS:
+    if (
+        len(argv) >= 3
+        and argv[0] == "letter"
+        and argv[1] == "registry"
+        and argv[2] in ALLOWED_REGISTRY_OPS
+    ):
         return [CONTAINER_CLI] + argv
     if len(argv) >= 2 and argv[0] == "letter" and argv[1] == "show":
         return [CONTAINER_CLI] + argv
@@ -264,17 +287,19 @@ def _container_command(config: dict, cid: str, argv: list[str]) -> list[str] | N
         platform = _flag_value(argv[2:], "--platform") or ""
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", platform):
             return None  # the real parser requires --platform;  refuse to guess it
-        if argv[1] == "registry" and not (
-            len(argv) >= 3 and argv[2] in ALLOWED_PLATFORM_OPS
-        ):
+        if argv[1] == "registry" and not (len(argv) >= 3 and argv[2] in ALLOWED_PLATFORM_OPS):
             return None
         return ["python3", "-m", str(config["platform_module"])] + argv[1:]
     if len(argv) >= 2 and argv[0] == "operator-registry" and argv[1] in ALLOWED_MODULE_VERBS:
         # Every module verb takes --db (two require it):  the dispatcher pins the canonical
         # store itself rather than trusting the in-container default or any caller value.
         return [
-            "python3", "-m", str(config["registry_module"]),
-            argv[1], "--db", CANONICAL_DB,
+            "python3",
+            "-m",
+            str(config["registry_module"]),
+            argv[1],
+            "--db",
+            CANONICAL_DB,
         ] + argv[2:]
     return None
 
@@ -325,35 +350,60 @@ def main(argv: list[str], home: str | None = None) -> int:
     if inner is None:
         return _fail("not-a-registry-route")
     cmd = [
-        "docker", "exec", "-i",
-        "-u", str(CONTAINER_UID),
-        "-w", CONTAINER_WORKDIR,
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        str(CONTAINER_UID),
+        "-w",
+        CONTAINER_WORKDIR,
         cid,
     ] + inner
     try:
         proc = subprocess.run(
-            cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
             timeout=EXEC_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         # NOT proof of failure and NOT proof of success:  the exec may still land the
         # write.  Retry is safe only for read-only verbs and proven-idempotent writes;
         # anything else must be reconciled by reading the registry first.
-        retry = "safe" if (
-            argv[:2] == ["letter", "show"]
-            or (len(argv) >= 2 and argv[0] == "platform-letter" and argv[1] == "show")
-            or (len(argv) >= 2 and argv[0] == "operator-registry"
-                and argv[1] in READ_ONLY_VERBS | PROVEN_IDEMPOTENT_WRITES)
-            or (len(argv) >= 3 and argv[:2] == ["letter", "registry"]
-                and argv[2] in ("register", "touch", "close"))
-            or (len(argv) >= 3 and argv[:2] == ["platform-letter", "registry"]
-                and argv[2] in ("register", "touch", "close", "show"))
-        ) else "read-back-first"
-        sys.stdout.write(json.dumps({
-            "error": "operator registry dispatch: timeout",
-            "outcome": "unknown",
-            "retry": retry,
-        }) + "\n")
+        retry = (
+            "safe"
+            if (
+                argv[:2] == ["letter", "show"]
+                or (len(argv) >= 2 and argv[0] == "platform-letter" and argv[1] == "show")
+                or (
+                    len(argv) >= 2
+                    and argv[0] == "operator-registry"
+                    and argv[1] in READ_ONLY_VERBS | PROVEN_IDEMPOTENT_WRITES
+                )
+                or (
+                    len(argv) >= 3
+                    and argv[:2] == ["letter", "registry"]
+                    and argv[2] in ("register", "touch", "close")
+                )
+                or (
+                    len(argv) >= 3
+                    and argv[:2] == ["platform-letter", "registry"]
+                    and argv[2] in ("register", "touch", "close", "show")
+                )
+            )
+            else "read-back-first"
+        )
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "error": "operator registry dispatch: timeout",
+                    "outcome": "unknown",
+                    "retry": retry,
+                }
+            )
+            + "\n"
+        )
         return 3
     except (OSError, subprocess.SubprocessError):
         return _fail("docker-unavailable")

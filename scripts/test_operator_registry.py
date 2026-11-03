@@ -1463,7 +1463,9 @@ class ReopenHeldCliTest(unittest.TestCase):
         return answer
 
     def _close(self, session_id):
-        code, answer = self._run(["close", "--db", self.db] + self.IDENTITY + ["--session-id", session_id])
+        code, answer = self._run(
+            ["close", "--db", self.db] + self.IDENTITY + ["--session-id", session_id]
+        )
         self.assertEqual(code, 0, answer)
 
     def _held(self, session_id):
@@ -1570,8 +1572,10 @@ class WakeTargetTest(unittest.TestCase):
     def test_no_registry_file_is_no_target_and_creates_nothing(self):
         missing = os.path.join(self.tmp.name, "absent", "registry.sqlite3")
         answer = R.resolve_wake_target(missing, "CLAUDE")
-        self.assertEqual(answer, {"found": False, "seat": "CLAUDE",
-                                  "reason": "no_active_session", "candidates": 0})
+        self.assertEqual(
+            answer,
+            {"found": False, "seat": "CLAUDE", "reason": "no_active_session", "candidates": 0},
+        )
         self.assertFalse(os.path.exists(missing), "a read never mints the file")
 
     def test_a_seat_is_required(self):
@@ -1607,8 +1611,13 @@ class WakeTargetTest(unittest.TestCase):
     def test_the_freshest_candidate_order_is_deterministic_but_not_delivery(self):
         self._register("nat-0o1d")
         self._register("nat-0new")
-        R.touch_session(self.db, platform="claude", verified_host="server",
-                        profile_scope="default", native_session_id="nat-0new")
+        R.touch_session(
+            self.db,
+            platform="claude",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id="nat-0new",
+        )
         candidates = R._candidate_sessions(self.db, "CLAUDE")
         self.assertEqual([c["native_session_id"] for c in candidates], ["nat-0new", "nat-0o1d"])
         answer = R.resolve_wake_target(self.db, "CLAUDE")
@@ -1619,12 +1628,24 @@ class WakeTargetTest(unittest.TestCase):
     def test_a_closed_session_is_not_a_candidate(self):
         self._register("nat-live")
         self._register("nat-gone")
-        R.close_session(self.db, platform="claude", verified_host="server",
-                        profile_scope="default", native_session_id="nat-gone", reason="test")
+        R.close_session(
+            self.db,
+            platform="claude",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id="nat-gone",
+            reason="test",
+        )
         candidates = R._candidate_sessions(self.db, "CLAUDE")
         self.assertEqual([c["native_session_id"] for c in candidates], ["nat-live"])
-        R.close_session(self.db, platform="claude", verified_host="server",
-                        profile_scope="default", native_session_id="nat-live", reason="test")
+        R.close_session(
+            self.db,
+            platform="claude",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id="nat-live",
+            reason="test",
+        )
         answer = R.resolve_wake_target(self.db, "CLAUDE")
         self.assertEqual(answer["reason"], "no_active_session")
         self.assertEqual(answer["candidates"], 0)

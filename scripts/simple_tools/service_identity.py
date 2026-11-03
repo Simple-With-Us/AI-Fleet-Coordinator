@@ -82,7 +82,9 @@ def operator_credentials(env, home=None, fetch=None):
         else:
             from . import operator_identity_reader as OIR
 
-            reader_home = home if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
+            reader_home = (
+                home if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
+            )
             try:
                 reader = OIR.reader_for(reader_home)  # memoized:  the 600 s cache survives callers
             except OIR.ReaderError as exc:  # present but unsafe/unqualified:  never a fallback
@@ -106,10 +108,16 @@ def operator_credentials(env, home=None, fetch=None):
                     if isinstance(value, str) and re.fullmatch(r"\$\{[^}]+\}", value.strip())
                 ]
                 if unresolved:
-                    raise Z.CredentialError("Operator unresolved reference: " + ", ".join(unresolved))
+                    raise Z.CredentialError(
+                        "Operator unresolved reference: " + ", ".join(unresolved)
+                    )
                 selected["ZULIP_SITE"] = values.get("ZULIP_OPERATOR_SITE", "")
                 creds = Z.env_credentials(
-                    selected, email_env=names[0], key_env=names[1], site_env="ZULIP_SITE", label=OPERATOR
+                    selected,
+                    email_env=names[0],
+                    key_env=names[1],
+                    site_env="ZULIP_SITE",
+                    label=OPERATOR,
                 )
                 creds = replace(
                     creds,

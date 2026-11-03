@@ -156,10 +156,7 @@ def load(home: Path | None = None):
         ):
             raise ReaderError("reader-config-invalid")
         config["api_url"] = _origin(config["api_url"])
-        pins = {
-            name: config[name]
-            for name in ("project_id", "token_id", "token_name", "api_url")
-        }
+        pins = {name: config[name] for name in ("project_id", "token_id", "token_name", "api_url")}
         commitment = hashlib.sha256(
             json.dumps(pins, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -331,7 +328,7 @@ class Reader:
         return values, expires
 
 
-_READERS: dict[str, "Reader | None"] = {}
+_READERS: dict[str, Reader | None] = {}
 _READERS_LOCK = threading.Lock()
 
 

@@ -213,7 +213,7 @@ def add_parsers(
         "--fleet-bearer-file",
         default=argparse.SUPPRESS,
         metavar="PATH",
-            help="authenticate as this bot with its private fleet bearer file (on a Mac the action still runs directly, elsewhere through the hosted gateway); no shared-credential fallback",
+        help="authenticate as this bot with its private fleet bearer file (on a Mac the action still runs directly, elsewhere through the hosted gateway); no shared-credential fallback",
     )
     # No --identity:  the log is the whole fleet's (any seat may read every Coding note), so it acts as no one;
     # --by-seat filters it.

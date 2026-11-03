@@ -2151,26 +2151,18 @@ def _connect_existing(db_path: str) -> sqlite3.Connection:
             uri=True,
         )
     except sqlite3.OperationalError as exc:
-        raise RegistryUnavailable(
-            "registry store is missing or unwritable: %s" % db_path
-        ) from exc
+        raise RegistryUnavailable("registry store is missing or unwritable: %s" % db_path) from exc
     try:
         # Existing is not enough:  mode=rw opens any database, so an argument pointing at
         # some other sqlite file would drain garbage while the real outbox backs up.  The
         # store must carry the registry's own schema markers before the bridge trusts it.
         found = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
     except sqlite3.DatabaseError as exc:
         conn.close()
-        raise RegistryUnavailable(
-            "registry store is unreadable: %s" % db_path
-        ) from exc
-    required = {"schema_migrations", "sessions", "alias_assignments", "events",
-                "export_outbox"}
+        raise RegistryUnavailable("registry store is unreadable: %s" % db_path) from exc
+    required = {"schema_migrations", "sessions", "alias_assignments", "events", "export_outbox"}
     if not required <= found:
         conn.close()
         raise RegistryUnavailable(
@@ -2603,13 +2595,17 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         finally:
             reg.close_db()
-        print(json.dumps({
-            "record_id": args.record_id,
-            "label": letter,
-            "generation": generation,
-            "previous": previous,
-            "outcome": "reopened",
-        }))
+        print(
+            json.dumps(
+                {
+                    "record_id": args.record_id,
+                    "label": letter,
+                    "generation": generation,
+                    "previous": previous,
+                    "outcome": "reopened",
+                }
+            )
+        )
         return 0
     if args.command == "held":
         reg = SessionRegistry(db, read_only=True)
