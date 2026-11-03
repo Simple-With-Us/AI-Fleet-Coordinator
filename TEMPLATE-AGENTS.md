@@ -723,6 +723,15 @@ address:
   - Because `verify` runs `npm run build`, a PR that breaks the build cannot merge —
     always run the full tsc/test/build trio locally before pushing.
 
+### Superseded PR closure and draft conversion
+
+Owner ruling, November 3, 2026, applies fleet-wide:
+
+- An agent may close a totally superseded PR if that agent made the PR being closed.
+- If another agent made the totally superseded PR, ask that agent first.  If no reply arrives within 20 minutes, ask Jay.  An agent may ask Jay first if urgent.
+- If 3 agents from 2 platforms agree to close a totally superseded PR, closure may proceed without Jay's or the PR owner's input.
+- Any agent may convert any PR to draft without anyone's permission.  Agents are encouraged to do so whenever a PR is not ready to merge.
+
 ### Fleet MCP and the Git Relay backend
 
 Connect to **Fleet MCP** at `https://agents.simplewithus.com/mcp` with your own assigned bearer for the tool families allowed to your agent.  Remote-capable clients connect directly; stdio-only clients use the reviewed assigned-hosted-stdio connector on their own runtime host.  Git Relay (`git-relay`) is the server-side backend, not a local per-agent replacement or bypass.  Fleet MCP is the MCP configuration target.  The owner wants one supported route for Mac agents across fleet tools and Git Relay; the final all-tool transport recommendation is pending, so do not add a parallel direct CLI route or remove a working route from these instructions.  Any approved client must retain the same assigned identity, backend policy, audit and operation limits, without a second broker, raw minted tokens, or credentials in arguments or logs.
