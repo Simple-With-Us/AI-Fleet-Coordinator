@@ -935,7 +935,15 @@ def captured_update_baseline(ctx, invocation):
             raise OSError("unsafe audit file")
         offset = max(0, info.st_size - AUDIT_CONTEXT_MAX_BYTES)
         os.lseek(fd, offset, os.SEEK_SET)
-        data = os.read(fd, min(info.st_size, AUDIT_CONTEXT_MAX_BYTES))
+        remaining = min(info.st_size, AUDIT_CONTEXT_MAX_BYTES)
+        chunks = []
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
         if offset:
             data = data.partition(b"\n")[2]
         lines = data.decode("utf-8").splitlines()
@@ -962,7 +970,10 @@ def captured_update_baseline(ctx, invocation):
         pass
     finally:
         for fd in reversed(descriptors):
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     raise Refused(
         "the captured update receipt context is unavailable",
         error_code="receipt_context_unavailable",

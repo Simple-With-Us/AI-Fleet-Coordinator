@@ -847,6 +847,53 @@ class UpdateStatusTests(Base):
         code, answer = self.status(capture=False)
         self.assertEqual((code, answer["result"]), (0, "done"))
 
+    def test_short_reads_still_recover_the_complete_capture(self):
+        self.write_capture()
+        original_read = os.read
+        reads = []
+
+        def short_read(fd, size):
+            reads.append(size)
+            return original_read(fd, min(size, 7))
+
+        with mock.patch.object(foc.os, "read", side_effect=short_read):
+            code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["result"]), (0, "done"))
+        self.assertGreater(len(reads), 1)
+
+    def test_close_error_preserves_outcome_and_attempts_every_descriptor(self):
+        original_open, original_close = os.open, os.close
+        for capture, expected in ((True, "done"), (False, "refused")):
+            if capture:
+                self.write_capture()
+            else:
+                (self.state / "ops-audit.jsonl").unlink()
+            opened, closed = [], []
+
+            def record_open(*args, **kwargs):
+                fd = original_open(*args, **kwargs)
+                opened.append(fd)
+                return fd
+
+            def flaky_close(fd):
+                closed.append(fd)
+                original_close(fd)
+                if len(closed) == 1:
+                    raise OSError("simulated close failure")
+
+            with (
+                mock.patch.object(foc.os, "open", side_effect=record_open),
+                mock.patch.object(foc.os, "close", side_effect=flaky_close),
+            ):
+                code, answer = self.status(capture=False)
+            self.assertEqual(answer["result"], expected)
+            if not capture:
+                self.assertEqual(
+                    (code, answer["errorCode"]), (2, "receipt_context_unavailable")
+                )
+            self.assertEqual(closed, list(reversed(opened)))
+            self.assertGreater(len(closed), 1)
+
 
 class MacVerbTests(Base):
     def plist(self, label, mode=0o600):
