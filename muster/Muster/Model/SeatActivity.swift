@@ -299,7 +299,7 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
     /// The number of open sessions the eavesdropper holds for this seat.
     let openSessions: SeatFact<Int>
     /// The eavesdropper's state for this seat.
-    let eavesdropper: SeatFact<SeatListenerState>
+    let listener: SeatFact<SeatListenerState>
     /// The seat's Zulip presence.
     let presence: SeatFact<SeatPresence>
     /// The seat's last Zulip post.
@@ -379,7 +379,7 @@ enum SeatActivityBuilder {
         /// The roster,  in the order the app shows it.
         var roster: [String] = []
         /// The eavesdropper's published state,  when it could be read.
-        var eavesdropper: ListenerStateDocument?
+        var listener: ListenerStateDocument?
         /// Why the eavesdropper's state could not be read.
         var listenerProblem: String?
         /// The bots the realm knows,  by seat tag.
@@ -429,7 +429,7 @@ enum SeatActivityBuilder {
             seat: seat,
             botName: bot?.fullName,
             openSessions: openSessions(for: seat, sources: sources),
-            eavesdropper: listenerState(for: seat, sources: sources),
+            listener: listenerState(for: seat, sources: sources),
             presence: sources.presence[seat] ?? .unknown(SeatActivityBuilder.noPresenceReason),
             lastPost: sources.lastPosts[seat] ?? .unknown(SeatActivityBuilder.noPostReason)
         )
@@ -448,7 +448,7 @@ enum SeatActivityBuilder {
     /// never zero:  zero would claim the seat has nothing running,  which is a claim
     /// about a seat the eavesdropper never said anything about.
     private static func openSessions(for seat: String, sources: Sources) -> SeatFact<Int> {
-        guard let eavesdropper = sources.listener else {
+        guard let listener = sources.listener else {
             return .unknown(sources.listenerProblem ?? "The eavesdropper's state could not be read.")
         }
         guard let entry = listener.seats?[seat] else {
@@ -463,13 +463,13 @@ enum SeatActivityBuilder {
 
     /// The eavesdropper's state for a seat.
     private static func listenerState(for seat: String, sources: Sources) -> SeatFact<SeatListenerState> {
-        guard let eavesdropper = sources.listener else {
+        guard let listener = sources.listener else {
             return .unknown(sources.listenerProblem ?? "The eavesdropper's state could not be read.")
         }
         // The kill switch comes first:  a paused seat is paused whatever else it is.  A
         // wakes-only pause leaves the seat running and connected,  so it does not hide the
         // connection state;  it only changes the label.
-        let pause = pauseKind(for: seat, eavesdropper: eavesdropper)
+        let pause = pauseKind(for: seat, listener: listener)
         if pause == .full {
             return .known(.paused)
         }
@@ -507,7 +507,7 @@ enum SeatActivityBuilder {
     /// This is the eavesdropper's own rule (`live.paused`):  a scope covers the seat when it
     /// names the seat or is `*`,  and an entry without `wakes_only` is a full pause.  A
     /// full pause in either scope wins over a wakes-only one.
-    static func pauseKind(for seat: String, eavesdropper: ListenerStateDocument) -> PauseKind? {
+    static func pauseKind(for seat: String, listener: ListenerStateDocument) -> PauseKind? {
         guard let pause = listener.pause else { return nil }
         var found: PauseKind?
         for scope in [seat, "*"] {

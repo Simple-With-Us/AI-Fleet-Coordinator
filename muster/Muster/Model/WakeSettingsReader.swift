@@ -100,7 +100,7 @@ struct WakeSettingsReader {
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {
-                    problems.append("The eavesdropper's status could not be read,  so nothing is known about the running listener.")
+                    problems.append("The eavesdropper's status could not be read,  so nothing is known about the running eavesdropper.")
                 }
             } else {
                 problems.append("The eavesdropper's status command failed:  \(result.stderrTail)")
