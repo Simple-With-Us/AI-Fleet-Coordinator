@@ -169,8 +169,16 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
     def test_child_environment_drops_present_bootstrap_credentials(self):
         credentials = {
             "INFISICAL_LISTENER_READ_TOKEN": "st.synthetic-secondary-token",
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st.synthetic-other-reader",
+            "INFISICAL_WRITE_TOKEN": "st.synthetic-writer-token",
             "INFISICAL_CLIENT_ID": "legacy-id-sentinel",
             "INFISICAL_CLIENT_SECRET": "legacy-secret-sentinel",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "universal-id-sentinel",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": "universal-secret-sentinel",
+            "INFISICAL_AUTOMATION_CLIENT_ID": "automation-id-sentinel",
+            "INFISICAL_AUTOMATION_CLIENT_SECRET": "automation-secret-sentinel",
+            "INFISICAL_SHARED_CLIENT_ID": "shared-id-sentinel",
+            "INFISICAL_SHARED_CLIENT_SECRET": "shared-secret-sentinel",
         }
         env = dict(self.env(), **credentials, KEEP_CONFIG="retained")
         with patch.object(MODULE, "server_codes", return_value={"TEST"}), patch.object(
@@ -180,8 +188,14 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         self.assertEqual(child["ZULIP_TEST_EMAIL"], "fixture@example.test")
         self.assertEqual(child["KEEP_CONFIG"], "retained")
         self.assertEqual(child["INFISICAL_PROJECT_ID"], PROJECT)
+        self.assertEqual(child["INFISICAL_ENVIRONMENT"], "prod")
         for name in {"INFISICAL_TOKEN", *credentials}:
             self.assertNotIn(name, child)
+
+    def test_standalone_auth_inventory_matches_shared_helper(self):
+        from fleet_secrets import core
+
+        self.assertEqual(MODULE.AUTH_ENV_VARS, core.AUTH_ENV_VARS | {MODULE.LISTENER_READ_TOKEN})
 
 
 if __name__ == "__main__":
