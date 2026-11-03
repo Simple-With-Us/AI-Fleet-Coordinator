@@ -64,6 +64,9 @@ SOURCES = (
     "agent-contribution",
     "linear",
 )
+# Retired 2026-11-03 (Linear is the only issue home).  Still accepted as a search filter so
+# historical golden queries load, but no longer reported by stats.
+RETIRED_SOURCES = ("board", "effort-log")
 CATEGORIES = (
     "lesson",
     "preference",
@@ -426,7 +429,7 @@ def recall_stats() -> dict:
     cfg = get_config(need_write=False)
     q = Qdrant(cfg)
     info = q.info()
-    by_source = {s: q.count(match_filter(source=s)) for s in SOURCES}
+    by_source = {s: q.count(match_filter(source=s)) for s in SOURCES if s not in RETIRED_SOURCES}
     by_app = {}
     for a in KNOWN_APPS:
         n = q.count(match_filter(app=a))

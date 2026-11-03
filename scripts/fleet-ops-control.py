@@ -2,7 +2,9 @@
 """fleet-ops-control:  start, stop, restart and update the fleet's own processes, and nothing else.
 
   python3 scripts/fleet-ops-control.py mac start|stop|restart LABEL       (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py pm2 start|stop|restart NAME        (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server start|stop|restart UNIT     (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server logs UNIT                   (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server update NAME                 (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
@@ -18,7 +20,15 @@ What it promises:
     neither it refuses.
   * Every command is an argv list run without a shell.  Labels and unit names must match a
     strict pattern before they reach an argv, and their output is thrown away: only an exit
-    status is reported.
+    status is reported.  `server logs` is the one deliberate exception: a `--yes` run returns
+    the last 200 journal lines (at most 64 KiB, with a truncation note when cut) in the
+    answer's `output`, while a `--plan` carries no log text at all.  Mac LaunchAgents have
+    no log verb, because launchd has no uniform log file to tail.  `pm2` verbs act on the
+    Mac pm2 applications the allowlist names, with one `pm2 start|stop|restart NAME` argv
+    and no ecosystem fallback.  A `start` first reads `pm2 jlist`:  a stale record (online
+    with no process behind it) is planned as a restart, because pm2 answers a start on one
+    with "already started" and starts nothing, and an application pm2 no longer remembers
+    is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
     resource, so no uuid or host is kept in this repo.  The Coolify token is read through
     `fleet-secrets` into memory, sent in one request header and never printed, logged or
@@ -44,6 +54,7 @@ import datetime
 import json
 import os
 import re
+import selectors
 import shlex
 import stat
 import subprocess
@@ -73,6 +84,11 @@ LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,126}")
 # A systemd unit this tool may name: a plain service or timer, no template or path escapes.
 UNIT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,120}\.(service|timer)")
 UPDATE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+# A pm2 application name: the registry's own lowercase shape, never a flag or a path.
+PM2_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+LOG_MAX_LINES = 200
+LOG_MAX_BYTES = 64 * 1024
+LOG_TRUNCATED_NOTE = "[fleet-ops-control: output truncated to the last 200 lines / 64 KiB]"
 # Coolify resource uuids are short lowercase letters and digits.
 UUID_RE = re.compile(r"[A-Za-z0-9]{6,64}")
 # What may appear in SSH_ORIGINAL_COMMAND at all: no quote, no shell metacharacter.
@@ -84,6 +100,14 @@ REDEPLOYABLE_TYPES = ("application",)
 
 LAUNCHCTL = "/bin/launchctl"
 SYSTEMCTL_CANDIDATES = ("/usr/bin/systemctl", "/bin/systemctl")
+JOURNALCTL_CANDIDATES = ("/usr/bin/journalctl", "/bin/journalctl")
+# pm2 runs the way Muster's own pm2 client runs it: a pinned node and the pm2 script,
+# never a PATH lookup a caller could shadow.
+NODE_CANDIDATES = ("/opt/homebrew/bin/node", "/usr/local/bin/node")
+PM2_CANDIDATES = (
+    "/opt/homebrew/lib/node_modules/pm2/bin/pm2",
+    "/usr/local/lib/node_modules/pm2/bin/pm2",
+)
 FLEET_SECRETS_CANDIDATES = ("~/.local/bin/fleet-secrets", "/usr/local/bin/fleet-secrets")
 COOLIFY_TOKEN_NAME = "COOLIFY_API_TOKEN"
 COOLIFY_TOKEN_PATH = "/coolify"
@@ -101,8 +125,17 @@ CREDENTIALS_MAX_BYTES = 8 * 1024
 COMMAND_TIMEOUT = 90
 SECRET_TIMEOUT = 30
 HTTP_TIMEOUT = 30
-# The only variables a launchctl or systemctl child sees.
-CHILD_ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+# The only variables a launchctl or systemctl child sees.  A pm2 child also needs
+# PM2_HOME, which names a directory and never a credential.
+CHILD_ENV_KEEP = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "PM2_HOME",
+)
 
 
 class Refused(Exception):
@@ -150,6 +183,14 @@ def validate_config(doc):
         if not LABEL_RE.fullmatch(label) or label in agents:
             bad("mac.agents label")
         agents[label] = _actions(row, bad)
+    pm2_apps = {}
+    for row in mac.get("pm2Apps") or []:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+            bad("mac.pm2Apps")
+        name = row["name"]
+        if not PM2_RE.fullmatch(name) or name in pm2_apps:
+            bad("mac.pm2Apps name")
+        pm2_apps[name] = _actions(row, bad)
     units = {}
     for row in server.get("units") or []:
         if not isinstance(row, dict) or not isinstance(row.get("unit"), str):
@@ -177,11 +218,15 @@ def validate_config(doc):
     coolify = server.get("coolify") or {}
     if not isinstance(coolify, dict) or not isinstance(coolify.get("redeploy", False), bool):
         bad("server.coolify")
+    if type(server.get("resourcePolicy", False)) is not bool:
+        bad("server.resourcePolicy")
     return {
         "agents": agents,
+        "pm2": pm2_apps,
         "units": units,
         "updates": updates,
         "redeploy": bool(coolify.get("redeploy", False)),
+        "resourcePolicy": server.get("resourcePolicy", False),
     }
 
 
@@ -195,12 +240,15 @@ def _actions(row, bad):
 # MARK: - Running things
 
 
-def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False):
+def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False, max_bytes=None):
     """(exit status, stdout bytes).  An argv list, never a shell; stderr is dropped.
 
-    A timeout is status 124 and a missing binary 127, like a shell would say."""
+    With `max_bytes` the capture itself is capped, keeping only the last bytes.  A timeout
+    is status 124 and a missing binary 127, like a shell would say."""
     if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
         raise Refused("internal: not an argv list")
+    if want_stdout and max_bytes:
+        return _run_capped(argv, timeout, env, max_bytes)
     try:
         proc = subprocess.run(
             argv,
@@ -218,6 +266,77 @@ def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False):
     except OSError:
         return 127, b""
     return proc.returncode, (proc.stdout or b"") if want_stdout else b""
+
+
+def _run_capped(argv, timeout, env, max_bytes):
+    """Capture stdout without ever holding more than its last `max_bytes` bytes."""
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            cwd="/",
+            shell=False,
+        )
+    except OSError:
+        return 127, b""
+    kept = bytearray()
+    selector = None
+    timed_out = False
+    try:
+        deadline = time.monotonic() + timeout
+        fd = proc.stdout.fileno()
+        selector = selectors.DefaultSelector()
+        selector.register(fd, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            if not selector.select(remaining):
+                timed_out = True
+                break
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            kept += chunk
+            if len(kept) > max_bytes:
+                del kept[: len(kept) - max_bytes]
+        if not timed_out:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        if timed_out:
+            proc.kill()
+            proc.wait()
+            return 124, b""
+        return proc.returncode, bytes(kept)
+    except BaseException:
+        # This child is only the bounded, read-only journal capture.  Keep its
+        # lifetime inside this call even when capture or waiting is interrupted.
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
+        try:
+            proc.wait()
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
+        raise
+    finally:
+        if selector is not None:
+            try:
+                selector.close()
+            except BaseException:  # noqa: BLE001, S110 - Best-effort cleanup must preserve the result.
+                pass
+        try:
+            proc.stdout.close()
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -258,6 +377,8 @@ class Context:
         audit_path=None,
         fleet_secrets=None,
         credentials_path=None,
+        pm2_node=None,
+        pm2_script=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -277,6 +398,8 @@ class Context:
         self.audit_path = audit_path or (
             self.home / ".local" / "state" / "fleet-tools" / "ops-audit.jsonl"
         )
+        self.pm2_node = pm2_node
+        self.pm2_script = pm2_script
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -286,6 +409,12 @@ class Context:
             runtime = f"/run/user/{self.uid}"
             if os.path.isdir(runtime):
                 env["XDG_RUNTIME_DIR"] = runtime
+        return env
+
+    def pm2_env(self):
+        env = self.child_env()
+        env.setdefault("PM2_HOME", str(self.home / ".pm2"))
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         return env
 
 
@@ -347,6 +476,113 @@ def server_unit_commands(ctx, config, action, unit):
     if action not in entry["actions"]:
         raise Refused("that action is not allowed for this unit")
     return [_systemctl_argv(entry["scope"], action, unit)], f"{entry['scope']} unit"
+
+
+def _journalctl():
+    for candidate in JOURNALCTL_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+    return JOURNALCTL_CANDIDATES[0]
+
+
+def server_logs_commands(ctx, config, unit):
+    _server_only(ctx)
+    if not UNIT_RE.fullmatch(unit or ""):
+        raise Refused("the unit is not a valid unit name")
+    entry = config["units"].get(unit)
+    if entry is None:
+        raise Refused("the unit is not in the allowlist")
+    argv = (
+        [_journalctl()]
+        + (["--user"] if entry["scope"] == "user" else [])
+        + ["-u", unit, "-n", str(LOG_MAX_LINES), "--no-pager"]
+    )
+    return [argv], f"last {LOG_MAX_LINES} journal lines, read only"
+
+
+def truncate_logs(raw):
+    """(text, kept journal line count) for a logs `--yes` answer.  At most the last
+    LOG_MAX_LINES lines and at most LOG_MAX_BYTES bytes, with the truncation
+    note first when anything was cut.  The note is not a journal line, so the count
+    is journal lines only, which is how every consumer words it."""
+    truncated = len(raw) > LOG_MAX_BYTES
+    if truncated:
+        raw = raw[-LOG_MAX_BYTES:]
+        # Drop a partial first line the byte cut may have made.
+        cut = raw.find(b"\n")
+        if cut >= 0:
+            raw = raw[cut + 1 :]
+    text = raw.decode("utf-8", "replace")
+    lines = text.splitlines(keepends=True)
+    if len(lines) > LOG_MAX_LINES:
+        truncated = True
+        lines = lines[-LOG_MAX_LINES:]
+    kept = "".join(lines)
+    if truncated:
+        kept = LOG_TRUNCATED_NOTE + "\n" + kept
+    return kept, len(lines)
+
+
+def _pm2_prefix(ctx):
+    node = ctx.pm2_node
+    if node is None:
+        node = next((c for c in NODE_CANDIDATES if os.access(c, os.X_OK)), NODE_CANDIDATES[0])
+    script = ctx.pm2_script
+    if script is None:
+        script = next((c for c in PM2_CANDIDATES if os.access(c, os.X_OK)), PM2_CANDIDATES[0])
+    return [node, script]
+
+
+def _pm2_record(ctx, name):
+    """(status, pid) pm2 has for `name`, "missing" when it has no record, else None.
+
+    None means pm2 could not be asked or its listing could not be read, so nothing is
+    known and the caller plans the plain verb."""
+    status, out = ctx.runner(
+        _pm2_prefix(ctx) + ["jlist"],
+        timeout=15,
+        env=ctx.pm2_env(),
+        want_stdout=True,
+        max_bytes=1024 * 1024,
+    )
+    if status != 0:
+        return None
+    try:
+        listing = json.loads((out or b"").decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(listing, list):
+        return None
+    for row in listing:
+        if not isinstance(row, dict) or row.get("name") != name:
+            continue
+        inner = row.get("pm2_env") if isinstance(row.get("pm2_env"), dict) else {}
+        pid = row.get("pid") if isinstance(row.get("pid"), int) else inner.get("pid")
+        return inner.get("status"), pid if isinstance(pid, int) else 0
+    return "missing"
+
+
+def pm2_commands(ctx, config, action, name):
+    if not ctx.platform.startswith("darwin"):
+        raise Refused("pm2 verbs run only on the Mac")
+    if not PM2_RE.fullmatch(name or ""):
+        raise Refused("the pm2 name is not valid")
+    allowed = config["pm2"].get(name)
+    if allowed is None:
+        raise Refused("the pm2 application is not in the allowlist")
+    if action not in allowed:
+        raise Refused("that action is not allowed for this pm2 application")
+    if action == "start":
+        record = _pm2_record(ctx, name)
+        if record == "missing":
+            raise Refused(
+                "pm2 no longer remembers this application and this tool does not recreate it"
+            )
+        if record is not None:
+            status_word, pid = record
+            if status_word == "online" and pid <= 0:
+                return [_pm2_prefix(ctx) + ["restart", name]], "stale pm2 record, restarting it"
+    return [_pm2_prefix(ctx) + [action, name]], "pm2 application"
 
 
 def server_update_commands(ctx, config, name):
@@ -578,10 +814,18 @@ def plan_request(ctx, config, scope, action, target):
             raise Refused("unknown mac verb")
         commands, note = mac_commands(ctx, config, action, target)
         return commands, note, target
+    if scope == "pm2":
+        if action not in ACTIONS:
+            raise Refused("unknown pm2 verb")
+        commands, note = pm2_commands(ctx, config, action, target)
+        return commands, note, target
     if scope != "server":
         raise Refused("unknown verb")
     if action in ACTIONS:
         commands, note = server_unit_commands(ctx, config, action, target)
+        return commands, note, target
+    if action == "logs":
+        commands, note = server_logs_commands(ctx, config, target)
         return commands, note, target
     if action == "update":
         commands, note = server_update_commands(ctx, config, target)
@@ -614,16 +858,35 @@ def execute(ctx, scope, action, target, commands):
         if not 200 <= status < 300:
             raise Failed(f"Coolify answered HTTP {status}" if status else "Coolify did not answer")
         return f"Coolify accepted the redeploy (HTTP {status})"
+    env = ctx.pm2_env() if scope == "pm2" else ctx.child_env()
     for argv in commands:
-        status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=ctx.child_env())
+        status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=env)
         if status != 0:
-            verb = next((a for a in argv[1:] if not a.startswith("-")), "")
+            verb = next((a for a in argv[1:] if not a.startswith("-") and "/" not in a), action)
             raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}")
     return "done" if commands else "nothing to do"
 
 
-def audit(ctx, scope, action, target, result):
-    """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname."""
+def execute_logs(ctx, commands):
+    """(detail, text, line count) for a logs `--yes`.  The journal text goes to the
+    answer only; the detail and the audit carry the count and nothing else."""
+    argv = commands[0]
+    status, out = ctx.runner(
+        argv,
+        timeout=COMMAND_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=LOG_MAX_BYTES * 4,
+    )
+    if status != 0:
+        raise Failed(f"journalctl exited {status}")
+    text, lines = truncate_logs(out or b"")
+    return f"{lines} journal lines", text, lines
+
+
+def audit(ctx, scope, action, target, result, lines=None):
+    """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
+    A finished logs run adds its line count and nothing of the text."""
     row = {
         "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host": "mac" if ctx.platform.startswith("darwin") else "server",
@@ -631,6 +894,8 @@ def audit(ctx, scope, action, target, result):
         "target": target,
         "result": result,
     }
+    if lines is not None:
+        row["lines"] = lines
     path = ctx.audit_path
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -665,14 +930,30 @@ def handle(ctx, scope, action, target, mode):
         "detail": "",
     }
     audit_target = target
+    log_lines = None
     try:
         if mode not in ("plan", "yes"):
             raise Refused("pass --plan to see the commands or --yes to run them")
         config = load_config(ctx.config_path)
+        if scope == "server" and action in ("resource-status", "resource-policy"):
+            if not config["resourcePolicy"]:
+                raise Refused("coding resource controls are not in the allowlist")
+            # -I omits the script directory. Only this reviewed sibling directory is
+            # added; neither the request nor the environment selects an import path.
+            scripts = str(Path(__file__).resolve().parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            from fleet_resource_control import handle as handle_resource
+
+            return handle_resource(ctx, action, target, mode)
         commands, note, audit_target = plan_request(ctx, config, scope, action, target)
         answer["commands"] = commands
         if mode == "plan":
             answer.update(ok=True, result="planned", detail=note)
+            code = 0
+        elif scope == "server" and action == "logs":
+            detail, text, log_lines = execute_logs(ctx, commands)
+            answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
             code = 0
         else:
             answer.update(
@@ -688,7 +969,14 @@ def handle(ctx, scope, action, target, mode):
     if mode == "yes":
         if scope == "server" and action == "redeploy" and audit_target == target:
             audit_target = "coolify resource"  # refused before the name was known: no uuid
-        audit(ctx, scope, action, (audit_target or "")[:120], answer["result"])
+        audit(
+            ctx,
+            scope,
+            action,
+            (audit_target or "")[:120],
+            answer["result"],
+            lines=log_lines if answer["result"] == "done" else None,
+        )
     return answer, code
 
 
@@ -699,13 +987,13 @@ class _QuietParser(argparse.ArgumentParser):
     """Refuses instead of printing argparse's own usage text and exiting."""
 
     def error(self, message):
-        raise Refused("usage: (mac|server) ACTION TARGET (--plan|--yes) [--json]")
+        raise Refused("usage: (mac|pm2|server) ACTION TARGET (--plan|--yes) [--json]")
 
 
 def parse_request(argv):
     """(scope, action, target, mode, json) from a verb argv, or Refused.  Exactly one target."""
     parser = _QuietParser(prog=TOOL, add_help=False)
-    parser.add_argument("scope", choices=("mac", "server"))
+    parser.add_argument("scope", choices=("mac", "pm2", "server"))
     parser.add_argument("action")
     parser.add_argument("target")
     group = parser.add_mutually_exclusive_group()
@@ -731,7 +1019,13 @@ def parse_ssh_command(text):
     plain = [w for w in words if not w.startswith("-")]
     if len(plain) != 3 or plain[0] != "server":
         raise Refused("only a server verb with one target is accepted over ssh")
-    if plain[1] not in ACTIONS + ("update", "redeploy"):
+    if plain[1] not in ACTIONS + (
+        "update",
+        "redeploy",
+        "logs",
+        "resource-status",
+        "resource-policy",
+    ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
         raise Refused("the verb and target come first")
@@ -742,6 +1036,36 @@ def parse_ssh_command(text):
     return words
 
 
+def sanitize_for_terminal(text):
+    """Journal text with escape and control sequences removed, for a terminal.
+
+    Newlines and tabs stay.  The JSON answer keeps the text as the journal held it."""
+    kept = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\x1b":
+            index += 1
+            if index < len(text) and text[index] == "[":
+                index += 1
+                while index < len(text) and not "@" <= text[index] <= "~":
+                    index += 1
+                index += 1
+            elif index < len(text) and text[index] == "]":
+                index += 1
+                while index < len(text) and text[index] not in ("\x07", "\x1b"):
+                    index += 1
+                if index < len(text) and text[index] == "\x07":
+                    index += 1
+            elif index < len(text):
+                index += 1
+            continue
+        if char in ("\n", "\t") or not (ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F):
+            kept.append(char)
+        index += 1
+    return "".join(kept)
+
+
 def emit(answer, as_json, out):
     if as_json:
         out.write(json.dumps(answer, sort_keys=True) + "\n")
@@ -750,6 +1074,8 @@ def emit(answer, as_json, out):
     out.write(f" ({answer['detail']})\n" if answer["detail"] else "\n")
     for argv in answer["commands"]:
         out.write("  " + " ".join(shlex.quote(a) for a in argv) + "\n")
+    if answer.get("output"):
+        out.write(sanitize_for_terminal(answer["output"]))
 
 
 def main(argv=None, ctx=None, out=None):

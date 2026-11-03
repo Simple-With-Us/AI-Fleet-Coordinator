@@ -1,7 +1,7 @@
 """Ingest orchestrator for the fleet-agents corpus.
 
     python3 -m fleet_rag.ingest --all [--dry-run] [--limit N] [--prune]
-    python3 -m fleet_rag.ingest --source board,doc [--since 2026-08-01 | --since 7d]
+    python3 -m fleet_rag.ingest --source linear,doc [--since 2026-08-01 | --since 7d]
     python3 -m fleet_rag.ingest --fix-seeds
 
 Pipeline per document (see docs/RAG-FLEET-INFRA.md, payload schema v2):

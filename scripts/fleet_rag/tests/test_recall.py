@@ -176,9 +176,13 @@ class StatsTests(RecallBase):
         self.assertEqual(res["points"], 3)
         self.assertTrue(res["embedder_healthy"])
         self.assertIsNone(res["rerank_healthy"])       # fake config has no TEI_RERANK_* keys
-        self.assertEqual(list(res["by_source"]), list(recall_api.SOURCES))
+        self.assertEqual(
+            list(res["by_source"]),
+            [s for s in recall_api.SOURCES if s not in recall_api.RETIRED_SOURCES],
+        )
         self.assertEqual(res["by_source"]["doc"], 3)
-        self.assertEqual(res["by_source"]["board"], 0)
+        self.assertNotIn("board", res["by_source"])
+        self.assertNotIn("effort-log", res["by_source"])
         self.assertEqual(res["by_app"], {"fleet": 3, "other": 0})
 
     def test_by_app_other_bucket_reconciles(self):

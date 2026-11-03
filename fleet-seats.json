@@ -1744,6 +1744,200 @@
       "platforms": [],
       "rules": []
     },
+    "KIMI": {
+      "notApplicable": [
+        {
+          "kind": "subagents",
+          "platforms": [
+            "kimi"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the kimi harness."
+        }
+      ],
+      "platforms": [
+        "kimi"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.kimi-code/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.kimi-code/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "8ff9548c9298d9007d8efa36ed7a60236b633bfba515cec7dbacaa0128077284"
+          },
+          "id": "kimi-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.kimi-code/config.toml",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.kimi-code/config.toml",
+            "names": [
+              "fleet-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "kimi-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.kimi-code/mcp.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.kimi-code/mcp.json",
+            "names": [
+              "fleet-recall",
+              "simple-chat"
+            ],
+            "present": true
+          },
+          "id": "kimi-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.kimi-code/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.kimi-code/skills",
+            "names": [
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-mode",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "secret-safety",
+              "sentence-gap",
+              "session-start",
+              "simple-tools-guide",
+              "token-thrift",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "kimi-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the KIMI Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "KIMI_ZULIP_EMAIL",
+              "KIMI_ZULIP_KEY",
+              "KIMI_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "kimi-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_KIMI",
+            "target": "~/.secrets/Zulip/Kimi-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "kimi-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
     "MA": {
       "notApplicable": [
         {
@@ -2466,6 +2660,200 @@
       ],
       "platforms": [],
       "rules": []
+    },
+    "ZCODE": {
+      "notApplicable": [
+        {
+          "kind": "subagents",
+          "platforms": [
+            "zcode"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the zcode harness."
+        }
+      ],
+      "platforms": [
+        "zcode"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.zcode/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.zcode/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "196f3553868c170edf7a1790d2764b978cabf0385eed9981a9caad7fa7451adc"
+          },
+          "id": "zcode-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "ZCODE",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.zcode/cli/config.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.zcode/cli/config.json",
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "zcode-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "ZCODE",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.zcode/cli/config.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.zcode/cli/config.json",
+            "names": [
+              "fleet-recall",
+              "simple-chat"
+            ],
+            "present": true
+          },
+          "id": "zcode-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "ZCODE",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.zcode/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.zcode/skills",
+            "names": [
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-mode",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "secret-safety",
+              "sentence-gap",
+              "session-start",
+              "simple-tools-guide",
+              "token-thrift",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "zcode-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "ZCODE",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the ZCODE Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "ZCODE_ZULIP_EMAIL",
+              "ZCODE_ZULIP_KEY",
+              "ZCODE_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "zcode-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "ZCODE",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_ZCODE",
+            "target": "~/.secrets/Zulip/Zcode-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "zcode-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "ZCODE",
+          "platforms": [
+            "zcode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
     }
   }
 }

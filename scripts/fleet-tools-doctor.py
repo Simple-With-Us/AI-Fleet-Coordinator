@@ -6,7 +6,7 @@ One OK / WARN / FAIL line per check, for the Mac and the Hetzner server alike
 commits, versions and booleans only:  never a credential value.
 
   python3 scripts/fleet-tools-doctor.py [--seats CLAUDE,CODEX] [--json] [--no-network]
-                                        [--remote ALIAS] [--write PATH|-] [--post]
+                                        [--remote ALIAS] [--vms] [--write PATH|-] [--post]
 
 Every row also carries a `state` (AFC-461), the answer Muster shows:
   current   observed equal to the expected revision or version in this run
@@ -30,6 +30,13 @@ On the server, `--json` also carries `serverStatus`:  the collector's
 fleet-server-status of at most 512 KiB.  On the Mac, `--remote` with `--write PATH` writes a
 valid `serverStatus` to ~/.local/state/fleet-tools/server-status.json (0600, atomically) and
 leaves it out of the combined report.
+
+`--vms` pulls each VM named in ~/.config/fleet-tools/vm-hosts.json over its read-only
+forced-command key (the key prints `fleet-vm-status.py --json`) into
+~/.local/state/fleet-tools/vms/<label>.json, 0600 and atomically.  A missing config is a
+no-op.  An answer that is oversize, not JSON, or not a fleet-vm-status report at the schema
+version this doctor reads is refused and the previous file stays.  A failed VM never fails
+the run.  docs/protocols/fleet-vm-status.md has the config shape and the owner steps.
 
 Checks:
   runtime     the installed fleet-cli release (simple-chat, simple-notes, simple-board, recall, lane,
@@ -220,6 +227,20 @@ MAX_REMOTE_BYTES = 2 * 1024 * 1024
 SERVER_STATUS_RELATIVE = ".local/state/fleet-tools/server-status.json"  # under HOME, both hosts
 SERVER_STATUS_TOOL = "fleet-server-status"
 MAX_SERVER_STATUS_BYTES = 512 * 1024
+# The optional VM pull (AFC-597):  each configured VM answers a forced-command key with
+# `fleet-vm-status.py --json`, and the report lands beside the server's, one file per label.
+VM_HOSTS_RELATIVE = ".config/fleet-tools/vm-hosts.json"  # under HOME
+VMS_RELATIVE = ".local/state/fleet-tools/vms"  # under HOME;  one <label>.json per VM
+VM_STATUS_TOOL = "fleet-vm-status"
+VM_STATUS_SCHEMA_VERSION = 1
+MAX_VM_STATUS_BYTES = 512 * 1024
+VM_TIMEOUT = 60  # the collector walks /proc and the checkouts, and prints one document
+VM_LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+VM_USER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# The destination is an alias or host only:  no "@", so it cannot smuggle a login
+# name past the separate user check and make the ssh target ambiguous.
+VM_HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+VM_PULL_WORKERS = 8  # hung VMs wait in parallel:  the pull costs one timeout, not N
 PROBE_TIMEOUT = 5  # each `<tool> --version`
 LATEST_TIMEOUT = 20  # each npm view / brew info
 GITHUB_TIMEOUT = 8
@@ -3081,6 +3102,147 @@ def keep_server_status(server: dict | None, path: Path | None = None) -> bool:
     return True
 
 
+def vm_status_valid(status) -> bool:
+    """A VM status the Mac may keep:  a JSON object from fleet-vm-status at the schema
+    version this doctor reads, within the depth and node bounds.  Anything else is
+    refused, never written:  the previous report stays and its age speaks."""
+    if not isinstance(status, dict):
+        return False
+    if (
+        status.get("tool") != VM_STATUS_TOOL
+        or status.get("schemaVersion") != VM_STATUS_SCHEMA_VERSION
+    ):
+        return False
+    # Muster can only ever show a report whose generatedAt it can read (a timeless
+    # one reads unknown forever), so keeping such an answer would overwrite the
+    # last good file with one that can never be current.
+    if parse_utc(status.get("generatedAt")) is None:
+        return False
+    return json_within_limits(status, max_nodes=MAX_REMOTE_NODES // 2)
+
+
+def fetch_vm_status(
+    target: str, runner: Callable = subprocess.run
+) -> tuple[dict | None, str | None]:
+    """One VM's report over its read-only key:  the forced command prints the collector's
+    document whatever is asked, so nothing is sent.  (document, None) or (None, reason)."""
+    try:
+        out = runner(
+            ["ssh", *SSH_OPTIONS, target],
+            capture_output=True,
+            timeout=VM_TIMEOUT,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"ssh {target} did not answer within {VM_TIMEOUT} seconds"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"ssh {target} could not run ({type(exc).__name__})"
+    stdout = out.stdout or b""
+    if isinstance(stdout, str):
+        stdout = stdout.encode()
+    if out.returncode != 0:
+        return None, f"ssh {target} exited {out.returncode}"
+    if len(stdout) > MAX_VM_STATUS_BYTES:
+        return None, f"the answer is larger than {MAX_VM_STATUS_BYTES} bytes"
+    try:
+        doc = json.loads(stdout.decode("utf-8", "replace"))
+    except (RecursionError, ValueError):
+        return None, "the answer is not JSON"
+    if not vm_status_valid(doc):
+        return None, "the answer is not a fleet-vm-status report this doctor reads"
+    return doc, None
+
+
+def pull_vms(
+    config_path: Path | None = None,
+    state_dir: Path | None = None,
+    runner: Callable = subprocess.run,
+) -> list[dict]:
+    """Pull every configured VM's report to ~/.local/state/fleet-tools/vms/<label>.json.
+
+    The config at ~/.config/fleet-tools/vm-hosts.json is `{"vms": [{"label", "destination",
+    "user"?}]}`.  A missing config is the feature off:  no ssh runs and nothing is written.
+    The label becomes a filename, so it is validated strictly before anything else.  A
+    failed VM keeps its previous report and never fails the doctor or the other VMs."""
+    config_path = config_path or (HOME / VM_HOSTS_RELATIVE)
+    state_dir = state_dir or (HOME / VMS_RELATIVE)
+    if not config_path.exists():
+        return []
+    try:
+        config = json.loads(config_path.read_text())
+        entries = config["vms"] if isinstance(config, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError("no vms list")
+    except (OSError, ValueError, KeyError) as exc:
+        return [
+            {
+                "label": None,
+                "ok": False,
+                "error": f"{config_path} is not a readable vm-hosts config ({type(exc).__name__})",
+            }
+        ]
+    results: list[dict | None] = [None] * len(entries)
+    jobs: list[tuple[int, str, str]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        label = entry.get("label") if isinstance(entry, dict) else None
+        destination = entry.get("destination") if isinstance(entry, dict) else None
+        user = entry.get("user") if isinstance(entry, dict) else None
+        if not isinstance(label, str) or not VM_LABEL_RE.fullmatch(label):
+            results[index] = {
+                "label": label,
+                "ok": False,
+                "error": "the label is not a plain filename-safe name",
+            }
+            continue
+        if label in seen:
+            results[index] = {
+                "label": label,
+                "ok": False,
+                "error": "the label is already configured; the first entry wins",
+            }
+            continue
+        seen.add(label)
+        if not isinstance(destination, str) or not VM_HOST_RE.fullmatch(destination):
+            results[index] = {
+                "label": label,
+                "ok": False,
+                "error": "the destination is not a plain ssh alias or host",
+            }
+            continue
+        if user is not None and (not isinstance(user, str) or not VM_USER_RE.fullmatch(user)):
+            results[index] = {
+                "label": label,
+                "ok": False,
+                "error": "the user is not a plain login name",
+            }
+            continue
+        jobs.append((index, label, f"{user}@{destination}" if user else destination))
+    if jobs:
+        # Fetch in parallel:  the pull runs before the combined report is written, so a
+        # serial 60 second timeout per hung VM would delay that report by N timeouts.
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(VM_PULL_WORKERS, len(jobs))
+        ) as pool:
+            fetched = list(pool.map(lambda job: fetch_vm_status(job[2], runner), jobs))
+        for (index, label, _target), (doc, error) in zip(jobs, fetched):
+            if doc is None:
+                results[index] = {"label": label, "ok": False, "error": error}
+                continue
+            try:
+                write_report(state_dir / f"{label}.json", doc)
+            except (OSError, ValueError) as exc:
+                results[index] = {
+                    "label": label,
+                    "ok": False,
+                    "error": f"the report could not be written ({type(exc).__name__})",
+                }
+                continue
+            results[index] = {"label": label, "ok": True, "error": None}
+    return [result for result in results if result is not None]
+
+
 def combined_report(docs: list) -> dict:
     apply_skew(docs)
     return {
@@ -3220,6 +3382,11 @@ def run(
         help="also read the server's doctor over this read-only ssh alias (fleet-tools-ro;  docs/protocols/fleet-tool-parity.md)",
     )
     parser.add_argument(
+        "--vms",
+        action="store_true",
+        help="also pull each VM in ~/.config/fleet-tools/vm-hosts.json over its read-only forced-command key into ~/.local/state/fleet-tools/vms/<label>.json (0600, atomically; a missing config is a no-op, and a failed VM never fails the run)",
+    )
+    parser.add_argument(
         "--write",
         metavar="PATH",
         help="write the combined report (this host plus the server) to PATH, 0600 and atomically;  '-' prints it instead",
@@ -3286,6 +3453,7 @@ def run(
             server.pop("serverStatus", None)
     elif host == "mac" and args.write:
         server = unreachable_server(f"{NO_ROUTE} (no --remote given)")
+    vms = pull_vms(runner=runner) if args.vms else []
     combined = None
     if args.write:
         docs = json.loads(
@@ -3311,6 +3479,13 @@ def run(
                 else f"unreachable:  {server.get('error')}"
             )
         print(f"fleet-tools-doctor:  wrote {report_path}:  {host} {state_counts(doc)}{far}")
+        for vm in vms:
+            line = (
+                f"vm {vm['label']}:  pulled"
+                if vm["ok"]
+                else f"vm {vm['label']}:  not pulled ({vm['error']})"
+            )
+            print(f"fleet-tools-doctor:  {line}")
     else:
         for row in report.rows:
             print(f"{row['status']:<4}  {row['check']:<28} {row['detail']}")
@@ -3323,6 +3498,10 @@ def run(
                     )
             else:
                 print(f"-- server unreachable:  {server.get('error')}")
+        for vm in vms:
+            print(
+                f"-- vm {vm['label']}:  {'pulled' if vm['ok'] else 'not pulled (' + str(vm['error']) + ')'}"
+            )
     return report, 1 if report.failed else 0
 
 

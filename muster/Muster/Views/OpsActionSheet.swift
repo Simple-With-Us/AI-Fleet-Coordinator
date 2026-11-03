@@ -90,7 +90,9 @@ struct OpsActionSheet: View {
         case .finished(_, let outcome):
             VStack(alignment: .leading, spacing: 8) {
                 resultLine(outcome)
-                if !outcome.commands.isEmpty {
+                if let logText = outcome.logText {
+                    logBlock(logText, lines: outcome.logLines)
+                } else if !outcome.commands.isEmpty {
                     planBlock(outcome, heading: outcome.kind == .planned ? "The plan" : "What ran")
                 }
             }
@@ -137,6 +139,23 @@ struct OpsActionSheet: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// A logs run's journal text:  scrollable and selectable,  so the owner can copy it.
+    private func logBlock(_ text: String, lines: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(lines.map { "The last \($0) journal lines" } ?? "The last journal lines")
+                .font(.headline)
+            ScrollView {
+                Text(text.isEmpty ? "The journal held no lines for this unit." : text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 320)
+            .padding(10)
+            .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 

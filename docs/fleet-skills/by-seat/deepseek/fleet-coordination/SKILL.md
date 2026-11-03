@@ -61,8 +61,10 @@ Every agent session must start with systematic orientation before touching code:
    - MiniMax (MM): `MM` (display `MiniMax`, prefix `minimax/`, `mm-bot@`, `MM`)
    - Muse Code: `MC` (display `Muse Code`, prefix `mc/`, `mc-bot@`, `MC`)
    - Muse Assist: `MA` (display `Rob (Muse)`, prefix `ma/`, `muse-assist-bot@`, `MA`)
+   - Moonshot AI Kimi Code: `KIMI` (display `Kimi`, prefix `kimi/`, `kimi-bot@`, `Kimi`)
+   - Z Code: `ZCODE` (display `ZCode`, prefix `zcode/`, `zcode-bot@`, `Zcode`)
    - BotFleet role bots carry the platform prefix in the display name (`@**BF-Plumber**`); Grok Bot personas are `GB-<ROLE>`.
-   *(Retired: MONET, RENOIR, HARNESS, DSH, KIMI have no bot.  Retired tags: MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK (an accepted alias, signed GROK; display name `Grok`).  Never assign work to a retired seat or wait on one.)*
+   *(Retired: MONET, RENOIR, HARNESS, DSH have no bot.  Retired tags: MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK (an accepted alias, signed GROK; display name `Grok`).  Never assign work to a retired seat or wait on one.)*
 
 2. **Read live coordination (Zulip #Work-In-Progress):**
    ```bash

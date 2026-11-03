@@ -5,7 +5,9 @@ description: Land a Kimi feature branch to main across the fleet — seat worktr
 
 # Land a feature branch (KIMI)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
