@@ -518,6 +518,157 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class MutablePrClient:
+    """Mutable upstream double: external actors can rename, reopen or move the head."""
+
+    def __init__(self):
+        self.state = {
+            "number": 7,
+            "state": "open",
+            "title": "old",
+            "body": "b",
+            "head": {"sha": SHA, "repo": {"full_name": REPO}},
+            "base": {"ref": "main"},
+        }
+        self.calls = []
+        self.fail_patch = False
+
+    def _call(self, method, path, payload=None, bearer=None):
+        import json as _json
+
+        self.calls.append((method, path))
+        if method == "GET" and path == f"/repos/{REPO}/pulls/7":
+            return _json.loads(_json.dumps(self.state))
+        if method == "PATCH" and path == f"/repos/{REPO}/pulls/7":
+            if self.fail_patch:
+                raise RelayGitHubError(502, "unknown")
+            self.state.update(payload or {})
+            return _json.loads(_json.dumps(self.state))
+        raise AssertionError(path)
+
+
+class ReapplyMutableUpstreamTests(unittest.TestCase):
+    """Known-success setters re-dispatch on resubmission; held writes never do."""
+
+    def _relay(self, client, directory):
+        import json as _json
+        from pathlib import Path
+
+        from git_relay.audit import AuditLog
+        from git_relay.server import Relay
+
+        config = _json.dumps(
+            {
+                "swu-wise": {
+                    "token": "s" * 32,
+                    "app_slug": "swu-wise",
+                    "mint_permissions": {"pull_requests": "write", "metadata": "read"},
+                    "actions": ["wf_pr_edit", "wf_pr_close"],
+                    "repos": [REPO],
+                }
+            }
+        )
+
+        class Minter:
+            def token_for(self, *args):
+                return "synthetic-own-token", 0
+
+        return Relay(
+            SeatPolicy(config),
+            client,
+            AuditLog(str(Path(directory) / "audit.jsonl")),
+            app_minter=Minter(),
+            workflow_verbs_enabled=True,
+        )
+
+    def test_edit_reapply_reasserts_after_external_rename(self):
+        import tempfile
+
+        client = MutablePrClient()
+        args = {
+            "repo": REPO,
+            "number": 7,
+            "title": "new",
+            "expected_head_sha": SHA,
+            "expected_base_ref": "main",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            relay = self._relay(client, d)
+            status, _ = relay.handle("s" * 32, "wf_pr_edit", args)
+            self.assertEqual(status, 200)
+            client.state["title"] = "foreign"
+            status, _ = relay.handle("s" * 32, "wf_pr_edit", args)
+            self.assertEqual(status, 200)
+        self.assertEqual(
+            [c for c in client.calls if c[0] == "PATCH"], [("PATCH", f"/repos/{REPO}/pulls/7")] * 2
+        )
+        # Setter behavior: the external title is overwritten by the re-asserted state.
+        self.assertEqual(client.state["title"], "new")
+
+    def test_close_reapply_reasserts_after_external_reopen(self):
+        import tempfile
+
+        client = MutablePrClient()
+        args = {
+            "repo": REPO,
+            "number": 7,
+            "expected_head_sha": SHA,
+            "expected_base_ref": "main",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            relay = self._relay(client, d)
+            status, _ = relay.handle("s" * 32, "wf_pr_close", args)
+            self.assertEqual(status, 200)
+            self.assertEqual(client.state["state"], "closed")
+            client.state["state"] = "open"  # external reopen at the same sha/base
+            status, _ = relay.handle("s" * 32, "wf_pr_close", args)
+            self.assertEqual(status, 200)
+        self.assertEqual(len([c for c in client.calls if c[0] == "PATCH"]), 2)
+        self.assertEqual(client.state["state"], "closed")
+
+    def test_head_move_refused_with_pre_read_get_only(self):
+        import tempfile
+
+        client = MutablePrClient()
+        args = {
+            "repo": REPO,
+            "number": 7,
+            "title": "new",
+            "expected_head_sha": SHA,
+            "expected_base_ref": "main",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            relay = self._relay(client, d)
+            status, _ = relay.handle("s" * 32, "wf_pr_edit", args)
+            self.assertEqual(status, 200)
+            client.state["head"]["sha"] = "c" * 40
+            before = list(client.calls)
+            status, _ = relay.handle("s" * 32, "wf_pr_edit", args)
+            self.assertEqual(status, 400)
+        self.assertEqual(client.calls[len(before) :], [("GET", f"/repos/{REPO}/pulls/7")])
+        self.assertEqual(client.state["title"], "new")  # no write attempted
+
+    def test_uncertain_patch_retry_held_with_zero_network(self):
+        import tempfile
+
+        client = MutablePrClient()
+        client.fail_patch = True
+        args = {
+            "repo": REPO,
+            "number": 7,
+            "expected_head_sha": SHA,
+            "expected_base_ref": "main",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            relay = self._relay(client, d)
+            status, _ = relay.handle("s" * 32, "wf_pr_close", args)
+            self.assertEqual(status, 502)
+            before = list(client.calls)
+            status, _ = relay.handle("s" * 32, "wf_pr_close", args)
+            self.assertEqual(status, 409)
+        self.assertEqual(client.calls, before)  # zero upstream calls on the held retry
+
+
 class PrRaceFixtureTests(unittest.TestCase):
     """Reviewer-reproduced races: the receipt must catch a foreign move that
     lands BETWEEN the pre-read pin and the write, or the pin is decorative."""
