@@ -66,6 +66,7 @@ from . import operator_registration_ask as ORASK
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
+from . import thread_registry as TR
 from . import session_ids as SI
 from . import subscribe_all as SUB
 from . import typing_signal as TYPING
@@ -1740,7 +1741,40 @@ class Daemon:
         runner.gaps = []
         runner.flush_cursor(force=True)
 
+    def _thread_registry_store(self) -> TR.ThreadRegistryStore:
+        store = getattr(self, "_thread_store", None)
+        if store is None:
+            store = TR.ThreadRegistryStore(TR.thread_store_path(self.root, self.env))
+            self._thread_store = store
+        return store
+
+    def _observe_thread(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Fold one routed message into the Operator's thread registry
+        (thread_registry.py).  Observation is best-effort by design:  a registry failure
+        is logged and never touches routing, and the store deduplicates by message id,
+        so the same message arriving for several seats, or again through backfill,
+        counts once."""
+        if not isinstance(message, Mapping) or message.get("type") != "stream":
+            return
+        try:
+            enriched = dict(message)
+            sender_id = message.get("sender_id")
+            if isinstance(sender_id, int):
+                person = runner.users.get(sender_id)
+                if isinstance(person, dict) and isinstance(person.get("is_bot"), bool):
+                    enriched["sender_is_bot"] = person["is_bot"]
+            stream_id = message.get("stream_id")
+            stream_name = runner.streams.get(stream_id) if isinstance(stream_id, int) else None
+            self._thread_registry_store().observe(enriched, stream_name=stream_name)
+        except Exception as exc:  # the registry must never break routing
+            self.log.write(
+                "thread-registry-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def route_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        self._observe_thread(runner, message)
         self._route_message(runner, message, advance_cursor=True)
 
     def _route_message(
