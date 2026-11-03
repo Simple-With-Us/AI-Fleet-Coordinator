@@ -11,7 +11,7 @@ description: >-
 > **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-Every host has the same tool set: `simple-notes` (CLI) and the `notes_*` MCP tools, verb for verb: `create`, `update`, `pin`, `unpin`, `read`, `list`, `status`, `log` (AFC-486, `docs/protocols/operator-notes.md`).  On the Mac they run the helper below directly; on the server and from cloud seats they go through the Operator's notes queue to a runner on the Mac and wait for its answer.  No Notes request goes through Zulip.
+Every host has the same tool set: `simple-notes` (CLI) and the `notes_*` MCP tools, verb for verb: `create`, `update`, `pin`, `unpin`, `read`, `list`, `status`, `log` (AFC-486, `docs/protocols/operator-notes.md`).  On the Mac they run the helper directly, after confirming your own bot's fleet bearer; on the server and from cloud seats they go through the Operator's notes queue to a runner on the Mac and wait for its answer.  No Notes request goes through Zulip.
 
 ```bash
 simple-notes create "[AFC, Claude] Topic" --body-file body.md
@@ -39,18 +39,11 @@ Write the reference the way you would say it and the helper links it (owner 2026
 - The helper says what it linked on stderr (`notes: linkified:  2 project references and 1 pull request reference became links`) and logs the counts under `reformatted.links`.
 - `NOTES_LINKIFY=0` turns the step off for one run.
 
-## Helper (the Mac)
+## On the Mac
 
-```bash
-/Users/jay/apps/apple-notes-coding.sh "Title" "plain body"
-/Users/jay/apps/apple-notes-coding.sh "Title" --html /path/to/body.html
-/Users/jay/apps/apple-notes-coding.sh --update "Title" "body"
-/Users/jay/apps/apple-notes-coding.sh --update "Title" --html /path/to/body.html
-/Users/jay/apps/apple-notes-coding.sh --pin-only "Exact Title"
-/Users/jay/apps/apple-notes-coding.sh --unpin-only "Exact Title"
-```
+On the Mac the same tools run the helper (`apple-notes-coding.sh`) directly, after confirming the calling bot's own fleet bearer.  Never invoke the helper yourself:  every Notes action goes through `simple-notes` or the `notes_*` tools on every host, so the caller is authenticated the same way everywhere.  A raw helper run is off-guidance and shows in the action log as caller `script`.
 
-Also: `--notify` / `--pushover`, `--needs-owner` / `--action-required`, `--summary "one sentence"`, `--pr "18"`.
+The flags map one to one:  `--notify` / `--pushover`, `--needs-owner` / `--action-required`, `--summary "one sentence"`, `--pr "18"`.
 
 Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do not `APPLE_NOTES_ACTIVATE=1` unless the owner is sitting at the Mac.
 
