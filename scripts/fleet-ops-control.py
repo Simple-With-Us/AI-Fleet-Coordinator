@@ -283,12 +283,13 @@ def _run_capped(argv, timeout, env, max_bytes):
     except OSError:
         return 127, b""
     kept = bytearray()
-    deadline = time.monotonic() + timeout
-    fd = proc.stdout.fileno()
-    selector = selectors.DefaultSelector()
-    selector.register(fd, selectors.EVENT_READ)
+    selector = None
     timed_out = False
     try:
+        deadline = time.monotonic() + timeout
+        fd = proc.stdout.fileno()
+        selector = selectors.DefaultSelector()
+        selector.register(fd, selectors.EVENT_READ)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -303,20 +304,39 @@ def _run_capped(argv, timeout, env, max_bytes):
             kept += chunk
             if len(kept) > max_bytes:
                 del kept[: len(kept) - max_bytes]
+        if not timed_out:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        if timed_out:
+            proc.kill()
+            proc.wait()
+            return 124, b""
+        return proc.returncode, bytes(kept)
+    except BaseException:
+        # This child is only the bounded, read-only journal capture.  Keep its
+        # lifetime inside this call even when capture or waiting is interrupted.
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
+        try:
+            proc.wait()
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
+        raise
     finally:
-        selector.close()
-        proc.stdout.close()
-    if timed_out:
-        proc.kill()
-        proc.wait()
-        return 124, b""
-    try:
-        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        return 124, b""
-    return proc.returncode, bytes(kept)
+        if selector is not None:
+            try:
+                selector.close()
+            except BaseException:  # noqa: BLE001, S110 - Best-effort cleanup must preserve the result.
+                pass
+        try:
+            proc.stdout.close()
+        except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
+            pass
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

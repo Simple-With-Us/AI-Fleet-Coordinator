@@ -1,6 +1,13 @@
 import Foundation
 import Combine
 
+enum FleetServiceActionRouting {
+    static func usesFleetAdmin(serviceID: String, label: String, allowlist: OpsAllowlist?) -> Bool {
+        if serviceID == FleetServiceRegistry.server.id { return true }
+        return allowlist?.verbs(forMacAgent: label).isEmpty != false
+    }
+}
+
 // Starting,  stopping,  restarting and updating the fleet's processes,  and writing a knob.
 //
 // Muster holds no credential and touches no process itself.  It runs two helpers and reads
