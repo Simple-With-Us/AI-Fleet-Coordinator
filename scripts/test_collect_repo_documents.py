@@ -137,7 +137,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(manifest["files"]["documents/docs/guide.md"]["source_commit"], published)
         version_key = collector._manifest_version_key(manifest)
         self.assertTrue((mirror / "reports" / version_key / "README.md").is_file())
-        self.assertEqual(manifest["collection_policy_id"], "human-docs-v2")
+        self.assertEqual(manifest["collection_policy_id"], "human-docs-v3")
         self.assertTrue((mirror / "catalog.json").is_file())
         self.assertIn(
             {"source_path": "docs/reports/receipt.md", "target_path": "docs/reports/missing.jsonl"},
@@ -229,6 +229,14 @@ class CollectorTests(unittest.TestCase):
         repo.write("DEPLOY.md", "Deployment notes.\n")
         repo.write("handbook/operations.md", "Operations handbook.\n")
         repo.write("clients/ios/README.md", "Client documentation.\n")
+        repo.write("docs/guides/brief.docx", b"office document bytes")
+        repo.write("docs/guides/workbook.xlsx", b"spreadsheet bytes")
+        repo.write("docs/guides/analysis.ipynb", b"notebook bytes")
+        repo.write("workbook.xlsx", b"unscoped spreadsheet bytes")
+        repo.write("scratch.md", "Scratch.")
+        repo.write("tmp-notes.md", "Temporary notes.")
+        repo.write("docs/scratch/draft.md", "Draft.")
+        repo.write("docs/archive/old.md", "Archived draft.")
         repo.write(
             "docs/guides/setup.adoc",
             "Guide; see image:images/topology.svg[] and link:evidence/results.csv[].\n",
@@ -273,6 +281,9 @@ class CollectorTests(unittest.TestCase):
             "DEPLOY.md",
             "handbook/operations.md",
             "clients/ios/README.md",
+            "docs/guides/brief.docx",
+            "docs/guides/workbook.xlsx",
+            "docs/guides/analysis.ipynb",
             "docs/guides/setup.adoc",
             "docs/guides/index.html",
             "docs/guides/images/topology.svg",
@@ -292,6 +303,12 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(rows["build/docs/generated.md"]["role"], "generated-output")
         self.assertEqual(rows["tests/fixtures/example.md"]["role"], "test-fixture")
         self.assertEqual(rows["infra/main.tf"]["role"], "deployment-config")
+        self.assertEqual(rows["workbook.xlsx"]["role"], "ambiguous-document-data")
+        for path in ("scratch.md", "tmp-notes.md", "docs/scratch/draft.md", "docs/archive/old.md"):
+            self.assertEqual(rows[path]["role"], "scratch-or-archive")
+            self.assertEqual(
+                rows[path]["exclusion_reason"], "scratch, temporary, backup, or archive path"
+            )
         manifest = json.loads((mirror / "manifest.json").read_text())
         for path in (
             "vendor/docs/upstream.md",
@@ -300,6 +317,11 @@ class CollectorTests(unittest.TestCase):
             "build/docs/generated.svg",
             "tests/fixtures/example.md",
             "tests/fixtures/example.svg",
+            "workbook.xlsx",
+            "scratch.md",
+            "tmp-notes.md",
+            "docs/scratch/draft.md",
+            "docs/archive/old.md",
             "credentials/token.md",
         ):
             self.assertFalse(rows[path]["copied_to_documents"], path)
@@ -370,7 +392,7 @@ class CollectorTests(unittest.TestCase):
         )
         new_version = mirror / "reports" / collector._manifest_version_key(new_manifest)
         self.assertTrue((new_version / "manifest.json").is_file())
-        self.assertEqual(new_manifest["collection_policy_id"], "human-docs-v2")
+        self.assertEqual(new_manifest["collection_policy_id"], "human-docs-v3")
         prior_policy = {**new_manifest, "collection_policy_id": "human-docs-v1"}
         catalog = json.loads((mirror / "catalog.json").read_text())
         readme = collector._repo_readme(collector._repo_info(repo.path), prior_policy, catalog)

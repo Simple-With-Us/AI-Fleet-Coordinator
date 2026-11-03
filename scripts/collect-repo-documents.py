@@ -324,48 +324,31 @@ def discover_repositories(
 
 
 def _parse_tree(repo: RepoInfo) -> dict[str, Blob]:
-    raw = _run_git(repo.path, "ls-tree", "-rz", "--full-tree", repo.commit)
+    raw = _run_git(repo.path, "ls-tree", "-rlz", "--full-tree", repo.commit)
     files: dict[str, Blob] = {}
     for record in raw.split(b"\0"):
         if not record:
             continue
         try:
             metadata, path_bytes = record.split(b"\t", 1)
-            mode, object_type, object_id = metadata.decode("ascii").split(" ")
+            fields = metadata.decode("ascii").split()
+            mode, object_type, object_id = fields[:3]
             relative = os.fsdecode(path_bytes)
         except (ValueError, UnicodeError):
             continue
         if object_type not in {"blob", "commit"}:
             continue
+        size_text = fields[3] if len(fields) > 3 else ""
+        if object_type == "blob" and not size_text.isdigit():
+            raise CollectionError("Git tree blob size metadata is invalid")
         files[relative] = Blob(
-            path=relative, mode=mode, object_id=object_id, object_type=object_type
+            path=relative,
+            mode=mode,
+            object_id=object_id,
+            object_type=object_type,
+            size_bytes=int(size_text) if object_type == "blob" else None,
         )
-    blob_ids = sorted({blob.object_id for blob in files.values() if blob.object_type == "blob"})
-    sizes: dict[str, int] = {}
-    if blob_ids:
-        response = _run_git(
-            repo.path,
-            "cat-file",
-            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
-            stdin_data=("\n".join(blob_ids) + "\n").encode("ascii"),
-        )
-        for line in response.splitlines():
-            fields = line.decode("ascii", "strict").split()
-            if len(fields) != 3 or fields[1] != "blob" or not fields[2].isdigit():
-                raise CollectionError("Git blob metadata response is invalid")
-            sizes[fields[0]] = int(fields[2])
-        if set(sizes) != set(blob_ids):
-            raise CollectionError("Git blob metadata response did not include every tracked blob")
-    return {
-        path: Blob(
-            path=blob.path,
-            mode=blob.mode,
-            object_id=blob.object_id,
-            object_type=blob.object_type,
-            size_bytes=sizes.get(blob.object_id) if blob.object_type == "blob" else None,
-        )
-        for path, blob in files.items()
-    }
+    return files
 
 
 def _safe_relative(value: str) -> bool:

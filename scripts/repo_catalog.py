@@ -9,7 +9,7 @@ from typing import Any
 
 CATALOG_SCHEMA_VERSION = 1
 CATALOG_POLICY_ID = "tracked-tree-roles-v1"
-COLLECTION_POLICY_ID = "human-docs-v2"
+COLLECTION_POLICY_ID = "human-docs-v3"
 
 HUMAN_DOCUMENT_SUFFIXES = {
     ".md",
@@ -31,6 +31,16 @@ HUMAN_DOCUMENT_SUFFIXES = {
     ".htm",
 }
 HTML_DOCUMENT_SUFFIXES = {".html", ".htm"}
+PATH_SCOPED_DOCUMENT_SUFFIXES = {
+    ".doc",
+    ".docx",
+    ".ipynb",
+    ".odt",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsx",
+}
 ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 EVIDENCE_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl", ".xml", ".yaml", ".yml"}
 
@@ -76,6 +86,7 @@ DOCUMENT_ROOTS = {
     "spec",
     "specs",
 }
+SCRATCH_PREFIXES = {"archive", "backup", "scratch", "temp", "tmp"}
 
 ROOT_DOCUMENT_STEMS = {
     "agents",
@@ -248,10 +259,30 @@ def is_fixture_path(relative: str) -> bool:
     return bool(set(_parts(relative)) & FIXTURE_DIRS)
 
 
+def is_scratch_path(relative: str) -> bool:
+    for part in _parts(relative):
+        stem = PurePosixPath(part).stem
+        if any(
+            part == prefix
+            or part.startswith((f"{prefix}-", f"{prefix}_"))
+            or stem == prefix
+            or stem.startswith((f"{prefix}-", f"{prefix}_"))
+            for prefix in SCRATCH_PREFIXES
+        ):
+            return True
+    return False
+
+
+def is_document_rooted(relative: str) -> bool:
+    return any(part in DOCUMENT_ROOTS for part in _parts(relative)[:-1])
+
+
 def is_human_document(relative: str, allow_private_audit: bool = False) -> bool:
     if not path_is_safe(relative):
         return False
     if is_sensitive_path(relative, allow_private_audit=allow_private_audit):
+        return False
+    if is_scratch_path(relative):
         return False
     if is_vendor_path(relative) or is_generated_path(relative) or is_fixture_path(relative):
         return False
@@ -266,9 +297,11 @@ def is_human_document(relative: str, allow_private_audit: bool = False) -> bool:
         return len(parts) == 1 and stem in ROOT_EXTENSIONLESS_DOCUMENT_NAMES
 
     if suffix in HTML_DOCUMENT_SUFFIXES:
-        in_document_root = any(part in DOCUMENT_ROOTS for part in parts[:-1])
+        in_document_root = is_document_rooted(relative)
         root_doc_name = len(parts) == 1 and stem in ROOT_DOCUMENT_STEMS
         return in_document_root or root_doc_name
+    if suffix in PATH_SCOPED_DOCUMENT_SUFFIXES:
+        return is_document_rooted(relative)
     return True
 
 
@@ -300,6 +333,8 @@ def role_for_path(
         return "unsafe-path", "path is not safe for portable mirror output"
     if is_sensitive_path(relative, allow_private_audit=allow_private_audit):
         return "credential-store", "sensitive path or credential-shaped filename"
+    if is_scratch_path(relative):
+        return "scratch-or-archive", "scratch, temporary, backup, or archive path"
     if is_vendor_path(relative):
         return "third-party-vendor", "vendored or dependency tree"
     if is_generated_path(relative):
@@ -313,6 +348,9 @@ def role_for_path(
         if suffix in EVIDENCE_SUFFIXES:
             return "linked-evidence", None
         return "human-document", None
+
+    if PurePosixPath(relative).suffix.casefold() in PATH_SCOPED_DOCUMENT_SUFFIXES:
+        return "ambiguous-document-data", "office document or notebook outside a documentation root"
 
     parts = _parts(relative)
     name = PurePosixPath(relative).name.casefold()
