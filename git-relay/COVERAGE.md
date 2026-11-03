@@ -35,16 +35,26 @@ source reconciliation before any completion claim. No deployment or live proof.
 
 - PR/issue comment edit and delete; review edit/dismiss; review thread listing.
 - PR draft/ready, auto-merge enable/disable, merge queue and cross-repo search.
-- Issue assignment, labels metadata, milestones, close/reopen/lock/transfer,
+- Issue assignment, labels metadata, milestones, close/reopen/lock,
   issue relations and pull-request conversion where supported.
+  Issue transfer is additionally blocked on grounding:  the upstream
+  REST page sections past "Update an issue" (including "Transfer an
+  issue") are not observable through the available fetch path (page
+  output truncates before them in both the .com and enterprise
+  variants), and the official client docs do not list the operation,
+  so no transfer verb is shipped until the route, body and response
+  contract are observed in an official source.
 - Branch update/delete, tag refs, git blobs/trees/commits, compare/patch/diff,
   file deletion and rename, workflow-file changes with explicit required scope.
 - Actions job/run log contents, artifacts download/delete, run deletion,
-  workflow enable/disable and dispatch inputs.
+  workflow enable/disable and dispatch inputs;  repository Actions settings
+  (permissions, outside-workflow access, retention, fork-PR approval and
+  private-fork workflow settings) and the repository team list.
 - Release list/get/delete, full binary/large asset upload/download/delete/update,
   tag handling and generated release notes.
 - Commit statuses, check run create/update, deployments and deployment statuses.
 - Repository list/search/create/edit/archive, branch protection and rulesets,
+  repository webhooks (secret-safe by refusal: raw hook secrets never enter the channel; events/active updates withheld until a private secret channel exists),
   collaborators/teams, webhooks and relevant automation settings.
 - Repository variables/secrets and environments: code must support authorized
   configuration without returning secret values or widening credentials.
