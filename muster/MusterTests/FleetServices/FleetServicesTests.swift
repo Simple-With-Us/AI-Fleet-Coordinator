@@ -377,10 +377,9 @@ final class FleetServicesTests: XCTestCase {
         let commands = FleetServiceCommands()
         commands.startFailure = CommandExitError(output: "pm2 said no")
         try pm2(commands, home: home).start(appName: "shellular")
-        XCTAssertEqual(commands.calls.count, 3)
-        XCTAssertEqual(commands.calls[0], ["jlist"])
-        XCTAssertEqual(commands.calls[1], ["start", "shellular"])
-        XCTAssertEqual(commands.calls[2], ["start",
+        XCTAssertEqual(commands.calls.count, 2)
+        XCTAssertEqual(commands.calls[0], ["start", "shellular"])
+        XCTAssertEqual(commands.calls[1], ["start",
                                           home.appendingPathComponent("apps/pm2-ecosystem.config.cjs").path,
                                           "--only", "shellular"])
     }
