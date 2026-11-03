@@ -19,7 +19,7 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        worker: ["agent-sync-mcp", "alert-ingress"]
+        worker: ["simple-tools-mcp", "alert-ingress"]
     steps:
       - uses: actions/checkout@v7
         with:

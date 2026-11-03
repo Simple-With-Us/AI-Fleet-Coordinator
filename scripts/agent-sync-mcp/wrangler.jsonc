@@ -228,10 +228,13 @@
     "GR_UPSTREAM_URL": "https://git-relay.simplewithus.com",
     "GR_WORKFLOW_TOOLS": "on",
     // Infisical fallback reads (src/infisical.js):  mode "fallback" lets a
-    // seat-key read fall back to the Fleet-OPS project named here when the
-    // primary path has no key.
+    // seat-key read fall back to the Fleet-OPS project when the primary path
+    // has no key.  INFISICAL_WORKSPACE_ID is deliberately absent, like
+    // ACCESS_AUD above:  the project id names the secret store itself, so it
+    // is provisioned as an encrypted Worker secret (wrangler secret put),
+    // never committed.  Until it is set, the fallback reads answer
+    // not_configured and the rest works (fail closed).
     "INFISICAL_MODE": "fallback",
-    "INFISICAL_WORKSPACE_ID": "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
   }
