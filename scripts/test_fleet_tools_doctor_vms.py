@@ -153,7 +153,9 @@ class VmPullTests(unittest.TestCase):
             ]
         )
         result = self.pull(ssh_runner(json.dumps(GOOD).encode(), calls=calls))
-        self.assertEqual([(r["label"], r["ok"]) for r in result], [("fixture-vm", True), ("fixture-vm", False)])
+        self.assertEqual(
+            [(r["label"], r["ok"]) for r in result], [("fixture-vm", True), ("fixture-vm", False)]
+        )
         self.assertEqual(len(calls), 1)
         self.assertEqual(json.loads((self.state / "fixture-vm.json").read_text()), GOOD)
 
@@ -177,7 +179,9 @@ class VmPullTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(GOOD).encode(), b"")
 
         result = self.pull(run)
-        self.assertEqual([(r["label"], r["ok"]) for r in result], [(label, True) for label in labels])
+        self.assertEqual(
+            [(r["label"], r["ok"]) for r in result], [(label, True) for label in labels]
+        )
 
     def test_malformed_config_is_a_failed_pull_not_a_crash(self):
         self.config.write_text("[1, 2")
