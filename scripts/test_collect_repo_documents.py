@@ -123,7 +123,9 @@ class CollectorTests(unittest.TestCase):
         self.assertFalse((mirror / "documents/docs/link.md").exists())
         self.assertFalse((mirror / "documents/docs/.secrets/internal.md").exists())
         self.assertFalse((mirror / "documents/.env.production").exists())
-        self.assertFalse((mirror / "documents/src/README.md").exists())
+        self.assertEqual(
+            (mirror / "documents/src/README.md").read_text(), "not a root README or docs path"
+        )
         self.assertFalse((mirror / "documents/docs/private/owner.md").exists())
         self.assertFalse((mirror / "documents/docs/private-audits/internal.md").exists())
         self.assertEqual((mirror / "documents/REVIEW.md").read_text(), "Root-level review note")
@@ -133,7 +135,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(manifest["source_ref"], "origin/main")
         self.assertEqual(manifest["source_commit"], published)
         self.assertEqual(manifest["files"]["documents/docs/guide.md"]["source_commit"], published)
-        self.assertTrue((mirror / "reports" / published / "README.md").is_file())
+        version_key = collector._manifest_version_key(manifest)
+        self.assertTrue((mirror / "reports" / version_key / "README.md").is_file())
+        self.assertEqual(manifest["collection_policy_id"], "human-docs-v2")
+        self.assertTrue((mirror / "catalog.json").is_file())
         self.assertIn(
             {"source_path": "docs/reports/receipt.md", "target_path": "docs/reports/missing.jsonl"},
             manifest["missing_local_links"],
@@ -217,6 +222,136 @@ class CollectorTests(unittest.TestCase):
             collector.preview_report_indexes([collector._repo_info(repo.path)], preview), []
         )
 
+    def test_catalog_covers_tracked_tree_and_explains_policy_exclusions(self) -> None:
+        repo = self.make_repo()
+        repo.write("AGENTS.md", "Repository instructions.\n")
+        repo.write("INFISICAL.md", "Configuration key names only.\n")
+        repo.write("DEPLOY.md", "Deployment notes.\n")
+        repo.write("handbook/operations.md", "Operations handbook.\n")
+        repo.write("clients/ios/README.md", "Client documentation.\n")
+        repo.write("docs/guides/setup.adoc", "Guide; see image:images/topology.svg[] and link:evidence/results.csv[].\n")
+        repo.write("docs/guides/index.html", '<a href="/docs/guides/setup.adoc">guide</a><img src="/docs/guides/images/topology.svg">\n')
+        repo.write("docs/guides/images/topology.svg", "<svg></svg>")
+        repo.write("docs/guides/evidence/results.csv", "check,result\nready,yes\n")
+        repo.write("vendor/docs/upstream.md", "Third party.\n")
+        repo.write("build/docs/generated.md", "Generated.\n")
+        repo.write("tests/fixtures/example.md", "Fixture.\n")
+        repo.write("credentials/token.md", "Never copy.\n")
+        repo.write("infra/main.tf", "resource \"x\" \"y\" {}\n")
+        repo.commit_published()
+
+        collector.collect(self.code, self.output)
+        mirror = self.output / "ExampleRepo"
+        catalog = json.loads((mirror / "catalog.json").read_text())
+        rows = {entry["path"]: entry for entry in catalog["files"]}
+
+        self.assertEqual(catalog["repository_profile"], "single-application")
+        self.assertIn("clients", catalog["structural_inventory"]["application_roots"])
+        self.assertIn("infra", catalog["structural_inventory"]["deployment_roots"])
+        self.assertIn("infra", catalog["structural_inventory"]["top_level_entries"])
+        self.assertEqual(catalog["tracked_entry_count"], len(rows))
+        self.assertEqual(
+            catalog["copied_entry_count"],
+            sum(bool(entry["copied_to_documents"]) for entry in rows.values()),
+        )
+        for path in (
+            "AGENTS.md",
+            "INFISICAL.md",
+            "DEPLOY.md",
+            "handbook/operations.md",
+            "clients/ios/README.md",
+            "docs/guides/setup.adoc",
+            "docs/guides/index.html",
+            "docs/guides/images/topology.svg",
+            "docs/guides/evidence/results.csv",
+        ):
+            self.assertIn(path, rows)
+            self.assertTrue(rows[path]["copied_to_documents"], path)
+            self.assertIn("object_id", rows[path])
+            self.assertIsInstance(rows[path]["size_bytes"], int)
+            self.assertEqual(rows[path]["object_type"], "blob")
+        self.assertEqual(rows["credentials/token.md"]["role"], "credential-store")
+        self.assertEqual(
+            rows["credentials/token.md"]["exclusion_reason"],
+            "sensitive path or credential-shaped filename",
+        )
+        self.assertEqual(rows["vendor/docs/upstream.md"]["role"], "third-party-vendor")
+        self.assertEqual(rows["build/docs/generated.md"]["role"], "generated-output")
+        self.assertEqual(rows["tests/fixtures/example.md"]["role"], "test-fixture")
+        self.assertEqual(rows["infra/main.tf"]["role"], "deployment-config")
+        for path in (
+            "vendor/docs/upstream.md",
+            "build/docs/generated.md",
+            "tests/fixtures/example.md",
+            "credentials/token.md",
+        ):
+            self.assertFalse((mirror / "documents" / path).exists(), path)
+
+    def test_v1_manifest_remains_readable_and_immutable_during_policy_migration(self) -> None:
+        repo = self.make_repo()
+        repo.write("README.md", "Root readme.\n")
+        repo.write("docs/guide.md", "Guide.\n")
+        commit = repo.commit_published()
+        collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        manifest_path = mirror / "manifest.json"
+        current = json.loads(manifest_path.read_text())
+        legacy = {
+            key: value
+            for key, value in current.items()
+            if key not in {
+                "collection_policy_id",
+                "catalog_policy_id",
+                "catalog_path",
+                "catalog_sha256",
+                "catalog_version_path",
+            }
+        }
+        legacy["schema_version"] = 1
+        legacy["files"] = {
+            key: value
+            for key, value in current["files"].items()
+            if key in {"documents/README.md", "documents/docs/guide.md"}
+        }
+        legacy_readme = collector._legacy_repo_readme(
+            collector.RepoInfo(repo.path, "fixture-owner", "ExampleRepo", "origin/main", commit),
+            legacy,
+        )
+        legacy_version_readme = collector._legacy_version_readme(
+            collector.RepoInfo(repo.path, "fixture-owner", "ExampleRepo", "origin/main", commit),
+            legacy,
+        )
+        legacy_bytes = collector._json_bytes(legacy)
+        legacy_version = mirror / "reports" / commit
+        legacy_version.mkdir(parents=True, exist_ok=True)
+        legacy_version.chmod(0o700)
+        (legacy_version / "manifest.json").write_bytes(legacy_bytes)
+        (legacy_version / "README.md").write_bytes(legacy_version_readme)
+        (legacy_version / "manifest.json").chmod(0o600)
+        (legacy_version / "README.md").chmod(0o600)
+        manifest_path.write_bytes(legacy_bytes)
+        (mirror / "README.md").write_bytes(legacy_readme)
+        manifest_path.chmod(0o600)
+        (mirror / "README.md").chmod(0o600)
+        (mirror / "catalog.json").unlink()
+
+        new_manifest, _ = collector.collect_repository(
+            collector._repo_info(repo.path), self.output
+        )
+        self.assertEqual(
+            collector._load_previous_manifest(manifest_path, "ExampleRepo")["schema_version"], 2
+        )
+        self.assertEqual((legacy_version / "manifest.json").read_bytes(), legacy_bytes)
+        self.assertEqual((legacy_version / "README.md").read_bytes(), legacy_version_readme)
+        self.assertNotEqual(
+            collector._manifest_version_key(legacy),
+            collector._manifest_version_key(new_manifest),
+        )
+        new_version = mirror / "reports" / collector._manifest_version_key(new_manifest)
+        self.assertTrue((new_version / "manifest.json").is_file())
+        self.assertEqual(new_manifest["collection_policy_id"], "human-docs-v2")
+
     def test_second_process_cannot_recover_a_live_writer_transaction(self) -> None:
         repo = self.make_repo()
         repo.write("docs/guide.md", "guide")
@@ -295,7 +430,13 @@ class CollectorTests(unittest.TestCase):
 
         collector.collect(self.code, self.output)
 
-        report = self.output / "ExampleRepo/reports" / commit / "README.md"
+        manifest = json.loads((self.output / "ExampleRepo/manifest.json").read_text())
+        report = (
+            self.output
+            / "ExampleRepo/reports"
+            / collector._manifest_version_key(manifest)
+            / "README.md"
+        )
         self.assertIn("- No eligible tracked documents were found.", report.read_text())
 
     def test_relative_output_roots_work_for_check_apply_and_repository_helper(self) -> None:
@@ -610,8 +751,10 @@ class CollectorTests(unittest.TestCase):
     def test_deleted_source_documents_are_retained_and_versioned(self) -> None:
         repo = self.make_repo()
         repo.write("docs/old.md", "old source")
-        first_commit = repo.commit_published()
+        repo.commit_published()
         collector.collect(self.code, self.output)
+        first_manifest = json.loads((self.output / "ExampleRepo/manifest.json").read_text())
+        first_key = collector._manifest_version_key(first_manifest)
         (repo.path / "docs/old.md").unlink()
         git(repo.path, "add", "--all")
         git(repo.path, "commit", "--quiet", "-m", "remove old document")
@@ -623,8 +766,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual((mirror / "documents/docs/old.md").read_text(), "old source")
         manifest = json.loads((mirror / "manifest.json").read_text())
         self.assertTrue(manifest["files"]["documents/docs/old.md"]["retained"])
-        self.assertTrue((mirror / "reports" / first_commit / "README.md").is_file())
-        self.assertTrue((mirror / "reports" / second_commit / "README.md").is_file())
+        second_manifest = json.loads((mirror / "manifest.json").read_text())
+        second_key = collector._manifest_version_key(second_manifest)
+        self.assertTrue((mirror / "reports" / first_key / "README.md").is_file())
+        self.assertTrue((mirror / "reports" / second_key / "README.md").is_file())
 
     def test_unowned_collision_and_output_symlink_are_rejected_without_overwrite(self) -> None:
         repo = self.make_repo()
@@ -697,12 +842,13 @@ class CollectorTests(unittest.TestCase):
     ) -> None:
         repo = self.make_repo()
         repo.write("docs/reports/report.md", "Report")
-        published = repo.commit_published()
+        repo.commit_published()
         prior_umask = os.umask(0)
         try:
             collector.collect(self.code, self.output)
         finally:
             os.umask(prior_umask)
+        manifest = json.loads((self.output / "ExampleRepo/manifest.json").read_text())
 
         for directory in (
             self.output,
@@ -710,7 +856,7 @@ class CollectorTests(unittest.TestCase):
             self.output / "ExampleRepo/documents",
             self.output / "ExampleRepo/documents/docs",
             self.output / "ExampleRepo/reports",
-            self.output / "ExampleRepo/reports" / published,
+            self.output / "ExampleRepo/reports" / collector._manifest_version_key(manifest),
         ):
             self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700, directory)
         for output in self.output.rglob("*"):
