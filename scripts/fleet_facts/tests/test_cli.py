@@ -75,10 +75,10 @@ class Sandbox(unittest.TestCase):
             "FF_STATE": str(self.state),
             "LANG": "C",
         }
+        env.update(env_extra or {})
         if hasattr(self, "api"):
             env.update(self.api.env)
             self.api.values["FLEET_FACTS_PUBLISH_FULL_COPY"] = (env_extra or {}).get("FAKE_FULL_COPY", "false")
-        env.update(env_extra or {})
         return subprocess.run(
             [sys.executable, "-I", str(entry), *args],
             capture_output=True,
@@ -307,6 +307,21 @@ class Errors(Sandbox):
         )
         self.assertEqual(refused.returncode, 3)
         self.assertIn("not one this job writes", refused.stderr)
+
+    def test_extra_environment_cannot_replace_the_loopback_reader_binding(self):
+        self.install_fake_infisical(key=SIGNER)
+        local = self.root / "a.json"
+        local.write_text('{"n": 1}')
+        proc = self.run_cli(
+            "publish", "--path", "gb/a.json", "--file", str(local), "--dry-run",
+            env_extra={
+                "FLEET_SECRETS_API": "http://127.0.0.1:1/api",
+                "FLEET_KNOBS_INFISICAL_TOKEN": "st.synthetic-override-not-authorized",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+        self.assertTrue(any(path.startswith("/api/v3/secrets/raw/FLEET_FACTS_SIGNING_KEY?") for path in self.api.requests))
 
     def test_verify_exit_codes_through_the_real_entry_point(self):
         from fleet_facts import signing

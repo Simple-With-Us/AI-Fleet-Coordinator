@@ -23,12 +23,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fleet_knobs.tests._fake import ScopedReadAPI
+
 ROOT = Path(__file__).resolve().parents[1]
 RUN = subprocess.run
 
 AUDIT = r"""
-import os, sys
+import os, pwd, sys
 _home = os.path.realpath(os.environ["HOME"])
+# The real entrypoints resolve account home through pwd, independently of HOME.
+# Keep that supported lookup inside the fixture before any optional host helper is opened.
+_getpwuid = pwd.getpwuid
+def _fixture_account(uid):
+    record = _getpwuid(uid)
+    return pwd.struct_passwd((*record[:5], _home, *record[6:])) if uid == os.getuid() else record
+pwd.getpwuid = _fixture_account
 def _audit(event, args):
     if event.startswith("socket."):
         raise RuntimeError("offline_network_forbidden")
@@ -263,7 +272,7 @@ class ActualRuntime(unittest.TestCase):
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
-        self.assertEqual(self.receiver.MAX_FILES, 146)
+        self.assertEqual(self.receiver.MAX_FILES, 148)
         self.assertIn("scripts/fleet_rag/recall_presentation.py", self.bundle["files"])
         self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
         # The git tools CLI ships in the bundle:  required of new bundles, never of rollback targets.
@@ -341,6 +350,103 @@ class ActualRuntime(unittest.TestCase):
         self.assertFalse((self.release / "scripts/fleet_rag/ingest.py").exists())
         self.assertFalse((self.release / "scripts/fleet_rag/eval.py").exists())
         self.assertFalse((self.release / "scripts/fleet_lanes/install_tools.py").exists())
+
+    def test_produced_runtime_uses_real_scoped_verifier_for_knobs_and_recall(self):
+        package = self.release / "scripts/fleet_secrets"
+        self.assertEqual(
+            sorted(path.name for path in package.iterdir()), ["__init__.py", "core.py"]
+        )
+        self.assertFalse((self.release / "scripts/fleet-secrets").exists())
+        code = r"""
+import json, os, sys, urllib.parse
+address = urllib.parse.urlsplit(os.environ['FLEET_SECRETS_API'])
+assert address.hostname == '127.0.0.1' and address.port
+allowed = (address.hostname, address.port)
+home = os.path.realpath(os.environ['HOME'])
+def audit(event, args):
+    if event == 'socket.connect' and args[1] != allowed:
+        raise RuntimeError('non_loopback_connection_forbidden')
+    if event == 'socket.getaddrinfo' and args[:2] != allowed:
+        raise RuntimeError('non_loopback_lookup_forbidden')
+    if event.startswith('socket.') and event not in ('socket.connect', 'socket.getaddrinfo', 'socket.__new__'):
+        raise RuntimeError('unexpected_socket_operation')
+    if event == 'open' and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        path = os.path.realpath(os.fsdecode(args[0]))
+        if any(part in path.split(os.sep) for part in ('.secrets', '.codex', '.claude')) and os.path.commonpath([home, path]) != home:
+            raise RuntimeError('outside_home_credentials_forbidden')
+sys.addaudithook(audit)
+sys.path.insert(0, sys.argv[1])
+import fleet_secrets.core as verifier
+assert os.path.commonpath([sys.argv[1], verifier.__file__]) == sys.argv[1]
+if sys.argv[2] == 'knobs':
+    from fleet_knobs import source
+    assert os.path.commonpath([sys.argv[1], source._load_helper().__file__]) == sys.argv[1]
+    result = source.fetch({'OPERATOR_API_URL'})
+else:
+    from fleet_rag import core
+    result = core.infisical_fetch({'RECALL_API_URL'})
+print(json.dumps(result))
+"""
+        values = {
+            "OPERATOR_API_URL": "https://operator.invalid",
+            "RECALL_API_URL": "https://recall.invalid",
+        }
+        with ScopedReadAPI(values) as api:
+            for consumer, name in (("knobs", "OPERATOR_API_URL"), ("recall", "RECALL_API_URL")):
+                with self.subTest(consumer=consumer):
+                    env = {
+                        **env_for(self.home),
+                        **api.env,
+                        "FLEET_RAG_INFISICAL_API": api.env["FLEET_SECRETS_API"],
+                    }
+                    if consumer == "recall":
+                        from fleet_rag.core import SHARED_PROJECT
+
+                        api.project = SHARED_PROJECT
+                        env["FLEET_RECALL_INFISICAL_TOKEN"] = env.pop("FLEET_KNOBS_INFISICAL_TOKEN")
+                    api.requests.clear()
+                    api.metadata_override.clear()
+                    ran = RUN(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-B",
+                            "-c",
+                            code,
+                            str(self.release / "scripts"),
+                            consumer,
+                        ],
+                        env=env,
+                        cwd=self.home,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    self.assertEqual(ran.returncode, 0, ran.stderr)
+                    self.assertEqual(json.loads(ran.stdout), {name: values[name]})
+                    self.assertEqual(len(api.requests), 2)
+                    self.assertEqual(api.requests[0], "/api/v2/service-token")
+                    self.assertTrue(api.requests[1].startswith("/api/v3/secrets/raw/" + name + "?"))
+                    api.requests.clear()
+                    api.metadata_override["permissions"] = ["read", "write"]
+                    denied = RUN(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-B",
+                            "-c",
+                            code,
+                            str(self.release / "scripts"),
+                            consumer,
+                        ],
+                        env=env,
+                        cwd=self.home,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    self.assertNotEqual(denied.returncode, 0)
+                    self.assertEqual(api.requests, ["/api/v2/service-token"])
 
     def test_actual_mcp_startup_refuses_missing_credentials(self):
         result = self.command(
@@ -446,6 +552,16 @@ class ActualRuntime(unittest.TestCase):
         if not sys.platform.startswith("linux"):
             self.skipTest(
                 "pinned deployment wrapper execution requires Linux; runtime and flags checked separately"
+            )
+        # A generated wrapper execs a fresh isolated interpreter, so the audited
+        # bootstrap's fixture account-home cannot cross that exec boundary.
+        # Fresh CI runners still execute every direct-wrapper assertion below.
+        import pwd
+
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        if (account_home / self.receiver.HELPER_PATH).exists():
+            self.skipTest(
+                "direct wrappers resolve a configured account helper outside temporary HOME"
             )
         interpreter = Path("/usr/bin/python3")
         if not interpreter.is_file():

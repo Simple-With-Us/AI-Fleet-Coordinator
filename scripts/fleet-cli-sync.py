@@ -25,7 +25,7 @@ from pathlib import Path
 
 DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-# The reviewed allowlisted runtime contains 146 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 148 files.  Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -34,7 +34,8 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
-MAX_FILES = 146
+# Files 147 and 148 are the existing low-level scoped verifier library; no secrets CLI ships.
+MAX_FILES = 148
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
