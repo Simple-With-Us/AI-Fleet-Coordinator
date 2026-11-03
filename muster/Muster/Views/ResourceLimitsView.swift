@@ -221,8 +221,8 @@ struct ResourceLimitsView: View {
                 observationRow("High Memory Mismatches", count(snapshot.observed.actualHighMismatches))
                 observationRow("Policy Stale", snapshot.observed.policyStale ? "Yes" : "No")
                 observationRow("Collector Update", collectorText)
-                if let age = reading.collectorAge, age > ResourcePolicyReading.maxCollectorAge {
-                    Label("The collector report is older than 45 minutes.\u{00A0} Runtime measurements may be out of date.", systemImage: "clock.badge.exclamationmark")
+                if let age = reading.observationAge, age > ResourcePolicyReading.maxCollectorAge {
+                    Label("The collector observation is older than 45 minutes.\u{00A0} Runtime measurements may be out of date.", systemImage: "clock.badge.exclamationmark")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -233,8 +233,8 @@ struct ResourceLimitsView: View {
     }
 
     private var collectorText: String {
-        guard let age = reading.collectorAge else { return "Unknown.\u{00A0} No readable collector timestamp." }
-        return age < 60 ? "Updated less than a minute ago" : "Updated \(Int(age / 60)) min ago"
+        guard let age = reading.observationAge else { return "Unknown.\u{00A0} No readable observation timestamp." }
+        return age < 60 ? "Observed less than a minute ago" : "Observed \(Int(age / 60)) min ago"
     }
 
     private var hasReviewableReceipt: Bool { reading.canReviewChanges(at: Date()) }

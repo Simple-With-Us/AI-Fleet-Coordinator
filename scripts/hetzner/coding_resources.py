@@ -519,8 +519,8 @@ def publish_snapshot(snapshot, path=PUBLIC_STATUS):
             json.dump(snapshot, f, sort_keys=True, separators=(",", ":"), allow_nan=False)
             f.write("\n")
             f.flush()
-            os.fsync(f.fileno())
             os.fchmod(f.fileno(), 0o644)
+            os.fsync(f.fileno())
         os.replace(temporary, path)
         # The ephemeral receipt is already visible atomically; directory fsync
         # only makes the rename durable, and unsupported filesystems may refuse it.

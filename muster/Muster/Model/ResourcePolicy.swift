@@ -213,8 +213,29 @@ struct ResourcePolicyReading: Equatable {
     let state: ResourcePolicyReadState
     let reason: String?
     let receiptAge: TimeInterval?
+    /// Age of the source report's `generatedAt` timestamp.
     let collectorAge: TimeInterval?
     let directReceiptAt: Date?
+    /// Age of the collector's actual observation timestamp, when the report carries one.
+    let observationAge: TimeInterval?
+
+    init(
+        snapshot: ResourcePolicySnapshot?,
+        state: ResourcePolicyReadState,
+        reason: String?,
+        receiptAge: TimeInterval?,
+        collectorAge: TimeInterval?,
+        directReceiptAt: Date?,
+        observationAge: TimeInterval? = nil
+    ) {
+        self.snapshot = snapshot
+        self.state = state
+        self.reason = reason
+        self.receiptAge = receiptAge
+        self.collectorAge = collectorAge
+        self.directReceiptAt = directReceiptAt
+        self.observationAge = observationAge
+    }
 
     var canReviewChanges: Bool { canReviewChanges(at: Date()) }
 
@@ -287,28 +308,28 @@ struct ResourcePolicyReading: Equatable {
             }
             let collectorAge = sourceAge
             guard let directReceiptAt else {
-                return .init(snapshot: snapshot, state: .unavailable, reason: "No direct server read time is available. Refresh before reviewing changes.", receiptAge: nil, collectorAge: collectorAge, directReceiptAt: nil)
+                return .init(snapshot: snapshot, state: .unavailable, reason: "No direct server read time is available. Refresh before reviewing changes.", receiptAge: nil, collectorAge: collectorAge, directReceiptAt: nil, observationAge: observationAge)
             }
             let receiptAge = now.timeIntervalSince(directReceiptAt)
             if receiptAge < 0 {
                 return .init(snapshot: nil, state: .invalid, reason: "The direct read timestamp is in the future.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: nil)
             }
             if snapshot.status == "unavailable" {
-                return .init(snapshot: snapshot, state: .unavailable, reason: "The server reported that resource policy is unavailable.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
+                return .init(snapshot: snapshot, state: .unavailable, reason: "The server reported that resource policy is unavailable.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt, observationAge: observationAge)
             }
             if snapshot.observed.policyStale {
-                return .init(snapshot: snapshot, state: .stale, reason: "The server marks the policy source stale.\u{00A0} Refresh after the policy is current.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
+                return .init(snapshot: snapshot, state: .stale, reason: "The server marks the policy source stale.\u{00A0} Refresh after the policy is current.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt, observationAge: observationAge)
             }
             if sourceAge > maxCollectorAge {
-                return .init(snapshot: snapshot, state: .stale, reason: "The resource policy source is older than 45 minutes.\u{00A0} Refresh the server report before reviewing changes.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
+                return .init(snapshot: snapshot, state: .stale, reason: "The resource policy source is older than 45 minutes.\u{00A0} Refresh the server report before reviewing changes.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt, observationAge: observationAge)
             }
             if let observationAge, observationAge > maxCollectorAge {
-                return .init(snapshot: snapshot, state: .stale, reason: "The collector observation is older than 45 minutes.\u{00A0} Refresh the server report before reviewing changes.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
+                return .init(snapshot: snapshot, state: .stale, reason: "The collector observation is older than 45 minutes.\u{00A0} Refresh the server report before reviewing changes.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt, observationAge: observationAge)
             }
             if receiptAge > maxReceiptAge {
-                return .init(snapshot: snapshot, state: .stale, reason: "The direct receipt is older than 60 seconds.\u{00A0} Refresh before reviewing a change.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
+                return .init(snapshot: snapshot, state: .stale, reason: "The direct receipt is older than 60 seconds.\u{00A0} Refresh before reviewing a change.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt, observationAge: observationAge)
             }
-            return .init(snapshot: snapshot, state: .current, reason: nil, receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
+            return .init(snapshot: snapshot, state: .current, reason: nil, receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt, observationAge: observationAge)
         } catch {
             return .init(snapshot: nil, state: .invalid, reason: "The resource policy report could not be read.", receiptAge: nil, collectorAge: nil, directReceiptAt: nil)
         }

@@ -49,6 +49,38 @@ final class ResourcePolicyTests: XCTestCase {
         XCTAssertTrue(reading.reason?.contains("collector observation is older than 45 minutes") == true)
     }
 
+    func test_observation_age_is_distinct_from_fresh_source_report_age() throws {
+        let data = try json(generatedAt: "2026-11-03T12:25:00Z")
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var report = try XCTUnwrap(root["resourcePolicy"] as? [String: Any])
+        var observed = try XCTUnwrap(report["observed"] as? [String: Any])
+        observed["updatedAt"] = "2026-11-03T11:40:00Z"
+        report["observed"] = observed
+        root["resourcePolicy"] = report
+
+        let reading = decode(try JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(reading.collectorAge, 300)
+        XCTAssertEqual(reading.observationAge, 3_000)
+        XCTAssertEqual(reading.state, .stale)
+        XCTAssertFalse(reading.canReviewChanges(at: now))
+        XCTAssertTrue(reading.reason?.contains("collector observation is older than 45 minutes") == true)
+    }
+
+    func test_missing_observation_timestamp_remains_unknown() throws {
+        let data = try json()
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var report = try XCTUnwrap(root["resourcePolicy"] as? [String: Any])
+        var observed = try XCTUnwrap(report["observed"] as? [String: Any])
+        observed.removeValue(forKey: "updatedAt")
+        report["observed"] = observed
+        root["resourcePolicy"] = report
+
+        let reading = decode(try JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(reading.state, .current)
+        XCTAssertEqual(reading.collectorAge, 0)
+        XCTAssertNil(reading.observationAge)
+    }
+
     func test_future_receipt_is_unknown() throws {
         let reading = decode(try json(generatedAt: "2026-11-03T12:30:01Z"))
         XCTAssertEqual(reading.state, .invalid)
