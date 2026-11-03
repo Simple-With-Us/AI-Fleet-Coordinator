@@ -499,6 +499,68 @@ final class OpsResultParserTests: XCTestCase {
 
 // MARK: - The allowlist and the audit log
 
+final class OpsUpdateReceiptTests: XCTestCase {
+    private let receipt = String(repeating: "a", count: 32)
+
+    private func read(_ json: String, exit: Int32 = 0, timedOut: Bool = false) async -> (OpsOutcome, FakeOpsRunner) {
+        let runner = FakeOpsRunner { _, _ in
+            OpsProcessResult(exitCode: exit, stdout: json, stderr: "", timedOut: timedOut)
+        }
+        let reader = OpsUpdateReceiptReader(runner: runner, makeBuilder: { exampleBuilder() })
+        return (await reader.read(name: "fleet-cli", invocationID: receipt), runner)
+    }
+
+    func test_verified_same_invocation_success_is_read_over_plan_only() async {
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let (outcome, runner) = await read(json)
+        XCTAssertTrue(outcome.isSuccess(for: .yes))
+        XCTAssertEqual(runner.recorded.first?.suffix(5).map { $0 }, [
+            "server", "update-status", "fleet-cli.\(receipt)", "--plan", "--json",
+        ])
+        XCTAssertFalse(runner.recorded.flatMap { $0 }.contains("--yes"))
+    }
+
+    func test_verified_same_invocation_failure_is_terminal() async {
+        let json = #"{"ok":false,"result":"failed","executionState":"failed","verified":true,"invocationID":"\#(receipt)","detail":"The recorded update failed."}"#
+        let (outcome, _) = await read(json, exit: 1)
+        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertEqual(outcome.detail, "The recorded update failed.")
+    }
+
+    func test_missing_replaced_or_unverified_receipts_never_complete_the_update() async {
+        for json in [
+            #"{"ok":true,"result":"done"}"#,
+            #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
+            #"{"ok":true,"result":"submitted","executionState":"submitted","verified":false,"invocationID":"\#(receipt)","errorCode":"invocation_not_current"}"#,
+        ] {
+            let (outcome, _) = await read(json)
+            XCTAssertEqual(outcome.kind, .submitted)
+            XCTAssertFalse(outcome.isSuccess(for: .yes))
+            XCTAssertEqual(outcome.invocationID, receipt)
+        }
+    }
+
+    func test_a_timed_out_receipt_read_stays_unverified() async {
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let (outcome, _) = await read(json, timedOut: true)
+        XCTAssertEqual(outcome.kind, .submitted)
+    }
+
+    func test_an_expired_receipt_remains_unverified_and_cannot_be_rechecked() async {
+        let json = #"{"ok":true,"result":"submitted","executionState":"expired","verified":false,"invocationID":"\#(receipt)"}"#
+        let (outcome, _) = await read(json)
+        XCTAssertEqual(outcome.kind, .submitted)
+        XCTAssertEqual(outcome.executionState, "expired")
+        XCTAssertFalse(outcome.isSuccess(for: .yes))
+    }
+
+    func test_recheck_cannot_name_another_update_or_inject_an_invocation() {
+        for (name, id) in [("other", receipt), ("fleet-cli", "--yes"), ("fleet-cli", receipt + ".extra")] {
+            XCTAssertThrowsError(try exampleBuilder().updateStatusInvocation(name: name, invocationID: id))
+        }
+    }
+}
+
 final class OpsAllowlistAndAuditTests: XCTestCase {
     func test_the_allowlist_names_the_buttons() throws {
         let list = try XCTUnwrap(OpsAllowlist.parse(Data(try fixture("ops_allowlist", "json").utf8)))
@@ -672,6 +734,32 @@ private func isFinished(_ phase: OpsController.Phase) -> Bool {
     return false
 }
 
+private actor ReceiptReadGate {
+    var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        started = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private struct GatedReceiptRunner: OpsRunning {
+    let base: FakeOpsRunner
+    let gate: ReceiptReadGate
+    let answer: String
+    func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult {
+        if invocation.arguments.contains("update-status") {
+            await gate.wait()
+            return OpsProcessResult(exitCode: 0, stdout: answer, stderr: "")
+        }
+        return try await base.run(invocation)
+    }
+}
+
 @MainActor
 final class OpsControllerFlowTests: XCTestCase {
     private let action = OpsAction.serverUnit(verb: .restart, unit: "fleet-server-status.timer")
@@ -732,6 +820,37 @@ final class OpsControllerFlowTests: XCTestCase {
         ])
         XCTAssertEqual(ops.completedRuns, 1)
         XCTAssertFalse(ops.isBusy)
+    }
+
+    func test_closing_a_pending_recheck_does_not_reopen_the_sheet_or_run_an_update() async throws {
+        let receipt = String(repeating: "a", count: 32)
+        let planned = #"{"ok":true,"commands":[],"result":"planned"}"#
+        let submitted = #"{"ok":true,"commands":[],"result":"submitted","invocationID":"\#(receipt)"}"#
+        let completed = #"{"ok":true,"commands":[],"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let base = FakeOpsRunner { invocation, _ in
+            OpsProcessResult(exitCode: 0, stdout: invocation.arguments.contains("--plan") ? planned : submitted, stderr: "")
+        }
+        let gate = ReceiptReadGate()
+        let runner = GatedReceiptRunner(base: base, gate: gate, answer: completed)
+        let ops = OpsController(runner: runner, makeBuilder: { exampleBuilder() }, auditURL: nil, checksInstall: false)
+        ops.plan(.serverUpdate(name: "fleet-cli"))
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        XCTAssertTrue(ops.canRecheckUpdate)
+        ops.recheckSubmittedUpdate()
+        for _ in 0..<400 {
+            if await gate.started { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let started = await gate.started
+        XCTAssertTrue(started)
+        ops.dismiss()
+        await gate.release()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(ops.phase, .idle)
+        XCTAssertFalse(ops.isRechecking)
+        XCTAssertEqual(base.recorded.filter { $0.contains("--yes") }.count, 1)
     }
 
     func test_a_plan_that_changed_after_review_is_not_run() async throws {

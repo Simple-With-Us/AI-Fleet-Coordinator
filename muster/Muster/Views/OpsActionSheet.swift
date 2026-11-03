@@ -87,14 +87,25 @@ struct OpsActionSheet: View {
                 }
                 planBlock(outcome, heading: "Running")
             }
-        case .finished(_, let outcome):
+        case .finished(let action, let outcome):
             VStack(alignment: .leading, spacing: 8) {
+                if controller.isRechecking {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Checking the recorded update; no update is started.")
+                            .font(.callout)
+                    }
+                }
                 resultLine(outcome)
                 if let invocationID = outcome.invocationID {
                     Text("Service invocation: \(invocationID)")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                } else if case .serverUpdate = action, outcome.kind == .submitted {
+                    Text("No service invocation receipt was captured, so this request cannot be rechecked.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if let logText = outcome.logText {
                     logBlock(logText, lines: outcome.logLines)
@@ -237,6 +248,10 @@ struct OpsActionSheet: View {
                 Button("Close") { }
                     .disabled(true)
             case .idle, .finished, .failed:
+                if controller.canRecheckUpdate {
+                    Button("Recheck Update") { controller.recheckSubmittedUpdate() }
+                        .disabled(controller.isRechecking)
+                }
                 Button("Close") { controller.dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
