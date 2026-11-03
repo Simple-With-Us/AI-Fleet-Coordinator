@@ -48,7 +48,7 @@ def signed_proof(root: str) -> tuple[str, dict]:
 
 class ProviderFixture:
     def __init__(self, private: bool = False):
-        self.owner_repo = "Simple-With-Us/Kodus-Config" if private else "fixture-owner/ExampleRepo"
+        self.owner_repo = "fixture-owner/ExamplePrivate" if private else "fixture-owner/ExampleRepo"
         self.visibility = "private" if private else "public"
         self.files = {
             "README.md": (
@@ -161,6 +161,11 @@ class ProviderFixture:
 
 class RemoteGitSourceTests(unittest.TestCase):
     def setUp(self):
+        allowlist = patch.object(
+            collector, "VERIFIED_PRIVATE_DOC_REPOS", {"fixture-owner/exampleprivate"}
+        )
+        allowlist.start()
+        self.addCleanup(allowlist.stop)
         self.temp = tempfile.TemporaryDirectory(dir=ROOT, prefix=".remote-docs-test-")
         self.base = Path(self.temp.name)
         self.sources = self.base / "sources"
@@ -342,7 +347,7 @@ class RemoteGitSourceTests(unittest.TestCase):
     def test_private_source_requires_exact_opt_in_and_stays_out_of_index_previews(self):
         self.provider = ProviderFixture(private=True)
         self.export()
-        for opt_in in (None, "other-owner/Kodus-Config", "simple-with-us/kodus-config"):
+        for opt_in in (None, "other-owner/ExamplePrivate", "fixture-owner/exampleprivate"):
             with self.subTest(opt_in=opt_in), self.assertRaises(collector.CollectionError):
                 collector.collect(
                     None,
@@ -357,7 +362,7 @@ class RemoteGitSourceTests(unittest.TestCase):
             git_source_descriptors=[self.descriptor],
             private_docs_repo=self.provider.owner_repo,
         )
-        manifest = json.loads((self.output / "Kodus-Config/manifest.json").read_text())
+        manifest = json.loads((self.output / "ExamplePrivate/manifest.json").read_text())
         self.assertEqual(manifest["private_docs_opt_in"], self.provider.owner_repo)
         with redirect_stderr(StringIO()):
             self.assertEqual(
@@ -369,7 +374,7 @@ class RemoteGitSourceTests(unittest.TestCase):
 
     def test_unmatched_private_opt_in_cannot_create_output_for_a_public_descriptor(self):
         self.export()
-        for identity in ("fixture-owner/ExampleRepo", "Simple-With-Us/Kodus-Config"):
+        for identity in ("fixture-owner/ExampleRepo", "fixture-owner/ExamplePrivate"):
             with self.subTest(identity=identity), self.assertRaises(collector.CollectionError):
                 collector.collect(
                     None,
@@ -560,12 +565,131 @@ class RemoteGitSourceTests(unittest.TestCase):
         with self.assertRaises(remote.SourceError):
             remote.tracked_entries(snapshot.identity["root_tree"], trees)
 
+    def test_metadata_limit_is_exact_and_serialization_work_is_linear(self):
+        reference = self.provider.snapshot()
+        canonical = remote.canonical
+        size = len(canonical(reference.trees))
+        count = len(reference.trees)
+        self.assertGreater(count, 2)
+        for limit in (size, size - 1):
+            calls = []
+
+            def counted(value, calls=calls):
+                if isinstance(value, dict) and all(remote.OID.fullmatch(key) for key in value):
+                    calls.append(len(value))
+                return canonical(value)
+
+            with (
+                self.subTest(limit=limit),
+                patch.object(remote, "MAX_METADATA_BYTES", limit),
+                patch.object(remote, "canonical", side_effect=counted),
+            ):
+                if limit == size:
+                    snapshot = self.provider.snapshot()
+                    self.assertEqual(snapshot.trees, reference.trees)
+                    self.assertEqual(calls.count(count), 1)
+                    self.assertEqual(sum(calls), 2 * count)
+                else:
+                    with self.assertRaisesRegex(remote.SourceError, "metadata exceeds"):
+                        self.provider.snapshot()
+                    self.assertEqual(calls.count(count), 0)
+                    self.assertEqual(sum(calls), count)
+
+    def fake_cli(self, source):
+        directory = self.base / "fixture-bin"
+        directory.mkdir()
+        executable = directory / "simple-git"
+        executable.write_text(f"#!{sys.executable}\n" + source)
+        executable.chmod(0o755)
+        return str(directory) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")
+
+    def test_real_relay_child_cannot_spool_unbounded_output_even_if_it_ignores_sigxfsz(self):
+        parent_limits = exporter.resource.getrlimit(exporter.resource.RLIMIT_FSIZE)
+        marker = self.base / "child-observation.json"
+        path = self.fake_cli(
+            "import json, os, resource, signal\n"
+            "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
+            "for _ in range(64):\n"
+            "    try:\n"
+            "        os.write(1, b'x' * 1_000_000)\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "with open(os.environ['FIXTURE_MARKER'], 'w') as marker:\n"
+            "    json.dump({'bytes': os.fstat(1).st_size, 'limit': resource.getrlimit(resource.RLIMIT_FSIZE)[1]}, marker)\n"
+        )
+        temporary_file = tempfile.TemporaryFile
+        spools = []
+
+        def tracked_spool():
+            handle = temporary_file()
+            spools.append(handle)
+            return handle
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PATH": path,
+                    "SIMPLE_TOOLS_BEARER": "fixture-process-only",
+                    "FIXTURE_MARKER": str(marker),
+                },
+            ),
+            patch.object(exporter.tempfile, "TemporaryFile", side_effect=tracked_spool),
+            self.assertRaisesRegex(remote.SourceError, "byte bound"),
+        ):
+            exporter.relay_read("gr_wf_repo_get", {"repo": "fixture-owner/ExampleRepo"})
+        observation = json.loads(marker.read_text())
+        self.assertEqual(observation["bytes"], exporter.MAX_RELAY_RESPONSE_BYTES + 1)
+        self.assertEqual(observation["limit"], exporter.MAX_RELAY_RESPONSE_BYTES + 1)
+        self.assertEqual(exporter.resource.getrlimit(exporter.resource.RLIMIT_FSIZE), parent_limits)
+        self.assertEqual(len(spools), 1)
+        self.assertTrue(spools[0].closed)
+
+    def test_real_relay_timeout_reaps_the_child_and_closes_its_spool(self):
+        marker = self.base / "child-pid"
+        path = self.fake_cli(
+            "import os, time\n"
+            "with open(os.environ['FIXTURE_MARKER'], 'w') as marker:\n"
+            "    marker.write(str(os.getpid()))\n"
+            "time.sleep(30)\n"
+        )
+        temporary_file = tempfile.TemporaryFile
+        spools = []
+
+        def tracked_spool():
+            handle = temporary_file()
+            spools.append(handle)
+            return handle
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PATH": path,
+                    "SIMPLE_TOOLS_BEARER": "fixture-process-only",
+                    "FIXTURE_MARKER": str(marker),
+                },
+            ),
+            patch.object(exporter.tempfile, "TemporaryFile", side_effect=tracked_spool),
+            patch.object(exporter, "RELAY_READ_TIMEOUT_SECONDS", 1.0),
+            self.assertRaisesRegex(remote.SourceError, "could not complete"),
+        ):
+            exporter.relay_read("gr_wf_repo_get", {"repo": "fixture-owner/ExampleRepo"})
+        pid = int(marker.read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        self.assertEqual(len(spools), 1)
+        self.assertTrue(spools[0].closed)
+
     def test_cli_transport_passes_only_arguments_on_stdin_and_never_reads_credentials(self):
         def run(argv, **kwargs):
             self.assertEqual(
                 argv, ["simple-git", "call", "gr_wf_repo_get", "--args-json", "-", "--json"]
             )
             self.assertEqual(json.loads(kwargs["input"]), {"repo": "fixture-owner/ExampleRepo"})
+            self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
+            self.assertEqual(kwargs["timeout"], 310)
+            self.assertIs(kwargs["preexec_fn"], exporter._limit_relay_output)
             kwargs["stdout"].write(
                 json.dumps({"structured": {"repository": {"id": 123}}, "text": ""}).encode()
             )

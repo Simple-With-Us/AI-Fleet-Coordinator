@@ -445,6 +445,7 @@ def export_snapshot(
         }
     )
     trees: dict[str, Any] = {}
+    metadata_bytes = len(canonical({}))
     pending = [(root, 0)]
     while pending:
         tree_id, depth = pending.pop()
@@ -458,9 +459,11 @@ def export_snapshot(
         if response.get("sha") != tree_id or response.get("truncated") is not False:
             raise SourceError("Provider tree is missing, truncated or rebound")
         entries = verify_tree(tree_id, response.get("entries"))
-        trees[tree_id] = entries
-        if len(canonical(trees)) > MAX_METADATA_BYTES:
+        # Each member excludes the empty object's braces/newline and adds its comma.
+        metadata_bytes += len(canonical({tree_id: entries})) - 3 + bool(trees)
+        if metadata_bytes > MAX_METADATA_BYTES:
             raise SourceError("Remote source tree metadata exceeds its byte bound")
+        trees[tree_id] = entries
         pending.extend((item["sha"], depth + 1) for item in entries if item["type"] == "tree")
     return Snapshot(
         identity,

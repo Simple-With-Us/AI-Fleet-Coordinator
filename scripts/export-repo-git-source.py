@@ -7,12 +7,25 @@ import argparse
 import importlib.util
 import json
 import os
+import resource
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import remote_git_source as remote
+
+MAX_RELAY_RESPONSE_BYTES = 4_000_000
+RELAY_READ_TIMEOUT_SECONDS = 310
+
+
+def _limit_relay_output() -> None:
+    # One overflow byte makes a swallowed SIGXFSZ failure observable to the parent.
+    ceiling = MAX_RELAY_RESPONSE_BYTES + 1
+    for limit in resource.getrlimit(resource.RLIMIT_FSIZE):
+        if limit != resource.RLIM_INFINITY:
+            ceiling = min(ceiling, limit)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (ceiling, ceiling))
 
 
 def relay_read(tool: str, arguments: dict) -> dict:
@@ -28,15 +41,16 @@ def relay_read(tool: str, arguments: dict) -> dict:
                 input=remote.canonical(arguments),
                 stdout=output,
                 stderr=subprocess.DEVNULL,
-                timeout=310,
+                timeout=RELAY_READ_TIMEOUT_SECONDS,
                 check=False,
+                preexec_fn=_limit_relay_output,
             )
+            if os.fstat(output.fileno()).st_size > MAX_RELAY_RESPONSE_BYTES:
+                raise remote.SourceError("Assigned Git relay response exceeded its byte bound")
             if result.returncode != 0:
                 raise remote.SourceError(
                     "Assigned Git relay refused or failed a bounded read: " + tool
                 )
-            if output.tell() > 4_000_000:
-                raise remote.SourceError("Assigned Git relay response exceeded its byte bound")
             output.seek(0)
             response = json.load(output)
         if (
