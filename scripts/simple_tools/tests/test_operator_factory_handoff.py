@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from simple_tools import operator_identity_reader as OIR
@@ -92,7 +93,10 @@ class HandoffTest(unittest.TestCase):
 
     def test_a_project_contradiction_is_refused(self):
         self._install_fake_api()
-        env = dict(ENV, INFISICAL_FLEET_OPS_PROJECT_ID="9bf7417a-fbbb-42ca-870c-2b45207233f5")
+        # A runtime-derived stand-in for a DIFFERENT project:  deterministic, no committed
+        # inventory-shaped literal.
+        env = dict(ENV, INFISICAL_FLEET_OPS_PROJECT_ID=str(
+            uuid.uuid5(uuid.NAMESPACE_URL, "simple-tools/tests/operator-factory-handoff/other-project")))
         with self.assertRaises(Z.CredentialError) as ctx:
             SI.operator_credentials(env, self.home)
         self.assertIn("another project", str(ctx.exception))

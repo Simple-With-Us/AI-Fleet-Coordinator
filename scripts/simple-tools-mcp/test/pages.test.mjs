@@ -410,3 +410,12 @@ test("past successful traffic cannot color a missing-service seat ready", async 
   assert.match(html, /status-state state-attention">Needs setup: Zulip key/);
   assert.doesNotMatch(html, /status-state state-ready">Needs setup/);
 });
+
+
+test("consent facts have a scoped wrapping table, not the admin scrolling table", async () => {
+  const res = consentPage({ clientName: "Example", clientDomain: null, clientId: "https://example.test/client.json", redirectHost: "example.test", scopes: ["zulip:read"], seat: "CURSOR", handle: "h".repeat(48), replacing: [], eventsOnly: false }, {});
+  const html = await res.text();
+  assert.match(html, /<table class="consent-facts">/);
+  assert.ok(STYLE.includes("table.consent-facts{display:table;table-layout:fixed;overflow:visible;white-space:normal;background:none}"));
+  assert.ok(STYLE.includes("table.consent-facts th,table.consent-facts td{overflow-wrap:anywhere}"));
+});

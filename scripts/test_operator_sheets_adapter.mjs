@@ -281,6 +281,11 @@ test("OAuth answer: a whitespace-only access_token is refused", async () => {
     /Google OAuth error 200/);
 });
 
+test("OAuth answer: a padded access_token is trimmed before it reaches the Bearer header", async () => {
+  const { token } = await getGoogleAccessToken(SA, oauthFetch({ access_token: "  tok  ", expires_in: 3600 }));
+  assert.equal(token, "tok");
+});
+
 test("OAuth answer: a missing or malformed expires_in fails closed, never an assumed TTL", async () => {
   for (const payload of [
     { access_token: "tok" },

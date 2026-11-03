@@ -103,8 +103,9 @@ export async function getGoogleAccessToken(sa, fetchImpl) {
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${signingInput}.${signature}`,
   });
   const data = await res.json().catch(() => null);
-  const token = data && typeof data.access_token === "string" ? data.access_token : "";
-  if (!res.ok || !token.trim())
+  const token = data && typeof data.access_token === "string" ? data.access_token.trim() : "";
+  // Trimmed once at extraction:  the validated value is the value the Bearer header gets.
+  if (!res.ok || !token)
     throw new Error(`Google OAuth error ${res.status}`);
   // expires_in is seconds and must be a finite positive TTL:  an unknown TTL is a
   // failure, never an assumed 3600 that could over-cache a shorter-lived token, and
