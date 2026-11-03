@@ -34,7 +34,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
-MAX_FILES = 146
+# The 147th is agent_sync/listener_registry.py, the Operator session-registry service the daemon
+# serves over the listener HTTPS API (Path B, operator.simplewithus.com).
+MAX_FILES = 147
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65

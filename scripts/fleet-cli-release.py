@@ -32,7 +32,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
-MAX_FILES = 146
+# The 147th is agent_sync/listener_registry.py, the Operator session-registry service the daemon
+# serves over the listener HTTPS API (Path B, operator.simplewithus.com).
+MAX_FILES = 147
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
