@@ -18,13 +18,14 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
 
 ## Rules a job gets for free
 
-- **One fetch per process**, on the first read, through the installed `infisical` CLI with
-  `--env=prod` (prod is the only environment).  A failed fetch is not retried;
+- **One fetch per process**, on the first read, through the low-level scoped REST reader in
+  `fleet_secrets/core.py`, for prod only.  A failed fetch is not retried;
   `knobs.refresh()` forgets it for a long-running process.
-- **Scoped service token.**  Every automated reader requires the per-use-case
-  `FLEET_KNOBS_INFISICAL_TOKEN`, passed only to the CLI child as `INFISICAL_TOKEN`.  Missing or
-  malformed tokens fail closed; there is no machine-identity or CLI-session fallback.  The CLI
-  export is bounded by one 8 second timeout.
+- **Scoped service token.**  Every automated reader requires the per-use-case
+  `FLEET_KNOBS_INFISICAL_TOKEN`, passed explicitly to the verifier.  Metadata must prove the
+  independently expected project, exact prod folder and read-only permission before named
+  values are fetched.  Missing or malformed tokens fail closed; there is no machine-identity
+  or CLI-session fallback.  One 8 second deadline bounds metadata and all named requests.
 - **Negative cache.**  A failed fetch writes `fetch-failed.json` (0600, timestamp and reason
   token) beside the copy;  for 60 seconds other processes skip the fetch and read the copy
   (`fetch_reason` `recent-<token>`).  A good fetch clears it;  `refresh()` ignores it.
@@ -76,8 +77,8 @@ unknown name, any secret and any value the knob's `Spec` rejects, through the sa
 `values.parse` the readers use, and writes the canonical text.  `--plan` shows the old and new
 value and the CLI argv and writes nothing; `--yes` runs `infisical secrets set NAME=VALUE
 --env=prod --path=/ --projectId=<id>` with a write-capable service token in the child's
-`INFISICAL_TOKEN` only.  The token comes from `FLEET_KNOBS_WRITE_TOKEN` or the Mac keychain item
-`fleet-knobs-write` (account `INFISICAL_TOKEN`); without one the answer is `no write token`. 
+`INFISICAL_TOKEN` only.  The token comes only from `FLEET_KNOBS_WRITE_TOKEN`, with its exact
+project, prod root folder and read/write grant verified first; without one the answer is `no write token`. 
 After a write the last-known-good copy is refreshed (or, when the re-read fails, patched for
 that key with its age kept), and every `--yes` appends a row to
 `~/.agent-sync/listener/knobs.jsonl` (0600): time, seat, key, old and new value, result.  Exit 0
@@ -86,8 +87,12 @@ planned or done, 1 failed, 2 refused.
 ## Packaging
 
 A stable copy run with `python3 -I` must carry this package (`scripts/fleet_knobs/`, without
-`tests/`).  It imports nothing outside the standard library, so no other fleet package comes
-with it, and `tests/test_inventory_cli.py` runs a bare copy under `python3 -I` to keep it so.
+`tests/`) plus the existing low-level verifier files `fleet_secrets/__init__.py` and
+`fleet_secrets/core.py`.  Both packages use only the standard library.  The fleet-facts and
+needs-owner installers copy those two verifier files explicitly and remove stale package
+extras; they do not install a fleet-secrets executable, `cli.py` or `__main__.py`.  Their
+installed `python3 -I` tests exercise real metadata and named-value verification through a
+loopback fixture, including successful reads and rejection before values for mismatched grants.
 
 ## Tests
 
@@ -95,6 +100,6 @@ with it, and `tests/test_inventory_cli.py` runs a bare copy under `python3 -I` t
 cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
 ```
 
-The tests put a fake `infisical` executable first and alone on `PATH`, point `HOME` at a temp
-directory and patch out the CLI fallback directories, so they never reach the network, the
-real CLI, `~/.secrets` or the real state directory.
+Tests use injected helper fixtures or a loopback HTTP API with synthetic tokens and values,
+point `HOME` at a temporary directory and disable CLI fallbacks.  They do not read real
+credential stores, invoke the real Infisical CLI or access live Infisical.

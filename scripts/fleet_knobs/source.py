@@ -111,11 +111,11 @@ def argv_named(cli: str, names: Iterable[str], project_id: str, path: str) -> li
 
 
 def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> dict[str, str]:
-    """Only the named secrets of one folder of another project (``infisical secrets get``).
+    """Only named secrets of one folder, checked against the caller's expected project.
 
-    Unlike ``fetch`` the CLI itself is asked for just these names, so no other secret in the
-    folder reaches this process.  Absent names are left out.  Same contract otherwise:  prod only,
-    the CLI's output and stderr never printed, a failure reduced to a reason token."""
+    The verifier checks metadata before per-name REST requests, so unrelated folder values
+    never enter this process.  Absent names are left out.  Prod only; failures are reduced to
+    reason tokens and provider output is never printed."""
     return _scoped_fetch(names, project_id, path, named=True)
 
 
