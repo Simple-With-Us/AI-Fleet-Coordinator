@@ -55,7 +55,6 @@ DOCUMENT_DIRS = {
 }
 SENSITIVE_DIRS = repo_catalog.SENSITIVE_DIRS
 SENSITIVE_SUFFIXES = repo_catalog.SENSITIVE_SUFFIXES
-SCRATCH_RE = re.compile(r"^(?:scratch|tmp|temp|backup|archive)(?:[-_].*)?$", re.IGNORECASE)
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -236,7 +235,7 @@ def _github_owner_repo(remote: str) -> tuple[str, str] | None:
 
 
 def _repo_info(path: Path) -> RepoInfo | None:
-    if path.is_symlink() or not path.is_dir() or SCRATCH_RE.match(path.name):
+    if path.is_symlink() or not path.is_dir() or repo_catalog.is_scratch_dir_name(path.name):
         return None
     try:
         top = Path(os.fsdecode(_run_git(path, "rev-parse", "--show-toplevel").strip())).resolve()

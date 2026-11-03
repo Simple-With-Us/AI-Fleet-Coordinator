@@ -86,7 +86,15 @@ DOCUMENT_ROOTS = {
     "spec",
     "specs",
 }
-SCRATCH_PREFIXES = {"archive", "backup", "scratch", "temp", "tmp"}
+SCRATCH_PREFIXES = {
+    "archive",
+    "archives",
+    "backup",
+    "backups",
+    "scratch",
+    "temp",
+    "tmp",
+}
 
 ROOT_DOCUMENT_STEMS = {
     "agents",
@@ -259,18 +267,18 @@ def is_fixture_path(relative: str) -> bool:
     return bool(set(_parts(relative)) & FIXTURE_DIRS)
 
 
+def is_scratch_dir_name(name: str) -> bool:
+    name = name.casefold()
+    stem = PurePosixPath(name).stem
+    return any(
+        value == prefix or value.startswith((f"{prefix}-", f"{prefix}_"))
+        for value in {name, stem}
+        for prefix in SCRATCH_PREFIXES
+    )
+
+
 def is_scratch_path(relative: str) -> bool:
-    for part in _parts(relative):
-        stem = PurePosixPath(part).stem
-        if any(
-            part == prefix
-            or part.startswith((f"{prefix}-", f"{prefix}_"))
-            or stem == prefix
-            or stem.startswith((f"{prefix}-", f"{prefix}_"))
-            for prefix in SCRATCH_PREFIXES
-        ):
-            return True
-    return False
+    return any(is_scratch_dir_name(part) for part in _parts(relative))
 
 
 def is_document_rooted(relative: str) -> bool:

@@ -75,6 +75,26 @@ class CollectorTests(unittest.TestCase):
     ) -> RepositoryFixture:
         return RepositoryFixture(self.code, folder, name, owner)
 
+    def test_plural_backup_and_archive_names_are_scratch_paths(self) -> None:
+        for name in (
+            "backups",
+            "backups-2026",
+            "backups_2026",
+            "archives",
+            "archives-2026",
+            "archives_2026",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(collector.repo_catalog.is_scratch_dir_name(name))
+                self.assertTrue(collector.repo_catalog.is_scratch_path(f"docs/{name}/guide.md"))
+                self.assertFalse(collector._is_human_document(f"docs/{name}/guide.md"))
+                self.assertFalse(
+                    collector.repo_catalog.is_linkable_evidence(f"docs/{name}/proof.csv")
+                )
+
+        scratch_repo = self.make_repo(folder="backups_2026", name="ExampleRepo")
+        self.assertIsNone(collector._repo_info(scratch_repo.path))
+
     def test_collection_uses_published_default_ref_and_only_tracked_human_docs(self) -> None:
         repo = self.make_repo()
         repo.write("README.md", "# Published README\n")
@@ -239,6 +259,12 @@ class CollectorTests(unittest.TestCase):
         repo.write("docs/scratch/draft.svg", "<svg></svg>")
         repo.write("docs/archive/old.md", "Archived draft.")
         repo.write("docs/archive/evidence.csv", "secret,archived\n")
+        repo.write("docs/backups/old.md", "Archived source tree.")
+        repo.write("docs/backups-2026/old.md", "Old backup tree.")
+        repo.write("docs/archives_current/old.md", "Old archive tree.")
+        repo.write("docs/guides/backups-2026/linked.md", "Linked backup document.")
+        repo.write("docs/guides/archives_current/results.csv", "private,result\nfoo,bar\n")
+        repo.write("docs/guides/backups_current/diagram.svg", "<svg></svg>")
         repo.write(
             "docs/guides/setup.adoc",
             "Guide; see image:images/topology.svg[] and link:evidence/results.csv[].\n",
@@ -251,7 +277,10 @@ class CollectorTests(unittest.TestCase):
             '<img src="/build/docs/generated.svg">'
             '<img src="/tests/fixtures/example.svg">'
             '<img src="/docs/scratch/draft.svg">'
-            '<a href="/docs/archive/evidence.csv">archived evidence</a>\n',
+            '<a href="/docs/archive/evidence.csv">archived evidence</a>'
+            '<a href="/docs/guides/backups-2026/linked.md">backup document</a>'
+            '<a href="/docs/guides/archives_current/results.csv">archive evidence</a>'
+            '<img src="/docs/guides/backups_current/diagram.svg">\n',
         )
         repo.write("docs/guides/images/topology.svg", "<svg></svg>")
         repo.write("docs/guides/evidence/results.csv", "check,result\nready,yes\n")
@@ -315,6 +344,12 @@ class CollectorTests(unittest.TestCase):
             "docs/scratch/draft.svg",
             "docs/archive/old.md",
             "docs/archive/evidence.csv",
+            "docs/backups/old.md",
+            "docs/backups-2026/old.md",
+            "docs/archives_current/old.md",
+            "docs/guides/backups-2026/linked.md",
+            "docs/guides/archives_current/results.csv",
+            "docs/guides/backups_current/diagram.svg",
         ):
             self.assertEqual(rows[path]["role"], "scratch-or-archive")
             self.assertEqual(
@@ -335,6 +370,12 @@ class CollectorTests(unittest.TestCase):
             "docs/scratch/draft.svg",
             "docs/archive/old.md",
             "docs/archive/evidence.csv",
+            "docs/backups/old.md",
+            "docs/backups-2026/old.md",
+            "docs/archives_current/old.md",
+            "docs/guides/backups-2026/linked.md",
+            "docs/guides/archives_current/results.csv",
+            "docs/guides/backups_current/diagram.svg",
             "credentials/token.md",
         ):
             self.assertFalse(rows[path]["copied_to_documents"], path)
