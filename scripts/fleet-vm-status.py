@@ -81,11 +81,17 @@ def iso_from_timestamp(value: float) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run(command, timeout=30):
+def run(command, timeout=30, env=None):
     """Run a command and return its stdout,  or None when it could not be run."""
     try:
         result = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout, check=False
+            command,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            check=False,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -405,9 +411,12 @@ def collect_harness_sessions(home):
         count = 0
         newest = None
         for directory, dirnames, filenames in os.walk(folder):
+            if count >= SESSION_FILE_CAP:
+                break
             dirnames[:] = [name for name in dirnames if not (Path(directory) / name).is_symlink()]
             for filename in filenames:
                 if count >= SESSION_FILE_CAP:
+                    dirnames[:] = []
                     break
                 if not _is_session_file(filename):
                     continue
@@ -434,9 +443,27 @@ def collect_harness_sessions(home):
 
 
 def _git(repo, args, run_command=run, timeout=15):
-    """One local git read,  with no optional locks so it never writes."""
-    command = ["git", "--no-optional-locks", "-C", str(repo)] + list(args)
-    return run_command(command, timeout=timeout)
+    """One local git read,  with no optional locks so it never writes.
+
+    Repo config is hostile input on a timer:  fsmonitor and hooks are
+    neutralized on the command line and global/system config is isolated,
+    so a cloned checkout cannot execute anything through a status read.
+    """
+    command = [
+        "git",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-C",
+        str(repo),
+    ] + list(args)
+    env = dict(os.environ)
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return run_command(command, timeout=timeout, env=env)
 
 
 def _checkout_unpushed(repo, run_command):
@@ -559,6 +586,8 @@ def write_report(path, document):
     """Atomic and private:  a 0600 temporary file in the same folder,  fsynced,
     then renamed over.  The folder is created 0700 when it is absent."""
     path = Path(path)
+    if path.parent.is_symlink():
+        raise ValueError("report folder is a symlink: %s" % path.parent)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     handle, temporary = tempfile.mkstemp(prefix=".vm-status.", suffix=".tmp", dir=str(path.parent))
     try:
@@ -569,6 +598,14 @@ def write_report(path, document):
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
     except BaseException:
         try:
             os.unlink(temporary)

@@ -17,6 +17,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -302,6 +303,68 @@ class ReportShapeTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             leftovers = [p.name for p in path.parent.iterdir() if p.name != "vm-status.json"]
             self.assertEqual(leftovers, [])
+
+    def test_write_report_refuses_symlinked_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            link = Path(tmp) / "state"
+            link.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                collector.write_report(link / "vm-status.json", {"schemaVersion": 1})
+            self.assertEqual(list(real.iterdir()), [])
+
+    def test_run_replaces_non_utf8_output_instead_of_raising(self):
+        import sys
+
+        out = collector.run(
+            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'ok-\\xff\\n')"]
+        )
+        self.assertIsNotNone(out)
+        self.assertTrue(out.startswith("ok-"))
+
+    def test_git_reads_neutralize_repo_hooks_and_config(self):
+        seen = {}
+
+        def fake(command, timeout=0, env=None):
+            seen["command"] = command
+            seen["env"] = env
+            return "main\n"
+
+        collector._git("/tmp/repo", ["status", "--porcelain"], run_command=fake)
+        joined = " ".join(seen["command"])
+        self.assertIn("core.fsmonitor=", joined)
+        self.assertIn("core.hooksPath=/dev/null", joined)
+        self.assertEqual(seen["env"]["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(seen["env"]["GIT_CONFIG_GLOBAL"], "/dev/null")
+
+    def test_session_cap_stops_the_walk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            folder = home / ".local" / "share" / "muse" / "sessions"
+            folder.mkdir(parents=True)
+            for index in range(5):
+                (folder / ("2026-session-%d.jsonl" % index)).write_text("{}\n")
+            deeper = folder / "deeper"
+            deeper.mkdir()
+            (deeper / "2026-session-9.jsonl").write_text("{}\n")
+            visited = []
+            real_walk = collector.os.walk
+
+            def counting_walk(top, *args, **kwargs):
+                for row in real_walk(top, *args, **kwargs):
+                    visited.append(row[0])
+                    yield row
+
+            old_cap = collector.SESSION_FILE_CAP
+            collector.SESSION_FILE_CAP = 2
+            try:
+                with unittest.mock.patch.object(collector.os, "walk", counting_walk):
+                    rows = collector.collect_harness_sessions(home)
+            finally:
+                collector.SESSION_FILE_CAP = old_cap
+            self.assertEqual(rows["muse"]["sessionFileCount"], 2)
+            self.assertEqual(len(visited), 1)
 
 
 if __name__ == "__main__":
