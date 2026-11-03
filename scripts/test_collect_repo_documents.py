@@ -236,7 +236,9 @@ class CollectorTests(unittest.TestCase):
         repo.write("scratch.md", "Scratch.")
         repo.write("tmp-notes.md", "Temporary notes.")
         repo.write("docs/scratch/draft.md", "Draft.")
+        repo.write("docs/scratch/draft.svg", "<svg></svg>")
         repo.write("docs/archive/old.md", "Archived draft.")
+        repo.write("docs/archive/evidence.csv", "secret,archived\n")
         repo.write(
             "docs/guides/setup.adoc",
             "Guide; see image:images/topology.svg[] and link:evidence/results.csv[].\n",
@@ -247,7 +249,9 @@ class CollectorTests(unittest.TestCase):
             '<img src="/docs/guides/images/topology.svg">'
             '<img src="/vendor/docs/upstream.svg">'
             '<img src="/build/docs/generated.svg">'
-            '<img src="/tests/fixtures/example.svg">\n',
+            '<img src="/tests/fixtures/example.svg">'
+            '<img src="/docs/scratch/draft.svg">'
+            '<a href="/docs/archive/evidence.csv">archived evidence</a>\n',
         )
         repo.write("docs/guides/images/topology.svg", "<svg></svg>")
         repo.write("docs/guides/evidence/results.csv", "check,result\nready,yes\n")
@@ -304,7 +308,14 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(rows["tests/fixtures/example.md"]["role"], "test-fixture")
         self.assertEqual(rows["infra/main.tf"]["role"], "deployment-config")
         self.assertEqual(rows["workbook.xlsx"]["role"], "ambiguous-document-data")
-        for path in ("scratch.md", "tmp-notes.md", "docs/scratch/draft.md", "docs/archive/old.md"):
+        for path in (
+            "scratch.md",
+            "tmp-notes.md",
+            "docs/scratch/draft.md",
+            "docs/scratch/draft.svg",
+            "docs/archive/old.md",
+            "docs/archive/evidence.csv",
+        ):
             self.assertEqual(rows[path]["role"], "scratch-or-archive")
             self.assertEqual(
                 rows[path]["exclusion_reason"], "scratch, temporary, backup, or archive path"
@@ -321,7 +332,9 @@ class CollectorTests(unittest.TestCase):
             "scratch.md",
             "tmp-notes.md",
             "docs/scratch/draft.md",
+            "docs/scratch/draft.svg",
             "docs/archive/old.md",
+            "docs/archive/evidence.csv",
             "credentials/token.md",
         ):
             self.assertFalse(rows[path]["copied_to_documents"], path)
@@ -994,6 +1007,27 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(manifest["private_docs_opt_in"], "fixture-owner/Fleet-OPS")
         with self.assertRaisesRegex(collector.CollectionError, "same explicit opt-in"):
             collector.collect(self.code, output, repo_paths=[repo.path])
+
+    def test_verified_private_kodus_repository_accepts_exact_owner_opt_in(self) -> None:
+        repo = self.make_repo(name="Kodus-Config", owner="Simple-With-Us")
+        repo.write("README.md", "Private repository instructions.")
+        repo.write("docs/rule-curation.md", "Private rules guide.")
+        repo.commit_published()
+        output = self.base / "kodus-private-central"
+
+        collector.collect(
+            self.code,
+            output,
+            repo_paths=[repo.path],
+            private_docs_repo="Simple-With-Us/Kodus-Config",
+        )
+
+        mirror = output / "Kodus-Config"
+        self.assertEqual(
+            (mirror / "documents/docs/rule-curation.md").read_text(), "Private rules guide."
+        )
+        manifest = json.loads((mirror / "manifest.json").read_text())
+        self.assertEqual(manifest["private_docs_opt_in"], "Simple-With-Us/Kodus-Config")
 
     def test_indexes_only_cli_writes_only_to_preview_root(self) -> None:
         repo = self.make_repo()

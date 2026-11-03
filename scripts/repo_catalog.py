@@ -310,6 +310,8 @@ def is_linkable_evidence(relative: str, allow_private_audit: bool = False) -> bo
         relative, allow_private_audit=allow_private_audit
     ):
         return False
+    if is_scratch_path(relative):
+        return False
     if is_vendor_path(relative) or is_generated_path(relative) or is_fixture_path(relative):
         return False
     if PurePosixPath(relative).suffix.casefold() not in EVIDENCE_SUFFIXES:
