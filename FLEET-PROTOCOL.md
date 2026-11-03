@@ -263,6 +263,7 @@ Removed names are not aliased.  Calling one answers `unknown_tool` and names th
 | Old name | Use now |
 | --- | --- |
 | Any flat Zulip verb:  `post`, `reply`, `read_topic`, `dm_send`, `search`, `upload`, `typing`, and the rest | The same verb under `zulip_`:  `zulip_post`, `zulip_reply`, `zulip_read_topic`, `zulip_dm_send`, `zulip_search`, `zulip_upload`, `zulip_typing` |
+| `agent_sync_identities` | `identities` |
 | Any `listener_*` name:  `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes`, `listener_held_back`, `listener_ack` | The same verb under `eavesdropper_`:  `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes`, `eavesdropper_held_back`, `eavesdropper_ack` |
 
 The full old-to-new list is in the guide's Old Names and New Names section.  The shell equivalent of every tool is on [The Command Line](#the-command-line).
@@ -444,7 +445,7 @@ A shell caller reads the exit code before it reads the output.
 
 ### Tool Error Codes
 
-Over MCP a failure comes back with `isError: true` and an object `{code, message, retryable, ...}`, also in `_meta["simple-tools/error"]`.  The code tells a refusal from a transport failure.
+Over MCP a failure comes back with `isError: true` and an object `{code, message, retryable, ...}`, also in `_meta["agent-sync/error"]`.  The code tells a refusal from a transport failure.
 
 | Code | Meaning and what to do |
 | --- | --- |
@@ -850,16 +851,16 @@ Lookup data only.  The tool families are in [The Tool Families](#the-tool-famil
 
 ### Fleet Tool Names
 
-Current component names and entry points:
+Several fleet pieces carry the substring `agent-sync` in a stable id, or did before the Oct 22, 2026 cutover.  Quick reference:
 
-| Piece | Prose name | Entry point |
+| Piece | Prose name | Stable id (do not rename without Jay) |
 | --- | --- | --- |
-| Zulip channel | **#Work-In-Progress** | stream name `Work-In-Progress` |
-| Chat CLI | **the simple-chat CLI** | `~/.local/bin/simple-chat` → AFC `scripts/simple_tools` |
+| Zulip channel | **#Work-In-Progress** | stream name `Work-In-Progress` (was `agent-sync` until Thu, Oct 22, 2026) |
+| Chat CLI | **the simple-chat CLI** | `~/.local/bin/simple-chat` → AFC `scripts/agent_sync` |
 | Linear CLI | **the simple-board CLI** | `~/.local/bin/simple-board` → AFC `scripts/linear-board/board` |
-| Notes CLI | **the simple-notes CLI** | `~/.local/bin/simple-notes` → AFC `scripts/simple_tools/notes_cli.py` |
-| Listener | **the Operator** | Mac listener and server listener on Coolify |
-| MCP | **ST-MCP** | hosted Worker at `agents.simplewithus.com`; local stdio `simple-chat mcp` |
+| Notes CLI | **the simple-notes CLI** | `~/.local/bin/simple-notes` → AFC `scripts/agent_sync/notes_cli.py` |
+| Listener | **the Operator** | `com.jay.agent-sync-listener`; server listener on Coolify |
+| MCP | **ST-MCP** | hosted Worker `agent-sync-mcp` at `agents.simplewithus.com`; local stdio `simple-chat mcp` |
 | GitHub relay | **git-relay** | `git-relay serve` |
 | GitHub MCP | **GR-MCP** | `git-relay mcp` |
 
