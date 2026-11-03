@@ -144,6 +144,8 @@ final class MacServicesCollectorTests: XCTestCase {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         let scripts = root.appendingPathComponent("scripts")
         try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scripts.path)
         defer { try? FileManager.default.removeItem(at: root) }
         let script = scripts.appendingPathComponent("fleet-mac-services.py")
         try Data("# test fixture\n".utf8).write(to: script)
@@ -156,7 +158,7 @@ final class MacServicesCollectorTests: XCTestCase {
             let invocation = try collector.invocation()
             XCTAssertEqual(invocation.executable, "/usr/bin/python3")
             XCTAssertEqual(invocation.arguments, [
-                "-I", collector.repoRoot.appendingPathComponent("scripts/fleet-mac-services.py").path,
+                "-I", URL(fileURLWithPath: invocation.workingDirectory).appendingPathComponent("scripts/fleet-mac-services.py").path,
                 "--dry-run", "--agents-dir", collector.home.appendingPathComponent("Library/LaunchAgents").path,
             ])
             XCTAssertEqual(invocation.environment, ["HOME": collector.home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
@@ -189,6 +191,20 @@ final class MacServicesCollectorTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scripts.path)
             try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: collector.repoRoot.path)
             XCTAssertThrowsError(try collector.invocation())
+        }
+    }
+
+    func test_repository_alias_executes_the_same_canonical_tree_that_was_checked() async throws {
+        try await withCollector { original in
+            let alias = original.repoRoot.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: original.repoRoot)
+            defer { try? FileManager.default.removeItem(at: alias) }
+            var collector = original
+            collector.repoRoot = alias
+            let invocation = try collector.invocation()
+            XCTAssertNotEqual(invocation.workingDirectory, alias.path)
+            XCTAssertEqual(invocation.arguments[1], invocation.workingDirectory + "/scripts/fleet-mac-services.py")
+            XCTAssertFalse(invocation.arguments[1].hasPrefix(alias.path + "/"))
         }
     }
 

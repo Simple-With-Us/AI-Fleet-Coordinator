@@ -276,11 +276,15 @@ struct MacServicesCollector {
     static let timeout: TimeInterval = 150
 
     func invocation(fileManager: FileManager = .default) throws -> OpsInvocation {
-        let script = repoRoot.appendingPathComponent("scripts/fleet-mac-services.py")
+        guard let resolvedPath = realpath(repoRoot.path, nil) else {
+            throw OpsControlError.helperNotFound(repoRoot.appendingPathComponent("scripts/fleet-mac-services.py").path)
+        }
+        let root = URL(fileURLWithPath: String(cString: resolvedPath), isDirectory: true)
+        free(resolvedPath)
+        let script = root.appendingPathComponent("scripts/fleet-mac-services.py")
         // This route runs the owner's configured, trusted checkout, like the other
         // app engines; it is not a sandbox for arbitrary Python supplied by callers.
         // Protect the file and both checkout directories from other-user replacement.
-        let root = repoRoot.resolvingSymlinksInPath()
         let scripts = root.appendingPathComponent("scripts")
         func trusted(_ url: URL, type: FileAttributeType, stickyParent: Bool = false) -> Bool {
             guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
@@ -306,7 +310,7 @@ struct MacServicesCollector {
         return OpsInvocation(
             executable: OpsControlRoute.interpreter,
             arguments: ["-I", script.path, "--dry-run", "--agents-dir", home.appendingPathComponent("Library/LaunchAgents").path],
-            workingDirectory: repoRoot.path,
+            workingDirectory: root.path,
             environment: ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
             timeout: Self.timeout
         )
