@@ -428,6 +428,39 @@ class LargeTextTests(unittest.TestCase):
                 },
             )
 
+    def test_explicit_false_flag_means_base_cap(self):
+        small_tree = [{"path": "a", "text": "x", "mode": "100644"}]
+        s, _ = svc({"sha": "b" * 40, "truncated": False, "tree": []})
+        out = s.run(
+            "wf_git_tree_create",
+            {"repo": REPO, "base_tree": SHA, "files": small_tree, "allow_large_text": False},
+        )
+        self.assertEqual(out["tree"]["files"], 1)
+        s, _ = svc({"sha": self.blob_sha(b"x")})
+        out = s.run(
+            "wf_git_blob_create", {"repo": REPO, "text": "x", "allow_large_text": False}
+        )
+        self.assertEqual(out["blob"]["sha"], self.blob_sha(b"x"))
+        raw = b"x"
+        reply = {
+            "sha": self.blob_sha(raw),
+            "encoding": "base64",
+            "size": 1,
+            "content": base64.b64encode(raw).decode(),
+        }
+        s, _ = svc(reply)
+        out = s.run(
+            "wf_git_blob_get", {"repo": REPO, "sha": self.blob_sha(raw), "allow_large_text": False}
+        )
+        self.assertEqual(out["blob"]["text"], "x")
+        s, c = svc()
+        with self.assertRaises(Refused):  # large text still held to the base cap
+            s.run(
+                "wf_git_blob_create",
+                {"repo": REPO, "text": self.TEXT, "allow_large_text": False},
+            )
+        self.assertEqual(c.calls, [])
+
     def test_tree_cumulative_cap_with_flag(self):
         files = [{"path": f"f{i}.txt", "text": "y" * 20000, "mode": "100644"} for i in range(3)]
         s, c = svc()

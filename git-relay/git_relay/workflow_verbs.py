@@ -5382,7 +5382,7 @@ class WorkflowVerbs:
         _only(args, ("repo", "base_tree", "files", "allow_large_text"))
         base = _sha(args, "base_tree")
         large = args.get("allow_large_text")
-        if large is not None and large is not True:
+        if large is not None and large is not True and large is not False:
             raise Refused("invalid files")
         total_cap = MAX_WORKFLOW_TEXT_LARGE if large is True else MAX_WORKFLOW_TEXT
         files = args.get("files")
@@ -5484,7 +5484,7 @@ class WorkflowVerbs:
         _only(args, ("repo", "sha", "allow_large_text"))
         sha = _sha(args, "sha")
         large = args.get("allow_large_text")
-        if large is not None and large is not True:
+        if large is not None and large is not True and large is not False:
             raise Refused("invalid blob read")
         size_cap = MAX_WORKFLOW_TEXT_LARGE if large is True else MAX_WORKFLOW_TEXT
         b64_cap = MAX_WORKFLOW_TEXT_LARGE_B64 if large is True else 60000
@@ -5527,7 +5527,7 @@ class WorkflowVerbs:
         if not isinstance(text, str) or find_secret(text) or self._provider_token_text(text):
             raise Refused("invalid blob text")
         large = args.get("allow_large_text")
-        if large is not None and large is not True:
+        if large is not None and large is not True and large is not False:
             raise Refused("invalid blob text")
         cap = MAX_WORKFLOW_TEXT_LARGE if large is True else MAX_WORKFLOW_TEXT
         try:
