@@ -166,7 +166,7 @@ class ReleaseTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(release.Refused, "existing_simple_tools_mcp_conflict"):
             self.receive()
-        self.assertEqual(config.read_bytes(), before + config.read_bytes()[len(before):])
+        self.assertEqual(config.read_bytes(), before + config.read_bytes()[len(before) :])
         self.assertIn("obsolete-tools", config.read_text())  # nothing migrated, nothing lost
 
     def test_unrecognized_custom_lookalikes_keep_the_plain_refusal(self):

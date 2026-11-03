@@ -17,6 +17,7 @@ import threading
 import tomllib
 import unittest
 import urllib.parse
+import uuid
 from pathlib import Path
 
 from simple_tools import config as C
@@ -215,7 +216,8 @@ class InfisicalEnvTests(unittest.TestCase):
                      "ZULIP_SITE", "ZULIP_ALERT_GB_TRADER_HEADER"):
             self.assertNotIn(name, names)
 
-    FLEET_OPS = "123e4567-e89b-42d3-a456-426614174000"
+    # Runtime-derived fixture id:  deterministic, no committed inventory-shaped literal.
+    FLEET_OPS = str(uuid.uuid5(uuid.NAMESPACE_URL, "simple-tools/tests/server-rollout/fleet-ops"))
 
     def operator_folder_reads(self, fake: FakeInfisical) -> list[str]:
         return [p for m, p in fake.requests if m == "GET" and "zulip_operator" in p]

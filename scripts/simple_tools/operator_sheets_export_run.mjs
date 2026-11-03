@@ -150,7 +150,10 @@ export function dispatchOutbox({ dispatcher, limit = 50, execFileImpl = execFile
 // The shipped, reviewed AFC-428 adapter.  Production selection (the OPERATOR_SHEETS_ADAPTER
 // environment variable) must resolve to exactly this module;  any other module is refused.
 // Test injection goes through deps.adapterSpec, which never crosses this pin.
-const SHIPPED_ADAPTER_PATH = fileURLToPath(new URL("./operator_sheets_adapter.mjs", import.meta.url));
+// Canonicalized lazily:  a process started through a symlinked checkout prefix holds a
+// non-canonical import URL, and a missing sibling fails the pin, never module load.
+const shippedAdapterPath = () =>
+  realpathSync(fileURLToPath(new URL("./operator_sheets_adapter.mjs", import.meta.url)));
 
 export function resolveEnvAdapterSpec(spec) {
   if (!spec || !spec.trim())
@@ -161,7 +164,13 @@ export function resolveEnvAdapterSpec(spec) {
   } catch {
     throw new Error("OPERATOR_SHEETS_ADAPTER does not resolve to a readable module");
   }
-  if (resolved !== SHIPPED_ADAPTER_PATH)
+  let shipped;
+  try {
+    shipped = shippedAdapterPath();
+  } catch {
+    throw new Error("the shipped reviewed adapter (operator_sheets_adapter.mjs) is missing");
+  }
+  if (resolved !== shipped)
     throw new Error("OPERATOR_SHEETS_ADAPTER must name the shipped reviewed adapter (operator_sheets_adapter.mjs)");
   return pathToFileURL(resolved).href;
 }

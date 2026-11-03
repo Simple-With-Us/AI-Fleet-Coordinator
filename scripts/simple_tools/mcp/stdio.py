@@ -593,16 +593,24 @@ def _open_identity(
             3,
         )
     role = me.get("role")
-    # The OPERATOR seat is the admin [Operator] bot (owner decision, Oct 22 2026), so it is the one
-    # identity allowed to authenticate with an administrator (200) key.  Every other seat, and the
-    # owner (100) for every seat including OPERATOR, keeps the member-only rule.
-    if not (identity == OPERATOR_SEAT and role == 200 and not me.get("is_owner")) and (
+    # A bot that is also an administrator is still the fleet's bot (owner decision 2026-11-02):
+    # bot keys are accepted at administrator (200), moderator (300) and member (400) alike.  An
+    # owner (100) key is refused for every seat including OPERATOR, and so is a bot at any other
+    # role.  A human key keeps the member-only rule:  the OPERATOR seat is the one identity
+    # allowed a human administrator (200) key (owner decision, Oct 22 2026), never an owner.
+    bot_ok = bool(me.get("is_bot")) and not me.get("is_owner") and role in T.BOT_ROLES
+    operator_admin = identity == OPERATOR_SEAT and role == 200 and not me.get("is_owner")
+    if not (bot_ok or operator_admin) and (
         me.get("is_admin") or me.get("is_owner") or role not in T.FLEET_ROLES
     ):
+        # The refusal itself comes first:  banners cut the text to a line, and the reason must
+        # survive the cut.
         raise _Refused(
-            "the %s bot has role %s; mcp accepts only moderator (300) and member (400) bots and refuses "
-            "admin and owner keys, except for the OPERATOR seat, which accepts an administrator (200) but "
-            "never an owner" % (identity, role),
+            "the %s key has role %s; mcp refuses owner keys and any other role - it accepts "
+            "administrator (200), moderator (300) and member (400) bots, because a bot that is also "
+            "an administrator is still the fleet's bot; human keys stay moderator/member only, "
+            "except for the OPERATOR seat, which also accepts an administrator (200), never an owner"
+            % (identity, role),
             3,
         )
     return agent, me

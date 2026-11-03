@@ -80,9 +80,14 @@ REGISTRATION_RECONCILE_INTERVAL = 900.0
 FLEET_ROLES = (
     300,
     400,
-)  # moderator and member (owner decision 2026-10-07); owner 100 and admin 200 refused
+)  # moderator and member (owner decision 2026-10-07):  the roles a HUMAN key may hold
+# A bot that is also an administrator is still the fleet's bot (owner decision 2026-11-02):
+# bot keys are accepted at administrator, moderator and member alike.  An owner (100) key is
+# refused for every seat, bot or human, and so is a bot at any other role.
+BOT_ROLES = (200, 300, 400)
 # The Operator seat is Z.OPERATOR_SEAT:  the admin [Operator] Zulip bot (owner decision, Oct 22 2026).
-# It is the only seat whose key may be an administrator's;  see admin_allowed.
+# It is the only seat whose HUMAN key may be an administrator's (see admin_allowed);  bot keys are
+# accepted at administrator, moderator and member on every seat (BOT_ROLES above).
 OPERATOR_SEAT = Z.OPERATOR_SEAT
 BACKOFF = (5.0, 30.0, 60.0, 120.0)
 DEAD_QUEUE_SECONDS = 180.0
@@ -149,9 +154,20 @@ class RoleRefused(Z.SimpleToolsError):
 
 
 def role_refused(person: Mapping[str, Any], admin_ok: bool = False) -> bool:
-    """True for an admin or owner bot (or an unknown role):  the listener refuses those keys.  With
-    admin_ok (see admin_allowed) an administrator (200) is accepted, never an owner."""
-    if admin_ok and person.get("role") == 200 and not person.get("is_owner"):
+    """True for a key the listener refuses.
+
+    A bot that is also an administrator is still the fleet's bot (owner decision 2026-11-02):
+    a bot key is accepted at administrator (200), moderator (300) and member (400) alike, and a
+    bot promoted to administrator keeps its queue.  An owner (100) key is refused for every
+    seat, bot or human, and so is a bot at any other role.  A human key keeps the member-only
+    rule:  with admin_ok (see admin_allowed) a human administrator (200) is accepted, never an
+    owner.
+    """
+    if person.get("is_owner") or person.get("role") == 100:
+        return True
+    if person.get("is_bot"):
+        return person.get("role") not in BOT_ROLES
+    if admin_ok and person.get("role") == 200:
         return False
     return bool(
         person.get("is_admin") or person.get("is_owner") or person.get("role") not in FLEET_ROLES
@@ -172,10 +188,14 @@ def admin_allowed(config: Any, seat_cfg: Any) -> bool:
 
 
 def role_refusal(seat: str, role: Any) -> str:
+    # The refusal itself comes first:  banners cut the text to a line, and the reason must
+    # survive the cut.
     return (
-        "the %s bot has role %s; the listener accepts only moderator (300) and member (400) bots and refuses "
-        "admin and owner keys, except for the OPERATOR seat, which accepts an administrator (200) but never an "
-        "owner" % (seat, role)
+        "the %s key has role %s; the listener refuses owner keys and any other role - it accepts "
+        "administrator (200), moderator (300) and member (400) bots, because a bot that is also an "
+        "administrator is still the fleet's bot; human keys stay moderator/member only, except for "
+        "the OPERATOR seat, which also accepts an administrator (200), never an owner"
+        % (seat, role)
     )
 
 
@@ -934,8 +954,9 @@ class Daemon:
             gone.stop.set()  # its poller and wake worker exit instead of reconnecting
             gone.disconnect()
         for runner in self.seats.values():
-            # A reload re-checks every connected seat's role against admin_allowed:  an administrator key on any seat
-            # but OPERATOR loses its queue at once, the same as a promotion.
+            # A reload re-checks every connected seat's role:  a key the listener refuses loses its
+            # queue at once, the same as a promotion.  A bot promoted to administrator keeps its
+            # queue;  a promotion to owner drops it.
             person = (
                 runner.users.get(runner.me.user_id) if runner.me else None
             ) or runner.me_person
@@ -1654,8 +1675,11 @@ class Daemon:
                                 runner.users[uid], admin_allowed(self.config, runner.cfg)
                             )
                         ):
-                            # The seat's own bot was promoted to admin or owner:  drop the queue now,
-                            # not when it next expires (owner decision 2026-10-07).
+                            # The seat's own bot left the accepted bot roles - promoted to owner,
+                            # or to anything the listener refuses:  drop the queue now, not when it
+                            # next expires.  A promotion to administrator keeps the queue:  a bot
+                            # that is also an administrator is still the fleet's bot (owner decision
+                            # 2026-11-02).
                             self._refuse(
                                 runner, role_refusal(runner.seat, runner.users[uid].get("role"))
                             )

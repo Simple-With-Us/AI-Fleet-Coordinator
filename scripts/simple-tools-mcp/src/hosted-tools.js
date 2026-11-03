@@ -10,7 +10,7 @@ import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
 // A port of scripts/simple_tools/mcp/tools.py over the Zulip REST API, with the
 // hosted rules on top:  the seat only from the grant, the channel rule (any
 // public channel the seat's bot is subscribed to, src/channels.js) by stream
-// id on every tool, the member-only role check, spacing,
+// id on every tool, the verified bot role check, spacing,
 // budgets and idempotency in the seat's SeatGate, and one audit row per call.
 //
 // No `cloudflare:` imports:  the Worker hands in a ZulipClient and a SeatGate
@@ -104,6 +104,8 @@ import {
   M_RELATE,
   Q_ISSUE,
   Q_COMMENTS,
+  Q_COMMENT_ONE,
+  Q_RELATIONS,
   Q_LIST,
   Q_TEAMS,
   Q_LABELS,
@@ -143,7 +145,9 @@ const SIDE_CHATS_STREAM_ID = 646987;
 import { CHANNEL_CACHE, lookupChannel, loadChannelSet } from "./channels.js";
 
 export const TRANSPORT = "hosted";
-export const MEMBER_ROLE = 400; // spec 3.6:  hosted seats accept member only
+export const MEMBER_ROLE = 400;
+export const HOSTED_BOT_ROLES = Object.freeze([200, 300, MEMBER_ROLE]);
+const HOSTED_ROLE_POLICY = 2;
 export const RECONCILE_DELAY_MS = 15_000;
 export const RECONCILE_WINDOW_S = 300;
 export const IDEM_EXPLICIT_TTL_MS = 24 * 3600 * 1000;
@@ -472,7 +476,7 @@ export class HostedTools {
       this.requireScope(publicName);
       if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP + GR-MCP Admin.");
       // Every delegated service call first verifies the selected role's own
-      // Zulip bot is present, matches its email and is a member (role 400).
+      // Zulip bot is present, matches its email and has an accepted bot role.
       if (this.callerGate !== this.gate || this.verifySeat) await this.ensureSeat();
       const preparedArgs = withDefaults(spec.inputSchema, args);
       result = Object.hasOwn(FLEETLINK_BY_NAME, publicName)
@@ -585,7 +589,7 @@ export class HostedTools {
 
   // ---------------------------------------------------------------- seat binding
 
-  /** Spec 3.6:  users/me on first use and every 10 minutes;  member bots of this seat only. */
+  /** Spec 3.6:  users/me on first use and every 10 minutes;  verified bots of this seat at administrator, moderator or member role. */
   async ensureSeat() {
     if (!this.zulip) {
       throw new ToolError("not_authorized", `No Zulip key is installed for ${this.seat}.  The owner installs it (scripts/simple-tools-mcp/install_seat_key.py).`);
@@ -599,7 +603,7 @@ export class HostedTools {
     // Object.hasOwn, not a null comparison:  a pre-pin row carries no owner
     // field at all, and an absent pin must not grandfather it for a borrowed
     // seat (seatProblem itself fails closed when the pin is missing there).
-    if (cached && Object.hasOwn(cached, "owner") && cached.owner === ownerPin) {
+    if (cached && Object.hasOwn(cached, "owner") && cached.owner === ownerPin && cached.policy === HOSTED_ROLE_POLICY) {
       if (!cached.ok) throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${cached.reason}`);
       this.me = { user_id: cached.user_id, role: cached.role };
       return;
@@ -612,13 +616,13 @@ export class HostedTools {
       // record it so the admin card names the cause instead of "not checked yet" (AFC-347).
       if (err?.status === 401 || err?.status === 403) {
         const reason = `Zulip refused the installed key (HTTP ${err.status});  reinstall it with install_seat_key.py ${this.seat} --apply`;
-        await this.gate.roleSet({ ok: false, user_id: null, role: null, reason, owner: this.config?.ownerUserId ?? null });
+        await this.gate.roleSet({ ok: false, user_id: null, role: null, reason, owner: this.config?.ownerUserId ?? null, policy: HOSTED_ROLE_POLICY });
         throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${reason}`);
       }
       throw err;
     }
     const problem = seatProblem(me, { seat: this.seat, email: this.email, ownerUserId: ownerPin });
-    await this.gate.roleSet({ ok: !problem, user_id: isInt(me.user_id) ? me.user_id : null, role: isInt(me.role) ? me.role : null, reason: problem ?? "", owner: ownerPin });
+    await this.gate.roleSet({ ok: !problem, user_id: isInt(me.user_id) ? me.user_id : null, role: isInt(me.role) ? me.role : null, reason: problem ?? "", owner: ownerPin, policy: HOSTED_ROLE_POLICY });
     if (problem) throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${problem}`);
     this.me = { user_id: me.user_id, role: me.role };
   }
@@ -1760,10 +1764,8 @@ export class HostedTools {
    * One Linear write, behind the seat's idempotency row, so a retry that the
    * model repeats returns the first result instead of a second comment.
    *
-   * Unlike a Zulip post there is no reconcile step:  Linear offers no way to
-   * search a comment by its body, so an outcome this server cannot confirm
-   * drops the row and lets the retry send.  Every body therefore opens with the
-   * seat tag line, which is what makes a human able to see a duplicate.
+   * Comment callers reconcile exact deterministic ids and guard historical candidates
+   * before entering this write. A dropped transient row is never proof a create failed.
    */
   async linearWrite(idem, fields, send) {
     const begun = await this.gate.idemBegin({ key: idem.key, ttlMs: idem.ttlMs, fields });
@@ -1853,6 +1855,63 @@ export class HostedTools {
     return this.linearBody(text, args.session) + `\n\n${footer.join("\n")}`;
   }
 
+  /** A current deterministic id proves operation identity; body similarity never does. */
+  async linearExistingComment(issueId, commentId, body, viewerId) {
+    const data = await this.linearCall(() => this.linear.call(Q_COMMENT_ONE, { id: commentId }));
+    if (!data || !Object.hasOwn(data, "comment")) throw new ToolError("outcome_unknown", "Could not verify the earlier Linear comment. No comment was posted.");
+    const found = data.comment;
+    if (found === null) return false;
+    if (found?.id !== commentId || found?.issue?.id !== issueId || found?.body !== body || found?.user?.id !== viewerId || found?.user?.app !== true) {
+      throw new ToolError("outcome_unknown", "The existing Linear comment identity could not be verified. No comment was posted.");
+    }
+    return true;
+  }
+
+  /** Refuse a likely historical retry, without calling it a confirmed duplicate. */
+  async linearCommentGuard(issueId, commentId, body, session, viewerId) {
+    if (!viewerId) throw new ToolError("outcome_unknown", "Could not verify the Linear comment actor. No comment was posted.");
+    if (await this.linearExistingComment(issueId, commentId, body, viewerId)) return true;
+    let after = null;
+    const cursors = new Set();
+    let candidate = null;
+    const today = centralDay(this.now());
+    for (let page = 0; page < 40; page += 1) {
+      const data = await this.linearCall(() => this.linear.call(Q_COMMENTS, { id: issueId, first: 100, after }));
+      const conn = data?.issue?.comments;
+      if (!Array.isArray(conn?.nodes) || typeof conn?.pageInfo?.hasNextPage !== "boolean") break;
+      for (const row of conn.nodes) {
+        if (typeof row?.id !== "string" || !row.id || typeof row.body !== "string" || (row.user !== null && (typeof row?.user?.id !== "string" || typeof row?.user?.app !== "boolean")) || typeof row.createdAt !== "string" || !Number.isFinite(Date.parse(row.createdAt))) {
+          throw new ToolError("outcome_unknown", "Linear comment history was incomplete. No comment was posted.");
+        }
+        if (row.id === commentId) {
+          if (row.body !== body || row.user?.id !== viewerId || row.user?.app !== true) throw new ToolError("outcome_unknown", "The existing Linear comment identity could not be verified. No comment was posted.");
+          return true;
+        }
+        // Full sessions are not stored in the visible tag. Same tag+body is only a likely retry.
+        if (row.body === body && row.user?.id === viewerId && row.user?.app === true && (session || centralDay(Date.parse(row.createdAt)) === today)) candidate = row.id;
+      }
+      if (!conn.pageInfo.hasNextPage) {
+        if (candidate) throw new ToolError("likely_duplicate", "This was seen as likely a duplicate post, but its historical operation identity cannot be proved. No comment was posted and no claim was changed. Check the existing comment before trying again.", { retryable: false, extra: { existing_comment_id: candidate } });
+        return false;
+      }
+      const cursor = conn.pageInfo.endCursor;
+      if (typeof cursor !== "string" || !cursor || cursors.has(cursor)) break;
+      cursors.add(cursor);
+      after = cursor;
+    }
+    throw new ToolError("outcome_unknown", "Linear comment history could not be fully checked. No comment was posted and no claim was changed.");
+  }
+
+  async linearCreateComment(issueId, commentId, body, viewerId) {
+    try {
+      const data = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issueId, commentId, body) }), { write: true });
+      if (data?.commentCreate?.success !== true || data?.commentCreate?.comment?.id !== commentId) throw new ToolError("linear_error", "Linear did not confirm the comment.");
+    } catch (error) {
+      // A create may land before its response is lost. Read the exact id, never retry by body.
+      if (!await this.linearExistingComment(issueId, commentId, body, viewerId)) throw error;
+    }
+  }
+
   async tool_linear_claim(args, audit) {
     this.requireLinearWrites();
     this.scanLinearText(args.comment?.trim() ? `CLAIMED\n\n${args.comment.trim()}` : "CLAIMED", args.session, { field: "comment" });
@@ -1908,12 +1967,12 @@ export class HostedTools {
     const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "claim", body, args.session, centralDay(this.now()));
+    const existingComment = await this.linearCommentGuard(issue.id, commentId, body, args.session, viewerId);
     const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId && delegating ? { delegateId: viewerId } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, label: claimName }, async () => {
       const updated = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });
       if (updated?.issueUpdate?.success !== true) throw new ToolError("linear_error", "Linear did not set the claim.");
-      const commented = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
-      if (commented?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the CLAIMED comment.");
+      if (!existingComment) await this.linearCreateComment(issue.id, commentId, body, viewerId);
       return { id: issue.id, identifier: issue.identifier, label: claimHit ? claimName : null, delegate: delegating ? viewerName : null, held_by: null };
     });
     return this.writeResult(result);
@@ -1928,15 +1987,39 @@ export class HostedTools {
     const idem = await this.idemKey(null, ["linear_comment", this.seat, issue.id, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "comment", body, args.session, centralDay(this.now()));
-    await this.linearCall(() => this.confirmedViewer());
+    const viewer = await this.linearCall(() => this.confirmedViewer());
+    const existingComment = await this.linearCommentGuard(issue.id, commentId, body, args.session, viewer?.id);
     const result = await this.linearWrite(idem, { issue: issue.id }, async () => {
       // A fixed comment id, so a retry that the model repeats updates that
       // comment instead of posting a second one (board comment_id).
-      const data = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
-      if (data?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the comment.");
-      return { id: data.commentCreate.comment.id, ok: true };
+      if (!existingComment) await this.linearCreateComment(issue.id, commentId, body, viewer.id);
+      return { id: commentId, ok: true };
     });
     return this.writeResult(result);
+  }
+
+  /** Existing duplicate edges are identified by exact directed endpoints, never their namespace. */
+  async linearDuplicateRelation(issueId, relatedIssueId) {
+    let after = null;
+    const cursors = new Set();
+    let found = null;
+    for (let page = 0; page < 40; page += 1) {
+      const data = await this.linearCall(() => this.linear.call(Q_RELATIONS, { id: issueId, first: 100, after }));
+      const conn = data?.issue?.relations;
+      if (!Array.isArray(conn?.nodes) || typeof conn?.pageInfo?.hasNextPage !== "boolean") break;
+      for (const row of conn.nodes) {
+        if (typeof row?.id !== "string" || !row.id || typeof row.type !== "string" || typeof row?.issue?.id !== "string" || typeof row?.relatedIssue?.id !== "string") {
+          throw new ToolError("outcome_unknown", "Linear relation history was incomplete. No duplicate relation was created.");
+        }
+        if (row.type === "duplicate" && row.issue.id === issueId && row.relatedIssue.id === relatedIssueId) found = row.id;
+      }
+      if (!conn.pageInfo.hasNextPage) return found;
+      const cursor = conn.pageInfo.endCursor;
+      if (typeof cursor !== "string" || !cursor || cursors.has(cursor)) break;
+      cursors.add(cursor);
+      after = cursor;
+    }
+    throw new ToolError("outcome_unknown", "Linear relations could not be fully checked. No duplicate relation was created.");
   }
 
   async tool_linear_status(args, audit) {
@@ -1955,11 +2038,18 @@ export class HostedTools {
       if (args.of === issue.identifier || args.of === issue.id) throw new ToolError("invalid_argument", "an issue cannot duplicate itself.");
       const kept = await this.linearIssue(args.of);
       const relationId = await stableRelationId(issue.id, kept.id);
+      const existingRelation = await this.linearDuplicateRelation(issue.id, kept.id);
       const result = await this.linearWrite(idem, { issue: issue.id, of: kept.id }, async () => {
         // A deterministic relation id, so a retry updates the same relation
         // instead of adding a second one.
-        const data = await this.linearCall(() => this.linear.call(M_RELATE, { input: { id: relationId, type: "duplicate", issueId: issue.id, relatedIssueId: kept.id } }), { write: true });
-        if (data?.issueRelationCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the duplicate relation.");
+        if (!existingRelation) {
+          try {
+            const data = await this.linearCall(() => this.linear.call(M_RELATE, { input: { id: relationId, type: "duplicate", issueId: issue.id, relatedIssueId: kept.id } }), { write: true });
+            if (data?.issueRelationCreate?.success !== true || data?.issueRelationCreate?.issueRelation?.id !== relationId) throw new ToolError("linear_error", "Linear did not confirm the duplicate relation.");
+          } catch (error) {
+            if (!await this.linearDuplicateRelation(issue.id, kept.id)) throw error;
+          }
+        }
         return { id: issue.id, identifier: issue.identifier, status: "duplicate", of: kept.identifier };
       });
       return this.writeResult(result);
@@ -2010,8 +2100,8 @@ export function seatProblem(me, { seat, email, ownerUserId = null }) {
   if (String(me.email ?? "").toLowerCase() !== email) return "the key belongs to another bot";
   const expectedTag = SEAT_TAG_EXPECTATIONS[seat] ?? seat;
   if (seatTagFor(me) !== expectedTag) return "the key signs as another seat";
-  if (me.is_admin === true || me.is_owner === true || me.role !== MEMBER_ROLE) {
-    return `its live Zulip role is ${isInt(me.role) ? me.role : "unknown"}; hosted seats accept member (400) only`;
+  if (me.is_owner === true || !HOSTED_BOT_ROLES.includes(me.role)) {
+    return `its live Zulip role is ${isInt(me.role) ? me.role : "unknown"}; hosted seats accept administrator (200), moderator (300) and member (400) bots, never owners`;
   }
   // A borrowed-bot seat rides a peer's bot:  the grant requires the pinned
   // owner, and the peer is ineligible while the owner pin is unavailable

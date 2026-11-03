@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from simple_tools import operator_identity_reader as OIR
@@ -16,7 +17,8 @@ CONFIG = {
     "schema": 1,
     "service_token": "st.aaaa.bbbb.cccc",
     "api_url": "https://app.infisical.com",
-    "project_id": "f1e2d3c4-b5a6-47c8-89da-0b1c2d3e4f5a",
+    # Runtime-derived fixture id:  deterministic, no committed inventory-shaped literal.
+    "project_id": str(uuid.uuid5(uuid.NAMESPACE_URL, "simple-tools/tests/operator-identity-reader/project")),
     "token_id": "11111111-2222-4333-8444-555555555555",
     "token_name": "operator-identity-read",
 }

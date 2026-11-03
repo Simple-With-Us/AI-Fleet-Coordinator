@@ -2,7 +2,7 @@
 // Run: node --test scripts/test_operator_sheets_export_run.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -12,7 +12,7 @@ import {
 } from "./simple_tools/operator_sheets_export_run.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 function pathToFileUrl() {
   return new URL("./simple_tools/operator_sheets_export_run.mjs", import.meta.url).href;
 }
@@ -119,6 +119,22 @@ test("resolveEnvAdapterSpec: the env path is pinned to the shipped reviewed adap
   const url = resolveEnvAdapterSpec(new URL("./simple_tools/operator_sheets_adapter.mjs", import.meta.url).pathname);
   assert.ok(url.startsWith("file:"), url);
   assert.ok(url.endsWith("operator_sheets_adapter.mjs"), url);
+});
+
+test("resolveEnvAdapterSpec: the pin holds when the checkout is reached through a symlinked prefix", () => {
+  // Both sides of the comparison are canonicalized:  a process started through a
+  // symlinked checkout prefix (symlinks preserved) still accepts the real adapter.
+  const dir = mkdtempSync(path.join(tmpdir(), "adapter-link-"));
+  const scriptsReal = realpathSync(fileURLToPath(new URL(".", import.meta.url)));
+  symlinkSync(scriptsReal, path.join(dir, "scripts"), "dir");
+  const runnerUrl = pathToFileURL(path.join(dir, "scripts", "simple_tools", "operator_sheets_export_run.mjs")).href;
+  const specViaLink = path.join(dir, "scripts", "simple_tools", "operator_sheets_adapter.mjs");
+  const out = execFileSync(process.execPath, ["--preserve-symlinks", "--input-type=module", "-e",
+    `const m = await import(${JSON.stringify(runnerUrl)});
+     try { m.resolveEnvAdapterSpec(${JSON.stringify(specViaLink)}); console.log("PIN-OK"); }
+     catch (err) { console.log("PIN-FAIL " + err.message); }`],
+    { encoding: "utf8" });
+  assert.ok(out.includes("PIN-OK"), out);
 });
 
 test("main: a bridge rejection is a logged clean exit 1, never an unhandled rejection", async () => {

@@ -44,7 +44,8 @@ INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
-BOT_ROLES = (300, 400)  # moderator, member:  the roles the listener accepts
+BOT_ROLES = (200, 300, 400)  # moderator, member, and bots that are also administrators
+# (owner decision 2026-11-02):  the bot roles the listener accepts
 # Bots never need a notification;  set every new subscription quiet so nothing reaches a phone.
 QUIET = {
     "desktop_notifications": False,
@@ -224,8 +225,8 @@ def run(creds: list[Z.Credentials], realm: str, *, apply: bool, out=sys.stdout) 
                 if "incoming webhook" in str(exc):
                     continue  # an integration bot (PagerDuty, Sentry):  it cannot subscribe or read
                 raise
-            if not me.get("is_bot") or me.get("role") not in BOT_ROLES:
-                continue  # a human, or an admin or owner bot:  never touched
+            if not me.get("is_bot") or me.get("is_owner") or me.get("role") not in BOT_ROLES:
+                continue  # a human, or an owner bot (whatever its role field says):  never touched
             tag = seat_tag_for(me)
             before = len(subscribed_ids(client))
             missing, joined = ensure_public(client, apply=apply)

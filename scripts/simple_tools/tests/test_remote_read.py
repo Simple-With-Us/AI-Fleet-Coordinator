@@ -101,6 +101,7 @@ class RemoteRead(unittest.TestCase):
             ["wait", "--topic", "t"],
             ["listener", "status"],
             ["verify-owner-msg", "1"],
+            ["unresolve", "--topic", "t", "--channel", "sandbox"],
         ):
             with self.subTest(argv=argv):
                 code, _, err, calls = self.run_cli(argv, reply({}))
@@ -137,6 +138,7 @@ class RemoteRead(unittest.TestCase):
             ["reply", "--id", "5", "hi"],
             ["react", "--id", "5", "eyes"],
             ["dm", "--to", "7", "hi"],
+            ["resolve", "--topic", "t", "--channel", "sandbox"],
         ):
             with self.subTest(argv=argv):
                 code, _, err, calls = self.run_cli(argv, reply({}))
@@ -275,6 +277,11 @@ class RemoteRead(unittest.TestCase):
                 ["dm", "--to", "7", "--to", "a@b.co", "hi"],
                 "zulip_dm_send",
                 {"text": "hi", "user_ids": [7], "emails": ["a@b.co"]},
+            ),
+            (
+                ["resolve", "--topic", "t1", "--channel", "sandbox"],
+                "zulip_resolve_topic",
+                {"channel": "sandbox", "topic": "t1"},
             ),
         ]
         for argv, tool, args in cases:

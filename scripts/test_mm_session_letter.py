@@ -488,10 +488,12 @@ class MmSessionLetterTest(unittest.TestCase):
         for transport_env, local_db in (("registry-hop", "/tmp/registry.sqlite3"), ("", "")):
             for caller_timeout, expected in ((3, 3), (25, M.REMOTE_TIMEOUT)):
                 seen = {}
+
                 def fake_remote(args, transport="", timeout=M.REMOTE_TIMEOUT):
                     seen["transport"] = transport
                     seen["timeout"] = timeout
                     return {"ok": True}
+
                 env = {M.ENV_TRANSPORT: transport_env} if transport_env else {}
                 with (
                     mock.patch.dict(M.os.environ, env, clear=False),
@@ -501,15 +503,19 @@ class MmSessionLetterTest(unittest.TestCase):
                 ):
                     if not transport_env:
                         M.os.environ.pop(M.ENV_TRANSPORT, None)
-                    self.assertEqual(M.registry_call(["pending"], timeout=caller_timeout), {"ok": True})
+                    self.assertEqual(
+                        M.registry_call(["pending"], timeout=caller_timeout), {"ok": True}
+                    )
                 self.assertEqual(seen["timeout"], expected, (transport_env, caller_timeout))
         self.assertEqual(seen["transport"], "")
 
     def test_an_explicit_transport_wins_and_carries_its_name(self):
         seen = {}
+
         def fake_remote(args, transport="", timeout=M.REMOTE_TIMEOUT):
             seen["transport"] = transport
             return {"ok": True}
+
         with (
             mock.patch.dict(M.os.environ, {M.ENV_TRANSPORT: "registry-hop"}, clear=False),
             mock.patch.object(M, "registry_db", return_value="/tmp/registry.sqlite3"),
@@ -988,6 +994,67 @@ class MmSessionLetterTest(unittest.TestCase):
         update_title.assert_not_called()
         self.assertNotIn(FIXTURE_SECRET, stdout.getvalue())
 
+    def test_a_registry_fault_on_the_title_update_does_not_block_the_stop(self):
+        # A registry that cannot be reached is not the agent's fault, and a Stop hook
+        # that exits 2 keeps the agent in a loop while the far host is asleep.
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "B: A real topic", "session_kind": "conversation"}
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+            mock.patch.object(
+                M,
+                "update_title",
+                side_effect=M.RegistryError("the registry host did not answer", "timeout"),
+            ),
+        ):
+            self.assertEqual(M.hook_stop(), 0)
+        self.assertIn("timeout", stderr.getvalue())
+
+    def test_a_registry_fault_after_the_rename_does_not_block_the_stop(self):
+        # The thread carries the title in the store;  the registry copy is a second
+        # copy, and the sweep carries it later.
+        payload = json.dumps({"session_id": SESSION_ID, "stop_hook_active": True}).encode()
+        row = {
+            "session_id": SESSION_ID,
+            "title": "no letter prefix",
+            "session_kind": "conversation",
+        }
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+            mock.patch.object(M, "held_letters", return_value=()),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(
+                M,
+                "update_title",
+                side_effect=M.RegistryError("the registry host did not answer", "timeout"),
+            ),
+        ):
+            self.assertEqual(M.hook_stop(), 0)
+        self.assertIn("renamed", stderr.getvalue())
+
+    def test_a_title_that_carries_a_credential_still_blocks_the_stop(self):
+        # A bad title is the agent's to fix, so that one still says so.
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "B: A real topic", "session_kind": "conversation"}
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+            mock.patch.object(M, "update_title", side_effect=ValueError("secret_detected")),
+        ):
+            self.assertEqual(M.hook_stop(), 2)
+        self.assertIn("secret_detected", stderr.getvalue())
+
     def test_the_stop_hook_asks_for_a_real_topic_when_the_title_is_the_placeholder(self):
         payload = json.dumps({"session_id": SESSION_ID}).encode()
         row = {
@@ -1335,6 +1402,51 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ScriptsDirTest(unittest.TestCase):
+    """The helper and the CLI it calls have to be the same version."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.here = os.path.dirname(os.path.realpath(M.__file__))
+
+    def _checkout(self, root):
+        # A competing checkout that LOOKS like the fleet scripts:  the search accepts
+        # it, so only the order keeps it from winning.
+        scripts = os.path.join(root, "AI-Fleet-Coordinator", "scripts")
+        os.makedirs(os.path.join(scripts, "simple_tools"))
+        open(os.path.join(scripts, "simple_tools", "operator_registry.py"), "w").close()
+        return scripts
+
+    def test_the_checkout_the_helper_runs_in_comes_first(self):
+        # A verb the helper sends has to be a verb the CLI knows, so the CLI comes
+        # from the checkout the helper itself is in, never from a stale checkout the
+        # environment happens to name.
+        stale = self._checkout(self.tmp.name)
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": self.tmp.name, "FLEET_APPS_ROOT": ""}):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
+        # The competing root is a real candidate:  without the running checkout in
+        # front of it, it is what the search returns.
+        self.assertNotEqual(stale, self.here)
+
+    def test_a_stale_checkout_in_the_home_layout_loses_too(self):
+        root = os.path.join(self.tmp.name, "home")
+        stale = self._checkout(os.path.join(root, "Code"))
+        with mock.patch.dict(
+            os.environ,
+            {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": "", "HOME": root},
+        ):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
+        self.assertNotEqual(stale, self.here)
+
+    def test_a_host_that_names_no_checkout_still_finds_one(self):
+        with mock.patch.dict(
+            os.environ,
+            {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": "", "HOME": self.tmp.name},
+        ):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
+
+
 class MmLetterReopenTest(unittest.TestCase):
     """A session the registry swept while its chat was live gets its letter back.
 
@@ -1586,6 +1698,28 @@ class MmReopenStrictTouchTest(unittest.TestCase):
             self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "AA")
         self.assertIn("Could not reopen", err.getvalue())
 
+    def test_a_faulting_registry_file_is_a_registry_error_not_a_traceback(self):
+        # A corrupt registry file faults when it is opened or read:  that is a
+        # refusal the caller can handle, never an uncaught sqlite error through the
+        # hook.
+        broken = os.path.join(self.tmp.name, "broken.sqlite3")
+        with open(broken, "wb") as handle:
+            handle.write(b"this is not a database")
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SIMPLE_TOOLS_OPERATOR_REGISTRY": broken,
+                    "MINIMAX_HOOKS_DATA": "",
+                    "MINIMAX_DATA_DIR": self.tmp.name,
+                },
+            ),
+            self.assertRaises(M.RegistryError) as caught,
+        ):
+            M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "reopen_failed")
+        self.assertEqual(caught.exception.outcome, "reopen_refused")
+
     def test_a_reopen_that_fails_on_the_registry_is_a_registry_error(self):
         # A raw storage failure out of the reopen travels as a RegistryError, so every
         # caller handles it the same way.
@@ -1605,10 +1739,19 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         # that travels as the same one error type:  the registry is out of reach.
         with (
             mock.patch.object(M, "registry_db", return_value=""),
-            mock.patch.dict(os.environ, {"PATH": os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep) if "mm-operator-registry" not in p)}),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PATH": os.pathsep.join(
+                        p
+                        for p in os.environ.get("PATH", "").split(os.pathsep)
+                        if "mm-operator-registry" not in p
+                    )
+                },
+            ),
+            self.assertRaises(M.RegistryError) as caught,
         ):
-            with self.assertRaises(M.RegistryError) as caught:
-                M.reopen_closed("r1")
+            M.reopen_closed("r1")
         self.assertIn(caught.exception.code, ("missing_tool", "remote_unreachable", "no_registry"))
 
 
@@ -1652,7 +1795,9 @@ class TransportTests(unittest.TestCase):
     def test_explicit_transport_wins_over_a_local_file(self):
         self.registry.write_bytes(b"not empty")  # a retired local store must not be used
         self._transport()
-        out = self._call(["register", "--platform=minimax"], MM_OPERATOR_REGISTRY_CMD="mm-operator-registry")
+        out = self._call(
+            ["register", "--platform=minimax"], MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"
+        )
         self.assertEqual(out.get("letter"), "AA")
         self.assertIn("register --platform=minimax", self.log.read_text())
         self.assertEqual(self.registry.read_bytes(), b"not empty")  # untouched
@@ -1663,7 +1808,14 @@ class TransportTests(unittest.TestCase):
             ["register", "--platform=minimax", "--session-id=s1"],
             ["touch", "--platform=minimax", "--scope=default", "--session-id=s1"],
             ["update", "--platform=minimax", "--scope=default", "--session-id=s1", "--title=AA: t"],
-            ["relabel", "--platform=minimax", "--scope=default", "--session-id=s1", "--letter=AB", "--force"],
+            [
+                "relabel",
+                "--platform=minimax",
+                "--scope=default",
+                "--session-id=s1",
+                "--letter=AB",
+                "--force",
+            ],
             ["sweep", "--platform=minimax", "--stale-after-minutes=120"],
         ):
             self._call(verb, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry")
@@ -1693,15 +1845,24 @@ class TransportTests(unittest.TestCase):
         cmd = self.bin / "mm-operator-registry"
         cmd.write_text("#!/bin/sh\nprintf '%s' '" + '{"letter": "AA"}' + "'\nexit 1\n")
         cmd.chmod(0o755)
-        out = self._call(["relabel", "--platform=minimax", "--force"], MM_OPERATOR_REGISTRY_CMD="mm-operator-registry")
+        out = self._call(
+            ["relabel", "--platform=minimax", "--force"],
+            MM_OPERATOR_REGISTRY_CMD="mm-operator-registry",
+        )
         self.assertNotEqual(out.get("letter"), "AA")
         self.assertEqual(out.get("outcome"), "outcome_unknown")
         self.assertIn("error", out)
 
     def test_reopen_closed_goes_to_the_transport_not_a_stale_local_store(self):
         self.registry.write_bytes(b"stale")  # a retired local store must not be written
-        self._transport(answer='{"record_id": "r1", "label": "AB", "generation": 3, "previous": "AA", "outcome": "reopened"}')
-        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+        self._transport(
+            answer='{"record_id": "r1", "label": "AB", "generation": 3, "previous": "AA", "outcome": "reopened"}'
+        )
+        with mock.patch.dict(
+            os.environ,
+            dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+            clear=False,
+        ):
             answer = M.reopen_closed("r1", "parent-session-1")
         self.assertEqual(answer["label"], "AB")
         self.assertEqual(answer["generation"], 3)
@@ -1712,16 +1873,26 @@ class TransportTests(unittest.TestCase):
 
     def test_reopen_closed_space_lost_from_the_transport_keeps_its_code(self):
         self._transport(answer='{"error": "the pair went to another chat", "code": "space_lost"}')
-        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
-            with self.assertRaises(M.RegistryError) as ctx:
-                M.reopen_closed("r1")
+        with (
+            mock.patch.dict(
+                os.environ,
+                dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+                clear=False,
+            ),
+            self.assertRaises(M.RegistryError) as ctx,
+        ):
+            M.reopen_closed("r1")
         self.assertEqual(ctx.exception.code, "space_lost")
 
     def test_held_letters_come_from_the_transport_not_a_stale_local_store(self):
         # A retired local store that still answers must not win over the transport.
         self.registry.write_bytes(b"stale")
         self._transport(answer='{"letters": ["AB", "AA"]}')
-        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+        with mock.patch.dict(
+            os.environ,
+            dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+            clear=False,
+        ):
             held = M.held_letters("session-0001")
         self.assertEqual(held, ("AB", "AA"))
         self.assertIn("held --platform=minimax", self.log.read_text())
@@ -1729,29 +1900,55 @@ class TransportTests(unittest.TestCase):
 
     def test_held_letters_rejects_a_string_answer_not_its_characters(self):
         self._transport(answer='{"letters": "AB"}')
-        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+        with mock.patch.dict(
+            os.environ,
+            dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+            clear=False,
+        ):
             self.assertEqual(M.held_letters("session-0001"), ())
 
     def test_held_letters_rejects_a_non_list_answer_without_crashing(self):
         self._transport(answer='{"letters": 5}')
-        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+        with mock.patch.dict(
+            os.environ,
+            dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+            clear=False,
+        ):
             self.assertEqual(M.held_letters("session-0001"), ())
 
     def test_held_letters_rejects_a_list_with_a_malformed_entry(self):
-        for bad in ('{"letters": ["AA", 7]}', '{"letters": ["AA", "abc"]}', '{"letters": ["AA", "TOOLONG"]}'):
+        for bad in (
+            '{"letters": ["AA", 7]}',
+            '{"letters": ["AA", "abc"]}',
+            '{"letters": ["AA", "TOOLONG"]}',
+        ):
             self._transport(answer=bad)
-            with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            with mock.patch.dict(
+                os.environ,
+                dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+                clear=False,
+            ):
                 self.assertEqual(M.held_letters("session-0001"), (), bad)
             self.log.unlink()
 
     def test_held_letters_rejects_an_error_answer_even_with_valid_letters(self):
-        self._transport(answer='{"error": "registry exploded", "code": "held_failed", "letters": ["AB", "AA"]}')
-        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+        self._transport(
+            answer='{"error": "registry exploded", "code": "held_failed", "letters": ["AB", "AA"]}'
+        )
+        with mock.patch.dict(
+            os.environ,
+            dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+            clear=False,
+        ):
             self.assertEqual(M.held_letters("session-0001"), ())
 
     def test_held_letters_accepts_single_letters_and_pairs(self):
         self._transport(answer='{"letters": ["AB", "B"]}')
-        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+        with mock.patch.dict(
+            os.environ,
+            dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+            clear=False,
+        ):
             self.assertEqual(M.held_letters("session-0001"), ("AB", "B"))
 
     def test_held_letters_on_a_transport_fault_is_empty_never_the_local_store(self):
@@ -1761,7 +1958,11 @@ class TransportTests(unittest.TestCase):
         cmd = self.bin / "mm-operator-registry"
         cmd.write_text("#!/bin/sh\nexit 1\n")
         cmd.chmod(0o755)
-        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+        with mock.patch.dict(
+            os.environ,
+            dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+            clear=False,
+        ):
             held = M.held_letters("session-0001")
         self.assertEqual(held, ())
 
@@ -1780,8 +1981,15 @@ class RegistryCliNeverCreatesTests(unittest.TestCase):
         missing = os.path.join(tempfile.mkdtemp(), "operator", "registry.sqlite3")
         with contextlib.redirect_stdout(io.StringIO()) as out:
             argv = [
-                "register", "--db", missing, "--platform=minimax", "--location=server",
-                "--scope=default", "--session-id=s1", "--seat=MM", "--source=test",
+                "register",
+                "--db",
+                missing,
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s1",
+                "--seat=MM",
+                "--source=test",
             ]
             code = operator_registry.main(argv)
         self.assertEqual(code, 3)

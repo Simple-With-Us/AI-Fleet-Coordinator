@@ -1463,7 +1463,9 @@ class ReopenHeldCliTest(unittest.TestCase):
         return answer
 
     def _close(self, session_id):
-        code, answer = self._run(["close", "--db", self.db] + self.IDENTITY + ["--session-id", session_id])
+        code, answer = self._run(
+            ["close", "--db", self.db] + self.IDENTITY + ["--session-id", session_id]
+        )
         self.assertEqual(code, 0, answer)
 
     def _held(self, session_id):
@@ -1570,8 +1572,10 @@ class WakeTargetTest(unittest.TestCase):
     def test_no_registry_file_is_no_target_and_creates_nothing(self):
         missing = os.path.join(self.tmp.name, "absent", "registry.sqlite3")
         answer = R.resolve_wake_target(missing, "CLAUDE")
-        self.assertEqual(answer, {"found": False, "seat": "CLAUDE",
-                                  "reason": "no_active_session", "candidates": 0})
+        self.assertEqual(
+            answer,
+            {"found": False, "seat": "CLAUDE", "reason": "no_active_session", "candidates": 0},
+        )
         self.assertFalse(os.path.exists(missing), "a read never mints the file")
 
     def test_a_seat_is_required(self):
@@ -1607,8 +1611,13 @@ class WakeTargetTest(unittest.TestCase):
     def test_the_freshest_candidate_order_is_deterministic_but_not_delivery(self):
         self._register("nat-0o1d")
         self._register("nat-0new")
-        R.touch_session(self.db, platform="claude", verified_host="server",
-                        profile_scope="default", native_session_id="nat-0new")
+        R.touch_session(
+            self.db,
+            platform="claude",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id="nat-0new",
+        )
         candidates = R._candidate_sessions(self.db, "CLAUDE")
         self.assertEqual([c["native_session_id"] for c in candidates], ["nat-0new", "nat-0o1d"])
         answer = R.resolve_wake_target(self.db, "CLAUDE")
@@ -1619,12 +1628,24 @@ class WakeTargetTest(unittest.TestCase):
     def test_a_closed_session_is_not_a_candidate(self):
         self._register("nat-live")
         self._register("nat-gone")
-        R.close_session(self.db, platform="claude", verified_host="server",
-                        profile_scope="default", native_session_id="nat-gone", reason="test")
+        R.close_session(
+            self.db,
+            platform="claude",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id="nat-gone",
+            reason="test",
+        )
         candidates = R._candidate_sessions(self.db, "CLAUDE")
         self.assertEqual([c["native_session_id"] for c in candidates], ["nat-live"])
-        R.close_session(self.db, platform="claude", verified_host="server",
-                        profile_scope="default", native_session_id="nat-live", reason="test")
+        R.close_session(
+            self.db,
+            platform="claude",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id="nat-live",
+            reason="test",
+        )
         answer = R.resolve_wake_target(self.db, "CLAUDE")
         self.assertEqual(answer["reason"], "no_active_session")
         self.assertEqual(answer["candidates"], 0)
@@ -1644,3 +1665,101 @@ class WakeTargetTest(unittest.TestCase):
         self.assertEqual(answer["found"], False)
         self.assertEqual(answer["reason"], "binding_unverified")
         self.assertEqual(answer["candidates"], 1)
+
+
+class RegistryGuardTest(unittest.TestCase):
+    """The CLI never brings a registry into being (AFC-593).
+
+    The transport runs this CLI directly, so the guard belongs here and not only in
+    the passthrough that runs it through simple-chat:  a host that keeps no registry
+    refuses the allocating and answering ops the same way, and a second registry never
+    grows to hand out letters that collide with the ones the Operator keeps.  The
+    bridge's own pending-outbox and mark-exported keep their reviewed missing-store
+    contract (exit 2), covered by the bridge test above.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.missing = os.path.join(self.tmp.name, "no-registry-here", "registry.sqlite3")
+
+    def _run(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(argv)
+        return code, json.loads(out.getvalue().splitlines()[-1])
+
+    def test_every_op_that_takes_a_database_refuses_on_a_host_without_one(self):
+        allocating = [
+            [
+                "register",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+                "--seat=MM",
+                "--source=a test",
+            ],
+            [
+                "relabel",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+                "--seat=MM",
+                "--source=a test",
+            ],
+            ["resolve", "--platform=minimax", "--letter=AA"],
+            [
+                "update",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            [
+                "close",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            ["sweep", "--platform=minimax", "--seat=MM"],
+            ["history", "--platform=minimax"],
+            [
+                "touch",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            ["reopen", "--record-id=r1"],
+            [
+                "held",
+                "--platform=minimax",
+                "--location=mac",
+                "--scope=main",
+                "--session-id=thread-0001",
+            ],
+        ]
+        for argv in allocating:
+            with self.subTest(op=argv[0]):
+                code, answer = self._run(argv + ["--db", self.missing])
+                self.assertEqual(code, 3)
+                self.assertEqual(answer, {"error": "no Operator registry on this host"})
+        # The bridge's own two verbs keep their reviewed contract:  a missing store
+        # is their error, exit 2 (covered by the bridge test as well).
+        for argv in (["pending-outbox"], ["mark-exported", "1"]):
+            with self.subTest(op=argv[0]):
+                code, answer = self._run(argv + ["--db", self.missing])
+                self.assertEqual(code, 2)
+                self.assertIn("missing", answer["error"])
+        self.assertFalse(os.path.exists(self.missing))
+
+    def test_a_host_that_keeps_a_registry_is_not_refused(self):
+        db = os.path.join(self.tmp.name, "registry.sqlite3")
+        reg = R.SessionRegistry(db)
+        reg.close_db()
+        code, answer = self._run(["history", "--platform=minimax", "--db", db])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer, [])

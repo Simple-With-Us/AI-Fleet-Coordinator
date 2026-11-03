@@ -1202,8 +1202,9 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         )
         if "allow_admin" in section:
             problems.append(
-                "seat.%s.allow_admin is not supported: admin and owner bot keys are always refused, "
-                "moderator and member keys are accepted (owner decision 2026-10-07)" % seat_name
+                "seat.%s.allow_admin is not supported: owner keys are always refused, and "
+                "administrator, moderator and member bot keys are all accepted - a bot that is also "
+                "an administrator is still the fleet's bot (owner decision 2026-11-02)" % seat_name
             )
         used = [
             name

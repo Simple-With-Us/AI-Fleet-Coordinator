@@ -538,14 +538,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 # ---------------------------------------------------------------- remote read transport (opt-in)
 #
-# SIMPLE_RECALL_REMOTE=1 sends `search` and `stats` to the hosted ST-MCP endpoint with the bot's own bearer
+# SIMPLE_RECALL_REMOTE=1 sends `search` and `stats` (and, with SIMPLE_RECALL_REMOTE_WRITES=1, `contribute`)
+# to the hosted ST-MCP endpoint with the bot's own bearer
 # (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server serves Recall from ONE shared backend
 # credential set, so this proves which bot asked, not a per-bot Recall credential.  The endpoint is the fixed
 # constant below (no override), nothing here reads a Recall, Qdrant, Infisical or Access credential, and a
 # failure never falls back to the direct or public route.  Every other verb, and every search flag with no
 # hosted equivalent, is refused.  Output is the hosted tool's text (fenced as untrusted) and structured result,
 # not this CLI's formatted lines.  The hosted bearer holds every hosted tool of its seat; this mode only ever
-# calls recall_search and recall_stats, which is a client choice and not a server restriction.
+# calls recall_search, recall_stats, identities and recall_contribute, which is a client choice and not a
+# server restriction.
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
@@ -578,6 +580,7 @@ _REMOTE_CODES = frozenset(
         "not_found",
         "channel_not_allowed",
         "claim_held",
+        "likely_duplicate",
         "zulip_error",
         "writes_disabled",
         "unknown_tool",
@@ -905,6 +908,33 @@ def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     return result
 
 
+def remote_verified_identity() -> str:
+    """This connection's own seat, proven by the hosted identities tool.  The hosted server refuses a seatless
+    write (identity_required), so a remote write names an identity;  the seat comes only from the server's own
+    answer about this bearer, never from the caller, and any answer that does not prove it fails closed before
+    the write is sent."""
+    result = remote_call("identities", {})
+    info = result.get("structuredContent")
+    if not isinstance(info, dict):
+        raise FleetRagError(
+            "the hosted identities answer carried no structured result; the write was not sent"
+        )
+    seat = info.get("authenticated_seat")
+    if not isinstance(seat, str) or not seat or seat != info.get("default_identity"):
+        raise FleetRagError(
+            "the hosted identities answer did not prove this connection's own seat; the write was not sent"
+        )
+    listing = info.get("identities")
+    if not isinstance(listing, list) or not any(
+        isinstance(entry, dict) and entry.get("identity") == seat for entry in listing
+    ):
+        raise FleetRagError(
+            "the hosted identities answer did not list this connection's own seat as callable; "
+            "the write was not sent"
+        )
+    return seat
+
+
 _ARGV: list[str] = []
 
 
@@ -915,9 +945,11 @@ def remote_main(a: argparse.Namespace) -> int:
             "search, stats and contribute); it is not run directly either"
         )
     if a.cmd == "contribute":
-        # A write: its own switch, the hosted recall_contribute tool only, and never a seat of the caller's choosing
-        # (the hosted server attributes the lesson to the bearer's seat).  The near-duplicate guard is local and
-        # has no hosted equivalent, so --force is refused rather than ignored.
+        # A write: its own switch, the hosted recall_contribute tool only, and never a seat of the caller's
+        # choosing.  The hosted server refuses a seatless write (identity_required), so the identity argument is
+        # this connection's own seat as proven by the hosted identities tool - read first, before any write;  the
+        # --seat flag stays refused because the seat is never the caller's to pick.  The near-duplicate guard is
+        # local and has no hosted equivalent, so --force is refused rather than ignored.
         if os.environ.get("SIMPLE_RECALL_REMOTE_WRITES") != "1":
             raise FleetRagError(
                 "contribute is a write:  set SIMPLE_RECALL_REMOTE_WRITES=1 as well as "
@@ -926,13 +958,14 @@ def remote_main(a: argparse.Namespace) -> int:
         if a.force or any(x == "--seat" or x.startswith("--seat=") for x in _ARGV):
             raise FleetRagError(
                 "--force and --seat have no meaning in remote mode (no local duplicate guard; "
-                "the hosted server attributes the lesson to this bearer's seat)"
+                "the write names this connection's own verified seat, never a caller-chosen one)"
             )
         args = {"text": contribute_text(a.text, a.file), "category": a.category, "app": a.app}
         if a.title:
             args["title"] = a.title
         if a.url:
             args["url"] = a.url
+        args["identity"] = remote_verified_identity()
         result = remote_call("recall_contribute", args, write=True)
     elif a.cmd == "stats":
         result = remote_call("recall_stats", {})

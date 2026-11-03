@@ -1889,10 +1889,12 @@ class RecoveryTests(DaemonHarness):
 
 
 class SecurityTests(DaemonHarness):
-    def test_the_operator_seat_may_hold_an_admin_key_and_no_other_seat_may(self) -> None:
-        """Operator is the admin [Operator] bot (owner decision, Oct 22 2026), so the member-only rule
-        above lifts for that seat alone.  An owner key is still refused, and a non-OPERATOR seat
-        holding an administrator key is still refused."""
+    def test_a_human_admin_key_is_refused_outside_the_operator_seat(self) -> None:
+        """Operator is the admin [Operator] bot (owner decision, Oct 22 2026), so the member-only
+        rule for HUMAN keys lifts for that seat alone.  A human owner key is still refused, and a
+        non-OPERATOR seat holding a human administrator key is still refused.  Bot keys are
+        separate:  a bot that is also an administrator is accepted on every seat (owner decision
+        2026-11-02)."""
         seat = lambda name, wake="inbox": SimpleNamespace(seat=name, wake=wake)  # noqa: E731
         config = SimpleNamespace()
 
@@ -1906,17 +1908,35 @@ class SecurityTests(DaemonHarness):
         self.assertTrue(D.admin_allowed(relay_era, seat("OPERATOR")))
         self.assertFalse(D.admin_allowed(config, seat("OPERATOR-EXTRA")))
 
-        # admin (200) is accepted for OPERATOR, refused for every other seat;  owner (100) refused always.
-        admin = {"role": 200, "is_admin": True, "is_owner": False}
-        owner = {"role": 100, "is_admin": True, "is_owner": True}
-        member = {"role": 400, "is_admin": False, "is_owner": False}
+        # A human admin (200) key is accepted for OPERATOR, refused for every other seat;  a human
+        # owner (100) key is refused always.
+        admin = {"role": 200, "is_admin": True, "is_owner": False, "is_bot": False}
+        owner = {"role": 100, "is_admin": True, "is_owner": True, "is_bot": False}
+        member = {"role": 400, "is_admin": False, "is_owner": False, "is_bot": False}
         self.assertFalse(D.role_refused(admin, D.admin_allowed(config, seat("OPERATOR"))))
         self.assertTrue(D.role_refused(admin, D.admin_allowed(config, seat("CLAUDE"))))
         self.assertTrue(D.role_refused(owner, D.admin_allowed(config, seat("OPERATOR"))))
         self.assertFalse(D.role_refused(member, D.admin_allowed(config, seat("CLAUDE"))))
+        # A BOT administrator key is accepted on every seat, no admin_ok needed;  a bot owner key is
+        # refused always, and a bot at a role outside the accepted set is refused.
+        admin_bot = {"role": 200, "is_admin": True, "is_owner": False, "is_bot": True}
+        owner_bot = {"role": 100, "is_admin": True, "is_owner": True, "is_bot": True}
+        guest_bot = {"role": 600, "is_admin": False, "is_owner": False, "is_bot": True}
+        self.assertFalse(D.role_refused(admin_bot, D.admin_allowed(config, seat("CLAUDE"))))
+        self.assertFalse(D.role_refused(admin_bot, D.admin_allowed(config, seat("OPERATOR"))))
+        self.assertTrue(D.role_refused(owner_bot, D.admin_allowed(config, seat("CLAUDE"))))
+        self.assertTrue(D.role_refused(owner_bot, D.admin_allowed(config, seat("OPERATOR"))))
+        self.assertTrue(D.role_refused(guest_bot, D.admin_allowed(config, seat("CLAUDE"))))
+        # An inconsistent record - administrator role but the owner flag set - is refused:  the
+        # owner gate reads the flag, never the role alone.
+        flagged = {"role": 200, "is_admin": True, "is_owner": True, "is_bot": True}
+        self.assertTrue(D.role_refused(flagged, D.admin_allowed(config, seat("CLAUDE"))))
+        self.assertTrue(D.role_refused(flagged, D.admin_allowed(config, seat("OPERATOR"))))
 
-    def test_admin_and_owner_bot_keys_are_refused_and_moderators_accepted(self) -> None:
-        for role, ok in ((200, False), (100, False), (300, True), (400, True), (600, False)):
+    def test_admin_moderator_and_member_bot_keys_are_accepted_and_owner_and_guest_refused(self) -> None:
+        # A bot that is also an administrator is still the fleet's bot (owner decision 2026-11-02):
+        # administrator (200), moderator (300) and member (400) bot keys are accepted on every seat.
+        for role, ok in ((200, True), (100, False), (300, True), (400, True), (600, False)):
             with self.subTest(role=role):
                 self.fake.me["role"] = role
                 self.fake.me["is_admin"] = role in (100, 200)
@@ -1924,19 +1944,41 @@ class SecurityTests(DaemonHarness):
                 daemon = self.daemon()
                 self.assertEqual(daemon.connect_seat("CLAUDE"), ok, daemon.seats["CLAUDE"].error)
                 if not ok:
-                    self.assertIn("refuses admin and owner keys", daemon.seats["CLAUDE"].error)
+                    self.assertIn("refuses owner keys and any other role", daemon.seats["CLAUDE"].error)
                 daemon.shutdown()
         self.fake.me.update(role=400, is_admin=False, is_owner=False)
 
-    def test_a_bot_promoted_to_admin_loses_its_queue_at_once(self) -> None:
+    def test_a_human_key_keeps_the_member_only_rule(self) -> None:
+        # The admin-bot acceptance is about BOTS:  a human administrator key is still refused on
+        # every seat but OPERATOR, and a human owner key is refused everywhere.
+        for role, ok in ((200, False), (100, False), (300, True), (400, True), (600, False)):
+            with self.subTest(role=role):
+                person = {"role": role, "is_admin": role in (100, 200), "is_owner": role == 100, "is_bot": False}
+                self.assertEqual(D.role_refused(person), not ok, role)
+
+    def test_a_bot_promoted_to_admin_keeps_its_queue(self) -> None:
+        # A bot that is also an administrator is still the fleet's bot (owner decision 2026-11-02):
+        # the promotion no longer costs the seat its queue.
         daemon = self.started()
         runner = daemon.seats["CLAUDE"]
         self.fake.set_role(self.fake.me["user_id"], 200)
+        self.pump_until(daemon, lambda: runner.users[runner.me.user_id].get("role") == 200)
+        for _ in range(3):  # a few more events:  the refusal, if any, fires with the merge
+            daemon.pump("CLAUDE", timeout=0.1)
+        self.assertFalse(runner.fatal, runner.error)
+        self.assertTrue(runner.connected)
+        self.assertFalse(self.fake.deleted_queues, "the queue is kept, not dropped")
+        self.fake.me.update(role=400, is_admin=False, is_owner=False)
+
+    def test_a_bot_promoted_to_owner_loses_its_queue_at_once(self) -> None:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        self.fake.set_role(self.fake.me["user_id"], 100)
         self.pump_until(daemon, lambda: runner.fatal)
         self.assertFalse(runner.connected)
-        self.assertIn("refuses admin and owner keys", runner.error)
+        self.assertIn("refuses owner keys and any other role", runner.error)
         self.assertTrue(self.fake.deleted_queues, "the queue is deleted, not left to expire")
-        self.assertTrue(any("refuses admin" in " ".join(b) for b in self.banners))
+        self.assertTrue(any("refuses owner" in " ".join(b) for b in self.banners))
         self.assertEqual(daemon._wake_block(runner, W.Pending("w", "CLAUDE", {"channel": "work-in-progress", "topic": "t"},
                                                                 owner=True, now=0, due=0), self.clock.time()),
                          "seat_refused")

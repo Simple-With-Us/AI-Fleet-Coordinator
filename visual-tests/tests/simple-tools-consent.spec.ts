@@ -1,6 +1,14 @@
 import { test, expect } from '@playwright/test';
 import { consentPage } from '../../scripts/simple-tools-mcp/src/pages.js';
 
+// Page-level overflow alone misses a horizontally scrolling consent table. Every
+// disclosure must fit its own cell without requiring sideways scrolling.
+async function expectConsentFactsToFit(page: import('@playwright/test').Page) {
+  const clipped = await page.locator('table.consent-facts, table.consent-facts th, table.consent-facts td').evaluateAll(
+    elements => elements.filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.textContent));
+  expect(clipped).toEqual([]);
+}
+
 const stamp = Date.parse('2026-10-15T09:00:00Z');
 const base = {
   clientName: 'Example Desktop',
@@ -27,6 +35,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(page.getByRole('heading', { name: 'Connect Example Desktop as Cursor & Grok Bots?', exact: true })).toBeVisible();
     await expect(page.getByText('Registered by hand in Fleet MCP Admin.')).toBeVisible();
     await expect(page.locator('body')).toHaveScreenshot(`simple-tools-consent-manual-${viewport.width}.png`, { animations: 'disabled', fullPage: true, maxDiffPixels: 100, mask: [page.locator('time'), page.locator('.timestamp'), page.locator('[data-dynamic]')] });
+    await expectConsentFactsToFit(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
@@ -38,6 +47,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await page.goto('/authorize');
     await expect(page.getByText('Published by', { exact: false })).toBeVisible();
     await expect(page.locator('body')).toHaveScreenshot(`simple-tools-consent-published-${viewport.width}.png`, { animations: 'disabled', fullPage: true, maxDiffPixels: 100, mask: [page.locator('time'), page.locator('.timestamp'), page.locator('[data-dynamic]')] });
+    await expectConsentFactsToFit(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }
@@ -55,6 +65,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(page.getByRole('heading', { name: 'Connect ChatGPT as Jet-Wake?', exact: true })).toBeVisible();
     await expect(page.locator('input[name="scope"]')).toHaveCount(1);
     await expect(page.locator('body')).toHaveScreenshot(`jet-wake-consent-${viewport.width}.png`, { animations: 'disabled', fullPage: true, maxDiffPixels: 100, mask: [page.locator('time'), page.locator('.timestamp'), page.locator('[data-dynamic]')] });
+    await expectConsentFactsToFit(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }
@@ -74,6 +85,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(page.getByText("It can also read and acknowledge messages in the owner's private WhatsApp inbox.")).toBeVisible();
     await expect(page.getByText('Private Zulip channels are never open to it.')).toBeVisible();
     await expect(page.locator('body')).toHaveScreenshot(`jet-chat-whatsapp-consent-${viewport.width}.png`, { animations: 'disabled', fullPage: true, maxDiffPixels: 100, mask: [page.locator('time'), page.locator('.timestamp'), page.locator('[data-dynamic]')] });
+    await expectConsentFactsToFit(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 

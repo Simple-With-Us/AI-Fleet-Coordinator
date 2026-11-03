@@ -627,11 +627,7 @@ def _private_parent_chain(home: Path, path: Path) -> bool:
             info = os.lstat(directory)
         except OSError:
             return False
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != euid
-            or info.st_mode & 0o022
-        ):
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != euid or info.st_mode & 0o022:
             return False
         if directory == home:
             return True

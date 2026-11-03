@@ -367,12 +367,23 @@
     },
     {
       "tag": "KIMI",
-      "notesName": "Kimi (retired 2026-08-21)",
+      "notesName": "Kimi",
       "worktreeSuffix": "kimi",
       "branchPrefixes": [
         "kimi/"
       ],
-      "retired": true
+      "zulipBotEmail": "kimi-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Kimi"
+    },
+    {
+      "tag": "ZC",
+      "notesName": "ZCode",
+      "worktreeSuffix": "zc",
+      "branchPrefixes": [
+        "zc/"
+      ],
+      "zulipBotEmail": "zc-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Zcode"
     },
     {
       "tag": "MM",
@@ -458,6 +469,8 @@
       "CLUTCH": "clutch",
       "FX": "fx",
       "OPENCODE": "opencode",
+      "KIMI": "kimi",
+      "ZC": "zcode",
       "GROK-BOT": "grok-bot",
       "ECHO": "instinct",
       "WISE": "instinct"

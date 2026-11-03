@@ -66,10 +66,18 @@ test("Grok shows as plain Grok, GROK-BUILD as a retired alias, retired seats as 
   assert.equal(grok[1], "Grok");
   const alias = seatsRows.find(r => r[0] === "GROK-BUILD");
   assert.match(alias[4], /^Retired 2026-10-08/);
-  for (const t of ["MONET", "RENOIR", "HARNESS", "DSH", "KIMI"]) {
+  for (const t of ["MONET", "RENOIR", "HARNESS", "DSH"]) {
     assert.match(seatsRows.find(r => r[0] === t)[4], /^Retired/, t);
   }
-  assert.match(seatsRows.find(r => r[0] === "KIMI")[4], /2026-08-21/);
+  // KIMI (un-retired) and ZC registered 2026-11-03:  active, their own bot emails, and the
+  // credential cells naming exactly the created Infisical rows (ZC's stem is ZCODE).
+  for (const [t, email, key] of [["KIMI", "kimi-bot@simplewithus.zulipchat.com", "KIMI_ZULIP_KEY"], ["ZC", "zc-bot@simplewithus.zulipchat.com", "ZCODE_ZULIP_KEY"]]) {
+    const row = seatsRows.find(r => r[0] === t);
+    assert.ok(row, t);
+    assert.equal(row[4], "active", t);
+    assert.equal(row[6], email, t);
+    assert.match(String(row[7]), new RegExp(`^Infisical .*:  ${key}$`), t);
+  }
 });
 
 test("credential cells carry names and paths only", () => {

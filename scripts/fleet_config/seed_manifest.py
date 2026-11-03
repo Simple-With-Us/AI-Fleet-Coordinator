@@ -96,10 +96,12 @@ SEAT_PLATFORMS: dict[str, tuple[str, ...]] = {
     "MA": ("muse",),
     "MC": ("muse-code",),
     "OPENCODE": ("opencode",),
+    "KIMI": ("kimi",),
     "GROK-WEB": (),
     "GROK-BOT": (),
     "ECHO": (),
     "WISE": (),
+    "ZC": (),
 }
 
 
@@ -965,6 +967,32 @@ def _build_seats() -> dict[str, dict[str, object]]:
     # are the Mavis ones the seat's identity names.
     seats["MM"] = _harness_seat("MM", "minimax", subagents=("~/.minimax/agents", ()))
 
+    # Kimi:  the kimi platform tables (.kimi-code rules, config, MCP) name its surfaces.
+    # The installer does not write its [[hooks]] guard block yet (install_tools
+    # PLATFORMS kimi supported=False), so the hooks rule pins the block's absence.
+    seats["KIMI"] = _harness_seat(
+        "KIMI",
+        "kimi",
+        subagents=None,
+        hook_absent_target="~/.kimi-code/config.toml",
+        hook_absent_description=(
+            "Kimi Code's guard is a [[hooks]] block in its config.toml that the "
+            "installer does not write yet (the kimi platform row is supported=False), "
+            "so the desired state is that no hook is registered there;  the rule "
+            "reports drift the moment one appears."
+        ),
+        extra_covers=[
+            _cover(
+                "hooks",
+                "Kimi Code takes its guard as a [[hooks]] block in config.toml (exit 2, "
+                "reason on stderr), and the installer lane that writes it is not built "
+                "yet, so the hooks rule asserts that no hook is registered and L1 "
+                "arrives with it.",
+                ["kimi"],
+            ),
+        ],
+    )
+
     # Muse Code and Muse Assist.  Muse Code takes its hooks from a plugin, and the
     # plugin manifest holds its hook table in a shape the Phase 2 hook reader does not
     # parse, so the hooks kind is covered as not applicable rather than by a rule that
@@ -1072,6 +1100,14 @@ def _build_seats() -> dict[str, dict[str, object]]:
         "Wise runs on the Instinct app's own computer and reaches the fleet through "
         "the hosted ST-MCP bridge",
         "Wise's credential is held by the hosted listener's secret store, not by a Mac "
+        "file of its own.",
+    )
+    # ZCode:  the installer tables name no zcode platform yet, so the seat has no Mac
+    # surface until that lane is grounded and built.
+    seats["ZC"] = _hosted_seat(
+        "ZC",
+        "ZCode has no Mac harness lane yet:  the installer tables name no zcode platform",
+        "ZCode's credential is held by the server listener's secret store, not by a Mac "
         "file of its own.",
     )
     return seats

@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest import mock
 
 from simple_tools import cli, daemon
+from simple_tools import subscribe_all
 from simple_tools import zulip as Z
 from simple_tools.mcp import identity_router as R
 from simple_tools.mcp import stdio as S
@@ -861,6 +862,8 @@ class ProtocolTests(McpHarness):
 
     def test_fleet_roles_match_the_listener(self):
         self.assertEqual(T.FLEET_ROLES, daemon.FLEET_ROLES)
+        self.assertEqual(T.BOT_ROLES, daemon.BOT_ROLES)
+        self.assertEqual(T.BOT_ROLES, subscribe_all.BOT_ROLES)
 
 
 class ReadToolTests(McpHarness):
@@ -1804,20 +1807,25 @@ class StartupTests(McpHarness):
             self.assert_structured("whoami", session.call("whoami"))["seat"], "CLAUDE"
         )
 
-    def test_subprocess_refuses_admin_and_owner_bots(self):
-        for role in (200, 100):
+    def test_subprocess_accepts_admin_bots_and_refuses_owner_bots(self):
+        # A bot that is also an administrator is still the fleet's bot (owner decision 2026-11-02).
+        for role, accepted in ((200, True), (100, False), (600, False)):
             with self.subTest(role=role):
                 self.fake.set_role(10, role)
                 code, lines, stderr = self.spawn(
                     self.mcp_env(), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
                 )
-                self.assertEqual((code, lines), (3, []))
-                self.assertIn("role %d" % role, stderr)
+                if accepted:
+                    self.assertEqual(code, 0, stderr)
+                else:
+                    self.assertEqual((code, lines), (3, []))
+                    self.assertIn("role %d" % role, stderr)
+        self.fake.set_role(10, 400)
 
     def test_subprocess_accepts_the_operator_admin_key_and_refuses_it_for_other_seats(self):
-        """Operator is the admin [Operator] bot (owner decision, Oct 22 2026).  Only the OPERATOR
-        identity may authenticate with an administrator key:  every other seat holding the same admin
-        key is still refused, and OPERATOR itself is still refused an owner key."""
+        """A bot that is also an administrator is accepted on every seat (owner decision 2026-11-02);
+        what a seat may never do is authenticate with ANOTHER seat's bot, and an owner key is still
+        refused everywhere."""
         operator_key = zulip_shaped()
         self.extra_secrets.append(operator_key)
         operator_id = self.fake.add_bot(
@@ -1831,8 +1839,9 @@ class StartupTests(McpHarness):
         self.assertEqual(code, 0, stderr)
 
         # The refused case:  the very same admin key cannot be borrowed by another seat.  (A seat's
-        # OWN bot holding an admin key is refused by the role check, proven by
-        # test_subprocess_refuses_admin_and_owner_bots.)
+        # OWN bot holding an admin key is accepted - a bot that is also an administrator is still
+        # the fleet's bot, proven by test_subprocess_accepts_admin_bots_and_refuses_owner_bots -
+        # but one seat may never authenticate with another seat's bot.)
         self.add_infisical_bot("CLAUDE", email="operator-bot@zulip.test", key=operator_key)
         code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT="CLAUDE"), ping)
         self.assertEqual((code, lines), (3, []))

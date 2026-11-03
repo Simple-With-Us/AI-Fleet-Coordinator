@@ -608,12 +608,13 @@ def _confirm_client(path: Path, seat: str, env: Mapping[str, str]) -> Any:
     return client
 
 
-def _confirm_refused(seat: str, exc: Any) -> "N.NotesError":
+def _confirm_refused(seat: str, exc: Any) -> N.NotesError:
     """The refusal a failed local confirm raises:  the bearer's own code, mapped to the CLI's exit codes."""
     if exc.code == "not_configured":
         return N.NotesError(
             "not_configured",
-            "on a Mac, %s's own bearer file could not be read (%s); nothing ran locally" % (seat, exc.code),
+            "on a Mac, %s's own bearer file could not be read (%s); nothing ran locally"
+            % (seat, exc.code),
         )
     if exc.code == "unavailable":
         return N.NotesError(

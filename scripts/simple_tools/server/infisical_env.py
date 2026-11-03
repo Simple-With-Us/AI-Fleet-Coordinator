@@ -107,9 +107,7 @@ OPERATOR_NAMES = frozenset(
 FLEET_OPS_PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
 OPERATOR_SERVICE_PATH = "/zulip_operator"
 OPERATOR_SERVICE_NAMES = frozenset({"OPERATOR_ZULIP_USER_ID", "OPERATOR_ZULIP_EMAIL"})
-_PROJECT_ID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
-)
+_PROJECT_ID_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
 

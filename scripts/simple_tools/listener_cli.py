@@ -742,7 +742,9 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
             continue
         user = by_email.get(seat_creds.email.casefold()) or {}
         role = user.get("role")
-        ok_role = role in (300, 400)
+        ok_role = (
+            bool(user.get("is_bot")) and not user.get("is_owner") and role in (200, 300, 400)
+        )  # the listener's accepted bot roles;  an owner flag refuses whatever the role says
         try:
             seat_client = Z.ZulipClient(seat_creds, realm, timeout=rt.timeout, sleep=rt.sleep)
             subs = {
@@ -761,7 +763,7 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
                     "file mode" if seat_cfg.creds == "file" and secrets_dir else "Infisical /zulip"
                 ),
                 role,
-                "" if ok_role else " (REFUSED: the listener takes moderator or member bots only)",
+                "" if ok_role else " (REFUSED: the listener refuses owner keys and any other role)",
                 Z.DEFAULT_CHANNEL,
                 "yes"
                 if Z.DEFAULT_CHANNEL.casefold() in {str(s).casefold() for s in subs}

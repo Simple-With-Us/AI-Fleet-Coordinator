@@ -148,7 +148,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "rewake_verified_desktop = false   # the same for the Desktop Code tab, which has its own flag (the old rewake_verified sets both)",
         "",
         "[seat.CLAUDE]",
-        'bot = "Claude"                    # reads %s (moderator or member role only)%s'
+        'bot = "Claude"                    # reads %s (moderator, member or admin bot role)%s'
         % (
             where("CLAUDE"),
             "" if present("CLAUDE") else "; NOT FOUND",

@@ -575,7 +575,7 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | Jet (ChatGPT, OpenAI dot) | JET, its own identity | openai-dot-bot@ | An ordinary Codex thread never signs JET. |
 | **Any session BotFleet launched** | **No default** | the role's own bot | The engine is not the bot's identity.  Only BotFleet assigns `BF-<ROLE>`. |
 | **A Cursor cloud agent Grok Bot drives** | **No default** | the GB persona's bot | Grok Bot assigns `GB-<NAME>`. |
-| **Engine-only CLIs** (Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they ask. |
+| **Engine-only CLIs** (Droid, Hermes, Qwen, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they ask. |
 | **Headless runs** (`claude -p`, `codex exec`, an SDK call, cron) | **No default** | none | A script that wants a seat is a launcher and sets one. |
 | **An app several seats share** | **No default** | none | Conductor runs Claude Code, Codex, Cursor and OpenCode in one workspace app and sets no launcher variable, so each tool inside still reads its own platform file. |
 
