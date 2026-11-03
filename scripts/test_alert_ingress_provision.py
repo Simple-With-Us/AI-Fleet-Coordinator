@@ -62,7 +62,18 @@ class FakeCLI:
         return FakeProc(0, json.dumps(values).encode())
 
 
-class OneNameBatch(unittest.TestCase):
+class ServiceTokenTestCase(unittest.TestCase):
+    def setUp(self):
+        self.token_env = mock.patch.dict(os.environ, {
+            provision.READ_TOKEN_AFC: "st." + "fixture-afc-read-token-value",
+            provision.READ_TOKEN_FLEETOPS: "st." + "fixture-fleetops-read-token",
+            provision.WRITE_TOKEN_AFC: "st." + "fixture-afc-write-token-value",
+        }, clear=False)
+        self.token_env.start()
+        self.addCleanup(self.token_env.stop)
+
+
+class OneNameBatch(ServiceTokenTestCase):
     """A batch of one answers with the raw value, not with a JSON object."""
 
     def test_one_name_is_read_as_itself(self):
@@ -88,7 +99,7 @@ class OneNameBatch(unittest.TestCase):
         self.assertEqual(len(cli.calls), 2)
 
 
-class BatchValues(unittest.TestCase):
+class BatchValues(ServiceTokenTestCase):
     """The environment first, one batched read second, an absence is an error."""
 
     def test_the_environment_comes_first(self):
@@ -107,23 +118,15 @@ class BatchValues(unittest.TestCase):
         self.assertIn("MISSING is absent from fleet-ops/", caught.exception.reason)
 
     def test_three_names_are_one_export(self):
-        # The fleet-ops folder holds the automation identity and the
-        # Cloudflare token.  They are read together, so the folder is
-        # exported once for the whole run.
+        # Fleet-OPS reads use this caller's distinct service token.
         cli = FakeCLI(
             {
-                "INFISICAL_AUTOMATION_CLIENT_ID": "the-id",
-                "INFISICAL_AUTOMATION_CLIENT_SECRET": "the-secret",
                 "CLOUDFLARE_FLEET_API_TOKEN": "the-token",
             }
         )
         with mock.patch.object(provision.subprocess, "run", cli):
             values = provision.batch_values(
-                [
-                    "INFISICAL_AUTOMATION_CLIENT_ID",
-                    "INFISICAL_AUTOMATION_CLIENT_SECRET",
-                    "CLOUDFLARE_FLEET_API_TOKEN",
-                ],
+                ["CLOUDFLARE_FLEET_API_TOKEN"],
                 "fleet-ops",
                 "/",
             )
@@ -131,8 +134,8 @@ class BatchValues(unittest.TestCase):
         self.assertEqual(values["CLOUDFLARE_FLEET_API_TOKEN"], "the-token")
 
 
-class InfisicalLogin(unittest.TestCase):
-    """The login takes its values from the caller, so the folder is read once."""
+class ServiceTokenWrites(ServiceTokenTestCase):
+    """Writes use the caller's separate scoped token directly."""
 
     def test_the_values_come_from_the_caller(self):
         seen = {}
@@ -142,20 +145,40 @@ class InfisicalLogin(unittest.TestCase):
             seen["data"] = data
             return {"accessToken": "the-access-token"}
 
-        with mock.patch.object(provision, "api", fake_api):
-            access = provision.infisical_login(
-                {
-                    "INFISICAL_AUTOMATION_CLIENT_ID": "the-id",
-                    "INFISICAL_AUTOMATION_CLIENT_SECRET": "the-secret",
-                }
-            )
-        self.assertEqual(access, "the-access-token")
-        self.assertEqual(seen["data"], {"clientId": "the-id", "clientSecret": "the-secret"})
+        metadata = {
+            "workspace": provision.AFC,
+            "projectId": provision.AFC,
+            "permissions": ["read", "write"],
+            "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
+            "expiresAt": None,
+        }
+        with mock.patch.object(provision.scoped_secrets, "_api_json", return_value=(200, metadata)) as verify:
+            with mock.patch.object(provision, "api", fake_api):
+                provision.infisical_upsert("st." + "fixture-afc-write-token-value", "INGRESS_SHARED_TOKEN", "secret")
+        verify.assert_called_once()
+        self.assertEqual(verify.call_args.args[1], "/v2/service-token")
+        self.assertEqual(verify.call_args.args[4][provision.scoped_secrets.ENV_WRITE_PATHS], "/zulip")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["data"]["secretValue"], "secret")
+
+    def test_wrong_writer_scope_fails_before_write(self):
+        metadata = {
+            "workspace": provision.AFC,
+            "projectId": provision.AFC,
+            "permissions": ["read", "write"],
+            "scopes": [{"environment": "prod", "secretPath": "/wrong"}],
+            "expiresAt": None,
+        }
+        with mock.patch.object(provision.scoped_secrets, "_api_json", return_value=(200, metadata)):
+            with mock.patch.object(provision, "api") as write:
+                with self.assertRaisesRegex(provision.ReadError, "scope verification"):
+                    provision.infisical_upsert("st." + "fixture-afc-write-token-value", "INGRESS_SHARED_TOKEN", "secret")
+        write.assert_not_called()
 
     def test_an_absent_credential_is_refused(self):
         with self.assertRaises(provision.ReadError) as caught:
-            provision.infisical_login({"INFISICAL_AUTOMATION_CLIENT_ID": "the-id"})
-        self.assertEqual(caught.exception.reason, "INFISICAL_AUTOMATION_CLIENT_SECRET is absent")
+            provision.infisical_upsert("bad-token", "INGRESS_SHARED_TOKEN", "secret")
+        self.assertEqual(caught.exception.reason, provision.WRITE_TOKEN_AFC + " is missing or invalid")
 
 
 if __name__ == "__main__":
