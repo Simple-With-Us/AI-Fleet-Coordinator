@@ -27,23 +27,30 @@ struct PM2Application: Decodable {
     let name: String
     /// The state pm2 has for the application.
     let status: String?
-    /// The process pm2 has behind the application, when it has one.
-    let pid: Int?
+    /// The process pm2 has behind the application, zero when it has none.
+    let pid: Int
 
     private enum CodingKeys: String, CodingKey {
         case name
+        case pid
         case environment = "pm2_env"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decode(String.self, forKey: .name)
-        if let environment = try? container.decode(PM2Environment.self, forKey: .environment) {
-            status = environment.status
-            pid = environment.pid
+        let environment = try? container.decode(PM2Environment.self, forKey: .environment)
+        status = environment?.status
+        // pm2 carries the process id at the entry level of its listing, and the
+        // nested environment may keep the id of a process that is long gone,
+        // so the entry decides whenever it has the key:  an explicit zero there
+        // means no process.  A missing entry key falls back to the nested
+        // value, so a shape that moves the field cannot make every running
+        // application read as failed.
+        if let entry = try? container.decode(Int.self, forKey: .pid) {
+            pid = entry
         } else {
-            status = nil
-            pid = nil
+            pid = environment?.pid ?? 0
         }
     }
 }
@@ -52,6 +59,37 @@ struct PM2Application: Decodable {
 private struct PM2Environment: Decodable {
     let status: String?
     let pid: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case pid
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try? container.decode(String.self, forKey: .status)
+        pid = try? container.decode(Int.self, forKey: .pid)
+    }
+}
+
+/// One look at pm2:  the state of every application it knows about, and the
+/// applications whose record is stale.
+///
+/// Both come from one listing, so a caller that needs both pays for one
+/// process rather than two.
+public struct PM2Snapshot {
+    /// The state of every application pm2 knows about, by name.
+    public let states: [String: ManagedServiceState]
+    /// The applications whose record says online with no process behind them.
+    ///
+    /// These are the stale records:  pm2 still remembers the application and
+    /// still calls it online, but there is no pid, so nothing is running.
+    public let stale: Set<String>
+
+    public init(states: [String: ManagedServiceState], stale: Set<String>) {
+        self.states = states
+        self.stale = stale
+    }
 }
 
 /// Runs the pm2 client that owns the BotFleet MCP server.
@@ -145,9 +183,7 @@ public struct PM2Client {
     /// any application.  That is not the same as an empty answer, which
     /// means pm2 knows about no application at all.
     public func appStates() -> [String: ManagedServiceState]? {
-        guard isAvailable else { return nil }
-        guard let listing = try? run(["jlist"]) else { return nil }
-        return PM2Client.parseAppStates(listing)
+        snapshot()?.states
     }
 
     /// The state of one pm2 application.
@@ -156,8 +192,19 @@ public struct PM2Client {
     /// started, and nothing asked it to stop.  A pm2 that cannot be reached
     /// knows nothing, so the state is unknown.
     public func state(ofApp name: String) -> ManagedServiceState {
-        guard let states = appStates() else { return .unknown }
-        return states[name] ?? .stopped
+        guard let snapshot = snapshot() else { return .unknown }
+        return snapshot.states[name] ?? .stopped
+    }
+
+    /// One look at pm2:  the state of every application it knows about, and
+    /// the applications whose record is stale.
+    ///
+    /// Both come from one listing, so a caller that needs both pays for one
+    /// process rather than two.  `nil` means pm2 could not be asked at all.
+    public func snapshot() -> PM2Snapshot? {
+        guard isAvailable else { return nil }
+        guard let listing = try? run(["jlist"]) else { return nil }
+        return PM2Client.snapshot(from: listing)
     }
 
     /// Reads the states out of what `pm2 jlist` printed.
@@ -170,13 +217,22 @@ public struct PM2Client {
     /// would act on that.  Only a listing that decodes to an empty array means
     /// pm2 knows about no application.
     public static func parseAppStates(_ listing: String) -> [String: ManagedServiceState]? {
+        snapshot(from: listing)?.states
+    }
+
+    /// The one look at pm2, from what `pm2 jlist` printed.
+    public static func snapshot(from listing: String) -> PM2Snapshot? {
         guard let data = listing.data(using: .utf8),
               let applications = try? JSONDecoder().decode([PM2Application].self, from: data) else { return nil }
         var states: [String: ManagedServiceState] = [:]
+        var stale: Set<String> = []
         for application in applications {
             states[application.name] = state(forStatus: application.status, pid: application.pid)
+            if application.status == "online", application.pid <= 0 {
+                stale.insert(application.name)
+            }
         }
-        return states
+        return PM2Snapshot(states: states, stale: stale)
     }
 
     /// The state pm2's own status means.
@@ -203,31 +259,6 @@ public struct PM2Client {
         }
     }
 
-    /// The applications whose pm2 record says online with no process behind
-    /// them, by name.
-    ///
-    /// These are the stale records:  pm2 still remembers the application and
-    /// still calls it online, but there is no pid, so nothing is running.
-    /// `nil` means pm2 could not be asked at all, so nothing is known.
-    public func staleApplications() -> Set<String>? {
-        guard isAvailable else { return nil }
-        guard let listing = try? run(["jlist"]) else { return nil }
-        return PM2Client.staleApplicationNames(in: listing)
-    }
-
-    /// The stale applications in what `pm2 jlist` printed.
-    public static func staleApplicationNames(in listing: String) -> Set<String>? {
-        guard let data = listing.data(using: .utf8),
-              let applications = try? JSONDecoder().decode([PM2Application].self, from: data) else { return nil }
-        var stale: Set<String> = []
-        for application in applications {
-            if application.status == "online", (application.pid ?? 0) <= 0 {
-                stale.insert(application.name)
-            }
-        }
-        return stale
-    }
-
     /// Starts a pm2 application.
     ///
     /// `pm2 start <name>` only works while pm2 still remembers the job.  When
@@ -237,10 +268,15 @@ public struct PM2Client {
     /// record it believes is online with "already started" and starts
     /// nothing, so a stale application would never come back and the start
     /// would report a success it did not achieve.  A stale record is
-    /// restarted instead, which runs the application's script again.
-    public func start(appName: String) throws {
-        if staleApplications()?.contains(appName) == true {
-            _ = try run(["restart", appName])
+    /// restarted instead, which runs the application's script again, and the
+    /// restart carries the same ecosystem-file fallback as any other.
+    ///
+    /// `stale` is the set the caller already read, so a start does not pay for
+    /// a second listing.  Pass `nil` when the caller has none.
+    public func start(appName: String, stale: Set<String>? = nil) throws {
+        let staleSet = stale ?? (snapshot()?.stale ?? [])
+        if staleSet.contains(appName) {
+            try restart(appName: appName)
             return
         }
         do {
@@ -285,11 +321,15 @@ public struct PM2Client {
                            attempts: Int = PM2Client.settleAttempts,
                            interval: TimeInterval = PM2Client.settleInterval) async throws -> ManagedServiceState {
         let wanted: ManagedServiceState = running ? .running : .stopped
-        let current = state(ofApp: appName)
+        let snapshot = self.snapshot()
+        // An application pm2 has no record of is stopped,  the same reading
+        // `state(ofApp:)` gives,  and a pm2 that could not be asked at all is
+        // unknown.  One listing answers both the state and the stale set.
+        let current = snapshot.map { $0.states[appName] ?? .stopped } ?? .unknown
         if current == wanted { return current }
         if current == .unknown { return current }
         if running {
-            try start(appName: appName)
+            try start(appName: appName, stale: snapshot?.stale)
         } else {
             try stop(appName: appName)
         }
@@ -383,7 +423,10 @@ public final class McpServerControl {
         if current == .unknown { return current }
         do {
             if running {
-                try pm2.start(appName: PM2Client.mcpAppName)
+                // The stale set is read here so a record that pm2 believes is
+                // online is restarted rather than answered with "already
+                // started",  which is what it would otherwise do.
+                try pm2.start(appName: PM2Client.mcpAppName, stale: pm2.snapshot()?.stale)
             } else {
                 try pm2.stop(appName: PM2Client.mcpAppName)
             }
