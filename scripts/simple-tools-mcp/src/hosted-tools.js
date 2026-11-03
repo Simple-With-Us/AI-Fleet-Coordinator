@@ -104,6 +104,8 @@ import {
   M_RELATE,
   Q_ISSUE,
   Q_COMMENTS,
+  Q_COMMENT_ONE,
+  Q_RELATIONS,
   Q_LIST,
   Q_TEAMS,
   Q_LABELS,
@@ -1760,10 +1762,8 @@ export class HostedTools {
    * One Linear write, behind the seat's idempotency row, so a retry that the
    * model repeats returns the first result instead of a second comment.
    *
-   * Unlike a Zulip post there is no reconcile step:  Linear offers no way to
-   * search a comment by its body, so an outcome this server cannot confirm
-   * drops the row and lets the retry send.  Every body therefore opens with the
-   * seat tag line, which is what makes a human able to see a duplicate.
+   * Comment callers reconcile exact deterministic ids and guard historical candidates
+   * before entering this write. A dropped transient row is never proof a create failed.
    */
   async linearWrite(idem, fields, send) {
     const begun = await this.gate.idemBegin({ key: idem.key, ttlMs: idem.ttlMs, fields });
@@ -1853,6 +1853,63 @@ export class HostedTools {
     return this.linearBody(text, args.session) + `\n\n${footer.join("\n")}`;
   }
 
+  /** A current deterministic id proves operation identity; body similarity never does. */
+  async linearExistingComment(issueId, commentId, body, viewerId) {
+    const data = await this.linearCall(() => this.linear.call(Q_COMMENT_ONE, { id: commentId }));
+    if (!data || !Object.hasOwn(data, "comment")) throw new ToolError("outcome_unknown", "Could not verify the earlier Linear comment. No comment was posted.");
+    const found = data.comment;
+    if (found === null) return false;
+    if (found?.id !== commentId || found?.issue?.id !== issueId || found?.body !== body || found?.user?.id !== viewerId || found?.user?.app !== true) {
+      throw new ToolError("outcome_unknown", "The existing Linear comment identity could not be verified. No comment was posted.");
+    }
+    return true;
+  }
+
+  /** Refuse a likely historical retry, without calling it a confirmed duplicate. */
+  async linearCommentGuard(issueId, commentId, body, session, viewerId) {
+    if (!viewerId) throw new ToolError("outcome_unknown", "Could not verify the Linear comment actor. No comment was posted.");
+    if (await this.linearExistingComment(issueId, commentId, body, viewerId)) return true;
+    let after = null;
+    const cursors = new Set();
+    let candidate = null;
+    const today = centralDay(this.now());
+    for (let page = 0; page < 40; page += 1) {
+      const data = await this.linearCall(() => this.linear.call(Q_COMMENTS, { id: issueId, first: 100, after }));
+      const conn = data?.issue?.comments;
+      if (!Array.isArray(conn?.nodes) || typeof conn?.pageInfo?.hasNextPage !== "boolean") break;
+      for (const row of conn.nodes) {
+        if (typeof row?.id !== "string" || !row.id || typeof row.body !== "string" || (row.user !== null && (typeof row?.user?.id !== "string" || typeof row?.user?.app !== "boolean")) || typeof row.createdAt !== "string" || !Number.isFinite(Date.parse(row.createdAt))) {
+          throw new ToolError("outcome_unknown", "Linear comment history was incomplete. No comment was posted.");
+        }
+        if (row.id === commentId) {
+          if (row.body !== body || row.user?.id !== viewerId || row.user?.app !== true) throw new ToolError("outcome_unknown", "The existing Linear comment identity could not be verified. No comment was posted.");
+          return true;
+        }
+        // Full sessions are not stored in the visible tag. Same tag+body is only a likely retry.
+        if (row.body === body && row.user?.id === viewerId && row.user?.app === true && (session || centralDay(Date.parse(row.createdAt)) === today)) candidate = row.id;
+      }
+      if (!conn.pageInfo.hasNextPage) {
+        if (candidate) throw new ToolError("likely_duplicate", "This was seen as likely a duplicate post, but its historical operation identity cannot be proved. No comment was posted and no claim was changed. Check the existing comment before trying again.", { retryable: false, extra: { existing_comment_id: candidate } });
+        return false;
+      }
+      const cursor = conn.pageInfo.endCursor;
+      if (typeof cursor !== "string" || !cursor || cursors.has(cursor)) break;
+      cursors.add(cursor);
+      after = cursor;
+    }
+    throw new ToolError("outcome_unknown", "Linear comment history could not be fully checked. No comment was posted and no claim was changed.");
+  }
+
+  async linearCreateComment(issueId, commentId, body, viewerId) {
+    try {
+      const data = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issueId, commentId, body) }), { write: true });
+      if (data?.commentCreate?.success !== true || data?.commentCreate?.comment?.id !== commentId) throw new ToolError("linear_error", "Linear did not confirm the comment.");
+    } catch (error) {
+      // A create may land before its response is lost. Read the exact id, never retry by body.
+      if (!await this.linearExistingComment(issueId, commentId, body, viewerId)) throw error;
+    }
+  }
+
   async tool_linear_claim(args, audit) {
     this.requireLinearWrites();
     this.scanLinearText(args.comment?.trim() ? `CLAIMED\n\n${args.comment.trim()}` : "CLAIMED", args.session, { field: "comment" });
@@ -1908,12 +1965,12 @@ export class HostedTools {
     const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "claim", body, args.session, centralDay(this.now()));
+    const existingComment = await this.linearCommentGuard(issue.id, commentId, body, args.session, viewerId);
     const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId && delegating ? { delegateId: viewerId } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, label: claimName }, async () => {
       const updated = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });
       if (updated?.issueUpdate?.success !== true) throw new ToolError("linear_error", "Linear did not set the claim.");
-      const commented = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
-      if (commented?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the CLAIMED comment.");
+      if (!existingComment) await this.linearCreateComment(issue.id, commentId, body, viewerId);
       return { id: issue.id, identifier: issue.identifier, label: claimHit ? claimName : null, delegate: delegating ? viewerName : null, held_by: null };
     });
     return this.writeResult(result);
@@ -1928,15 +1985,39 @@ export class HostedTools {
     const idem = await this.idemKey(null, ["linear_comment", this.seat, issue.id, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "comment", body, args.session, centralDay(this.now()));
-    await this.linearCall(() => this.confirmedViewer());
+    const viewer = await this.linearCall(() => this.confirmedViewer());
+    const existingComment = await this.linearCommentGuard(issue.id, commentId, body, args.session, viewer?.id);
     const result = await this.linearWrite(idem, { issue: issue.id }, async () => {
       // A fixed comment id, so a retry that the model repeats updates that
       // comment instead of posting a second one (board comment_id).
-      const data = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
-      if (data?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the comment.");
-      return { id: data.commentCreate.comment.id, ok: true };
+      if (!existingComment) await this.linearCreateComment(issue.id, commentId, body, viewer.id);
+      return { id: commentId, ok: true };
     });
     return this.writeResult(result);
+  }
+
+  /** Existing duplicate edges are identified by exact directed endpoints, never their namespace. */
+  async linearDuplicateRelation(issueId, relatedIssueId) {
+    let after = null;
+    const cursors = new Set();
+    let found = null;
+    for (let page = 0; page < 40; page += 1) {
+      const data = await this.linearCall(() => this.linear.call(Q_RELATIONS, { id: issueId, first: 100, after }));
+      const conn = data?.issue?.relations;
+      if (!Array.isArray(conn?.nodes) || typeof conn?.pageInfo?.hasNextPage !== "boolean") break;
+      for (const row of conn.nodes) {
+        if (typeof row?.id !== "string" || !row.id || typeof row.type !== "string" || typeof row?.issue?.id !== "string" || typeof row?.relatedIssue?.id !== "string") {
+          throw new ToolError("outcome_unknown", "Linear relation history was incomplete. No duplicate relation was created.");
+        }
+        if (row.type === "duplicate" && row.issue.id === issueId && row.relatedIssue.id === relatedIssueId) found = row.id;
+      }
+      if (!conn.pageInfo.hasNextPage) return found;
+      const cursor = conn.pageInfo.endCursor;
+      if (typeof cursor !== "string" || !cursor || cursors.has(cursor)) break;
+      cursors.add(cursor);
+      after = cursor;
+    }
+    throw new ToolError("outcome_unknown", "Linear relations could not be fully checked. No duplicate relation was created.");
   }
 
   async tool_linear_status(args, audit) {
@@ -1955,11 +2036,18 @@ export class HostedTools {
       if (args.of === issue.identifier || args.of === issue.id) throw new ToolError("invalid_argument", "an issue cannot duplicate itself.");
       const kept = await this.linearIssue(args.of);
       const relationId = await stableRelationId(issue.id, kept.id);
+      const existingRelation = await this.linearDuplicateRelation(issue.id, kept.id);
       const result = await this.linearWrite(idem, { issue: issue.id, of: kept.id }, async () => {
         // A deterministic relation id, so a retry updates the same relation
         // instead of adding a second one.
-        const data = await this.linearCall(() => this.linear.call(M_RELATE, { input: { id: relationId, type: "duplicate", issueId: issue.id, relatedIssueId: kept.id } }), { write: true });
-        if (data?.issueRelationCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the duplicate relation.");
+        if (!existingRelation) {
+          try {
+            const data = await this.linearCall(() => this.linear.call(M_RELATE, { input: { id: relationId, type: "duplicate", issueId: issue.id, relatedIssueId: kept.id } }), { write: true });
+            if (data?.issueRelationCreate?.success !== true || data?.issueRelationCreate?.issueRelation?.id !== relationId) throw new ToolError("linear_error", "Linear did not confirm the duplicate relation.");
+          } catch (error) {
+            if (!await this.linearDuplicateRelation(issue.id, kept.id)) throw error;
+          }
+        }
         return { id: issue.id, identifier: issue.identifier, status: "duplicate", of: kept.identifier };
       });
       return this.writeResult(result);

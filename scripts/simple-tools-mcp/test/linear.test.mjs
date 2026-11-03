@@ -1078,3 +1078,151 @@ test("MA spellings: every alias that reaches MA is treated as MA (label-only, no
     assert.equal(fake.requests.length, 0, `${spelling}: nothing was sent to Linear`);
   }
 });
+
+function historicalComment(fake, issue, body, { id = "historical-id", actor = fake.viewer.id, createdAt = "2026-10-09T09:00:00Z", app = true } = {}) {
+  issue.comments.push({ id, body, createdAt, user: { id: actor, app, name: "Stored actor" } });
+}
+
+test("historical same-actor comment refuses clearly as likely duplicate without writing", async () => {
+  const { tools, fake } = harness();
+  const issue = fake.addIssue();
+  historicalComment(fake, issue, tools.linearBody("same words"));
+  const error = toolError(await tools.call("linear_comment", { id: issue.id, body: "same words" }), "likely_duplicate");
+  assert.match(error.message, /likely a duplicate post/);
+  assert.match(error.message, /No comment was posted/);
+  assert.equal(error.existing_comment_id, "historical-id");
+  assert.equal(error.retryable, false);
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("historical CLAIMED body never collapses claim/comment verbs and refuses before claim update", async () => {
+  const { tools, fake } = harness();
+  const issue = fake.addIssue();
+  historicalComment(fake, issue, tools.linearBody("CLAIMED"));
+  toolError(await tools.call("linear_claim", { id: issue.id }), "likely_duplicate");
+  toolError(await tools.call("linear_comment", { id: issue.id, body: "CLAIMED" }), "likely_duplicate");
+  assert.equal(fake.mutations().length, 0);
+  assert.equal(issue.state.name, "Todo");
+});
+
+test("different actor, new text, different session tag and next Central day proceed", async () => {
+  for (const mode of ["actor", "text", "tag", "day"]) {
+    const { tools, fake } = harness();
+    const issue = fake.addIssue();
+    const args = { id: issue.id, body: "new text", ...(mode === "tag" ? { session: "abcdefgh-new" } : {}) };
+    historicalComment(fake, issue, tools.linearBody(mode === "text" ? "other text" : "new text", mode === "tag" ? "different-old" : undefined), {
+      ...(mode === "actor" ? { actor: "another-app" } : {}),
+      ...(mode === "day" ? { createdAt: "2026-10-08T09:00:00Z" } : {}),
+    });
+    ok(await tools.call("linear_comment", args), "linear_comment");
+    assert.equal(fake.mutations().length, 1, mode);
+  }
+});
+
+test("same shortened session tag remains ambiguous across full sessions and days", async () => {
+  const { tools, fake } = harness();
+  const issue = fake.addIssue();
+  historicalComment(fake, issue, tools.linearBody("same", "abcdefgh-original"), { createdAt: "2026-01-01T00:00:00Z" });
+  toolError(await tools.call("linear_comment", { id: issue.id, body: "same", session: "abcdefgh-distinct" }), "likely_duplicate");
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("history pagination finds later historical candidates and refuses malformed or repeated cursors", async () => {
+  for (const mode of ["later", "repeated", "malformed", "missing-pageinfo"]) {
+    const { tools, fake } = harness();
+    const issue = fake.addIssue();
+    const body = tools.linearBody("same");
+    const match = (entry) => opOf(entry.body?.query)?.name === "BoardComments";
+    fake.failNext(match, () => fake.json(200, { data: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: true, endCursor: "next" } } } } }));
+    fake.failNext(match, (entry) => {
+      assert.equal(entry.body.variables.after, "next");
+      const row = { id: "historical-id", body, createdAt: "2026-10-09T09:00:00Z", user: { id: fake.viewer.id, app: true } };
+      const conn = mode === "missing-pageinfo" ? { nodes: [] } : {
+        nodes: mode === "malformed" ? [{}] : mode === "later" ? [row] : [],
+        pageInfo: { hasNextPage: mode === "repeated", endCursor: "next" },
+      };
+      return fake.json(200, { data: { issue: { comments: conn } } });
+    });
+    toolError(await tools.call("linear_comment", { id: issue.id, body: "same" }), mode === "later" ? "likely_duplicate" : "outcome_unknown");
+    assert.equal(fake.mutations().length, 0, mode);
+  }
+});
+
+test("current deterministic id recovers an expired idempotency row without creating again", async () => {
+  const { tools, fake, clock } = harness();
+  const issue = fake.addIssue();
+  const first = ok(await tools.call("linear_comment", { id: issue.id, body: "same" }), "linear_comment");
+  clock.now += 11 * 60_000;
+  const next = ok(await tools.call("linear_comment", { id: issue.id, body: "same" }), "linear_comment");
+  assert.equal(next.id, first.id);
+  assert.equal(fake.mutations().length, 1);
+});
+
+test("lost create response reconciles exact current id and does not send a second mutation", async () => {
+  const { tools, fake } = harness();
+  const issue = fake.addIssue();
+  fake.failNext((entry) => opOf(entry.body?.query)?.name === "BoardComment", (entry) => {
+    fake.createComment(entry.body.variables.input);
+    return fake.json(503, { error: "lost response" });
+  });
+  const result = ok(await tools.call("linear_comment", { id: issue.id, body: "same" }), "linear_comment");
+  assert.equal(result.id, issue.comments[0].id);
+  assert.equal(fake.mutations().length, 1);
+});
+
+test("unverifiable current id refuses rather than borrowing another actor's comment", async () => {
+  const { tools, fake } = harness();
+  const issue = fake.addIssue();
+  const body = tools.linearBody("same");
+  const id = await commentId(issue.id, "GROK-WEB", "comment", body, undefined, "2026-10-09");
+  historicalComment(fake, issue, body, { id, actor: "different-app" });
+  toolError(await tools.call("linear_comment", { id: issue.id, body: "same" }), "outcome_unknown");
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("endless history fails closed at forty pages before a claim writes", async () => {
+  const { tools, fake } = harness();
+  const issue = fake.addIssue();
+  for (let i = 0; i < 40; i += 1) fake.failNext((entry) => opOf(entry.body?.query)?.name === "BoardComments", () => fake.json(200, { data: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: true, endCursor: `page-${i}` } } } } }));
+  toolError(await tools.call("linear_claim", { id: issue.id }), "outcome_unknown");
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("historical duplicate relation with exact directed endpoints is reused regardless of id", async () => {
+  for (const type of ["duplicate", "related", "reverse"]) {
+    const { tools, fake } = harness();
+    const issue = fake.addIssue({ id: "source" });
+    const kept = fake.addIssue({ id: "target" });
+    fake.relations.push({ id: "historical-edge", type: type === "related" ? "related" : "duplicate", issueId: type === "reverse" ? kept.id : issue.id, relatedIssueId: type === "reverse" ? issue.id : kept.id });
+    ok(await tools.call("linear_status", { id: issue.id, status: "duplicate", of: kept.id }), "linear_status");
+    assert.equal(fake.mutations().length, type === "duplicate" ? 0 : 1, type);
+  }
+});
+
+test("duplicate edge pagination finds later edges, refuses incomplete pages and recovers lost create response", async () => {
+  for (const mode of ["later", "repeated", "malformed", "lost"]) {
+    const { tools, fake } = harness();
+    const issue = fake.addIssue({ id: "source" });
+    const kept = fake.addIssue({ id: "target" });
+    const match = (e) => opOf(e.body?.query)?.name === "BoardRelations";
+    if (mode !== "lost") {
+      fake.failNext(match, () => fake.json(200, { data: { issue: { relations: { nodes: [], pageInfo: { hasNextPage: true, endCursor: "next" } } } } }));
+      fake.failNext(match, () => fake.json(200, { data: { issue: { relations: { nodes: mode === "later" ? [{ id: "historical", type: "duplicate", issue: { id: issue.id }, relatedIssue: { id: kept.id } }] : mode === "malformed" ? [{}] : [], pageInfo: { hasNextPage: mode === "repeated", endCursor: "next" } } } } }));
+    } else fake.failNext((e) => opOf(e.body?.query)?.name === "BoardRelate", (e) => {
+      fake.createRelation(e.body.variables.input);
+      return fake.json(503, { error: "lost" });
+    });
+    const result = await tools.call("linear_status", { id: issue.id, status: "duplicate", of: kept.id });
+    if (["later", "lost"].includes(mode)) ok(result, "linear_status");
+    else toolError(result, "outcome_unknown");
+    assert.equal(fake.mutations().length, mode === "lost" ? 1 : 0, mode);
+  }
+});
+
+test("actorless integration comments do not block a new app comment", async () => {
+  const { tools, fake } = harness();
+  const issue = fake.addIssue();
+  issue.comments.push({ id: "integration-comment", body: tools.linearBody("same"), createdAt: "2026-10-09T09:00:00Z", user: null });
+  ok(await tools.call("linear_comment", { id: issue.id, body: "same" }), "linear_comment");
+  assert.equal(fake.mutations().length, 1);
+});

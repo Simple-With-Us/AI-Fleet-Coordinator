@@ -238,6 +238,15 @@ export class FakeLinear {
       }
       case "BoardIssue":
         return { issue: this.issueNode(this.findIssue(variables.id)) };
+      case "BoardRelations":
+        return { issue: { relations: connection(this.relations.filter((r) => r.issueId === variables.id).map((r) => ({ id: r.id, type: r.type, issue: { id: r.issueId }, relatedIssue: { id: r.relatedIssueId } }))) } };
+      case "BoardCommentOne": {
+        for (const issue of this.issues) {
+          const comment = issue.comments.find((row) => row.id === variables.id);
+          if (comment) return { comment: { ...comment, issue: { id: issue.id } } };
+        }
+        return { comment: null };
+      }
       case "BoardComments":
         return { issue: { comments: connection(this.findIssue(variables.id)?.comments ?? []) } };
       case "BoardList":

@@ -504,6 +504,19 @@ export const Q_ISSUE = `query BoardIssue($id: String!) {
   }
 }` + F_ISSUE;
 
+export const Q_RELATIONS = `query BoardRelations($id: String!, $first: Int!, $after: String) {
+  issue(id: $id) {
+    relations(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { id type issue { id } relatedIssue { id } }
+    }
+  }
+}`;
+
+export const Q_COMMENT_ONE = `query BoardCommentOne($id: String!) {
+  comment(id: $id) { id body issue { id } user { id app } }
+}`;
+
 export const Q_COMMENTS = `query BoardComments($id: String!, $first: Int!, $after: String) {
   issue(id: $id) {
     comments(first: $first, after: $after) {
