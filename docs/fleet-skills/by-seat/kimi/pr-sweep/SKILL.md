@@ -5,7 +5,7 @@ description: Sweep the open PRs across the fleet repos and land them — invento
 
 # PR sweep (KIMI)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 `pr-sweep` (`scripts/pr-sweep` in AI-Fleet-Coordinator, docs `docs/PR-SWEEP.md`) is the fleet's PR sweep for every platform.  The worker rules have ONE home, `scripts/pr_sweep/rules.md`, and `pr-sweep prompt` prints them filled in for a PR and your seat.  Never retype them into a chat or a script; print them.

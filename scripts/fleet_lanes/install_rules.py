@@ -123,6 +123,8 @@ TEMPLATE_FILES = {
     "clutch": "fleet-basics.clutch.md",          # Fleet Basics, fixed default seat CLUTCH, then the Lane Map
     "nodefault": "fleet-basics.nodefault.md",    # Fleet Basics, no default seat, then the Lane Map
     "opencode": "seat-identity.opencode.md",     # Seat Identity with the fixed default seat OPENCODE, then the Lane Map
+    "kimi": "seat-identity.kimi.md",             # Fleet Basics, fixed default seat KIMI, then the Lane Map
+    "zcode": "seat-identity.zcode.md",           # Fleet Basics, fixed default seat ZCODE, then the Lane Map
 }
 # Pieces a template pulls in by placeholder.  The Lane Map body is the `full` variant's text.
 BODY_PLACEHOLDER = "{{LANE_MAP_BODY}}"
@@ -186,8 +188,9 @@ PLATFORMS: tuple[Platform, ...] = (
     # at the nearest .git root, and $DSH_HOME is forced to ~/.clutch/dsh by Clutch's own launcher.
     Platform("clutch", ".clutch/dsh/AGENTS.md", "clutch", "Clutch (DSH engine, $DSH_HOME/AGENTS.md)",
              size_cap=CLUTCH_CAP),
+    Platform("kimi", ".kimi-code/AGENTS.md", "kimi", "Kimi Code ($KIMI_CODE_HOME/AGENTS.md)"),
+    Platform("zcode", ".zcode/AGENTS.md", "zcode", "Z Code (Z.ai desktop IDE, ~/.zcode/AGENTS.md)"),
     # Engine-only CLIs: no default seat, so the block says to take a launcher's seat or ask Jay.  (OpenCode is not one: see below.)
-    Platform("kimi", ".kimi-code/AGENTS.md", "nodefault", "Kimi Code ($KIMI_CODE_HOME/AGENTS.md)"),
     Platform("copilot", ".copilot/copilot-instructions.md", "nodefault", "GitHub Copilot CLI (user-level instructions)",
              caveat="UNVERIFIED on this Mac: the file name comes from GitHub's documentation, and the 1.0.68 "
                     "binary was not exercised with a model; start a Copilot session and ask what it loaded"),
@@ -213,7 +216,7 @@ PLATFORMS: tuple[Platform, ...] = (
 PLATFORM_BY_NAME = {p.name: p for p in PLATFORMS}
 PLATFORM_ALIASES = {"ag": "antigravity", "gemini": "antigravity", "mm": "minimax", "grok-build": "grok",
                     "mc": "muse-code", "muse": "muse-code", "kimi-code": "kimi",
-                    "copilot-cli": "copilot", "dsh": "clutch"}
+                    "copilot-cli": "copilot", "dsh": "clutch", "z-code": "zcode", "zc": "zcode"}
 
 
 def resolve_platform_names(names: Iterable[str]) -> list[Platform]:
