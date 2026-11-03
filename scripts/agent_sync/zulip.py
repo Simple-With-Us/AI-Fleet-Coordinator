@@ -815,17 +815,23 @@ def _infisical_api_request(
     raise CredentialError("infisical-api %s: %s" % (stage, last))
 
 
+def _refuse_non_prod_slug(env: Mapping[str, str]) -> None:
+    """This route reads prod only (fleet-secrets refuses any other slug, and so does this route)."""
+    for var in ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV"):
+        slug = (env.get(var) or "").strip().lower()
+        if slug and slug != "prod":
+            raise CredentialError("infisical-api non-prod-environment (%s)" % var)
+
+
 def _infisical_api_values(
     wanted: tuple[str, ...], env: Mapping[str, str], home: Path, path: str
 ) -> dict[str, str]:
     """Just these names, read from Infisical directly (the server-instance route).  The project is the
     same one the CLI route would read (the caller's pin, resolved by `_project_scope`), the environment
-    is prod (fleet-secrets refuses any other slug, and so does this route), and a name the folder does
-    not hold is the CLI route's key-absent failure under this route's name.  Raises CredentialError."""
-    for var in ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV"):
-        slug = (env.get(var) or "").strip().lower()
-        if slug and slug != "prod":
-            raise CredentialError("infisical-api non-prod-environment (%s)" % var)
+    is prod (refused by `_refuse_non_prod_slug`, in the dispatcher before the cache and again here),
+    and a name the folder does not hold is the CLI route's key-absent failure under this route's name.
+    Raises CredentialError."""
+    _refuse_non_prod_slug(env)
     identity = _automation_identity(env)
     if identity is None:  # the dispatcher only routes here with the pair present
         raise CredentialError("infisical-api automation-identity-missing")
@@ -883,10 +889,14 @@ def _fetch_from_fleet_secrets(
     binary = fleet_secrets_bin(env, home)
     if binary:
         route: str = binary
-    elif (env.get(ENV_INSTANCE) or "").strip() == "server" and _automation_identity(env):
+    elif (env.get(ENV_INSTANCE) or "").strip().casefold() == "server" and _automation_identity(env):
         route = _API_ROUTE
     else:
         raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
+    if route == _API_ROUTE:
+        # Before the cache, not after it:  a warm entry was read under prod, and a fetch carrying a
+        # non-prod slug must be refused, not served the prod values until the TTL runs out.
+        _refuse_non_prod_slug(env)
     now = time.monotonic()
     with _cache_lock:
         project = _project_scope(env, home)

@@ -209,6 +209,23 @@ class ApiRouteTests(unittest.TestCase):
         self.assertIn("non-prod-environment", str(caught.exception))
         self.assertEqual(api.requests, [])
 
+    def test_a_warm_cache_does_not_serve_a_non_prod_fetch(self):
+        api = FakeInfisical({"/zulip": {"A": "1"}})
+        env = self.server_env()
+        with mock.patch.object(Z, "_API_OPENER", api):
+            self.assertEqual(Z._fetch_from_fleet_secrets(("A",), env, self.home), {"A": "1"})
+            env["INFISICAL_ENVIRONMENT"] = "dev"
+            with self.assertRaises(Z.CredentialError) as caught:
+                Z._fetch_from_fleet_secrets(("A",), env, self.home)
+        self.assertIn("non-prod-environment", str(caught.exception))
+        self.assertEqual(len(api.requests), 2)  # refused before any new request was made
+
+    def test_the_server_instance_gate_casefolds_like_the_other_instance_checks(self):
+        api = FakeInfisical({"/zulip": {"A": "1"}})
+        env = self.server_env(AGENT_SYNC_INSTANCE="Server")
+        with mock.patch.object(Z, "_API_OPENER", api):
+            self.assertEqual(Z._fetch_from_fleet_secrets(("A",), env, self.home), {"A": "1"})
+
     def test_an_installed_binary_still_wins_over_the_api_route(self):
         data = Path(self.tmp.name) / "fake-fleet-secrets.json"
         data.write_text(json.dumps({"/zulip": {"A": "from-cli"}}), encoding="utf-8")
