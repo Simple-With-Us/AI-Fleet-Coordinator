@@ -386,13 +386,10 @@ def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dic
             "code": "not_configured",
         }
     env = os.environ
-    principal = (
-        (env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL") or "").strip().upper() or SEAT
-    )
+    principal = (env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL") or "").strip().upper() or SEAT
     key_env = (
-        (env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV") or "").strip()
-        or "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
-    )
+        env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV") or ""
+    ).strip() or "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
     key = (env.get(key_env) or "").strip()
     if not key:
         return {
@@ -451,6 +448,7 @@ def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dic
             "outcome": "outcome_unknown",
         }
     return answer
+
 
 def _with_registry_code(answer: dict) -> dict:
     """A registry answer, with the code the helper uses for a host that keeps no registry.

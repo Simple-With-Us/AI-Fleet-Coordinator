@@ -153,7 +153,9 @@ class ListenerReadApi:
         self.root = root
         self.notes = notes  # a notes_queue.NotesQueue, or None:  then /notes/v1/ is 404 like any unknown path
         self.linear_projects = linear_projects  # a linear_projects_hook.LinearProjectsHook, or None
-        self.registry = registry  # a listener_registry.RegistryService, or None:  then /registry/v1/ is 404
+        self.registry = (
+            registry  # a listener_registry.RegistryService, or None:  then /registry/v1/ is 404
+        )
         self.keys = {
             seat.upper(): key
             for seat, key in keys.items()

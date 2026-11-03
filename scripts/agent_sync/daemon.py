@@ -1203,9 +1203,7 @@ class Daemon:
         if old is not None and old_spec == spec:
             service = old
         else:
-            service = LREG.RegistryService(
-                db_path, keys, clock=self.clock.time, log=self.log.write
-            )
+            service = LREG.RegistryService(db_path, keys, clock=self.clock.time, log=self.log.write)
         self.registry_service = service
         self._registry_spec = spec
         return service

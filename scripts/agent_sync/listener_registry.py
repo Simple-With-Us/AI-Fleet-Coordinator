@@ -223,9 +223,7 @@ class RegistryService:
 
     # ---- the router ------------------------------------------------------
 
-    def handle(
-        self, method: str, raw_path: str, headers: Mapping[str, str], body: bytes
-    ) -> Answer:
+    def handle(self, method: str, raw_path: str, headers: Mapping[str, str], body: bytes) -> Answer:
         """(status, JSON body) for one request under /registry/v1/.  Pure apart from the
         registry file, so tests call it without a socket."""
         parts = urlsplit(raw_path)
@@ -280,9 +278,7 @@ class RegistryService:
     @staticmethod
     def _operator_only(principal: str) -> Answer | None:
         if principal != OPERATOR:
-            return _error(
-                403, "issuer_refused", "only the Operator may issue a letter"
-            )
+            return _error(403, "issuer_refused", "only the Operator may issue a letter")
         return None
 
     def _row_for(self, identity: Mapping[str, str]) -> Any:
@@ -307,9 +303,7 @@ class RegistryService:
         if row is None or principal == OPERATOR:
             return row, None
         if str(row["seat"]).strip().upper() != principal:
-            return None, _error(
-                403, "forbidden", "a seat may act only on its own sessions"
-            )
+            return None, _error(403, "forbidden", "a seat may act only on its own sessions")
         return row, None
 
     def _require_store(self) -> None:
@@ -336,9 +330,7 @@ class RegistryService:
     def _op_history(self, principal: str, payload: Mapping[str, Any]) -> Answer:
         self._require_store()
         limit = payload.get("limit", 50)
-        rows = OR.letter_history(
-            self.db_path, str(payload.get("platform") or ""), int(limit or 50)
-        )
+        rows = OR.letter_history(self.db_path, str(payload.get("platform") or ""), int(limit or 50))
         if principal != OPERATOR:
             rows = [row for row in rows if str(row.get("seat") or "").upper() == principal]
         return 200, {"items": rows, "count": len(rows)}
