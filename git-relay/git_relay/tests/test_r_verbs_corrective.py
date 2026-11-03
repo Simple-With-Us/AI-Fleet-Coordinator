@@ -5,6 +5,7 @@
 - wf_merge_guarded optional commit_title / commit_message and tightened receipt
 - opt-in larger-text class (allow_large_text is True) on blob/tree verbs
 """
+
 import base64
 import hashlib
 import unittest
@@ -17,19 +18,31 @@ from git_relay.workflow_verbs import ACTIONS, SPECS, Refused
 try:
     from test_workflow_verbs import REPO, SHA, Client, Multi, Policy, svc
 except ImportError:
-    from .test_workflow_verbs import REPO, SHA, Client, Multi, Policy, svc
+    from .test_workflow_verbs import REPO, SHA, Client, Multi, svc
 
 SECRET_TITLE = "ghp_" + "x" * 24
 BRANCH_OK = {"name": "wise/x", "commit": {"sha": SHA}}
 
 
-def pr(number=7, state="open", head_sha=SHA, head_ref="wise/x", base_ref="main",
-       title="t", body="b", head_repo=REPO, user_type="User"):
+def pr(
+    number=7,
+    state="open",
+    head_sha=SHA,
+    head_ref="wise/x",
+    base_ref="main",
+    title="t",
+    body="b",
+    head_repo=REPO,
+    user_type="User",
+):
     return {
         "number": number,
         "state": state,
-        "head": {"ref": head_ref, "sha": head_sha,
-                 "repo": ({"full_name": head_repo} if head_repo else None)},
+        "head": {
+            "ref": head_ref,
+            "sha": head_sha,
+            "repo": ({"full_name": head_repo} if head_repo else None),
+        },
         "base": {"ref": base_ref, "sha": SHA},
         "title": title,
         "body": body,
@@ -42,9 +55,15 @@ def pr(number=7, state="open", head_sha=SHA, head_ref="wise/x", base_ref="main",
 
 
 def check_run(i, head_sha=SHA, app_id=123, app_slug="kody-ai"):
-    return {"id": i, "name": "kody", "status": "completed",
-            "conclusion": "success", "completed_at": "2026-11-03T00:00:00Z",
-            "head_sha": head_sha, "app": {"id": app_id, "slug": app_slug}}
+    return {
+        "id": i,
+        "name": "kody",
+        "status": "completed",
+        "conclusion": "success",
+        "completed_at": "2026-11-03T00:00:00Z",
+        "head_sha": head_sha,
+        "app": {"id": app_id, "slug": app_slug},
+    }
 
 
 def checks_page(runs, total):
@@ -56,8 +75,15 @@ class FailingClient(Client):
         super().__init__(*replies)
         self.status = status
 
-    def _call(self, method, path, payload=None, bearer=None,
-              expected_status=None, allow_empty_object=False):
+    def _call(
+        self,
+        method,
+        path,
+        payload=None,
+        bearer=None,
+        expected_status=None,
+        allow_empty_object=False,
+    ):
         self.calls.append((method, path, payload, bearer))
         raise RelayGitHubError(self.status, "upstream down")
 
@@ -76,8 +102,14 @@ class SpecTests(unittest.TestCase):
 
 
 class PrCreateTests(unittest.TestCase):
-    ARGS = {"repo": REPO, "base": "main", "head": "wise/x", "title": "t",
-            "body": "b", "expected_head_sha": SHA}
+    ARGS = {
+        "repo": REPO,
+        "base": "main",
+        "head": "wise/x",
+        "title": "t",
+        "body": "b",
+        "expected_head_sha": SHA,
+    }
 
     def test_happy_path_receipt_verified(self):
         s, c = svc(BRANCH_OK, pr())
@@ -87,8 +119,7 @@ class PrCreateTests(unittest.TestCase):
         self.assertEqual(c.calls[0][0], "GET")  # branch preflight first
         method, path, payload, _ = c.calls[1]
         self.assertEqual(method, "POST")
-        self.assertEqual(payload, {"title": "t", "body": "b", "base": "main",
-                                   "head": "wise/x"})
+        self.assertEqual(payload, {"title": "t", "body": "b", "base": "main", "head": "wise/x"})
 
     def test_tampered_receipt_is_502(self):
         s, _ = svc(BRANCH_OK, pr(title="DIFFERENT"))
@@ -115,15 +146,21 @@ class PrCreateTests(unittest.TestCase):
 
 
 class PrEditTests(unittest.TestCase):
-    ARGS = {"repo": REPO, "number": 7, "title": "n", "expected_head_sha": SHA,
-            "expected_base_ref": "main"}
+    ARGS = {
+        "repo": REPO,
+        "number": 7,
+        "title": "n",
+        "expected_head_sha": SHA,
+        "expected_base_ref": "main",
+    }
 
     def test_nothing_to_edit_refused(self):
         s, c = svc()
         with self.assertRaises(Refused):
-            s.run("wf_pr_edit", {"repo": REPO, "number": 7,
-                                 "expected_head_sha": SHA,
-                                 "expected_base_ref": "main"})
+            s.run(
+                "wf_pr_edit",
+                {"repo": REPO, "number": 7, "expected_head_sha": SHA, "expected_base_ref": "main"},
+            )
         self.assertEqual(c.calls, [])
 
     def test_pre_read_unavailable_blocks_write(self):
@@ -171,8 +208,7 @@ class PrEditTests(unittest.TestCase):
 
 
 class PrCloseTests(unittest.TestCase):
-    ARGS = {"repo": REPO, "number": 7, "expected_head_sha": SHA,
-            "expected_base_ref": "main"}
+    ARGS = {"repo": REPO, "number": 7, "expected_head_sha": SHA, "expected_base_ref": "main"}
 
     def test_not_open_refused(self):
         s, c = svc(pr(state="closed"))
@@ -200,15 +236,26 @@ class PrCloseTests(unittest.TestCase):
 
 class PrListTests(unittest.TestCase):
     def test_two_pages_complete_with_metadata_projection(self):
-        s, _ = svc([pr(number=i) for i in range(1, 31)],
-                   [pr(number=i) for i in range(31, 36)])
+        s, _ = svc([pr(number=i) for i in range(1, 31)], [pr(number=i) for i in range(31, 36)])
         out = s.run("wf_pr_list", {"repo": REPO})
         self.assertEqual(len(out["pulls"]), 35)
         self.assertTrue(out["complete"])
         row = out["pulls"][0]
-        for key in ("number", "title", "draft", "head_ref", "head_sha",
-                    "base_ref", "base_sha", "author", "author_type",
-                    "created_at", "updated_at", "merged_at", "auto_merge"):
+        for key in (
+            "number",
+            "title",
+            "draft",
+            "head_ref",
+            "head_sha",
+            "base_ref",
+            "base_sha",
+            "author",
+            "author_type",
+            "created_at",
+            "updated_at",
+            "merged_at",
+            "auto_merge",
+        ):
             self.assertIn(key, row)
         self.assertEqual(row["author"], "jay")
         self.assertEqual(row["author_type"], "User")
@@ -227,8 +274,12 @@ class ChecksTests(unittest.TestCase):
         self.assertEqual(c.calls, [])
 
     def test_missing_required_fields_is_502_not_empty_complete(self):
-        for bad in ({}, {"check_runs": []}, {"total_count": 0},
-                    {"total_count": "0", "check_runs": []}):
+        for bad in (
+            {},
+            {"check_runs": []},
+            {"total_count": 0},
+            {"total_count": "0", "check_runs": []},
+        ):
             s, _ = svc(bad)
             with self.assertRaises(RelayGitHubError, msg=repr(bad)):
                 s.run("wf_checks", {"repo": REPO, "ref": SHA})
@@ -240,14 +291,18 @@ class ChecksTests(unittest.TestCase):
         self.assertEqual(out["complete"], "unknown")
 
     def test_census_shift_mid_read_is_unknown(self):
-        s, _ = svc(checks_page([check_run(i) for i in range(1, 31)], 33),
-                   checks_page([check_run(i) for i in range(31, 34)], 50))
+        s, _ = svc(
+            checks_page([check_run(i) for i in range(1, 31)], 33),
+            checks_page([check_run(i) for i in range(31, 34)], 50),
+        )
         out = s.run("wf_checks", {"repo": REPO, "ref": SHA})
         self.assertEqual(out["complete"], "unknown")
 
     def test_two_pages_complete_true(self):
-        s, _ = svc(checks_page([check_run(i) for i in range(1, 31)], 33),
-                   checks_page([check_run(i) for i in range(31, 34)], 33))
+        s, _ = svc(
+            checks_page([check_run(i) for i in range(1, 31)], 33),
+            checks_page([check_run(i) for i in range(31, 34)], 33),
+        )
         out = s.run("wf_checks", {"repo": REPO, "ref": SHA})
         self.assertEqual(len(out["checks"]), 33)
         self.assertTrue(out["complete"])
@@ -257,8 +312,9 @@ class ChecksTests(unittest.TestCase):
         self.assertEqual(row["app_id"], 123)
 
     def test_capped_is_incomplete(self):
-        s, _ = svc(*[checks_page([check_run(30 * p + i + 1) for i in range(30)], 1000)
-                     for p in range(10)])
+        s, _ = svc(
+            *[checks_page([check_run(30 * p + i + 1) for i in range(30)], 1000) for p in range(10)]
+        )
         out = s.run("wf_checks", {"repo": REPO, "ref": SHA})
         self.assertEqual(len(out["checks"]), 300)
         self.assertFalse(out["complete"])
@@ -284,37 +340,58 @@ class ChecksTests(unittest.TestCase):
 class MergeGuardedTests(unittest.TestCase):
     def test_title_and_message_passthrough(self):
         s, c = svc({"merged": True, "sha": "b" * 40})
-        s.run("wf_merge_guarded", {"repo": REPO, "number": 7, "method": "squash",
-                                   "expected_head_sha": SHA,
-                                   "commit_title": "t", "commit_message": "m"})
+        s.run(
+            "wf_merge_guarded",
+            {
+                "repo": REPO,
+                "number": 7,
+                "method": "squash",
+                "expected_head_sha": SHA,
+                "commit_title": "t",
+                "commit_message": "m",
+            },
+        )
         self.assertEqual(c.calls[0][2]["commit_title"], "t")
         self.assertEqual(c.calls[0][2]["commit_message"], "m")
 
     def test_empty_message_preserved(self):
         s, c = svc({"merged": True, "sha": "b" * 40})
-        s.run("wf_merge_guarded", {"repo": REPO, "number": 7, "method": "squash",
-                                   "expected_head_sha": SHA, "commit_message": ""})
+        s.run(
+            "wf_merge_guarded",
+            {
+                "repo": REPO,
+                "number": 7,
+                "method": "squash",
+                "expected_head_sha": SHA,
+                "commit_message": "",
+            },
+        )
         self.assertEqual(c.calls[0][2]["commit_message"], "")
 
     def test_merged_false_is_502(self):
         s, _ = svc({"merged": False, "message": "Not mergeable"})
         with self.assertRaises(RelayGitHubError):
-            s.run("wf_merge_guarded", {"repo": REPO, "number": 7, "method": "squash",
-                                       "expected_head_sha": SHA})
+            s.run(
+                "wf_merge_guarded",
+                {"repo": REPO, "number": 7, "method": "squash", "expected_head_sha": SHA},
+            )
 
     def test_short_receipt_sha_is_502(self):
         s, _ = svc({"merged": True, "sha": "abc123"})
         with self.assertRaises(RelayGitHubError):
-            s.run("wf_merge_guarded", {"repo": REPO, "number": 7, "method": "squash",
-                                       "expected_head_sha": SHA})
+            s.run(
+                "wf_merge_guarded",
+                {"repo": REPO, "number": 7, "method": "squash", "expected_head_sha": SHA},
+            )
 
 
 class LargeTextTests(unittest.TestCase):
     TEXT = "x" * 83854  # over the 40000 base cap, under the 100000 opt-in cap
 
     def blob_sha(self, raw):
-        return hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw,
-                            usedforsecurity=False).hexdigest()
+        return hashlib.sha1(
+            b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+        ).hexdigest()
 
     def test_blob_create_large_refused_without_flag(self):
         s, c = svc()
@@ -325,8 +402,9 @@ class LargeTextTests(unittest.TestCase):
     def test_blob_create_large_with_flag(self):
         sha = self.blob_sha(self.TEXT.encode())
         s, _ = svc({"sha": sha})
-        out = s.run("wf_git_blob_create", {"repo": REPO, "text": self.TEXT,
-                                           "allow_large_text": True})
+        out = s.run(
+            "wf_git_blob_create", {"repo": REPO, "text": self.TEXT, "allow_large_text": True}
+        )
         self.assertEqual(out["blob"]["sha"], sha)
 
     def test_non_bool_flag_refused(self):
@@ -340,9 +418,15 @@ class LargeTextTests(unittest.TestCase):
                     args["sha"] = SHA
                 s.run(verb, args)
         with self.assertRaises(Refused):
-            s.run("wf_git_tree_create", {"repo": REPO, "base_tree": SHA,
-                                         "files": [{"path": "a", "text": "x", "mode": "100644"}],
-                                         "allow_large_text": "yes"})
+            s.run(
+                "wf_git_tree_create",
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "a", "text": "x", "mode": "100644"}],
+                    "allow_large_text": "yes",
+                },
+            )
 
     def test_tree_cumulative_cap_with_flag(self):
         files = [{"path": f"f{i}.txt", "text": "y" * 20000, "mode": "100644"} for i in range(3)]
@@ -351,14 +435,20 @@ class LargeTextTests(unittest.TestCase):
             s.run("wf_git_tree_create", {"repo": REPO, "base_tree": SHA, "files": files})
         self.assertEqual(c.calls, [])
         s, _ = svc({"sha": "b" * 40, "truncated": False, "tree": []})
-        out = s.run("wf_git_tree_create", {"repo": REPO, "base_tree": SHA,
-                                           "files": files, "allow_large_text": True})
+        out = s.run(
+            "wf_git_tree_create",
+            {"repo": REPO, "base_tree": SHA, "files": files, "allow_large_text": True},
+        )
         self.assertEqual(out["tree"]["files"], 3)
 
     def test_blob_get_large_refused_without_flag(self):
         raw = self.TEXT.encode()
-        reply = {"sha": self.blob_sha(raw), "encoding": "base64", "size": len(raw),
-                 "content": base64.b64encode(raw).decode()}
+        reply = {
+            "sha": self.blob_sha(raw),
+            "encoding": "base64",
+            "size": len(raw),
+            "content": base64.b64encode(raw).decode(),
+        }
         s, _ = svc(reply)
         with self.assertRaises(Refused):
             s.run("wf_git_blob_get", {"repo": REPO, "sha": self.blob_sha(raw)})
@@ -366,11 +456,14 @@ class LargeTextTests(unittest.TestCase):
     def test_blob_get_large_with_flag(self):
         raw = self.TEXT.encode()
         sha = self.blob_sha(raw)
-        reply = {"sha": sha, "encoding": "base64", "size": len(raw),
-                 "content": base64.b64encode(raw).decode()}
+        reply = {
+            "sha": sha,
+            "encoding": "base64",
+            "size": len(raw),
+            "content": base64.b64encode(raw).decode(),
+        }
         s, _ = svc(reply)
-        out = s.run("wf_git_blob_get", {"repo": REPO, "sha": sha,
-                                        "allow_large_text": True})
+        out = s.run("wf_git_blob_get", {"repo": REPO, "sha": sha, "allow_large_text": True})
         self.assertEqual(out["blob"]["text"], self.TEXT)
 
 
@@ -386,38 +479,68 @@ class PrRaceFixtureTests(unittest.TestCase):
         # Branch pre-read at expected sha, but the created PR's head moved.
         s, c = svc(BRANCH_OK, pr(head_sha="c" * 40))
         with self.assertRaises(RelayGitHubError):
-            s.run("wf_pr_create", {"repo": REPO, "base": "main", "head": "wise/x",
-                                   "title": "t", "body": "b",
-                                   "expected_head_sha": SHA})
+            s.run(
+                "wf_pr_create",
+                {
+                    "repo": REPO,
+                    "base": "main",
+                    "head": "wise/x",
+                    "title": "t",
+                    "body": "b",
+                    "expected_head_sha": SHA,
+                },
+            )
 
     def test_edit_receipt_base_retarget_is_502(self):
         # Pre-read base main; PATCH returns a PR retargeted to release.
         s, _ = svc(pr(), pr(title="n", base_ref="release"))
         with self.assertRaises(RelayGitHubError):
-            s.run("wf_pr_edit", {"repo": REPO, "number": 7, "title": "n",
-                                 "expected_head_sha": SHA,
-                                 "expected_base_ref": "main"})
+            s.run(
+                "wf_pr_edit",
+                {
+                    "repo": REPO,
+                    "number": 7,
+                    "title": "n",
+                    "expected_head_sha": SHA,
+                    "expected_base_ref": "main",
+                },
+            )
 
     def test_edit_receipt_head_repo_changed_is_502(self):
         s, _ = svc(pr(), pr(title="n", head_repo="other/repo"))
         with self.assertRaises(RelayGitHubError):
-            s.run("wf_pr_edit", {"repo": REPO, "number": 7, "title": "n",
-                                 "expected_head_sha": SHA,
-                                 "expected_base_ref": "main"})
+            s.run(
+                "wf_pr_edit",
+                {
+                    "repo": REPO,
+                    "number": 7,
+                    "title": "n",
+                    "expected_head_sha": SHA,
+                    "expected_base_ref": "main",
+                },
+            )
 
     def test_edit_receipt_state_flipped_is_502(self):
         s, _ = svc(pr(), pr(title="n", state="closed"))
         with self.assertRaises(RelayGitHubError):
-            s.run("wf_pr_edit", {"repo": REPO, "number": 7, "title": "n",
-                                 "expected_head_sha": SHA,
-                                 "expected_base_ref": "main"})
+            s.run(
+                "wf_pr_edit",
+                {
+                    "repo": REPO,
+                    "number": 7,
+                    "title": "n",
+                    "expected_head_sha": SHA,
+                    "expected_base_ref": "main",
+                },
+            )
 
     def test_close_receipt_base_retarget_is_502(self):
         s, _ = svc(pr(), pr(state="closed", base_ref="release"))
         with self.assertRaises(RelayGitHubError):
-            s.run("wf_pr_close", {"repo": REPO, "number": 7,
-                                  "expected_head_sha": SHA,
-                                  "expected_base_ref": "main"})
+            s.run(
+                "wf_pr_close",
+                {"repo": REPO, "number": 7, "expected_head_sha": SHA, "expected_base_ref": "main"},
+            )
 
 
 class AuthorMetadataTests(unittest.TestCase):
@@ -438,12 +561,13 @@ class AuthorMetadataTests(unittest.TestCase):
 
     def test_commit_read_returns_native_and_account_metadata(self):
         who = {"name": "n", "email": "e", "date": "d"}
-        reply = {"sha": SHA,
-                 "commit": {"tree": {"sha": SHA}, "message": "m",
-                            "author": who, "committer": who},
-                 "parents": [],
-                 "author": {"login": "jay", "type": "User"},
-                 "committer": {"login": "kody", "type": "Bot"}}
+        reply = {
+            "sha": SHA,
+            "commit": {"tree": {"sha": SHA}, "message": "m", "author": who, "committer": who},
+            "parents": [],
+            "author": {"login": "jay", "type": "User"},
+            "committer": {"login": "kody", "type": "Bot"},
+        }
         s, _ = svc(reply)
         out = s.run("wf_git_commit_get", {"repo": REPO, "sha": SHA})
         c = out["commit"]
@@ -453,10 +577,13 @@ class AuthorMetadataTests(unittest.TestCase):
 
     def test_commit_read_null_account_is_true_unknown(self):
         who = {"name": "n", "email": "e", "date": "d"}
-        reply = {"sha": SHA,
-                 "commit": {"tree": {"sha": SHA}, "message": "m",
-                            "author": who, "committer": who},
-                 "parents": [], "author": None, "committer": None}
+        reply = {
+            "sha": SHA,
+            "commit": {"tree": {"sha": SHA}, "message": "m", "author": who, "committer": who},
+            "parents": [],
+            "author": None,
+            "committer": None,
+        }
         s, _ = svc(reply)
         out = s.run("wf_git_commit_get", {"repo": REPO, "sha": SHA})
         self.assertIsNone(out["commit"]["author_account"])
@@ -464,22 +591,32 @@ class AuthorMetadataTests(unittest.TestCase):
 
     def test_commit_read_bad_account_refuses(self):
         who = {"name": "n", "email": "e", "date": "d"}
-        for bad in ({"login": "x"}, {"login": "x", "type": "Svc"},
-                    {"type": "User"}, "x"):
-            reply = {"sha": SHA,
-                     "commit": {"tree": {"sha": SHA}, "message": "m",
-                                "author": who, "committer": who},
-                     "parents": [], "author": bad, "committer": None}
+        for bad in ({"login": "x"}, {"login": "x", "type": "Svc"}, {"type": "User"}, "x"):
+            reply = {
+                "sha": SHA,
+                "commit": {"tree": {"sha": SHA}, "message": "m", "author": who, "committer": who},
+                "parents": [],
+                "author": bad,
+                "committer": None,
+            }
             s, _ = svc(reply)
             with self.assertRaises(RelayGitHubError, msg=repr(bad)):
                 s.run("wf_git_commit_get", {"repo": REPO, "sha": SHA})
 
     def test_commit_read_bad_native_author_refuses(self):
         who = {"name": "n", "email": "e", "date": "d"}
-        reply = {"sha": SHA,
-                 "commit": {"tree": {"sha": SHA}, "message": "m",
-                            "author": {"name": 7}, "committer": who},
-                 "parents": [], "author": None, "committer": None}
+        reply = {
+            "sha": SHA,
+            "commit": {
+                "tree": {"sha": SHA},
+                "message": "m",
+                "author": {"name": 7},
+                "committer": who,
+            },
+            "parents": [],
+            "author": None,
+            "committer": None,
+        }
         s, _ = svc(reply)
         with self.assertRaises(RelayGitHubError):
             s.run("wf_git_commit_get", {"repo": REPO, "sha": SHA})

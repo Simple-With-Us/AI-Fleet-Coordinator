@@ -6119,12 +6119,7 @@ class WorkflowVerbs:
 
     def _pr_text_field(self, args, key, limit, allow_blank=False):
         value = args.get(key)
-        if (
-            not isinstance(value, str)
-            or not allow_blank
-            and not value.strip()
-            or "\x00" in value
-        ):
+        if not isinstance(value, str) or not allow_blank and not value.strip() or "\x00" in value:
             raise Refused(f"invalid PR {key}")
         try:
             size = len(value.encode("utf-8"))
@@ -6259,9 +6254,17 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "PR edit receipt unconfirmed; write may have occurred")
         # A verified receipt confirms only the provider-visible effect at response time: it cannot prevent a later foreign overwrite or close, and it supplies no authority for the action by itself.
-        return {"pull": {"number": number, "state": "open", "head_sha": head,
-                         "base_ref": expected_base, "head_repo": repo,
-                         "title": result.get("title"), "body": result.get("body")}}
+        return {
+            "pull": {
+                "number": number,
+                "state": "open",
+                "head_sha": head,
+                "base_ref": expected_base,
+                "head_repo": repo,
+                "title": result.get("title"),
+                "body": result.get("body"),
+            }
+        }
 
     def wf_pr_close(self, repo, args):
         """Close only. Branch deletion is a separately authorized follow-up, never implicit."""
@@ -6288,8 +6291,14 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "PR close receipt unconfirmed; write may have occurred")
         # A verified receipt confirms only the provider-visible effect at response time: it cannot prevent a later foreign overwrite or close, and it supplies no authority for the action by itself.
-        return {"pull": {"number": number, "state": "closed", "head_sha": head,
-                         "base_ref": expected_base}}
+        return {
+            "pull": {
+                "number": number,
+                "state": "closed",
+                "head_sha": head,
+                "base_ref": expected_base,
+            }
+        }
 
     def wf_merge_guarded(self, repo, args):
         _only(

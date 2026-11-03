@@ -305,7 +305,7 @@ class Tests(unittest.TestCase):
                         "app": {"id": 123, "slug": "kody-ai"},
                         "extra": "x",
                     }
-                ]
+                ],
             }
         )
         out = s.run("wf_checks", {"repo": REPO, "ref": SHA})

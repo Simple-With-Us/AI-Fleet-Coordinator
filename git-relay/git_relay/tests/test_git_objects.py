@@ -51,7 +51,12 @@ class Objects(unittest.TestCase):
                 "wf_git_commit_get",
                 {
                     "sha": SHA,
-                    "commit": {"tree": {"sha": SHA}, "message": "hi", "author": {"name": "n", "email": "e", "date": "d"}, "committer": {"name": "n", "email": "e", "date": "d"}},
+                    "commit": {
+                        "tree": {"sha": SHA},
+                        "message": "hi",
+                        "author": {"name": "n", "email": "e", "date": "d"},
+                        "committer": {"name": "n", "email": "e", "date": "d"},
+                    },
                     "parents": [{"sha": SHA}],
                     "author": {"login": "jay", "type": "User"},
                     "committer": {"login": "kody", "type": "Bot"},
@@ -78,7 +83,10 @@ class Objects(unittest.TestCase):
     def test_bounded_reads_refuse_malformed(self):
         for a, reply in [
             ("wf_git_tree_get", {"sha": SHA, "truncated": False, "tree": [{}] * 101}),
-            ("wf_git_commit_get", {"sha": SHA, "commit": {"tree": [], "message": "hi"}, "parents": []}),
+            (
+                "wf_git_commit_get",
+                {"sha": SHA, "commit": {"tree": [], "message": "hi"}, "parents": []},
+            ),
             ("wf_git_blob_get", {"sha": SHA, "encoding": "base64", "size": 40001, "content": ""}),
         ]:
             c = Client(reply)
@@ -147,7 +155,16 @@ class Objects(unittest.TestCase):
         from unittest.mock import patch
 
         # Synthetic runtime-only shape, never a credential.
-        row = {"sha": SHA, "commit": {"tree": {"sha": SHA}, "message": "ghp_" + "x" * 36, "author": {"name": "n", "email": "e", "date": "d"}, "committer": {"name": "n", "email": "e", "date": "d"}}, "parents": []}
+        row = {
+            "sha": SHA,
+            "commit": {
+                "tree": {"sha": SHA},
+                "message": "ghp_" + "x" * 36,
+                "author": {"name": "n", "email": "e", "date": "d"},
+                "committer": {"name": "n", "email": "e", "date": "d"},
+            },
+            "parents": [],
+        }
         with self.assertRaises(Refused):
             self.handle(Client(row), "wf_git_commit_get").run(
                 "wf_git_commit_get", {"repo": REPO, "sha": SHA}
