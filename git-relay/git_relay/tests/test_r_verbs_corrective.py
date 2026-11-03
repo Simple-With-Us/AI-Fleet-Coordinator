@@ -514,10 +514,6 @@ class LargeTextTests(unittest.TestCase):
             scan_args({"text": text}, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MutablePrClient:
     """Mutable upstream double: external actors can rename, reopen or move the head."""
 
@@ -825,3 +821,7 @@ class AuthorMetadataTests(unittest.TestCase):
         s, _ = svc(reply)
         with self.assertRaises(RelayGitHubError):
             s.run("wf_git_commit_get", {"repo": REPO, "sha": SHA})
+
+
+if __name__ == "__main__":
+    unittest.main()
