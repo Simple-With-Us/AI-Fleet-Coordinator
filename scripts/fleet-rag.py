@@ -9,7 +9,7 @@ machine identity in the environment, otherwise from `fleet-secrets`.  Values are
     fleet-rag.py search "how do I avoid leaking credentials?" --limit 5
     fleet-rag.py search "vector database" --category infrastructure --since-days 30
     fleet-rag.py ingest notes.jsonl --source doc --app fleet --category lesson [--dry-run]
-    fleet-rag.py ingest-all [--source board,doc,...] [--dry-run] [--limit N] [--since 7d] [--prune]
+    fleet-rag.py ingest-all [--source linear,doc,...] [--dry-run] [--limit N] [--since 7d] [--prune]
     fleet-rag.py ingest-all --fix-seeds
 
 See docs/RAG-FLEET-INFRA.md.  Search is hybrid (dense + keyword, RRF) per the recall tool
@@ -41,8 +41,6 @@ from fleet_rag.scrub import GitleaksError
 
 KNOWN_SOURCES = (
     "linear",
-    "board",
-    "effort-log",
     "apple-note",
     "doc",
     "skill",
@@ -314,7 +312,7 @@ def main() -> int:
 
     a = sub.add_parser("ingest-all", help="run the full source pipeline (fleet_rag.ingest)")
     a.add_argument(
-        "--source", help="comma-separated subset: board,effort-log,doc,skill,memory,apple-note"
+        "--source", help="comma-separated subset: linear,doc,skill,memory,apple-note,chat-log"
     )
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--limit", type=int)
