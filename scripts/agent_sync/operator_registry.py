@@ -1971,6 +1971,7 @@ def lookup_many(
                 "generation": generation,
                 "seat": seat,
                 "ref": cross_seat_ref(seat, letter, generation),
+                "title": str(found.get("title") or ""),
             }
     finally:
         try:
