@@ -1744,6 +1744,202 @@
       "platforms": [],
       "rules": []
     },
+    "KIMI": {
+      "notApplicable": [
+        {
+          "kind": "hooks",
+          "platforms": [
+            "kimi"
+          ],
+          "reason": "Kimi Code takes its guard as a [[hooks]] block in config.toml (exit 2, reason on stderr), and the installer lane that writes it is not built yet, so the hooks rule asserts that no hook is registered and L1 arrives with it."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [
+            "kimi"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the kimi harness."
+        }
+      ],
+      "platforms": [
+        "kimi"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.kimi-code/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.kimi-code/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "06f647a862e0098a8857bc889f2dc7964a5b5b1e13042d981b22338c65d1ecfd"
+          },
+          "id": "kimi-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.kimi-code/config.toml",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Kimi Code's guard is a [[hooks]] block in its config.toml that the installer does not write yet (the kimi platform row is supported=False), so the desired state is that no hook is registered there;  the rule reports drift the moment one appears.",
+          "expected": {
+            "description": "No hook is registered for PreToolUse in ~/.kimi-code/config.toml",
+            "present": false
+          },
+          "id": "kimi-hooks-none",
+          "kind": "hooks",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.kimi-code/mcp.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.kimi-code/mcp.json",
+            "names": [
+              "fleet-recall"
+            ],
+            "present": true
+          },
+          "id": "kimi-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.kimi/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.kimi/skills",
+            "names": [
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-mode",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "secret-safety",
+              "sentence-gap",
+              "session-start",
+              "simple-tools-guide",
+              "token-thrift",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "kimi-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the KIMI Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "KIMI_ZULIP_EMAIL",
+              "KIMI_ZULIP_KEY",
+              "KIMI_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "kimi-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_KIMI",
+            "target": "~/.secrets/Zulip/Kimi-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "kimi-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "KIMI",
+          "platforms": [
+            "kimi"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
     "MA": {
       "notApplicable": [
         {
@@ -2462,6 +2658,42 @@
           "kind": "permissions",
           "platforms": [],
           "reason": "Wise's credential is held by the hosted listener's secret store, not by a Mac file of its own."
+        }
+      ],
+      "platforms": [],
+      "rules": []
+    },
+    "ZC": {
+      "notApplicable": [
+        {
+          "kind": "instructions",
+          "platforms": [],
+          "reason": "ZCode has no Mac harness lane yet:  the installer tables name no zcode platform, so this Mac holds no rules file for it."
+        },
+        {
+          "kind": "hooks",
+          "platforms": [],
+          "reason": "ZCode has no Mac harness lane yet:  the installer tables name no zcode platform, so this Mac holds no hook config for it."
+        },
+        {
+          "kind": "mcp",
+          "platforms": [],
+          "reason": "ZCode has no Mac harness lane yet:  the installer tables name no zcode platform, so this Mac holds no MCP config for it."
+        },
+        {
+          "kind": "skills",
+          "platforms": [],
+          "reason": "ZCode has no Mac harness lane yet:  the installer tables name no zcode platform, so this Mac holds no skills home for it."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [],
+          "reason": "ZCode has no Mac harness lane yet:  the installer tables name no zcode platform, so this Mac holds no sub-agent definitions for it."
+        },
+        {
+          "kind": "permissions",
+          "platforms": [],
+          "reason": "ZCode's credential is held by the server listener's secret store, not by a Mac file of its own."
         }
       ],
       "platforms": [],

@@ -662,6 +662,16 @@
       "profile": "amp"
     },
     {
+      "identity": "KIMI",
+      "app_slug": "swu-kimi",
+      "profile": "fleet"
+    },
+    {
+      "identity": "ZC",
+      "app_slug": "swu-zc",
+      "profile": "fleet"
+    },
+    {
       "identity": "BF-COMPILER",
       "app_slug": "swu-bf-compiler",
       "profile": "fleet"

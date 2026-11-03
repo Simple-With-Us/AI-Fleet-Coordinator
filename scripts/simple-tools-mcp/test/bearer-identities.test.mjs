@@ -37,6 +37,14 @@ test("all active ordinary registry bots have canonical bearer identities without
       assert.ok(!KNOWN_SEATS.includes(identity));
       continue;
     }
+    if (identity === "ZC" || identity === "KIMI") {
+      // Registered 2026-11-03:  the ZC seat tag is the acronym while its created /zulip
+      // records use the ZCODE stem, so ZC requests ZCODE_ZULIP_* and KIMI requests
+      // KIMI_ZULIP_* - the exact requested secret names are pinned, not wildcarded.
+      assert.deepEqual(row, identity === "ZC"
+        ? { prefix: "ZCODE", email: "zc-bot@simplewithus.zulipchat.com" }
+        : { prefix: "KIMI", email: "kimi-bot@simplewithus.zulipchat.com" });
+    }
     const source = ordinary.find((r) => r.tag === identity);
     assert.equal(row.email, source.zulipBotEmail);
     assert.equal(row.prefix, source.zulipFileCode.toUpperCase().replaceAll("-", "_"));
