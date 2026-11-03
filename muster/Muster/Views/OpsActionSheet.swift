@@ -90,6 +90,12 @@ struct OpsActionSheet: View {
         case .finished(_, let outcome):
             VStack(alignment: .leading, spacing: 8) {
                 resultLine(outcome)
+                if let invocationID = outcome.invocationID {
+                    Text("Service invocation: \(invocationID)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
                 if let logText = outcome.logText {
                     logBlock(logText, lines: outcome.logLines)
                 } else if !outcome.commands.isEmpty {
@@ -202,6 +208,7 @@ struct OpsActionSheet: View {
 
     private func resultTitle(_ outcome: OpsOutcome) -> String {
         switch outcome.kind {
+        case .submitted: return "Submitted; completion is not yet verified."
         case .done: return outcome.isSuccess(for: .yes) ? "Done." : "The helper said done, but did not say it worked."
         case .planned: return "The plan could not be confirmed."
         case .refused: return "The helper refused the action."

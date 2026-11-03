@@ -116,4 +116,80 @@ final class MacServicesReportTests: XCTestCase {
         XCTAssertNil(reading.problem)
         XCTAssertEqual(reading.state, .unknown)
     }
+
+    func test_displayed_evidence_expires_without_another_file_read() throws {
+        let reading = try readText(try fixture("mac_services_current", "json"))
+        let expired = reading.aged(at: generated.addingTimeInterval(16 * 60))
+        XCTAssertFalse(expired.isCurrent)
+        XCTAssertEqual(expired.state, .unknown)
+        XCTAssertNotEqual(expired.age, reading.age)
+    }
+
+    func test_missing_report_names_its_path_and_safe_recovery() {
+        let url = URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)/mac-services.json")
+        let reading = MacServicesReportReader.read(at: url)
+        XCTAssertTrue(reading.problem?.contains(url.path) == true)
+        XCTAssertTrue(reading.problem?.contains("Read Current Agents") == true)
+        XCTAssertFalse(reading.isCurrent)
+    }
+}
+
+private struct MacCollectorRunner: OpsRunning {
+    let result: OpsProcessResult
+    func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult { result }
+}
+
+final class MacServicesCollectorTests: XCTestCase {
+    private func withCollector(_ body: (MacServicesCollector) async throws -> Void) async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let scripts = root.appendingPathComponent("scripts")
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let script = scripts.appendingPathComponent("fleet-mac-services.py")
+        try Data("# test fixture\n".utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: script.path)
+        try await body(MacServicesCollector(repoRoot: root, home: root.appendingPathComponent("home")))
+    }
+
+    func test_collector_uses_pinned_isolated_read_only_route() async throws {
+        try await withCollector { collector in
+            let invocation = try collector.invocation()
+            XCTAssertEqual(invocation.executable, "/usr/bin/python3")
+            XCTAssertEqual(invocation.arguments, [
+                "-I", collector.repoRoot.appendingPathComponent("scripts/fleet-mac-services.py").path,
+                "--dry-run", "--agents-dir", collector.home.appendingPathComponent("Library/LaunchAgents").path,
+            ])
+            XCTAssertEqual(invocation.environment, ["HOME": collector.home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+            XCTAssertFalse(invocation.arguments.contains("--write"))
+        }
+    }
+
+    func test_missing_or_writable_collector_refuses_before_launch() async throws {
+        let missing = MacServicesCollector(repoRoot: URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)"))
+        XCTAssertThrowsError(try missing.invocation())
+        try await withCollector { collector in
+            let script = collector.repoRoot.appendingPathComponent("scripts/fleet-mac-services.py")
+            try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: script.path)
+            XCTAssertThrowsError(try collector.invocation())
+        }
+    }
+
+    func test_live_answer_works_without_saved_report_and_failed_refresh_is_unknown() async throws {
+        let now = FleetTime.parse("2026-10-28T15:02:00Z")!
+        let json = try fixture("mac_services_current", "json")
+        try await withCollector { original in
+            var collector = original
+            collector.runner = MacCollectorRunner(result: OpsProcessResult(exitCode: 0, stdout: json, stderr: ""))
+            let reading = await collector.collect(now: now)
+            XCTAssertNil(reading.problem)
+            XCTAssertTrue(reading.isCurrent)
+            XCTAssertEqual(reading.agents.count, 5)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: MacServicesReportReader.reportURL(home: collector.home).path))
+            collector.runner = MacCollectorRunner(result: OpsProcessResult(exitCode: 1, stdout: json, stderr: "failure"))
+            let failed = await collector.collect(now: now)
+            XCTAssertFalse(failed.isCurrent)
+            XCTAssertTrue(failed.agents.isEmpty)
+            XCTAssertNotNil(failed.problem)
+        }
+    }
 }

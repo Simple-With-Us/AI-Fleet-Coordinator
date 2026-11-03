@@ -55,7 +55,7 @@ enum OpsControlRoute {
 
     /// A plan only reads,  so it is short.
     static let planTimeout: TimeInterval = 90
-    /// An update can take minutes:  `systemctl start` waits for a oneshot unit to finish.
+    /// Allow time for an update helper's bounded completion check after submission.
     static let runTimeout: TimeInterval = 900
     /// How long a timed-out helper has to exit after SIGTERM before it gets SIGKILL.
     static let killGrace: TimeInterval = 5
@@ -671,9 +671,13 @@ struct OpsResult: Decodable, Equatable {
     let lines: Int?
     /// The server's direct coding resource-policy receipt,  when the status verb returned one.
     let resourcePolicy: ResourcePolicySnapshot?
+    let executionState: String?
+    let verified: Bool
+    let invocationID: String?
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
+        case executionState, verified, invocationID
         case oldSource = "old_source"
     }
 
@@ -694,6 +698,9 @@ struct OpsResult: Decodable, Equatable {
         output = try? container.decodeIfPresent(String.self, forKey: .output)
         lines = try? container.decodeIfPresent(Int.self, forKey: .lines)
         resourcePolicy = try? container.decodeIfPresent(ResourcePolicySnapshot.self, forKey: .resourcePolicy)
+        executionState = try? container.decodeIfPresent(String.self, forKey: .executionState)
+        verified = (try? container.decodeIfPresent(Bool.self, forKey: .verified)) == true
+        invocationID = try? container.decodeIfPresent(String.self, forKey: .invocationID)
     }
 }
 
@@ -745,6 +752,7 @@ struct OpsKnobChange: Equatable {
 /// The helper's result word.
 enum OpsResultKind: String {
     case planned
+    case submitted
     case done
     case refused
     case failed
@@ -769,6 +777,8 @@ struct OpsOutcome: Equatable {
     var logLines: Int? = nil
     /// The direct resource-policy receipt,  when a status read supplied one.
     var resourcePolicy: ResourcePolicySnapshot? = nil
+    /// Only a fixed-shape systemd receipt is displayed, never arbitrary helper output.
+    var invocationID: String? = nil
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -835,10 +845,35 @@ enum OpsResultParser {
         var detail = ApplyCopy.normalize(answer.detail ?? "")
         // A plan changes nothing.  A plan that answers "done" is a helper that did something
         // it was not asked to,  and the app says so rather than calling it a plan.
-        if mode == .plan && kind == .done {
+        if mode == .plan && (kind == .done || kind == .submitted) {
+            let reported = kind.rawValue
             kind = .failed
-            let warning = "The helper answered \"done\" to a plan."
+            let warning = "The helper answered \"\(reported)\" to a plan."
             detail = detail.isEmpty ? warning : ApplyCopy.join(warning, detail)
+        }
+        let invocationID = answer.invocationID.flatMap { value -> String? in
+            value.count == 32 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+                ? value : nil
+        }
+        if mode == .yes && kind == .done {
+            let completed: Bool
+            switch action {
+            case .serverUpdate:
+                completed = answer.verified && answer.executionState == "completed" && invocationID != nil
+            case .coolifyRedeploy:
+                completed = answer.verified && answer.executionState == "completed"
+            default:
+                completed = answer.executionState == nil || answer.executionState == "completed"
+            }
+            if !answer.ok || result.exitCode != 0 {
+                kind = .failed
+            } else if !completed {
+                kind = .submitted
+                detail = "The request was submitted; completion has not been verified."
+            }
+        }
+        if kind == .submitted && (!answer.ok || result.exitCode != 0) {
+            kind = .failed
         }
         if detail.isEmpty {
             detail = defaultDetail(kind: kind, exitCode: result.exitCode)
@@ -874,7 +909,8 @@ enum OpsResultParser {
             knobChange: knobChange,
             logText: logText,
             logLines: logLines,
-            resourcePolicy: answer.resourcePolicy
+            resourcePolicy: answer.resourcePolicy,
+            invocationID: invocationID
         )
     }
 
@@ -919,6 +955,7 @@ enum OpsResultParser {
     private static func defaultDetail(kind: OpsResultKind, exitCode: Int32) -> String {
         switch kind {
         case .planned: return "Nothing has run yet."
+        case .submitted: return "The request was submitted; completion has not been verified."
         case .done: return "Done."
         case .refused: return "The helper refused the action."
         case .failed: return "The helper said the action failed (exit \(exitCode))."

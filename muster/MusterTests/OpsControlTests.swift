@@ -316,6 +316,44 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertEqual(outcome.detail, "Done.")
     }
 
+    func test_async_acceptance_never_claims_completion_even_from_legacy_helpers() {
+        for action in [OpsAction.serverUpdate(name: "fleet-cli"), .coolifyRedeploy(uuid: "exampleuuid1", name: "example")] {
+            for json in [
+                #"{"ok":true,"result":"done","detail":"done"}"#,
+                #"{"ok":true,"result":"submitted","executionState":"submitted","verified":false}"#,
+                #"{"ok":true,"result":"done","executionState":"submitted","verified":true}"#,
+                #"{"ok":true,"result":"done","executionState":"completed","verified":false}"#,
+                #"{"ok":true,"result":"done","executionState":"completed","verified":"true"}"#,
+            ] {
+                let outcome = OpsResultParser.parse(result(json), mode: .yes, action: action, timeout: 900)
+                XCTAssertEqual(outcome.kind, .submitted)
+                XCTAssertFalse(outcome.isSuccess(for: .yes))
+            }
+        }
+    }
+
+    func test_update_completion_requires_a_verified_invocation_receipt() {
+        let action = OpsAction.serverUpdate(name: "fleet-cli")
+        let receipt = String(repeating: "a", count: 32)
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let completed = OpsResultParser.parse(result(json), mode: .yes, action: action, timeout: 900)
+        XCTAssertTrue(completed.isSuccess(for: .yes))
+        XCTAssertEqual(completed.invocationID, receipt)
+        let invalid = json.replacingOccurrences(of: receipt, with: "not-a-receipt")
+        XCTAssertEqual(OpsResultParser.parse(result(invalid), mode: .yes, action: action, timeout: 900).kind, .submitted)
+        XCTAssertNil(OpsResultParser.parse(result(invalid), mode: .yes, action: action, timeout: 900).invocationID)
+        XCTAssertEqual(OpsResultParser.parse(result(json), mode: .plan, action: action, timeout: 90).kind, .failed)
+    }
+
+    func test_submitted_is_not_success_when_the_helper_exits_with_failure() {
+        let json = #"{"ok":true,"result":"submitted"}"#
+        let outcome = OpsResultParser.parse(result(json, exit: 1), mode: .yes, action: unit, timeout: 900)
+        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertFalse(outcome.isSuccess(for: .yes))
+        let audit = OpsAuditEntry(time: nil, host: "server", verb: "server update", target: "fleet-cli", result: "submitted")
+        XCTAssertEqual(audit.state, .unproven)
+    }
+
     func test_a_plan_that_answers_done_is_a_failure() throws {
         let outcome = OpsResultParser.parse(
             result(try fixture("ops_result_done", "json")), mode: .plan, action: unit, timeout: 90

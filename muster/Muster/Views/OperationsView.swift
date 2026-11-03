@@ -2,11 +2,9 @@ import SwiftUI
 
 /// The operations tab:  the Mac's LaunchAgents,  the server's updates,  and the audit log.
 ///
-/// It reads three local files and runs nothing by itself:  the Mac collector's
-/// `mac-services.json`,  the allowlist in this Mac's checkout
-/// (`scripts/fleet-ops-control.json`),  and the audit log `ops-audit.jsonl`.  Every button
-/// starts an action through `OpsController`,  which plans it,  shows the plan,  asks Touch ID
-/// and only then runs it.
+/// It initially reads the saved Mac report, allowlist and audit log.  Refresh collects
+/// current agents through the existing read-only collector without writing a report.
+/// Service changes use `OpsController`: plan, review, Touch ID, re-plan, then run.
 struct OperationsView: View {
     @State private var services: MacServicesReading?
     @State private var allowlist: OpsAllowlist?
@@ -24,7 +22,9 @@ struct OperationsView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    agentsSection
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        agentsSection(services?.aged(at: context.date))
+                    }
                     updatesSection
                     auditSection
                 }
@@ -32,7 +32,7 @@ struct OperationsView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        .task { await load() }
+        .task { await load(collectAgents: false) }
         .onChange(of: controller.completedRuns) { _, _ in
             Task { await load() }
         }
@@ -51,11 +51,19 @@ struct OperationsView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .disabled(loading)
+                .disabled(loading || controller.isBusy)
             }
-            Text("Start, stop and update the fleet's processes.\u{00A0} Every action shows its plan and asks Touch ID before it runs.")
+            Text("Start, stop and update the fleet's processes.\u{00A0} Service changes show their plan and ask Touch ID before they run.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if loading {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading operations state…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             if controller.isBusy {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -100,8 +108,19 @@ struct OperationsView: View {
     // MARK: The Mac's agents
 
     @ViewBuilder
-    private var agentsSection: some View {
+    private func agentsSection(_ services: MacServicesReading?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Checks this Mac's current agents without changing them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Read Current Agents") {
+                    Task { await load() }
+                }
+                .controlSize(.small)
+                .disabled(loading || controller.isBusy)
+            }
             if let services {
                 let current = services.problem == nil && services.isCurrent
                 sectionHeader(
@@ -113,14 +132,14 @@ struct OperationsView: View {
                         : ""
                 )
                 if let age = services.age {
-                    Text("Read \(age) ago")
+                    Text("Read \(age) ago · \(services.path)")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(services.isCurrent ? Color.secondary : Color.orange)
                 }
                 if let problem = services.problem {
                     problemBox(problem)
                 } else if !services.isCurrent {
-                    problemBox("This file is stale.\u{00A0} The collector writes it every five minutes; old rows are not current evidence.")
+                    problemBox("This snapshot is stale.\u{00A0} Choose Read Current Agents to collect current state.")
                 } else if services.agents.isEmpty {
                     Text("The file names no agents.")
                         .font(.callout)
@@ -171,7 +190,7 @@ struct OperationsView: View {
                             controller.plan(.macAgent(verb: verb, label: agent.label))
                         }
                         .controlSize(.small)
-                        .disabled(controller.isPresenting)
+                        .disabled(controller.isPresenting || loading)
                     }
                 } else {
                     Text("not in the allowlist")
@@ -220,7 +239,7 @@ struct OperationsView: View {
                                 controller.plan(.serverUpdate(name: update.name))
                             }
                             .controlSize(.small)
-                            .disabled(controller.isPresenting)
+                            .disabled(controller.isPresenting || loading)
                         }
                         .padding(.vertical, 2)
                     }
@@ -297,8 +316,9 @@ struct OperationsView: View {
 
     // MARK: The read
 
-    /// Read the three files off the main thread.
-    private func load() async {
+    /// Read local operations data and, when requested, obtain a fresh agent snapshot.
+    private func load(collectAgents: Bool = true) async {
+        guard !loading else { return }
         loading = true
         defer { loading = false }
         let servicesURL = MacServicesReportReader.reportURL()
@@ -311,7 +331,11 @@ struct OperationsView: View {
                 OpsAuditLog.read(at: auditURL)
             )
         }.value
-        services = readServices
+        if collectAgents {
+            services = await MacServicesCollector(repoRoot: FleetConfigLocation.resolve().repoRoot).collect()
+        } else {
+            services = readServices
+        }
         allowlist = readAllowlist
         allowlistPath = allowlistURL.path
         audit = readAudit

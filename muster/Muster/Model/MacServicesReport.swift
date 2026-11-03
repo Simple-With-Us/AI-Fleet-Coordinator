@@ -152,6 +152,17 @@ struct MacServicesReading {
 
     /// How many agents the collector could not read.
     var unreadCount: Int { agents.filter { !$0.isObserved }.count }
+
+    /// Re-evaluate the displayed evidence instead of freezing its original age.
+    func aged(at now: Date) -> MacServicesReading {
+        var reading = self
+        guard let generatedAt else { return reading }
+        reading.age = FleetTime.ageText(since: generatedAt, now: now)
+        let seconds = now.timeIntervalSince(generatedAt)
+        reading.isCurrent = seconds >= -60 && seconds <= Double(MacServicesContract.maxAgeSeconds)
+        if !reading.isCurrent { reading.state = .unknown }
+        return reading
+    }
 }
 
 // MARK: - The reader
@@ -181,9 +192,18 @@ enum MacServicesReportReader {
                 return reading
             }
         } else {
-            reading.problem = "The file could not be read:\(gap)the file is not there"
+            reading.problem = "No saved Mac LaunchAgents report exists at \(url.path).\(gap)Choose Read Current Agents to collect a read-only snapshot; the scheduled collector may not be installed or running."
             return reading
         }
+
+        return parse(data, path: url.path, now: now)
+    }
+
+    /// Saved reports and on-demand collector answers use the same contract.
+    static func parse(_ data: Data, path: String, now: Date = Date()) -> MacServicesReading {
+        var reading = MacServicesReading()
+        reading.path = path
+        let gap = ServerStatusCopy.sentenceGap
 
         let report: MacServicesReport
         do {
@@ -244,5 +264,51 @@ enum MacServicesReportReader {
             worst = agent.state
         }
         return worst
+    }
+}
+
+/// --dry-run reads launchd and prints JSON without writing a report, installing an
+/// agent, or starting or stopping a service.
+struct MacServicesCollector {
+    var repoRoot: URL
+    var home: URL = FileManager.default.homeDirectoryForCurrentUser
+    var runner: OpsRunning = OpsProcessRunner()
+    static let timeout: TimeInterval = 150
+
+    func invocation(fileManager: FileManager = .default) throws -> OpsInvocation {
+        let script = repoRoot.appendingPathComponent("scripts/fleet-mac-services.py")
+        guard let attributes = try? fileManager.attributesOfItem(atPath: script.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let permissions = attributes[.posixPermissions] as? NSNumber,
+              permissions.intValue & 0o022 == 0 else {
+            throw OpsControlError.launchFailed(
+                "The Mac services collector is missing or unsafe at \(script.path).\(ServerStatusCopy.sentenceGap)Choose a repository containing scripts/fleet-mac-services.py in Settings."
+            )
+        }
+        return OpsInvocation(
+            executable: OpsControlRoute.interpreter,
+            arguments: ["-I", script.path, "--dry-run", "--agents-dir", home.appendingPathComponent("Library/LaunchAgents").path],
+            workingDirectory: repoRoot.path,
+            environment: ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
+            timeout: Self.timeout
+        )
+    }
+
+    func collect(now: Date? = nil) async -> MacServicesReading {
+        var reading = MacServicesReading()
+        reading.path = MacServicesReportReader.reportURL(home: home).path
+        do {
+            let result = try await runner.run(invocation())
+            if result.timedOut {
+                reading.problem = "The Mac services collector timed out; no current agent state was obtained."
+            } else if result.exitCode != 0 {
+                reading.problem = "The Mac services collector failed (exit \(result.exitCode)); no current agent state was obtained."
+            } else {
+                reading = MacServicesReportReader.parse(Data(result.stdout.utf8), path: "On-demand Mac collection", now: now ?? Date())
+            }
+        } catch {
+            reading.problem = error.localizedDescription
+        }
+        return reading
     }
 }
