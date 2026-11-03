@@ -19,6 +19,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
     case seatDetail
     case serverStatus
     case hosts
+    case virtualMachines
     case operations
 
     var id: String { rawValue }
@@ -36,6 +37,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .seatDetail: return "Seat Detail"
         case .serverStatus: return "Server Status"
         case .hosts: return "Hosts"
+        case .virtualMachines: return "Virtual Machines"
         case .operations: return "Operations"
         }
     }
@@ -53,6 +55,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .seatDetail: return "bolt.shield"
         case .serverStatus: return "cpu"
         case .hosts: return "server.rack"
+        case .virtualMachines: return "desktopcomputer"
         case .operations: return "gearshape.2"
         }
     }
@@ -62,7 +65,7 @@ enum MusterDestination: String, CaseIterable, Identifiable {
     /// The sidebar's This Mac section, in the order it reads.
     static let thisMac: [MusterDestination] = [.services, .wakeAndListener, .controls, .seatDetail]
     /// The sidebar's Server section, in the order it reads.
-    static let server: [MusterDestination] = [.serverStatus, .hosts, .operations]
+    static let server: [MusterDestination] = [.serverStatus, .hosts, .virtualMachines, .operations]
 
     /// The destination a saved spelling names, or the overview when it names nothing.
     static func restored(from saved: String?) -> MusterDestination {

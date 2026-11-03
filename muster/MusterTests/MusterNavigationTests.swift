@@ -11,9 +11,9 @@ final class MusterNavigationTests: XCTestCase {
     /// doubled in the move.
     func test_sidebar_names_every_place_once() {
         let named = [MusterDestination.overview] + MusterDestination.fleet + MusterDestination.thisMac + MusterDestination.server
-        XCTAssertEqual(named.count, 12)
+        XCTAssertEqual(named.count, 13)
         XCTAssertEqual(Set(named), Set(MusterDestination.allCases))
-        XCTAssertEqual(MusterDestination.allCases.count, 12)
+        XCTAssertEqual(MusterDestination.allCases.count, 13)
     }
 
     func test_saved_spelling_restores_its_place() {
