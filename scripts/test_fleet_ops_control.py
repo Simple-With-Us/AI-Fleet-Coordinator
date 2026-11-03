@@ -664,20 +664,32 @@ class UpdateStatusTests(Base):
             self.assertNotIn(foc.SUDO, argv)
             self.assertIn("show", argv)
             return 0, state or update_state(
-                InvocationID="b" * 32, ExecMainStartTimestampMonotonic="200",
+                InvocationID="b" * 32,
+                ExecMainStartTimestampMonotonic="200",
                 ExecMainExitTimestampMonotonic="210",
             )
 
         return self.run_main(
-            ["server", "update-status", target or ("fleet-cli." + "b" * 32 + ".100"), mode, "--json"],
+            [
+                "server",
+                "update-status",
+                target or ("fleet-cli." + "b" * 32 + ".100"),
+                mode,
+                "--json",
+            ],
             self.ctx(runner=runner),
         )
 
     def write_capture(self, **changes):
         row = {
-            "host": "server", "verb": "server update", "target": "fleet-cli",
-            "route": "sudo-system-update", "result": "submitted",
-            "invocationID": "b" * 32, "baselineStartMonotonic": 100, "verified": False,
+            "host": "server",
+            "verb": "server update",
+            "target": "fleet-cli",
+            "route": "sudo-system-update",
+            "result": "submitted",
+            "invocationID": "b" * 32,
+            "baselineStartMonotonic": 100,
+            "verified": False,
         }
         row.update(changes)
         self.capture_text = json.dumps(row) + "\n"
@@ -751,7 +763,12 @@ class UpdateStatusTests(Base):
 
     def test_recheck_preserves_the_captured_freshness_baseline(self):
         current = update_state(InvocationID="b" * 32)
-        for baseline, expected in (("100", "submitted"), ("110", "refused"), ("99", "refused"), ("0", "refused")):
+        for baseline, expected in (
+            ("100", "submitted"),
+            ("110", "refused"),
+            ("99", "refused"),
+            ("0", "refused"),
+        ):
             code, answer = self.status(current, target="fleet-cli." + "b" * 32 + "." + baseline)
             self.assertEqual(answer["result"], expected)
             if expected == "refused":
@@ -770,9 +787,13 @@ class UpdateStatusTests(Base):
 
     def test_capture_rows_require_exact_action_target_route_and_integer(self):
         for changes in (
-            {"host": "mac"}, {"verb": "server restart"}, {"target": "other"},
-            {"route": "other"}, {"baselineStartMonotonic": True},
-            {"baselineStartMonotonic": "100"}, {"baselineStartMonotonic": -1},
+            {"host": "mac"},
+            {"verb": "server restart"},
+            {"target": "other"},
+            {"route": "other"},
+            {"baselineStartMonotonic": True},
+            {"baselineStartMonotonic": "100"},
+            {"baselineStartMonotonic": -1},
         ):
             self.write_capture(**changes)
             code, answer = self.status(capture=False)

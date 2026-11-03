@@ -918,18 +918,18 @@ def captured_update_baseline(ctx, invocation):
             descriptors.append(parent)
             info = os.fstat(parent)
             sticky_root = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
-            if (
-                info.st_uid not in (0, ctx.uid)
-                or (info.st_mode & 0o022 and not sticky_root)
-            ):
+            if info.st_uid not in (0, ctx.uid) or (info.st_mode & 0o022 and not sticky_root):
                 raise OSError("unsafe audit directory")
         fd = os.open(
-            path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent,
+            path.name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=parent,
         )
         descriptors.append(fd)
         info = os.fstat(fd)
         if (
-            not stat.S_ISREG(info.st_mode) or info.st_uid != ctx.uid
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != ctx.uid
             or stat.S_IMODE(info.st_mode) != 0o600
         ):
             raise OSError("unsafe audit file")
@@ -948,11 +948,13 @@ def captured_update_baseline(ctx, invocation):
                 continue
             baseline = row.get("baselineStartMonotonic")
             if (
-                row.get("host") == "server" and row.get("verb") == "server update"
+                row.get("host") == "server"
+                and row.get("verb") == "server update"
                 and row.get("target") == "fleet-cli"
                 and row.get("route") in ("sudo-system-update", "root-system-update")
                 and row.get("result") in ("submitted", "done", "failed")
-                and type(baseline) is int and 0 <= baseline <= UINT64_MAX
+                and type(baseline) is int
+                and 0 <= baseline <= UINT64_MAX
             ):
                 return baseline
             break
