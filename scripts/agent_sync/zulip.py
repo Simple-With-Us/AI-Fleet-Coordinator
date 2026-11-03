@@ -107,8 +107,8 @@ ENV_INFISICAL = "AGENT_SYNC_INFISICAL"  # 0, false, off or no turns the Infisica
 ENV_INFISICAL_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 INFISICAL_PROJECT_FILE = ".agent-sync/fleet-ops-project-id"
 INFISICAL_PATH = "/zulip"
-# The fleet's Infisical reader (scripts/fleet_secrets, installed as ~/.local/bin/fleet-secrets).  Tests point
-# FLEET_SECRETS_BIN at a fake.  Its auth chain (System keychain machine identity) works under launchd and pm2.
+# The fleet's scoped-token reader (scripts/fleet_secrets, installed as ~/.local/bin/fleet-secrets).  Tests point
+# FLEET_SECRETS_BIN at a fake.  Noninteractive calls require the caller's registered read-token binding.
 ENV_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
 FLEET_SECRETS_TIMEOUT = (
     15.0  # interactive commands wait at most this long for one fleet-secrets call

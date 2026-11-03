@@ -2,7 +2,7 @@
 """Mocked-API contract tests for populate-scoped-folders.py.
 
 No network and no real fleet-secrets:  urllib.request.urlopen is stubbed with a
-fake Infisical (login, token metadata, the upsert write), and subprocess.run
+fake Infisical (token metadata and the upsert write), and subprocess.run
 with a fake `fleet-secrets get` over the same values (every read).  Values are
 sentinel strings ("VALUE-<name>"); every test asserts they never appear in any
 printed output (names-only reporting, redacted errors)."""
@@ -13,11 +13,15 @@ import io
 import json
 import os
 import pathlib
+import secrets
 import subprocess
 import sys
 import unittest
 import urllib.error
 import urllib.request
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+from fleet_secrets import core as fleet_secrets_core
 
 spec = importlib.util.spec_from_file_location(
     "psf", str(pathlib.Path(__file__).with_name("populate-scoped-folders.py"))
@@ -28,22 +32,44 @@ spec.loader.exec_module(psf)
 DEST_PATHS = {(psf.ENV, p) for _, _, _, p, _ in psf.MAPPING}
 
 
+def fixture_service_token():
+    return "st." + secrets.token_urlsafe(32)
+
+
 class FakeInfisical:
     """Routes urlopen calls and `fleet-secrets get` runs over one store.
     values[(ws, path, name)] -> value;  a missing key is fleet-secrets' exit 3."""
 
-    def __init__(self, scopes=None, values=None, fail=None):
-        self.scopes = (
-            scopes
-            if scopes is not None
-            else [{"environment": psf.ENV, "secretPath": p} for _, p in sorted(DEST_PATHS)]
-        )
+    def __init__(self, scopes=None, values=None, fail=None, read_tokens=None, write_token=None):
+        self.scopes = scopes
         self.values = values or {}
+        self.read_tokens = read_tokens or {psf.AFC: fixture_service_token(), psf.FLEETOPS: fixture_service_token()}
+        self.write_token = write_token or fixture_service_token()
         # ("read", (ws, path, name)) -> fleet-secrets exit code;  ("upsert", name) -> HTTP code
         self.fail = fail or {}
         self.upserts = []
         self.agents = []  # the User-Agent of every API call
+        self.authorizations = []
         self.reads = []  # every fleet-secrets run:  (argv, child env)
+
+    def default_metadata(self, token):
+        if token == self.read_tokens[psf.AFC]:
+            project = psf.AFC
+            paths = {(psf.ENV, path or "/") for ws, path, *_ in psf.MAPPING if ws == project}
+            permissions = ["read"]
+        elif token == self.read_tokens[psf.FLEETOPS]:
+            project = psf.FLEETOPS
+            paths = {(psf.ENV, path or "/") for ws, path, *_ in psf.MAPPING if ws == project} | DEST_PATHS
+            permissions = ["read"]
+        else:
+            project = psf.FLEETOPS
+            paths = DEST_PATHS
+            permissions = ["read", "write"]
+        scopes = self.scopes if self.scopes is not None else [
+            {"environment": environment, "secretPath": path} for environment, path in sorted(paths)
+        ]
+        return {"id": "fixture-service-token", "workspace": project, "projectId": project, "permissions": permissions,
+                "scopes": scopes, "expiresAt": None}
 
     def _err(self, url, code, body="server message"):
         raise urllib.error.HTTPError(
@@ -71,10 +97,10 @@ class FakeInfisical:
     def open(self, request, timeout=35):
         url, method = request.full_url, request.get_method()
         self.agents.append(request.get_header("User-agent"))
+        self.authorizations.append((method, request.get_header("Authorization")))
         if url.endswith("/api/v2/service-token"):
-            return io.BytesIO(json.dumps({"id": "st1", "scopes": self.scopes}).encode())
-        if url.endswith("/auth/universal-auth/login"):
-            return io.BytesIO(json.dumps({"accessToken": "automation"}).encode())
+            token = (request.get_header("Authorization") or "").removeprefix("Bearer ")
+            return io.BytesIO(json.dumps(self.default_metadata(token)).encode())
         if "/api/v3/secrets/raw/" in url:
             name = urllib.parse.unquote(url.split("/api/v3/secrets/raw/")[1].split("?")[0])
             if method == "POST":
@@ -89,17 +115,17 @@ class FakeInfisical:
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.fake = FakeInfisical()
+        self.read_tokens = {psf.AFC: fixture_service_token(), psf.FLEETOPS: fixture_service_token()}
+        self.write_token = fixture_service_token()
+        self.fake = FakeInfisical(read_tokens=self.read_tokens, write_token=self.write_token)
         self._orig = psf.urlopen
         psf.urlopen = self.fake.open
         self._orig_run = subprocess.run
         subprocess.run = self.fake.run
         self._env = dict(os.environ)
-        # The automation login comes from the environment (the handoff's first
-        # source), so no test ever reaches a real fleet-secrets.
-        os.environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "u"
-        os.environ["INFISICAL_AUTOMATION_CLIENT_SECRET"] = "p"
-        os.environ["READ_TOOLS_SERVICE_TOKEN"] = "read-tools-st"
+        os.environ[psf.READ_TOKEN_ENVS[psf.AFC]] = self.read_tokens[psf.AFC]
+        os.environ[psf.READ_TOKEN_ENVS[psf.FLEETOPS]] = self.read_tokens[psf.FLEETOPS]
+        os.environ[psf.WRITE_TOKEN_ENV] = self.write_token
 
     def tearDown(self):
         psf.urlopen = self._orig
@@ -130,11 +156,14 @@ class TestMapping(Base):
 
 class TestGate(Base):
     def test_full_coverage_passes(self):
-        self.assertTrue(psf.check_read_tools_scope())
+        reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
+        self.assertTrue(psf.check_scoped_tokens(reads, self.write_token))
 
     def test_missing_scope_aborts(self):
+        self.fake.scopes = self.fake.default_metadata(self.read_tokens[psf.AFC])["scopes"]
         self.fake.scopes = [s for s in self.fake.scopes if s["secretPath"] != "/tools"]
-        self.assertFalse(psf.check_read_tools_scope())
+        reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
+        self.assertFalse(psf.check_scoped_tokens(reads, self.write_token))
 
     def test_endpoint_404_aborts(self):
         def boom(request, timeout=35):
@@ -143,15 +172,17 @@ class TestGate(Base):
             return self.fake.open(request, timeout)
 
         psf.urlopen = boom
-        self.assertFalse(psf.check_read_tools_scope())
+        reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
+        self.assertFalse(psf.check_scoped_tokens(reads, self.write_token))
 
     def test_unknown_schema_aborts(self):
         self.fake.scopes = {"prod": ["/wake"]}  # not the expected list of dicts
-        self.assertFalse(psf.check_read_tools_scope())
+        reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
+        self.assertFalse(psf.check_scoped_tokens(reads, self.write_token))
 
     def test_no_token_aborts(self):
-        del os.environ["READ_TOOLS_SERVICE_TOKEN"]
-        self.assertFalse(psf.check_read_tools_scope())
+        reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
+        self.assertFalse(psf.check_scoped_tokens(reads, ""))
 
     def test_non_object_metadata_aborts_without_attribute_error(self):
         # kody 4365622066:  a top-level list is the parser's fail-safe None.
@@ -160,7 +191,8 @@ class TestGate(Base):
 
     def test_every_call_names_the_project(self):
         # kody 4365622172:  never the runtime's default Python-urllib agent.
-        self.assertTrue(psf.check_read_tools_scope())
+        reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
+        self.assertTrue(psf.check_scoped_tokens(reads, self.write_token))
         self.assertTrue(self.fake.agents)
         self.assertTrue(all(a == psf.USER_AGENT for a in self.fake.agents))
 
@@ -174,7 +206,7 @@ class TestGate(Base):
         self.assertTrue(all(isinstance(h, psf.RefuseRedirects) for h in handlers))
         request = urllib.request.Request(
             "https://app.infisical.com/api/v2/service-token",
-            headers={"Authorization": "Bearer synthetic"},
+            headers={"Authorization": "Bearer " + self.write_token},
         )
         for code in (301, 302, 303, 307, 308):
             with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -199,14 +231,22 @@ class TestGate(Base):
             psf.urlopen = lambda request, timeout=35, body=body: io.BytesIO(body)
             with self.assertRaises(psf.ResponseLimitError):
                 psf.read_json(request, timeout=35)
-            self.assertFalse(psf.check_read_tools_scope(), "the gate aborts fail safe")
+            reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
+            self.assertFalse(
+                psf.check_scoped_tokens(reads, self.write_token),
+                "the gate aborts fail safe",
+            )
         at_depth = b"[" * (psf.MAX_RESPONSE_DEPTH + 1) + b"]" * (psf.MAX_RESPONSE_DEPTH + 1)
         psf.urlopen = lambda request, timeout=35: io.BytesIO(at_depth)
         self.assertIsInstance(
             psf.read_json(request, timeout=35), list, "exactly at the depth cap passes"
         )
         psf.urlopen = self.fake.open
-        self.assertEqual(psf.token_data("read-tools-st")["id"], "st1", "a normal answer passes")
+        self.assertEqual(
+            psf.token_data(os.environ[psf.READ_TOKEN_ENVS[psf.AFC]])["id"],
+            "fixture-service-token",
+            "a normal answer passes",
+        )
 
 
 class TestDryRun(Base):
@@ -218,7 +258,7 @@ class TestDryRun(Base):
 
     def test_dry_run_fails_closed_when_the_gate_fails(self):
         # kody 4366921815:  a gate that cannot pass is a non-zero exit in a dry run too.
-        del os.environ["READ_TOOLS_SERVICE_TOKEN"]
+        del os.environ[psf.WRITE_TOKEN_ENV]
         code, out = self.run_main()
         self.assertEqual(code, 1)
         self.assertIn("Aborting (fail safe)", out)
@@ -317,14 +357,36 @@ class TestApply(Base):
                 psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
             ]
             seen.append((argv[2], argv[4], slug, env[id_var]))
+            expected_token = os.environ[
+                psf.READ_TOKEN_ENVS[psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS]
+            ]
+            token_var = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN" if slug == "ai-fleet-coordinator" else "INFISICAL_TOKEN"
+            self.assertEqual(env[token_var], expected_token)
+            workspace = psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
             self.assertEqual(
-                env["INFISICAL_TOKEN"], "automation", "the login's own token, one identity"
+                fleet_secrets_core.declared_paths(env, argv[4]),
+                psf.READ_PATHS_BY_PROJECT[workspace],
             )
+            self.assertNotIn("INFISICAL_TOKEN" if token_var != "INFISICAL_TOKEN" else "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", env)
             for dropped in psf.CHILD_DROPPED_ENV:
+                if dropped == token_var:
+                    continue
                 self.assertNotIn(dropped, env, f"{dropped} never reaches the child")
         self.assertEqual(seen, expected)
-        # The API carries the login, the scope gate and the 72 writes, and no read.
+        # Metadata checks and writes use the dedicated Fleet-OPS write token.
         self.assertEqual(len(self.fake.upserts), 72)
+        self.assertEqual(
+            [token for method, token in self.fake.authorizations if method == "POST"],
+            ["Bearer " + self.write_token] * 72,
+        )
+        self.assertEqual(
+            [token for method, token in self.fake.authorizations if method == "GET"],
+            [
+                "Bearer " + self.read_tokens[psf.AFC],
+                "Bearer " + self.read_tokens[psf.FLEETOPS],
+                "Bearer " + self.write_token,
+            ],
+        )
 
     def test_values_are_not_taken_from_the_environment(self):
         # A same-named variable in the shell must never be copied in place of the source.
@@ -373,21 +435,6 @@ class TestApply(Base):
         self.assertEqual(self.fake.upserts, [])
         self.assertNotIn("VALUE-", out)
 
-    def test_login_handoff_timeout_exits_124_names_only(self):
-        # kody 4367021960:  the login handoff's fleet-secrets timeout is 124 too.
-        del os.environ["INFISICAL_AUTOMATION_CLIENT_ID"]
-
-        def slow(argv, **kwargs):
-            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
-
-        subprocess.run = slow
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
-            psf.handoff("INFISICAL_AUTOMATION_CLIENT_ID")
-        self.assertEqual(caught.exception.code, 124)
-        self.assertIn("INFISICAL_AUTOMATION_CLIENT_ID", err.getvalue())
-        self.assertIn("timed out", err.getvalue())
-
     def test_fleet_secrets_own_exit_124_is_a_timeout(self):
         # kody 4368415894:  fleet-secrets' own 124 (its Linux entry point's login
         # timeout) exits 124 too, not as a generic "exit 124" failure.
@@ -401,93 +448,21 @@ class TestApply(Base):
         self.assertEqual(self.fake.upserts, [])
         self.assertNotIn("VALUE-", out)
 
-    def test_login_failure_stops_names_only_before_any_copy(self):
-        # kody 4368415797:  a refused, oversized, malformed, unreachable or stalled
-        # login stops with one names-only STOP line, never a traceback.  A refused
-        # login names the variables to check and nothing derived from their values
-        # (kody 4368465194);  a stalled one exits 124 (kody 4368465375).  Nothing
-        # reaches stderr (kody 4368465538):  the STOP line is on stdout with the
-        # rest of the run's report.
+    def test_missing_or_malformed_scoped_tokens_fail_closed_without_fallback(self):
         seeded(self.fake)
-
-        def refused(code):
-            def answer(url):
-                self.fake._err(url, code, "leak VALUE-x")
-
-            return answer
-
-        def raises(error):
-            def answer(url):
-                raise error
-
-            return answer
-
-        check = ";  check INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET"
-        answers = [
-            (f"was refused (HTTP 401){check}", 1, refused(401)),
-            (f"was refused (HTTP 403){check}", 1, refused(403)),
-            ("was refused (HTTP 500)", 1, refused(500)),
-            (
-                "failed (ResponseLimitError)",
-                1,
-                lambda url: io.BytesIO(b"x" * (psf.MAX_RESPONSE_BYTES + 1)),
-            ),
-            ("failed (ValueError)", 1, lambda url: io.BytesIO(b"{}")),
-            ("failed (URLError)", 1, raises(urllib.error.URLError("unreachable"))),
-            ("timed out", psf.TIMED_OUT, raises(TimeoutError("timed out"))),
-            ("timed out", psf.TIMED_OUT, raises(urllib.error.URLError(TimeoutError()))),
-        ]
-        for expected, status, answer in answers:
-            with self.subTest(expected=expected, status=status):
-
-                def login_fails(request, timeout=35, answer=answer):
-                    if request.full_url.endswith("/auth/universal-auth/login"):
-                        return answer(request.full_url)
-                    return self.fake.open(request, timeout)
-
-                psf.urlopen = login_fails
-                err = io.StringIO()
-                with contextlib.redirect_stderr(err):
+        for name, value in ((psf.WRITE_TOKEN_ENV, ""), (psf.READ_TOKEN_ENVS[psf.AFC], "ua.client")):
+            with self.subTest(name=name):
+                old = os.environ[name]
+                os.environ[name] = value
+                try:
                     code, out = self.run_main("--apply")
-                self.assertEqual(code, status)
-                self.assertIn(
-                    f"STOP before the first copy: the Infisical login {expected}.  "
-                    "Nothing was copied.",
-                    out,
-                )
-                # stderr may carry the fake HTTPError's ResourceWarning under unittest,
-                # never a traceback, a STOP line or server text.
-                for stream in (out, err.getvalue()):
-                    self.assertNotIn("Traceback", stream)
-                    self.assertNotIn("VALUE-", stream)
-                    self.assertNotIn("leak", stream)
-                self.assertNotIn("STOP", err.getvalue())
-                self.assertEqual(self.fake.upserts, [])
-                self.assertEqual(self.fake.reads, [], "no value is read before the login succeeds")
-
-    def test_login_handoff_exits_pass_through_main(self):
-        # kody 4368465667:  the handoff's own 124 and 127 reach main()'s caller
-        # unchanged, through the new login handler, with no read and no write.
-        seeded(self.fake)
-        del os.environ["INFISICAL_AUTOMATION_CLIENT_ID"]
-
-        def slow(argv, **kwargs):
-            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
-
-        def missing(argv, **kwargs):
-            raise FileNotFoundError(argv[0])
-
-        for run, status in ((slow, psf.TIMED_OUT), (missing, psf.MISSING_EXECUTABLE)):
-            with self.subTest(status=status):
-                subprocess.run = run
-                err = io.StringIO()
-                with contextlib.redirect_stderr(err):
-                    code, out = self.run_main("--apply")
-                self.assertEqual(code, status)
-                self.assertIn("INFISICAL_AUTOMATION_CLIENT_ID", err.getvalue())
-                self.assertNotIn("STOP before the first copy", out)
-                self.assertEqual(self.fake.upserts, [])
+                finally:
+                    os.environ[name] = old
+                self.assertEqual(code, 1)
+                self.assertIn(name, out)
                 self.assertEqual(self.fake.reads, [])
+                self.assertEqual(self.fake.upserts, [])
+                self.assertEqual(self.fake.authorizations, [])
 
     def test_write_timeout_is_an_unknown_outcome_like_a_5xx(self):
         # kody 4368532647:  a stalled write may have landed, as a write answered

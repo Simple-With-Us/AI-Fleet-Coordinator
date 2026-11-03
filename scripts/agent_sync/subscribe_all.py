@@ -19,7 +19,7 @@ Credentials, deduplicated by bot email:
   mac        every bot with <BOT>_ZULIP_EMAIL, _KEY and _SITE in Infisical Fleet-OPS /zulip (the Mac's
              source since AFC-359, read through fleet-secrets in one call;  no credential file)
   infisical  every ZULIP_<CODE>_EMAIL / ZULIP_<CODE>_API_KEY pair in Infisical prod /zulip,
-             through the automation identity from `fleet-secrets get`
+             through the read-only AGENT_SYNC_SUBSCRIBE_INFISICAL_TOKEN service-token binding.
 Only bots are touched:  a key whose users/me is a human, or an admin or owner, is skipped.
 Private channels are never joined, and nobody else's subscriptions are read or changed.
 """
@@ -29,14 +29,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable
-from pathlib import Path
 
 from . import zulip as Z
 from .identity import seat_tag_for
@@ -45,6 +42,7 @@ INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
+INFISICAL_TOKEN_ENV = "AGENT_SYNC_SUBSCRIBE_INFISICAL_TOKEN"
 BOT_ROLES = (300, 400)  # moderator, member:  the roles the listener accepts
 # Bots never need a notification;  set every new subscription quiet so nothing reaches a phone.
 QUIET = {
@@ -122,20 +120,11 @@ def mac_credentials() -> list[Z.Credentials]:
     return out
 
 
-def _handoff(name: str) -> str:
-    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The old flat
-    credentials file is retired.  Only the name is ever reported."""
-    value = os.environ.get(name, "").strip()
-    if value:
-        return value
-    binary = shutil.which("fleet-secrets") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
-    try:
-        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    raise Failure("%s is not in the environment or fleet-secrets (name only)" % name)
+def _service_token() -> str:
+    token = os.environ.get(INFISICAL_TOKEN_ENV, "").strip()
+    if not token.startswith("st.") or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token):
+        raise Failure(f"{INFISICAL_TOKEN_ENV} is missing or is not a valid service token")
+    return token
 
 
 def _http_json(
@@ -158,32 +147,27 @@ def _http_json(
 
 
 def infisical_credentials(realm: str) -> list[Z.Credentials]:
-    login = _http_json(
-        "POST",
-        INFISICAL_API + "/api/v1/auth/universal-auth/login",
-        body={
-            "clientId": _handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
-            "clientSecret": _handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
-        },
-    )
-    token = login.get("accessToken")
-    if not token:
-        raise Failure("Infisical login returned no access token")
-    query = urllib.parse.urlencode(
-        {
-            "workspaceId": INFISICAL_PROJECT,
-            "environment": INFISICAL_ENV,
-            "secretPath": INFISICAL_PATH,
-        }
-    )
-    data = _http_json(
-        "GET",
-        INFISICAL_API + "/api/v3/secrets/raw?" + query,
-        headers={"Authorization": "Bearer " + token},
-    )
-    found = {
-        s.get("secretKey"): (s.get("secretValue") or "").strip() for s in data.get("secrets") or []
-    }
+    # Keep the listener package importable in its runtime image, which intentionally contains
+    # only scripts/agent_sync and scripts/simple-chat.  This optional CLI helper is installed on
+    # the host, not in the listener image; load it only when this explicit command is invoked.
+    try:
+        from fleet_secrets import core as scoped_secrets
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"fleet_secrets", "fleet_secrets.core"}:
+            raise
+        raise Failure("Infisical source unavailable (fleet-secrets helper is not installed)") from None
+
+    token = _service_token()
+    env = {key: value for key, value in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS}
+    env[scoped_secrets.ENV_READ_PATHS] = INFISICAL_PATH
+    env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = INFISICAL_PROJECT
+    env[scoped_secrets.ENV_AI_FLEET_COORDINATOR_TOKEN] = token
+    try:
+        found = scoped_secrets.fetch_project(
+            INFISICAL_PROJECT, INFISICAL_PATH, env, token=token
+        )
+    except scoped_secrets.SecretsError as exc:
+        raise Failure("Infisical scoped read failed (" + exc.message + ")") from None
     out = []
     for name in sorted(found):
         if not (name.startswith("ZULIP_") and name.endswith("_EMAIL")):

@@ -132,35 +132,36 @@ test("install_seat_key --delete (the kill switch) never resolves the Fleet-OPS p
   }
 });
 
-test("install_seat_key refuses malformed Infisical responses instead of reading partial data (kody 4363264042)", () => {
-  // Each case is (login response, secrets response).  Every secrets list also
-  // holds both requested secrets (E and K), so a case is refused only by the
-  // check it targets:  without that check it would succeed or crash with an
-  // error other than SystemExit.  The program reports each refusal's own
-  // message, so the test pins which check refused it.
+test("install_seat_key requires its scoped token and refuses malformed Infisical responses (kody 4363264042)", () => {
   const program = [
     "import json, sys",
     "sys.path.insert(0, sys.argv[1])",
     "import install_seat_key as m",
-    "ok = {'accessToken': 't'}",
+    "import os",
     "good = [{'secretKey': 'E', 'secretValue': 'e'}, {'secretKey': 'K', 'secretValue': 'k'}]",
     "cases = [",
-    "  (['not-a-dict'], {'secrets': good}),                 # login not an object",
-    "  ({'accessToken': 7}, {'secrets': good}),             # token not a string",
-    "  (ok, ['not-a-dict']),                                # secrets response not an object",
-    "  (ok, {'secrets': None}),                             # missing secrets list",
-    "  (ok, {'secrets': ['not-a-dict'] + good}),            # entry not an object",
-    "  (ok, {'secrets': [{'secretKey': 7, 'secretValue': 'v'}] + good}),  # non-string key",
-    "  (ok, {'secrets': [{'secretKey': 'E', 'secretValue': 3}, good[1]]}),  # non-string value",
-    "  (ok, {'secrets': [{'secretKey': 'E'}, good[1]]}),    # missing value reads as empty, no KeyError",
-    "  (ok, {'secrets': good}),                             # well formed",
+    "  ['not-a-dict'],                                      # response not an object",
+    "  {'secrets': None},                                   # missing secrets list",
+    "  {'secrets': ['not-a-dict'] + good},                  # entry not an object",
+    "  {'secrets': [{'secretKey': 7, 'secretValue': 'v'}] + good},  # non-string key",
+    "  {'secrets': [{'secretKey': 'E', 'secretValue': 3}, good[1]]},  # non-string value",
+    "  {'secrets': [{'secretKey': 'E'}, good[1]]},          # missing value reads as empty",
+    "  {'secrets': good},                                   # well formed",
     "]",
     "results = []",
-    "for login, secrets in cases:",
-    "    calls = iter([login, secrets])",
-    "    m.http_json = lambda *a, **k: next(calls)",
+    "token_name = m.INFISICAL_TOKEN_ENVS[m.INFISICAL_PROJECT]",
+    "m.http_json = lambda *a, **k: (_ for _ in ()).throw(AssertionError('unexpected request'))",
+    "os.environ.pop(token_name, None)",
+    "try: m.infisical_pair('E', 'K', m.INFISICAL_PROJECT)",
+    "except SystemExit as exc: results.append(['missing', str(exc)])",
+    "os.environ[token_name] = 'automation.client-secret'",
+    "try: m.infisical_pair('E', 'K', m.INFISICAL_PROJECT)",
+    "except SystemExit as exc: results.append(['malformed', str(exc)])",
+    "os.environ[token_name] = 'st.seat-key-read-token-fixture'",
+    "for secrets in cases:",
+    "    m.http_json = lambda *a, **k: secrets",
     "    try:",
-    "        results.append(['ok', list(m.infisical_pair('E', 'K', 'p'))])",
+    "        results.append(['ok', list(m.infisical_pair('E', 'K', m.INFISICAL_PROJECT))])",
     "    except SystemExit as exc:",
     "        results.append(['refused', str(exc)])",
     "    except Exception as exc:",
@@ -168,17 +169,16 @@ test("install_seat_key refuses malformed Infisical responses instead of reading 
     "print(json.dumps(results))",
   ].join("\n");
   const out = JSON.parse(execFileSync("python3", ["-c", program, ROOT], {
-    env: { ...process.env, INFISICAL_AUTOMATION_CLIENT_ID: "x", INFISICAL_AUTOMATION_CLIENT_SECRET: "y" },
+    env: { ...process.env },
     encoding: "utf8",
   }));
-  const login = "install_seat_key: Infisical login returned a malformed response (not an object)";
-  const token = "install_seat_key: Infisical login returned no access token";
   const list = "install_seat_key: Infisical secrets response is malformed (missing secrets list)";
   const entry = "install_seat_key: Infisical secrets response has a malformed entry - refusing to continue on partial data";
-  assert.deepEqual(out.slice(0, 7), [
-    ["refused", login],
-    ["refused", token],
-    ["refused", list],
+  assert.deepEqual(out.slice(0, 2), [
+    ["missing", "install_seat_key: " + "AGENT_SYNC_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN is missing or is not a valid service token"],
+    ["malformed", "install_seat_key: " + "AGENT_SYNC_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN is missing or is not a valid service token"],
+  ]);
+  assert.deepEqual(out.slice(2, 7), [
     ["refused", list],
     ["refused", entry],
     ["refused", entry],

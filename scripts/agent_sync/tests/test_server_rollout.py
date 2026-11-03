@@ -27,6 +27,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "server-listener-live-o
 TARGETS = ["JET"] + ["GB-" + r for r in ("DIRECTOR", "FIXER", "DESIGNER", "COMPILER", "HOUSEKEEPER", "PUBLISHER",
                                           "DEPLOYER", "MONITOR", "PLUMBER", "ORACLE", "TRADER", "ENGINEER")]
 UNTOUCHED = ["MA", "GROK-WEB", "WISE", "ECHO"]
+INFISICAL_PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
 
 
 def _load(name: str):
@@ -46,16 +47,18 @@ def folder(path: str) -> str:
 
 
 # --------------------------------------------------------------------------------------------
-# A loopback Infisical:  universal-auth login, then one folder of raw secrets
+# A loopback Infisical:  direct service-token bearer, then one folder of raw secrets
 # --------------------------------------------------------------------------------------------
 
 class FakeInfisical:
     def __init__(self, client_id: str, client_secret: str, secrets_map: dict[str, str]) -> None:
         self.client_id, self.client_secret, self.secrets = client_id, client_secret, secrets_map
-        self.token = "tok-" + secrets.token_hex(16)
+        self.token = "st." + "service-token-fixture-value"
         self.login_status = 200
         self.read_failures = 0          # 5xx answers before a good read
         self.requests: list[tuple[str, str]] = []
+        self.metadata_override: dict[str, object] = {}
+        self.provenance_override: dict[str, str] = {}
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -73,23 +76,44 @@ class FakeInfisical:
             def do_POST(self) -> None:
                 fake.requests.append(("POST", self.path))
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if self.path != "/api/v1/auth/universal-auth/login" or fake.login_status != 200:
-                    return self._send(fake.login_status if fake.login_status != 200 else 404,
-                                      {"message": "refused " + body.get("clientSecret", "")})
-                if (body.get("clientId"), body.get("clientSecret")) != (fake.client_id, fake.client_secret):
-                    return self._send(401, {"message": "bad identity"})
-                self._send(200, {"accessToken": fake.token, "expiresIn": 7200})
+                return self._send(404, {"message": "login route is not available"})
 
             def do_GET(self) -> None:
                 fake.requests.append(("GET", self.path))
                 if self.headers.get("Authorization") != "Bearer " + fake.token:
                     return self._send(401, {"message": "no token"})
-                if fake.read_failures:
+                if self.path == "/api/v2/service-token":
+                    metadata = {
+                        "id": "synthetic-token-id",
+                        "name": "synthetic-listener-reader",
+                        "projectId": INFISICAL_PROJECT_ID,
+                        "workspace": INFISICAL_PROJECT_ID,
+                        "scopes": [
+                            {"environment": "prod", "secretPath": "/zulip"},
+                            {"environment": "prod", "secretPath": "/operator"},
+                        ],
+                        "permissions": ["read"],
+                        "expiresAt": "2099-01-01T00:00:00Z",
+                    }
+                    metadata.update(fake.metadata_override)
+                    return self._send(200, metadata)
+                if fake.read_failures and self.path.startswith("/api/v3/secrets/raw?"):
                     fake.read_failures -= 1
                     return self._send(503, {"message": "busy"})
-                if "secretPath=%2Fzulip" not in self.path or "environment=prod" not in self.path:
+                requested_path = folder(self.path)
+                if requested_path not in ("/zulip", "/operator") or "environment=prod" not in self.path:
                     return self._send(404, {"message": "no folder"})
-                self._send(200, {"secrets": [{"secretKey": k, "secretValue": v} for k, v in fake.secrets.items()]})
+                self._send(200, {"secrets": [
+                    {
+                        "secretKey": k,
+                        "secretValue": v,
+                        "workspace": fake.provenance_override.get("workspace", INFISICAL_PROJECT_ID),
+                        "environment": "prod",
+                        "secretPath": requested_path,
+                        "type": "shared",
+                    }
+                    for k, v in fake.secrets.items()
+                ]})
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -126,8 +150,8 @@ class InfisicalEnvTests(unittest.TestCase):
         }
 
     def env(self, fake: FakeInfisical | None = None, **extra: str) -> dict[str, str]:
-        env = {"INFISICAL_CLIENT_ID": self.cid, "INFISICAL_CLIENT_SECRET": self.csecret,
-               "INFISICAL_PROJECT_ID": "proj-1", "PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable),
+        env = {"INFISICAL_TOKEN": "st.service-token-fixture-value",
+               "INFISICAL_PROJECT_ID": INFISICAL_PROJECT_ID, "PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable),
                "HOME": str(self.tmp), "ZULIP_SITE": "https://simplewithus.zulipchat.com"}
         if fake:
             env["INFISICAL_API_URL"] = fake.url
@@ -161,12 +185,12 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertIn("loaded 6 variables", line)
         self.assertNotIn("k@o1", line)
 
-    def test_a_refused_login_falls_back_to_the_container_environment_without_a_body(self) -> None:
-        with FakeInfisical(self.cid, "other-secret", self.values) as fake:
-            out, line = IE.build_env(self.env(fake, ZULIP_GB_FIXER_API_KEY="coolify-copy"))
-        self.assertEqual(line, "Infisical load failed (login: HTTP 401); starting with the container environment")
-        self.assertEqual(out["ZULIP_GB_FIXER_API_KEY"], "coolify-copy")
-        self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
+    def test_missing_service_token_fails_closed_before_any_request(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            env = self.env(fake, ZULIP_GB_FIXER_API_KEY="coolify-copy")
+            env.pop("INFISICAL_TOKEN")
+            with self.assertRaisesRegex(IE.LoadError, "missing INFISICAL_TOKEN"):
+                IE.build_env(env)
 
     def test_a_busy_read_is_retried_once(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
@@ -174,21 +198,34 @@ class InfisicalEnvTests(unittest.TestCase):
             out, line = IE.build_env(self.env(fake), sleep=lambda s: None)
         self.assertIn("loaded 5 variables", line)
         # The /zulip read is retried once;  then the notes-queue keys' own folder is read once (AFC-486).
-        self.assertEqual([m for m, _ in fake.requests], ["POST", "GET", "GET", "GET"])
-        self.assertEqual([folder(p) for m, p in fake.requests if m == "GET"], ["/zulip", "/zulip", "/operator"])
+        self.assertEqual([m for m, _ in fake.requests], ["GET"] * 5)
+        raw_paths = [folder(p) for m, p in fake.requests if "/api/v3/secrets/raw?" in p]
+        self.assertEqual(raw_paths, ["/zulip", "/zulip", "/operator"])
+
+    def test_token_metadata_project_mismatch_stops_before_secret_values(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            fake.metadata_override = {"projectId": "wrong-project"}
+            with self.assertRaisesRegex(IE.LoadError, "project identity did not match"):
+                IE.build_env(self.env(fake))
+        self.assertEqual([path for _, path in fake.requests], ["/api/v2/service-token"])
+
+    def test_secret_record_provenance_mismatch_fails_closed(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            fake.provenance_override = {"workspace": "wrong-project"}
+            with self.assertRaisesRegex(IE.LoadError, "invalid or unverified listing"):
+                IE.build_env(self.env(fake))
+        raw_paths = [folder(path) for _, path in fake.requests if "/api/v3/secrets/raw?" in path]
+        self.assertEqual(raw_paths, ["/zulip"])
 
     def test_a_plain_http_api_that_is_not_loopback_is_refused(self) -> None:
-        out, line = IE.build_env(self.env(INFISICAL_API_URL="http://infisical.example.com/api"))
-        self.assertEqual(line, "Infisical load failed (INFISICAL_API_URL must be an https URL); starting with the "
-                               "container environment")
-        self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
+        with self.assertRaisesRegex(IE.LoadError, "must be an https URL"):
+            IE.build_env(self.env(INFISICAL_API_URL="http://infisical.example.com/api"))
 
     def test_an_incomplete_identity_is_not_used(self) -> None:
         env = self.env()
         env.pop("INFISICAL_PROJECT_ID")
-        out, line = IE.build_env(env)
-        self.assertIn("Infisical not used (INFISICAL_PROJECT_ID not set)", line)
-        self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
+        with self.assertRaisesRegex(IE.LoadError, "missing INFISICAL_PROJECT_ID"):
+            IE.build_env(env)
 
     def test_the_allowlist_follows_the_partition(self) -> None:
         names = IE.allowed_names(IE.server_codes(IE.PARTITION_DEFAULT))
@@ -230,35 +267,41 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse(json.loads(run.stdout)["running"], "simple-chat daemon status --json ran with the given arguments")
         self.assertIn("simple-chat: loaded 5 variables from Infisical", run.stderr)
-        self.assertEqual([p.split("?")[0] for _, p in fake.requests],
-                         ["/api/v1/auth/universal-auth/login", "/api/v3/secrets/raw", "/api/v3/secrets/raw"])
-        # one login, then /zulip and the notes-queue keys' /operator folder (AFC-486)
-        self.assertEqual([folder(p) for m, p in fake.requests if m == "GET"], ["/zulip", "/operator"])
+        self.assertEqual([p.split("?")[0] for _, p in fake.requests if "/api/v3/secrets/raw?" in p],
+                         ["/api/v3/secrets/raw", "/api/v3/secrets/raw"])
+        # /zulip and the notes-queue keys' /operator folder (AFC-486)
+        self.assertEqual(
+            [folder(p) for m, p in fake.requests if "/api/v3/secrets/raw?" in p],
+            ["/zulip", "/operator"],
+        )
+        raw_queries = [urllib.parse.parse_qs(urllib.parse.urlsplit(p).query)
+                       for _, p in fake.requests if "/api/v3/secrets/raw?" in p]
+        for query in raw_queries:
+            self.assertEqual(query["expandSecretReferences"], ["false"])
+            self.assertEqual(query["recursive"], ["false"])
+            self.assertEqual(query["include_imports"], ["false"])
 
-    def test_the_entrypoint_without_an_identity_runs_as_before(self) -> None:
+    def test_the_entrypoint_without_a_service_token_fails_closed(self) -> None:
         env = self.env()
-        for name in ("INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_PROJECT_ID"):
+        for name in ("INFISICAL_TOKEN", "INFISICAL_PROJECT_ID"):
             env.pop(name)
         run = self.entrypoint(env)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertNotIn("Infisical", run.stderr)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("missing INFISICAL_TOKEN", run.stderr)
 
-    def test_the_entrypoint_with_a_partial_identity_says_so_and_still_runs(self) -> None:
+    def test_the_entrypoint_with_a_service_token_but_no_project_fails_closed(self) -> None:
         env = self.env()
         env.pop("INFISICAL_PROJECT_ID")
         run = self.entrypoint(env)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("ERROR: Infisical not used (missing: INFISICAL_PROJECT_ID;", run.stderr)
-        self.assertNotIn(self.csecret, run.stderr)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("missing INFISICAL_PROJECT_ID", run.stderr)
 
-    def test_a_project_id_without_client_credentials_fails_loudly_naming_them(self) -> None:
+    def test_a_project_id_without_service_token_fails_loudly(self) -> None:
         env = self.env()
-        env.pop("INFISICAL_CLIENT_ID")
-        env.pop("INFISICAL_CLIENT_SECRET")
+        env.pop("INFISICAL_TOKEN")
         run = self.entrypoint(env)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("ERROR: Infisical not used (missing: INFISICAL_CLIENT_ID INFISICAL_CLIENT_SECRET;", run.stderr)
-        self.assertIn("NOT in use", run.stderr)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("missing INFISICAL_TOKEN", run.stderr)
 
     def test_the_load_line_counts_gb_seats_with_both_zulip_names_without_values(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
@@ -273,9 +316,8 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             url = fake.url
         run = self.entrypoint(self.env(INFISICAL_API_URL=url))        # the fake is stopped:  connection refused
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("Infisical load failed (login: ", run.stderr)
-        self.assertIn("starting with the container environment", run.stderr)
+        self.assertNotEqual(run.returncode, 0, run.stderr)
+        self.assertIn("ERROR: service-token metadata: URLError", run.stderr)
 
 
 # --------------------------------------------------------------------------------------------

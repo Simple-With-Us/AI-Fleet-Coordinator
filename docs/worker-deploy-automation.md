@@ -35,7 +35,10 @@ or absent health routes need an approved probe before automation can be enabled.
 No public health bypass is introduced. Ambiguous start-jays-services,
 fleet-share-api and BotFleet broker are not included. No iOS workflow is changed.
 
-CI reads the scoped Cloudflare token from Fleet-OPS/prod/root through the existing
-automation identity. Repository bootstrap names: INFISICAL_AUTOMATION_CLIENT_ID
-and INFISICAL_AUTOMATION_CLIENT_SECRET. Provisioning those CI bootstrap secrets
-is a separate approved setup step; activation remains off until cutover.
+CI reads the scoped Cloudflare token from Fleet-OPS/prod/root using a per-use-case
+Infisical service token.  Bind the Fleet-OPS/prod root-scoped read token for this
+workflow as `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`; bind a separate Fleet-OPS/prod
+root-scoped read token for alert-worker deploys as `AFC_ALERT_WORKERS_INFISICAL_TOKEN`.
+Provisioning and registering either token is a separate setup step.  This code change
+does not establish that either GitHub secret has been configured; deployment remains
+off until the token binding and registry scope are verified.

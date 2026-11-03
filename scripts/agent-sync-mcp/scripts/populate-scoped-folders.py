@@ -14,14 +14,14 @@ Copies are POINT-IN-TIME: they do NOT track source rotation.  After a source
 rotation the Fleet-OPS copy must be reconciled by hand:  a re-run stops at the
 first destination that holds a different value (see below) and never overwrites.
 
-The automation login comes from the environment first, then `fleet-secrets get`
-(INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET, the same
-handoff as install_seat_key.py);  no credential file is read.
+The run requires `AFC_SCOPED_FOLDERS_AFC_READ_TOKEN`,
+`AFC_SCOPED_FOLDERS_FLEETOPS_READ_TOKEN`, and
+`AFC_SCOPED_FOLDERS_FLEETOPS_WRITE_TOKEN`; no machine identity or credential file is read.
 
 Every value READ, source and destination alike, goes through
 `fleet-secrets get NAME --path PATH --project ai-fleet-coordinator|fleet-ops`
-(kody 4365621961).  The child gets that login's access token as INFISICAL_TOKEN
-(one identity for reads and writes, no login per read) and the project ids
+(kody 4365621961).  The child gets its project-scoped read service token as INFISICAL_TOKEN
+(one read token per project; writes use a separate Fleet-OPS token) and the project ids
 pinned to AFC and FLEETOPS below, so each read lands in exactly the workspace
 and folder MAPPING names.  fleet-secrets expands Infisical references (Fleet-OPS
 root holds its keys as references, INFISICAL.md) and refuses an unresolved one
@@ -61,6 +61,11 @@ import urllib.request
 AFC = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
 FLEETOPS = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
 ENV = "prod"
+READ_TOKEN_ENVS = {
+    AFC: "AFC_SCOPED_FOLDERS_AFC_READ_TOKEN",
+    FLEETOPS: "AFC_SCOPED_FOLDERS_FLEETOPS_READ_TOKEN",
+}
+WRITE_TOKEN_ENV = "AFC_SCOPED_FOLDERS_FLEETOPS_WRITE_TOKEN"
 
 GB_ROLES = [
     "COMPILER",
@@ -131,6 +136,16 @@ MAPPING = (
 )
 assert len(MAPPING) == 72 and len({(d, n) for _, _, _, d, n in MAPPING}) == 72
 
+# The service-token verifier compares its grant with INFISICAL_READ_PATHS, so each subprocess
+# declares exactly the folders that project reads, including Fleet-OPS destinations checked before writing.
+READ_PATHS_BY_PROJECT = {
+    AFC: tuple(sorted({source_path for workspace, source_path, *_ in MAPPING if workspace == AFC})),
+    FLEETOPS: tuple(sorted(
+        {source_path for workspace, source_path, *_ in MAPPING if workspace == FLEETOPS}
+        | {destination_path for _, _, _, destination_path, _ in MAPPING}
+    )),
+}
+
 BASE = "https://app.infisical.com"
 # An explicit, project-identifying User-Agent on every Infisical call:  the
 # runtime default (Python-urllib/3.x) is what protected endpoints refuse.
@@ -138,7 +153,7 @@ USER_AGENT = "AI-Fleet-Coordinator populate-scoped-folders"
 # Exit status when fleet-secrets itself is not installed (the shell's "command
 # not found"), apart from 1 for every other stop (kody 4366921905).
 MISSING_EXECUTABLE = 127
-# Exit status when a read times out (a fleet-secrets run or the Infisical login),
+# Exit status when a fleet-secrets read times out,
 # the status timeout(1) uses (kody 4367021960, 4368415894, 4368465375).  A
 # stalled write exits 1 like a write answered with a 5xx:  either may have
 # landed, and a re-run reconciles (kody 4368532647).
@@ -148,7 +163,7 @@ TIMED_OUT = 124
 # src/infisical.js INFISICAL_LIMITS puts on one secret's answer:  the body is
 # read up to a byte cap (a longer one is refused), then the parsed tree is
 # walked without recursion against a depth and a node cap.  Every answer this
-# script reads (the login, the token's scope metadata, an upsert's reply) is
+# script reads (token-scope metadata and an upsert reply) is
 # one small object, far inside these caps.
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_RESPONSE_DEPTH = 32
@@ -230,63 +245,21 @@ def req(url, token, data=None, method=None):
     return read_json(r, timeout=35)
 
 
+def service_token(name):
+    token = os.environ.get(name, "").strip()
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
+        raise ValueError(f"{name} is missing or malformed")
+    return token
+
+
 def fleet_secrets_binary():
     return shutil.which("fleet-secrets") or str(
         pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
     )
-
-
-def handoff(name):
-    """One credential:  the environment first, then `fleet-secrets get` (the
-    install_seat_key.py handoff, OPS-818).  Only the name is ever reported."""
-    value = os.environ.get(name, "").strip()
-    if value:
-        return value
-    binary = fleet_secrets_binary()
-    try:
-        proc = subprocess.run(
-            [binary, "get", name], check=False, capture_output=True, text=True, timeout=60
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
-    except subprocess.TimeoutExpired:
-        print(
-            f"{name} is not in the environment, and fleet-secrets timed out reading it.  "
-            "Name only;  no value printed.",
-            file=sys.stderr,
-        )
-        raise SystemExit(TIMED_OUT) from None
-    except FileNotFoundError:
-        print(
-            f"{name} is not in the environment, and fleet-secrets is not installed.  "
-            "Name only;  no value printed.",
-            file=sys.stderr,
-        )
-        raise SystemExit(MISSING_EXECUTABLE) from None
-    except (OSError, subprocess.SubprocessError):
-        pass
-    raise SystemExit(
-        f"{name} is not in the environment or fleet-secrets.  Name only;  no value printed."
-    )
-
-
-def login():
-    body = {
-        "clientId": handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
-        "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
-    }
-    data = read_json(
-        urllib.request.Request(
-            f"{BASE}/api/v1/auth/universal-auth/login",
-            data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-        ),
-        timeout=35,
-    )
-    token = data.get("accessToken") if isinstance(data, dict) else None
-    if not isinstance(token, str) or not token:
-        raise ValueError("Infisical login answer has no accessToken string")
-    return token
 
 
 # fleet-secrets' read-only project slugs, and the variables it resolves each
@@ -300,6 +273,12 @@ FLEET_SECRETS_PROJECT_ID_ENV = {
 # Login material this script holds that the child never needs:  it reads with
 # the access token alone.
 CHILD_DROPPED_ENV = (
+    "INFISICAL_TOKEN",
+    "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+    "INFISICAL_WRITE_TOKEN",
+    "AFC_SCOPED_FOLDERS_AFC_READ_TOKEN",
+    "AFC_SCOPED_FOLDERS_FLEETOPS_READ_TOKEN",
+    WRITE_TOKEN_ENV,
     "INFISICAL_AUTOMATION_CLIENT_ID",
     "INFISICAL_AUTOMATION_CLIENT_SECRET",
     "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
@@ -324,8 +303,9 @@ def fleet_secrets_get(token, ws, path, name):
     as bytes, decoded as UTF-8, never stripped).  Any other exit raises
     ReadError with the code only;  stderr is discarded unread."""
     env = {k: v for k, v in os.environ.items() if k not in CHILD_DROPPED_ENV}
-    env["INFISICAL_TOKEN"] = token
+    env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN" if ws == AFC else "INFISICAL_TOKEN"] = token
     env[FLEET_SECRETS_PROJECT_ID_ENV[ws]] = ws
+    env["INFISICAL_READ_PATHS"] = ",".join(READ_PATHS_BY_PROJECT[ws])
     argv = [
         fleet_secrets_binary(),
         "get",
@@ -423,17 +403,13 @@ def parse_scopes(data):
         ):
             return None
         out.add((s["environment"], s["secretPath"]))
+    if len(out) != len(scopes):
+        return None
     return out
 
 
-def check_read_tools_scope():
-    """Fail-safe gate: the read-tools token reports its own scopes; abort on any doubt."""
-    st = os.environ.get("READ_TOOLS_SERVICE_TOKEN", "").strip()
-    if not st:
-        print(
-            "GATE: READ_TOOLS_SERVICE_TOKEN not in env - cannot verify scope.  Aborting (fail safe)."
-        )
-        return False
+def check_token_scope(st, project, needed, label, permissions):
+    """Fail-safe gate: the token proves its exact project, grant, and folder set."""
     try:
         data = token_data(st)
     except urllib.error.HTTPError as e:
@@ -445,21 +421,47 @@ def check_read_tools_scope():
         )
         return False
     granted = parse_scopes(data)
-    if granted is None:
+    actual_permissions = data.get("permissions") if isinstance(data, dict) else None
+    if (
+        granted is None
+        or data.get("workspace") != project
+        or ("projectId" in data and data.get("projectId") != project)
+        or not isinstance(actual_permissions, list)
+        or any(not isinstance(permission, str) for permission in actual_permissions)
+        or len(actual_permissions) != len(set(actual_permissions))
+        or set(actual_permissions) != set(permissions)
+    ):
         print(
-            "GATE: token metadata schema not the expected scopes list of {environment, secretPath}.  "
-            "Aborting (fail safe);  confirm the live schema before any run."
+            f"GATE: {label} metadata does not prove the exact project, permissions, and scope schema.  "
+            "Aborting (fail safe)."
         )
         return False
-    needed = {(ENV, p) for _, _, _, p, _ in MAPPING}
-    missing = sorted(needed - granted)
-    if missing:
+    if granted != needed:
         print(
-            f"GATE: read-tools token does NOT grant: {missing}.  Aborting;  broadening scope is the owner's call."
+            f"GATE: {label} folder scope differs from the exact required set.  Aborting;  broadening scope is the owner's call."
         )
         return False
-    print(f"GATE: read-tools token covers all {len(needed)} destination paths.")
+    print(f"GATE: {label} covers all {len(needed)} required paths.")
     return True
+
+
+def check_scoped_tokens(read_tokens, write_token):
+    if not all(read_tokens.get(ws) for ws in (AFC, FLEETOPS)) or not write_token:
+        print("GATE: project-scoped read/write tokens are missing.  Aborting (fail safe).")
+        return False
+    needed = {
+        AFC: {(ENV, path or "/") for ws, path, *_ in MAPPING if ws == AFC},
+        FLEETOPS: {
+            (ENV, path or "/")
+            for ws, path, *_ in MAPPING
+            if ws == FLEETOPS
+        } | {(ENV, dest_path) for _, _, _, dest_path, _ in MAPPING},
+    }
+    for ws, paths in needed.items():
+        if not check_token_scope(read_tokens[ws], ws, paths, READ_TOKEN_ENVS[ws], ("read",)):
+            return False
+    write_paths = {(ENV, dest_path) for _, _, _, dest_path, _ in MAPPING}
+    return check_token_scope(write_token, FLEETOPS, write_paths, WRITE_TOKEN_ENV, ("read", "write"))
 
 
 def main():
@@ -468,51 +470,29 @@ def main():
     for sws, spath, sname, dpath, dname in MAPPING:
         src = "AFC" if sws == AFC else "Fleet-OPS"
         print(f"  {src} {spath or '/'}/{sname}  ->  Fleet-OPS {dpath}/{dname}")
+    try:
+        read_tokens = {ws: service_token(name) for ws, name in READ_TOKEN_ENVS.items()}
+        write_token = service_token(WRITE_TOKEN_ENV)
+    except ValueError as error:
+        print(f"GATE: {error}.  Aborting (fail safe).")
+        sys.exit(1)
     if dry:
         print("Dry run only.  Step-0 scope gate:")
-        if not check_read_tools_scope():
+        if not check_scoped_tokens(read_tokens, write_token):
             # Fail closed in a dry run too (kody 4366921815):  a gate that cannot
             # pass is a non-zero exit, never a clean-looking rehearsal.
             sys.exit(1)
         print("Re-run with --apply only after the owner's approval is relayed.")
         return
-    if not check_read_tools_scope():
-        sys.exit(1)
-    # A failed login stops visibly, names only, before any copy (kody 4368415797):
-    # never a traceback.  A refused login names the two variables to check and
-    # nothing derived from their values (no prefix, suffix or masked preview, as
-    # #937 settled for the Linear relay;  kody 4368465194).  A stalled login exits
-    # 124 like every other timeout (kody 4368465375).  The handoff's own exits
-    # (124, 127) are SystemExit and pass through unchanged.
-    try:
-        token = login()
-    except urllib.error.HTTPError as e:
-        check = (
-            ";  check INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET"
-            if e.code in (401, 403)
-            else ""
-        )
-        print(
-            f"STOP before the first copy: the Infisical login was refused (HTTP {e.code}){check}.  "
-            "Nothing was copied."
-        )
-        sys.exit(1)
-    except Exception as e:  # noqa: BLE001 - any login failure stops visibly before any copy
-        if timed_out_error(e):
-            print("STOP before the first copy: the Infisical login timed out.  Nothing was copied.")
-            sys.exit(TIMED_OUT)
-        print(
-            f"STOP before the first copy: the Infisical login failed ({type(e).__name__}).  "
-            "Nothing was copied."
-        )
+    if not check_scoped_tokens(read_tokens, write_token):
         sys.exit(1)
     done = skipped = 0
     for sws, spath, sname, dpath, dname in MAPPING:
         reading = f"source {'AFC' if sws == AFC else 'Fleet-OPS'} {spath.rstrip('/')}/{sname}"
         try:
-            value = read_secret(token, sws, spath, sname)  # in memory only
+            value = read_secret(read_tokens[sws], sws, spath, sname)  # in memory only
             reading = f"destination Fleet-OPS {dpath}/{dname}"
-            existing = read_secret_opt(token, FLEETOPS, dpath, dname)
+            existing = read_secret_opt(read_tokens[FLEETOPS], FLEETOPS, dpath, dname)
             if existing is not None and existing != value:
                 value = existing = None
                 print(
@@ -528,7 +508,7 @@ def main():
                 skipped += 1
                 print(f"  already in sync: {dpath}/{dname}")  # names only, never values
                 continue
-            upsert(token, FLEETOPS, dpath, dname, value)
+            upsert(write_token, FLEETOPS, dpath, dname, value)
             value = existing = None
         except urllib.error.HTTPError as e:
             print(
@@ -540,7 +520,7 @@ def main():
             value = existing = None
             missing_tool = e.code == MISSING_EXECUTABLE
             # Our own 90-second limit, or fleet-secrets' own 124 (its Linux entry
-            # point's login timeout):  every timeout exits 124 (kody 4368415894).
+            # point's Infisical timeout):  every timeout exits 124 (kody 4368415894).
             timed_out = e.code in ("timeout", TIMED_OUT)
             if missing_tool:
                 what, status = "is not installed", MISSING_EXECUTABLE
@@ -557,7 +537,7 @@ def main():
         except Exception as e:  # noqa: BLE001 - any copy failure stops visibly, re-run reconciles
             # A stalled write may still have landed, like a write answered with a
             # 5xx, so it shares that outcome:  exit 1, and a re-run reconciles
-            # (kody 4368532647).  124 stays for a stalled read or login.
+            # (kody 4368532647).  124 stays for a stalled read.
             what = (
                 "the Infisical write timed out, so its outcome is unknown"
                 if timed_out_error(e)
