@@ -440,6 +440,18 @@ class VerifyCacheTests(unittest.TestCase):
             self.assertEqual(second.rpc.call_count, 2)
         self.assertFalse(missing.exists(), "the cache never creates the state root")
 
+    def test_symlinked_seat_directory_disables_the_cache(self):
+        target = self.home / "elsewhere"
+        target.mkdir()
+        (self.root / "CODEX").symlink_to(target, target_is_directory=True)
+        client = self.client([WHOAMI_OK, TOOL_OK])
+        client.call("whoami", {})
+        self.assertEqual(client.rpc.call_count, 2, "verification still runs live")
+        self.assertFalse((target / F.VERIFY_CACHE_FILE).exists(), "no write escapes the state root")
+        second = self.client([WHOAMI_OK, TOOL_OK])
+        second.call("zulip_read", {})
+        self.assertEqual(second.rpc.call_count, 2, "nothing was cached through the link")
+
     def test_failed_verification_is_never_cached(self):
         bad = {"structuredContent": {"seat": "ECHO", "authenticated_seat": "ECHO"}}
         client = self.client([bad])

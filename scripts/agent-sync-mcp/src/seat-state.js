@@ -735,8 +735,6 @@ export async function auditCall(store, row, now = Date.now()) {
   return store.transaction((txn) => auditCallInner(txn, row, now));
 }
 
-export const AUDIT_BATCH_MAX = 1000;
-
 /**
  * Many audit rows in one transaction (R2, DO burn reduction):  the write
  * half of the worker isolate's audit buffer (src/audit-batch.js).  Each
@@ -744,18 +742,20 @@ export const AUDIT_BATCH_MAX = 1000;
  * `at` - same field discipline, same caps, same error and geo side rows -
  * but the whole batch costs one Durable Object invocation and one storage
  * transaction, so the read/modify/write sequences of individual rows can
- * never interleave with another writer either.
+ * never interleave with another writer either.  EVERY entry lands:  the
+ * batch is never truncated, and { written } is the true count, because a
+ * caller that cleared its buffer on a silent partial write would lose
+ * audit rows invisibly.
  */
 export async function auditCallBatch(store, entries, now = Date.now()) {
   if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
   if (!Array.isArray(entries)) throw new TypeError("audit batch entries must be an array");
-  const batch = entries.slice(0, AUDIT_BATCH_MAX);
   return store.transaction(async (txn) => {
-    for (const entry of batch) {
+    for (const entry of entries) {
       const at = Number.isFinite(entry?.at) ? entry.at : now;
       await auditCallInner(txn, entry?.row ?? {}, at);
     }
-    return { written: batch.length };
+    return { written: entries.length };
   });
 }
 

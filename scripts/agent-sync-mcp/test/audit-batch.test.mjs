@@ -127,6 +127,72 @@ test("a row appended while a flush is in flight lands in the next batch, never l
   assert.deepEqual(gate.batches.map((b) => b.map((e) => e.row.tool)), [["a", "b"], ["c"]]);
 });
 
+function fakeScheduler() {
+  const timers = [];
+  return {
+    timers,
+    schedule: (fn, ms) => {
+      const handle = { fn, ms, cleared: false };
+      timers.push(handle);
+      return handle;
+    },
+    cancel: (handle) => { handle.cleared = true; },
+  };
+}
+
+test("the trailing timer flushes an idle gate's partial buffer at the age bound, with no further append", async () => {
+  const gate = fakeGate();
+  const { timers, schedule, cancel } = fakeScheduler();
+  const batcher = new AuditBatcher({ flushRows: 50, flushMs: 5000, now: () => 1000, log: () => {}, schedule, cancel });
+  await batcher.append("ECHO", gate, { tool: "a", outcome: "ok" });
+  assert.deepEqual(gate.batches, []);
+  assert.equal(timers.length, 1, "the first buffered row arms the trailing timer");
+  assert.equal(timers[0].ms, 5000);
+  await batcher.append("ECHO", gate, { tool: "b", outcome: "ok" });
+  assert.equal(timers.length, 1, "later rows ride the same timer");
+  timers[0].fn();
+  await batcher.flush("ECHO"); // joins the timer's flush
+  assert.deepEqual(gate.batches.map((b) => b.map((e) => e.row.tool)), [["a", "b"]]);
+  assert.deepEqual(batcher.pending(), { ECHO: 0 });
+});
+
+test("an error appended during an in-flight flush queues a follow-up and lands before its append resolves", async () => {
+  const gate = fakeGate();
+  let release;
+  const held = new Promise((r) => (release = r));
+  const inner = gate.auditCallBatch.bind(gate);
+  let calls = 0;
+  gate.auditCallBatch = async (entries) => {
+    calls += 1;
+    if (calls === 1) await held;
+    return inner(entries);
+  };
+  const batcher = new AuditBatcher({ flushRows: 2, flushMs: 5000, now: () => 0, log: () => {} });
+  await batcher.append("ECHO", gate, { tool: "a", outcome: "ok" });
+  const flushing = batcher.append("ECHO", gate, { tool: "b", outcome: "ok" }); // starts the held flush
+  const errorAppend = batcher.append("ECHO", gate, { tool: "boom", outcome: "error", error_code: "paused" });
+  release();
+  await errorAppend; // resolves only after the queued follow-up has run
+  assert.deepEqual(gate.batches.map((b) => b.map((e) => e.row.tool)), [["a", "b"], ["boom"]]);
+  await flushing;
+  assert.deepEqual(batcher.pending(), { ECHO: 0 });
+});
+
+test("a failed flush retries on the trailing timer at the flush cadence", async () => {
+  const gate = fakeGate();
+  gate.failNext = 1;
+  const { timers, schedule, cancel } = fakeScheduler();
+  const batcher = new AuditBatcher({ flushRows: 2, flushMs: 5000, now: () => 0, log: () => {}, schedule, cancel });
+  await batcher.append("ECHO", gate, { tool: "a" });
+  await batcher.append("ECHO", gate, { tool: "b" }); // trips the flush, which fails
+  assert.deepEqual(gate.batches, []);
+  assert.deepEqual(batcher.pending(), { ECHO: 2 });
+  assert.ok(timers.length >= 1, "a timer stands behind the retained rows");
+  timers[timers.length - 1].fn();
+  await batcher.flush("ECHO"); // joins the retry
+  assert.deepEqual(gate.batches.map((b) => b.map((e) => e.row.tool)), [["a", "b"]]);
+});
+
 test("HostedTools without a sink writes each row straight to its gate (the standing default)", async () => {
   const calls = [];
   const gate = { auditCall: async (row) => calls.push(["gate", row]) };

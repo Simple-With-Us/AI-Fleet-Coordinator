@@ -117,6 +117,13 @@ test("auditCallBatch lands every row exactly as sequential auditCall writes woul
   assert.deepEqual(tail.map((r) => r.ts), [T0 + 2000, T0 + 1000, T0]);
 });
 
+test("auditCallBatch lands every entry, however large the batch - no silent truncation", async () => {
+  const store = S.memoryStore();
+  const entries = Array.from({ length: 1001 }, (_, i) => ({ row: { seat: "ECHO", tool: "whoami", outcome: "ok" }, at: T0 + i }));
+  assert.deepEqual(await S.auditCallBatch(store, entries), { written: 1001 });
+  assert.equal((await S.callTail(store, 2000)).length, 1001);
+});
+
 test("auditCallBatch of nothing writes nothing, and a non-array is refused", async () => {
   const store = S.memoryStore();
   assert.deepEqual(await S.auditCallBatch(store, []), { written: 0 });

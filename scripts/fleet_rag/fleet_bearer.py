@@ -343,7 +343,14 @@ class Client:
         root = Path(override).expanduser() if override else Path.home() / ".agent-sync"
         if not root.is_dir():
             return None
-        return root / self.seat / VERIFY_CACHE_FILE
+        seat_dir = root / self.seat
+        # A planted symlink for the seat directory would let the mkdir and
+        # the cache write escape the state root:  refuse it, the same
+        # discipline private_bearer keeps for the bearer file itself.  The
+        # cache simply stays off and verification runs live.
+        if seat_dir.is_symlink():
+            return None
+        return seat_dir / VERIFY_CACHE_FILE
 
     def _bearer_path_digest(self):
         return hashlib.sha256(
