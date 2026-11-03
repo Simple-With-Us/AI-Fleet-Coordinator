@@ -787,7 +787,7 @@ jobs:
       - name: Fetch Wise relay token in this job
         if: inputs.use_wise_relay
         env:
-          INFISICAL_TOKEN: ${{ secrets.WISE_RELAY_INFISICAL_TOKEN || secrets.wise_infisical_token }}
+          WISE_RELAY_INFISICAL_TOKEN: ${{ secrets.WISE_RELAY_INFISICAL_TOKEN || secrets.wise_infisical_token }}
           EXPECTED_MERGE_ACTOR: ${{ inputs.expected_merge_actor }}
           EXPECTED_HEAD: ${{ needs.classify.outputs.head }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -866,13 +866,22 @@ jobs:
           import json
           import os
           import re
-          import subprocess
+          from datetime import datetime, timezone
           import sys
           import urllib.error
           import urllib.parse
           import urllib.request
 
           FOLDER = "/gr-front/wise-st"
+          FLEETOPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+          INFISICAL_API = "https://app.infisical.com/api"
+          AUTH_ENV_VARS = {
+              "INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", "INFISICAL_WRITE_TOKEN",
+              "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_AUTOMATION_CLIENT_ID",
+              "INFISICAL_AUTOMATION_CLIENT_SECRET", "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+              "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET", "INFISICAL_SHARED_CLIENT_ID",
+              "INFISICAL_SHARED_CLIENT_SECRET", "WISE_RELAY_INFISICAL_TOKEN",
+          }
           REPO = "Simple-With-Us/Socratic-Trade"
           ACTOR = "swu-wise[bot]"
           PERMISSIONS = {
@@ -897,7 +906,7 @@ jobs:
 
 
           def configuration(export):
-              # Infisical CLI versions emit either a name/value map or secret records.
+              # Validate the exact required relay values before use.
               if isinstance(export, list):
                   values = {}
                   for item in export:
@@ -967,6 +976,67 @@ jobs:
                   raise Refused("authenticated service request failed") from None
 
 
+          def fetch_infisical_configuration(token, request=request_json):
+              if (not isinstance(token, str) or not token.startswith("st.")
+                      or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token)):
+                  raise Refused("dedicated Infisical service token required")
+              auth = {"Authorization": "Bearer " + token}
+              metadata = request(INFISICAL_API + "/v2/service-token", auth)
+              if not isinstance(metadata, dict):
+                  raise Refused("Infisical token metadata is malformed")
+              permissions = metadata.get("permissions")
+              scopes = metadata.get("scopes")
+              if (metadata.get("workspace") != FLEETOPS_PROJECT
+                      or ("projectId" in metadata and metadata.get("projectId") != FLEETOPS_PROJECT)
+                      or permissions != ["read"] or not isinstance(scopes, list)):
+                  raise Refused("Infisical token project or permissions mismatch")
+              granted = []
+              for scope in scopes:
+                  if (not isinstance(scope, dict) or scope.get("environment") != "prod"
+                          or not isinstance(scope.get("secretPath"), str)):
+                      raise Refused("Infisical token scope metadata is malformed")
+                  granted.append((scope["environment"], scope["secretPath"]))
+              if len(granted) != 1 or granted != [("prod", FOLDER)]:
+                  raise Refused("Infisical token folder scope mismatch")
+              expires = metadata.get("expiresAt")
+              if expires is not None:
+                  try:
+                      parsed = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+                      if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
+                          raise ValueError
+                  except (AttributeError, TypeError, ValueError):
+                      raise Refused("Infisical token expiry is invalid") from None
+              query = urllib.parse.urlencode({
+                  "workspaceId": FLEETOPS_PROJECT,
+                  "environment": "prod",
+                  "secretPath": FOLDER,
+                  "viewSecretValue": "true",
+                  "expandSecretReferences": "false",
+                  "recursive": "false",
+                  "include_imports": "false",
+              })
+              payload = request(INFISICAL_API + "/v3/secrets/raw?" + query, auth)
+              records = payload.get("secrets") if isinstance(payload, dict) else None
+              if not isinstance(records, list):
+                  raise Refused("Infisical secret response is malformed")
+              values = {}
+              for record in records:
+                  if (not isinstance(record, dict) or record.get("type") != "shared"
+                          or record.get("secretValueHidden") is True):
+                      raise Refused("Infisical returned an unverified secret record")
+                  for field, expected in (("workspace", FLEETOPS_PROJECT),
+                                          ("environment", "prod"), ("secretPath", FOLDER)):
+                      if field in record and record[field] != expected:
+                          raise Refused("Infisical secret provenance mismatch")
+                  name, value = record.get("secretKey"), record.get("secretValue")
+                  if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,254}", name)
+                          or not isinstance(value, str) or name in values
+                          or re.search(r"\$\{[^}]+\}", value)):
+                      raise Refused("Infisical secret value or provenance is invalid")
+                  values[name] = value
+              return values
+
+
           def mint_verified(config, request=request_json):
               result = request(
                   config["WISE_GIT_RELAY_URL"].rstrip("/") + "/v1/mint_token",
@@ -1002,49 +1072,17 @@ jobs:
               if len(sys.argv) < 3 or sys.argv[1] != "--":
                   raise Refused("usage: wise-relay-exec.py -- command [args]")
               env = dict(os.environ)
-              if not env.get("INFISICAL_TOKEN", "").startswith("st."):
+              token = env.pop("WISE_RELAY_INFISICAL_TOKEN", "").strip()
+              if not token.startswith("st.") or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token):
                   raise Refused("dedicated Infisical service token required")
-              for key in (
-                  "INFISICAL_CLIENT_ID",
-                  "INFISICAL_CLIENT_SECRET",
-                  "INFISICAL_AUTOMATION_CLIENT_ID",
-                  "INFISICAL_AUTOMATION_CLIENT_SECRET",
-                  "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
-                  "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
-                  "GH_TOKEN",
-                  "GITHUB_TOKEN",
-                  "GH_ENTERPRISE_TOKEN",
-                  "GITHUB_ENTERPRISE_TOKEN",
-              ):
+              for key in AUTH_ENV_VARS | {
+                  "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"
+              }:
                   env.pop(key, None)
               try:
-                  run = subprocess.run(
-                      [
-                          "infisical",
-                          "export",
-                          "--env",
-                          "prod",
-                          "--path",
-                          FOLDER,
-                          "--format",
-                          "json",
-                          "--expand=false",
-                          "--include-imports=false",
-                          "--secret-overriding=false",
-                          "--silent",
-                          "--telemetry=false",
-                      ],
-                      env=env,
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.DEVNULL,
-                      timeout=40,
-                      check=True,
-                  )
-                  if len(run.stdout) > 65536:
-                      raise Refused("configuration too large")
-                  config = configuration(json.loads(run.stdout))
-              except (subprocess.SubprocessError, OSError, ValueError):
-                  raise Refused("Infisical dedicated-folder fetch failed") from None
+                  config = configuration(fetch_infisical_configuration(token))
+              except Refused:
+                  raise Refused("Infisical scoped-folder fetch failed") from None
               # The caller's configured merge principal must be the relay principal; never overwrite it silently.
               if os.environ.get("EXPECTED_MERGE_ACTOR", ACTOR) != ACTOR:
                   raise Refused("caller merge principal does not match the relay principal")
@@ -1052,7 +1090,8 @@ jobs:
               if os.environ.get("GITHUB_ACTIONS") == "true":
                   print("::add-mask::" + token, flush=True)
               # Do not pass bearer or Infisical bootstrap to the consumer command.
-              env.pop("INFISICAL_TOKEN", None)
+              for key in AUTH_ENV_VARS:
+                  env.pop(key, None)
               env["GH_TOKEN"] = token
               env["SHEPHERD_EXPECTED_ACTOR"] = ACTOR
               env["EXPECTED_MERGE_ACTOR"] = ACTOR
