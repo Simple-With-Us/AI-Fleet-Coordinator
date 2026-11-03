@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:5f7d2d9908eb97b9cfedee6eac9a13983b36b1c35b8b02118a6d051d99d73a43 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6 -->
 # FLEET-PROTOCOL — Fleet Tools Manual
 
 This is the manual every AI agent seat uses to reach the owner's tools:  the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
@@ -263,7 +263,6 @@ Removed names are not aliased.  Calling one answers `unknown_tool` and names th
 | Old name | Use now |
 | --- | --- |
 | Any flat Zulip verb:  `post`, `reply`, `read_topic`, `dm_send`, `search`, `upload`, `typing`, and the rest | The same verb under `zulip_`:  `zulip_post`, `zulip_reply`, `zulip_read_topic`, `zulip_dm_send`, `zulip_search`, `zulip_upload`, `zulip_typing` |
-| `agent_sync_identities` | `identities` |
 | Any `listener_*` name:  `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes`, `listener_held_back`, `listener_ack` | The same verb under `eavesdropper_`:  `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes`, `eavesdropper_held_back`, `eavesdropper_ack` |
 
 The full old-to-new list is in the guide's Old Names and New Names section.  The shell equivalent of every tool is on [The Command Line](#the-command-line).
@@ -445,7 +444,7 @@ A shell caller reads the exit code before it reads the output.
 
 ### Tool Error Codes
 
-Over MCP a failure comes back with `isError: true` and an object `{code, message, retryable, ...}`, also in `_meta["agent-sync/error"]`.  The code tells a refusal from a transport failure.
+Over MCP a failure comes back with `isError: true` and an object `{code, message, retryable, ...}`, also in `_meta["simple-tools/error"]`.  The code tells a refusal from a transport failure.
 
 | Code | Meaning and what to do |
 | --- | --- |
@@ -575,7 +574,7 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | Jet (ChatGPT, OpenAI dot) | JET, its own identity | openai-dot-bot@ | An ordinary Codex thread never signs JET. |
 | **Any session BotFleet launched** | **No default** | the role's own bot | The engine is not the bot's identity.  Only BotFleet assigns `BF-<ROLE>`. |
 | **A Cursor cloud agent Grok Bot drives** | **No default** | the GB persona's bot | Grok Bot assigns `GB-<NAME>`. |
-| **Engine-only CLIs** (Droid, Hermes, Qwen, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they ask. |
+| **Engine-only CLIs** (Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they ask. |
 | **Headless runs** (`claude -p`, `codex exec`, an SDK call, cron) | **No default** | none | A script that wants a seat is a launcher and sets one. |
 | **An app several seats share** | **No default** | none | Conductor runs Claude Code, Codex, Cursor and OpenCode in one workspace app and sets no launcher variable, so each tool inside still reads its own platform file. |
 
@@ -851,16 +850,16 @@ Lookup data only.  The tool families are in [The Tool Families](#the-tool-famil
 
 ### Fleet Tool Names
 
-Several fleet pieces carry the substring `agent-sync` in a stable id, or did before the Oct 22, 2026 cutover.  Quick reference:
+Current component names and entry points:
 
-| Piece | Prose name | Stable id (do not rename without Jay) |
+| Piece | Prose name | Entry point |
 | --- | --- | --- |
-| Zulip channel | **#Work-In-Progress** | stream name `Work-In-Progress` (was `agent-sync` until Thu, Oct 22, 2026) |
-| Chat CLI | **the simple-chat CLI** | `~/.local/bin/simple-chat` → AFC `scripts/agent_sync` |
+| Zulip channel | **#Work-In-Progress** | stream name `Work-In-Progress` |
+| Chat CLI | **the simple-chat CLI** | `~/.local/bin/simple-chat` → AFC `scripts/simple_tools` |
 | Linear CLI | **the simple-board CLI** | `~/.local/bin/simple-board` → AFC `scripts/linear-board/board` |
-| Notes CLI | **the simple-notes CLI** | `~/.local/bin/simple-notes` → AFC `scripts/agent_sync/notes_cli.py` |
-| Listener | **the Operator** | `com.jay.agent-sync-listener`; server listener on Coolify |
-| MCP | **ST-MCP** | hosted Worker `agent-sync-mcp` at `agents.simplewithus.com`; local stdio `simple-chat mcp` |
+| Notes CLI | **the simple-notes CLI** | `~/.local/bin/simple-notes` → AFC `scripts/simple_tools/notes_cli.py` |
+| Listener | **the Operator** | Mac listener and server listener on Coolify |
+| MCP | **ST-MCP** | hosted Worker at `agents.simplewithus.com`; local stdio `simple-chat mcp` |
 | GitHub relay | **git-relay** | `git-relay serve` |
 | GitHub MCP | **GR-MCP** | `git-relay mcp` |
 
