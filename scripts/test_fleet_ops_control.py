@@ -550,8 +550,10 @@ class UpdateReceiptTests(Base):
         self.assertEqual(self.audit_rows(), [])
 
     def test_root_uses_direct_systemctl(self):
-        self.update(uid=0)
+        with mock.patch.object(foc, "audit", return_value=True) as audit:
+            self.update(uid=0)
         self.assertFalse(any(argv[0] == foc.SUDO for argv, _ in self.update_calls))
+        self.assertEqual(audit.call_args.kwargs["route"], "root-system-update")
 
     def test_private_stderr_is_classified_and_never_returned(self):
         marker = b"Access denied SECRET_HOST_AND_TOKEN"

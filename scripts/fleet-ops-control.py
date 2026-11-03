@@ -1194,7 +1194,7 @@ def audit(
     }
     if lines is not None:
         row["lines"] = lines
-    if route == "sudo-system-update":
+    if route in ("sudo-system-update", "root-system-update"):
         row["route"] = route
     if isinstance(invocation_id, str) and re.fullmatch(r"[0-9a-f]{32}", invocation_id):
         row["invocationID"] = invocation_id
@@ -1294,6 +1294,13 @@ def handle(ctx, scope, action, target, mode):
     if mode == "yes" and not (scope == "server" and action == "update-status"):
         if scope == "server" and action == "redeploy" and audit_target == target:
             audit_target = "coolify resource"  # refused before the name was known: no uuid
+        route = None
+        if scope == "server" and action == "update":
+            direct = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
+            if answer["commands"] == [[SUDO, "-n"] + direct]:
+                route = "sudo-system-update"
+            elif ctx.uid == 0 and answer["commands"] == [direct]:
+                route = "root-system-update"
         audit(
             ctx,
             scope,
@@ -1301,14 +1308,7 @@ def handle(ctx, scope, action, target, mode):
             (audit_target or "")[:120],
             answer["result"],
             lines=log_lines if answer["result"] == "done" else None,
-            route=(
-                "sudo-system-update"
-                if scope == "server"
-                and action == "update"
-                and answer["commands"]
-                == [[SUDO, "-n", UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]]
-                else None
-            ),
+            route=route,
             invocation_id=answer.get("invocationID"),
             verified=answer.get("verified"),
         )
