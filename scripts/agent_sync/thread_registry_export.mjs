@@ -10,7 +10,8 @@
 // and `python3 -m agent_sync.thread_registry export-rows` emits the desired rows this
 // drain consumes, so the plan tested in Python is the plan executed here.
 //
-// Auth:  a DEDICATED service account for the Operator thread registry.  Its key JSON comes
+// Auth:  the existing fleet Sheets service account, reused for the Operator registries
+// (owner ruling, 2026-11-03: no dedicated SA).  Its key JSON comes
 // from OPERATOR_GOOGLE_SHEETS_SA in the environment, else Infisical Fleet-OPS prod
 // /operator-thread-registry (key OPERATOR_GOOGLE_SHEETS_SA) through fleet-secrets — the
 // same resolution shape as sheet-read.mjs, a different, purpose-scoped secret.  The sheet
