@@ -61,10 +61,17 @@ CONFIG = {
 
 def update_state(**changes):
     state = {
-        "LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead", "Job": "",
-        "Type": "oneshot", "InvocationID": "a" * 32, "Result": "success",
-        "ExecMainCode": "1", "ExecMainStatus": "0",
-        "ExecMainStartTimestampMonotonic": "100", "ExecMainExitTimestampMonotonic": "110",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "Job": "",
+        "Type": "oneshot",
+        "InvocationID": "a" * 32,
+        "Result": "success",
+        "ExecMainCode": "1",
+        "ExecMainStatus": "0",
+        "ExecMainStartTimestampMonotonic": "100",
+        "ExecMainExitTimestampMonotonic": "110",
     }
     state.update(changes)
     return "".join(f"{key}={value}\n" for key, value in state.items()).encode()
@@ -85,7 +92,12 @@ class FakeRunner:
         self.max_bytes_seen = []
 
     def __call__(
-        self, argv, timeout=None, env=None, want_stdout=False, max_bytes=None,
+        self,
+        argv,
+        timeout=None,
+        env=None,
+        want_stdout=False,
+        max_bytes=None,
         combine_stderr=False,
     ):
         assert isinstance(argv, list) and all(isinstance(a, str) for a in argv)
@@ -310,7 +322,9 @@ class ServerVerbTests(Base):
     def test_update_starts_the_update_unit(self):
         code, ans = self.run_main(["server", "update", "fleet-cli", "--yes", "--json"], self.ctx())
         self.assertEqual(code, 0)
-        argv = next(argv for argv, _ in self.runner.calls if "--no-block" in argv and "-l" not in argv)
+        argv = next(
+            argv for argv, _ in self.runner.calls if "--no-block" in argv and "-l" not in argv
+        )
         self.assertEqual(argv[-3:], ["start", "--no-block", "fleet-cli-git-update.service"])
         self.assertEqual(ans["result"], "submitted")
         self.assertFalse(ans["verified"])
@@ -356,7 +370,8 @@ class UpdateReceiptTests(Base):
     def test_new_success_is_verified(self):
         old = update_state()
         new = update_state(
-            InvocationID="b" * 32, ExecMainStartTimestampMonotonic="200",
+            InvocationID="b" * 32,
+            ExecMainStartTimestampMonotonic="200",
             ExecMainExitTimestampMonotonic="210",
         )
         code, answer = self.update([old, old, new])
@@ -365,7 +380,9 @@ class UpdateReceiptTests(Base):
         self.assertEqual(answer["executionState"], "completed")
 
     def test_new_invocation_with_old_process_times_is_not_completion(self):
-        code, answer = self.update([update_state(), update_state(), update_state(InvocationID="b" * 32)])
+        code, answer = self.update(
+            [update_state(), update_state(), update_state(InvocationID="b" * 32)]
+        )
         self.assertEqual((code, answer["result"]), (0, "submitted"))
 
     def test_busy_update_is_refused_without_submission(self):
@@ -377,7 +394,9 @@ class UpdateReceiptTests(Base):
     def test_busy_recheck_refuses_race_after_plan(self):
         code, answer = self.update([update_state(), update_state(ActiveState="activating")])
         self.assertEqual((code, answer["errorCode"]), (2, "update_busy"))
-        self.assertFalse(any("--no-block" in argv and "-l" not in argv for argv, _ in self.update_calls))
+        self.assertFalse(
+            any("--no-block" in argv and "-l" not in argv for argv, _ in self.update_calls)
+        )
 
     def test_missing_unit_is_refused_without_sudo(self):
         code, answer = self.update([b"LoadState=not-found\n"])
@@ -402,21 +421,53 @@ class UpdateReceiptTests(Base):
             self.fail("no mutation is allowed after permission revocation")
 
         code, answer = self.run_main(
-            ["server", "update", "fleet-cli", "--yes", "--json"], self.ctx(runner=runner),
+            ["server", "update", "fleet-cli", "--yes", "--json"],
+            self.ctx(runner=runner),
         )
         self.assertEqual((code, answer["errorCode"], count), (2, "authorization_unavailable", 2))
 
     def test_sudo_wraps_only_exact_systemctl_argv(self):
         self.update()
         commands = [argv for argv, _ in self.update_calls if "--no-block" in argv]
-        self.assertEqual(commands, [
-            [foc.SUDO, "-n", "-l", "--", foc._systemctl(), "start", "--no-block", "fleet-cli-git-update.service"],
-            [foc.SUDO, "-n", "-l", "--", foc._systemctl(), "start", "--no-block", "fleet-cli-git-update.service"],
-            [foc.SUDO, "-n", foc._systemctl(), "start", "--no-block", "fleet-cli-git-update.service"],
-        ])
+        self.assertEqual(
+            commands,
+            [
+                [
+                    foc.SUDO,
+                    "-n",
+                    "-l",
+                    "--",
+                    foc._systemctl(),
+                    "start",
+                    "--no-block",
+                    "fleet-cli-git-update.service",
+                ],
+                [
+                    foc.SUDO,
+                    "-n",
+                    "-l",
+                    "--",
+                    foc._systemctl(),
+                    "start",
+                    "--no-block",
+                    "fleet-cli-git-update.service",
+                ],
+                [
+                    foc.SUDO,
+                    "-n",
+                    foc._systemctl(),
+                    "start",
+                    "--no-block",
+                    "fleet-cli-git-update.service",
+                ],
+            ],
+        )
 
     def test_config_cannot_select_another_privileged_update(self):
-        for name, unit in (("other", "fleet-cli-git-update.service"), ("fleet-cli", "sshd.service")):
+        for name, unit in (
+            ("other", "fleet-cli-git-update.service"),
+            ("fleet-cli", "sshd.service"),
+        ):
             ctx = self.ctx()
             with self.assertRaises(foc.Refused) as raised:
                 foc.update_command(ctx, name, {"scope": "system", "unit": unit})
@@ -432,8 +483,20 @@ class UpdateReceiptTests(Base):
 
     def test_privileged_executable_is_not_selected_from_candidates(self):
         with mock.patch.object(foc, "_systemctl", return_value="/untrusted/systemctl"):
-            command = foc.update_command(self.ctx(), "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT})
-        self.assertEqual(command, [foc.SUDO, "-n", "/usr/bin/systemctl", "start", "--no-block", foc.FLEET_CLI_UPDATE_UNIT])
+            command = foc.update_command(
+                self.ctx(), "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT}
+            )
+        self.assertEqual(
+            command,
+            [
+                foc.SUDO,
+                "-n",
+                "/usr/bin/systemctl",
+                "start",
+                "--no-block",
+                foc.FLEET_CLI_UPDATE_UNIT,
+            ],
+        )
 
     def test_invalid_probe_cannot_verify_completion(self):
         code, answer = self.update([update_state(), update_state(), b"LoadState=loaded\n"])
@@ -441,11 +504,14 @@ class UpdateReceiptTests(Base):
 
     def test_plan_checks_permission_without_mutation(self):
         code, answer = self.run_main(
-            ["server", "update", "fleet-cli", "--plan", "--json"], self.ctx(),
+            ["server", "update", "fleet-cli", "--plan", "--json"],
+            self.ctx(),
         )
         self.assertEqual((code, answer["result"]), (0, "planned"))
         self.assertEqual(answer["commands"][0][:3], [foc.SUDO, "-n", "/usr/bin/systemctl"])
-        self.assertFalse(any("--no-block" in argv and "-l" not in argv for argv, _ in self.runner.calls))
+        self.assertFalse(
+            any("--no-block" in argv and "-l" not in argv for argv, _ in self.runner.calls)
+        )
         self.assertEqual(self.audit_rows(), [])
 
     def test_root_uses_direct_systemctl(self):
@@ -460,26 +526,37 @@ class UpdateReceiptTests(Base):
         self.assertNotIn("SECRET", (self.state / "ops-audit.jsonl").read_text())
 
     def test_submission_timeout_and_missing_executable_have_fixed_codes(self):
-        for status, expected in ((124, "update_submit_timeout"), (127, "update_executable_unavailable")):
+        for status, expected in (
+            (124, "update_submit_timeout"),
+            (127, "update_executable_unavailable"),
+        ):
             code, answer = self.update(submit=(status, b"private detail"))
             self.assertEqual((code, answer["errorCode"]), (1, expected))
 
     def test_new_failed_invocation_is_reported(self):
         old = update_state()
-        failed = update_state(InvocationID="b" * 32, ActiveState="failed", Result="exit-code", ExecMainStatus="1")
+        failed = update_state(
+            InvocationID="b" * 32, ActiveState="failed", Result="exit-code", ExecMainStatus="1"
+        )
         code, answer = self.update([old, old, failed])
         self.assertEqual((code, answer["result"], answer["verified"]), (1, "failed", True))
         self.assertEqual(answer["errorCode"], "update_invocation_failed")
 
     def test_running_invocation_remains_submitted(self):
         old = update_state()
-        code, answer = self.update([old, old, update_state(InvocationID="b" * 32, ActiveState="activating")])
+        code, answer = self.update(
+            [old, old, update_state(InvocationID="b" * 32, ActiveState="activating")]
+        )
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
 
     def test_replaced_invocation_is_not_credited(self):
         old = update_state()
         running = update_state(InvocationID="b" * 32, ActiveState="activating")
-        replaced = update_state(InvocationID="c" * 32, ExecMainStartTimestampMonotonic="200", ExecMainExitTimestampMonotonic="210")
+        replaced = update_state(
+            InvocationID="c" * 32,
+            ExecMainStartTimestampMonotonic="200",
+            ExecMainExitTimestampMonotonic="210",
+        )
         code, answer = self.update([old, old, running, replaced])
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
 
@@ -1150,7 +1227,10 @@ class LogsAndPm2Tests(Base):
 
         status, out = foc.run_command(
             [sys.executable, "-c", "import sys; sys.stderr.write('x' * 300000 + 'TAILMARK')"],
-            timeout=30, want_stdout=True, max_bytes=1000, combine_stderr=True,
+            timeout=30,
+            want_stdout=True,
+            max_bytes=1000,
+            combine_stderr=True,
         )
         self.assertEqual(status, 0)
         self.assertEqual(len(out), 1000)

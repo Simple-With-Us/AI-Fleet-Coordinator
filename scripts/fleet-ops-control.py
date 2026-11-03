@@ -136,8 +136,16 @@ UPDATE_PROBE_TIMEOUT = 3
 UPDATE_POLL_ATTEMPTS = 8
 UPDATE_POLL_INTERVAL = 0.5
 UPDATE_PROPERTIES = (
-    "LoadState", "ActiveState", "SubState", "Job", "Type", "InvocationID", "Result",
-    "ExecMainCode", "ExecMainStatus", "ExecMainStartTimestampMonotonic",
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "Job",
+    "Type",
+    "InvocationID",
+    "Result",
+    "ExecMainCode",
+    "ExecMainStatus",
+    "ExecMainStartTimestampMonotonic",
     "ExecMainExitTimestampMonotonic",
 )
 # The only variables a launchctl or systemctl child sees.  A pm2 child also needs
@@ -264,7 +272,11 @@ def _actions(row, bad):
 
 
 def run_command(
-    argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False, max_bytes=None,
+    argv,
+    timeout=COMMAND_TIMEOUT,
+    env=None,
+    want_stdout=False,
+    max_bytes=None,
     combine_stderr=False,
 ):
     """(exit status, captured bytes).  An argv list, never a shell.
@@ -644,7 +656,8 @@ def update_command(ctx, name, entry):
         # Query this exact argv; never grant permission or elevate the broker itself.
         status, _ = ctx.runner(
             [SUDO, "-n", "-l", "--"] + argv,
-            timeout=UPDATE_PROBE_TIMEOUT, env=ctx.child_env(),
+            timeout=UPDATE_PROBE_TIMEOUT,
+            env=ctx.child_env(),
         )
         if status != 0:
             raise Refused(
@@ -658,11 +671,15 @@ def update_command(ctx, name, entry):
 def update_unit_state(ctx, entry):
     status, raw = ctx.runner(
         _systemctl_argv(
-            entry["scope"], "show", entry["unit"],
+            entry["scope"],
+            "show",
+            entry["unit"],
             "--property=" + ",".join(UPDATE_PROPERTIES),
         ),
-        timeout=UPDATE_PROBE_TIMEOUT, env=ctx.child_env(),
-        want_stdout=True, max_bytes=16 * 1024,
+        timeout=UPDATE_PROBE_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=16 * 1024,
     )
     if status != 0:
         raise Refused("the update unit status is unavailable", error_code="unit_status_unavailable")
@@ -677,11 +694,15 @@ def update_unit_state(ctx, entry):
     if set(state) != set(UPDATE_PROPERTIES) or state["LoadState"] != "loaded":
         raise Refused("the update unit status is incomplete", error_code="unit_status_invalid")
     if state["Type"] != "oneshot":
-        raise Refused("the update unit must be a oneshot service", error_code="unit_type_unsupported")
+        raise Refused(
+            "the update unit must be a oneshot service", error_code="unit_type_unsupported"
+        )
     if state["InvocationID"] and not re.fullmatch(r"[0-9a-f]{32}", state["InvocationID"]):
         raise Refused("the update invocation status is invalid", error_code="unit_status_invalid")
     for key in (
-        "ExecMainCode", "ExecMainStatus", "ExecMainStartTimestampMonotonic",
+        "ExecMainCode",
+        "ExecMainStatus",
+        "ExecMainStartTimestampMonotonic",
         "ExecMainExitTimestampMonotonic",
     ):
         if not re.fullmatch(r"[0-9]{1,20}", state[key]):
@@ -692,7 +713,9 @@ def update_unit_state(ctx, entry):
 
 def require_update_idle(state):
     if state["ActiveState"] not in ("inactive", "failed") or state["Job"]:
-        raise Refused("the update is already running or has a pending job", error_code="update_busy")
+        raise Refused(
+            "the update is already running or has a pending job", error_code="update_busy"
+        )
 
 
 def update_failure_code(status, output):
@@ -702,11 +725,19 @@ def update_failure_code(status, output):
         return "update_submit_timeout"
     if status == 127:
         return "update_executable_unavailable"
-    if any(word in text for word in (
-        "access denied", "permission denied", "authentication required",
-        "authentication is required", "password is required", "not allowed to execute",
-        "a terminal is required", "incorrect password",
-    )):
+    if any(
+        word in text
+        for word in (
+            "access denied",
+            "permission denied",
+            "authentication required",
+            "authentication is required",
+            "password is required",
+            "not allowed to execute",
+            "a terminal is required",
+            "incorrect password",
+        )
+    ):
         return "authorization_unavailable"
     if "not found" in text or "does not exist" in text or "masked" in text:
         return "unit_unavailable"
@@ -722,8 +753,12 @@ def execute_update(ctx, config, target, commands):
     if commands != [command]:
         raise Refused("the update execution route changed", error_code="update_route_changed")
     status, output = ctx.runner(
-        command, timeout=UPDATE_PROBE_TIMEOUT, env=ctx.child_env(),
-        want_stdout=True, max_bytes=8192, combine_stderr=True,
+        command,
+        timeout=UPDATE_PROBE_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=8192,
+        combine_stderr=True,
     )
     if status != 0:
         raise Failed(
@@ -731,7 +766,10 @@ def execute_update(ctx, config, target, commands):
             error_code=update_failure_code(status, output),
         )
     answer = dict(
-        ok=True, result="submitted", executionState="submitted", verified=False,
+        ok=True,
+        result="submitted",
+        executionState="submitted",
+        verified=False,
         detail="the update was submitted; completion has not been observed",
     )
     invocation = None
@@ -747,7 +785,9 @@ def execute_update(ctx, config, target, commands):
         if not current or current == before["InvocationID"]:
             continue
         if invocation is not None and current != invocation:
-            answer["detail"] = "the update was submitted; another invocation replaced its completion status"
+            answer["detail"] = (
+                "the update was submitted; another invocation replaced its completion status"
+            )
             return answer, 0
         invocation = current
         answer["invocationID"] = current
@@ -756,19 +796,26 @@ def execute_update(ctx, config, target, commands):
             continue
         if state["Result"] and state["Result"] != "success":
             answer.update(
-                ok=False, result="failed", executionState="failed", verified=True,
-                errorCode="update_invocation_failed", detail="the new update service invocation failed",
+                ok=False,
+                result="failed",
+                executionState="failed",
+                verified=True,
+                errorCode="update_invocation_failed",
+                detail="the new update service invocation failed",
             )
             return answer, 1
         started = state["ExecMainStartTimestampMonotonic"]
         if (
-            state["Result"] == "success" and state["ExecMainCode"] == 1
+            state["Result"] == "success"
+            and state["ExecMainCode"] == 1
             and state["ExecMainStatus"] == 0
             and started > before["ExecMainStartTimestampMonotonic"]
             and state["ExecMainExitTimestampMonotonic"] >= started
         ):
             answer.update(
-                result="done", executionState="completed", verified=True,
+                result="done",
+                executionState="completed",
+                verified=True,
                 detail="a new update service invocation completed successfully",
             )
             return answer, 0
@@ -1137,8 +1184,11 @@ def handle(ctx, scope, action, target, mode):
         elif scope == "server" and action == "redeploy":
             detail = execute(ctx, scope, action, target, commands)
             answer.update(
-                ok=True, result="submitted", detail=detail,
-                executionState="submitted", verified=False,
+                ok=True,
+                result="submitted",
+                detail=detail,
+                executionState="submitted",
+                verified=False,
             )
             code = 0
         else:
