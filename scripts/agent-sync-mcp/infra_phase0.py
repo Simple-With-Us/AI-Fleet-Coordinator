@@ -60,7 +60,7 @@ ACCESS_PATHS = [f"{HOST}/authorize", f"{HOST}/admin"]
 # address on this list is an admin credential for the server;  keep it to one.
 OWNER_EMAILS = ["mail@jays.services"]
 KV_TITLE = "agent-sync-mcp-OAUTH_KV"
-WORKER_NAME = "agent-sync-mcp"
+WORKER_NAME = "simple-tools-mcp"
 HERE = pathlib.Path(__file__).resolve().parent
 WRANGLER = HERE / "wrangler.jsonc"
 BACKUP_DIR = pathlib.Path.home() / ".agent-sync-mcp-phase0"
