@@ -2944,6 +2944,7 @@ _REMOTE_CODES = frozenset(
         "not_found",
         "channel_not_allowed",
         "claim_held",
+        "likely_duplicate",
         "zulip_error",
         "writes_disabled",
         "unknown_tool",

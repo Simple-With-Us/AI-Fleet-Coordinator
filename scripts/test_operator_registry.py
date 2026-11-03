@@ -156,6 +156,7 @@ class RegistryTest(unittest.TestCase):
             R.mark_exported(missing, ["o1"])
         self.assertFalse(os.path.exists(missing), "the bridge created a second store")
 
+
     def test_the_bridge_cli_reports_a_missing_store_as_an_error(self):
         missing = os.path.join(os.path.dirname(self.db), "no-such-registry.sqlite3")
         for verb in (["pending-outbox"], ["mark-exported", "o1"]):
@@ -165,7 +166,6 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(code, 2, verb)
             self.assertIn("missing", json.loads(out.getvalue())["error"])
         self.assertFalse(os.path.exists(missing))
-
     def test_mark_exported_then_crash_rerun(self):
         self.reg.resolve_or_register(ident())
         pending = R.pending_outbox(self.db)
@@ -1665,3 +1665,95 @@ class WakeTargetTest(unittest.TestCase):
         self.assertEqual(answer["found"], False)
         self.assertEqual(answer["reason"], "binding_unverified")
         self.assertEqual(answer["candidates"], 1)
+
+
+class RegistryGuardTest(unittest.TestCase):
+    """The CLI never brings a registry into being (AFC-593).
+
+    The transport runs this CLI directly, so the guard belongs here and not only in
+    the passthrough that runs it through simple-chat:  a host that keeps no registry
+    refuses the allocating and answering ops the same way, and a second registry never
+    grows to hand out letters that collide with the ones the Operator keeps.  The
+    bridge's own pending-outbox and mark-exported keep their reviewed missing-store
+    contract (exit 2), covered by the bridge test above.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.missing = os.path.join(self.tmp.name, "no-registry-here", "registry.sqlite3")
+
+    def _run(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(argv)
+        return code, json.loads(out.getvalue().splitlines()[-1])
+
+    def test_every_op_that_takes_a_database_refuses_on_a_host_without_one(self):
+        allocating = [
+            [
+                "register",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+                "--seat=MM",
+                "--source=a test",
+            ],
+            [
+                "relabel",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+                "--seat=MM",
+                "--source=a test",
+            ],
+            ["resolve", "--platform=minimax", "--letter=AA"],
+            [
+                "update",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            [
+                "close",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            ["sweep", "--platform=minimax", "--seat=MM"],
+            ["history", "--platform=minimax"],
+            [
+                "touch",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            ["reopen", "--record-id=r1"],
+            ["held", "--platform=minimax", "--location=mac", "--scope=main", "--session-id=thread-0001"],
+        ]
+        for argv in allocating:
+            with self.subTest(op=argv[0]):
+                code, answer = self._run(argv + ["--db", self.missing])
+                self.assertEqual(code, 3)
+                self.assertEqual(answer, {"error": "no Operator registry on this host"})
+        # The bridge's own two verbs keep their reviewed contract:  a missing store
+        # is their error, exit 2 (covered by the bridge test as well).
+        for argv in (["pending-outbox"], ["mark-exported", "1"]):
+            with self.subTest(op=argv[0]):
+                code, answer = self._run(argv + ["--db", self.missing])
+                self.assertEqual(code, 2)
+                self.assertIn("missing", answer["error"])
+        self.assertFalse(os.path.exists(self.missing))
+
+    def test_a_host_that_keeps_a_registry_is_not_refused(self):
+        db = os.path.join(self.tmp.name, "registry.sqlite3")
+        reg = R.SessionRegistry(db)
+        reg.close_db()
+        code, answer = self._run(["history", "--platform=minimax", "--db", db])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer, [])

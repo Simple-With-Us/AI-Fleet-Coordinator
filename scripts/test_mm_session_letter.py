@@ -994,6 +994,63 @@ class MmSessionLetterTest(unittest.TestCase):
         update_title.assert_not_called()
         self.assertNotIn(FIXTURE_SECRET, stdout.getvalue())
 
+    def test_a_registry_fault_on_the_title_update_does_not_block_the_stop(self):
+        # A registry that cannot be reached is not the agent's fault, and a Stop hook
+        # that exits 2 keeps the agent in a loop while the far host is asleep.
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "B: A real topic", "session_kind": "conversation"}
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+            mock.patch.object(
+                M,
+                "update_title",
+                side_effect=M.RegistryError("the registry host did not answer", "timeout"),
+            ),
+        ):
+            self.assertEqual(M.hook_stop(), 0)
+        self.assertIn("timeout", stderr.getvalue())
+
+    def test_a_registry_fault_after_the_rename_does_not_block_the_stop(self):
+        # The thread carries the title in the store;  the registry copy is a second
+        # copy, and the sweep carries it later.
+        payload = json.dumps({"session_id": SESSION_ID, "stop_hook_active": True}).encode()
+        row = {"session_id": SESSION_ID, "title": "no letter prefix", "session_kind": "conversation"}
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+            mock.patch.object(M, "held_letters", return_value=()),
+            mock.patch.object(M, "set_title", return_value=True),
+            mock.patch.object(
+                M,
+                "update_title",
+                side_effect=M.RegistryError("the registry host did not answer", "timeout"),
+            ),
+        ):
+            self.assertEqual(M.hook_stop(), 0)
+        self.assertIn("renamed", stderr.getvalue())
+
+    def test_a_title_that_carries_a_credential_still_blocks_the_stop(self):
+        # A bad title is the agent's to fix, so that one still says so.
+        payload = json.dumps({"session_id": SESSION_ID}).encode()
+        row = {"session_id": SESSION_ID, "title": "B: A real topic", "session_kind": "conversation"}
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stdin", _StdinBytes(payload)),
+            mock.patch.object(sys, "stderr", stderr),
+            mock.patch.object(M, "session_row", return_value=row),
+            mock.patch.object(M, "cached_letter", return_value="B"),
+            mock.patch.object(M, "update_title", side_effect=ValueError("secret_detected")),
+        ):
+            self.assertEqual(M.hook_stop(), 2)
+        self.assertIn("secret_detected", stderr.getvalue())
+
     def test_the_stop_hook_asks_for_a_real_topic_when_the_title_is_the_placeholder(self):
         payload = json.dumps({"session_id": SESSION_ID}).encode()
         row = {
@@ -1341,6 +1398,53 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ScriptsDirTest(unittest.TestCase):
+    """The helper and the CLI it calls have to be the same version."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.here = os.path.dirname(os.path.realpath(M.__file__))
+
+    def _checkout(self, root):
+        # A competing checkout that LOOKS like the fleet scripts:  the search accepts
+        # it, so only the order keeps it from winning.
+        scripts = os.path.join(root, "AI-Fleet-Coordinator", "scripts")
+        os.makedirs(os.path.join(scripts, "simple_tools"))
+        open(os.path.join(scripts, "simple_tools", "operator_registry.py"), "w").close()
+        return scripts
+
+    def test_the_checkout_the_helper_runs_in_comes_first(self):
+        # A verb the helper sends has to be a verb the CLI knows, so the CLI comes
+        # from the checkout the helper itself is in, never from a stale checkout the
+        # environment happens to name.
+        stale = self._checkout(self.tmp.name)
+        with mock.patch.dict(
+            os.environ, {"FLEET_CODE_ROOT": self.tmp.name, "FLEET_APPS_ROOT": ""}
+        ):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
+        # The competing root is a real candidate:  without the running checkout in
+        # front of it, it is what the search returns.
+        self.assertNotEqual(stale, self.here)
+
+    def test_a_stale_checkout_in_the_home_layout_loses_too(self):
+        root = os.path.join(self.tmp.name, "home")
+        stale = self._checkout(os.path.join(root, "Code"))
+        with mock.patch.dict(
+            os.environ,
+            {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": "", "HOME": root},
+        ):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
+        self.assertNotEqual(stale, self.here)
+
+    def test_a_host_that_names_no_checkout_still_finds_one(self):
+        with mock.patch.dict(
+            os.environ,
+            {"FLEET_CODE_ROOT": "", "FLEET_APPS_ROOT": "", "HOME": self.tmp.name},
+        ):
+            self.assertEqual(M.repo_scripts_dir(), self.here)
+
+
 class MmLetterReopenTest(unittest.TestCase):
     """A session the registry swept while its chat was live gets its letter back.
 
@@ -1591,6 +1695,28 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         ):
             self.assertEqual(M.letter_for(SESSION_ID, "AA: Swept thread", ""), "AA")
         self.assertIn("Could not reopen", err.getvalue())
+
+    def test_a_faulting_registry_file_is_a_registry_error_not_a_traceback(self):
+        # A corrupt registry file faults when it is opened or read:  that is a
+        # refusal the caller can handle, never an uncaught sqlite error through the
+        # hook.
+        broken = os.path.join(self.tmp.name, "broken.sqlite3")
+        with open(broken, "wb") as handle:
+            handle.write(b"this is not a database")
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SIMPLE_TOOLS_OPERATOR_REGISTRY": broken,
+                    "MINIMAX_HOOKS_DATA": "",
+                    "MINIMAX_DATA_DIR": self.tmp.name,
+                },
+            ),
+            self.assertRaises(M.RegistryError) as caught,
+        ):
+            M.reopen_closed("r1")
+        self.assertEqual(caught.exception.code, "reopen_failed")
+        self.assertEqual(caught.exception.outcome, "reopen_refused")
 
     def test_a_reopen_that_fails_on_the_registry_is_a_registry_error(self):
         # A raw storage failure out of the reopen travels as a RegistryError, so every

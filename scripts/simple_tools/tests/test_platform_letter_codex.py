@@ -74,6 +74,17 @@ class Base(unittest.TestCase):
         env.update(extra)
         return env
 
+    def later(self, delay: float, fn, *args: object) -> None:
+        """Run fn on a timer, and wait for it before the temporary folder is removed.
+
+        The hook under test returns as soon as the row it waits for appears, which can be
+        before the timer has finished writing; cancelling alone would let cleanup race it.
+        """
+        timer = threading.Timer(delay, fn, args=args)
+        timer.start()
+        self.addCleanup(timer.join, 10)
+        self.addCleanup(timer.cancel)
+
     def exe(self, *parts: str) -> str:
         """A program file under the temporary folder, executable."""
         path = os.path.join(self.tmp.name, *parts)
@@ -574,9 +585,7 @@ class AccessorTests(Base):
 
     def test_a_subagent_row_that_is_written_a_moment_late_is_waited_for(self) -> None:
         chat = self.add(1)
-        timer = threading.Timer(0.3, self.add_child, args=(2, chat))
-        timer.start()
-        self.addCleanup(timer.cancel)
+        self.later(0.3, self.add_child, 2, chat)
         sub = {"hook_event_name": "SubagentStart", "session_id": chat, "agent_id": tid(2)}
         self.assertEqual(C.codex_current_title(sub, self.env()), "Pong")
 
@@ -1276,9 +1285,7 @@ class SubagentTests(HookBase):
 
     def test_a_subagent_whose_row_is_late_still_gets_its_task_name(self) -> None:
         parent = self.chat()
-        timer = threading.Timer(0.3, self.add_child, args=(2, parent))
-        timer.start()
-        self.addCleanup(timer.cancel)
+        self.later(0.3, self.add_child, 2, parent)
         self.sub_start(parent, tid(2))
         self.assertEqual(self.stored_name(tid(2)), "%s: Pong" % self.note(tid(2))["label"])
 

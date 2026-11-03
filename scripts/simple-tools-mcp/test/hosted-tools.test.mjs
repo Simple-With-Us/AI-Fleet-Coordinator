@@ -438,12 +438,15 @@ test("inbox:  with since_id a full page bounds what is known, so no item is skip
 
 // ---------------------------------------------------------------- seat binding
 
-test("seat binding:  only a member bot whose users/me is this seat's email and tag", () => {
+test("seat binding:  only a verified accepted-role bot whose users/me is this seat's email and tag", () => {
   const good = { is_bot: true, email: BOT_EMAIL, role: 400, is_admin: false, is_owner: false };
   const seat = { seat: "GROK-WEB", email: BOT_EMAIL };
   assert.equal(seatProblem(good, seat), null);
-  assert.match(seatProblem({ ...good, role: 200, is_admin: true }, seat), /role is 200; hosted seats accept member \(400\) only/);
-  assert.match(seatProblem({ ...good, role: 300 }, seat), /member \(400\) only/);
+  assert.equal(seatProblem({ ...good, role: 200, is_admin: true }, seat), null);
+  assert.equal(seatProblem({ ...good, role: 300 }, seat), null);
+  for (const denied of [{ role: 100 }, { role: 600 }, { role: 200, is_owner: true }, { role: 400, is_owner: true }, { role: "200" }]) {
+    assert.match(seatProblem({ ...good, ...denied }, seat), /never owners/);
+  }
   assert.match(seatProblem({ ...good, is_bot: false }, seat), /not a bot/);
   assert.match(seatProblem({ ...good, email: "claude-bot@simplewithus.zulipchat.com" }, seat), /another bot/);
   assert.match(seatProblem({ ...good, email: "openai-dot-bot@example.test" }, { seat: "GROK-WEB", email: "openai-dot-bot@example.test" }), /another seat/);
@@ -459,14 +462,14 @@ test("seat binding:  only a member bot whose users/me is this seat's email and t
   assert.match(seatProblem(good, { seat: "JET", email: BOT_EMAIL }), /another seat/);
 });
 
-test("an admin bot key is refused with no post, and the refusal is cached and audited", async () => {
-  const { fake, tools, gate } = harness({ fakeOptions: { me: { role: 200, is_admin: true } } });
+test("an owner bot key is refused with no post, and the refusal is cached and audited", async () => {
+  const { fake, tools, gate } = harness({ fakeOptions: { me: { role: 100, is_admin: true, is_owner: true } } });
   const error = toolError(await tools.call("zulip_post", { channel: "sandbox", topic: "t", text: "hi" }), "not_authorized");
-  assert.match(error.message, /role is 200/);
+  assert.match(error.message, /role is 100/);
   toolError(await tools.call("whoami", {}), "not_authorized");
   assert.equal(fake.requestsTo("GET", "users/me").length, 1, "the refusal is cached for 10 minutes");
   assert.equal(fake.requestsTo("POST", "messages").length, 0);
-  assert.equal((await S.tail(gate.store, 5)).find((r) => r.event === "role_refused")?.role, 200);
+  assert.equal((await S.tail(gate.store, 5)).find((r) => r.event === "role_refused")?.role, 100);
 });
 
 test("a key Zulip refuses (401) is recorded as a refused role, not left unchecked (AFC-347)", async () => {
@@ -486,8 +489,9 @@ test("the role is re-checked every 10 minutes", async () => {
   structured(await tools.call("whoami", {}), "whoami");
   assert.equal(fake.requestsTo("GET", "users/me").length, 1);
   clock.now += S.ROLE_TTL_MS;
-  fake.users[0].role = 200;
+  fake.users[0].role = 100;
   fake.users[0].is_admin = true;
+  fake.users[0].is_owner = true;
   toolError(await tools.call("whoami", {}), "not_authorized");
   assert.equal(fake.requestsTo("GET", "users/me").length, 2);
 });
@@ -826,4 +830,32 @@ test("a delegated call reserves on the caller's gate and the target's gate, each
   await gate.store.put("budget:write", [[minute, hourly]]);
   await assert.rejects(() => tools.reserve("write"), (error) => /budget/.test(error.message));
   assert.equal(total(await callerGate.store.get("budget:write")), 1, "the caller was charged, as before this change");
+});
+
+test("administrator and moderator own-seat bots retain read access without posting", async () => {
+  for (const role of [200, 300, 400]) {
+    const { tools, fake } = harness({ fakeOptions: { me: { role, is_admin: role === 200, is_owner: false } } });
+    structured(await tools.call("whoami", {}), "whoami");
+    assert.equal(fake.requestsTo("GET", "users/me").length, 1);
+    assert.equal(fake.requestsTo("POST", "messages").length, 0);
+  }
+});
+
+test("a pre-policy cached admin refusal is rechecked, never grandfathered or left refused", async () => {
+  const { tools, fake, gate } = harness({ fakeOptions: { me: { role: 200, is_admin: true } } });
+  await gate.store.put("role", { ok: false, role: 200, reason: "member only", user_id: 1, owner: null, checked_at: Date.parse("2026-10-09T10:00:00Z") });
+  structured(await tools.call("whoami", {}), "whoami");
+  assert.equal(fake.requestsTo("GET", "users/me").length, 1);
+  assert.equal((await S.roleStatus(gate.store)).policy, 2);
+});
+
+test("admin status cannot bypass human, email, seat-tag or borrowed-owner checks", () => {
+  const good = { is_bot: true, email: BOT_EMAIL, role: 200, is_admin: true, is_owner: false };
+  const seat = { seat: "GROK-WEB", email: BOT_EMAIL };
+  assert.match(seatProblem({ ...good, is_bot: false }, seat), /not a bot/);
+  assert.match(seatProblem({ ...good, email: "another@example.test" }, seat), /another bot/);
+  assert.match(seatProblem(good, { ...seat, seat: "CURSOR" }), /another seat/);
+  const jet = { ...good, email: "openai-dot-bot@example.test", bot_owner_id: 42 };
+  assert.match(seatProblem(jet, { seat: "JET-CHAT", email: jet.email, ownerUserId: 900001 }), /owner is not the pinned owner/);
+  assert.equal(seatProblem({ ...jet, bot_owner_id: 900001 }, { seat: "JET-CHAT", email: jet.email, ownerUserId: 900001 }), null);
 });
