@@ -27,6 +27,8 @@ struct PM2Application: Decodable {
     let name: String
     /// The state pm2 has for the application.
     let status: String?
+    /// The process pm2 has behind the application, when it has one.
+    let pid: Int?
 
     private enum CodingKeys: String, CodingKey {
         case name
@@ -38,8 +40,10 @@ struct PM2Application: Decodable {
         name = try container.decode(String.self, forKey: .name)
         if let environment = try? container.decode(PM2Environment.self, forKey: .environment) {
             status = environment.status
+            pid = environment.pid
         } else {
             status = nil
+            pid = nil
         }
     }
 }
@@ -47,6 +51,7 @@ struct PM2Application: Decodable {
 /// The part of a pm2 application the Control app reads.
 private struct PM2Environment: Decodable {
     let status: String?
+    let pid: Int?
 }
 
 /// Runs the pm2 client that owns the BotFleet MCP server.
@@ -169,7 +174,7 @@ public struct PM2Client {
               let applications = try? JSONDecoder().decode([PM2Application].self, from: data) else { return nil }
         var states: [String: ManagedServiceState] = [:]
         for application in applications {
-            states[application.name] = state(forStatus: application.status)
+            states[application.name] = state(forStatus: application.status, pid: application.pid)
         }
         return states
     }
@@ -179,20 +184,65 @@ public struct PM2Client {
     /// An application that errored is not running and nothing asked it to
     /// stop, so it failed.  A status the Control app does not know is
     /// unknown, and an unknown service is never acted on.
-    public static func state(forStatus status: String?) -> ManagedServiceState {
+    ///
+    /// An application pm2 calls "online" with no process behind it is not
+    /// running either.  pm2 keeps the record of every application it started
+    /// and the record outlives the process:  the BotFleet MCP adapter read
+    /// as "online" for days while nothing served its port and its launcher
+    /// pointed at a checkout that had been removed.  A status of "online"
+    /// with no pid behind it is a stale record, and a stale record is not a
+    /// running service:  it reads as failed, which is what it is.
+    public static func state(forStatus status: String?, pid: Int? = nil) -> ManagedServiceState {
         switch status {
-        case "online": return .running
+        case "online":
+            if (pid ?? 0) > 0 { return ManagedServiceState.running }
+            return ManagedServiceState.failed
         case "stopped": return .stopped
         case "errored": return .failed
         default: return .unknown
         }
     }
 
+    /// The applications whose pm2 record says online with no process behind
+    /// them, by name.
+    ///
+    /// These are the stale records:  pm2 still remembers the application and
+    /// still calls it online, but there is no pid, so nothing is running.
+    /// `nil` means pm2 could not be asked at all, so nothing is known.
+    public func staleApplications() -> Set<String>? {
+        guard isAvailable else { return nil }
+        guard let listing = try? run(["jlist"]) else { return nil }
+        return PM2Client.staleApplicationNames(in: listing)
+    }
+
+    /// The stale applications in what `pm2 jlist` printed.
+    public static func staleApplicationNames(in listing: String) -> Set<String>? {
+        guard let data = listing.data(using: .utf8),
+              let applications = try? JSONDecoder().decode([PM2Application].self, from: data) else { return nil }
+        var stale: Set<String> = []
+        for application in applications {
+            if application.status == "online", (application.pid ?? 0) <= 0 {
+                stale.insert(application.name)
+            }
+        }
+        return stale
+    }
+
     /// Starts a pm2 application.
     ///
     /// `pm2 start <name>` only works while pm2 still remembers the job.  When
     /// it does not, the ecosystem file is the way back, so it is tried second.
+    ///
+    /// A stale record is neither of those.  pm2 answers `pm2 start` on a
+    /// record it believes is online with "already started" and starts
+    /// nothing, so a stale application would never come back and the start
+    /// would report a success it did not achieve.  A stale record is
+    /// restarted instead, which runs the application's script again.
     public func start(appName: String) throws {
+        if staleApplications()?.contains(appName) == true {
+            _ = try run(["restart", appName])
+            return
+        }
         do {
             _ = try run(["start", appName])
         } catch {

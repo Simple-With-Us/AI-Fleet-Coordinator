@@ -216,9 +216,9 @@ final class FleetServicesTests: XCTestCase {
     func testThePM2StatesAreReadFromTheJSON() throws {
         let listing = """
         [
-          {"name": "shellular", "pm2_env": {"status": "online"}},
-          {"name": "botfleet-mcp", "pm2_env": {"status": "stopped"}},
-          {"name": "grok-acp", "pm2_env": {"status": "errored"}}
+          {"name": "shellular", "pm2_env": {"status": "online", "pid": 4242}},
+          {"name": "botfleet-mcp", "pm2_env": {"status": "stopped", "pid": 0}},
+          {"name": "grok-acp", "pm2_env": {"status": "errored", "pid": 0}}
         ]
         """
         let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
@@ -241,7 +241,7 @@ final class FleetServicesTests: XCTestCase {
 
     func testAnApplicationPM2HasNoRecordOfIsNotRunning() {
         let commands = FleetServiceCommands()
-        commands.pm2Listing = #"[{"name": "shellular", "pm2_env": {"status": "online"}}]"#
+        commands.pm2Listing = #"[{"name": "shellular", "pm2_env": {"status": "online", "pid": 4242}}]"#
         let pm2 = PM2Client(commands: commands, nodePath: "/usr/bin/node", pm2Path: "/usr/bin/pm2")
         XCTAssertEqual(pm2.state(ofApp: "grok-acp"), .stopped)
     }
@@ -259,12 +259,67 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(PM2Client.state(forStatus: "launching"), .unknown)
     }
 
+    func testAnApplicationPM2CallsOnlineWithNoProcessBehindItIsNotRunning() throws {
+        // pm2 keeps the record of every application it started, and the record
+        // outlives the process.  The BotFleet MCP adapter read as online for
+        // days while nothing served its port, and a record that says online
+        // with no pid behind it is exactly that:  a stale record, and a stale
+        // record is not a running service.
+        let listing = """
+        [
+          {"name": "botfleet-mcp", "pm2_env": {"status": "online", "pid": 0}},
+          {"name": "shellular", "pm2_env": {"status": "online", "pid": 4242}}
+        ]
+        """
+        let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
+        XCTAssertEqual(states["botfleet-mcp"], .failed)
+        XCTAssertEqual(states["shellular"], .running)
+    }
+
+    func testAnApplicationPM2ReportsOnlineWithNoPidAtAllIsNotRunning() throws {
+        // A listing with no pid proves nothing about a process, so it cannot
+        // read as running either.
+        let listing = #"[{"name": "botfleet-mcp", "pm2_env": {"status": "online"}}]"#
+        let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
+        XCTAssertEqual(states["botfleet-mcp"], .failed)
+    }
+
+    func testTheStaleApplicationsAreTheOnesWithNoProcessBehindThem() throws {
+        let listing = """
+        [
+          {"name": "botfleet-mcp", "pm2_env": {"status": "online", "pid": 0}},
+          {"name": "shellular", "pm2_env": {"status": "online", "pid": 4242}},
+          {"name": "grok-acp", "pm2_env": {"status": "errored", "pid": 0}}
+        ]
+        """
+        XCTAssertEqual(PM2Client.staleApplicationNames(in: listing), ["botfleet-mcp"])
+    }
+
+    func testAListingThatCannotBeReadNamesNoStaleApplication() {
+        XCTAssertNil(PM2Client.staleApplicationNames(in: "not json"))
+        XCTAssertEqual(PM2Client.staleApplicationNames(in: "[]"), [])
+    }
+
     // MARK: - Changing the pm2 applications
 
     func testStartingAPM2ApplicationRunsPM2Start() throws {
         let commands = FleetServiceCommands()
         try pm2(commands).start(appName: "shellular")
-        XCTAssertEqual(commands.calls, [["start", "shellular"]])
+        // The start looks at the listing first, because a stale record cannot
+        // be started with `pm2 start`, and then it starts the application.
+        XCTAssertEqual(commands.calls, [["jlist"], ["start", "shellular"]])
+    }
+
+    func testStartingAStaleApplicationRestartsItInsteadOfStartingIt() throws {
+        // pm2 answers `pm2 start` on a record it believes is online with
+        // "already started" and starts nothing, so a stale application would
+        // never come back and the start would report a success it did not
+        // achieve.  A stale record is restarted, which runs the script again.
+        let commands = FleetServiceCommands()
+        commands.pm2Listing = #"[{"name": "botfleet-mcp", "pm2_env": {"status": "online", "pid": 0}}]"#
+        try pm2(commands).start(appName: "botfleet-mcp")
+        XCTAssertTrue(commands.calls.contains { $0 == ["restart", "botfleet-mcp"] })
+        XCTAssertFalse(commands.calls.contains { $0.first == "start" })
     }
 
     func testStartingAPM2ApplicationFallsBackToTheEcosystemFile() throws {
@@ -275,9 +330,10 @@ final class FleetServicesTests: XCTestCase {
         let commands = FleetServiceCommands()
         commands.startFailure = CommandExitError(output: "pm2 said no")
         try pm2(commands, home: home).start(appName: "shellular")
-        XCTAssertEqual(commands.calls.count, 2)
-        XCTAssertEqual(commands.calls[0], ["start", "shellular"])
-        XCTAssertEqual(commands.calls[1], ["start",
+        XCTAssertEqual(commands.calls.count, 3)
+        XCTAssertEqual(commands.calls[0], ["jlist"])
+        XCTAssertEqual(commands.calls[1], ["start", "shellular"])
+        XCTAssertEqual(commands.calls[2], ["start",
                                           home.appendingPathComponent("apps/pm2-ecosystem.config.cjs").path,
                                           "--only", "shellular"])
     }
@@ -314,7 +370,7 @@ final class FleetServicesTests: XCTestCase {
     func testTheStateAfterTheActionIsTheOneThatIsReported() async throws {
         let commands = FleetServiceCommands()
         commands.pm2Listing = #"[{"name": "shellular", "pm2_env": {"status": "stopped"}}]"#
-        commands.pm2ListingAfterChange = #"[{"name": "shellular", "pm2_env": {"status": "online"}}]"#
+        commands.pm2ListingAfterChange = #"[{"name": "shellular", "pm2_env": {"status": "online", "pid": 4242}}]"#
         let state = try await pm2(commands).setRunning(true, appName: "shellular", attempts: 2)
         XCTAssertEqual(state, .running)
         XCTAssertTrue(commands.calls.contains { $0.first == "start" })
@@ -340,7 +396,7 @@ final class FleetServicesTests: XCTestCase {
 
     func testAnApplicationThatIsAlreadyRunningIsNotStartedAgain() async throws {
         let commands = FleetServiceCommands()
-        commands.pm2Listing = #"[{"name": "shellular", "pm2_env": {"status": "online"}}]"#
+        commands.pm2Listing = #"[{"name": "shellular", "pm2_env": {"status": "online", "pid": 4242}}]"#
         let state = try await pm2(commands).setRunning(true, appName: "shellular", attempts: 1)
         XCTAssertEqual(state, .running)
         XCTAssertFalse(commands.calls.contains { $0.first == "start" })
@@ -793,8 +849,8 @@ final class FleetServicesTests: XCTestCase {
         FleetServiceURLProtocol.handler = { _ in .failure(URLError(.timedOut)) }
         let commands = FleetServiceCommands()
         commands.pm2Listing = """
-        [{"name": "shellular", "pm2_env": {"status": "online"}},
-         {"name": "grok-acp", "pm2_env": {"status": "errored"}}]
+        [{"name": "shellular", "pm2_env": {"status": "online", "pid": 4242}},
+         {"name": "grok-acp", "pm2_env": {"status": "errored", "pid": 0}}]
         """
         let home = try makeHome(serverInstalled: true)
         defer { try? FileManager.default.removeItem(at: home) }
