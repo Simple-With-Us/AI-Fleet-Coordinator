@@ -735,6 +735,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                 out = specialize_from_monet(src, seat, skill_name=name)
                 for phrase in self.AFC_SIGNATURE_PHRASES:
                     self.assertNotIn(phrase, out, f"{key}/{name}: {phrase}")
+
     def test_by_seat_catalog_matches_specialization(self) -> None:
         kimi_ss = Path(DOCS, "by-seat", "kimi", "session-start", "SKILL.md").read_text(
             encoding="utf-8"
