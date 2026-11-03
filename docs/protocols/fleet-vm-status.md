@@ -43,6 +43,32 @@ command="/usr/bin/python3 -I $HOME/.local/share/fleet-cli/repo/scripts/fleet-vm-
 
 Revoke by deleting that one `authorized_keys` line.  That is the whole revoke: the key then matches nothing, and no other access was ever granted.  Stopping the local timer is separate and optional (`systemctl --user disable --now fleet-vm-status.timer`).
 
+## Doctor carry: `fleet-tools-doctor.py --vms` (AFC-597 slice S5, Mac side)
+
+The puller is the doctor.  `scripts/fleet-tools-doctor.py --vms` reads the VMs from `~/.config/fleet-tools/vm-hosts.json` on the Mac, ssh's to each one, and writes each answer to `~/.local/state/fleet-tools/vms/<label>.json` (0600, atomically, the same writer as the server's report).  Muster's Virtual Machines panel reads those files and runs nothing.  A missing config is the feature off: no ssh runs and nothing is written.  Without `--vms` the doctor never touches a VM.
+
+The config is one JSON object.  Each entry names a `label`, an ssh `destination` and optionally a `user`.
+
+```json
+{"vms": [{"label": "vm-name", "destination": "vm-name-ro", "user": "puller"}]}
+```
+
+Create it with `chmod 600`.  The label becomes a filename, so the doctor validates it strictly (letters, digits, dot, dash and underscore, starting with a letter or digit, at most 64 characters) and refuses an entry whose label could escape the folder.  The destination must be a plain alias or host and the user a plain login name, so a config value can never become an ssh option.
+
+Per VM, the pull is one `ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes <user@destination>` with nothing sent: the forced command on the VM prints the fresh report whatever is asked, exactly as the server's doctor key does.  The answer is refused, and the previous report stays untouched, when the ssh fails or times out (60 seconds), when the answer is larger than 512 KiB, when it is not JSON, or when it is not a `fleet-vm-status` report at schemaVersion 1.  A refused or unreachable VM never fails the doctor run and never blocks the other VMs.  The old file then ages past Muster's 45-minute window and the VM reads as unknown, which is the staleness doing its job.
+
+To have the pull ride the existing schedule, add `--vms` to the doctor run the LaunchAgent already makes with `--write`.  That plist change is an owner step and is not made by this slice.
+
+Per-VM `authorized_keys` line (same shape as above, one key per VM, on the login whose home carries the collector checkout):
+
+```
+command="/usr/bin/python3 -I /home/<login>/.local/share/fleet-cli/repo/scripts/fleet-vm-status.py --json",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 <puller-public-key> fleet-vm-status-ro
+```
+
+The ssh alias the config's `destination` names must resolve to that key (an `~/.ssh/config` host stanza with its own `IdentityFile` per VM keeps the keys separate).  Muster never sees the alias, the key or the VM's address: it only ever reads the pulled files.
+
+Revoke, in order: delete the VM's entry from `~/.config/fleet-tools/vm-hosts.json` (the doctor stops pulling at the next run), delete the VM's `authorized_keys` line (the key then matches nothing, and no other access was ever granted), and delete `~/.local/state/fleet-tools/vms/<label>.json` on the Mac so the panel stops showing it.  Deleting the whole config file turns the feature off for every VM at once.  Stopping the timer on the VM is separate and optional, as above.
+
 ## Non-goals
 
 No lettering.  No wakes.  No control of anything on the VM.  No Zulip posting.  No prompts, tokens, argv values or environment values anywhere in the report.  The collector writes one file and changes nothing else.
