@@ -34,6 +34,33 @@ final class OpsCommandBuilderTests: XCTestCase {
         XCTAssertEqual(invocation.timeout, OpsControlRoute.planTimeout)
     }
 
+    func test_a_pm2_verb_runs_the_helper_on_this_mac() throws {
+        let invocation = try exampleBuilder().invocation(
+            for: .pm2App(verb: .restart, name: "shellular"), mode: .plan
+        )
+        XCTAssertEqual(invocation.executable, "/usr/bin/python3")
+        XCTAssertEqual(invocation.arguments, [
+            "-s", "/tmp/example-repo/scripts/fleet-ops-control.py",
+            "pm2", "restart", "shellular", "--plan", "--json",
+        ])
+        XCTAssertFalse(OpsAction.pm2App(verb: .restart, name: "shellular").runsOnServer)
+        XCTAssertEqual(OpsAction.pm2App(verb: .stop, name: "shellular").auditVerb, "pm2 stop")
+        XCTAssertEqual(OpsAction.pm2App(verb: .stop, name: "shellular").auditTarget, "shellular")
+    }
+
+    func test_a_logs_verb_goes_over_ssh_to_the_alias() throws {
+        let invocation = try exampleBuilder().invocation(
+            for: .logs(unit: "fleet-server-status.timer"), mode: .yes
+        )
+        XCTAssertEqual(invocation.executable, "/usr/bin/ssh")
+        XCTAssertEqual(
+            invocation.arguments,
+            sshPrefix + ["server", "logs", "fleet-server-status.timer", "--yes", "--json"]
+        )
+        XCTAssertTrue(OpsAction.logs(unit: "fleet-server-status.timer").runsOnServer)
+        XCTAssertEqual(OpsAction.logs(unit: "fleet-server-status.timer").auditVerb, "server logs")
+    }
+
     func test_a_server_verb_goes_over_ssh_to_the_alias() throws {
         let invocation = try exampleBuilder().invocation(
             for: .serverUnit(verb: .start, unit: "fleet-server-status.timer"), mode: .yes
@@ -97,6 +124,9 @@ final class OpsCommandBuilderTests: XCTestCase {
             (.serverUnit(verb: .stop, unit: "a;reboot"), .invalidArgument("unit name")),
             (.serverUnit(verb: .stop, unit: ""), .invalidArgument("unit name")),
             (.serverUpdate(name: "fleet-cli$(id)"), .invalidArgument("update name")),
+            (.pm2App(verb: .start, name: "shellular;id"), .invalidArgument("pm2 name")),
+            (.pm2App(verb: .start, name: "-oProxyCommand=x"), .invalidArgument("pm2 name")),
+            (.logs(unit: "a b.service"), .invalidArgument("unit name")),
             (.coolifyRedeploy(uuid: "x@y", name: "x"), .invalidArgument("resource id")),
             (.knobSet(key: "lower_case", value: "x"), .invalidArgument("knob name")),
             (.knobSet(key: "FLEET_X", value: "-rf"), .invalidArgument("knob value")),
@@ -133,7 +163,9 @@ final class OpsCommandBuilderTests: XCTestCase {
             }
         }
         XCTAssertThrowsError(try builder.checkInstalled(for: .knobSet(key: "FLEET_X", value: "1")))
+        XCTAssertThrowsError(try builder.checkInstalled(for: .pm2App(verb: .start, name: "shellular")))
         XCTAssertNoThrow(try builder.checkInstalled(for: .serverUpdate(name: "fleet-cli")))
+        XCTAssertNoThrow(try builder.checkInstalled(for: .logs(unit: "fleet-server-status.timer")))
     }
 
     func test_the_audit_names_of_an_action() {
@@ -272,6 +304,21 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertNil(OpsKnobChange(old: nil, oldSource: nil, new: nil, lkg: "patched").lkgWarning)
     }
 
+    func test_a_logs_run_surfaces_the_log_text_and_a_plan_never_does() {
+        let logs = OpsAction.logs(unit: "fleet-server-status.timer")
+        let done = #"{"ok": true, "verb": "server logs", "target": "fleet-server-status.timer", "commands": [["journalctl", "--user", "-u", "fleet-server-status.timer", "-n", "200", "--no-pager"]], "result": "done", "detail": "2 journal lines", "output": "line one\nline two\n", "lines": 2}"#
+        let outcome = OpsResultParser.parse(result(done), mode: .yes, action: logs, timeout: 900)
+        XCTAssertTrue(outcome.isSuccess(for: .yes))
+        XCTAssertEqual(outcome.logText, "line one\nline two\n")
+        XCTAssertEqual(outcome.logLines, 2)
+        // The same answer read as a plan surfaces no log text: a plan fetched nothing.
+        let asPlan = OpsResultParser.parse(result(done), mode: .plan, action: logs, timeout: 90)
+        XCTAssertNil(asPlan.logText)
+        // And output on an answer for any other action is never surfaced.
+        let other = OpsResultParser.parse(result(done), mode: .yes, action: unit, timeout: 900)
+        XCTAssertNil(other.logText)
+    }
+
     func test_a_server_answer_has_no_knob_change() throws {
         let outcome = OpsResultParser.parse(
             result(try fixture("ops_result_planned", "json")), mode: .plan, action: unit, timeout: 90
@@ -306,6 +353,8 @@ final class OpsAllowlistAndAuditTests: XCTestCase {
         XCTAssertEqual(list.verbs(forMacAgent: "com.jay.fleet-tools-doctor"), [.start, .stop, .restart])
         XCTAssertEqual(list.verbs(forServerUnit: "fleet-server-status.timer"), [.restart])
         XCTAssertEqual(list.verbs(forServerUnit: "sshd.service"), [])
+        XCTAssertEqual(list.verbs(forPM2App: "shellular"), [.start, .restart])
+        XCTAssertEqual(list.verbs(forPM2App: "not-listed"), [])
         XCTAssertEqual(list.updates.map(\.name), ["fleet-cli"])
         XCTAssertEqual(list.updates.first?.unit, "fleet-cli-git-update.service")
         XCTAssertTrue(list.coolifyRedeploy)

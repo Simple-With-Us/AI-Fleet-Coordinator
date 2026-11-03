@@ -87,12 +87,16 @@ enum OpsAction: Equatable {
     case knobSet(key: String, value: String)
     /// `fleet_knobs unset KEY`,  run on this Mac:  removes the override so the default applies.
     case knobUnset(key: String)
+    /// `pm2 start|stop|restart NAME`,  run on this Mac.
+    case pm2App(verb: OpsVerb, name: String)
+    /// `server logs UNIT`,  run on the server:  the last journal lines,  read only.
+    case logs(unit: String)
 
     /// True when the action runs on the server,  over ssh.
     var runsOnServer: Bool {
         switch self {
-        case .serverUnit, .serverUpdate, .coolifyRedeploy: return true
-        case .macAgent, .knobSet, .knobUnset: return false
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs: return true
+        case .macAgent, .knobSet, .knobUnset, .pm2App: return false
         }
     }
 
@@ -105,6 +109,8 @@ enum OpsAction: Equatable {
         case .coolifyRedeploy(_, let name): return "Redeploy \(name) on Coolify"
         case .knobSet(let key, let value): return "Set \(key) to \"\(value)\""
         case .knobUnset(let key): return "Reset \(key) to the default"
+        case .pm2App(let verb, let name): return "\(verb.title) \(name) (pm2) on this Mac"
+        case .logs(let unit): return "Read the last logs of \(unit) on the server"
         }
     }
 
@@ -117,6 +123,8 @@ enum OpsAction: Equatable {
         case .coolifyRedeploy: return "server redeploy"
         case .knobSet: return "knob set"
         case .knobUnset: return "knob unset"
+        case .pm2App(let verb, _): return "pm2 \(verb.rawValue)"
+        case .logs: return "server logs"
         }
     }
 
@@ -132,6 +140,8 @@ enum OpsAction: Equatable {
         case .coolifyRedeploy(_, let name): return name
         case .knobSet(let key, _): return key
         case .knobUnset(let key): return key
+        case .pm2App(_, let name): return name
+        case .logs(let unit): return unit
         }
     }
 
@@ -144,6 +154,8 @@ enum OpsAction: Equatable {
         case .coolifyRedeploy(let uuid, _): return ["server", "redeploy", uuid]
         case .knobSet(let key, let value): return ["set", key, value]
         case .knobUnset(let key): return ["unset", key]
+        case .pm2App(let verb, let name): return ["pm2", verb.rawValue, name]
+        case .logs(let unit): return ["server", "logs", unit]
         }
     }
 }
@@ -275,6 +287,12 @@ struct OpsCommandBuilder {
             guard isSafeKnobValue(value) else { throw OpsControlError.invalidArgument("knob value") }
         case .knobUnset(let key):
             guard isKnobKey(key) else { throw OpsControlError.invalidArgument("knob name") }
+        case .pm2App(_, let name):
+            guard isSafeToken(name), !name.contains("@") else {
+                throw OpsControlError.invalidArgument("pm2 name")
+            }
+        case .logs(let unit):
+            guard isSafeToken(unit) else { throw OpsControlError.invalidArgument("unit name") }
         }
     }
 
@@ -286,9 +304,9 @@ struct OpsCommandBuilder {
     /// A server action runs the server's own copy,  so nothing local is needed.
     func requiredFile(for action: OpsAction) -> URL? {
         switch action {
-        case .macAgent: return helperURL
+        case .macAgent, .pm2App: return helperURL
         case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
-        case .serverUnit, .serverUpdate, .coolifyRedeploy: return nil
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs: return nil
         }
     }
 
@@ -344,7 +362,7 @@ struct OpsCommandBuilder {
             tail = ["unset", mode.flag, "--json", "--", key]
         }
         switch action {
-        case .macAgent:
+        case .macAgent, .pm2App:
             return OpsInvocation(
                 executable: OpsControlRoute.interpreter,
                 arguments: ["-s", helperURL.path] + tail,
@@ -360,7 +378,7 @@ struct OpsCommandBuilder {
                 environment: localEnvironment,
                 timeout: timeout
             )
-        case .serverUnit, .serverUpdate, .coolifyRedeploy:
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs:
             // `--` ends ssh's own options,  so nothing after the alias is read as one.  The
             // server's forced command reads the rest from SSH_ORIGINAL_COMMAND and checks it
             // against its own allowlist again.
@@ -525,9 +543,13 @@ struct OpsResult: Decodable, Equatable {
     let new: String?
     /// How the last-known-good copy was brought up to date after a write.
     let lkg: String?
+    /// A logs run's journal text:  the one helper answer that carries output.
+    let output: String?
+    /// How many journal lines `output` holds.
+    let lines: Int?
 
     enum CodingKeys: String, CodingKey {
-        case ok, verb, target, commands, result, detail, old, new, lkg
+        case ok, verb, target, commands, result, detail, old, new, lkg, output, lines
         case oldSource = "old_source"
     }
 
@@ -545,6 +567,8 @@ struct OpsResult: Decodable, Equatable {
         oldSource = try? container.decodeIfPresent(String.self, forKey: .oldSource)
         new = try? container.decodeIfPresent(String.self, forKey: .new)
         lkg = try? container.decodeIfPresent(String.self, forKey: .lkg)
+        output = try? container.decodeIfPresent(String.self, forKey: .output)
+        lines = try? container.decodeIfPresent(Int.self, forKey: .lines)
     }
 }
 
@@ -614,6 +638,10 @@ struct OpsOutcome: Equatable {
     var exitCode: Int32
     /// What a knob write changes,  for a knob action whose answer said;  nil otherwise.
     var knobChange: OpsKnobChange? = nil
+    /// A logs run's journal text;  nil for every other action and for a plan.
+    var logText: String? = nil
+    /// How many journal lines `logText` holds.
+    var logLines: Int? = nil
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -702,13 +730,23 @@ enum OpsResultParser {
                 removesValue: removes, lkg: answer.lkg
             )
         }
+        // Log text is surfaced only for a logs run that ran:  a plan fetched
+        // nothing,  and output on any other action's answer stays unread.
+        var logText: String?
+        var logLines: Int?
+        if case .logs = action, mode == .yes, kind == .done {
+            logText = answer.output
+            logLines = answer.lines
+        }
         return OpsOutcome(
             kind: kind,
             ok: answer.ok,
             commands: answer.commands,
             detail: detail,
             exitCode: result.exitCode,
-            knobChange: knobChange
+            knobChange: knobChange,
+            logText: logText,
+            logLines: logLines
         )
     }
 
@@ -773,6 +811,7 @@ struct OpsAllowlist: Equatable {
     }
 
     var macAgents: [Entry] = []
+    var pm2Apps: [Entry] = []
     var serverUnits: [Entry] = []
     var updates: [Update] = []
     var coolifyRedeploy: Bool = false
@@ -780,6 +819,11 @@ struct OpsAllowlist: Equatable {
     /// The verbs the allowlist names for a LaunchAgent,  in the app's order.
     func verbs(forMacAgent label: String) -> [OpsVerb] {
         verbs(in: macAgents, named: label)
+    }
+
+    /// The verbs the allowlist names for a pm2 application,  in the app's order.
+    func verbs(forPM2App name: String) -> [OpsVerb] {
+        verbs(in: pm2Apps, named: name)
     }
 
     /// The verbs the allowlist names for a unit,  in the app's order.
@@ -816,6 +860,10 @@ struct OpsAllowlist: Equatable {
         for item in (mac?["agents"] as? [[String: Any]]) ?? [] {
             guard let label = item["label"] as? String else { continue }
             list.macAgents.append(Entry(name: label, actions: (item["actions"] as? [String]) ?? []))
+        }
+        for item in (mac?["pm2Apps"] as? [[String: Any]]) ?? [] {
+            guard let name = item["name"] as? String else { continue }
+            list.pm2Apps.append(Entry(name: name, actions: (item["actions"] as? [String]) ?? []))
         }
         for item in (server?["units"] as? [[String: Any]]) ?? [] {
             guard let unit = item["unit"] as? String else { continue }

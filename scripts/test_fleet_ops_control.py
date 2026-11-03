@@ -35,7 +35,11 @@ CONFIG = {
         "agents": [
             {"label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"]},
             {"label": "com.jay.only-start", "actions": ["start"]},
-        ]
+        ],
+        "pm2Apps": [
+            {"name": "shellular", "actions": ["start", "stop", "restart"]},
+            {"name": "only-start-app", "actions": ["start"]},
+        ],
     },
     "server": {
         "units": [
@@ -57,11 +61,12 @@ CONFIG = {
 class FakeRunner:
     """Records every argv;  answers `launchctl print` with `loaded` and the rest with `status`."""
 
-    def __init__(self, loaded=True, status=0, secret=TOKEN):
+    def __init__(self, loaded=True, status=0, secret=TOKEN, log_bytes=b"line one\nline two\n"):
         self.calls = []
         self.loaded = loaded
         self.status = status
         self.secret = secret
+        self.log_bytes = log_bytes
 
     def __call__(self, argv, timeout=None, env=None, want_stdout=False):
         assert isinstance(argv, list) and all(isinstance(a, str) for a in argv)
@@ -70,6 +75,8 @@ class FakeRunner:
             return (0 if self.loaded else 113), b""
         if argv[1:2] == ["get"]:
             return (0, self.secret.encode()) if self.secret else (3, b"")
+        if "journalctl" in argv[0]:
+            return self.status, (self.log_bytes if want_stdout else b"")
         return self.status, b""
 
 
@@ -103,6 +110,8 @@ class Base(unittest.TestCase):
             now=lambda: NOW,
             config_path=self.config_path,
             fleet_secrets="/fake/bin/fleet-secrets",
+            pm2_node="/fake/bin/node",
+            pm2_script="/fake/lib/pm2",
         )
 
     def run_main(self, argv, ctx):
@@ -687,6 +696,120 @@ class SshGateTests(Base):
             "server update fleet-cli --plan", argv=("server", "update", "fleet-cli", "--from-ssh")
         )
         self.assertEqual(code, 2)
+
+
+class LogsAndPm2Tests(Base):
+    def test_logs_plan_refuses_non_allowlisted_unit_and_carries_no_log_text(self):
+        code, ans = self.run_main(
+            ["server", "logs", "sshd.service", "--plan", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"]), (2, "refused"))
+        self.assertEqual(self.runner.calls, [])
+        code, ans = self.run_main(
+            ["server", "logs", "fleet-server-status.timer", "--plan", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"]), (0, "planned"))
+        self.assertNotIn("output", ans)
+        self.assertNotIn("line one", json.dumps(ans))
+        self.assertEqual(self.runner.calls, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_logs_yes_argv_is_bounded_journalctl_and_audit_has_no_log_text(self):
+        code, ans = self.run_main(
+            ["server", "logs", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"]), (0, "done"), ans)
+        ((argv, _env),) = self.runner.calls
+        self.assertTrue(argv[0].endswith("journalctl"), argv)
+        self.assertEqual(
+            argv[1:],
+            ["--user", "-u", "fleet-server-status.timer", "-n", "200", "--no-pager"],
+        )
+        self.assertEqual(ans["output"], "line one\nline two\n")
+        self.assertEqual(ans["lines"], 2)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["verb"], "server logs")
+        self.assertEqual(rows[0]["lines"], 2)
+        audit_text = (self.state / "ops-audit.jsonl").read_text()
+        self.assertNotIn("line one", audit_text)
+        self.assertNotIn("line two", audit_text)
+
+    def test_logs_system_scope_has_no_user_flag_and_truncates(self):
+        many = b"".join(b"row %d\n" % i for i in range(250))
+        code, ans = self.run_main(
+            ["server", "logs", "fleet-cli-git-update.timer", "--yes", "--json"],
+            self.ctx(runner=FakeRunner(log_bytes=many)),
+        )
+        self.assertEqual(code, 0, ans)
+        ((argv, _env),) = self.runner.calls
+        self.assertEqual(argv[1:], ["-u", "fleet-cli-git-update.timer", "-n", "200", "--no-pager"])
+        self.assertIn("truncated", ans["output"])
+        self.assertLessEqual(ans["lines"], 200)
+        self.assertNotIn("row 0\n", ans["output"])
+
+    def test_logs_refused_for_mac_scope_and_bad_unit(self):
+        for argv in (
+            ["mac", "logs", "com.jay.fleet-tools-doctor", "--plan", "--json"],
+            ["server", "logs", "../x.service", "--yes", "--json"],
+            ["server", "logs", "fleet-server-status.timer\n", "--yes", "--json"],
+        ):
+            platform = "darwin" if argv[0] == "mac" else "linux"
+            code, ans = self.run_main(argv, self.ctx(platform))
+            self.assertEqual((code, ans["result"]), (2, "refused"), argv)
+
+    def test_pm2_plan_and_yes_argv_for_allowlisted_app(self):
+        code, ans = self.run_main(
+            ["pm2", "restart", "shellular", "--plan", "--json"], self.ctx("darwin")
+        )
+        self.assertEqual((code, ans["result"]), (0, "planned"), ans)
+        self.assertEqual(
+            ans["commands"], [["/fake/bin/node", "/fake/lib/pm2", "restart", "shellular"]]
+        )
+        self.assertEqual(self.runner.calls, [])
+        code, ans = self.run_main(
+            ["pm2", "stop", "shellular", "--yes", "--json"], self.ctx("darwin")
+        )
+        self.assertEqual((code, ans["result"]), (0, "done"), ans)
+        ((argv, env),) = self.runner.calls
+        self.assertEqual(argv, ["/fake/bin/node", "/fake/lib/pm2", "stop", "shellular"])
+        self.assertIn("PM2_HOME", env)
+        self.assertNotIn("SECRET_THING", env)
+        self.assertEqual(self.audit_rows()[0]["verb"], "pm2 stop")
+
+    def test_pm2_bad_token_unlisted_and_disallowed_action_refused(self):
+        for argv in (
+            ["pm2", "start", "not-listed", "--yes", "--json"],
+            ["pm2", "stop", "only-start-app", "--yes", "--json"],
+            ["pm2", "start", "shellular;id", "--yes", "--json"],
+            ["pm2", "start", "-oProxyCommand=x", "--yes", "--json"],
+            ["pm2", "start", "shellular\n", "--yes", "--json"],
+            ["pm2", "delete", "shellular", "--yes", "--json"],
+        ):
+            code, ans = self.run_main(argv, self.ctx("darwin"))
+            self.assertEqual((code, ans["result"]), (2, "refused"), argv)
+            self.assertEqual(self.runner.calls, [], argv)
+
+    def test_pm2_refused_on_linux_and_malformed_allowlist_entry(self):
+        code, _ = self.run_main(
+            ["pm2", "start", "shellular", "--plan", "--json"], self.ctx("linux")
+        )
+        self.assertEqual(code, 2)
+        with self.assertRaises(foc.Refused):
+            foc.validate_config(
+                {
+                    "schemaVersion": 1,
+                    "mac": {"pm2Apps": [{"name": "Bad Name", "actions": ["start"]}]},
+                }
+            )
+
+    def test_repo_allowlist_pm2_names_match_the_swift_registry(self):
+        config = foc.load_config()
+        swift = Path(HERE, "..", "muster", "Muster", "FleetServices", "FleetServices.swift")
+        mcp = Path(HERE, "..", "muster", "Muster", "FleetServices", "McpServerControl.swift")
+        text = swift.read_text() + mcp.read_text()
+        for name in config["pm2"]:
+            self.assertIn('"%s"' % name, text, name)
 
 
 class SourceTests(unittest.TestCase):

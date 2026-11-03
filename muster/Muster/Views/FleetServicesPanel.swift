@@ -12,6 +12,7 @@ import SwiftUI
 /// own health endpoint reports.
 struct FleetServicesPanel: View {
     @EnvironmentObject private var admin: FleetAdmin
+    @ObservedObject private var controller = OpsController.shared
 
     var body: some View {
         ScrollView {
@@ -27,6 +28,9 @@ struct FleetServicesPanel: View {
             .padding(.vertical, 18)
         }
         .task { await admin.refresh() }
+        .onChange(of: controller.completedRuns) { _, _ in
+            Task { await admin.refresh() }
+        }
     }
 
     // MARK: The header
@@ -136,16 +140,9 @@ struct FleetServicesPanel: View {
             HStack(spacing: 8) {
                 ForEach(fleetAdminActions(for: entry)) { action in
                     Button(action.title) {
-                        // A stop is confirmed first,  with the service's own warning
-                        // and the work in flight that would block it.
-                        if action.action == .stop,
-                           !confirmFleetStop(title: entry.title,
-                                             message: admin.stopConfirmation(for: entry.id)) {
-                            return
-                        }
-                        Task { await admin.perform(action.action, serviceID: entry.id) }
+                        actuate(action.action, for: entry)
                     }
-                    .disabled(admin.busyServiceID != nil)
+                    .disabled(admin.busyServiceID != nil || controller.isPresenting)
                 }
             }
         }
@@ -153,6 +150,41 @@ struct FleetServicesPanel: View {
         .padding(.horizontal, 10)
         .background(Color.secondary.opacity(0.05))
         .cornerRadius(8)
+    }
+
+    /// One row's action,  on the one control path.
+    ///
+    /// A pm2 row and a LaunchAgent row go through `OpsController`:  the helper plans
+    /// the change,  the sheet shows the plan and asks Touch ID,  and only then does
+    /// anything run,  against the allowlist the helper checks again itself.  The
+    /// BotFleet Server's own row stays with the fleet admin:  its start clears the
+    /// deliberate-stop marker through the installed wrapper and its stop asks the
+    /// server itself,  neither of which an allowlist argv can say,  so it keeps its
+    /// stop confirmation here.
+    private func actuate(_ action: ManagedServiceAction, for entry: FleetServiceEntry) {
+        let verb: OpsVerb?
+        switch action {
+        case .start: verb = .start
+        case .stop: verb = .stop
+        case .restart: verb = .restart
+        case .none: verb = nil
+        }
+        guard let verb else { return }
+        switch entry.kind {
+        case .pm2(let appName):
+            controller.plan(.pm2App(verb: verb, name: appName))
+        case .launchAgent(let label):
+            if entry.id == FleetServiceRegistry.server.id {
+                if action == .stop,
+                   !confirmFleetStop(title: entry.title,
+                                     message: admin.stopConfirmation(for: entry.id)) {
+                    return
+                }
+                Task { await admin.perform(action, serviceID: entry.id) }
+            } else {
+                controller.plan(.macAgent(verb: verb, label: label))
+            }
+        }
     }
 
     // MARK: A refusal
