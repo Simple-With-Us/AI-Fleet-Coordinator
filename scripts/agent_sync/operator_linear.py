@@ -31,8 +31,9 @@ rulings (2026-10-21 and 2026-10-23), with the keying stated exactly as the owner
 
 What is different from the standalone relay:
 
-  - Identity.  Writes go out under the Operator's own Linear credential (OPERATOR_LINEAR_TOKEN,
-    below), never the relay app's token and never a seat's.  The comment footer names the
+  - Identity.  Writes go out under the Operator's own Linear app (the renamed relay app),
+    reached through its OAuth client pair in Infisical (below), never a seat's credential
+    and never a baked token.  The comment footer names the
     Operator; the marker line is deliberately the relay's own (`<!-- zulip-relay -->`), so
     the hosted worker ADOPTS the comments the standalone relay already created instead of
     stacking new ones beside them.
@@ -44,38 +45,288 @@ What is different from the standalone relay:
     client (a read of a public stream); Linear writes are the only writes, and they use
     the Operator's token alone.
 
-Credentials (environment, loaded by the container from Infisical, never logged):
+Credentials (never logged; the pair and the minted token live in memory only):
 
-    OPERATOR_LINEAR_TOKEN   a dedicated Linear credential for the Operator (see
-                            docs/operator-linear-comments.md for the exact seam: it must
-                            be created, it does not exist yet)
+    The writing credential is the Operator's own Linear app (the renamed relay app), an
+    OAuth client pair in Infisical (project AI Fleet Coordinator, prod, folder /linear):
+    LINEAR_OPERATOR_CLIENT_ID and LINEAR_OPERATOR_CLIENT_SECRET.  The daemon reaches
+    the pair through ONE scoped read-only Infisical service token (operator-linear-read;
+    registry:  SWU Fleet References, "Infisical Service Tokens"), never through a
+    machine identity and never through a baked Linear token.  The service token itself
+    arrives one of two ways:
+
+    OPERATOR_LINEAR_INFISICAL_TOKEN   the service token, bound directly by the host as
+                            a runtime-only variable;  wins when set
+    [linear_comments] infisical_token_file   the path of a file holding the service
+                            token (owner-only permissions, checked before use);
+                            defaults to ~/workspace/.secrets/operator-linear-service-token
+
+    At engine build (daemon start, and again whenever the service token changes) the
+    pair is fetched with the service token — after the token is verified against its
+    own record:  read-only, one scope, exactly prod /linear in this project — then
+    exchanged at Linear's OAuth token endpoint (client_credentials, the app's own
+    registered scopes), and the minted access token is what the relay's LinearClient
+    writes with.  A configured credential that is refused stops this feature
+    (CredentialRefused, logged with its stage and status, never a value), never the
+    daemon.
+
     OPERATOR_ZULIP_EMAIL    the Operator bot's own Zulip address; its posts are skipped,
                             as the relay skipped its own
     OPERATOR_LINEAR_STATE   optional ledger path override
     OPERATOR_LINEAR_DRY_RUN=1   log what would be written, write nothing to Linear, and
                             keep the ledger in a sibling dry-run file
 
-Off unless [linear_comments] enabled is true in listener.toml AND OPERATOR_LINEAR_TOKEN
-is set.  Python 3.11+, standard library only.
+Off unless [linear_comments] enabled is true in listener.toml AND a service token
+resolves.  Python 3.11+, standard library only.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from . import linear_relay as lr
-from .zulip import ZulipClient, realm_url
+from .zulip import ZulipClient, _strip_quotes, realm_url
 
-TOKEN_ENV = "OPERATOR_LINEAR_TOKEN"
+SERVICE_TOKEN_ENV = "OPERATOR_LINEAR_INFISICAL_TOKEN"
 STATE_ENV = "OPERATOR_LINEAR_STATE"
 DRY_RUN_ENV = "OPERATOR_LINEAR_DRY_RUN"
 OWN_EMAIL_ENV = "OPERATOR_ZULIP_EMAIL"
 STATE_NAME = "linear-comments.json"
 PAGE = 500  # messages per history page
+
+# The Operator's Linear credential seam (docs/operator-linear-comments.md):  constants,
+# never environment overrides, as in linear_project_linkifiers.py.
+INFISICAL_API = "https://app.infisical.com/api"
+INFISICAL_PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
+INFISICAL_ENVIRONMENT = "prod"
+INFISICAL_SECRET_PATH = "/linear"
+CLIENT_ID_NAME = "LINEAR_OPERATOR_CLIENT_ID"
+CLIENT_SECRET_NAME = "LINEAR_OPERATOR_CLIENT_SECRET"
+PAIR_NAMES = (CLIENT_ID_NAME, CLIENT_SECRET_NAME)
+DEFAULT_SERVICE_TOKEN_FILE = "~/workspace/.secrets/operator-linear-service-token"
+LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token"
+# The Operator app's own registered scopes.  Asking Linear for a different scope string
+# revokes every token the app holds (the linear-board rule), so this is a constant.
+LINEAR_MINT_SCOPE = "read,comments:create"
+
+
+class CredentialRefused(Exception):
+    """The Operator's Linear credential could not be loaded.  The message names only the
+    stage and a status — never a value, a response body or a URL query."""
+
+    def __init__(self, reason: str, message: str | None = None) -> None:
+        self.reason = reason
+        super().__init__(message or reason)
+
+
+HttpFn = Callable[[str, str, dict[str, str] | None, bytes | None], tuple[int, Any]]
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # never re-send a credential to another host
+        return None
+
+
+def _default_http(
+    method: str, url: str, headers: dict[str, str] | None = None, body: bytes | None = None
+) -> tuple[int, Any]:
+    """(status, parsed JSON) for one request; an unparseable body reads as {}.  Mirrors
+    linear_project_linkifiers._default_http, plus the no-redirect opener the rest of
+    this package uses around credentials:  an HTTP error is a result, not a raise, and
+    its body is parsed only as JSON, never logged."""
+    req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
+    opener = urllib.request.build_opener(_NoRedirect())
+    try:
+        with opener.open(req, timeout=30) as resp:
+            status = getattr(resp, "status", 200)
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read()
+        except OSError:
+            raw = b""
+        try:
+            return exc.code, json.loads(raw or b"{}")
+        except ValueError:
+            return exc.code, {}
+    try:
+        return status, json.loads(raw.decode("utf-8") if raw else "{}")
+    except ValueError:
+        return status, {}
+
+
+def service_token(env: Mapping[str, str], token_file: str | None = None) -> str:
+    """The scoped Infisical service token for the pair fetch:  the host-bound variable
+    wins;  else the configured file (default DEFAULT_SERVICE_TOKEN_FILE).  "" when
+    neither source yields one — the feature is simply unconfigured.  A file that
+    exists but is group- or other-readable raises CredentialRefused:  a service token
+    must not sit in a file other accounts can read."""
+    bound = _strip_quotes(env.get(SERVICE_TOKEN_ENV) or "")
+    if bound:
+        return bound
+    path = Path(token_file or DEFAULT_SERVICE_TOKEN_FILE).expanduser()
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        return ""
+    if mode & 0o077:
+        raise CredentialRefused(
+            "token_file_permissions",
+            "%s is group- or other-readable (mode %04o); the service token file "
+            "must be owner-only" % (path, mode),
+        )
+    try:
+        return _strip_quotes(path.read_text("utf-8"))
+    except OSError:
+        return ""
+
+
+def _infisical_get(http: HttpFn, url: str, token: str, stage: str) -> Any:
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Accept": "application/json",
+        "User-Agent": "operator-linear-comments",
+    }
+    try:
+        status, payload = http("GET", url, headers, None)
+    except OSError as exc:
+        raise CredentialRefused(
+            "infisical_error", "%s: %s" % (stage, type(exc).__name__)
+        ) from None
+    if status is None or not 200 <= int(status) < 300:
+        raise CredentialRefused("infisical_error", "%s: HTTP %s" % (stage, status))
+    return payload
+
+
+def fetch_client_pair(token: str, *, http: HttpFn | None = None) -> tuple[str, str]:
+    """The Operator's Linear OAuth client pair from Infisical, the ONLY source.  The
+    service token is first verified against its own record — read-only, scoped to
+    exactly prod /linear in the AI Fleet Coordinator project — and anything wider is
+    refused before a single secret is read."""
+    request = http or _default_http
+    record = _infisical_get(
+        request, INFISICAL_API + "/v2/service-token", token, "read the service-token record"
+    )
+    if not isinstance(record, dict):
+        raise CredentialRefused("token_invalid", "the service-token record is not an object")
+    permissions = record.get("permissions", [])
+    if isinstance(permissions, dict):
+        permissions = list(permissions)
+    if not isinstance(permissions, list):
+        permissions = []
+    lowered = [str(p).lower() for p in permissions]
+    if "write" in lowered or "read" not in lowered:
+        raise CredentialRefused("token_not_read_only", "the service token is not read-only")
+    scopes = record.get("scopes", record.get("scope", []))
+    if isinstance(scopes, dict):
+        scopes = [scopes]
+    if not isinstance(scopes, list) or len(scopes) != 1:
+        raise CredentialRefused(
+            "token_scope_mismatch", "the service token must be scoped to exactly prod /linear"
+        )
+    scope = scopes[0]
+    if (
+        not isinstance(scope, dict)
+        or scope.get("environment") != INFISICAL_ENVIRONMENT
+        or scope.get("secretPath") != INFISICAL_SECRET_PATH
+    ):
+        raise CredentialRefused(
+            "token_scope_mismatch", "the service token must be scoped to exactly prod /linear"
+        )
+    if record.get("workspace") != INFISICAL_PROJECT_ID:
+        raise CredentialRefused(
+            "token_scope_mismatch", "the service token belongs to another project"
+        )
+    query = urllib.parse.urlencode(
+        {
+            "workspaceId": INFISICAL_PROJECT_ID,
+            "environment": INFISICAL_ENVIRONMENT,
+            "secretPath": INFISICAL_SECRET_PATH,
+        }
+    )
+    raw = _infisical_get(
+        request, INFISICAL_API + "/v3/secrets/raw?" + query, token, "read the Linear client pair"
+    )
+    items: Any = raw.get("secrets", raw) if isinstance(raw, dict) else raw
+    found: dict[str, str] = {}
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("secretKey", item.get("key", item.get("name")))
+            value = item.get("secretValue", item.get("value"))
+            if isinstance(key, str) and isinstance(value, str) and key in PAIR_NAMES:
+                found[key] = value
+    missing = [name for name in PAIR_NAMES if not found.get(name)]
+    if missing:
+        raise CredentialRefused(
+            "pair_incomplete",
+            "Infisical prod /linear is missing %s" % " and ".join(missing),
+        )
+    return found[CLIENT_ID_NAME], found[CLIENT_SECRET_NAME]
+
+
+def mint_access_token(
+    client_id: str, client_secret: str, *, http: HttpFn | None = None
+) -> str:
+    """Exchange the pair at Linear's OAuth token endpoint (client_credentials, the app's
+    own registered scopes — a different scope string would revoke the app's other
+    tokens).  Only the access token comes back;  a refusal names the HTTP status and
+    nothing of Linear's answer."""
+    request = http or _default_http
+    body = urllib.parse.urlencode(
+        {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": LINEAR_MINT_SCOPE,
+        }
+    ).encode()
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "operator-linear-comments",
+    }
+    try:
+        status, payload = request("POST", LINEAR_TOKEN_URL, headers, body)
+    except OSError as exc:
+        raise CredentialRefused(
+            "linear_mint_failed",
+            "minting the Operator's Linear token: %s" % type(exc).__name__,
+        ) from None
+    if (
+        status is None
+        or not 200 <= int(status) < 300
+        or not isinstance(payload, dict)
+        or not payload.get("access_token")
+    ):
+        raise CredentialRefused(
+            "linear_mint_failed", "minting the Operator's Linear token: HTTP %s" % status
+        )
+    return str(payload["access_token"])
+
+
+def load_access_token(
+    env: Mapping[str, str], token_file: str | None = None, *, http: HttpFn | None = None
+) -> str | None:
+    """The minted Linear access token for the hosted engine, or None when no service
+    token is configured (the feature is off).  Raises CredentialRefused when a service
+    token IS configured but the pair cannot be fetched or exchanged.  The pair and the
+    token are held in memory only — nothing here writes either anywhere."""
+    token = service_token(env, token_file)
+    if not token:
+        return None
+    client_id, client_secret = fetch_client_pair(token, http=http)
+    return mint_access_token(client_id, client_secret, http=http)
 
 
 def state_path(root: str | Path, env: Mapping[str, str], dry_run: bool) -> Path:
@@ -267,12 +518,17 @@ def build(
     log: Callable[[str], None],
     clock: Callable[[], float] = time.time,
     monotonic: Callable[[], float] = time.monotonic,
+    service_token_file: str | None = None,
+    http: HttpFn | None = None,
 ) -> OperatorLinearComments | None:
-    """The hosted engine, or None when OPERATOR_LINEAR_TOKEN is not set (the feature is
-    off; the daemon logs the reason).  A ledger that refuses to open raises SystemExit,
-    which the daemon logs as this feature failing closed — never as a daemon failure."""
-    token = (env.get(TOKEN_ENV) or "").strip()
-    if not token:
+    """The hosted engine, or None when no Infisical service token is configured (the
+    feature is off; the daemon logs the reason).  The Operator's Linear pair is fetched
+    and exchanged here, at build, so a build is the one moment credentials move.  A
+    configured credential that is refused raises CredentialRefused, and a ledger that
+    refuses to open raises SystemExit:  the daemon logs both as this feature failing
+    closed — never as a daemon failure."""
+    token = load_access_token(env, service_token_file, http=http)
+    if token is None:
         return None
     dry = env.get(DRY_RUN_ENV) == "1"
     ledger = lr.Ledger(state_path(root, env, dry))

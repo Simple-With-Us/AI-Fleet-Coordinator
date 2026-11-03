@@ -96,6 +96,11 @@ retirement sequence at the end runs, in order, after verification.
   `scripts/agent_sync/server/listener.toml`, and `apply_live_config.py` adds the section
   to a live volume that lacks it.  The server image copies the whole `agent_sync`
   package, so no Dockerfile change is needed.
+- **Credentials:** the daemon's Linear credential loads through the scoped Infisical
+  service token described in the credential seam below — the pair is fetched and
+  exchanged inside `operator_linear.build`, so a daemon reload that leaves the
+  service token unchanged keeps the running engine (and its ledger lock), and a
+  service-token change rebuilds the engine on the same ledger file.
 - **Update policy** (inherited, unchanged):  create immediately on first mention;  edits
   batched to at most one per 10 minutes per comment;  one cycle's writes share a 120 s
   budget so a slow Linear never stalls the listener;  transient failures back off
@@ -104,21 +109,37 @@ retirement sequence at the end runs, in order, after verification.
   the topic gives the entry new content;  an uncertain create is reconciled by marker
   before any re-create, at startup and before the next write.
 
-## The credential seam (the one thing that must be created)
+## The credential seam (resolved 2026-11-03)
 
-The Operator has no Linear credential of its own for commenting.  Before this can be
-enabled, an owner/admin must:
+The original design assumed a single baked token (`OPERATOR_LINEAR_TOKEN`, bound to
+the container).  That is superseded by the live layout, verified 2026-11-03:
 
-1. Create a dedicated Linear app (or a dedicated Operator Linear user with an API key)
-   for the Operator's Zulip -> Linear comments, with scopes `read` + `comments:create`.
-   Do NOT reuse the relay app's token, a seat's Linear OAuth app, or the
-   `/operator-linkifiers` `LINEAR_API_KEY` (that one reads projects for the webhook).
-2. Store its token in Infisical, project AI Fleet Coordinator, prod, folder
-   `/operator-linear-comments`, name `OPERATOR_LINEAR_TOKEN` (registered in
-   INFISICAL.md), and bind it to the server container as the runtime-only variable
-   `OPERATOR_LINEAR_TOKEN` — the same delivery route `LINEAR_RELAY_TOKEN` used.
-3. Prove the edit scope in the Linear sandbox (the relay's open question):  create a
-   comment with the new credential, then edit it, before any live enablement.
+- **The app exists.**  The relay's dedicated Linear app was renamed to "Operator" by
+  the owner;  it keeps its scopes (`read` + `comments:create`) and its OAuth client
+  pair.  Its pair lives in Infisical, project AI Fleet Coordinator, prod, folder
+  `/linear`, as `LINEAR_OPERATOR_CLIENT_ID` and `LINEAR_OPERATOR_CLIENT_SECRET`
+  (registered in INFISICAL.md).  No seat's credential and not the
+  `/operator-linkifiers` `LINEAR_API_KEY` (that one reads projects for the webhook).
+- **The daemon reaches the pair through a service token, never a machine identity.**
+  A scoped read-only Infisical service token, `operator-linear-read`, was minted for
+  exactly prod `/linear` (registry:  SWU Fleet References, "Infisical Service Tokens"
+  row 61).  The daemon resolves it from the runtime-only variable
+  `OPERATOR_LINEAR_INFISICAL_TOKEN` when the host binds it, else from the file named
+  by `[linear_comments] infisical_token_file` (owner-only permissions, checked;
+  default `~/workspace/.secrets/operator-linear-service-token`).
+- **The load, at engine build** (daemon start, and again when the service token
+  changes):  the token is verified against its own Infisical record (read-only, one
+  scope, exactly prod `/linear`, this project — anything wider is refused before a
+  secret is read), the pair is fetched from `GET /api/v3/secrets/raw`, and the pair
+  is exchanged at Linear's OAuth token endpoint (`client_credentials`, the app's own
+  registered scope string — a different string would revoke the app's other tokens).
+  The pair and the minted access token are held in memory only;  a refused load
+  stops this feature, never the daemon.
+- **Still owed before any live enablement:**  the sandbox proof (the relay's open
+  question) — create a comment with this credential, then EDIT it.  It is step 1 of
+  the retirement sequence below, and it needs a validated OAuth token for the app;
+  the old relay's cached token lives in its ledger on the server host, which is
+  where the proof runs.
 
 `OPERATOR_ZULIP_EMAIL` (the Operator bot's own address, already bound on the container
 for the Operator voice) is read when present so the engine skips the Operator's own
@@ -126,7 +147,7 @@ posts, as the relay skipped its own.
 
 ## Tests
 
-`scripts/agent_sync/tests/test_operator_linear.py` (new, 19 tests):  mention first
+`scripts/agent_sync/tests/test_operator_linear.py` (40 tests):  mention first
 appearing in the 3rd message produces a comment covering messages 1–3;  one comment per
 (topic, issue) across repeats, two issues in one topic, and one issue in two topics;
 edits in place reflecting the whole thread;  restart recovery from the ledger with no
@@ -137,8 +158,15 @@ message names, and never blocks a create when the history read fails;  a topic-t
 mention backfills from the first routed message;  tracked topics take every later
 message, untracked topics take none;  history paging and narrow shape;  the engine
 end-to-end and across a restart;  silence until the public-stream set loads;  private
-streams never commented;  dry run writes nothing;  the ledger path;  and the
-`[linear_comments]` config parsing.  The relay's own suite
+streams never commented;  dry run writes nothing;  the ledger path;  the
+`[linear_comments]` config parsing (including `infisical_token_file`);  the credential
+load with the HTTP fetch faked — the service token's sources (bound variable wins,
+owner-only file, missing file is simply off, group-readable file refused), the scope
+verification (a write-capable token, a wider scope or another project's token is
+refused before any secret is read), the pair fetch, the Linear mint with the app's
+own scope string, and the daemon's configure step on a stub (engine built from the
+service token, kept across a reload, a refused token file logged as this feature's
+error and nothing built).  The relay's own suite
 (`test_linear_relay.py`, 78 tests) stays green unchanged in behaviour except the
 whole-topic continuation above.
 
@@ -148,14 +176,16 @@ Run only after the fold-in is merged and deployed, in this order — the order i
 safety property:  at no point are both writers live on the same topic, and at no point
 is neither live.
 
-1. **Credential + sandbox proof.**  Create the Operator's Linear credential (seam
-   above);  in the sandbox, create and then EDIT a comment with it.  If the edit is
-   refused under `read` + `comments:create`, widen the app's scopes first — do not
-   proceed on a create-only proof.
+1. **Sandbox proof.**  The Operator's Linear credential exists (seam above);  in the
+   sandbox, create and then EDIT a comment with it.  If the edit is refused under
+   `read` + `comments:create`, widen the app's scopes first — do not proceed on a
+   create-only proof.
 2. **Deploy dark.**  Ship the fold-in with `[linear_comments] enabled = false` (the
    sample's default) in the server image;  restart the app;  confirm the daemon is
    healthy and logs no `linear-comments` errors.  The standalone relay keeps running.
-3. **Shadow check.**  Bind `OPERATOR_LINEAR_TOKEN`, set `OPERATOR_LINEAR_DRY_RUN=1`,
+3. **Shadow check.**  Place the `operator-linear-read` service token where the
+   daemon resolves it (`OPERATOR_LINEAR_INFISICAL_TOKEN`, or the
+   `[linear_comments] infisical_token_file`), set `OPERATOR_LINEAR_DRY_RUN=1`,
    enable `[linear_comments]`, reload.  For one active topic that names an issue,
    confirm from the log that the engine would create ONE comment and that its rendered
    coverage is the whole topic (the dry-run ledger is a sibling file;  the live ledger

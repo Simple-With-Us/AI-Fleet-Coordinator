@@ -412,6 +412,290 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(dry, Path("/state/operator/linear-comments.dry-run.json"))
 
 
+class FakeHttp:
+    """Scripted HTTP for the credential loader:  routes by URL, records every call.
+    Nothing here touches the network."""
+
+    def __init__(self, record=None, secrets=None, mint=None, statuses=None) -> None:
+        self.record = (
+            {
+                "permissions": ["read"],
+                "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+                "workspace": opl.INFISICAL_PROJECT_ID,
+            }
+            if record is None
+            else record
+        )
+        self.secrets = (
+            {
+                "secrets": [
+                    {"secretKey": "LINEAR_OPERATOR_CLIENT_ID", "secretValue": "cid"},
+                    {"secretKey": "LINEAR_OPERATOR_CLIENT_SECRET", "secretValue": "sec"},
+                    {"secretKey": "LINEAR_MA_CLIENT_ID", "secretValue": "not-the-operator"},
+                ]
+            }
+            if secrets is None
+            else secrets
+        )
+        self.mint = {"access_token": "minted-token"} if mint is None else mint
+        self.statuses = statuses or {}
+        self.calls: list[tuple[str, str, dict, bytes | None]] = []
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append((method, url, dict(headers or {}), body))
+        if url.endswith("/v2/service-token"):
+            return self.statuses.get("record", 200), self.record
+        if "/v3/secrets/raw" in url:
+            return self.statuses.get("secrets", 200), self.secrets
+        if url == opl.LINEAR_TOKEN_URL:
+            return self.statuses.get("mint", 200), self.mint
+        raise AssertionError("unexpected url %s" % url)
+
+
+class CredentialTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.logs: list[str] = []
+
+    def token_file(self, content="st-from-file", mode=0o600) -> Path:
+        path = self.dir / "service-token"
+        path.write_text(content, "utf-8")
+        path.chmod(mode)
+        return path
+
+    # -- where the service token comes from -------------------------------------------
+    def test_service_token_env_wins_over_file(self) -> None:
+        path = self.token_file()
+        env = {opl.SERVICE_TOKEN_ENV: "  st-from-env  "}
+        self.assertEqual(opl.service_token(env, str(path)), "st-from-env")
+
+    def test_service_token_reads_the_configured_file(self) -> None:
+        path = self.token_file()
+        self.assertEqual(opl.service_token({}, str(path)), "st-from-file")
+
+    def test_service_token_missing_file_is_unconfigured(self) -> None:
+        self.assertEqual(opl.service_token({}, str(self.dir / "absent")), "")
+
+    def test_service_token_refuses_a_group_readable_file(self) -> None:
+        path = self.token_file(mode=0o644)
+        with self.assertRaises(opl.CredentialRefused) as caught:
+            opl.service_token({}, str(path))
+        self.assertEqual(caught.exception.reason, "token_file_permissions")
+        self.assertNotIn("st-from-file", str(caught.exception))
+
+    # -- the pair fetch -----------------------------------------------------------------
+    def test_pair_fetch_verifies_scope_then_reads_the_pair(self) -> None:
+        http = FakeHttp()
+        pair = opl.fetch_client_pair("st-test", http=http)
+        self.assertEqual(pair, ("cid", "sec"))
+        record_call, secrets_call = http.calls
+        self.assertEqual(record_call[2]["Authorization"], "Bearer st-test")
+        query = secrets_call[1].split("?", 1)[1]
+        self.assertIn("workspaceId=" + opl.INFISICAL_PROJECT_ID, query)
+        self.assertIn("environment=prod", query)
+        self.assertIn("secretPath=%2Flinear", query)
+
+    def test_pair_fetch_refuses_a_write_capable_token(self) -> None:
+        http = FakeHttp(
+            record={
+                "permissions": ["read", "write"],
+                "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+                "workspace": opl.INFISICAL_PROJECT_ID,
+            }
+        )
+        with self.assertRaises(opl.CredentialRefused) as caught:
+            opl.fetch_client_pair("st-test", http=http)
+        self.assertEqual(caught.exception.reason, "token_not_read_only")
+        self.assertEqual(len(http.calls), 1)  # refused before any secret was read
+
+    def test_pair_fetch_refuses_a_wider_scope(self) -> None:
+        for scopes in (
+            [{"environment": "prod", "secretPath": "/"}],
+            [
+                {"environment": "prod", "secretPath": "/linear"},
+                {"environment": "prod", "secretPath": "/zulip"},
+            ],
+        ):
+            http = FakeHttp(
+                record={
+                    "permissions": ["read"],
+                    "scopes": scopes,
+                    "workspace": opl.INFISICAL_PROJECT_ID,
+                }
+            )
+            with self.assertRaises(opl.CredentialRefused) as caught:
+                opl.fetch_client_pair("st-test", http=http)
+            self.assertEqual(caught.exception.reason, "token_scope_mismatch")
+
+    def test_pair_fetch_refuses_another_projects_token(self) -> None:
+        http = FakeHttp(
+            record={
+                "permissions": ["read"],
+                "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+                "workspace": "00000000-0000-0000-0000-000000000000",
+            }
+        )
+        with self.assertRaises(opl.CredentialRefused) as caught:
+            opl.fetch_client_pair("st-test", http=http)
+        self.assertEqual(caught.exception.reason, "token_scope_mismatch")
+
+    def test_pair_fetch_refuses_an_incomplete_pair(self) -> None:
+        http = FakeHttp(
+            secrets={"secrets": [{"secretKey": "LINEAR_OPERATOR_CLIENT_ID", "secretValue": "cid"}]}
+        )
+        with self.assertRaises(opl.CredentialRefused) as caught:
+            opl.fetch_client_pair("st-test", http=http)
+        self.assertEqual(caught.exception.reason, "pair_incomplete")
+        self.assertIn("LINEAR_OPERATOR_CLIENT_SECRET", str(caught.exception))
+
+    def test_pair_fetch_refuses_on_an_http_error(self) -> None:
+        http = FakeHttp(statuses={"record": 500})
+        with self.assertRaises(opl.CredentialRefused) as caught:
+            opl.fetch_client_pair("st-test", http=http)
+        self.assertEqual(caught.exception.reason, "infisical_error")
+        self.assertIn("HTTP 500", str(caught.exception))
+
+    # -- the Linear mint ------------------------------------------------------------------
+    def test_mint_exchanges_the_pair_with_the_apps_own_scopes(self) -> None:
+        http = FakeHttp()
+        token = opl.mint_access_token("cid", "sec", http=http)
+        self.assertEqual(token, "minted-token")
+        _method, _url, _headers, body = http.calls[0]
+        import urllib.parse
+
+        form = urllib.parse.parse_qs(body.decode("utf-8"))
+        self.assertEqual(form["grant_type"], ["client_credentials"])
+        self.assertEqual(form["client_id"], ["cid"])
+        self.assertEqual(form["client_secret"], ["sec"])
+        self.assertEqual(form["scope"], [opl.LINEAR_MINT_SCOPE])
+
+    def test_mint_refuses_without_an_access_token(self) -> None:
+        for mint, statuses in (({}, None), ({"access_token": "x"}, {"mint": 401})):
+            http = FakeHttp(mint=mint, statuses=statuses)
+            with self.assertRaises(opl.CredentialRefused) as caught:
+                opl.mint_access_token("cid", "sec", http=http)
+            self.assertEqual(caught.exception.reason, "linear_mint_failed")
+
+    # -- the whole load, and build ---------------------------------------------------------
+    def test_load_access_token_runs_the_whole_chain(self) -> None:
+        http = FakeHttp()
+        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
+        self.assertEqual(opl.load_access_token(env, http=http), "minted-token")
+        self.assertEqual(len(http.calls), 3)  # record, pair, mint — in that order
+        self.assertTrue(http.calls[0][1].endswith("/v2/service-token"))
+        self.assertIn("/v3/secrets/raw", http.calls[1][1])
+        self.assertEqual(http.calls[2][1], opl.LINEAR_TOKEN_URL)
+
+    def test_load_access_token_unconfigured_is_none(self) -> None:
+        http = FakeHttp()
+        self.assertIsNone(opl.load_access_token({}, str(self.dir / "absent"), http=http))
+        self.assertEqual(http.calls, [])
+
+    def test_build_wires_the_minted_token_into_the_engine(self) -> None:
+        http = FakeHttp()
+        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
+        engine = opl.build(env, self.dir, log=self.logs.append, http=http)
+        self.assertIsNotNone(engine)
+        self.assertIsInstance(engine.worker.linear, lr.LinearClient)
+        engine.close()
+
+    def test_build_without_a_service_token_is_off(self) -> None:
+        engine = opl.build(
+            {},
+            self.dir,
+            log=self.logs.append,
+            service_token_file=str(self.dir / "absent"),
+            http=FakeHttp(),
+        )
+        self.assertIsNone(engine)
+
+    def test_build_propagates_a_refused_credential(self) -> None:
+        http = FakeHttp(statuses={"secrets": 403})
+        env = {opl.SERVICE_TOKEN_ENV: "st-test"}
+        with self.assertRaises(opl.CredentialRefused):
+            opl.build(env, self.dir, log=self.logs.append, http=http)
+
+
+class _StubLog:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, dict]] = []
+
+    def write(self, kind, **fields) -> None:
+        self.rows.append((kind, fields))
+
+    def kinds(self) -> list[str]:
+        return [kind for kind, _fields in self.rows]
+
+
+class _StubClock:
+    def time(self) -> float:
+        return 1000.0
+
+    def monotonic(self) -> float:
+        return 1000.0
+
+
+class DaemonConfigureTests(unittest.TestCase):
+    """The daemon's _configure_linear_comments, driven on a stub self:  the engine is
+    built from the service token, kept across a reload that leaves the token alone,
+    and the feature — never the daemon — fails closed on a refused credential."""
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+
+    def stub(self, env, token_file=""):
+        import types
+
+        from agent_sync import daemon as D
+
+        stub = types.SimpleNamespace()
+        stub.config = types.SimpleNamespace(
+            linear_comments_enabled=True,
+            linear_comments_infisical_token_file=token_file,
+        )
+        stub.env = env
+        stub.root = self.dir
+        stub.log = _StubLog()
+        stub.clock = _StubClock()
+        stub.hidden: list[str] = []
+        stub.hide_values = lambda values: stub.hidden.extend(values)
+        stub.scrub = lambda text: text
+        stub.linear_comments = None
+        stub._linear_comments_spec = None
+        stub.configure = lambda: D.Daemon._configure_linear_comments(stub)
+        return stub
+
+    def test_no_service_token_logs_off_and_builds_nothing(self) -> None:
+        stub = self.stub({}, token_file=str(self.dir / "absent"))
+        stub.configure()
+        self.assertIsNone(stub.linear_comments)
+        self.assertIn("linear-comments-off", stub.log.kinds())
+
+    def test_engine_builds_from_the_service_token_and_survives_a_reload(self) -> None:
+        http = FakeHttp()
+        stub = self.stub({opl.SERVICE_TOKEN_ENV: "st-test"})
+        with mock.patch.object(opl, "_default_http", http):
+            stub.configure()
+            engine = stub.linear_comments
+            self.assertIsNotNone(engine)
+            self.assertEqual(stub._linear_comments_spec, ("st-test",))
+            self.assertIn("st-test", stub.hidden)  # the log scrubber knows the value
+            stub.configure()  # a reload with the same token keeps the engine
+            self.assertIs(stub.linear_comments, engine)
+            self.assertEqual(len(http.calls), 3)  # no second fetch or mint
+        engine.close()
+
+    def test_a_group_readable_token_file_fails_closed_in_the_log(self) -> None:
+        path = self.dir / "service-token"
+        path.write_text("st-from-file", "utf-8")
+        path.chmod(0o644)
+        stub = self.stub({}, token_file=str(path))
+        stub.configure()
+        self.assertIsNone(stub.linear_comments)
+        self.assertIn("linear-comments-error", stub.log.kinds())
+        self.assertNotIn("linear-comments-off", stub.log.kinds())
+
+
 class LinearCommentsConfigTests(unittest.TestCase):
     def test_section_parsing(self) -> None:
         from agent_sync import config as C
@@ -425,6 +709,19 @@ class LinearCommentsConfigTests(unittest.TestCase):
         self.assertFalse(cfg.linear_comments_enabled)
         cfg = C.from_dict({"linear_comments": {"enabled": True, "bogus": 1}})
         self.assertIn("[linear_comments] has unknown setting(s): bogus", cfg.errors)
+        self.assertFalse(cfg.linear_comments_enabled)
+
+    def test_infisical_token_file_parsing(self) -> None:
+        from agent_sync import config as C
+
+        self.assertEqual(C.from_dict({}).linear_comments_infisical_token_file, "")
+        cfg = C.from_dict({"linear_comments": {"infisical_token_file": " /data/tok "}})
+        self.assertEqual(cfg.linear_comments_infisical_token_file, "/data/tok")
+        self.assertNotIn(
+            "linear_comments.infisical_token_file must be a string", cfg.errors
+        )
+        cfg = C.from_dict({"linear_comments": {"infisical_token_file": 7}})
+        self.assertIn("linear_comments.infisical_token_file must be a string", cfg.errors)
         self.assertFalse(cfg.linear_comments_enabled)
 
 

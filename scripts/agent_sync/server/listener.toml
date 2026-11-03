@@ -113,12 +113,15 @@ enabled = false
 # The Operator's Zulip -> Linear living comments (scripts/agent_sync/operator_linear.py):
 # one standing, edited-in-place comment per (Zulip topic, Linear issue mentioned in it),
 # covering the whole topic.  This replaces the standalone linear_relay process and its
-# own bot.  Its writes use the Operator's own Linear credential, bound as the Coolify
-# runtime-only variable OPERATOR_LINEAR_TOKEN (a dedicated Linear credential for the
-# Operator, held in Infisical;  see docs/operator-linear-comments.md).  Server instance
-# only.  Enable only after that variable is set, then restart the app.
+# own bot.  Its writes use the Operator's own Linear app:  an OAuth client pair in
+# Infisical (AI Fleet Coordinator, prod, /linear), fetched at daemon start through ONE
+# scoped read-only Infisical service token — bound as the runtime-only variable
+# OPERATOR_LINEAR_INFISICAL_TOKEN, or held in the infisical_token_file below (a 0600
+# file;  see docs/operator-linear-comments.md).  Server instance only.  Enable only
+# after the service token is in place, then restart the app.
 [linear_comments]
 enabled = false
+# infisical_token_file = "/data/operator/linear-service-token"
 
 [seat.MA]
 instance = "server"

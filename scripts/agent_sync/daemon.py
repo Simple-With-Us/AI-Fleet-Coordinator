@@ -779,7 +779,7 @@ class Daemon:
         # The Operator's Zulip -> Linear living comments (operator_linear.py), the
         # standalone relay hosted by this daemon:  rebuilt on every start and reload
         # (_configure_linear_comments), None while [linear_comments] is off or no
-        # OPERATOR_LINEAR_TOKEN is bound.
+        # Infisical service token for the Operator's Linear pair resolves.
         self.linear_comments: Any | None = None
         self._linear_comments_spec: tuple[Any, ...] | None = None
         self.backfill_lock = threading.Lock()
@@ -1180,28 +1180,45 @@ class Daemon:
 
     def _configure_linear_comments(self) -> None:
         """The Operator's Zulip -> Linear living comments (operator_linear.py), or None:
-        off unless [linear_comments] enabled is true and OPERATOR_LINEAR_TOKEN is bound
-        (the Operator's own Linear credential, loaded by the container from Infisical).
-        A reload that leaves the token as it was keeps the same engine object, so its
-        ledger lock and its (topic, issue) -> comment mapping survive;  a token change
-        builds a fresh engine on the same ledger file, which adopts the standing
-        comments by their marker instead of stacking new ones."""
+        off unless [linear_comments] enabled is true and the Operator's Linear credential
+        loads — the OAuth client pair in Infisical prod /linear, reached through the
+        scoped read-only Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN, or
+        the [linear_comments] infisical_token_file).  A reload that leaves the service
+        token as it was keeps the same engine object, so its ledger lock and its
+        (topic, issue) -> comment mapping survive;  a service-token change builds a
+        fresh engine on the same ledger file, which adopts the standing comments by
+        their marker instead of stacking new ones.  The pair is fetched and exchanged
+        inside the build, and held in memory only."""
         old = getattr(self, "linear_comments", None)
         old_spec = getattr(self, "_linear_comments_spec", None)
         self.linear_comments = None
         self._linear_comments_spec = None
         if not getattr(self.config, "linear_comments_enabled", False):
             return
-        token = Z._strip_quotes(self.env.get("OPERATOR_LINEAR_TOKEN") or "")
-        if not token:
+        try:
+            # Imported here, not at module load, so a missing module never stops the daemon.
+            from . import operator_linear as OPL
+        except ImportError as exc:
+            self.log.write("linear-comments-error", error=type(exc).__name__)
+            return
+        token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
+        try:
+            service = OPL.service_token(self.env, token_file)
+        except OPL.CredentialRefused as exc:
+            # The token file itself is unusable (its permissions):  the message names
+            # the file and the mode, never a value.
+            self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            return
+        if not service:
             self.log.write(
                 "linear-comments-off",
-                reason="OPERATOR_LINEAR_TOKEN is not set",
+                reason="no Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN "
+                "is not set and no usable infisical_token_file)",
                 hint=ENV_RESTART_HINT,
             )
             return
-        self.hide_values([token])
-        if old is not None and old_spec == (token,):
+        self.hide_values([service])
+        if old is not None and old_spec == (service,):
             self.linear_comments = old
             self._linear_comments_spec = old_spec
             return
@@ -1212,19 +1229,19 @@ class Daemon:
             if callable(close):
                 close()
         try:
-            # Imported here, not at module load, so a missing module never stops the daemon.
-            from . import operator_linear as OPL
-        except ImportError as exc:
-            self.log.write("linear-comments-error", error=type(exc).__name__)
-            return
-        try:
             engine = OPL.build(
                 self.env,
                 self.root,
                 log=lambda m: self.log.write("linear-comments", detail=self.scrub(m)),
                 clock=self.clock.time,
                 monotonic=self.clock.monotonic,
+                service_token_file=token_file,
             )
+        except OPL.CredentialRefused as exc:
+            # The pair fetch or the Linear mint was refused:  this feature fails
+            # closed, the daemon does not.  The message names a stage and a status.
+            self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            return
         except SystemExit as exc:
             # The ledger refused to open (another holder, or unreadable state):  this
             # feature fails closed, the daemon does not.
@@ -1236,12 +1253,12 @@ class Daemon:
         if engine is None:
             self.log.write(
                 "linear-comments-off",
-                reason="OPERATOR_LINEAR_TOKEN is not set",
+                reason="no Infisical service token",
                 hint=ENV_RESTART_HINT,
             )
             return
         self.linear_comments = engine
-        self._linear_comments_spec = (token,)
+        self._linear_comments_spec = (service,)
 
     def _observe_linear_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
         """Feed one routed message to the Operator's Zulip -> Linear living comments
