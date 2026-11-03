@@ -218,12 +218,15 @@ def validate_config(doc):
     coolify = server.get("coolify") or {}
     if not isinstance(coolify, dict) or not isinstance(coolify.get("redeploy", False), bool):
         bad("server.coolify")
+    if type(server.get("resourcePolicy", False)) is not bool:
+        bad("server.resourcePolicy")
     return {
         "agents": agents,
         "pm2": pm2_apps,
         "units": units,
         "updates": updates,
         "redeploy": bool(coolify.get("redeploy", False)),
+        "resourcePolicy": server.get("resourcePolicy", False),
     }
 
 
@@ -912,6 +915,16 @@ def handle(ctx, scope, action, target, mode):
         if mode not in ("plan", "yes"):
             raise Refused("pass --plan to see the commands or --yes to run them")
         config = load_config(ctx.config_path)
+        if scope == "server" and action in ("resource-status", "resource-policy"):
+            if not config["resourcePolicy"]:
+                raise Refused("coding resource controls are not in the allowlist")
+            # -I omits the script directory. Only this reviewed sibling directory is
+            # added; neither the request nor the environment selects an import path.
+            scripts = str(Path(__file__).resolve().parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            from fleet_resource_control import handle as handle_resource
+            return handle_resource(ctx, action, target, mode)
         commands, note, audit_target = plan_request(ctx, config, scope, action, target)
         answer["commands"] = commands
         if mode == "plan":
@@ -985,7 +998,7 @@ def parse_ssh_command(text):
     plain = [w for w in words if not w.startswith("-")]
     if len(plain) != 3 or plain[0] != "server":
         raise Refused("only a server verb with one target is accepted over ssh")
-    if plain[1] not in ACTIONS + ("update", "redeploy", "logs"):
+    if plain[1] not in ACTIONS + ("update", "redeploy", "logs", "resource-status", "resource-policy"):
         raise Refused("unknown server verb")
     if words[:3] != plain:
         raise Refused("the verb and target come first")

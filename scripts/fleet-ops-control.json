@@ -37,6 +37,7 @@
     ]
   },
   "server": {
+    "resourcePolicy": true,
     "units": [
       {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"]},
       {"unit": "fleet-cli-git-update.timer", "scope": "system", "actions": ["start", "stop", "restart"]}

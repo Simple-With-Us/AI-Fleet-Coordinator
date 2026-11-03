@@ -140,6 +140,13 @@ struct FleetOverviewView: View {
             MiniMaxDetailView()
         case .serverStatus:
             ServerStatusPanel()
+        case .serverResourceLimits:
+            ResourceLimitsView(
+                readPolicy: { await OpsResourcePolicyReader().read() },
+                onReviewChange: { field, value, revision in
+                    OpsController.shared.plan(.serverResource(field: field, value: value, revision: revision))
+                }
+            )
         case .hosts:
             FleetHostsView()
         case .operations:

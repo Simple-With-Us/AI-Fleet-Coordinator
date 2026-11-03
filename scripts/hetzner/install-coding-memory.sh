@@ -9,6 +9,8 @@ scripts=$(cd "$here/.." && pwd)
 dest=/usr/local/lib/fleet-coding-memory
 config=/etc/fleet-coding-memory
 install -d -m 0700 "$dest" "$dest/settings" "$dest/settings/fleet_secrets" "$config"
+install -d -m 0755 /run/fleet-coding-resources
+install -m 0600 "$here/coding_resources.py" "$dest/coding_resources.py"
 install -m 0600 "$here/fleet_coding_memory.py" "$dest/fleet_coding_memory.py"
 install -m 0700 "$scripts/fleet-secrets" "$dest/settings/fleet-secrets"
 for source in "$scripts"/fleet_secrets/*.py; do

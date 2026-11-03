@@ -18,6 +18,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    from .coding_resources import CPUManager, policy_revision, public_snapshot, publish_snapshot
+except ImportError:  # Installed as sibling scripts, rather than an imported package.
+    from coding_resources import CPUManager, policy_revision, public_snapshot, publish_snapshot
+
 POLICY_CMD = ["get-verified", "CODING_RAM_POLICY", "--path", "/coding-memory"]
 POLICY_FIELDS = {
     "schema_version",
@@ -39,6 +44,7 @@ POLICY_FIELDS = {
     "production_container_prefixes",
     "production_name_prefixes",
 }
+OPTIONAL_POLICY_FIELDS = {"cpu_cores", "cpu_weight", "allow_borrowing"}
 CGROOT = Path("/sys/fs/cgroup")
 STATE_DIR = Path("/var/lib/fleet-coding-memory")
 EXCLUDE_FILE = Path("/etc/fleet-coding-memory/exclude-units")
@@ -102,8 +108,16 @@ def load_excluded_units(path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, war
 
 def validate_policy(raw: str) -> dict[str, Any]:
     obj = json.loads(raw)
-    if not isinstance(obj, dict) or set(obj) != POLICY_FIELDS or obj.get("schema_version") != 1:
+    if (not isinstance(obj, dict) or not POLICY_FIELDS <= set(obj)
+        or set(obj) - POLICY_FIELDS - OPTIONAL_POLICY_FIELDS or obj.get("schema_version") != 1):
         raise ValueError("invalid policy schema")
+    for key in ("cpu_cores", "cpu_weight"):
+        if key in obj and (type(obj[key]) is not int or obj[key] < 1):
+            raise ValueError(f"invalid {key}")
+    if "cpu_weight" in obj and obj["cpu_weight"] > 10000:
+        raise ValueError("invalid cpu_weight")
+    if "allow_borrowing" in obj and type(obj["allow_borrowing"]) is not bool:
+        raise ValueError("invalid allow_borrowing")
     ints = POLICY_FIELDS - {
         "schema_version",
         "pressure_some_avg10",
@@ -132,6 +146,9 @@ def validate_policy(raw: str) -> dict[str, Any]:
             or any(not isinstance(x, str) or not x or "/" in x for x in obj[k])
         ):
             raise ValueError(f"invalid {k}")
+    for key in ("coding_units", "coding_containers"):
+        if any(not UNIT_NAME_RE.fullmatch(name) for name in obj[key]):
+            raise ValueError(f"invalid {key}")
     if (
         obj["critical_budget_bytes"] > obj["budget_bytes"]
         or obj["recovery_available_bytes"] < obj["pressure_available_bytes"]
@@ -902,7 +919,7 @@ def step(
                     - policy["reserve_bytes"],
                 ),
             )
-            if mode == "normal"
+            if mode == "normal" and policy.get("allow_borrowing", True)
             else min(total, budget)
         )
     )
@@ -931,6 +948,14 @@ def step(
     production_protected, production_unprotected = production_protection_counts(
         prod, root, production_limits
     )
+    high_mismatches = len(code) - len(allocations)
+    for path, desired_high in allocations.items():
+        try:
+            actual_high = (path / "memory.high").read_text().strip()
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            high_mismatches += int(actual_high != str(desired_high // page_size * page_size))
+        except OSError:
+            high_mismatches += 1
     state["mode"] = mode
     state["last_status"] = {
         "mode": mode,
@@ -945,6 +970,7 @@ def step(
         "production_unprotected_groups": production_unprotected,
         "oom_kill_delta": oom_delta,
         "control_write_failures": write_failures,
+        "actual_high_mismatches": high_mismatches,
         "excluded_units": len(excluded_units),
         "control_reasserted": reasserted,
         "control_suspended": len(suspended),
@@ -992,6 +1018,7 @@ def refresh_worker(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--public-status", type=Path, default=Path("/run/fleet-coding-resources/status.json"))
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--state-dir", type=Path, default=STATE_DIR)
@@ -1049,6 +1076,11 @@ def main() -> int:
         ):
             print("state ownership record invalid; refusing cgroup changes", file=sys.stderr)
             return 1
+    try:
+        cpu = CPUManager(args.cgroot, state, lambda: atomic_json(state_path, state))
+    except ValueError:
+        print("CPU ownership cache invalid; refusing control changes", file=sys.stderr)
+        return 1
     reconcile_owned(state, lambda: atomic_json(state_path, state))
     reset_transient_state(state)
     policy, stale = load_lkg(args.state_dir)
@@ -1078,6 +1110,7 @@ def main() -> int:
     excluded_cgroups: set[Path] = set()
     seen_excluded: set[str] | None = None
     discovered_once = False
+    seen_policy_revision = None
     try:
         while True:
             if quit_flag:
@@ -1087,6 +1120,10 @@ def main() -> int:
             if excluded_units != seen_excluded:
                 discovered_once = False
                 seen_excluded = set(excluded_units)
+            revision = policy_revision(policy)
+            if revision != seen_policy_revision:
+                discovered_once = False
+                seen_policy_revision = revision
             state["policy_stale"] = stale
             try:
                 if (
@@ -1102,8 +1139,10 @@ def main() -> int:
                     excluded_cgroups = set(
                         resolve_unit_cgroups(sorted(excluded_units), args.cgroot)
                     )
+                    cpu.discover(policy, excluded_units, excluded_cgroups)
                     last_discovery = time.monotonic()
                     discovered_once = True
+                cpu.apply(policy, suspended_controls(args.state_dir))
                 report = step(
                     policy,
                     args.cgroot,
@@ -1116,11 +1155,19 @@ def main() -> int:
                 )
                 state["updated_at"] = int(time.time())
                 atomic_json(state_path, state)
+                publish_snapshot(public_snapshot(policy, state, cpu), args.public_status)
                 if args.once:
                     print(json.dumps(report))
                     break
             except Exception as e:
                 print(f"controller tick failed: {type(e).__name__}", file=sys.stderr)
+                # A failed tick must invalidate the previous public receipt.
+                try:
+                    receipt = public_snapshot(policy, state, cpu)
+                    receipt["status"] = "unavailable"
+                    publish_snapshot(receipt, args.public_status)
+                except Exception:
+                    pass
                 if args.once:
                     return 1
             if quit_flag:
@@ -1131,9 +1178,16 @@ def main() -> int:
         refresh.set()
         worker.join(timeout=1)
         if quit_flag:
+            cpu.restore(suspended_controls(args.state_dir))
             restore_owned(state, lambda: atomic_json(state_path, state))
             reset_transient_state(state)
             atomic_json(state_path, state)
+            try:
+                receipt = public_snapshot(policy, state, cpu)
+                receipt["status"] = "unavailable"
+                publish_snapshot(receipt, args.public_status)
+            except Exception:
+                pass
         os.close(lock_fd)
     return 0
 

@@ -91,11 +91,15 @@ enum OpsAction: Equatable {
     case pm2App(verb: OpsVerb, name: String)
     /// `server logs UNIT`,  run on the server:  the last journal lines,  read only.
     case logs(unit: String)
+    /// Change one coding resource-policy field,  reviewed against a revision on the server.
+    case serverResource(field: String, value: String, revision: String)
+    /// Read the server's coding resource-policy receipt,  without changing anything.
+    case resourceStatus
 
     /// True when the action runs on the server,  over ssh.
     var runsOnServer: Bool {
         switch self {
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs: return true
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return true
         case .macAgent, .knobSet, .knobUnset, .pm2App: return false
         }
     }
@@ -111,6 +115,8 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return "Reset \(key) to the default"
         case .pm2App(let verb, let name): return "\(verb.title) \(name) (pm2) on this Mac"
         case .logs(let unit): return "Read the last logs of \(unit) on the server"
+        case .serverResource(let field, let value, _): return "Set server \(resourceTitle(field)) to \(value)"
+        case .resourceStatus: return "Read server resource policy"
         }
     }
 
@@ -125,6 +131,8 @@ enum OpsAction: Equatable {
         case .knobUnset: return "knob unset"
         case .pm2App(let verb, _): return "pm2 \(verb.rawValue)"
         case .logs: return "server logs"
+        case .serverResource: return "server resource policy"
+        case .resourceStatus: return "server resource status"
         }
     }
 
@@ -142,6 +150,8 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return key
         case .pm2App(_, let name): return name
         case .logs(let unit): return unit
+        case .serverResource(let field, _, _): return "coding.\(field)"
+        case .resourceStatus: return "coding"
         }
     }
 
@@ -156,6 +166,21 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return ["unset", key]
         case .pm2App(let verb, let name): return ["pm2", verb.rawValue, name]
         case .logs(let unit): return ["server", "logs", unit]
+        case .serverResource(let field, let value, let revision):
+            return ["server", "resource-policy", "\(field).\(value).\(revision)"]
+        case .resourceStatus: return ["server", "resource-status", "coding"]
+        }
+    }
+
+    private func resourceTitle(_ field: String) -> String {
+        switch field {
+        case "cpu-cores": return "CPU Cores"
+        case "cpu-weight": return "CPU Weight"
+        case "ram-budget-gib": return "RAM Budget"
+        case "ram-critical-gib": return "RAM Critical Threshold"
+        case "ram-reserve-gib": return "Host RAM Reserve"
+        case "borrow-idle": return "Idle Capacity Borrowing"
+        default: return "Resource Policy"
         }
     }
 }
@@ -217,6 +242,9 @@ struct OpsCommandBuilder {
 
     /// The longest knob value Muster passes on.
     static let maximumValueLength = 1024
+    private static let resourcePolicyFields: Set<String> = [
+        "cpu-cores", "cpu-weight", "ram-budget-gib", "ram-critical-gib", "ram-reserve-gib", "borrow-idle",
+    ]
 
     /// A label,  unit,  update name or uuid is a plain token:  it starts with a letter or a
     /// digit and holds only letters,  digits,  `.`,  `_`,  `-` and `@`.  A token that could
@@ -330,6 +358,23 @@ struct OpsCommandBuilder {
         return true
     }
 
+    private static func isSafeResourceRevision(_ value: String) -> Bool {
+        value.count == 64 && value.unicodeScalars.allSatisfy {
+            $0.isASCII && ((65...70).contains($0.value) || (97...102).contains($0.value) || (48...57).contains($0.value))
+        } && !value.contains(where: { $0.isUppercase })
+    }
+
+    private static func isSafeResourceValue(field: String, value: String) -> Bool {
+        if field == "borrow-idle" { return value == "0" || value == "1" }
+        guard !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
+              let number = Int(value), number <= 10_000, String(number) == value else { return false }
+        switch field {
+        case "cpu-cores", "cpu-weight", "ram-critical-gib": return number >= 1
+        case "ram-budget-gib", "ram-reserve-gib": return number >= 2
+        default: return false
+        }
+    }
+
     /// Check an action's values before anything runs.
     static func validate(_ action: OpsAction) throws {
         switch action {
@@ -354,6 +399,12 @@ struct OpsCommandBuilder {
             }
         case .logs(let unit):
             guard isUnitName(unit) else { throw OpsControlError.invalidArgument("unit name") }
+        case .serverResource(let field, let value, let revision):
+            guard resourcePolicyFields.contains(field) else { throw OpsControlError.invalidArgument("resource field") }
+            guard isSafeResourceValue(field: field, value: value) else { throw OpsControlError.invalidArgument("resource value") }
+            guard isSafeResourceRevision(revision) else { throw OpsControlError.invalidArgument("resource revision") }
+        case .resourceStatus:
+            break
         }
     }
 
@@ -367,7 +418,7 @@ struct OpsCommandBuilder {
         switch action {
         case .macAgent, .pm2App: return helperURL
         case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs: return nil
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return nil
         }
     }
 
@@ -412,6 +463,9 @@ struct OpsCommandBuilder {
     /// The one invocation for an action and a mode.
     func invocation(for action: OpsAction, mode: OpsMode) throws -> OpsInvocation {
         try Self.validate(action)
+        if case .resourceStatus = action, mode != .plan {
+            throw OpsControlError.invalidArgument("read-only resource status mode")
+        }
         let timeout = mode == .plan ? OpsControlRoute.planTimeout : OpsControlRoute.runTimeout
         var tail = action.verbArguments + [mode.flag, "--json"]
         if case .knobSet(let key, let value) = action {
@@ -439,7 +493,7 @@ struct OpsCommandBuilder {
                 environment: localEnvironment,
                 timeout: timeout
             )
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs:
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
             // `--` ends ssh's own options,  so nothing after the alias is read as one.  The
             // server's forced command reads the rest from SSH_ORIGINAL_COMMAND and checks it
             // against its own allowlist again.
@@ -608,9 +662,11 @@ struct OpsResult: Decodable, Equatable {
     let output: String?
     /// How many journal lines `output` holds.
     let lines: Int?
+    /// The server's direct coding resource-policy receipt,  when the status verb returned one.
+    let resourcePolicy: ResourcePolicySnapshot?
 
     enum CodingKeys: String, CodingKey {
-        case ok, verb, target, commands, result, detail, old, new, lkg, output, lines
+        case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
         case oldSource = "old_source"
     }
 
@@ -630,6 +686,7 @@ struct OpsResult: Decodable, Equatable {
         lkg = try? container.decodeIfPresent(String.self, forKey: .lkg)
         output = try? container.decodeIfPresent(String.self, forKey: .output)
         lines = try? container.decodeIfPresent(Int.self, forKey: .lines)
+        resourcePolicy = try? container.decodeIfPresent(ResourcePolicySnapshot.self, forKey: .resourcePolicy)
     }
 }
 
@@ -703,6 +760,8 @@ struct OpsOutcome: Equatable {
     var logText: String? = nil
     /// How many journal lines `logText` holds.
     var logLines: Int? = nil
+    /// The direct resource-policy receipt,  when a status read supplied one.
+    var resourcePolicy: ResourcePolicySnapshot? = nil
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -807,7 +866,8 @@ enum OpsResultParser {
             exitCode: result.exitCode,
             knobChange: knobChange,
             logText: logText,
-            logLines: logLines
+            logLines: logLines,
+            resourcePolicy: answer.resourcePolicy
         )
     }
 
@@ -886,6 +946,36 @@ enum OpsResultParser {
             return "The helper printed no answer (exit \(result.exitCode))."
         }
         return ApplyCopy.join("The helper printed no answer (exit \(result.exitCode)).", tail)
+    }
+}
+
+/// Reads one direct policy receipt over the existing fixed,  read-only ssh route.
+///
+/// This deliberately bypasses the confirmation sheet because `resource-status --plan`
+/// cannot change state.  Resource writes still go through `OpsController.plan`,  review,
+/// Touch ID and the controller's fresh-plan comparison.
+struct OpsResourcePolicyReader {
+    var runner: OpsRunning = OpsProcessRunner()
+    var makeBuilder: () -> OpsCommandBuilder = {
+        OpsCommandBuilder(repoRoot: FleetConfigLocation.resolve().repoRoot)
+    }
+
+    func read(now: Date? = nil) async -> ResourcePolicyReading {
+        let action = OpsAction.resourceStatus
+        do {
+            let invocation = try makeBuilder().invocation(for: action, mode: .plan)
+            let process = try await runner.run(invocation)
+            let outcome = OpsResultParser.parse(process, mode: .plan, action: action, timeout: invocation.timeout)
+            guard outcome.isSuccess(for: .plan) else { return .unavailable(outcome.detail) }
+            guard let snapshot = outcome.resourcePolicy else {
+                return .unavailable("The server did not include a resource policy receipt.")
+            }
+            let data = try JSONEncoder().encode(snapshot)
+            let receivedAt = now ?? Date()
+            return ResourcePolicyReading.decode(data, now: receivedAt, directReceiptAt: receivedAt)
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
     }
 }
 

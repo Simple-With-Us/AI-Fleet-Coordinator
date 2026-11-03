@@ -61,6 +61,40 @@ final class OpsCommandBuilderTests: XCTestCase {
         XCTAssertEqual(OpsAction.logs(unit: "fleet-server-status.timer").auditVerb, "server logs")
     }
 
+    func test_resource_policy_write_and_status_use_the_fixed_ssh_routes() throws {
+        let revision = String(repeating: "a", count: 64)
+        let action = OpsAction.serverResource(field: "cpu-cores", value: "8", revision: revision)
+        let write = try exampleBuilder().invocation(for: action, mode: .plan)
+        XCTAssertEqual(write.executable, "/usr/bin/ssh")
+        XCTAssertEqual(write.arguments, sshPrefix + [
+            "server", "resource-policy", "cpu-cores.8.\(revision)", "--plan", "--json",
+        ])
+        XCTAssertTrue(action.runsOnServer)
+        XCTAssertEqual(action.auditVerb, "server resource policy")
+        XCTAssertEqual(action.auditTarget, "coding.cpu-cores")
+
+        let status = try exampleBuilder().invocation(for: .resourceStatus, mode: .plan)
+        XCTAssertEqual(status.executable, "/usr/bin/ssh")
+        XCTAssertEqual(status.arguments, sshPrefix + ["server", "resource-status", "coding", "--plan", "--json"])
+        XCTAssertThrowsError(try exampleBuilder().invocation(for: .resourceStatus, mode: .yes))
+    }
+
+    func test_resource_policy_action_rejects_unlisted_fields_values_and_revisions() {
+        let invalid: [OpsAction] = [
+            .serverResource(field: "shell", value: "8", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-cores", value: "0", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-weight", value: "10001", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "ram-budget-gib", value: "2.5", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "borrow-idle", value: "true", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "borrow-idle", value: "2", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-cores", value: "8", revision: String(repeating: "A", count: 64)),
+            .serverResource(field: "cpu-cores", value: "8", revision: "short"),
+        ]
+        for action in invalid {
+            XCTAssertThrowsError(try exampleBuilder().invocation(for: action, mode: .plan), "\(action)")
+        }
+    }
+
     func test_a_server_verb_goes_over_ssh_to_the_alias() throws {
         let invocation = try exampleBuilder().invocation(
             for: .serverUnit(verb: .start, unit: "fleet-server-status.timer"), mode: .yes
@@ -230,6 +264,18 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertFalse(outcome.isSuccess(for: .yes))
         XCTAssertEqual(outcome.commandLines, ["systemctl --user restart fleet-server-status.timer"])
         XCTAssertEqual(outcome.detail, "Nothing has run.")
+    }
+
+    func test_a_resource_status_answer_carries_its_typed_receipt() throws {
+        let revision = String(repeating: "a", count: 64)
+        let policy = #"{"schemaVersion":1,"generatedAt":"2026-11-03T12:30:00Z","policyRevision":"\#(revision)","desired":{"cpuCores":8,"cpuWeight":100,"ramPressureGiB":8,"ramCriticalGiB":4,"reserveGiB":4,"allowBorrowing":false},"observed":{"cpuOnline":16,"cpuCores":8,"cpuWeight":50,"cpuGroups":4,"cpuMismatches":0,"ramTotalBytes":17179869184,"ramCurrentBytes":5368709120,"ramTargetBytes":8589934592,"mode":"normal","codingGroups":4,"productionGroups":2,"controlWriteFailures":0,"controlSuspended":0,"policyStale":false,"actualHighMismatches":0,"updatedAt":"2026-11-03T12:25:00Z"},"status":"applied"}"#
+        let stdout = #"{"ok":true,"verb":"server resource status","target":"coding","commands":[["server","resource-status","coding"]],"result":"planned","resourcePolicy":\#(policy)}"#
+        let outcome = OpsResultParser.parse(
+            result(stdout), mode: .plan, action: .resourceStatus, timeout: 90
+        )
+        XCTAssertTrue(outcome.isSuccess(for: .plan))
+        XCTAssertEqual(outcome.resourcePolicy?.policyRevision, revision)
+        XCTAssertEqual(outcome.resourcePolicy?.desired.allowBorrowing, false)
     }
 
     func test_a_run_reads_as_done() throws {
@@ -638,6 +684,31 @@ final class OpsControllerFlowTests: XCTestCase {
         XCTAssertNotNil(ops.notice)
         XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
         XCTAssertEqual(ops.completedRuns, 0)
+    }
+
+    func test_a_resource_policy_plan_with_a_changed_revision_or_old_value_is_not_run() async throws {
+        let revision = String(repeating: "a", count: 64)
+        let action = OpsAction.serverResource(field: "cpu-cores", value: "9", revision: revision)
+        let first = #"{"ok":true,"commands":[["resource-policy","coding","\#(revision)","cpu-cores","8","9"]],"result":"planned"}"#
+        let changed = #"{"ok":true,"commands":[["resource-policy","coding","\#(revision)","cpu-cores","7","9"]],"result":"planned"}"#
+        let fake = FakeOpsRunner { invocation, count in
+            if invocation.arguments.contains("--plan") {
+                return OpsProcessResult(exitCode: 0, stdout: count == 1 ? first : changed, stderr: "")
+            }
+            return OpsProcessResult(exitCode: 0, stdout: #"{"ok":true,"commands":[],"result":"done"}"#, stderr: "")
+        }
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(action))
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops) { phase in
+            if case .review(_, let outcome) = phase {
+                return outcome.commandLines == ["resource-policy coding \(revision) cpu-cores 7 9"]
+            }
+            return false
+        }
+        XCTAssertTrue(ops.notice?.contains("changed") == true)
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
     }
 
     func test_a_second_plan_that_is_refused_shows_its_own_refusal() async throws {
