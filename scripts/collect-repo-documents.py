@@ -12,7 +12,6 @@ import base64
 import errno
 import fcntl
 import hashlib
-from html.parser import HTMLParser
 import json
 import os
 import posixpath
@@ -23,6 +22,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
@@ -340,9 +340,7 @@ def _parse_tree(repo: RepoInfo) -> dict[str, Blob]:
         files[relative] = Blob(
             path=relative, mode=mode, object_id=object_id, object_type=object_type
         )
-    blob_ids = sorted(
-        {blob.object_id for blob in files.values() if blob.object_type == "blob"}
-    )
+    blob_ids = sorted({blob.object_id for blob in files.values() if blob.object_type == "blob"})
     sizes: dict[str, int] = {}
     if blob_ids:
         response = _run_git(
@@ -391,9 +389,7 @@ RST_LINK_RE = re.compile(
     r"`[^`<>]+\s*<([^>]+)>`_|^\s*\.\.\s+(?:image|figure)::\s*(\S+)", re.MULTILINE
 )
 RST_REFERENCE_RE = re.compile(r"^\s*\.\.\s+_[^:]+:\s*(\S+)", re.MULTILINE)
-ASCIIDOC_LINK_RE = re.compile(
-    r"(?<!\\)\b(?:image|link|xref):{1,2}([^\s\[\]]+)(?:\[[^\]]*\])?"
-)
+ASCIIDOC_LINK_RE = re.compile(r"(?<!\\)\b(?:image|link|xref):{1,2}([^\s\[\]]+)(?:\[[^\]]*\])?")
 ASCIIDOC_XREF_RE = re.compile(r"(?<!\\)<<([^,>#]+)(?:#[^,>]+)?(?:,[^>]+)?>>")
 
 
@@ -416,7 +412,9 @@ class _HTMLLocalTargetParser(HTMLParser):
             if folded in {"href", "src", "poster", "data"}:
                 self.targets.append(value)
             elif folded == "srcset":
-                self.targets.extend(item.strip().split()[0] for item in value.split(",") if item.strip())
+                self.targets.extend(
+                    item.strip().split()[0] for item in value.split(",") if item.strip()
+                )
 
 
 def _local_targets(content: bytes, source_path: str) -> set[str]:
@@ -461,7 +459,9 @@ def _local_targets(content: bytes, source_path: str) -> set[str]:
             if not path_text:
                 continue
         parts: list[str] = []
-        relative_target = PurePosixPath(path_text) if root_relative else parent / PurePosixPath(path_text)
+        relative_target = (
+            PurePosixPath(path_text) if root_relative else parent / PurePosixPath(path_text)
+        )
         for part in relative_target.parts:
             if part in {"", ".", "/"}:
                 continue
@@ -501,9 +501,7 @@ def _select_blobs(
         blob = tree[source_path]
         data = _run_git(repo.path, "show", f"{repo.commit}:{source_path}")
         content[source_path] = data
-        if not _is_human_document(
-            source_path, allow_private_audit=include_private_audits
-        ):
+        if not _is_human_document(source_path, allow_private_audit=include_private_audits):
             continue
         for target in _local_targets(data, source_path):
             linked = tree.get(target)
@@ -965,9 +963,7 @@ def _build_manifest(
     }
     if private_docs_opt_in is not None:
         manifest["private_docs_opt_in"] = private_docs_opt_in
-    manifest["catalog_version_path"] = (
-        f"reports/{_manifest_version_key(manifest)}/catalog.json"
-    )
+    manifest["catalog_version_path"] = f"reports/{_manifest_version_key(manifest)}/catalog.json"
     return manifest
 
 
@@ -1422,10 +1418,9 @@ def collect_repository(
                 previous_catalog = json.loads(previous_catalog_bytes)
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise CollectionError("An existing catalog is not valid JSON") from exc
-            if (
-                previous_catalog.get("source_commit") != previous_commit
-                or previous_catalog.get("owner_repo") != previous.get("owner_repo")
-            ):
+            if previous_catalog.get("source_commit") != previous_commit or previous_catalog.get(
+                "owner_repo"
+            ) != previous.get("owner_repo"):
                 raise CollectionError("Existing catalog provenance does not match its manifest")
             versioned_catalog_path = _safe_output_path(
                 repo_root, previous.get("catalog_version_path", "")

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import PurePosixPath
-from typing import Any, Iterable
-
+from typing import Any
 
 CATALOG_SCHEMA_VERSION = 1
 CATALOG_POLICY_ID = "tracked-tree-roles-v1"
@@ -207,7 +207,11 @@ def _parts(relative: str) -> tuple[str, ...]:
 
 
 def path_is_safe(relative: str) -> bool:
-    if not relative or "\\" in relative or any(ord(char) < 0x20 or ord(char) == 0x7F for char in relative):
+    if (
+        not relative
+        or "\\" in relative
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in relative)
+    ):
         return False
     path = PurePosixPath(relative)
     return not path.is_absolute() and all(part not in {"", ".", ".."} for part in path.parts)
@@ -337,11 +341,24 @@ def role_for_path(
 
 def repository_profile(repo_name: str, paths: Iterable[str]) -> tuple[str, list[str]]:
     path_set = set(paths)
-    tops = {PurePosixPath(path).parts[0].casefold() for path in path_set if PurePosixPath(path).parts}
+    tops = {
+        PurePosixPath(path).parts[0].casefold() for path in path_set if PurePosixPath(path).parts
+    }
     package_roots = sorted(
         str(PurePosixPath(path).parent)
         for path in path_set
-        if PurePosixPath(path).name.casefold() in {"package.json", "cargo.toml", "pyproject.toml", "go.mod", "package.swift", "pubspec.yaml", "pom.xml", "build.gradle", "build.gradle.kts"}
+        if PurePosixPath(path).name.casefold()
+        in {
+            "package.json",
+            "cargo.toml",
+            "pyproject.toml",
+            "go.mod",
+            "package.swift",
+            "pubspec.yaml",
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+        }
     )
     if "casks" in tops:
         return "distribution-tap", ["top-level Casks directory"]
@@ -360,7 +377,9 @@ def repository_profile(repo_name: str, paths: Iterable[str]) -> tuple[str, list[
         return "operations", ["top-level handbook or infrastructure root"]
     if "scripts" in tops or "tools" in tops:
         return "tooling", ["top-level scripts or tools root"]
-    return "mixed-repository", ["no single dominant deployment or package profile inferred from paths"]
+    return "mixed-repository", [
+        "no single dominant deployment or package profile inferred from paths"
+    ]
 
 
 def build_catalog(
@@ -402,17 +421,11 @@ def build_catalog(
     profile, profile_evidence = repository_profile(repo_name, path_list)
     role_counts = Counter(row["role"] for row in rows)
     top_level_entries = sorted(
-        {
-            PurePosixPath(path).parts[0]
-            for path in path_list
-            if PurePosixPath(path).parts
-        },
+        {PurePosixPath(path).parts[0] for path in path_list if PurePosixPath(path).parts},
         key=str.casefold,
     )
     build_manifests = sorted(
-        path
-        for path in path_list
-        if PurePosixPath(path).name.casefold() in BUILD_MANIFEST_NAMES
+        path for path in path_list if PurePosixPath(path).name.casefold() in BUILD_MANIFEST_NAMES
     )
     package_boundaries = sorted(
         {PurePosixPath(path).parent.as_posix() for path in build_manifests},

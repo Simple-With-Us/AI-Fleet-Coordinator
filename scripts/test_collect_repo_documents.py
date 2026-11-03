@@ -229,15 +229,21 @@ class CollectorTests(unittest.TestCase):
         repo.write("DEPLOY.md", "Deployment notes.\n")
         repo.write("handbook/operations.md", "Operations handbook.\n")
         repo.write("clients/ios/README.md", "Client documentation.\n")
-        repo.write("docs/guides/setup.adoc", "Guide; see image:images/topology.svg[] and link:evidence/results.csv[].\n")
-        repo.write("docs/guides/index.html", '<a href="/docs/guides/setup.adoc">guide</a><img src="/docs/guides/images/topology.svg">\n')
+        repo.write(
+            "docs/guides/setup.adoc",
+            "Guide; see image:images/topology.svg[] and link:evidence/results.csv[].\n",
+        )
+        repo.write(
+            "docs/guides/index.html",
+            '<a href="/docs/guides/setup.adoc">guide</a><img src="/docs/guides/images/topology.svg">\n',
+        )
         repo.write("docs/guides/images/topology.svg", "<svg></svg>")
         repo.write("docs/guides/evidence/results.csv", "check,result\nready,yes\n")
         repo.write("vendor/docs/upstream.md", "Third party.\n")
         repo.write("build/docs/generated.md", "Generated.\n")
         repo.write("tests/fixtures/example.md", "Fixture.\n")
         repo.write("credentials/token.md", "Never copy.\n")
-        repo.write("infra/main.tf", "resource \"x\" \"y\" {}\n")
+        repo.write("infra/main.tf", 'resource "x" "y" {}\n')
         repo.commit_published()
 
         collector.collect(self.code, self.output)
@@ -300,7 +306,8 @@ class CollectorTests(unittest.TestCase):
         legacy = {
             key: value
             for key, value in current.items()
-            if key not in {
+            if key
+            not in {
                 "collection_policy_id",
                 "catalog_policy_id",
                 "catalog_path",
@@ -336,9 +343,7 @@ class CollectorTests(unittest.TestCase):
         (mirror / "README.md").chmod(0o600)
         (mirror / "catalog.json").unlink()
 
-        new_manifest, _ = collector.collect_repository(
-            collector._repo_info(repo.path), self.output
-        )
+        new_manifest, _ = collector.collect_repository(collector._repo_info(repo.path), self.output)
         self.assertEqual(
             collector._load_previous_manifest(manifest_path, "ExampleRepo")["schema_version"], 2
         )
