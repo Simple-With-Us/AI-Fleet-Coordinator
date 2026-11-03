@@ -3,7 +3,8 @@
 // Everything is faked:  no network, no service account, no token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createAdapter } from "./simple_tools/operator_sheets_adapter.mjs";
+import { createAdapter, getGoogleAccessToken } from "./simple_tools/operator_sheets_adapter.mjs";
+import { generateKeyPairSync } from "node:crypto";
 import { SESSIONS_HEADERS, EVENTS_HEADERS } from "./simple_tools/operator_sheets_export.mjs";
 
 const SID = "test-spreadsheet";
@@ -265,4 +266,39 @@ test("credential custody: Infisical fleet-secrets only, scrubbed child env, no e
   assert.deepEqual(seen[0].args, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"]);
   assert.deepEqual(Object.keys(seen[0].env), ["PATH"],
     "the secrets child inherits no ambient environment");
+});
+
+
+// getGoogleAccessToken: the OAuth answer is dependency-free validated before use.
+const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const SA = { client_email: "sa@example.iam.gserviceaccount.com", private_key: privateKey.export({ type: "pkcs8", format: "pem" }) };
+const oauthFetch = (payload, status = 200) => async () =>
+  ({ ok: status >= 200 && status < 300, status, json: async () => payload });
+
+test("OAuth answer: a whitespace-only access_token is refused", async () => {
+  await assert.rejects(
+    () => getGoogleAccessToken(SA, oauthFetch({ access_token: "   ", expires_in: 3600 })),
+    /Google OAuth error 200/);
+});
+
+test("OAuth answer: a missing or malformed expires_in fails closed, never an assumed TTL", async () => {
+  for (const payload of [
+    { access_token: "tok" },
+    { access_token: "tok", expires_in: "3600" },
+    { access_token: "tok", expires_in: 0 },
+    { access_token: "tok", expires_in: -5 },
+    { access_token: "tok", expires_in: Number.NaN },
+  ]) {
+    await assert.rejects(
+      () => getGoogleAccessToken(SA, oauthFetch(payload)),
+      /malformed expires_in/);
+  }
+});
+
+test("OAuth answer: an overlong expires_in is bounded to a one-hour cache", async () => {
+  const { token, expiresAt } = await getGoogleAccessToken(
+    SA, oauthFetch({ access_token: "tok", expires_in: 86400 }));
+  assert.equal(token, "tok");
+  const ttl = expiresAt - Math.floor(Date.now() / 1000);
+  assert.ok(ttl > 3500 && ttl <= 3600, `bounded ttl, got ${ttl}`);
 });

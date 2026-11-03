@@ -81,7 +81,7 @@ function loadServiceAccount(env, execImpl) {
   return JSON.parse(raw);
 }
 
-async function getGoogleAccessToken(sa, fetchImpl) {
+export async function getGoogleAccessToken(sa, fetchImpl) {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "RS256", typ: "JWT" };
   const payload = {
@@ -103,11 +103,16 @@ async function getGoogleAccessToken(sa, fetchImpl) {
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${signingInput}.${signature}`,
   });
   const data = await res.json().catch(() => null);
-  if (!res.ok || typeof data?.access_token !== "string" || !data.access_token)
+  const token = data && typeof data.access_token === "string" ? data.access_token : "";
+  if (!res.ok || !token.trim())
     throw new Error(`Google OAuth error ${res.status}`);
-  // expires_in is seconds;  refresh 60s early so --loop never rides a dying token.
-  const expiresIn = Number.isFinite(data.expires_in) ? data.expires_in : 3600;
-  return { token: data.access_token, expiresAt: now + expiresIn - 60 };
+  // expires_in is seconds and must be a finite positive TTL:  an unknown TTL is a
+  // failure, never an assumed 3600 that could over-cache a shorter-lived token, and
+  // the cache never exceeds an hour.  Refresh 60s early so --loop never rides a dying token.
+  if (!Number.isFinite(data?.expires_in) || data.expires_in <= 0)
+    throw new Error("Google OAuth error: malformed expires_in");
+  const expiresIn = Math.min(data.expires_in, 3600);
+  return { token, expiresAt: now + expiresIn - 60 };
 }
 
 export function createAdapter(deps = {}) {

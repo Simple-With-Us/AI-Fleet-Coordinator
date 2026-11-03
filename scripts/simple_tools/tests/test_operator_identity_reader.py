@@ -16,7 +16,7 @@ CONFIG = {
     "schema": 1,
     "service_token": "st.aaaa.bbbb.cccc",
     "api_url": "https://app.infisical.com",
-    "project_id": "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5",
+    "project_id": "f1e2d3c4-b5a6-47c8-89da-0b1c2d3e4f5a",
     "token_id": "11111111-2222-4333-8444-555555555555",
     "token_name": "operator-identity-read",
 }

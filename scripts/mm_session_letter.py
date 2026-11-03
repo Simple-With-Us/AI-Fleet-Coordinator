@@ -386,20 +386,22 @@ def transport() -> str:
 
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
-    transport = str(os.environ.get(ENV_TRANSPORT) or "").strip()
+    transport_name = str(os.environ.get(ENV_TRANSPORT) or "").strip()
     local_db = registry_db()
     scripts = repo_scripts_dir()
-    if transport:
+    if transport_name:
         # An explicit transport IS the destination:  it wins over any local file, so a
         # retired store left behind after the move can never become a second allocator.
-        return remote_registry_call(args, transport=transport)
+        return remote_registry_call(
+            args, transport=transport_name, timeout=min(timeout, REMOTE_TIMEOUT)
+        )
     if not local_db or not scripts:
         # This host keeps no registry of its own, so the Operator's one is on the host
         # that holds it:  the transport command carries that host, and the registry's
         # own CLI runs there, so both sides speak one dialect.  The hop has its own
         # bound:  it has to finish inside the hook's timeout, not inside the timeout
         # the local call would use.
-        return remote_registry_call(args)
+        return remote_registry_call(args, timeout=min(timeout, REMOTE_TIMEOUT))
     cmd = [sys.executable, "-m", "simple_tools.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None

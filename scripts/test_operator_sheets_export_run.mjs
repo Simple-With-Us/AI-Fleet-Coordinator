@@ -8,6 +8,7 @@ import path from "node:path";
 import {
   parseArgs, cliOutbox, dispatchOutbox, loadAdapter, execUnderFlock, runLockPath,
   CANONICAL_DB, LOCK_NAME, holdingFlock, runOnce, main,
+  resolveEnvAdapterSpec,
 } from "./simple_tools/operator_sheets_export_run.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -71,9 +72,10 @@ test("cliOutbox: the bridge argv, the pinned cwd and the scrubbed environment", 
   assert.deepEqual(await outbox.pending(50), [{ outbox_id: "o1" }]);
   await outbox.markExported(["o1", "o2"]);
   assert.deepEqual(calls[0].cmd, ["python3", "-m", "simple_tools.operator_registry",
-    "pending-outbox", "--db", DB, "--limit", "50"]);
+    "pending-outbox", `--db=${DB}`, "--limit", "50"]);
+  // --db= form plus the "--" separator: a db or id starting with "-" can never parse as an option.
   assert.deepEqual(calls[1].cmd, ["python3", "-m", "simple_tools.operator_registry",
-    "mark-exported", "--db", DB, "o1", "o2"]);
+    "mark-exported", `--db=${DB}`, "--", "o1", "o2"]);
   for (const c of calls) {
     assert.equal(c.opts.cwd, "/app/scripts", "the child never inherits the caller's cwd");
     assert.deepEqual(Object.keys(c.opts.env).sort(), ["PATH", "PYTHONNOUSERSITE"],
@@ -97,8 +99,64 @@ test("dispatchOutbox: the dispatch pins the store - no --db crosses this argv", 
   assert.deepEqual(calls[0], ["/usr/local/bin/simple-chat", "operator-registry",
     "pending-outbox", "--limit", "25"]);
   assert.deepEqual(calls[1], ["/usr/local/bin/simple-chat", "operator-registry",
-    "mark-exported", "o1"]);
+    "mark-exported", "--", "o1"]);
   for (const c of calls) assert.ok(!c.includes("--db"), "the caller never names a store");
+});
+
+test("resolveEnvAdapterSpec: the env path is pinned to the shipped reviewed adapter", () => {
+  // No spec:  the same loud refusal as before.
+  assert.throws(() => resolveEnvAdapterSpec(""), /OPERATOR_SHEETS_ADAPTER/);
+  assert.throws(() => resolveEnvAdapterSpec("   "), /OPERATOR_SHEETS_ADAPTER/);
+  // Any other module - relative, absolute or bare - is refused:  an existing wrong file
+  // hits the pin, an unresolvable one fails closed before it.
+  const dir = mkdtempSync(path.join(tmpdir(), "adapter-pin-"));
+  const wrong = path.join(dir, "evil-adapter.mjs");
+  writeFileSync(wrong, "export default {};");
+  assert.throws(() => resolveEnvAdapterSpec(wrong), /shipped reviewed adapter/);
+  assert.throws(() => resolveEnvAdapterSpec(path.join(dir, "missing.mjs")), /does not resolve/);
+  assert.throws(() => resolveEnvAdapterSpec("some-package"), /does not resolve/);
+  // The shipped adapter itself resolves to its file URL.
+  const url = resolveEnvAdapterSpec(new URL("./simple_tools/operator_sheets_adapter.mjs", import.meta.url).pathname);
+  assert.ok(url.startsWith("file:"), url);
+  assert.ok(url.endsWith("operator_sheets_adapter.mjs"), url);
+});
+
+test("main: a bridge rejection is a logged clean exit 1, never an unhandled rejection", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "export-run-reject-"));
+  const good = path.join(dir, "good.mjs");
+  writeFileSync(good, "export default { validateHeaders(){}, readRows(){}, appendSession(){}, updateSessionRow(){}, appendEvent(){} };");
+  const errors = [];
+  const savedError = console.error;
+  console.error = (m) => errors.push(String(m));
+  try {
+    const code = await main(["--once", "--dispatcher", "/d"], {
+      adapterSpec: pathToFileURL(good).href,
+      skipLock: true,
+      outbox: {
+        pending: async () => { throw new Error("bridge down"); },
+        markExported: async () => {},
+      },
+    });
+    assert.equal(code, 1, "bridge failure is exit 1");
+  } finally {
+    console.error = savedError;
+  }
+  assert.ok(errors.some((m) => m.includes("bridge down")), errors.join(" | "));
+});
+
+test("main: an env adapter spec naming another module refuses before any workbook write", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "export-run-pin-"));
+  const evil = path.join(dir, "evil.mjs");
+  writeFileSync(evil, "export default {};");
+  const saved = process.env.OPERATOR_SHEETS_ADAPTER;
+  process.env.OPERATOR_SHEETS_ADAPTER = evil;
+  try {
+    const code = await main(["--dispatcher", "/d"], {});
+    assert.equal(code, 2);
+  } finally {
+    if (saved === undefined) delete process.env.OPERATOR_SHEETS_ADAPTER;
+    else process.env.OPERATOR_SHEETS_ADAPTER = saved;
+  }
 });
 
 test("loadAdapter fails closed without a spec", async () => {

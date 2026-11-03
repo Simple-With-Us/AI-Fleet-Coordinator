@@ -482,6 +482,43 @@ class MmSessionLetterTest(unittest.TestCase):
         ):
             M.touch_session("sid")
 
+    def test_a_remote_registry_call_forwards_the_caller_timeout_capped(self):
+        # Both remote branches forward the caller's budget, capped at REMOTE_TIMEOUT:
+        # a custom deadline is never silently dropped back to the default.
+        for transport_env, local_db in (("registry-hop", "/tmp/registry.sqlite3"), ("", "")):
+            for caller_timeout, expected in ((3, 3), (25, M.REMOTE_TIMEOUT)):
+                seen = {}
+                def fake_remote(args, transport="", timeout=M.REMOTE_TIMEOUT):
+                    seen["transport"] = transport
+                    seen["timeout"] = timeout
+                    return {"ok": True}
+                env = {M.ENV_TRANSPORT: transport_env} if transport_env else {}
+                with (
+                    mock.patch.dict(M.os.environ, env, clear=False),
+                    mock.patch.object(M, "registry_db", return_value=local_db),
+                    mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+                    mock.patch.object(M, "remote_registry_call", side_effect=fake_remote),
+                ):
+                    if not transport_env:
+                        M.os.environ.pop(M.ENV_TRANSPORT, None)
+                    self.assertEqual(M.registry_call(["pending"], timeout=caller_timeout), {"ok": True})
+                self.assertEqual(seen["timeout"], expected, (transport_env, caller_timeout))
+        self.assertEqual(seen["transport"], "")
+
+    def test_an_explicit_transport_wins_and_carries_its_name(self):
+        seen = {}
+        def fake_remote(args, transport="", timeout=M.REMOTE_TIMEOUT):
+            seen["transport"] = transport
+            return {"ok": True}
+        with (
+            mock.patch.dict(M.os.environ, {M.ENV_TRANSPORT: "registry-hop"}, clear=False),
+            mock.patch.object(M, "registry_db", return_value="/tmp/registry.sqlite3"),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(M, "remote_registry_call", side_effect=fake_remote),
+        ):
+            M.registry_call(["pending"])
+        self.assertEqual(seen["transport"], "registry-hop")
+
     def test_an_interrupted_registry_call_stops_the_child(self):
         # The child sits in its own process group, so an interrupted runner has to
         # stop it or it outlives this process.

@@ -34,13 +34,15 @@ class ProvisionedConfirm:
     same FakeConfirm the notes_client and MCP notes tests use.  Auth refusals (another seat's bearer, revocation,
     rotation, an unreachable gateway) are covered in those modules;  this module's subject is session ids."""
 
-    def __init__(self):
-        self.by_seat: dict = {}
+    def __init__(self, seats=("CLAUDE", "CURSOR", TI.PERSONA)):
+        # Only the seats this module's tests authenticate as are provisioned:  a bearer
+        # confirmation for any other seat raises instead of minting a passing fake.
+        self.by_seat: dict = {seat: FakeConfirm(seat=seat) for seat in seats}
 
     def factory(self, path, expected_seat=None, identity_env=None):
-        confirm = self.by_seat.get(expected_seat)
-        if confirm is None:
-            confirm = self.by_seat[expected_seat] = FakeConfirm(seat=expected_seat)
+        if expected_seat not in self.by_seat:
+            raise AssertionError(f"confirm_local_seat for unprovisioned seat {expected_seat!r}")
+        confirm = self.by_seat[expected_seat]
         confirm.constructed.append((str(path), expected_seat))
         return confirm
 
@@ -366,6 +368,10 @@ class ToolTests(TI.IdentityHarness):
                 ),
             ),
         )
+        # The CURSOR write really confirmed CURSOR's bearer:  a skipped confirm_local_seat
+        # or a wrong-seat bearer fails here, never passes silently.
+        self.assertGreaterEqual(self.confirm.by_seat["CURSOR"].confirms, 1)
+        self.assertIn("CURSOR", {seat for _path, seat in self.confirm.by_seat["CURSOR"].constructed})
         self.assertEqual(self.script_sessions(), ["cursor-conv-0001"])
         self.assertEqual(self.run.calls[-1]["env"]["AGENT_SEAT"], "CURSOR")
 

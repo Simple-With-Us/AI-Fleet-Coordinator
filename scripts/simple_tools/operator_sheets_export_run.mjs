@@ -119,10 +119,12 @@ export function cliOutbox({ python, module, db, cwd, execFileImpl = execFile }) 
   };
   return {
     async pending(limit) {
-      return run(["pending-outbox", "--db", db, "--limit", String(limit)]);
+      // --db= form: a db value starting with "-" can never parse as a fresh option.
+      return run(["pending-outbox", `--db=${db}`, "--limit", String(limit)]);
     },
     async markExported(ids) {
-      await run(["mark-exported", "--db", db, ...ids]);
+      // "--" ends option parsing: an id starting with "-" stays a positional.
+      await run(["mark-exported", `--db=${db}`, "--", ...ids]);
     },
   };
 }
@@ -140,9 +142,28 @@ export function dispatchOutbox({ dispatcher, limit = 50, execFileImpl = execFile
       return run(["pending-outbox", "--limit", String(n)]);
     },
     async markExported(ids) {
-      await run(["mark-exported", ...ids]);
+      await run(["mark-exported", "--", ...ids]);
     },
   };
+}
+
+// The shipped, reviewed AFC-428 adapter.  Production selection (the OPERATOR_SHEETS_ADAPTER
+// environment variable) must resolve to exactly this module;  any other module is refused.
+// Test injection goes through deps.adapterSpec, which never crosses this pin.
+const SHIPPED_ADAPTER_PATH = fileURLToPath(new URL("./operator_sheets_adapter.mjs", import.meta.url));
+
+export function resolveEnvAdapterSpec(spec) {
+  if (!spec || !spec.trim())
+    throw new Error("no adapter: set OPERATOR_SHEETS_ADAPTER to the reviewed adapter module");
+  let resolved;
+  try {
+    resolved = realpathSync(path.resolve(spec.trim()));
+  } catch {
+    throw new Error("OPERATOR_SHEETS_ADAPTER does not resolve to a readable module");
+  }
+  if (resolved !== SHIPPED_ADAPTER_PATH)
+    throw new Error("OPERATOR_SHEETS_ADAPTER must name the shipped reviewed adapter (operator_sheets_adapter.mjs)");
+  return pathToFileURL(resolved).href;
 }
 
 export async function loadAdapter(spec) {
@@ -269,7 +290,10 @@ export async function main(argv, deps = {}) {
   }
   let adapter;
   try {
-    adapter = await loadAdapter(deps.adapterSpec ?? process.env.OPERATOR_SHEETS_ADAPTER ?? "");
+    const adapterSpec = deps.adapterSpec !== undefined
+      ? deps.adapterSpec
+      : resolveEnvAdapterSpec(process.env.OPERATOR_SHEETS_ADAPTER ?? "");
+    adapter = await loadAdapter(adapterSpec);
   } catch (err) {
     console.error(`operator-sheets-export-run: ${err.message}`);
     return 2;
@@ -297,9 +321,15 @@ export async function main(argv, deps = {}) {
     }
   }
   const once = async () => {
-    const { exported, failed } = await runOnce({ outbox, adapter, limit: args.limit });
-    console.log(JSON.stringify({ exported, failed }));
-    return failed ? 1 : 0;
+    try {
+      const { exported, failed } = await runOnce({ outbox, adapter, limit: args.limit });
+      console.log(JSON.stringify({ exported, failed }));
+      return failed ? 1 : 0;
+    } catch (err) {
+      // A bridge failure is a clean logged exit 1, never an unhandled rejection.
+      console.error(`operator-sheets-export-run: ${err.message}`);
+      return 1;
+    }
   };
   if (args.once) return once();
   // --loop: a stopped drain never overtakes itself - each pass is a full reconcile.

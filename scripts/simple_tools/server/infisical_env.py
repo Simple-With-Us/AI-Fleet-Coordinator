@@ -30,9 +30,11 @@ The allowlist is built from the seat partition (every seat it gives to "server")
 The Operator's own credential pair (ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY) and identity pins
 (OPERATOR_ZULIP_USER_ID, OPERATOR_ZULIP_EMAIL) live in the Fleet-OPS project's /zulip_operator folder
 (service_identity.py), NOT in this loader's primary /zulip folder.  When INFISICAL_FLEET_OPS_PROJECT_ID is
-set, this loader makes one more read of that folder with the same login and injects exactly those four
-names, so the daemon's supported Operator factory (service_identity.operator_credentials) and the DM
-policy's identity pins resolve on the server, which has no fleet-secrets binary.  Two guards keep the
+set, this loader makes one more read of that folder with the same login and injects exactly the two
+identity pins (OPERATOR_ZULIP_USER_ID, OPERATOR_ZULIP_EMAIL);  the credential pair is NEVER injected -
+the factory reads it through the custody-checked service-token reader instead - so the daemon's
+supported Operator factory (service_identity.operator_credentials) and the DM policy's identity pins
+resolve on the server, which has no fleet-secrets binary.  Two guards keep the
 injected identity pinned:  an OPERATOR_ZULIP_EMAIL that disagrees with one already pinned in the
 container environment is refused (neither pin is injected), and a ZULIP_OPERATOR_EMAIL credential that
 disagrees with the pin is refused (the pair is not injected).  Both refusals are one log line naming the

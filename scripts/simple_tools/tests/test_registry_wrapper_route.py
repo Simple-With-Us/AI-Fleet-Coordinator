@@ -122,14 +122,20 @@ class WrapperRouteTest(unittest.TestCase):
             (PLATFORM_LETTER, ["show", "--platform", "codex"]),
             (SIMPLE_CHAT, ["operator-registry", "sweep", "--platform", "minimax"]),
         ):
+            before = (
+                self.docker_log.read_text().splitlines() if self.docker_log.exists() else []
+            )
             proc = self._run(script, argv)
             self.assertEqual(proc.returncode, 2, (script, argv, proc.stdout))
             self.assertIn(DISPATCH_PREFIX + " container-missing", proc.stdout, (script, argv))
-        calls = self.docker_log.read_text().splitlines()
-        self.assertTrue(calls, "the route never asked docker for the container")
-        # Only ps lookups:  a missing container is refused before any inspect or exec,
-        # so the route never ran an arbitrary docker execution.
-        self.assertTrue(all(line.startswith("ps ") for line in calls), calls)
+            # Per iteration:  THIS route asked docker for the container, and only with ps
+            # lookups - a missing container is refused before any inspect or exec, so the
+            # route never ran an arbitrary docker execution.  A missing log raises here
+            # instead of passing on another iteration's calls.
+            self.assertTrue(self.docker_log.exists(), (script, argv, "no docker log"))
+            calls = self.docker_log.read_text().splitlines()[len(before):]
+            self.assertTrue(calls, (script, argv, "the route never asked docker for the container"))
+            self.assertTrue(all(line.startswith("ps ") for line in calls), (script, argv, calls))
 
     def test_a_present_but_invalid_config_fails_closed_on_both_wrappers(self):
         self._write_config(raw="{ not json")
