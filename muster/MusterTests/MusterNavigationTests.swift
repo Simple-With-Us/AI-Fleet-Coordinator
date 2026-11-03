@@ -75,4 +75,26 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(counts.red, 0)
         XCTAssertNil(counts.stale)
     }
+
+    /// Stale uses the grid's own tolerance:  a cell checked seconds before the
+    /// shared time is the same pass, not a cached exception.
+    func test_stale_uses_the_grids_sixty_second_tolerance() {
+        func checkedCell(_ checkedAt: String) -> GridCell {
+            cell(.passed, rules: [
+                CheckResult(
+                    ruleId: "r", seat: "MM", platform: "minimax", kind: "skills",
+                    state: "PASS", reason: "ok", reasonCode: "ok",
+                    expected: [:], observed: [:],
+                    proofLevelRequired: "L0", proofLevelAchieved: "L0",
+                    collector: "mac", checkType: "marked_block_hash",
+                    checkedAt: checkedAt, expiresAt: nil, ttlSeconds: 900,
+                    stale: false, failing: false)
+            ])
+        }
+        let common = FleetTime.parse("2026-10-21T09:00:00Z")
+        let counts = OverviewCounts.make(
+            cells: [checkedCell("2026-10-21T08:59:01Z"), checkedCell("2026-10-21T08:58:59Z")],
+            trusted: true, commonCheckedAt: common)
+        XCTAssertEqual(counts.stale, 1)
+    }
 }

@@ -14,7 +14,13 @@ struct FleetOverviewView: View {
 
     init() {
         let saved = UserDefaults.standard.string(forKey: MusterSettings.sidebarSelectionDefaultsKey)
-        _destination = State(initialValue: MusterDestination.restored(from: saved))
+        let restored = MusterDestination.restored(from: saved)
+        if let saved, MusterDestination(rawValue: saved) == nil {
+            // Heal a spelling this app no longer names, so the fallback runs once
+            // instead of on every launch.
+            UserDefaults.standard.set(restored.rawValue, forKey: MusterSettings.sidebarSelectionDefaultsKey)
+        }
+        _destination = State(initialValue: restored)
     }
 
     var body: some View {

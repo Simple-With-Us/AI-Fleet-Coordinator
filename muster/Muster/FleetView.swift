@@ -93,11 +93,17 @@ struct FleetView: View {
 
     private func emptyState(_ title: String, description: String) -> some View {
         ContentUnavailableView {
-            Label(title, systemImage: "line.3.horizontal.decrease.circle")
+            if failed {
+                Label("Fleet Data Unknown", systemImage: "exclamationmark.triangle")
+            } else {
+                Label(title, systemImage: "line.3.horizontal.decrease.circle")
+            }
         } description: {
-            Text(description)
+            Text(failed
+                ? "The last refresh failed, so this section cannot say what is here.\u{00A0} Nothing here is treated as current."
+                : description)
         } actions: {
-            if isFiltering {
+            if isFiltering && !failed {
                 Button("Clear Filters") { clearFilters() }
             }
         }

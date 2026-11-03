@@ -68,7 +68,7 @@ struct OverviewView: View {
                     countCard(
                         title: "Drift History",
                         systemImage: "exclamationmark.triangle",
-                        count: monitor.transitions.count,
+                        count: monitor.redCount == nil ? nil : monitor.transitions.count,
                         tint: .secondary,
                         subtitle: "Turns to red on record",
                         destination: .driftHistory
