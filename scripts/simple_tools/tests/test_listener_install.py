@@ -201,6 +201,56 @@ class InitAndTestWakeTests(ListenerHarness):
         self.assertEqual(sorted(cfg.eligible_user_ids), [10, 11, 13, 14])
         self.assertIn("CLAUDE: file mode ok, role 400", result.out)
 
+    def test_init_status_marks_only_the_roles_the_listener_refuses(self) -> None:
+        # The status line mirrors the listener (owner decision 2026-11-02):  an admin bot is fine,
+        # an owner-flagged record is refused whatever its role field says, and a human seat
+        # account is refused.
+        codex_key = secrets.token_hex(16)
+        self.extra_keys.append(("codex-bot@zulip.test", codex_key))
+        self.fake.add_bot("codex-bot@zulip.test", "Codex", codex_key, role=200)
+        write_rc(
+            self.secrets_dir / "Codex-zuliprc",
+            email="codex-bot@zulip.test", key=codex_key, site=self.fake.url,
+        )
+        cursor_key = secrets.token_hex(16)
+        self.extra_keys.append(("cursor-bot@zulip.test", cursor_key))
+        cursor = self.fake.add_bot("cursor-bot@zulip.test", "Cursor", cursor_key, role=200)
+        cursor["is_owner"] = True  # an inconsistent record:  the owner flag, not the role, decides
+        write_rc(
+            self.secrets_dir / "Cursor-zuliprc",
+            email="cursor-bot@zulip.test", key=cursor_key, site=self.fake.url,
+        )
+        human_key = secrets.token_hex(16)
+        self.extra_keys.append(("helper@zulip.test", human_key))
+        human = {
+            "user_id": 77, "email": "helper@zulip.test", "full_name": "Helper",
+            "is_bot": False, "is_active": True, "role": 400, "is_admin": False, "is_owner": False,
+        }
+        self.fake.users.append(human)
+        self.fake.keys[human_key] = human
+        write_rc(
+            self.secrets_dir / "Helper-zuliprc",
+            email="helper@zulip.test", key=human_key, site=self.fake.url,
+        )
+        self.write_config(
+            owner=0,
+            eligible=[],
+            seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.CODEX]\nbot = "Codex"\n\n'
+                  '[seat.CURSOR]\nbot = "Cursor"\n\n[seat.FX]\nbot = "Helper"\n',
+        )
+        result = self.run_cli("daemon", "init", "--yes")
+        self.assertEqual(result.code, 0, result.err + result.out)
+        lines = {
+            line.split(":")[0].strip(): line
+            for line in result.out.splitlines()
+            if line.startswith("  ")
+        }
+        self.assertIn("role 200", lines["CODEX"])
+        self.assertNotIn("REFUSED", lines["CODEX"])
+        self.assertIn("REFUSED: the listener refuses owner keys", lines["CURSOR"])
+        self.assertIn("REFUSED: the listener refuses owner keys", lines["FX"])
+        self.assertNotIn("REFUSED", lines["CLAUDE"])
+
     def codex_rc(self) -> Path:
         key = secrets.token_hex(16)
         self.extra_keys.append(("codex-bot@zulip.test", key))

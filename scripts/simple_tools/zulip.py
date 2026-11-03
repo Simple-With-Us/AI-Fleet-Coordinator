@@ -140,8 +140,10 @@ ENV_CHANNEL = "SIMPLE_TOOLS_CHANNEL"
 # settable for a deployment that puts the fleet somewhere else.
 DEFAULT_CHANNEL = "work-in-progress"
 # The Operator seat:  the admin [Operator] Zulip bot (role 200) and the GitHub identity
-# `swu-operator` (owner decision, Oct 22 2026).  It is the only seat whose key may be an
-# administrator's;  every other seat, and the owner for every seat, stays moderator/member only.
+# `swu-operator` (owner decision, Oct 22 2026).  A bot key is accepted at administrator (200),
+# moderator (300) or member (400) on every seat:  a bot that is also an administrator is still the
+# fleet's bot (owner decision 2026-11-02).  A human key stays moderator/member only (the OPERATOR
+# seat may also hold a human administrator's), and an owner key is refused for every seat.
 OPERATOR_SEAT = "OPERATOR"
 # The Operator bot's Zulip user id.  A production user id is private inventory, so none is
 # committed:  the deployment sets it and the runtime reads it at call time.  The same

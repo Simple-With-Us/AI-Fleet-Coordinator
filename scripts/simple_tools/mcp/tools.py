@@ -87,6 +87,9 @@ RECONCILE_WINDOW = (
 IDEM_EXPLICIT_TTL = 24 * 3600.0
 IDEM_IMPLICIT_TTL = 600.0
 FLEET_ROLES = (300, 400)  # moderator and member; daemon.FLEET_ROLES (a test keeps the two equal)
+# The bot roles the listener accepts - a bot that is also an administrator is still the
+# fleet's bot (owner decision 2026-11-02);  daemon.BOT_ROLES (a test keeps the two equal)
+BOT_ROLES = (200, 300, 400)
 ERROR_META_KEY = "simple-tools/error"
 # Every served tool is classified here, explicitly, as a read or a write (AFC-331, per-call identity:
 # a write must name its identity, a read may use the connection's default).  Never inferred from a

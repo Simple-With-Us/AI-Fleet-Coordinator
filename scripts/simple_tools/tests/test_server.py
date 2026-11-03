@@ -346,10 +346,39 @@ class EnvCredentialTests(ServerHarness):
 
 
 class AdminRefusalTests(ServerHarness):
-    def test_an_admin_persona_is_refused_and_logged_while_the_other_seats_run(self) -> None:
+    def test_an_admin_persona_connects_while_the_other_seats_run(self) -> None:
+        # A bot that is also an administrator is still the fleet's bot (owner decision 2026-11-02):
+        # the director persona holds a queue like any other seat.
         director_key = secrets.token_hex(16)
         self.extra_keys.append((DIRECTOR_EMAIL, director_key))
-        self.fake.add_bot(DIRECTOR_EMAIL, "GB-Director", director_key, role=200)
+        director = self.fake.add_bot(DIRECTOR_EMAIL, "GB-Director", director_key, role=200)
+        self.write_server_config(
+            seats=textwrap.dedent("""\
+            [seat.GB-DIRECTOR]
+            instance = "server"
+            creds = "env"
+            wake = "inbox"
+            """)
+        )
+        env = self.server_env(
+            ZULIP_GB_DIRECTOR_EMAIL=DIRECTOR_EMAIL, ZULIP_GB_DIRECTOR_API_KEY=director_key
+        )
+        daemon = self.server_daemon(env=env)
+        self.assertTrue(daemon.connect_seat("GB-DIRECTOR"), daemon.seats["GB-DIRECTOR"].error)
+        self.assertTrue(daemon.connect_seat(SEAT), daemon.seats[SEAT].error)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertNotIn('"seat-refused"', log)
+        self.assertEqual(
+            sorted(r["user_id"] for r in self.fake.registrations),
+            sorted([director["user_id"], self.gb["user_id"]]),
+            "both personas hold queues",
+        )
+
+    def test_an_owner_persona_is_refused_and_logged_while_the_other_seats_run(self) -> None:
+        # The owner gate is untouched:  a bot promoted to owner loses its queue at once.
+        director_key = secrets.token_hex(16)
+        self.extra_keys.append((DIRECTOR_EMAIL, director_key))
+        self.fake.add_bot(DIRECTOR_EMAIL, "GB-Director", director_key, role=100)
         self.write_server_config(
             seats=textwrap.dedent("""\
             [seat.GB-DIRECTOR]
@@ -363,12 +392,12 @@ class AdminRefusalTests(ServerHarness):
         )
         daemon = self.server_daemon(env=env)
         self.assertFalse(daemon.connect_seat("GB-DIRECTOR"))
-        self.assertIn("refuses admin and owner keys", daemon.seats["GB-DIRECTOR"].error)
+        self.assertIn("refuses owner keys and any other role", daemon.seats["GB-DIRECTOR"].error)
         self.assertTrue(daemon.connect_seat(SEAT))
         log = (self.state_dir / "logs" / "listener.log").read_text()
         refused = [json.loads(line) for line in log.splitlines() if '"seat-refused"' in line]
         self.assertEqual([r["seat"] for r in refused], ["GB-DIRECTOR"])
-        self.assertIn("role 200", refused[0]["error"])
+        self.assertIn("role 100", refused[0]["error"])
         self.assertEqual(
             [r["user_id"] for r in self.fake.registrations],
             [self.gb["user_id"]],
@@ -383,7 +412,7 @@ class AdminRefusalTests(ServerHarness):
         self.assertEqual(self.ledger("GB-DIRECTOR"), [])
         daemon.write_status()
         status = L.read_json(os.path.join(self.root, "listener", "status.json"))
-        self.assertIn("refuses admin", " ".join(status["seats"]["GB-DIRECTOR"]["red"]))
+        self.assertIn("refuses owner", " ".join(status["seats"]["GB-DIRECTOR"]["red"]))
 
 
 # --------------------------------------------------------------------------------------------
@@ -1514,11 +1543,21 @@ class CloudSeatTests(CloudSeatHarness):
         self.assertEqual(got.header("Authorization"), "Bearer " + hook_key)
         self.assertEqual((got.json()["seat"], got.json()["topic"]), ("GB-FIXER", "fixer wake"))
 
-    def test_a_cloud_bot_that_is_still_an_admin_is_refused_while_the_others_run(self) -> None:
+    def test_a_cloud_bot_that_is_also_an_admin_connects_while_the_others_run(self) -> None:
+        # A bot that is also an administrator is still the fleet's bot (owner decision 2026-11-02).
         self.fake.set_role(self.cloud["JET"]["user_id"], 200)
         daemon = self.server_daemon(env=self.cloud_env())
+        for seat in ("JET", "MA", "GROK-WEB", "WISE", "ECHO"):
+            self.assertTrue(daemon.connect_seat(seat), "%s: %s" % (seat, daemon.seats[seat].error))
+        self.assertIn(
+            self.cloud["JET"]["user_id"], [r["user_id"] for r in self.fake.registrations]
+        )
+
+    def test_a_cloud_bot_promoted_to_owner_is_refused_while_the_others_run(self) -> None:
+        self.fake.set_role(self.cloud["JET"]["user_id"], 100)
+        daemon = self.server_daemon(env=self.cloud_env())
         self.assertFalse(daemon.connect_seat("JET"))
-        self.assertIn("refuses admin and owner keys", daemon.seats["JET"].error)
+        self.assertIn("refuses owner keys and any other role", daemon.seats["JET"].error)
         for seat in ("MA", "GROK-WEB", "WISE", "ECHO"):
             self.assertTrue(daemon.connect_seat(seat), "%s: %s" % (seat, daemon.seats[seat].error))
         self.assertNotIn(
