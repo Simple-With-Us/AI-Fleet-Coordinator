@@ -134,14 +134,17 @@ def registry_db() -> str:
 
 
 def repo_scripts_dir() -> str:
-    """This host's checkout of the fleet scripts, where the registry CLI lives.
+    """Where the registry CLI lives on this host.
 
-    The checkout is host configuration, so the host names it and this file never
-    writes a path:  the code root comes from the environment, the fleet's code root
-    sits beside its apps root, the Mac has its own layout, and a checkout running
-    this script is its own parent.
+    The checkout this script runs in comes first:  the helper and the CLI it calls
+    have to be the same version, or a verb the helper sends is an unknown one to the
+    CLI.  The other candidates are the host's own configuration, in the order the
+    house keeps them:  the code root comes from the environment, the fleet's code
+    root sits beside its apps root, the Mac has its own layout.
     """
     candidates = []
+    # A checkout running this script:  the scripts sit beside it.
+    candidates.append(os.path.dirname(os.path.realpath(__file__)))
     code_root = os.environ.get("FLEET_CODE_ROOT", "").strip()
     if code_root:
         candidates.append(os.path.join(code_root, "AI-Fleet-Coordinator", "scripts"))
@@ -153,8 +156,6 @@ def repo_scripts_dir() -> str:
     candidates.append(
         os.path.join(os.path.expanduser("~"), "Code", "AI-Fleet-Coordinator", "scripts")
     )
-    # A checkout running this script:  the scripts sit beside it.
-    candidates.append(os.path.dirname(os.path.realpath(__file__)))
     for candidate in candidates:
         if os.path.isdir(candidate) and os.path.isfile(
             os.path.join(candidate, "simple_tools", "operator_registry.py")
@@ -624,8 +625,9 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     from simple_tools import operator_registry as OR
     from simple_tools import platform_letter
 
-    reg = OR.SessionRegistry(db)
+    reg = None
     try:
+        reg = OR.SessionRegistry(db)
         letter, generation, previous = platform_letter.operator_reopen(
             OR,
             db,
@@ -643,13 +645,15 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     except OR.LabelExhausted as exc:
         # Every letter in the space is live, so there is nothing to hand back.
         raise RegistryError(str(exc), "label_exhausted", "reopen_refused")
-    except (OR.UnknownRecord, KeyError, ValueError, OSError) as exc:
-        # A record that is not there, or a registry file that cannot be read or written.
-        # Both are a registry fault, so both travel as one:  a caller never has to know
-        # which storage failure it was.
+    except (OR.UnknownRecord, KeyError, ValueError, OSError, sqlite3.Error) as exc:
+        # A record that is not there, or a registry file that cannot be opened, read
+        # or written.  All of them are a registry fault, so they travel as one:  a
+        # caller never has to know which storage failure it was, and a faulting
+        # database is a refusal, never a traceback through the hook.
         raise RegistryError(str(exc), "reopen_failed", "reopen_refused")
     finally:
-        reg.close_db()
+        if reg is not None:
+            reg.close_db()
     return {
         "record_id": record_id,
         "label": letter,
@@ -1521,7 +1525,15 @@ def hook_stop() -> int:
     if ok:
         try:
             update_title(session_id, title)
-        except (RegistryError, ValueError) as exc:
+        except RegistryError as exc:
+            # A registry that cannot be reached is not a reason to block the stop:  the
+            # chat already holds its letter, and a Stop hook that exits 2 keeps the
+            # agent in a loop while the far host is asleep.
+            _report_registry_fault(exc)
+            return 0
+        except ValueError as exc:
+            # The title carries a credential:  the refusal names the problem and never
+            # the value.
             sys.stderr.write("Could not update the registry: %s\n" % exc)
             return 2
         return 0
@@ -1545,7 +1557,11 @@ def hook_stop() -> int:
         return 2
     try:
         update_title(session_id, fallback)
-    except (RegistryError, ValueError) as exc:
+    except RegistryError as exc:
+        # The thread carries the title in the store;  the registry copy is a second
+        # copy, and the sweep carries it later.  A fault here never blocks the stop.
+        _report_registry_fault(exc)
+    except ValueError as exc:
         sys.stderr.write("Could not update the registry: %s\n" % exc)
         return 2
     sys.stderr.write("The thread was renamed to %r.\n" % fallback)
