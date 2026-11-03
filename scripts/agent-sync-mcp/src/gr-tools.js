@@ -36,6 +36,9 @@ export const RelayResponseSchema = z.looseObject({
 
 export const GR_TIMEOUT_MS = 15_000;
 export const GR_RESPONSE_LIMIT = 262_144; // bytes:  a relay answer is small JSON
+export const GRAPHQL_ERROR_CODES = Object.freeze([
+  "graphql_forbidden", "graphql_not_found", "graphql_unprocessable", "graphql_rate_limited",
+]);
 export const GR_SECRETS = Object.freeze({
   accessId: "GR_ACCESS_CLIENT_ID",
   accessSecret: "GR_ACCESS_CLIENT_SECRET",
@@ -189,7 +192,11 @@ export class GrRelayClient {
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
       if(response.status===409 && ['pending','unknown'].includes(body.outcome))
         return {status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false}};
-      if(response.status>=500 && body.retryable!==true) return unavailable();
+      if(response.status>=500 && body.retryable!==true) {
+        if (response.status === 502 && body.outcome === "unknown" && GRAPHQL_ERROR_CODES.includes(body.github_code))
+          return {status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,github_code:body.github_code}};
+        return unavailable();
+      }
       return {status:response.status,body:{error:"workflow_request_refused", ...(body.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }

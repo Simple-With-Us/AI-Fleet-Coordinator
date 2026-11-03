@@ -388,6 +388,28 @@ test("grCall maps relay outcomes precisely and answers in the MCP result shape",
   assert.match(arrayRes.content[0].text, /could not read/);
 });
 
+test("GraphQL unknown outcomes expose only fixed diagnostic codes without enabling retry", async () => {
+  for (const code of ["graphql_forbidden", "graphql_not_found", "graphql_unprocessable", "graphql_rate_limited", "private-provider-text", null, ["graphql_forbidden"]]) {
+    const tools = grHarness(new GrRelayClient({
+      baseUrl: "https://git-relay.example.test", accessId: "test-access-id",
+      accessSecret: "test-access-secret", bearer: "sbt_jet-chat_testbearer",
+      fetch: async () => new Response(JSON.stringify({
+        error: "github call outcome unknown", outcome: "unknown", retryable: false,
+        github_code: code, provider_message: "private-provider-text",
+      }), { status: 502 }),
+    }));
+    const result = await tools.call("gr_merge_pr", { repo: "a/b", number: 1 });
+    assert.equal(result.isError, true);
+    const error = JSON.parse(result.content[0].text);
+    assert.equal(error.code, "outcome_unknown");
+    assert.equal(error.retryable, false);
+    assert.match(error.message, /Do not retry blindly/);
+    const expected = typeof code === "string" && code.startsWith("graphql_") ? code : undefined;
+    assert.equal(error.github_code, expected);
+    assert.doesNotMatch(JSON.stringify(result), /private-provider-text/);
+  }
+});
+
 test("an upstream not_configured 503 never impersonates a local failure", async () => {
   const tools = grHarness(new GrRelayClient({baseUrl:"https://git-relay.example.test", accessId:"id", accessSecret:"secret", bearer:"fixture", fetch:async()=>Response.json({error:"not_configured",localFailure:true},{status:503})}));
   const res=await tools.call("gr_open_pr",{repo:"a/b",base:"main",head:"f",title:"t",body:"b"});
