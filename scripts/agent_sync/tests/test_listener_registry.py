@@ -110,6 +110,12 @@ class RegistryApiTest(unittest.TestCase):
         raw = path + (("?" + query) if query else "")
         return self.service.handle(method, raw, headers, body)
 
+    def create_store(self) -> None:
+        # A store comes into being as a local act on the host that holds it, never
+        # through the API:  opening the registry in write mode lays the file down.
+        registry = OR.SessionRegistry(self.db)
+        registry.close_db()
+
     def register(self, seat: str, sid: str) -> dict[str, Any]:
         status, answer = self.call(
             "OPERATOR",
@@ -130,6 +136,7 @@ class RegistryApiTest(unittest.TestCase):
     # ---- the 12 ops ----------------------------------------------------------
 
     def test_all_twelve_ops(self) -> None:
+        self.create_store()
         # register (Operator only) for two seats.
         claude = self.register("CLAUDE", SID_CLAUDE)
         codex = self.register("CODEX", SID_CODEX)
@@ -223,6 +230,7 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual(answer["error"], "issuer_refused")
         # Nothing was written:  the store was never created by the refused call.
         self.assertFalse(os.path.isfile(self.db))
+        self.create_store()
         self.register("CLAUDE", SID_CLAUDE)
         status, answer = self.call(
             "CLAUDE", "POST", "relabel", {**payload, "force": True}
@@ -230,7 +238,53 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual(status, 403, answer)
         self.assertEqual(answer["error"], "issuer_refused")
 
+    def test_register_and_relabel_require_an_existing_store(self) -> None:
+        # No op brings a store into being, register and relabel included:  on a
+        # host with no store both answer 503, and neither call creates the file.
+        # A store is created as a local act on the host that holds it.
+        payload = {
+            **identity(SID_CLAUDE),
+            "seat": "CLAUDE",
+            "source": "registry-api test",
+        }
+        status, answer = self.call("OPERATOR", "POST", "register", payload)
+        self.assertEqual((status, answer["error"]), (503, "unavailable"), answer)
+        status, answer = self.call(
+            "OPERATOR", "POST", "relabel", {**payload, "force": True}
+        )
+        self.assertEqual((status, answer["error"]), (503, "unavailable"), answer)
+        self.assertFalse(os.path.isfile(self.db))
+
+    def test_cross_seat_access_is_refused_with_an_unfolded_identity(self) -> None:
+        # The registry stores the identity folded (the platform folded by
+        # normalize_platform, the session id trimmed by session_ids.check) and
+        # its mutation functions fold before their lookups, so the ownership
+        # pre-check folds too:  an unfolded identity that missed the stored row
+        # once read as "no row, no refusal" and the mutation landed on the other
+        # seat's session.
+        self.create_store()
+        self.register("CLAUDE", SID_CLAUDE)
+        unfolded = {
+            "platform": "MiniMax",
+            "location": "mac",
+            "scope": "default",
+            "session_id": " %s " % SID_CLAUDE,
+        }
+        for op, payload in (
+            ("update", {**unfolded, "title": "Stolen"}),
+            ("touch", unfolded),
+            ("close", unfolded),
+        ):
+            status, answer = self.call("CODEX", "POST", op, payload)
+            self.assertEqual(status, 403, (op, answer))
+        # The owning seat with the same unfolded identity is still itself:  the
+        # fold finds its row, the call goes through, and the row was not closed
+        # by the refused close above.
+        status, answer = self.call("CLAUDE", "POST", "touch", unfolded)
+        self.assertEqual(status, 200, answer)
+
     def test_cross_seat_access_is_refused(self) -> None:
+        self.create_store()
         claude = self.register("CLAUDE", SID_CLAUDE)
         self.register("CODEX", SID_CODEX)
         record_id = claude["record_id"]
@@ -261,6 +315,7 @@ class RegistryApiTest(unittest.TestCase):
     # ---- the HMAC discipline ------------------------------------------------------
 
     def test_hmac_discipline(self) -> None:
+        self.create_store()
         self.register("CLAUDE", SID_CLAUDE)
         query = {"platform": "minimax", "letter": "AA"}
         # A bad signature is 401.
@@ -355,6 +410,7 @@ class RegistryApiTest(unittest.TestCase):
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
     def test_behind_the_listener_server(self) -> None:
+        self.create_store()
         server = self._serve()
         status, answer = self._http(
             server, "OPERATOR", "POST", "register",
@@ -487,6 +543,9 @@ class RegistryTransportTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.db))
 
     def test_url_set_uses_https_transport(self) -> None:
+        # The far side's store exists (a local act on that host, as always).
+        registry = OR.SessionRegistry(self.db)
+        registry.close_db()
         server = self._serve()
         host, port = server.address
         url = "http://%s:%d" % (host, port)  # loopback stub:  http is allowed there only

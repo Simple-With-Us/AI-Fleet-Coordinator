@@ -40,6 +40,9 @@ Authority, enforced here and in `operator_registry` itself:
     filtered to the principal's own rows.  The OPERATOR principal acts for any seat.
   * The export outbox is the Operator's own:  `pending-outbox` and `mark-exported` require
     the OPERATOR principal.
+  * No op brings a store into being:  every op, `register` and `relabel` included, answers
+    503 until the host's store exists.  A store is created as a local act on the host that
+    holds it, never through this API, so a misdirected call cannot start a second registry.
 
 Op mapping (the registry's 12 ops):  register -> register_session, relabel -> relabel_session,
 resolve -> resolve_label, update -> update_session, close -> close_session, sweep ->
@@ -168,10 +171,18 @@ def _identity(payload: Mapping[str, Any]) -> dict[str, str]:
         return ""
 
     return {
-        "platform": pick("platform"),
+        # The identity is folded to the form the registry stores, here at the one
+        # seam every op passes through:  register_session stores the platform
+        # folded by normalize_platform and the session id trimmed by
+        # session_ids.check, and the mutation functions fold the same way before
+        # their lookups.  The ownership pre-check (_own_row) compares raw stored
+        # values, so an unfolded identity (platform "MiniMax", a padded session
+        # id) would miss the stored row, read as "no row, no refusal", and the
+        # mutation would then find and change another seat's session.
+        "platform": OR.normalize_platform(pick("platform")),
         "verified_host": pick("verified_host", "location"),
         "profile_scope": pick("profile_scope", "scope"),
-        "native_session_id": pick("native_session_id", "session_id"),
+        "native_session_id": pick("native_session_id", "session_id").strip(),
     }
 
 
@@ -379,6 +390,11 @@ class RegistryService:
         refused = self._operator_only(principal)
         if refused:
             return refused
+        # Never bring a registry into being:  a store is created as a local act on
+        # the host that holds it, so a host with no store answers 503 here as on
+        # every other op, rather than starting a second registry that would hand
+        # out colliding letters (the registry CLI's own guard, applied to the API).
+        self._require_store()
         identity = _identity(payload)
         out = OR.register_session(
             self.db_path,
@@ -405,6 +421,7 @@ class RegistryService:
         refused = self._operator_only(principal)
         if refused:
             return refused
+        self._require_store()
         identity = _identity(payload)
         out = OR.relabel_session(
             self.db_path,
