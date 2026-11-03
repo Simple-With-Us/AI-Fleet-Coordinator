@@ -67,9 +67,10 @@ UNRELATED = secrets.token_urlsafe(24)
 class ScopedReadAPI:
     """Loopback metadata and named rows for subprocesses using the real verifier."""
 
-    def __init__(self, values, *, project=source.PROJECT_ID, path="/"):
+    def __init__(self, values, *, project=source.PROJECT_ID, path="/", allow_bulk=False):
         self.values = dict(values)
         self.project, self.path = project, path
+        self.allow_bulk = allow_bulk
         self.token = fixture_service_token()
         self.metadata_override = {}
         self.requests = []
@@ -118,6 +119,34 @@ class ScopedReadAPI:
                                 "type": "shared",
                             }
                         }
+                elif (
+                    fake.allow_bulk
+                    and parsed.path == "/api/v3/secrets/raw"
+                    and query
+                    == {
+                        "workspaceId": [fake.project],
+                        "environment": ["prod"],
+                        "secretPath": [fake.path],
+                        "viewSecretValue": ["true"],
+                        "expandSecretReferences": ["false"],
+                        "recursive": ["false"],
+                        "include_imports": ["false"],
+                    }
+                ):
+                    status = 200
+                    payload = {
+                        "secrets": [
+                            {
+                                "secretKey": name,
+                                "secretValue": value,
+                                "workspace": fake.project,
+                                "environment": "prod",
+                                "secretPath": fake.path,
+                                "type": "shared",
+                            }
+                            for name, value in fake.values.items()
+                        ]
+                    }
                 data = json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")

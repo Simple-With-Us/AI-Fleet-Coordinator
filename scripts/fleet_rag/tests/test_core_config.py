@@ -9,12 +9,17 @@ account, no handoff file, no edit to core.py.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
+from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core
 
 # The five variables a third party sets to run their own corpus.
@@ -269,6 +274,51 @@ class OverrideTests(unittest.TestCase):
         self.assertIn("environment=prod", seen[1])
         # The owner's project id is never used once an override is set.
         self.assertNotIn(core.SHARED_PROJECT, seen[1])
+
+
+@unittest.skipUnless(shutil.which("rsync"), "standalone installer requires rsync")
+class StandaloneScopedReaderTests(unittest.TestCase):
+    def test_installed_recall_verifies_real_scoped_reads_and_replaces_only_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            home.mkdir()
+            stable = home / "apps/fleet-rag"
+            installer = pathlib.Path(__file__).resolve().parents[2] / "install-fleet-rag.sh"
+            env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "FLEET_RAG_HOME": str(stable)}
+            installed = subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            package = stable / "fleet_secrets"
+            self.assertEqual(sorted(p.name for p in package.iterdir()), ["__init__.py", "core.py"])
+            self.assertFalse((stable / "fleet-secrets").exists())
+            (package / "cli.py").write_text("# stale code must not ship\n")
+            (stable / "state/keep").write_text("preserved")
+            again = subprocess.run(["bash", str(installer)], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertFalse((package / "cli.py").exists())
+            self.assertEqual((stable / "state/keep").read_text(), "preserved")
+            boot = (
+                "import json,os,sys;sys.path.insert(0,sys.argv[1]);"
+                "from fleet_rag import core;import fleet_secrets.core as verifier;"
+                "assert os.path.commonpath([sys.argv[1],verifier.__file__])==sys.argv[1];"
+                "print(json.dumps(core.infisical_fetch({'RECALL_API_URL'})))"
+            )
+            with ScopedReadAPI({"RECALL_API_URL": "https://recall.invalid"}, project=core.SHARED_PROJECT) as api:
+                child = {**env, "FLEET_RECALL_INFISICAL_TOKEN": api.token,
+                         "FLEET_SECRETS_API": api.env["FLEET_SECRETS_API"],
+                         "FLEET_RAG_INFISICAL_API": api.env["FLEET_SECRETS_API"]}
+                ran = subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(stable)],
+                                     env=child, cwd=home, capture_output=True, text=True, timeout=15)
+                self.assertEqual(ran.returncode, 0, ran.stderr)
+                self.assertEqual(json.loads(ran.stdout), {"RECALL_API_URL": "https://recall.invalid"})
+                self.assertEqual(len(api.requests), 2)
+                self.assertEqual(api.requests[0], "/api/v2/service-token")
+                self.assertTrue(api.requests[1].startswith("/api/v3/secrets/raw/RECALL_API_URL?"))
+                api.requests.clear()
+                api.metadata_override["permissions"] = ["read", "write"]
+                denied = subprocess.run([sys.executable, "-I", "-B", "-c", boot, str(stable)],
+                                        env=child, cwd=home, capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(denied.returncode, 0)
+                self.assertEqual(api.requests, ["/api/v2/service-token"])
 
 
 if __name__ == "__main__":
