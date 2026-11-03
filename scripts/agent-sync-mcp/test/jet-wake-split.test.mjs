@@ -125,15 +125,17 @@ test("the events-only flip is a config var:  absent means no restriction, an unk
   assert.throws(() => loadConfig(testEnv({ EVENTS_ONLY_SEATS: "NOPE" })), /unknown events-only seat/, "never widen to an unknown seat");
 });
 
-test("JET-CHAT is absent by default, and only hosting it unprovisioned fails closed", () => {
-  // An absent optional seat loads safely:  the default production config has
-  // no JET-CHAT and loads unchanged.
+test("JET-CHAT is hosted with its captured pair, and only hosting it unprovisioned fails closed", () => {
+  // JET-CHAT was live in production before the committed config said so;
+  // the Nov 3, 2026 parity change records it here.
   const prod = loadConfig(wranglerConfig().vars);
-  assert.ok(!prod.hostedSeats.includes("JET-CHAT"), "HOSTED_SEATS gains JET-CHAT only with its captured pair at deploy");
-  assert.equal(prod.botEmails["JET-CHAT"], undefined);
+  assert.ok(prod.hostedSeats.includes("JET-CHAT"), "JET-CHAT is hosted:  its captured pair is in the committed SEATS");
+  assert.equal(prod.botEmails["JET-CHAT"], prod.botEmails.JET, "one bot serves both Jet seats");
   // The fail-closed 500 is reserved for explicitly hosting an incompletely
   // provisioned seat.
-  assert.throws(() => loadConfig(testEnv({ HOSTED_SEATS: "JET,JET-CHAT" })), /ZULIP_EMAIL_JET_CHAT/, "an unprovisioned email var refuses config load rather than serving a wrong binding");
+  const unprovisioned = testEnv({ HOSTED_SEATS: "JET,JET-CHAT" });
+  delete unprovisioned.ZULIP_EMAIL_JET_CHAT;
+  assert.throws(() => loadConfig(unprovisioned), /ZULIP_EMAIL_JET_CHAT/, "an unprovisioned email var refuses config load rather than serving a wrong binding");
 });
 
 test("JET-CHAT loads with Jet's bot email under its own var name", () => {

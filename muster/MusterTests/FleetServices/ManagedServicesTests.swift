@@ -225,6 +225,23 @@ final class ManagedServicesTests: XCTestCase {
         XCTAssertTrue(commands.calls[0].contains("botfleet-mcp"))
     }
 
+    func testAStartThatDoesNotBringTheMCPServerUpIsRestarted() async throws {
+        // pm2 answers a start on a record it believes is online with "already
+        // started" and starts nothing, so a start that leaves the server down
+        // has proved the record was stale, and the record is then restarted.
+        // The start itself stays one pm2 command, so the repair is paid for
+        // only when there is something to repair.
+        ManagedServicesURLProtocol.handler = { _ in
+            .failure(URLError(.cannotConnectToHost))
+        }
+        let commands = PM2Commands()
+        let control = try makeControl(commands: commands)
+        let state = try await control.setRunning(true, within: 0.1)
+        XCTAssertNotEqual(state, .running)
+        XCTAssertTrue(commands.calls.contains { $0.contains("restart") })
+        XCTAssertTrue(commands.calls.contains { $0.contains("botfleet-mcp") })
+    }
+
     func testARefusedPM2IsReportedRatherThanClaimedAsSuccess() async throws {
         ManagedServicesURLProtocol.handler = { _ in
             .response(200, Data(#"{"status":"ok","app":"botfleet-admin-mcp"}"#.utf8))

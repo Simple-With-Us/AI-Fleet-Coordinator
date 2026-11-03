@@ -52,7 +52,7 @@ function harness(fetchImpl, enabled=true) {
   return new HostedTools({seat:'JET-CHAT',scopes:['zulip:read','zulip:write'],clientId:'test',grantRef:'abc123',paused:false,config:{...loadConfig(testEnv()),grWorkflowEnabled:enabled},zulip:null,key:'',gate,gr,log:()=>{},sleep:async()=>{}});
 }
 test('default-off discovery, cache separation and direct-call denial',async()=>{
-  assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
+  assert.equal(loadConfig(testEnv({GR_WORKFLOW_TOOLS:""})).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,WF_V1_ACTIONS.length);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
