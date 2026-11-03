@@ -5,7 +5,9 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 Canonical reference: `/Users/jay/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
@@ -61,8 +63,10 @@ Every agent session must start with systematic orientation before touching code:
    - MiniMax (MM): `MM` (display `MiniMax`, prefix `minimax/`, `mm-bot@`, `MM`)
    - Muse Code: `MC` (display `Muse Code`, prefix `mc/`, `mc-bot@`, `MC`)
    - Muse Assist: `MA` (display `Rob (Muse)`, prefix `ma/`, `muse-assist-bot@`, `MA`)
+   - Moonshot AI Kimi Code: `KIMI` (display `Kimi`, prefix `kimi/`, `kimi-bot@`, `Kimi`)
+   - Z Code: `ZCODE` (display `ZCode`, prefix `zcode/`, `zcode-bot@`, `Zcode`)
    - BotFleet role bots carry the platform prefix in the display name (`@**BF-Plumber**`); Grok Bot personas are `GB-<ROLE>`.
-   *(Retired: MONET, RENOIR, HARNESS, DSH, KIMI have no bot.  Retired tags: MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK (an accepted alias, signed GROK; display name `Grok`).  Never assign work to a retired seat or wait on one.)*
+   *(Retired: MONET, RENOIR, HARNESS, DSH have no bot.  Retired tags: MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK (an accepted alias, signed GROK; display name `Grok`).  Never assign work to a retired seat or wait on one.)*
 
 2. **Read live coordination (Zulip #Work-In-Progress):**
    ```bash

@@ -327,9 +327,14 @@ struct HostMemory: Decodable, Equatable {
     }
 
     /// The share of memory in use, from 0 to 1, when both numbers were read.
+    ///
+    /// Impossible numbers (negative,  or more available than there is) are not a
+    /// measurement,  so they read as unmeasured rather than clamping to a pass.
     var usedFraction: Double? {
-        guard let total = totalBytes, let available = availableBytes, total > 0 else { return nil }
-        return min(max(Double(total - available) / Double(total), 0), 1)
+        guard let total = totalBytes, let available = availableBytes,
+            total > 0, available >= 0, available <= total
+        else { return nil }
+        return Double(total - available) / Double(total)
     }
 }
 
@@ -352,8 +357,10 @@ struct HostSwap: Decodable, Equatable {
     ///
     /// A host with no swap has no share to show,  so it is nil rather than a zero.
     var usedFraction: Double? {
-        guard let total = totalBytes, let free = freeBytes, total > 0 else { return nil }
-        return min(max(Double(total - free) / Double(total), 0), 1)
+        guard let total = totalBytes, let free = freeBytes,
+            total > 0, free >= 0, free <= total
+        else { return nil }
+        return Double(total - free) / Double(total)
     }
 }
 
@@ -383,11 +390,11 @@ struct HostDisk: Decodable, Identifiable, Equatable {
     /// Used over used plus free,  the way `df` counts it,  so the space kept back for
     /// root does not read as free space the fleet can use.
     var usedFraction: Double? {
-        if let used = usedBytes, let free = freeBytes, used + free > 0 {
-            return min(max(Double(used) / Double(used + free), 0), 1)
+        if let used = usedBytes, let free = freeBytes, used >= 0, free >= 0, used + free > 0 {
+            return Double(used) / Double(used + free)
         }
-        if let used = usedBytes, let total = totalBytes, total > 0 {
-            return min(max(Double(used) / Double(total), 0), 1)
+        if let used = usedBytes, let total = totalBytes, used >= 0, total > 0, used <= total {
+            return Double(used) / Double(total)
         }
         return nil
     }
@@ -432,8 +439,8 @@ struct HostMetrics: Decodable, Equatable {
     /// A load of one per cpu is a full machine,  so the bar is drawn against that and
     /// can run past it.
     var loadFraction: Double? {
-        guard let load = loadAverage.first, let cpus = cpuCount, cpus > 0 else { return nil }
-        return max(load / Double(cpus), 0)
+        guard let load = loadAverage.first, load >= 0, let cpus = cpuCount, cpus > 0 else { return nil }
+        return load / Double(cpus)
     }
 
     /// The three load numbers,  as `uptime` prints them.
@@ -574,10 +581,12 @@ struct ServerStatusReport: Decodable {
     let services: [ServerService]
     /// How many files the collector found,  when it said.
     let filesSummary: ServerFilesSummary?
+    /// The redacted resource receipt is optional; its absence never proves limits applied.
+    let resourcePolicy: ResourcePolicySnapshot?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, tool, generatedAt, host, coolify, processes, files
-        case hostMetrics, services, filesSummary
+        case hostMetrics, services, filesSummary, resourcePolicy
     }
 
     init(from decoder: Decoder) throws {
@@ -596,6 +605,7 @@ struct ServerStatusReport: Decodable {
         hostMetrics = try? container.decodeIfPresent(HostMetrics.self, forKey: .hostMetrics)
         services = (try? container.decodeIfPresent([ServerService].self, forKey: .services)) ?? []
         filesSummary = try? container.decodeIfPresent(ServerFilesSummary.self, forKey: .filesSummary)
+        resourcePolicy = try? container.decodeIfPresent(ResourcePolicySnapshot.self, forKey: .resourcePolicy)
     }
 }
 
@@ -627,6 +637,7 @@ struct ServerStatusReading {
     var services: [ServerService] = []
     /// How many files the collector found,  when the report says.
     var filesSummary: ServerFilesSummary?
+    var resourcePolicy: ResourcePolicySnapshot?
     /// The verdict for the whole report.
     var state: CellState = .unknown
 
@@ -776,6 +787,7 @@ enum ServerStatusReportReader {
         reading.hostMetrics = report.hostMetrics
         reading.services = report.services
         reading.filesSummary = report.filesSummary
+        reading.resourcePolicy = report.resourcePolicy
         // A report out of its window is not a reading:  the whole report reads unknown,
         // even where every row in it looks fine.
         reading.state = overall(of: reading)

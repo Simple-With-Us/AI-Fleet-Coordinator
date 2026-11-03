@@ -555,6 +555,7 @@ def load_registry(path: str | os.PathLike[str] | None = None, *, include_extras:
 CANONICAL_SEATS: tuple[str, ...] = (
     "claude", "monet", "codex", "antigravity", "cursor", "grok", "grok-build", "deepseek",
     "harness", "renoir", "fx", "kimi", "minimax", "muse-assist", "muse-code", "wise",
+    "zcode",
 )
 
 # Short forms in wide use on disk.  `gb` and `grok-bot` map to `cursor` because the registry gives
@@ -573,6 +574,7 @@ SEAT_ALIASES: dict[str, str] = {
     "dsh": "deepseek",
     "gb": "cursor",
     "grok-bot": "cursor",
+    "zc": "zcode",
 }
 
 # BotFleet bot roles show up in lane names and branch prefixes.  They are not seats.
@@ -653,6 +655,9 @@ _HARNESS_SPECS: tuple[tuple[str, str, bool], ...] = (
     ("grok", ".grok/worktrees", True),
     ("antigravity", ".gemini/antigravity/worktrees", True),
     ("antigravity-ag", ".ag/worktrees", True),
+    ("kimi", ".kimi-code/worktrees", True),
+    ("zcode", ".zcode/worktrees", True),
+    ("zcode-workspace", ".zcode/workspace", False),
     ("botfleet", ".botfleet/worktrees", True),
     ("codecaps-pages", "codecaps-pages", True),
     ("antigravity-scratch", ".gemini/antigravity/scratch", False),

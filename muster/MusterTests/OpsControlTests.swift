@@ -1,5 +1,34 @@
 import XCTest
 
+final class FleetServicesPanelRoutingTests: XCTestCase {
+    func test_launch_agents_use_admin_when_allowlist_is_missing_or_empty() {
+        let serviceID = "com.jay.unlisted-agent"
+
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: serviceID, label: serviceID, allowlist: nil
+        ))
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: serviceID, label: serviceID, allowlist: OpsAllowlist()
+        ))
+    }
+
+    func test_listed_launch_agent_uses_controller_and_server_keeps_admin_route() {
+        let label = "com.jay.allowed-agent"
+        let allowlist = OpsAllowlist(macAgents: [
+            OpsAllowlist.Entry(name: label, actions: [OpsVerb.start.rawValue])
+        ])
+
+        XCTAssertFalse(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: label, label: label, allowlist: allowlist
+        ))
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: FleetServiceRegistry.server.id,
+            label: FleetServiceRegistry.server.id,
+            allowlist: allowlist
+        ))
+    }
+}
+
 // The operations control:  the argv Muster builds for each action,  how it reads a
 // helper's answer,  and the plan,  confirm and run flow with an injected runner.
 //
@@ -32,6 +61,67 @@ final class OpsCommandBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(invocation.workingDirectory, "/")
         XCTAssertEqual(invocation.timeout, OpsControlRoute.planTimeout)
+    }
+
+    func test_a_pm2_verb_runs_the_helper_on_this_mac() throws {
+        let invocation = try exampleBuilder().invocation(
+            for: .pm2App(verb: .restart, name: "shellular"), mode: .plan
+        )
+        XCTAssertEqual(invocation.executable, "/usr/bin/python3")
+        XCTAssertEqual(invocation.arguments, [
+            "-s", "/tmp/example-repo/scripts/fleet-ops-control.py",
+            "pm2", "restart", "shellular", "--plan", "--json",
+        ])
+        XCTAssertFalse(OpsAction.pm2App(verb: .restart, name: "shellular").runsOnServer)
+        XCTAssertEqual(OpsAction.pm2App(verb: .stop, name: "shellular").auditVerb, "pm2 stop")
+        XCTAssertEqual(OpsAction.pm2App(verb: .stop, name: "shellular").auditTarget, "shellular")
+    }
+
+    func test_a_logs_verb_goes_over_ssh_to_the_alias() throws {
+        let invocation = try exampleBuilder().invocation(
+            for: .logs(unit: "fleet-server-status.timer"), mode: .yes
+        )
+        XCTAssertEqual(invocation.executable, "/usr/bin/ssh")
+        XCTAssertEqual(
+            invocation.arguments,
+            sshPrefix + ["server", "logs", "fleet-server-status.timer", "--yes", "--json"]
+        )
+        XCTAssertTrue(OpsAction.logs(unit: "fleet-server-status.timer").runsOnServer)
+        XCTAssertEqual(OpsAction.logs(unit: "fleet-server-status.timer").auditVerb, "server logs")
+    }
+
+    func test_resource_policy_write_and_status_use_the_fixed_ssh_routes() throws {
+        let revision = String(repeating: "a", count: 64)
+        let action = OpsAction.serverResource(field: "cpu-cores", value: "8", revision: revision)
+        let write = try exampleBuilder().invocation(for: action, mode: .plan)
+        XCTAssertEqual(write.executable, "/usr/bin/ssh")
+        XCTAssertEqual(write.arguments, sshPrefix + [
+            "server", "resource-policy", "cpu-cores.8.\(revision)", "--plan", "--json",
+        ])
+        XCTAssertTrue(action.runsOnServer)
+        XCTAssertEqual(action.auditVerb, "server resource policy")
+        XCTAssertEqual(action.auditTarget, "coding.cpu-cores")
+
+        let status = try exampleBuilder().invocation(for: .resourceStatus, mode: .plan)
+        XCTAssertEqual(status.executable, "/usr/bin/ssh")
+        XCTAssertEqual(status.arguments, sshPrefix + ["server", "resource-status", "coding", "--plan", "--json"])
+        XCTAssertThrowsError(try exampleBuilder().invocation(for: .resourceStatus, mode: .yes))
+    }
+
+    func test_resource_policy_action_rejects_unlisted_fields_values_and_revisions() {
+        let invalid: [OpsAction] = [
+            .serverResource(field: "shell", value: "8", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-cores", value: "0", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-weight", value: "10001", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "ram-budget-gib", value: "2.5", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "borrow-idle", value: "true", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "borrow-idle", value: "2", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-cores", value: "8", revision: String(repeating: "A", count: 64)),
+            .serverResource(field: "cpu-cores", value: "8", revision: "short"),
+        ]
+        for action in invalid {
+            XCTAssertThrowsError(try exampleBuilder().invocation(for: action, mode: .plan), "\(action)")
+        }
     }
 
     func test_a_server_verb_goes_over_ssh_to_the_alias() throws {
@@ -97,6 +187,9 @@ final class OpsCommandBuilderTests: XCTestCase {
             (.serverUnit(verb: .stop, unit: "a;reboot"), .invalidArgument("unit name")),
             (.serverUnit(verb: .stop, unit: ""), .invalidArgument("unit name")),
             (.serverUpdate(name: "fleet-cli$(id)"), .invalidArgument("update name")),
+            (.pm2App(verb: .start, name: "shellular;id"), .invalidArgument("pm2 name")),
+            (.pm2App(verb: .start, name: "-oProxyCommand=x"), .invalidArgument("pm2 name")),
+            (.logs(unit: "a b.service"), .invalidArgument("unit name")),
             (.coolifyRedeploy(uuid: "x@y", name: "x"), .invalidArgument("resource id")),
             (.knobSet(key: "lower_case", value: "x"), .invalidArgument("knob name")),
             (.knobSet(key: "FLEET_X", value: "-rf"), .invalidArgument("knob value")),
@@ -117,6 +210,38 @@ final class OpsCommandBuilderTests: XCTestCase {
         XCTAssertEqual(Array(invocation.arguments.suffix(3)), ["--", "FLEET_X", "-1"])
     }
 
+    func test_values_the_helper_would_refuse_are_refused_here_first() throws {
+        // Each of these passes the loose token check but fails the helper's own
+        // pattern for its verb, so building the invocation has to refuse it here
+        // rather than after Touch ID.
+        let refused: [(OpsAction, OpsControlError)] = [
+            (.pm2App(verb: .start, name: "Shellular"), .invalidArgument("pm2 name")),
+            (.pm2App(verb: .start, name: "app@1"), .invalidArgument("pm2 name")),
+            (.pm2App(verb: .start, name: String(repeating: "a", count: 65)), .invalidArgument("pm2 name")),
+            (.logs(unit: "fleet-worker@CLAUDE.service"), .invalidArgument("unit name")),
+            (.logs(unit: "no-suffix"), .invalidArgument("unit name")),
+            (.serverUnit(verb: .stop, unit: "fleet-worker@CLAUDE.service"), .invalidArgument("unit name")),
+            (.serverUnit(verb: .stop, unit: "a.servicex"), .invalidArgument("unit name")),
+            (.macAgent(verb: .start, label: "com.jay.x@y"), .invalidArgument("agent label")),
+            (.macAgent(verb: .start, label: String(repeating: "a", count: 128)), .invalidArgument("agent label")),
+            (.serverUpdate(name: "Fleet-CLI"), .invalidArgument("update name")),
+            (.coolifyRedeploy(uuid: "ab-cd1234", name: "x"), .invalidArgument("resource id")),
+            (.coolifyRedeploy(uuid: "abc", name: "x"), .invalidArgument("resource id")),
+        ]
+        for (action, expected) in refused {
+            XCTAssertThrowsError(try exampleBuilder().invocation(for: action, mode: .plan), "\(action)") { error in
+                XCTAssertEqual(error as? OpsControlError, expected, "\(action)")
+            }
+        }
+        // And the shapes the helper accepts still build.
+        XCTAssertNoThrow(try exampleBuilder().invocation(
+            for: .pm2App(verb: .start, name: "botfleet-mcp"), mode: .plan))
+        XCTAssertNoThrow(try exampleBuilder().invocation(
+            for: .macAgent(verb: .start, label: "app.botfleet.companion"), mode: .plan))
+        XCTAssertNoThrow(try exampleBuilder().invocation(
+            for: .coolifyRedeploy(uuid: "exampleuuid1", name: "x"), mode: .plan))
+    }
+
     func test_a_templated_unit_name_is_a_token() {
         XCTAssertTrue(OpsCommandBuilder.isSafeToken("fleet-worker@CLAUDE.service"))
         XCTAssertTrue(OpsCommandBuilder.isSafeToken("com.jay.fleet-tools-doctor"))
@@ -133,7 +258,9 @@ final class OpsCommandBuilderTests: XCTestCase {
             }
         }
         XCTAssertThrowsError(try builder.checkInstalled(for: .knobSet(key: "FLEET_X", value: "1")))
+        XCTAssertThrowsError(try builder.checkInstalled(for: .pm2App(verb: .start, name: "shellular")))
         XCTAssertNoThrow(try builder.checkInstalled(for: .serverUpdate(name: "fleet-cli")))
+        XCTAssertNoThrow(try builder.checkInstalled(for: .logs(unit: "fleet-server-status.timer")))
     }
 
     func test_the_audit_names_of_an_action() {
@@ -166,6 +293,18 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertFalse(outcome.isSuccess(for: .yes))
         XCTAssertEqual(outcome.commandLines, ["systemctl --user restart fleet-server-status.timer"])
         XCTAssertEqual(outcome.detail, "Nothing has run.")
+    }
+
+    func test_a_resource_status_answer_carries_its_typed_receipt() throws {
+        let revision = String(repeating: "a", count: 64)
+        let policy = #"{"schemaVersion":1,"generatedAt":"2026-11-03T12:30:00Z","policyRevision":"\#(revision)","desired":{"cpuCores":8,"cpuWeight":100,"ramPressureGiB":8,"ramCriticalGiB":4,"reserveGiB":4,"allowBorrowing":false},"observed":{"cpuOnline":16,"cpuCores":8,"cpuWeight":50,"cpuGroups":4,"cpuMismatches":0,"ramTotalBytes":17179869184,"ramCurrentBytes":5368709120,"ramTargetBytes":8589934592,"mode":"normal","codingGroups":4,"productionGroups":2,"controlWriteFailures":0,"controlSuspended":0,"policyStale":false,"actualHighMismatches":0,"updatedAt":"2026-11-03T12:25:00Z"},"status":"applied"}"#
+        let stdout = #"{"ok":true,"verb":"server resource status","target":"coding","commands":[["server","resource-status","coding"]],"result":"planned","resourcePolicy":\#(policy)}"#
+        let outcome = OpsResultParser.parse(
+            result(stdout), mode: .plan, action: .resourceStatus, timeout: 90
+        )
+        XCTAssertTrue(outcome.isSuccess(for: .plan))
+        XCTAssertEqual(outcome.resourcePolicy?.policyRevision, revision)
+        XCTAssertEqual(outcome.resourcePolicy?.desired.allowBorrowing, false)
     }
 
     func test_a_run_reads_as_done() throws {
@@ -272,6 +411,28 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertNil(OpsKnobChange(old: nil, oldSource: nil, new: nil, lkg: "patched").lkgWarning)
     }
 
+    func test_a_logs_run_surfaces_the_log_text_and_a_plan_never_does() {
+        let logs = OpsAction.logs(unit: "fleet-server-status.timer")
+        let done = #"{"ok": true, "verb": "server logs", "target": "fleet-server-status.timer", "commands": [["journalctl", "--user", "-u", "fleet-server-status.timer", "-n", "200", "--no-pager"]], "result": "done", "detail": "2 journal lines", "output": "line one\nline two\n", "lines": 2}"#
+        let outcome = OpsResultParser.parse(result(done), mode: .yes, action: logs, timeout: 900)
+        XCTAssertTrue(outcome.isSuccess(for: .yes))
+        XCTAssertEqual(outcome.logText, "line one\nline two\n")
+        XCTAssertEqual(outcome.logLines, 2)
+        // The same answer read as a plan surfaces no log text: a plan fetched nothing.
+        let asPlan = OpsResultParser.parse(result(done), mode: .plan, action: logs, timeout: 90)
+        XCTAssertNil(asPlan.logText)
+        // And output on an answer for any other action is never surfaced.
+        let other = OpsResultParser.parse(result(done), mode: .yes, action: unit, timeout: 900)
+        XCTAssertNil(other.logText)
+    }
+
+    func test_a_logs_run_strips_terminal_escapes_before_the_text_is_shown() {
+        let logs = OpsAction.logs(unit: "fleet-server-status.timer")
+        let done = #"{"ok": true, "verb": "server logs", "target": "fleet-server-status.timer", "commands": [], "result": "done", "detail": "2 journal lines", "output": "\u001b[31mred\u001b[0m\u0007\nnext\tline", "lines": 2}"#
+        let outcome = OpsResultParser.parse(result(done), mode: .yes, action: logs, timeout: 900)
+        XCTAssertEqual(outcome.logText, "red\nnext\tline")
+    }
+
     func test_a_server_answer_has_no_knob_change() throws {
         let outcome = OpsResultParser.parse(
             result(try fixture("ops_result_planned", "json")), mode: .plan, action: unit, timeout: 90
@@ -306,6 +467,8 @@ final class OpsAllowlistAndAuditTests: XCTestCase {
         XCTAssertEqual(list.verbs(forMacAgent: "com.jay.fleet-tools-doctor"), [.start, .stop, .restart])
         XCTAssertEqual(list.verbs(forServerUnit: "fleet-server-status.timer"), [.restart])
         XCTAssertEqual(list.verbs(forServerUnit: "sshd.service"), [])
+        XCTAssertEqual(list.verbs(forPM2App: "shellular"), [.start, .restart])
+        XCTAssertEqual(list.verbs(forPM2App: "not-listed"), [])
         XCTAssertEqual(list.updates.map(\.name), ["fleet-cli"])
         XCTAssertEqual(list.updates.first?.unit, "fleet-cli-git-update.service")
         XCTAssertTrue(list.coolifyRedeploy)
@@ -550,6 +713,31 @@ final class OpsControllerFlowTests: XCTestCase {
         XCTAssertNotNil(ops.notice)
         XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
         XCTAssertEqual(ops.completedRuns, 0)
+    }
+
+    func test_a_resource_policy_plan_with_a_changed_revision_or_old_value_is_not_run() async throws {
+        let revision = String(repeating: "a", count: 64)
+        let action = OpsAction.serverResource(field: "cpu-cores", value: "9", revision: revision)
+        let first = #"{"ok":true,"commands":[["resource-policy","coding","\#(revision)","cpu-cores","8","9"]],"result":"planned"}"#
+        let changed = #"{"ok":true,"commands":[["resource-policy","coding","\#(revision)","cpu-cores","7","9"]],"result":"planned"}"#
+        let fake = FakeOpsRunner { invocation, count in
+            if invocation.arguments.contains("--plan") {
+                return OpsProcessResult(exitCode: 0, stdout: count == 1 ? first : changed, stderr: "")
+            }
+            return OpsProcessResult(exitCode: 0, stdout: #"{"ok":true,"commands":[],"result":"done"}"#, stderr: "")
+        }
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(action))
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops) { phase in
+            if case .review(_, let outcome) = phase {
+                return outcome.commandLines == ["resource-policy coding \(revision) cpu-cores 7 9"]
+            }
+            return false
+        }
+        XCTAssertTrue(ops.notice?.contains("changed") == true)
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
     }
 
     func test_a_second_plan_that_is_refused_shows_its_own_refusal() async throws {

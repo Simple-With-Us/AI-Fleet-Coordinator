@@ -206,6 +206,27 @@ def grok_imported() -> dict:
     }
 
 
+def zcode_config() -> dict:
+    return {
+        "hooks": {
+            "events": {
+                "PreToolUse": [
+                    {
+                        "matcher": "tool",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "/dummy/tool-hook",
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+
+
 MUSE_SETTINGS = {"schema_version": 1, "provider": "x", "model": "y", "tui": {}, "permissions": {}}
 
 SHAPES = {
@@ -215,6 +236,7 @@ SHAPES = {
     ".gemini/config/hooks.json": gemini_hooks,
     ".grok/hooks/imported-from-claude.json": grok_imported,
     ".config/muse/settings.json": lambda: copy.deepcopy(MUSE_SETTINGS),
+    ".zcode/cli/config.json": zcode_config,
 }
 
 
@@ -318,6 +340,7 @@ class World(unittest.TestCase):
             ".cursor/hooks.json",
             ".gemini/config/hooks.json",
             ".grok/hooks/imported-from-claude.json",
+            ".zcode/cli/config.json",
         )
 
     def install(self, platforms: tuple = T.SUPPORTED_KEYS, source: T.Source | None = None) -> None:

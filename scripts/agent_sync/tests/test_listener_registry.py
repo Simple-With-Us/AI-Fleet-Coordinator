@@ -45,6 +45,7 @@ KEYS = {
     "CODEX": CODEX_KEY,
     "MM": MM_KEY,
 }
+SID_SEED = "session-seed-0001"
 SID_CLAUDE = "session-claude-0001"
 SID_CODEX = "session-codex-0001"
 
@@ -437,12 +438,40 @@ class RegistryTransportTest(unittest.TestCase):
         self.assertEqual(answer.get("seat"), "MM")
 
     def test_command_transport_wins_over_a_missing_local_file(self) -> None:
-        # The local file does not exist, so the local path would answer no_registry;
-        # the explicit command transport is reached instead, and it creates the store
-        # the CLI's own default path names (AGENT_SYNC_OPERATOR_REGISTRY).
-        self.assertFalse(os.path.isfile(self.db))
-        command = "%s -m agent_sync.operator_registry" % sys.executable
-        with self._env(MM_OPERATOR_REGISTRY_CMD=command):
+        # This host keeps no registry (its AGENT_SYNC_OPERATOR_REGISTRY names a file
+        # that does not exist), so the call goes over the transport command (the hop
+        # main's remote_registry_call makes, a plain command name the host
+        # configuration supplies) to the host that holds the one registry.  The far
+        # side's store already exists there:  the registry CLI never brings a store
+        # into being, so the shim carries the far side's own path, the way the real
+        # transport command carries its host's configuration.
+        OR.register_session(
+            self.db,
+            platform="minimax",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=SID_SEED,
+            seat="MM",
+            source="transport test seed",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+        self.assertTrue(os.path.isfile(self.db))
+        scripts = os.path.dirname(os.path.abspath(self.M.__file__))
+        bin_dir = os.path.join(self.tmp.name, "bin")
+        os.makedirs(bin_dir)
+        shim = os.path.join(bin_dir, "mm-operator-registry")
+        with open(shim, "w", encoding="utf-8") as fh:
+            fh.write(
+                "#!/bin/sh\nAGENT_SYNC_OPERATOR_REGISTRY=%s PYTHONPATH=%s exec %s "
+                "-m agent_sync.operator_registry \"$@\"\n"
+                % (self.db, scripts, sys.executable)
+            )
+        os.chmod(shim, 0o755)
+        with self._env(
+            AGENT_SYNC_OPERATOR_REGISTRY=os.path.join(self.tmp.name, "missing.sqlite3"),
+            MM_OPERATOR_REGISTRY_CMD="mm-operator-registry",
+            PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""),
+        ):
             answer = self.M.registry_call(
                 [
                     "register",

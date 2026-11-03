@@ -1,82 +1,158 @@
 import SwiftUI
 
-/// The window's root:  the MiniMax panel, the fleet grid and the fleet view, over one
-/// shared run.
+/// The window's root:  the sidebar's places in one detail column, over one shared run.
+///
+/// The sidebar names every panel the window holds, which the tab bar it replaced did
+/// not:  at the window's usual width the tabs past the first few folded into an
+/// overflow menu, and a panel inside it was a panel the owner had to know to look for.
 struct FleetOverviewView: View {
     @EnvironmentObject private var store: FleetStore
+    @EnvironmentObject private var monitor: DriftMonitor
     @AppStorage(MusterSettings.themeDefaultsKey) private var theme: ThemeChoice = .system
+    @AppStorage(MusterSettings.sidebarSelectionDefaultsKey) private var storedDestination = MusterDestination.overview.rawValue
+    @State private var destination: MusterDestination
+
+    init() {
+        let saved = UserDefaults.standard.string(forKey: MusterSettings.sidebarSelectionDefaultsKey)
+        let restored = MusterDestination.restored(from: saved)
+        if let saved, MusterDestination(rawValue: saved) == nil {
+            // Heal a spelling this app no longer names, so the fallback runs once
+            // instead of on every launch.
+            UserDefaults.standard.set(restored.rawValue, forKey: MusterSettings.sidebarSelectionDefaultsKey)
+        }
+        _destination = State(initialValue: restored)
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if case .failed(let reason) = store.phase {
-                FailureBanner(reason: reason)
+        NavigationSplitView {
+            List(selection: $destination) {
+                Section {
+                    sidebarRow(.overview)
+                }
+                Section("Fleet") {
+                    ForEach(MusterDestination.fleet) { sidebarRow($0) }
+                }
+                Section("This Mac") {
+                    ForEach(MusterDestination.thisMac) { sidebarRow($0) }
+                }
+                Section("Server") {
+                    ForEach(MusterDestination.server) { sidebarRow($0) }
+                }
             }
-            if let problem = store.manifestProblem {
-                FailureBanner(
-                    reason: problem,
-                    title: "The manifest could not be read,  so the roster is not the manifest's."
-                )
+            .navigationTitle("Muster")
+            .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 300)
+        } detail: {
+            VStack(spacing: 0) {
+                if case .failed(let reason) = store.phase {
+                    FailureBanner(reason: reason)
+                }
+                if let problem = store.manifestProblem {
+                    FailureBanner(
+                        reason: problem,
+                        title: "The manifest could not be read,  so the roster is not the manifest's."
+                    )
+                }
+                if let problem = store.registryProblem {
+                    FailureBanner(
+                        reason: problem,
+                        title: "The registry could not be read,  so the grid has no rows of its own."
+                    )
+                }
+                detail
+                // The footer and the fix activity describe the run and its cells, so
+                // they sit under the two places that read those cells and nowhere
+                // else:  under every panel they read as belonging to it, including
+                // panels an engine failure says nothing about.
+                if destination == .overview || destination == .complianceGrid {
+                    Divider()
+                    ApplyActivityView()
+                    footer
+                }
             }
-            if let problem = store.registryProblem {
-                FailureBanner(
-                    reason: problem,
-                    title: "The registry could not be read,  so the grid has no rows of its own."
-                )
+            .navigationTitle(destination.title)
+            .toolbar {
+                ToolbarItem {
+                    // The one refresh the window keeps is the engine's.  Panels with a
+                    // source of their own keep their own refresh beside their rows,
+                    // which names what it rereads;  this one ran the engine when it
+                    // stood over the tabs and still does.
+                    Button {
+                        store.refresh()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(store.phase == .running)
+                    .help("Run the engine again")
+                }
             }
-            TabView {
-                MiniMaxDetailView()
-                    .tabItem { Label("MiniMax", systemImage: "bolt.shield") }
-                FleetGridView()
-                    .tabItem { Label("Fleet Grid", systemImage: "square.grid.3x3") }
-                FleetView()
-                    .tabItem { Label("Fleet", systemImage: "list.bullet.rectangle") }
-                FleetHostsView()
-                    .tabItem { Label("Fleet Hosts", systemImage: "server.rack") }
-                FleetServicesPanel()
-                    .tabItem { Label("Fleet Services", systemImage: "square.stack.3d.up") }
-                ServerStatusPanel()
-                    .tabItem { Label("Server Status", systemImage: "cpu") }
-                OperationsView()
-                    .tabItem { Label("Operations", systemImage: "gearshape.2") }
-                ControlsView()
-                    .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
-                WakeSettingsView()
-                    .tabItem { Label("Wake Settings", systemImage: "bell.badge") }
-                SeatActivityView()
-                    .tabItem { Label("Seat Activity", systemImage: "person.2.badge.gearshape") }
-                DriftHistoryView()
-                    .tabItem { Label("Drift History", systemImage: "exclamationmark.triangle") }
-            }
-            Divider()
-            ApplyActivityView()
-            footer
         }
         .preferredColorScheme(theme.colorScheme)
         // The plan sheet hangs off the window root,  so the apply flow can present a
         // plan from any view that holds a red cell.
         .applyPlanSheet()
         // The operations sheet hangs off the root the same way,  so the Server Status,
-        // Operations and Controls tabs share one plan,  one Touch ID question and one
+        // Operations and Controls panels share one plan,  one Touch ID question and one
         // action in flight.
         .opsActionSheet()
-        .toolbar {
-            ToolbarItemGroup {
-                Picker("Theme", selection: $theme) {
-                    ForEach(ThemeChoice.allCases) { choice in
-                        Text(choice.title).tag(choice)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 210)
+        .onChange(of: destination) { _, chosen in
+            storedDestination = chosen.rawValue
+        }
+    }
 
-                Button {
-                    store.refresh()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .disabled(store.phase == .running)
-                .help("Run the engine again")
+    /// One place in the sidebar.  The two compliance places carry the drift count,
+    /// which is the monitor's own number:  nil reads unknown, never nothing.
+    @ViewBuilder
+    private func sidebarRow(_ place: MusterDestination) -> some View {
+        let label = Label(place.title, systemImage: place.systemImage).tag(place)
+        if place == .complianceGrid || place == .driftHistory {
+            if let redCount = monitor.redCount, redCount > 0 {
+                label.badge(redCount)
+            } else if monitor.redCount == nil {
+                label.badge(Text("—"))
+            } else {
+                label
             }
+        } else {
+            label
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        switch destination {
+        case .overview:
+            OverviewView(selection: $destination)
+        case .complianceGrid:
+            FleetGridView()
+        case .appsAndWork:
+            FleetView()
+        case .seats:
+            SeatActivityView()
+        case .driftHistory:
+            DriftHistoryView()
+        case .services:
+            FleetServicesPanel()
+        case .wakeAndListener:
+            WakeSettingsView()
+        case .controls:
+            ControlsView()
+        case .seatDetail:
+            MiniMaxDetailView()
+        case .serverStatus:
+            ServerStatusPanel()
+        case .serverResourceLimits:
+            ResourceLimitsView(
+                readPolicy: { await OpsResourcePolicyReader().read() },
+                onReviewChange: { field, value, revision in
+                    OpsController.shared.plan(.serverResource(field: field, value: value, revision: revision))
+                }
+            )
+        case .hosts:
+            FleetHostsView()
+        case .virtualMachines:
+            VirtualMachinesView()
+        case .operations:
+            OperationsView()
         }
     }
 

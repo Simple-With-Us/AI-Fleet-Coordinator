@@ -367,12 +367,14 @@
     },
     {
       "tag": "KIMI",
-      "notesName": "Kimi (retired 2026-08-21)",
+      "notesName": "Kimi",
       "worktreeSuffix": "kimi",
       "branchPrefixes": [
         "kimi/"
       ],
-      "retired": true
+      "zulipBotEmail": "kimi-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Kimi",
+      "notes": "Moonshot AI Kimi Code CLI (~/.local/bin/kimi, config ~/.kimi-code)."
     },
     {
       "tag": "MM",
@@ -441,6 +443,17 @@
       "zulipBotEmail": "instinct-owl-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Wise",
       "notes": "The other bot of the Instinct app, shown as Wise (Instinct) since Sun, Oct 11, 2026 (the owner's name for what used to be called the Instinct version).  The seat tag is WISE (owner 2026-10-15);  INSTINCT is retired and stays as an accepted spelling so existing references keep resolving.  instinct/ remains a branch prefix alongside wise/ because its merged work is on instinct/ branches under the owner's GitHub login.  Held by the server listener (docs/protocols/agent-sync-partition.toml), reached through the hosted ST-MCP bridge, and makes no Mac lanes.  Has its own Linear app, Wise (Instinct), key variables LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
+    },
+    {
+      "tag": "ZCODE",
+      "notesName": "ZCode",
+      "worktreeSuffix": "zcode",
+      "branchPrefixes": [
+        "zcode/"
+      ],
+      "zulipBotEmail": "zcode-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "Zcode",
+      "notes": "Z Code (Z.ai / Zhipu AI desktop IDE, ~/.zcode, global rules ~/.zcode/AGENTS.md)."
     }
   ],
   "seatApps": {
@@ -460,7 +473,9 @@
       "OPENCODE": "opencode",
       "GROK-BOT": "grok-bot",
       "ECHO": "instinct",
-      "WISE": "instinct"
+      "WISE": "instinct",
+      "KIMI": "kimi-code",
+      "ZCODE": "zcode"
     },
     "extraSeats": {
       "AMP": "amp",

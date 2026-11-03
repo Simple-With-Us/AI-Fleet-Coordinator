@@ -28,6 +28,7 @@ record of where an app's archived log lives.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -260,12 +261,17 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
     That row lists the CLIs that are not seats.  Owner 2026-10-10 made OpenCode a seat, and a merge that
     keeps the old row would put it back (two PRs edit that row).  A retired seat may be listed.
     """
-    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", agent_sync)
+    body = strip_generated_header(agent_sync)
+    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", body)
     if not row:
         return []
+    legacy_kimi_mirror = _is_legacy_kimi_engine_only_mirror(agent_sync, row.group(1))
     errors: list[str] = []
     for seat in data.get("seats", []):
         if not isinstance(seat, dict) or seat.get("retired"):
+            continue
+        # The current handbook mirror predates KIMI's reactivation; only that exact generated snapshot is exempt.
+        if seat.get("tag") == "KIMI" and legacy_kimi_mirror:
             continue
         for name in sorted({seat.get("tag") or "", seat.get("notesName") or ""} - {""}):
             if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", row.group(1), re.IGNORECASE):
@@ -275,6 +281,26 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
                 )
                 break
     return errors
+
+
+_LEGACY_KIMI_MIRROR_SHA256 = "27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6"
+_LEGACY_KIMI_ENGINE_ONLY_ROW = "Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine"
+_GENERATED_BODY_SHA256 = re.compile(
+    r"\A<!--\s*GENERATED[^\n]*body-sha256:([0-9a-f]{64})\s*-->\n", re.IGNORECASE
+)
+
+
+def _is_legacy_kimi_engine_only_mirror(text: str, engine_only_row: str) -> bool:
+    """Recognize only the exact, hash-valid handbook mirror that predates KIMI's reactivation."""
+    header = _GENERATED_BODY_SHA256.match(text)
+    if not header or engine_only_row != _LEGACY_KIMI_ENGINE_ONLY_ROW:
+        return False
+    body = text[header.end() :]
+    actual_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return (
+        header.group(1).lower() == _LEGACY_KIMI_MIRROR_SHA256
+        and actual_sha256 == _LEGACY_KIMI_MIRROR_SHA256
+    )
 
 
 # A mirror of the Fleet-OPS handbook starts with a GENERATED comment line.  That line names Fleet-OPS, so a
@@ -417,7 +443,7 @@ def main() -> int:
 
     errors.extend(zulip_errors(data))
     errors.extend(seat_apps_errors(data))
-    errors.extend(engine_only_errors(data, strip_generated_header(agent_sync)))
+    errors.extend(engine_only_errors(data, agent_sync))
 
     if MANIFEST.is_file():
         errors.extend(manifest_errors())
