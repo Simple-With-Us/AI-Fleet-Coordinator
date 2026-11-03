@@ -1,3 +1,0 @@
-Address review findings for ZCODE and KIMI platform support
-
-Support nested hooks.events.<EventName> in hook_entries for ZCODE.  Register zcode platform rules, tools, and MCP targets in fleet_config plan.py.  Remove KIMI from retired catalog and seat blocks.  Update fleet-coordination canonical skill and re-render seat packs.
