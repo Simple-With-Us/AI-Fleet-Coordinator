@@ -1187,20 +1187,46 @@ class ResourceReceiptTests(unittest.TestCase):
 
     def test_receipt_is_projected_without_private_inventory(self):
         import datetime
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        raw = {"schemaVersion": 1, "generatedAt": stamp, "policyRevision": "a" * 64,
-               "desired": {"cpuCores": 12, "cpuWeight": 50, "ramPressureGiB": 8,
-                           "ramCriticalGiB": 6, "reserveGiB": 6, "allowBorrowing": True},
-               "observed": {"cpuOnline": 16, "cpuCores": 12, "cpuWeight": 50,
-                            "cpuGroups": 7, "cpuMismatches": 0, "ramTotalBytes": 32 * 1024**3,
-                            "ramCurrentBytes": 10 * 1024**3, "ramTargetBytes": 18 * 1024**3,
-                            "mode": "normal", "codingGroups": 7, "productionGroups": 4,
-                            "controlWriteFailures": 0, "controlSuspended": 0,
-                            "policyStale": False, "actualHighMismatches": 0, "updatedAt": stamp},
-               "status": "applied", "token": "private-value", "coding_units": ["private-unit"]}
+
+        stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        raw = {
+            "schemaVersion": 1,
+            "generatedAt": stamp,
+            "policyRevision": "a" * 64,
+            "desired": {
+                "cpuCores": 12,
+                "cpuWeight": 50,
+                "ramPressureGiB": 8,
+                "ramCriticalGiB": 6,
+                "reserveGiB": 6,
+                "allowBorrowing": True,
+            },
+            "observed": {
+                "cpuOnline": 16,
+                "cpuCores": 12,
+                "cpuWeight": 50,
+                "cpuGroups": 7,
+                "cpuMismatches": 0,
+                "ramTotalBytes": 32 * 1024**3,
+                "ramCurrentBytes": 10 * 1024**3,
+                "ramTargetBytes": 18 * 1024**3,
+                "mode": "normal",
+                "codingGroups": 7,
+                "productionGroups": 4,
+                "controlWriteFailures": 0,
+                "controlSuspended": 0,
+                "policyStale": False,
+                "actualHighMismatches": 0,
+                "updatedAt": stamp,
+            },
+            "status": "applied",
+            "token": "private-value",
+            "coding_units": ["private-unit"],
+        }
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "resources.json"
-            path.write_text(json.dumps(raw)); path.chmod(0o644)
+            path.write_text(json.dumps(raw))
+            path.chmod(0o644)
             result = collector.collect_resource_policy(path, owner_uid=os.getuid())
             self.assertEqual(result["status"], "applied")
             self.assertNotIn("private-", json.dumps(result))
@@ -1208,7 +1234,10 @@ class ResourceReceiptTests(unittest.TestCase):
             self.assertEqual(report["resourcePolicy"], result)
             raw["generatedAt"] = "2000-01-01T00:00:00Z"
             path.write_text(json.dumps(raw))
-            self.assertEqual(collector.collect_resource_policy(path, owner_uid=os.getuid())["status"], "unavailable")
+            self.assertEqual(
+                collector.collect_resource_policy(path, owner_uid=os.getuid())["status"],
+                "unavailable",
+            )
 
 
 if __name__ == "__main__":

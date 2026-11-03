@@ -1069,7 +1069,8 @@ def collect_resource_policy(path=Path("/run/fleet-coding-resources/status.json")
             return None
         # The collector is launched with -I, so load the reviewed sibling explicitly.
         spec = importlib.util.spec_from_file_location(
-            "fleet_resource_control", Path(__file__).resolve().with_name("fleet_resource_control.py")
+            "fleet_resource_control",
+            Path(__file__).resolve().with_name("fleet_resource_control.py"),
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

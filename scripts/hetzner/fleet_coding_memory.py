@@ -108,8 +108,12 @@ def load_excluded_units(path: Path = EXCLUDE_FILE, *, expected_uid: int = 0, war
 
 def validate_policy(raw: str) -> dict[str, Any]:
     obj = json.loads(raw)
-    if (not isinstance(obj, dict) or not POLICY_FIELDS <= set(obj)
-        or set(obj) - POLICY_FIELDS - OPTIONAL_POLICY_FIELDS or obj.get("schema_version") != 1):
+    if (
+        not isinstance(obj, dict)
+        or not POLICY_FIELDS <= set(obj)
+        or set(obj) - POLICY_FIELDS - OPTIONAL_POLICY_FIELDS
+        or obj.get("schema_version") != 1
+    ):
         raise ValueError("invalid policy schema")
     for key in ("cpu_cores", "cpu_weight"):
         if key in obj and (type(obj[key]) is not int or obj[key] < 1):
@@ -1018,7 +1022,9 @@ def refresh_worker(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--public-status", type=Path, default=Path("/run/fleet-coding-resources/status.json"))
+    ap.add_argument(
+        "--public-status", type=Path, default=Path("/run/fleet-coding-resources/status.json")
+    )
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--state-dir", type=Path, default=STATE_DIR)
