@@ -29,9 +29,9 @@ import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
 // The hosted server lists the first ten tools.json tools, hosted-only recall and Linear tools, then
-// the FleetLink tools (AFC-328), the rest of tools.json and the listener tools (AFC-330).
+// the FleetLink tools (AFC-328), the rest of tools.json and the eavesdropper tools (AFC-330).
 const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
-  // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
+  // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only eavesdropper tools.
   ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log",
   // The GR-MCP front (gr-tools.js):  listed like every other family;  without
   // GR_UPSTREAM_URL the calls answer not_configured.
@@ -430,7 +430,7 @@ async function mcpModern(accessToken, method, params = {}) {
   return { status: res.status, json: line ? JSON.parse(line.slice(5)) : text ? JSON.parse(text) : null };
 }
 
-/** The listener's wake POST (adapters.py):  sorted compact JSON, hex HMAC of the raw bytes. */
+/** The eavesdropper's wake POST (adapters.py):  sorted compact JSON, hex HMAC of the raw bytes. */
 function wakeBytes(overrides = {}) {
   const body = {
     contract: "agent-sync-wake/1", seat: "JET", wake_id: `w-${randomBytes(6).toString("hex")}`, message_id: 9001, trigger_ids: [9001],
@@ -730,13 +730,13 @@ try {
     assert.match(second.json.error.message, /another chat/);
   });
 
-  await step("wake:  a signed listener POST is 202 and delivers one Standard Webhooks event;  a replay is a duplicate", async () => {
+  await step("wake:  a signed eavesdropper POST is 202 and delivers one Standard Webhooks event;  a replay is a duplicate", async () => {
     const before = callbackCalls.length;
     const bytes = wakeBytes();
     const res = await wakePost("JET", bytes);
     assert.equal(res.status, 202, await res.clone().text());
     assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" });
-    assert.equal(callbackCalls.length, before + 1, "delivered before the answer, inside the listener's request");
+    assert.equal(callbackCalls.length, before + 1, "delivered before the answer, inside the eavesdropper's request");
     const delivery = callbackCalls[callbackCalls.length - 1];
     const event = new Webhook(CALLBACK_SECRET).verify(delivery.raw, delivery.headers);
     assert.equal(event.name, "zulip.mention");
@@ -780,7 +780,7 @@ try {
     assert.equal(callbackCalls.length, before, "nothing verified or delivered");
   });
 
-  await step("wake:  a failed delivery is 503 so the listener retries;  the retry delivers (202);  one more is a duplicate;  a copy mid-delivery is 503 in_flight", async () => {
+  await step("wake:  a failed delivery is 503 so the eavesdropper retries;  the retry delivers (202);  one more is a duplicate;  a copy mid-delivery is 503 in_flight", async () => {
     const before = callbackCalls.length;
     const bytes = wakeBytes();
     callbackStatuses.push(503, 502);
@@ -795,7 +795,7 @@ try {
     assert.equal(callbackCalls.length, before + 2, "two attempts inside the request");
     assert.deepEqual(concurrent, { status: 503, retryAfter: concurrent.retryAfter, body: { ok: false, in_flight: true } });
     assert.match(concurrent.retryAfter, /^\d+$/);
-    // The listener's retry sends the identical bytes.
+    // The eavesdropper's retry sends the identical bytes.
     res = await wakePost("JET", bytes);
     assert.equal(res.status, 202, await res.clone().text());
     assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" });

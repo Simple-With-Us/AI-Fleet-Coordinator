@@ -797,7 +797,7 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
         status, _, _ = _http("GET", f"{ISSUER}{path}")
         expect(f"{path} is 404", status == 404, str(status))
 
-    # The listener's wake (spec 3.12) is outside Access:  an unsigned POST is the
+    # The eavesdropper's wake (spec 3.12) is outside Access:  an unsigned POST is the
     # Worker's own 401 once WAKE_HMAC_KEY_JET is set (404 before), never Access.
     status, headers, _ = _http(
         "POST", f"{ISSUER}/internal/wake/JET", b"{}", {"Content-Type": "application/json"}
