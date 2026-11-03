@@ -75,14 +75,25 @@ struct VirtualMachinesView: View {
     }
 
     /// No reports at all:  say what the owner writes so the doctor starts pulling.
+    ///
+    /// A directory that exists but could not be listed is a different story:  the
+    /// reports may be there,  so it shows its problem instead of setup steps.
     private func emptyState(_ fleet: VmFleetReading) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            problemBox(
-                "No VM reports are here yet.  The doctor pulls them with --vms from the VMs named in \(VmStatusContract.configPathText):  write {\"vms\": [{\"label\": \"<name>\", \"destination\": \"<ssh alias>\"}]} there (0600), give the pull key a forced-command line on each VM, and this panel fills in on the next doctor run.  docs/protocols/fleet-vm-status.md has the exact steps.")
-            Text("Nothing is wrong with the VMs themselves:  this panel only knows what a pulled report says, and no report has been pulled.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let problem = fleet.problem {
+                problemBox(problem)
+                Text("Refresh after fixing the directory, and any reports already pulled show here.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                problemBox(
+                    "No VM reports are here yet.  The doctor pulls them with --vms from the VMs named in \(VmStatusContract.configPathText):  write {\"vms\": [{\"label\": \"<name>\", \"destination\": \"<ssh alias>\"}]} there (0600), give the pull key a forced-command line on each VM, and this panel fills in on the next doctor run.  docs/protocols/fleet-vm-status.md has the exact steps.")
+                Text("Nothing is wrong with the VMs themselves:  this panel only knows what a pulled report says, and no report has been pulled.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -181,7 +192,10 @@ struct VirtualMachinesView: View {
     private func processRows(_ report: VmStatusReport) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             subHeader("Harness processes")
-            ForEach(report.processes) { process in
+            // Rows are identified by position, not name:  a tolerated malformed
+            // report can carry two rows with the same (or no) name,  and duplicate
+            // ForEach identities misrender.
+            ForEach(Array(report.processes.enumerated()), id: \.offset) { _, process in
                 HStack(spacing: 10) {
                     Text(process.name)
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -227,7 +241,7 @@ struct VirtualMachinesView: View {
     private func checkoutRows(_ report: VmStatusReport) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             subHeader("Checkouts")
-            ForEach(report.checkouts) { checkout in
+            ForEach(Array(report.checkouts.enumerated()), id: \.offset) { _, checkout in
                 HStack(spacing: 10) {
                     Text(checkout.name)
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))

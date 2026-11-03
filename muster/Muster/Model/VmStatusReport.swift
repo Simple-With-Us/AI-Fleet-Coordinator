@@ -184,9 +184,12 @@ struct VmStatusReport: Decodable, Equatable {
     }
 
     /// The one-minute load over the cpu count,  when both were read.
+    ///
+    /// A negative load is not a measurement (load averages cannot be negative),  so
+    /// it reads as unmeasured rather than clamping to a zero that passes.
     var loadFraction: Double? {
-        guard let load1, let cpuCount, cpuCount > 0 else { return nil }
-        return max(load1 / Double(cpuCount), 0)
+        guard let load1, load1 >= 0, let cpuCount, cpuCount > 0 else { return nil }
+        return load1 / Double(cpuCount)
     }
 
     /// How long the VM has been up,  in the app's own words.
@@ -261,6 +264,10 @@ struct VmFleetReading {
     /// One reading per report file,  in label order.  A file that cannot be read is a
     /// reading with a problem,  never a skipped VM.
     var vms: [VmStatusReading] = []
+    /// Why the directory itself could not be listed,  when it exists but its
+    /// contents could not be read.  Distinct from an empty directory:  reports may
+    /// well be there,  Muster just cannot see them.
+    var problem: String?
 }
 
 // MARK: - The reader
@@ -284,10 +291,17 @@ enum VmStatusReportReader {
         fleet.directoryExists =
             FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
         guard fleet.directoryExists else { return fleet }
-        let names =
-            ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? [])
-            .filter { $0.hasSuffix(".json") }
-            .sorted()
+        let names: [String]
+        do {
+            names =
+                try FileManager.default.contentsOfDirectory(atPath: url.path)
+                .filter { $0.hasSuffix(".json") }
+                .sorted()
+        } catch {
+            fleet.problem =
+                "The reports directory is there but could not be listed:\(ServerStatusCopy.sentenceGap)\(error.localizedDescription)"
+            return fleet
+        }
         fleet.vms = names.map { read(at: url.appendingPathComponent($0), now: now) }
         return fleet
     }

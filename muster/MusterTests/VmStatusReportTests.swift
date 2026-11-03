@@ -139,6 +139,43 @@ final class VmStatusReportTests: XCTestCase {
         XCTAssertNil(fleet.vms[0].problem)
     }
 
+    func testNegativeLoadIsUnmeasuredNeverAPass() throws {
+        let json = """
+        {"schemaVersion": 1, "tool": "fleet-vm-status", "generatedAt": "\(time(60))",
+         "load1": -1.5, "load5": -1.0, "load15": -0.5, "cpuCount": 4}
+        """
+        let reading = try read(json)
+        let report = try XCTUnwrap(reading.report)
+        XCTAssertNil(report.loadFraction)
+        XCTAssertEqual(reading.state, .unproven)
+    }
+
+    func testMemoryAvailableAboveTotalIsUnmeasured() throws {
+        let json = """
+        {"schemaVersion": 1, "tool": "fleet-vm-status", "generatedAt": "\(time(60))",
+         "memory": {"totalBytes": 8000, "availableBytes": 9000}}
+        """
+        let reading = try read(json)
+        let report = try XCTUnwrap(reading.report)
+        XCTAssertNil(report.memory?.usedFraction)
+        XCTAssertEqual(reading.state, .unproven)
+    }
+
+    func testUnlistableDirectoryCarriesAProblemNotAnEmptyFleet() throws {
+        let directory = try makeDirectory()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try fullReport(generatedAt: time(60)).write(
+            to: directory.appendingPathComponent("fixture-vm.json"), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
+        let fleet = VmStatusReportReader.readDirectory(at: directory, now: now)
+        XCTAssertTrue(fleet.directoryExists)
+        XCTAssertNotNil(fleet.problem)
+        XCTAssertTrue(fleet.vms.isEmpty)
+    }
+
     func testMissingDirectoryReadsAsNoVms() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

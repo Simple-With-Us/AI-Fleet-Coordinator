@@ -8,6 +8,7 @@ import os
 import stat
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -141,6 +142,41 @@ class VmPullTests(unittest.TestCase):
 
         result = self.pull(run)
         self.assertFalse(result[0]["ok"])
+
+    def test_duplicate_label_is_refused_before_the_second_ssh(self):
+        calls = []
+        self.write_config(
+            [
+                {"label": "fixture-vm", "destination": "vm-ro"},
+                {"label": "fixture-vm", "destination": "other-ro"},
+            ]
+        )
+        result = self.pull(ssh_runner(json.dumps(GOOD).encode(), calls=calls))
+        self.assertEqual([(r["label"], r["ok"]) for r in result], [("fixture-vm", True), ("fixture-vm", False)])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads((self.state / "fixture-vm.json").read_text()), GOOD)
+
+    def test_destination_with_an_at_sign_is_refused_before_ssh(self):
+        calls = []
+        self.write_config([{"label": "ok", "destination": "evil@vm-ro", "user": "puller"}])
+        result = self.pull(ssh_runner(json.dumps(GOOD).encode(), calls=calls))
+        self.assertFalse(result[0]["ok"])
+        self.assertEqual(calls, [])
+
+    def test_pulls_fetch_concurrently_in_config_order(self):
+        labels = ["vm-a", "vm-b", "vm-c"]
+        self.write_config([{"label": label, "destination": "vm-ro"} for label in labels])
+        barrier = threading.Barrier(len(labels))
+
+        def run(argv, **kwargs):
+            try:
+                barrier.wait(timeout=10)
+            except threading.BrokenBarrierError:
+                return subprocess.CompletedProcess(argv, 255, b"", b"serial")
+            return subprocess.CompletedProcess(argv, 0, json.dumps(GOOD).encode(), b"")
+
+        result = self.pull(run)
+        self.assertEqual([(r["label"], r["ok"]) for r in result], [(label, True) for label in labels])
 
     def test_malformed_config_is_a_failed_pull_not_a_crash(self):
         self.config.write_text("[1, 2")

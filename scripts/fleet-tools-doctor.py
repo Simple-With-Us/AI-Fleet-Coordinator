@@ -237,6 +237,10 @@ MAX_VM_STATUS_BYTES = 512 * 1024
 VM_TIMEOUT = 60  # the collector walks /proc and the checkouts, and prints one document
 VM_LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 VM_USER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# The destination is an alias or host only:  no "@", so it cannot smuggle a login
+# name past the separate user check and make the ssh target ambiguous.
+VM_HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+VM_PULL_WORKERS = 8  # hung VMs wait in parallel:  the pull costs one timeout, not N
 PROBE_TIMEOUT = 5  # each `<tool> --version`
 LATEST_TIMEOUT = 20  # each npm view / brew info
 GITHUB_TIMEOUT = 8
@@ -3162,32 +3166,43 @@ def pull_vms(
             raise ValueError("no vms list")
     except (OSError, ValueError, KeyError) as exc:
         return [{"label": None, "ok": False, "error": f"{config_path} is not a readable vm-hosts config ({type(exc).__name__})"}]
-    results = []
-    for entry in entries:
+    results: list[dict | None] = [None] * len(entries)
+    jobs: list[tuple[int, str, str]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
         label = entry.get("label") if isinstance(entry, dict) else None
         destination = entry.get("destination") if isinstance(entry, dict) else None
         user = entry.get("user") if isinstance(entry, dict) else None
         if not isinstance(label, str) or not VM_LABEL_RE.fullmatch(label):
-            results.append({"label": label, "ok": False, "error": "the label is not a plain filename-safe name"})
+            results[index] = {"label": label, "ok": False, "error": "the label is not a plain filename-safe name"}
             continue
-        if not isinstance(destination, str) or not ALIAS_RE.fullmatch(destination):
-            results.append({"label": label, "ok": False, "error": "the destination is not a plain ssh alias or host"})
+        if label in seen:
+            results[index] = {"label": label, "ok": False, "error": "the label is already configured; the first entry wins"}
+            continue
+        seen.add(label)
+        if not isinstance(destination, str) or not VM_HOST_RE.fullmatch(destination):
+            results[index] = {"label": label, "ok": False, "error": "the destination is not a plain ssh alias or host"}
             continue
         if user is not None and (not isinstance(user, str) or not VM_USER_RE.fullmatch(user)):
-            results.append({"label": label, "ok": False, "error": "the user is not a plain login name"})
+            results[index] = {"label": label, "ok": False, "error": "the user is not a plain login name"}
             continue
-        target = f"{user}@{destination}" if user else destination
-        doc, error = fetch_vm_status(target, runner)
-        if doc is None:
-            results.append({"label": label, "ok": False, "error": error})
-            continue
-        try:
-            write_report(state_dir / f"{label}.json", doc)
-        except (OSError, ValueError) as exc:
-            results.append({"label": label, "ok": False, "error": f"the report could not be written ({type(exc).__name__})"})
-            continue
-        results.append({"label": label, "ok": True, "error": None})
-    return results
+        jobs.append((index, label, f"{user}@{destination}" if user else destination))
+    if jobs:
+        # Fetch in parallel:  the pull runs before the combined report is written, so a
+        # serial 60 second timeout per hung VM would delay that report by N timeouts.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(VM_PULL_WORKERS, len(jobs))) as pool:
+            fetched = list(pool.map(lambda job: fetch_vm_status(job[2], runner), jobs))
+        for (index, label, _target), (doc, error) in zip(jobs, fetched):
+            if doc is None:
+                results[index] = {"label": label, "ok": False, "error": error}
+                continue
+            try:
+                write_report(state_dir / f"{label}.json", doc)
+            except (OSError, ValueError) as exc:
+                results[index] = {"label": label, "ok": False, "error": f"the report could not be written ({type(exc).__name__})"}
+                continue
+            results[index] = {"label": label, "ok": True, "error": None}
+    return [result for result in results if result is not None]
 
 
 def combined_report(docs: list) -> dict:
