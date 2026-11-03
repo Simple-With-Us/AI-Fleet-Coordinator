@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 146 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 150 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -534,6 +534,112 @@ CODEX_KEY = (
     "simple-chat"  # local stdio MCP mode of the simple-chat CLI (the hosted server is ST-MCP)
 )
 
+#: The one custom Codex MCP transport the updater positively recognizes:  the Oct 29 batch
+#: wrapper Jay registered for the CODEX seats, at ~/.local/libexec/codex-simple-tools.  It is
+#: FOREIGN-managed - not written by this tool - so it is preserved, never overwritten, never
+#: deleted and never migrated.  Recognition is exact (shape, path, custody and content
+#: digest):  any other custom entry keeps the plain refusal.
+CUSTOM_TRANSPORT_NAME = "codex-simple-tools"
+# sha256 of the known wrapper's bytes, from the host's sanitized provenance.  Until the host
+# pins the real digest this never matches, which fails closed into the existing refusal.
+# The host's verified pin for the installed transport:  a regular single-link file,
+# mode 0700, 1266 bytes, owned by jay (uid 1001, gid 1001, verified with id).
+CUSTOM_TRANSPORT_SHA256 = "092d2f52678243c6b7a479c31d537d4041374d92d9b61a4f4dcb26a6ad3efa3c"
+CUSTOM_TRANSPORT_MAX_BYTES = 65536
+
+
+def qualified_custom_transport(home: Path, entry: object) -> bool:
+    """True only for the positively identified custom Codex transport, never for a look-alike.
+
+    Every check must pass:  the registration shape (the managed seat-env contract, an empty
+    or absent env, no extra keys), the exact libexec path, namespace custody (every directory
+    from the file's parent up to home is a real directory owned by the caller and closed to
+    group/other write), opened-descriptor custody (fstat of the read descriptor:  a regular
+    single-link file owned by the user running the updater, closed to group/other write,
+    inside the size cap, opened without following links) and the pinned content digest.  A failure anywhere is not a refusal of
+    the update by itself - it simply means "not recognized", and the caller's plain refusal
+    applies as before.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if not set(entry) <= {"command", "env_vars", "env"}:
+        return False
+    if entry.get("env_vars") != codex_mcp_expected(home / ".local/bin")["env_vars"]:
+        return False
+    if "env" in entry and entry["env"] != {}:
+        return False
+    path = home / ".local/libexec" / CUSTOM_TRANSPORT_NAME
+    if entry.get("command") != str(path):
+        return False
+    if not _private_parent_chain(home, path):
+        return False
+    try:
+        # O_NONBLOCK as well:  a FIFO in the transport's place would otherwise hold
+        # the updater in the open forever.  The fstat below refuses anything that is
+        # not a regular file, and a nonblocking read that cannot complete surfaces as
+        # OSError, which is the same plain refusal.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        # fstat the OPEN descriptor, never the path again:  the custody checks bind
+        # to the file that is actually read, so a rename between a path stat and the
+        # open cannot slip a different file past them.
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+            or not 0 < info.st_size <= CUSTOM_TRANSPORT_MAX_BYTES
+        ):
+            return False
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > CUSTOM_TRANSPORT_MAX_BYTES:
+                return False
+            digest.update(chunk)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return digest.hexdigest() == CUSTOM_TRANSPORT_SHA256
+
+
+def _private_parent_chain(home: Path, path: Path) -> bool:
+    """Every directory from the file's parent up to and including home is a real
+    directory - never a link - owned by the caller and closed to group/other write.
+
+    The pinned digest proves what the file holds;  this chain proves the namespace
+    custody:  nobody but the caller can rename or replace the file between the check
+    and the use.  Home itself is the grounded private boundary, so the walk stops
+    there and never passes judgment on the directory above it.
+    """
+    euid = os.geteuid()
+    directory = path.parent
+    while True:
+        try:
+            info = os.lstat(directory)
+        except OSError:
+            return False
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != euid
+            or info.st_mode & 0o022
+        ):
+            return False
+        if directory == home:
+            return True
+        parent = directory.parent
+        if parent == directory:  # the root, without ever meeting home
+            return False
+        directory = parent
+
 
 def codex_mcp_expected(bin_dir: Path) -> dict:
     return {
@@ -570,8 +676,15 @@ def migrate_codex_mcp(home: Path, files: dict, replacement: tuple[str, str] | No
     if not isinstance(servers, dict):
         raise Refused("invalid_codex_config")
     current = servers.get(CODEX_KEY)
-    if current is not None and current != expected:
+    if (
+        current is not None
+        and current != expected
+        and not qualified_custom_transport(home, current)
+    ):
         raise Refused("existing_simple_chat_mcp_conflict")
+    # A recognized foreign custom transport is preserved untouched:  no overwrite, no delete,
+    # no migration decision.  With it present, a replacement still cannot take the key (the
+    # both-keys refusal below stands).
     if replacement is None:
         return
     source_key, source_wrapper = replacement
