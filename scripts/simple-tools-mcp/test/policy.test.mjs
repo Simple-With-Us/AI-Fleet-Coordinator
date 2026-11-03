@@ -450,7 +450,9 @@ test("client binding:  a client bound to ECHO cannot mint a WISE grant", () => {
   assert.equal(clientBoundToSeat(instinctClient, "WISE", LOOP, instinctConfig), true);
   assert.equal(clientBoundToSeat(instinctClient, "ECHO", LOOP, instinctConfig), false);
   assert.equal(clientBoundToSeat(untagged, "ECHO", LOOP, instinctConfig), false, "an untagged client on a shared redirect is refused");
-  assert.equal(clientBoundToSeat(untagged, "JET", CHATGPT_REDIRECT, instinctConfig), true, "an untagged client on a one-seat redirect still works");
+  assert.equal(clientBoundToSeat(untagged, "JET", CHATGPT_REDIRECT, instinctConfig), false, "the ChatGPT redirect belongs to the JET / JET-CHAT / CODEX cohort now, so an untagged client is refused there");
+  const soloJet = loadConfig(testEnv({ HOSTED_SEATS: "JET", SEATS: { JET: { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] } } }));
+  assert.equal(clientBoundToSeat(untagged, "JET", CHATGPT_REDIRECT, soloJet), true, "an untagged client on a one-seat redirect still works");
   assert.equal(clientBoundToSeat({ clientId: CHATGPT_CLIENT, clientName: "ChatGPT (manual form, ECHO)" }, "ECHO", LOOP, instinctConfig), false, "a CIMD id binds by the allowlist only");
   assert.equal(clientBoundToSeat({ clientId: CHATGPT_CLIENT }, "JET", CHATGPT_REDIRECT, instinctConfig), true);
   // A CIMD id listed under ECHO only is refused for WISE.

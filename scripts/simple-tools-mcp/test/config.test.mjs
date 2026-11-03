@@ -15,7 +15,9 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   // demoted it on Fri, Oct 9, and JET was deployed with its key at about 8:10am
   // (DEPLOY.md, "Re-enable JET").
   // ECHO and WISE (the Instinct app) were added on Fri, Oct 9.
-  assert.deepEqual([...cfg.hostedSeats], ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]);
+  // JET-CHAT (the Jet wake split) and CODEX were live in production before
+  // the committed config said so;  the Nov 3, 2026 parity change records them.
+  assert.deepEqual([...cfg.hostedSeats], ["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "CODEX"]);
   assert.deepEqual([...loadConfig(testEnv()).hostedSeats], ["JET", "GROK-WEB"]);
   // Channels:  any public channel the bot is subscribed to (owner, Sat, Oct 10, 2026), so no allowlist;  the denylist ships empty.
   assert.deepEqual([...cfg.channelsDeny], []);
@@ -23,7 +25,14 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   assert.equal(cfg.channels, undefined);
   assert.equal(cfg.ownerUserId, 1211974);
   assert.equal(cfg.botEmails["GROK-WEB"], "grok-web-bot@simplewithus.zulipchat.com");
-  assert.equal(cfg.redirectOwner.get(CHATGPT_REDIRECT), "JET");
+  // JET-CHAT is the same bot as JET under its own seat (one bot, two seats),
+  // and CODEX is hosted on codex-bot's own address.
+  assert.equal(cfg.botEmails["JET-CHAT"], cfg.botEmails.JET);
+  assert.equal(cfg.botEmails.CODEX, "codex-bot@simplewithus.zulipchat.com");
+  // The shared ChatGPT callback belongs to the whole cohort, so it has no
+  // single owner.
+  assert.deepEqual([...cfg.redirectSeats.get(CHATGPT_REDIRECT)], ["JET", "JET-CHAT", "CODEX"]);
+  assert.equal(cfg.redirectOwner.has(CHATGPT_REDIRECT), false, "a shared redirect has no single owner");
   assert.equal(cfg.botEmails.ECHO, "instinct-bat-bot@simplewithus.zulipchat.com");
   assert.equal(cfg.botEmails.WISE, "instinct-owl-bot@simplewithus.zulipchat.com");
   // The Instinct app's loopback callback is shared by its two seats, and only
