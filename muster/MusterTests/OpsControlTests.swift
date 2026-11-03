@@ -335,7 +335,7 @@ final class OpsResultParserTests: XCTestCase {
     func test_update_completion_requires_a_verified_invocation_receipt() {
         let action = OpsAction.serverUpdate(name: "fleet-cli")
         let receipt = String(repeating: "a", count: 32)
-        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
         let completed = OpsResultParser.parse(result(json), mode: .yes, action: action, timeout: 900)
         XCTAssertTrue(completed.isSuccess(for: .yes))
         XCTAssertEqual(completed.invocationID, receipt)
@@ -507,21 +507,21 @@ final class OpsUpdateReceiptTests: XCTestCase {
             OpsProcessResult(exitCode: exit, stdout: json, stderr: "", timedOut: timedOut)
         }
         let reader = OpsUpdateReceiptReader(runner: runner, makeBuilder: { exampleBuilder() })
-        return (await reader.read(name: "fleet-cli", invocationID: receipt), runner)
+        return (await reader.read(name: "fleet-cli", invocationID: receipt, baselineStartMonotonic: 100), runner)
     }
 
     func test_verified_same_invocation_success_is_read_over_plan_only() async {
-        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
         let (outcome, runner) = await read(json)
         XCTAssertTrue(outcome.isSuccess(for: .yes))
         XCTAssertEqual(runner.recorded.first?.suffix(5).map { $0 }, [
-            "server", "update-status", "fleet-cli.\(receipt)", "--plan", "--json",
+            "server", "update-status", "fleet-cli.\(receipt).100", "--plan", "--json",
         ])
         XCTAssertFalse(runner.recorded.flatMap { $0 }.contains("--yes"))
     }
 
     func test_verified_same_invocation_failure_is_terminal() async {
-        let json = #"{"ok":false,"result":"failed","executionState":"failed","verified":true,"invocationID":"\#(receipt)","detail":"The recorded update failed."}"#
+        let json = #"{"ok":false,"result":"failed","executionState":"failed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100,"detail":"The recorded update failed."}"#
         let (outcome, _) = await read(json, exit: 1)
         XCTAssertEqual(outcome.kind, .failed)
         XCTAssertEqual(outcome.detail, "The recorded update failed.")
@@ -531,7 +531,7 @@ final class OpsUpdateReceiptTests: XCTestCase {
         for json in [
             #"{"ok":true,"result":"done"}"#,
             #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
-            #"{"ok":true,"result":"submitted","executionState":"submitted","verified":false,"invocationID":"\#(receipt)","errorCode":"invocation_not_current"}"#,
+            #"{"ok":true,"result":"submitted","executionState":"submitted","verified":false,"invocationID":"\#(receipt)","baselineStartMonotonic":100,"errorCode":"invocation_not_current"}"#,
         ] {
             let (outcome, _) = await read(json)
             XCTAssertEqual(outcome.kind, .submitted)
@@ -541,13 +541,28 @@ final class OpsUpdateReceiptTests: XCTestCase {
     }
 
     func test_a_timed_out_receipt_read_stays_unverified() async {
-        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
         let (outcome, _) = await read(json, timedOut: true)
         XCTAssertEqual(outcome.kind, .submitted)
     }
 
+    func test_recheck_requires_the_original_exact_integer_baseline() async {
+        for raw in ["true", "-1", "1.5", "18446744073709551616", "\"100\"", "101"] {
+            let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":\#(raw)}"#
+            let (outcome, _) = await read(json)
+            XCTAssertEqual(outcome.kind, .submitted, raw)
+        }
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let (missing, _) = await read(json)
+        XCTAssertEqual(missing.kind, .submitted)
+        let maximum = OpsResultParser.decode(#"{"baselineStartMonotonic":18446744073709551615}"#)
+        XCTAssertEqual(maximum?.baselineStartMonotonic, UInt64.max)
+        let invocation = try? exampleBuilder().updateStatusInvocation(name: "fleet-cli", invocationID: receipt, baselineStartMonotonic: .max)
+        XCTAssertTrue(invocation?.arguments.contains("fleet-cli.\(receipt).18446744073709551615") == true)
+    }
+
     func test_an_expired_receipt_remains_unverified_and_cannot_be_rechecked() async {
-        let json = #"{"ok":true,"result":"submitted","executionState":"expired","verified":false,"invocationID":"\#(receipt)"}"#
+        let json = #"{"ok":true,"result":"submitted","executionState":"expired","verified":false,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
         let (outcome, _) = await read(json)
         XCTAssertEqual(outcome.kind, .submitted)
         XCTAssertEqual(outcome.executionState, "expired")
@@ -556,7 +571,7 @@ final class OpsUpdateReceiptTests: XCTestCase {
 
     func test_recheck_cannot_name_another_update_or_inject_an_invocation() {
         for (name, id) in [("other", receipt), ("fleet-cli", "--yes"), ("fleet-cli", receipt + ".extra")] {
-            XCTAssertThrowsError(try exampleBuilder().updateStatusInvocation(name: name, invocationID: id))
+            XCTAssertThrowsError(try exampleBuilder().updateStatusInvocation(name: name, invocationID: id, baselineStartMonotonic: 100))
         }
     }
 }
@@ -825,8 +840,8 @@ final class OpsControllerFlowTests: XCTestCase {
     func test_closing_a_pending_recheck_does_not_reopen_the_sheet_or_run_an_update() async throws {
         let receipt = String(repeating: "a", count: 32)
         let planned = #"{"ok":true,"commands":[],"result":"planned"}"#
-        let submitted = #"{"ok":true,"commands":[],"result":"submitted","invocationID":"\#(receipt)"}"#
-        let completed = #"{"ok":true,"commands":[],"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let submitted = #"{"ok":true,"commands":[],"result":"submitted","invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let completed = #"{"ok":true,"commands":[],"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
         let base = FakeOpsRunner { invocation, _ in
             OpsProcessResult(exitCode: 0, stdout: invocation.arguments.contains("--plan") ? planned : submitted, stderr: "")
         }

@@ -102,8 +102,10 @@ struct OpsActionSheet: View {
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
-                } else if case .serverUpdate = action, outcome.kind == .submitted {
-                    Text("No service invocation receipt was captured, so this request cannot be rechecked.")
+                }
+                if case .serverUpdate = action, outcome.kind == .submitted,
+                   outcome.invocationID == nil || outcome.baselineStartMonotonic == nil {
+                    Text("A complete service invocation receipt was not captured, so this request cannot be rechecked.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

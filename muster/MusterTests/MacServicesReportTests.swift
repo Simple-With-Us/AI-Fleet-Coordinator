@@ -174,6 +174,24 @@ final class MacServicesCollectorTests: XCTestCase {
         }
     }
 
+    func test_symlink_or_writable_checkout_directory_refuses_before_launch() async throws {
+        try await withCollector { collector in
+            let scripts = collector.repoRoot.appendingPathComponent("scripts")
+            let script = scripts.appendingPathComponent("fleet-mac-services.py")
+            let actual = scripts.appendingPathComponent("actual.py")
+            try FileManager.default.moveItem(at: script, to: actual)
+            try FileManager.default.createSymbolicLink(at: script, withDestinationURL: actual)
+            XCTAssertThrowsError(try collector.invocation())
+            try FileManager.default.removeItem(at: script)
+            try FileManager.default.moveItem(at: actual, to: script)
+            try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: scripts.path)
+            XCTAssertThrowsError(try collector.invocation())
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scripts.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: collector.repoRoot.path)
+            XCTAssertThrowsError(try collector.invocation())
+        }
+    }
+
     func test_live_answer_works_without_saved_report_and_failed_refresh_is_unknown() async throws {
         let now = FleetTime.parse("2026-10-28T15:02:00Z")!
         let json = try fixture("mac_services_current", "json")

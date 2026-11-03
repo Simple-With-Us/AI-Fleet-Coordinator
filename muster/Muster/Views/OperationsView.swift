@@ -11,6 +11,8 @@ struct OperationsView: View {
     @State private var allowlistPath = ""
     @State private var audit: OpsAuditReading?
     @State private var loading = false
+    @State private var collectingAgents = false
+    @State private var refreshAgentsAfterCollection = false
     @ObservedObject private var controller = OpsController.shared
 
     var body: some View {
@@ -34,7 +36,10 @@ struct OperationsView: View {
         }
         .task { await load(collectAgents: false) }
         .onChange(of: controller.completedRuns) { _, _ in
-            Task { await load() }
+            let localAgentChanged: Bool
+            if let action = controller.phase.action, case .macAgent = action { localAgentChanged = true }
+            else { localAgentChanged = false }
+            Task { await load(collectAgents: localAgentChanged) }
         }
     }
 
@@ -51,12 +56,12 @@ struct OperationsView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .disabled(loading || controller.isBusy)
+                .disabled(loading || collectingAgents || controller.isBusy)
             }
             Text("Start, stop and update the fleet's processes.\u{00A0} Service changes show their plan and ask Touch ID before they run.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            if loading {
+            if loading || collectingAgents {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text("Reading operations state…")
@@ -119,7 +124,7 @@ struct OperationsView: View {
                     Task { await load() }
                 }
                 .controlSize(.small)
-                .disabled(loading || controller.isBusy)
+                .disabled(loading || collectingAgents || controller.isBusy)
             }
             if let services {
                 let current = services.problem == nil && services.isCurrent
@@ -190,7 +195,7 @@ struct OperationsView: View {
                             controller.plan(.macAgent(verb: verb, label: agent.label))
                         }
                         .controlSize(.small)
-                        .disabled(controller.isPresenting || loading)
+                        .disabled(controller.isPresenting)
                     }
                 } else {
                     Text("not in the allowlist")
@@ -239,7 +244,7 @@ struct OperationsView: View {
                                 controller.plan(.serverUpdate(name: update.name))
                             }
                             .controlSize(.small)
-                            .disabled(controller.isPresenting || loading)
+                            .disabled(controller.isPresenting)
                         }
                         .padding(.vertical, 2)
                     }
@@ -320,7 +325,6 @@ struct OperationsView: View {
     private func load(collectAgents: Bool = true) async {
         guard !loading else { return }
         loading = true
-        defer { loading = false }
         let servicesURL = MacServicesReportReader.reportURL()
         let allowlistURL = OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
         let auditURL = OpsAuditLog.logURL()
@@ -331,14 +335,22 @@ struct OperationsView: View {
                 OpsAuditLog.read(at: auditURL)
             )
         }.value
-        if collectAgents {
-            services = await MacServicesCollector(repoRoot: FleetConfigLocation.resolve().repoRoot).collect()
-        } else {
-            services = readServices
-        }
+        if services == nil { services = readServices }
         allowlist = readAllowlist
         allowlistPath = allowlistURL.path
         audit = readAudit
+        loading = false
+        guard collectAgents else { return }
+        if collectingAgents {
+            refreshAgentsAfterCollection = true
+            return
+        }
+        collectingAgents = true
+        defer { collectingAgents = false }
+        repeat {
+            refreshAgentsAfterCollection = false
+            services = await MacServicesCollector(repoRoot: FleetConfigLocation.resolve().repoRoot).collect()
+        } while refreshAgentsAfterCollection
     }
 }
 

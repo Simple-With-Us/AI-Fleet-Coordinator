@@ -277,10 +277,28 @@ struct MacServicesCollector {
 
     func invocation(fileManager: FileManager = .default) throws -> OpsInvocation {
         let script = repoRoot.appendingPathComponent("scripts/fleet-mac-services.py")
-        guard let attributes = try? fileManager.attributesOfItem(atPath: script.path),
-              attributes[.type] as? FileAttributeType == .typeRegular,
-              let permissions = attributes[.posixPermissions] as? NSNumber,
-              permissions.intValue & 0o022 == 0 else {
+        // This route runs the owner's configured, trusted checkout, like the other
+        // app engines; it is not a sandbox for arbitrary Python supplied by callers.
+        // Protect the file and both checkout directories from other-user replacement.
+        let root = repoRoot.resolvingSymlinksInPath()
+        let scripts = root.appendingPathComponent("scripts")
+        func trusted(_ url: URL, type: FileAttributeType, stickyParent: Bool = false) -> Bool {
+            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                  attributes[.type] as? FileAttributeType == type,
+                  let owner = attributes[.ownerAccountID] as? NSNumber,
+                  owner.uint32Value == getuid() || owner.uint32Value == 0,
+                  let permissions = attributes[.posixPermissions] as? NSNumber else { return false }
+            return permissions.intValue & 0o022 == 0
+                || (stickyParent && permissions.intValue & 0o1000 != 0)
+        }
+        var parent = root.deletingLastPathComponent()
+        var trustedParents = true
+        while parent.path != "/" {
+            if !trusted(parent, type: .typeDirectory, stickyParent: true) { trustedParents = false; break }
+            parent.deleteLastPathComponent()
+        }
+        guard trusted(root, type: .typeDirectory), trusted(scripts, type: .typeDirectory),
+              trusted(script, type: .typeRegular), trustedParents else {
             throw OpsControlError.launchFailed(
                 "The Mac services collector is missing or unsafe at \(script.path).\(ServerStatusCopy.sentenceGap)Choose a repository containing scripts/fleet-mac-services.py in Settings."
             )

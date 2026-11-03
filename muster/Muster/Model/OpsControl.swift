@@ -472,12 +472,12 @@ struct OpsCommandBuilder {
     }
 
     /// The sole receipt recheck route is observation of a captured fleet-cli invocation.
-    func updateStatusInvocation(name: String, invocationID: String) throws -> OpsInvocation {
+    func updateStatusInvocation(name: String, invocationID: String, baselineStartMonotonic: UInt64) throws -> OpsInvocation {
         guard name == "fleet-cli", Self.isInvocationID(invocationID) else {
             throw OpsControlError.invalidArgument("update invocation receipt")
         }
         return serverInvocation(
-            tail: ["server", "update-status", "\(name).\(invocationID)", "--plan", "--json"],
+            tail: ["server", "update-status", "\(name).\(invocationID).\(baselineStartMonotonic)", "--plan", "--json"],
             timeout: OpsControlRoute.planTimeout
         )
     }
@@ -693,10 +693,11 @@ struct OpsResult: Decodable, Equatable {
     let executionState: String?
     let verified: Bool
     let invocationID: String?
+    let baselineStartMonotonic: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
-        case executionState, verified, invocationID
+        case executionState, verified, invocationID, baselineStartMonotonic
         case oldSource = "old_source"
     }
 
@@ -720,6 +721,7 @@ struct OpsResult: Decodable, Equatable {
         executionState = try? container.decodeIfPresent(String.self, forKey: .executionState)
         verified = (try? container.decodeIfPresent(Bool.self, forKey: .verified)) == true
         invocationID = try? container.decodeIfPresent(String.self, forKey: .invocationID)
+        baselineStartMonotonic = try? container.decodeIfPresent(UInt64.self, forKey: .baselineStartMonotonic)
     }
 }
 
@@ -799,6 +801,7 @@ struct OpsOutcome: Equatable {
     /// Only a fixed-shape systemd receipt is displayed, never arbitrary helper output.
     var invocationID: String? = nil
     var executionState: String? = nil
+    var baselineStartMonotonic: UInt64? = nil
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -930,7 +933,8 @@ enum OpsResultParser {
             logLines: logLines,
             resourcePolicy: answer.resourcePolicy,
             invocationID: invocationID,
-            executionState: answer.executionState
+            executionState: answer.executionState,
+            baselineStartMonotonic: answer.baselineStartMonotonic
         )
     }
 
@@ -1020,17 +1024,19 @@ struct OpsUpdateReceiptReader {
         OpsCommandBuilder(repoRoot: FleetConfigLocation.resolve().repoRoot)
     }
 
-    func read(name: String, invocationID: String) async -> OpsOutcome {
+    func read(name: String, invocationID: String, baselineStartMonotonic: UInt64) async -> OpsOutcome {
         func unverified(_ detail: String, expired: Bool = false) -> OpsOutcome {
             OpsOutcome(kind: .submitted, ok: false, commands: [], detail: detail, exitCode: 0,
                        invocationID: OpsCommandBuilder.isInvocationID(invocationID) ? invocationID : nil,
-                       executionState: expired ? "expired" : "submitted")
+                       executionState: expired ? "expired" : "submitted",
+                       baselineStartMonotonic: baselineStartMonotonic)
         }
         do {
-            let invocation = try makeBuilder().updateStatusInvocation(name: name, invocationID: invocationID)
+            let invocation = try makeBuilder().updateStatusInvocation(name: name, invocationID: invocationID, baselineStartMonotonic: baselineStartMonotonic)
             let process = try await runner.run(invocation)
             guard !process.timedOut, let answer = OpsResultParser.decode(process.stdout),
-                  answer.invocationID == invocationID else {
+                  answer.invocationID == invocationID,
+                  answer.baselineStartMonotonic == baselineStartMonotonic else {
                 return unverified("The recorded service invocation could not be read; completion remains unverified.")
             }
             if answer.executionState == "expired" {
@@ -1244,20 +1250,21 @@ final class OpsController: ObservableObject {
     var canRecheckUpdate: Bool {
         guard case .finished(.serverUpdate(let name), let outcome) = phase else { return false }
         return name == "fleet-cli" && outcome.kind == .submitted && outcome.invocationID != nil
-            && outcome.executionState != "expired"
+            && outcome.baselineStartMonotonic != nil && outcome.executionState != "expired"
     }
 
     /// A receipt read has no approval or write path and may be closed while pending.
     func recheckSubmittedUpdate() {
         guard canRecheckUpdate, task == nil,
               case .finished(let action, let previous) = phase,
-              case .serverUpdate(let name) = action, let invocationID = previous.invocationID else { return }
+              case .serverUpdate(let name) = action, let invocationID = previous.invocationID,
+              let baseline = previous.baselineStartMonotonic else { return }
         isRechecking = true
         notice = nil
         let reader = OpsUpdateReceiptReader(runner: runner, makeBuilder: makeBuilder)
         task = Task { [weak self] in
             guard !Task.isCancelled else { return }
-            let outcome = await reader.read(name: name, invocationID: invocationID)
+            let outcome = await reader.read(name: name, invocationID: invocationID, baselineStartMonotonic: baseline)
             guard !Task.isCancelled, let self else { return }
             self.phase = .finished(action, outcome)
             self.isRechecking = false
