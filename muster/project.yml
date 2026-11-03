@@ -75,6 +75,7 @@ targets:
       - path: Muster/Model/FleetGrid.swift
       - path: Muster/Model/FleetRegistry.swift
       - path: Muster/Model/FleetStore.swift
+      - path: Muster/Model/MusterNavigation.swift
       - path: Muster/Model/FleetToolsReport.swift
       - path: Muster/Model/ServerStatusReport.swift
       - path: Muster/Model/WorkerHealthReport.swift

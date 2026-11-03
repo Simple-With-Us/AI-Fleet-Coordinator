@@ -380,15 +380,16 @@ struct FleetView: View {
                 }.value
             }
         } catch {
-            // Fail closed:  clear the lists, never show the last green.
+            // Fail closed:  clear the lists, never show the last green.  The registry
+            // rows go with them:  read back without the run's answer they carry lane,
+            // pull request and claim counts of zero, which reads as a fleet measured
+            // and found idle rather than one this refresh could not see.  The banner
+            // above the list says the counts are unknown;  nothing under it may spell
+            // a number of its own.
             envelope = nil
             failed = true
             refreshedAt = Date()
-            if let root {
-                registrySummary = await Task.detached(priority: .userInitiated) {
-                    FleetRegistryReader.read(repoRoot: root, viewOutput: nil, toolsReading: tools)
-                }.value
-            }
+            registrySummary = FleetRegistrySummary()
         }
     }
 }
