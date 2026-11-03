@@ -299,7 +299,7 @@ def process_name(pid, proc=Path("/proc")):
         pass
     try:
         return (proc / str(pid) / "comm").read_text().strip() or None
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 

@@ -151,6 +151,18 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual([r["name"] for r in rows], ["grok"])
             self.assertNotIn("oldestStartedAt", rows[0])  # no btime: omitted
 
+    def test_non_utf8_comm_is_omitted_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = Path(tmp) / "proc"
+            proc.mkdir()
+            folder = proc / "202"
+            folder.mkdir()
+            rest = ["S"] + ["0"] * 18 + ["100"] + ["0"] * 5
+            (folder / "stat").write_text("202 (x) %s\n" % " ".join(rest))
+            (folder / "comm").write_bytes(b"gr\xc3\x28k\n")  # invalid UTF-8
+            self.assertIsNone(collector.process_name(202, proc=proc))
+            self.assertEqual(collector.collect_processes(proc=proc, clock_ticks=100), [])
+
     def test_missing_proc_omits_processes_section(self):
         self.assertIsNone(collector.collect_processes(proc=Path("/no-such-proc-xyz"), clock_ticks=100))
 
