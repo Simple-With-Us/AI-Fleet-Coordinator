@@ -4,11 +4,11 @@ import SwiftUI
 /// it should be,  and a way to change it.
 ///
 /// The panel has two columns of truth and never mixes them.  The left column is the file,
-/// and it is editable.  The middle column is the running listener's own account of itself.
+/// and it is editable.  The middle column is the running eavesdropper's own account of itself.
 /// When the two disagree the row says DRIFT,  and it is never a quiet green.
 ///
 /// A setting the engine does not enforce is shown as NOT OWNED and is not editable:  the
-/// listener counts wakes and not dollars,  so a dollar cap in the file would never bind.
+/// eavesdropper counts wakes and not dollars,  so a dollar cap in the file would never bind.
 struct WakeSettingsView: View {
     enum SeatFilter: String, CaseIterable, Identifiable {
         case all = "All Seats"
@@ -134,7 +134,7 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// The listener's own account of itself.
+    /// The eavesdropper's own account of itself.
     private var listenerLine: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -203,9 +203,9 @@ struct WakeSettingsView: View {
     /// The daemon-wide settings,  like the host load gate.
     private var daemonSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("The Listener")
+            Text("The Eavesdropper")
                 .font(.headline)
-            GridRowHeader(labels: ["Setting", "The file", "The listener", "State"])
+            GridRowHeader(labels: ["Setting", "The file", "The eavesdropper", "State"])
             ForEach(store.model.daemonSettings) { setting in
                 WakeSettingRow(
                     setting: setting,
@@ -493,7 +493,7 @@ struct WakeSettingsView: View {
 
 // MARK: - One row
 
-/// One setting of one seat,  with the file's value and the listener's value side by side.
+/// One setting of one seat,  with the file's value and the eavesdropper's value side by side.
 private struct WakeSettingRow: View {
     let setting: WakeSetting
     /// False when Muster will not write this setting.
@@ -580,12 +580,12 @@ private extension WakeSettingState {
     /// The badge's tooltip.
     var note: String {
         switch self {
-        case .match: return "The listener is using the value the file holds."
-        case .drift: return "The listener is using something other than the file's value."
+        case .match: return "The eavesdropper is using the value the file holds."
+        case .drift: return "The eavesdropper is using something other than the file's value."
         case .unproven: return "Configured,  but no pin has ever proved it works."
         case .notOwned: return "The engine does not enforce this setting,  so Muster will not write it."
         case .unpublished: return "The engine reads this one,  but does not publish it."
-        case .unset: return "The file holds nothing,  so the listener's default is in effect."
+        case .unset: return "The file holds nothing,  so the eavesdropper's default is in effect."
         case .off: return "Off,  by the owner's ruling."
         case .unknown: return "This could not be read."
         }
@@ -621,7 +621,7 @@ private struct PendingWakeAction: Identifiable {
     var message: String {
         switch kind {
         case .apply:
-            return "This writes \(seat)'s edited settings to the listener configuration file and asks the listener to re-read it.\u{00A0} The change takes effect in the running listener."
+            return "This writes \(seat)'s edited settings to the eavesdropper configuration file and asks the eavesdropper to re-read it.\u{00A0} The change takes effect in the running eavesdropper."
         case .testWake:
             return "This runs \(seat)'s wake for real, exactly as a live wake would run.\u{00A0} It can spend wake budget and start a worker session."
         case .pin:
