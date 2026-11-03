@@ -875,7 +875,11 @@ class ExcludeTests(unittest.TestCase):
             with mock.patch.object(m, "resolve_unit_cgroups") as resolver:
                 for now in (1, 2, 3):
                     status = m.step(
-                        policy(), root, {"owned": {}}, procroot, now,
+                        policy(),
+                        root,
+                        {"owned": {}},
+                        procroot,
+                        now,
                         ([coding], [], {}),
                         excluded_units={"inactive.service"},
                         excluded_cgroups=set(),
