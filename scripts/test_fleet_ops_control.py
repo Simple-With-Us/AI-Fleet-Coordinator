@@ -707,6 +707,7 @@ class SourceTests(unittest.TestCase):
                 "fleet-worker-health.py",
                 "fleet-tools-doctor.py",
                 "fleet-server-status.py",
+                "fleet-vm-status.py",
             )
         ] + sorted(Path(HERE, "fleet_knobs").glob("*.py"))
         for path in paths:

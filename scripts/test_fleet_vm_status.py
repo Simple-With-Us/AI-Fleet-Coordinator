@@ -314,6 +314,24 @@ class ReportShapeTests(unittest.TestCase):
                 collector.write_report(link / "vm-status.json", {"schemaVersion": 1})
             self.assertEqual(list(real.iterdir()), [])
 
+    def test_write_report_directory_fsync_failure_propagates(self):
+        calls = []
+
+        def flaky_fsync(fd):
+            calls.append(fd)
+            if len(calls) == 2:
+                raise OSError("directory fsync failed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state" / "vm-status.json"
+            with unittest.mock.patch.object(collector.os, "fsync", flaky_fsync):
+                with self.assertRaises(OSError):
+                    collector.write_report(path, {"schemaVersion": 1})
+
+    def test_collector_source_avoids_python311_datetime_utc(self):
+        source = (HERE / "fleet-vm-status.py").read_text()
+        self.assertNotIn("datetime.UTC", source)
+
     def test_run_replaces_non_utf8_output_instead_of_raising(self):
         import sys
 
@@ -335,6 +353,7 @@ class ReportShapeTests(unittest.TestCase):
         joined = " ".join(seen["command"])
         self.assertIn("core.fsmonitor=", joined)
         self.assertIn("core.hooksPath=/dev/null", joined)
+        self.assertIn("safe.directory=*", joined)
         self.assertEqual(seen["env"]["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(seen["env"]["GIT_CONFIG_GLOBAL"], "/dev/null")
 

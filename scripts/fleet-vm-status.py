@@ -73,11 +73,11 @@ HOST_LABEL_FILE = Path(".config/fleet-tools/vm-host-label")
 
 def utc_now() -> str:
     """The time this report was made,  in the spelling the doctor uses."""
-    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def iso_from_timestamp(value: float) -> str:
-    moment = datetime.datetime.fromtimestamp(value, datetime.UTC)
+    moment = datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -456,6 +456,8 @@ def _git(repo, args, run_command=run, timeout=15):
         "core.fsmonitor=",
         "-c",
         "core.hooksPath=/dev/null",
+        "-c",
+        "safe.directory=*",
         "-C",
         str(repo),
     ] + list(args)
@@ -598,14 +600,11 @@ def write_report(path, document):
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
-            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError:
-            pass
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except BaseException:
         try:
             os.unlink(temporary)
