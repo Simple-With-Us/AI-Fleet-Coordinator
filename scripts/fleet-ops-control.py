@@ -750,9 +750,7 @@ def execute_logs(ctx, commands):
     """(detail, text, line count) for a logs `--yes`.  The journal text goes to the
     answer only; the detail and the audit carry the count and nothing else."""
     argv = commands[0]
-    status, out = ctx.runner(
-        argv, timeout=COMMAND_TIMEOUT, env=ctx.child_env(), want_stdout=True
-    )
+    status, out = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=ctx.child_env(), want_stdout=True)
     if status != 0:
         raise Failed(f"journalctl exited {status}")
     text, lines = truncate_logs(out or b"")
