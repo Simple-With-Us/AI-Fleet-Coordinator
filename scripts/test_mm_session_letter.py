@@ -1971,9 +1971,7 @@ class RegistryHttpsCallTest(unittest.TestCase):
             mock.patch.dict(os.environ, env),
             mock.patch.object(M, "_REGISTRY_OPENER", _Opener()),
         ):
-            answer = M._registry_https_call(
-                args, "https://operator.example.test", timeout=5
-            )
+            answer = M._registry_https_call(args, "https://operator.example.test", timeout=5)
         return answer, captured["request"]
 
     def _http_error(self, code, body):
