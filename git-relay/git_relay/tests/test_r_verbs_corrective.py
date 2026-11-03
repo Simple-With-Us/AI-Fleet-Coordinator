@@ -594,6 +594,13 @@ class PrRaceFixtureTests(unittest.TestCase):
 
 
 class AuthorMetadataTests(unittest.TestCase):
+    def test_pr_edit_and_close_are_reapply_state_actions(self):
+        from git_relay.server import _REAPPLY_STATE_ACTIONS
+
+        self.assertIn("wf_pr_edit", _REAPPLY_STATE_ACTIONS)
+        self.assertIn("wf_pr_close", _REAPPLY_STATE_ACTIONS)
+        self.assertNotIn("wf_pr_create", _REAPPLY_STATE_ACTIONS)
+
     def test_pr_list_author_type_missing_refuses_not_defaults(self):
         row = pr()
         row["user"] = {"login": "ghost"}  # no type
