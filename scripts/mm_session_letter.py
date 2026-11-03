@@ -860,12 +860,14 @@ def held_letters(session_id: str) -> tuple[str, ...]:
         # The canonical store answers.  A transport fault returns the empty history, and
         # that empty history never stands in for a stale local file:  the caller falls
         # back to the shape rules, which is the safe direction.
-        answer = registry_call([
-            "held",
-            "--platform=" + PLATFORM,
-            *_registry_identity_args(),
-            "--session-id=" + session_id,
-        ])
+        answer = registry_call(
+            [
+                "held",
+                "--platform=" + PLATFORM,
+                *_registry_identity_args(),
+                "--session-id=" + session_id,
+            ]
+        )
         # Only a successful answer with a letters list of letter strings counts.  A
         # bare string is not a one-letter list (it would split into characters), a
         # non-iterable is not a list at all, and any malformed entry voids the whole
