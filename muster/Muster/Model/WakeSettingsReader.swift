@@ -1,15 +1,15 @@
 import Foundation
 
-// Reading the wake settings:  the configuration file,  the listener's own status,  the pins
+// Reading the wake settings:  the configuration file,  the eavesdropper's own status,  the pins
 // that prove a binary works,  and the ledger that says how much of the budget is used.
 //
 // Nothing here decides anything.  It reads,  and hands what it read to the builder.
 
 // MARK: - Where the state lives
 
-/// Where the listener keeps its state on this Mac.
+/// Where the eavesdropper keeps its state on this Mac.
 struct ListenerStateLocation: Equatable {
-    /// The listener's state directory:  `~/.agent-sync`.
+    /// The eavesdropper's state directory:  `~/.agent-sync`.
     var root: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -21,7 +21,7 @@ struct ListenerStateLocation: Equatable {
         root.appendingPathComponent("listener.toml")
     }
 
-    /// The listener's own published state.
+    /// The eavesdropper's own published state.
     var statusURL: URL {
         root.appendingPathComponent("listener/status.json")
     }
@@ -54,7 +54,7 @@ struct ListenerStateLocation: Equatable {
 struct WakeSettingsReader {
     /// Where the state lives.
     var location: ListenerStateLocation
-    /// The command line,  for the listener's own account of itself.
+    /// The command line,  for the eavesdropper's own account of itself.
     var runner: AgentSyncRunning
     /// The seats to show.
     var roster: [String]
@@ -93,24 +93,24 @@ struct WakeSettingsReader {
         sources.config = ListenerConfigDocument(text: configText)
         sources.configPath = location.configURL.path
 
-        // The listener's own account of itself.
+        // The eavesdropper's own account of itself.
         var status: ListenerStatus?
         do {
             let result = try await runner.run(AgentSyncInvocation.status())
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {
-                    problems.append("The listener's status could not be read,  so nothing is known about the running listener.")
+                    problems.append("The eavesdropper's status could not be read,  so nothing is known about the running listener.")
                 }
             } else {
-                problems.append("The listener's status command failed:  \(result.stderrTail)")
+                problems.append("The eavesdropper's status command failed:  \(result.stderrTail)")
             }
         } catch {
-            problems.append("The listener's status could not be run:  \(error.localizedDescription)")
+            problems.append("The eavesdropper's status could not be run:  \(error.localizedDescription)")
         }
         sources.status = status
 
-        // The seats to show:  the roster,  then every seat the file or the listener knows.
+        // The seats to show:  the roster,  then every seat the file or the eavesdropper knows.
         var tags = roster
         for section in sources.config.sections where section.name.hasPrefix("seat.") {
             let tag = String(section.name.dropFirst("seat.".count))

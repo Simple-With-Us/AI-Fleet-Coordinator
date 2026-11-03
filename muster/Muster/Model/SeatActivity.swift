@@ -9,8 +9,8 @@ import Foundation
 //
 // The sources are:
 //
-//   * the listener's own published state,  `~/.agent-sync/listener/status.json`,  which
-//     holds the open sessions (the leases it holds alive)  and the listener's state for
+//   * the eavesdropper's own published state,  `~/.agent-sync/listener/status.json`,  which
+//     holds the open sessions (the leases it holds alive)  and the eavesdropper's state for
 //     each seat
 //   * the fleet chat CLI (`simple-chat`),  which holds the seat's Zulip presence and the
 //     seat's last Zulip post
@@ -51,25 +51,25 @@ enum SeatFact<Value: Equatable & Sendable>: Equatable, Sendable {
     }
 }
 
-// MARK: - The listener's own state
+// MARK: - The eavesdropper's own state
 
-/// The listener's published state,  as `~/.agent-sync/listener/status.json` holds it.
+/// The eavesdropper's published state,  as `~/.agent-sync/listener/status.json` holds it.
 ///
-/// The file is the listener's own account of itself,  rewritten every two seconds while
+/// The file is the eavesdropper's own account of itself,  rewritten every two seconds while
 /// it runs.  It is not the CLI's envelope:  the CLI wraps this document in
 /// `{"running":…, "status":…}`,  and the file is the inner document on its own.
 struct ListenerStateDocument: Decodable, Equatable, Sendable {
     /// One seat's half of the state.
     struct Seat: Decodable, Equatable, Sendable {
-        /// The seat's bot name,  as the listener knows it.
+        /// The seat's bot name,  as the eavesdropper knows it.
         var bot: String?
-        /// Whether the listener is connected for this seat.
+        /// Whether the eavesdropper is connected for this seat.
         var connected: Bool?
         /// Whether the kill switch stops this seat.
         var paused: Bool?
-        /// The wake jobs the listener is running for this seat.
+        /// The wake jobs the eavesdropper is running for this seat.
         var jobs: Int?
-        /// The session leases the listener holds for this seat.
+        /// The session leases the eavesdropper holds for this seat.
         var leases: [Lease]?
 
         enum CodingKeys: String, CodingKey {
@@ -88,19 +88,19 @@ struct ListenerStateDocument: Decodable, Equatable, Sendable {
         }
     }
 
-    /// One session lease the listener holds.
+    /// One session lease the eavesdropper holds.
     struct Lease: Decodable, Equatable, Sendable {
         /// The lease's own id.
         var leaseID: String?
         /// The platform the lease belongs to.
         var platform: String?
-        /// Whether the listener judges the session behind the lease to be alive.
+        /// Whether the eavesdropper judges the session behind the lease to be alive.
         ///
-        /// This is the listener's own judgement,  and it is the one the panel shows:  a
+        /// This is the eavesdropper's own judgement,  and it is the one the panel shows:  a
         /// lease whose process is gone,  whose pid was reused or  whose heartbeat stopped
         /// is not an open session.
         var alive: Bool?
-        /// Why the lease is alive or not,  in the listener's words.
+        /// Why the lease is alive or not,  in the eavesdropper's words.
         var why: String?
         /// How many topics the lease holds.
         var topics: Int?
@@ -148,19 +148,19 @@ struct ListenerStateDocument: Decodable, Equatable, Sendable {
         }
     }
 
-    /// The listener's pid.
+    /// The eavesdropper's pid.
     var pid: Int?
-    /// The listener's version.
+    /// The eavesdropper's version.
     var version: String?
-    /// When the listener last published.
+    /// When the eavesdropper last published.
     var updated: Double?
-    /// The seats the listener's configuration turned off.
+    /// The seats the eavesdropper's configuration turned off.
     var disabled: [String]?
-    /// The seats the listener could not start,  and why.
+    /// The seats the eavesdropper could not start,  and why.
     var skippedSeats: [String: [String]]?
     /// The kill switch,  by scope.
     var pause: [String: PauseEntry]?
-    /// The seats the listener runs,  by tag.
+    /// The seats the eavesdropper runs,  by tag.
     var seats: [String: Seat]?
 
     enum CodingKeys: String, CodingKey {
@@ -179,7 +179,7 @@ struct ListenerStateDocument: Decodable, Equatable, Sendable {
         seats = try? container.decodeIfPresent([String: Seat].self, forKey: .seats)
     }
 
-    /// When the listener last published,  as a date.
+    /// When the eavesdropper last published,  as a date.
     var publishedAt: Date? {
         updated.map { Date(timeIntervalSince1970: $0) }
     }
@@ -187,20 +187,20 @@ struct ListenerStateDocument: Decodable, Equatable, Sendable {
 
 // MARK: - What a seat reads as
 
-/// The listener's state for one seat.
+/// The eavesdropper's state for one seat.
 enum SeatListenerState: Equatable, Sendable {
-    /// The listener is connected for this seat.
+    /// The eavesdropper is connected for this seat.
     case connected(jobs: Int)
-    /// The listener runs this seat but is not connected to it.
+    /// The eavesdropper runs this seat but is not connected to it.
     case disconnected
     /// The kill switch stops this seat.
     case paused
-    /// The kill switch stops this seat's wakes only.  The listener still runs the seat,
+    /// The kill switch stops this seat's wakes only.  The eavesdropper still runs the seat,
     /// so it still says whether it is connected.
     case wakesPaused(connected: Bool)
-    /// The listener's configuration turned this seat off.
+    /// The eavesdropper's configuration turned this seat off.
     case off
-    /// The listener could not start this seat,  and says why.
+    /// The eavesdropper could not start this seat,  and says why.
     case skipped(String)
 
     /// The label the column shows.
@@ -220,7 +220,7 @@ enum SeatListenerState: Equatable, Sendable {
 
     /// Whether this state is a fact the source stated,  rather than a guess.
     ///
-    /// Every case is a statement the listener made,  so every case is known.  The
+    /// Every case is a statement the eavesdropper made,  so every case is known.  The
     /// unknown case lives in `SeatFact`,  not here.
     var isHealthy: Bool {
         switch self {
@@ -296,10 +296,10 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
     let seat: String
     /// The bot's Zulip display name,  when the realm knows one for this seat.
     let botName: String?
-    /// The number of open sessions the listener holds for this seat.
+    /// The number of open sessions the eavesdropper holds for this seat.
     let openSessions: SeatFact<Int>
-    /// The listener's state for this seat.
-    let listener: SeatFact<SeatListenerState>
+    /// The eavesdropper's state for this seat.
+    let eavesdropper: SeatFact<SeatListenerState>
     /// The seat's Zulip presence.
     let presence: SeatFact<SeatPresence>
     /// The seat's last Zulip post.
@@ -327,7 +327,7 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
     var unknowns: [(column: String, reason: String)] {
         var found: [(String, String)] = []
         if let reason = openSessions.reason { found.append(("open sessions", reason)) }
-        if let reason = listener.reason { found.append(("listener", reason)) }
+        if let reason = listener.reason { found.append(("eavesdropper", reason)) }
         if let reason = presence.reason { found.append(("presence", reason)) }
         if let reason = lastPost.reason { found.append(("last post", reason)) }
         return found
@@ -355,13 +355,13 @@ struct SeatActivityModel: Equatable, Sendable {
     var requestCeiling: Int = 0
     /// What could not be read,  across every seat.
     var problems: [String] = []
-    /// Where the listener's state came from.
+    /// Where the eavesdropper's state came from.
     var listenerPath: String = ""
 
     /// The seats with at least one open session.
     ///
     /// This is the question the panel exists for:  which seats are actually working.
-    /// A seat the listener knows but that holds no live lease is not on this list.
+    /// A seat the eavesdropper knows but that holds no live lease is not on this list.
     var seatsWithSessions: [SeatActivityRow] {
         rows.filter { row in
             if case .known(let sessions) = row.openSessions, sessions > 0 { return true }
@@ -378,9 +378,9 @@ enum SeatActivityBuilder {
     struct Sources {
         /// The roster,  in the order the app shows it.
         var roster: [String] = []
-        /// The listener's published state,  when it could be read.
-        var listener: ListenerStateDocument?
-        /// Why the listener's state could not be read.
+        /// The eavesdropper's published state,  when it could be read.
+        var eavesdropper: ListenerStateDocument?
+        /// Why the eavesdropper's state could not be read.
         var listenerProblem: String?
         /// The bots the realm knows,  by seat tag.
         var bots: [String: ChatBot] = [:]
@@ -398,7 +398,7 @@ enum SeatActivityBuilder {
         var requestCeiling: Int = 0
         /// When the read happened.
         var readAt: Date = Date()
-        /// Where the listener's state lives.
+        /// Where the eavesdropper's state lives.
         var listenerPath: String = ""
     }
 
@@ -429,7 +429,7 @@ enum SeatActivityBuilder {
             seat: seat,
             botName: bot?.fullName,
             openSessions: openSessions(for: seat, sources: sources),
-            listener: listenerState(for: seat, sources: sources),
+            eavesdropper: listenerState(for: seat, sources: sources),
             presence: sources.presence[seat] ?? .unknown(SeatActivityBuilder.noPresenceReason),
             lastPost: sources.lastPosts[seat] ?? .unknown(SeatActivityBuilder.noPostReason)
         )
@@ -440,36 +440,36 @@ enum SeatActivityBuilder {
     /// The reason a seat has no last post,  when the panel never asked.
     static let noPostReason = "The seat's last post was not read."
 
-    /// The number of open sessions the listener holds for a seat.
+    /// The number of open sessions the eavesdropper holds for a seat.
     ///
-    /// The listener's own lease list is the source:  a lease is a session that attached
-    /// to the fleet chat,  and the listener judges it alive or not.  A seat the listener
+    /// The eavesdropper's own lease list is the source:  a lease is a session that attached
+    /// to the fleet chat,  and the eavesdropper judges it alive or not.  A seat the eavesdropper
     /// publishes no state for has no lease list to read,  so its count is unknown and
     /// never zero:  zero would claim the seat has nothing running,  which is a claim
-    /// about a seat the listener never said anything about.
+    /// about a seat the eavesdropper never said anything about.
     private static func openSessions(for seat: String, sources: Sources) -> SeatFact<Int> {
-        guard let listener = sources.listener else {
-            return .unknown(sources.listenerProblem ?? "The listener's state could not be read.")
+        guard let eavesdropper = sources.listener else {
+            return .unknown(sources.listenerProblem ?? "The eavesdropper's state could not be read.")
         }
         guard let entry = listener.seats?[seat] else {
-            return .unknown("The listener publishes no state for this seat,  so its open sessions are unknown.")
+            return .unknown("The eavesdropper publishes no state for this seat,  so its open sessions are unknown.")
         }
         guard let leases = entry.leases else {
-            return .unknown("The listener's state for this seat names no leases,  so its open sessions are unknown.")
+            return .unknown("The eavesdropper's state for this seat names no leases,  so its open sessions are unknown.")
         }
         let alive = leases.filter { $0.alive == true }.count
         return .known(alive)
     }
 
-    /// The listener's state for a seat.
+    /// The eavesdropper's state for a seat.
     private static func listenerState(for seat: String, sources: Sources) -> SeatFact<SeatListenerState> {
-        guard let listener = sources.listener else {
-            return .unknown(sources.listenerProblem ?? "The listener's state could not be read.")
+        guard let eavesdropper = sources.listener else {
+            return .unknown(sources.listenerProblem ?? "The eavesdropper's state could not be read.")
         }
         // The kill switch comes first:  a paused seat is paused whatever else it is.  A
         // wakes-only pause leaves the seat running and connected,  so it does not hide the
         // connection state;  it only changes the label.
-        let pause = pauseKind(for: seat, listener: listener)
+        let pause = pauseKind(for: seat, eavesdropper: eavesdropper)
         if pause == .full {
             return .known(.paused)
         }
@@ -481,7 +481,7 @@ enum SeatActivityBuilder {
                 return .known(.paused)
             }
             guard let connected = entry.connected else {
-                return .unknown("The listener's state for this seat does not say whether it is connected.")
+                return .unknown("The eavesdropper's state for this seat does not say whether it is connected.")
             }
             if pause == .wakesOnly {
                 return .known(.wakesPaused(connected: connected))
@@ -491,7 +491,7 @@ enum SeatActivityBuilder {
         if let problems = listener.skippedSeats?[seat], !problems.isEmpty {
             return .known(.skipped(problems.joined(separator: "; ")))
         }
-        return .unknown("The listener publishes no state for this seat.")
+        return .unknown("The eavesdropper publishes no state for this seat.")
     }
 
     /// How far the kill switch covers a seat.
@@ -504,10 +504,10 @@ enum SeatActivityBuilder {
 
     /// The kill switch that covers a seat,  when one does.
     ///
-    /// This is the listener's own rule (`live.paused`):  a scope covers the seat when it
+    /// This is the eavesdropper's own rule (`live.paused`):  a scope covers the seat when it
     /// names the seat or is `*`,  and an entry without `wakes_only` is a full pause.  A
     /// full pause in either scope wins over a wakes-only one.
-    static func pauseKind(for seat: String, listener: ListenerStateDocument) -> PauseKind? {
+    static func pauseKind(for seat: String, eavesdropper: ListenerStateDocument) -> PauseKind? {
         guard let pause = listener.pause else { return nil }
         var found: PauseKind?
         for scope in [seat, "*"] {
