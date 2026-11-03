@@ -3108,7 +3108,10 @@ def vm_status_valid(status) -> bool:
     refused, never written:  the previous report stays and its age speaks."""
     if not isinstance(status, dict):
         return False
-    if status.get("tool") != VM_STATUS_TOOL or status.get("schemaVersion") != VM_STATUS_SCHEMA_VERSION:
+    if (
+        status.get("tool") != VM_STATUS_TOOL
+        or status.get("schemaVersion") != VM_STATUS_SCHEMA_VERSION
+    ):
         return False
     # Muster can only ever show a report whose generatedAt it can read (a timeless
     # one reads unknown forever), so keeping such an answer would overwrite the
@@ -3118,7 +3121,9 @@ def vm_status_valid(status) -> bool:
     return json_within_limits(status, max_nodes=MAX_REMOTE_NODES // 2)
 
 
-def fetch_vm_status(target: str, runner: Callable = subprocess.run) -> tuple[dict | None, str | None]:
+def fetch_vm_status(
+    target: str, runner: Callable = subprocess.run
+) -> tuple[dict | None, str | None]:
     """One VM's report over its read-only key:  the forced command prints the collector's
     document whatever is asked, so nothing is sent.  (document, None) or (None, reason)."""
     try:
@@ -3170,7 +3175,13 @@ def pull_vms(
         if not isinstance(entries, list):
             raise ValueError("no vms list")
     except (OSError, ValueError, KeyError) as exc:
-        return [{"label": None, "ok": False, "error": f"{config_path} is not a readable vm-hosts config ({type(exc).__name__})"}]
+        return [
+            {
+                "label": None,
+                "ok": False,
+                "error": f"{config_path} is not a readable vm-hosts config ({type(exc).__name__})",
+            }
+        ]
     results: list[dict | None] = [None] * len(entries)
     jobs: list[tuple[int, str, str]] = []
     seen: set[str] = set()
@@ -3179,23 +3190,41 @@ def pull_vms(
         destination = entry.get("destination") if isinstance(entry, dict) else None
         user = entry.get("user") if isinstance(entry, dict) else None
         if not isinstance(label, str) or not VM_LABEL_RE.fullmatch(label):
-            results[index] = {"label": label, "ok": False, "error": "the label is not a plain filename-safe name"}
+            results[index] = {
+                "label": label,
+                "ok": False,
+                "error": "the label is not a plain filename-safe name",
+            }
             continue
         if label in seen:
-            results[index] = {"label": label, "ok": False, "error": "the label is already configured; the first entry wins"}
+            results[index] = {
+                "label": label,
+                "ok": False,
+                "error": "the label is already configured; the first entry wins",
+            }
             continue
         seen.add(label)
         if not isinstance(destination, str) or not VM_HOST_RE.fullmatch(destination):
-            results[index] = {"label": label, "ok": False, "error": "the destination is not a plain ssh alias or host"}
+            results[index] = {
+                "label": label,
+                "ok": False,
+                "error": "the destination is not a plain ssh alias or host",
+            }
             continue
         if user is not None and (not isinstance(user, str) or not VM_USER_RE.fullmatch(user)):
-            results[index] = {"label": label, "ok": False, "error": "the user is not a plain login name"}
+            results[index] = {
+                "label": label,
+                "ok": False,
+                "error": "the user is not a plain login name",
+            }
             continue
         jobs.append((index, label, f"{user}@{destination}" if user else destination))
     if jobs:
         # Fetch in parallel:  the pull runs before the combined report is written, so a
         # serial 60 second timeout per hung VM would delay that report by N timeouts.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(VM_PULL_WORKERS, len(jobs))) as pool:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(VM_PULL_WORKERS, len(jobs))
+        ) as pool:
             fetched = list(pool.map(lambda job: fetch_vm_status(job[2], runner), jobs))
         for (index, label, _target), (doc, error) in zip(jobs, fetched):
             if doc is None:
@@ -3204,7 +3233,11 @@ def pull_vms(
             try:
                 write_report(state_dir / f"{label}.json", doc)
             except (OSError, ValueError) as exc:
-                results[index] = {"label": label, "ok": False, "error": f"the report could not be written ({type(exc).__name__})"}
+                results[index] = {
+                    "label": label,
+                    "ok": False,
+                    "error": f"the report could not be written ({type(exc).__name__})",
+                }
                 continue
             results[index] = {"label": label, "ok": True, "error": None}
     return [result for result in results if result is not None]
@@ -3447,7 +3480,11 @@ def run(
             )
         print(f"fleet-tools-doctor:  wrote {report_path}:  {host} {state_counts(doc)}{far}")
         for vm in vms:
-            line = f"vm {vm['label']}:  pulled" if vm["ok"] else f"vm {vm['label']}:  not pulled ({vm['error']})"
+            line = (
+                f"vm {vm['label']}:  pulled"
+                if vm["ok"]
+                else f"vm {vm['label']}:  not pulled ({vm['error']})"
+            )
             print(f"fleet-tools-doctor:  {line}")
     else:
         for row in report.rows:
@@ -3462,7 +3499,9 @@ def run(
             else:
                 print(f"-- server unreachable:  {server.get('error')}")
         for vm in vms:
-            print(f"-- vm {vm['label']}:  {'pulled' if vm['ok'] else 'not pulled (' + str(vm['error']) + ')'}")
+            print(
+                f"-- vm {vm['label']}:  {'pulled' if vm['ok'] else 'not pulled (' + str(vm['error']) + ')'}"
+            )
     return report, 1 if report.failed else 0
 
 
