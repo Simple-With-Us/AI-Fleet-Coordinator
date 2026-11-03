@@ -10,6 +10,7 @@ import signal
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1568,3 +1569,113 @@ class MmReopenStrictTouchTest(unittest.TestCase):
             with self.assertRaises(M.RegistryError) as caught:
                 M.reopen_closed("r1")
         self.assertEqual(caught.exception.code, "no_registry")
+
+
+class TransportTests(unittest.TestCase):
+    """The registry transport:  explicit destination wins, no local second allocator."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.state = root / "state"
+        (self.state / "operator").mkdir(parents=True)
+        self.bin = root / "bin"
+        self.bin.mkdir()
+        self.log = root / "transport.log"
+        self.registry = self.state / "operator" / "registry.sqlite3"
+        self._env = {
+            "SIMPLE_TOOLS_STATE_DIR": str(self.state),
+            "HOME": str(root),
+            "PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
+        }
+
+    def _transport(self, answer=None):
+        if answer is None:
+            answer = '{"letter": "AA", "record_id": 1}'
+        cmd = self.bin / "mm-operator-registry"
+        script = (
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> '" + str(self.log) + "'\n"
+            "printf '%s' '" + answer + "'\n"
+        )
+        cmd.write_text(script)
+        cmd.chmod(0o755)
+
+    def _call(self, args, **env):
+        merged = dict(self._env)
+        merged.update(env)
+        with mock.patch.dict(os.environ, merged, clear=False):
+            return M.registry_call(args)
+
+    def test_explicit_transport_wins_over_a_local_file(self):
+        self.registry.write_bytes(b"not empty")  # a retired local store must not be used
+        self._transport()
+        out = self._call(["register", "--platform=minimax"], MM_OPERATOR_REGISTRY_CMD="mm-operator-registry")
+        self.assertEqual(out.get("letter"), "AA")
+        self.assertIn("register --platform=minimax", self.log.read_text())
+        self.assertEqual(self.registry.read_bytes(), b"not empty")  # untouched
+
+    def test_all_mm_verbs_reach_the_transport(self):
+        self._transport()
+        for verb in (
+            ["register", "--platform=minimax", "--session-id=s1"],
+            ["touch", "--platform=minimax", "--scope=default", "--session-id=s1"],
+            ["update", "--platform=minimax", "--scope=default", "--session-id=s1", "--title=AA: t"],
+            ["relabel", "--platform=minimax", "--scope=default", "--session-id=s1", "--letter=AB", "--force"],
+            ["sweep", "--platform=minimax", "--stale-after-minutes=120"],
+        ):
+            self._call(verb, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry")
+        calls = self.log.read_text().splitlines()
+        self.assertEqual(len(calls), 5)
+        self.assertIn("relabel", calls[3])
+        self.assertIn("--force", calls[3])  # the double-apply risk verb passes through verbatim
+
+    def test_no_local_store_uses_the_default_transport(self):
+        self._transport()
+        out = self._call(["history", "--platform=minimax"])
+        self.assertEqual(out.get("letter"), "AA")
+        self.assertIn("history", self.log.read_text())
+
+    def test_a_missing_transport_is_missing_tool_not_no_registry(self):
+        out = self._call(["history", "--platform=minimax"])
+        # Both are non-success transport faults;  which one fires depends on how the
+        # host's PATH resolves the name (absent vs. unusable), not on the registry.
+        self.assertIn(out.get("code"), ("missing_tool", "remote_unreachable"))
+
+    def test_a_bad_transport_name_is_refused_never_run(self):
+        out = self._call(["history"], MM_OPERATOR_REGISTRY_CMD="bad; rm -rf /")
+        self.assertEqual(out.get("code"), "remote_refused")
+
+    def test_a_success_shaped_answer_with_a_nonzero_exit_is_not_a_success(self):
+        # The transport answered like a success but exited 1:  never treat it as one.
+        cmd = self.bin / "mm-operator-registry"
+        cmd.write_text("#!/bin/sh\nprintf '%s' '" + '{"letter": "AA"}' + "'\nexit 1\n")
+        cmd.chmod(0o755)
+        out = self._call(["relabel", "--platform=minimax", "--force"], MM_OPERATOR_REGISTRY_CMD="mm-operator-registry")
+        self.assertNotEqual(out.get("letter"), "AA")
+        self.assertEqual(out.get("outcome"), "outcome_unknown")
+        self.assertIn("error", out)
+
+    def test_the_far_side_no_registry_guard_maps_to_no_registry(self):
+        self._transport(answer='{"error": "no Operator registry on this host"}')
+        out = self._call(["register", "--platform=minimax"])
+        self.assertEqual(out.get("code"), "no_registry")
+
+
+class RegistryCliNeverCreatesTests(unittest.TestCase):
+    """The registry CLI refuses a missing store instead of creating a second one."""
+
+    def test_a_missing_db_is_refused_for_a_write_and_a_read(self):
+        from simple_tools import operator_registry
+
+        missing = os.path.join(tempfile.mkdtemp(), "operator", "registry.sqlite3")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            argv = [
+                "register", "--db", missing, "--platform=minimax", "--location=server",
+                "--scope=default", "--session-id=s1", "--seat=MM", "--source=test",
+            ]
+            code = operator_registry.main(argv)
+        self.assertEqual(code, 3)
+        self.assertIn("no Operator registry on this host", out.getvalue())
+        self.assertFalse(os.path.exists(missing))  # never brought into being

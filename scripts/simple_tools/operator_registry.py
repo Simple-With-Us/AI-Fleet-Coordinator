@@ -2380,20 +2380,31 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--scope", required=True, help="the profile scope")
     t.add_argument("--session-id", required=True, help="the native session id")
     args = parser.parse_args(argv)
+    db = getattr(args, "db", "") or _default_db()
     if args.command == "pending-outbox":
+        # The bridge's own reviewed contract:  a missing store is its error, exit 2.
         try:
-            print(json.dumps(pending_outbox(args.db, args.limit)))
+            print(json.dumps(pending_outbox(db, args.limit)))
         except RegistryUnavailable as exc:
             print(json.dumps({"error": str(exc)}))
             return 2
         return 0
+    # mark-exported keeps the same reviewed exit-2 bridge contract and already fails
+    # closed on a missing store;  every remaining verb gets the never-create guard.
+    if args.command != "mark-exported" and not os.path.isfile(db):
+        # Never bring a registry into being:  a second registry would hand out letters
+        # that collide with the ones the Operator keeps.  Every other verb that takes a
+        # database refuses the same way, so the transport that runs this CLI directly
+        # is guarded as well as the passthrough that runs it through simple-chat.
+        print(json.dumps({"error": "no Operator registry on this host"}))
+        return 3
     if args.command == "wake-target":
-        print(json.dumps(resolve_wake_target(args.db or _default_db(), args.seat)))
+        print(json.dumps(resolve_wake_target(db, args.seat)))
         return 0
     if args.command == "resolve":
         try:
             found = resolve_label(
-                args.db or _default_db(),
+                db,
                 args.platform,
                 args.letter,
                 args.generation,
@@ -2406,7 +2417,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "register":
         try:
             out = register_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2436,7 +2447,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "relabel":
         try:
             out = relabel_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2467,7 +2478,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "update":
         try:
             out = update_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2486,7 +2497,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "close":
         try:
             out = close_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2503,7 +2514,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "touch":
         try:
             out = touch_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2516,7 +2527,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "sweep":
         ended = sweep_stale(
-            args.db or _default_db(),
+            db,
             platform=args.platform,
             seat=args.seat,
             stale_after_minutes=args.stale_after_minutes,
@@ -2525,14 +2536,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "history":
         try:
-            rows = letter_history(args.db or _default_db(), args.platform, args.limit)
+            rows = letter_history(db, args.platform, args.limit)
         except (ValueError, RegistryUnavailable) as exc:
             print(json.dumps({"error": str(exc)}))
             return 2
         print(json.dumps(rows))
         return 0
     try:
-        print(json.dumps({"marked": mark_exported(args.db, args.outbox_ids)}))
+        print(json.dumps({"marked": mark_exported(db, args.outbox_ids)}))
     except RegistryUnavailable as exc:
         print(json.dumps({"error": str(exc)}))
         return 2

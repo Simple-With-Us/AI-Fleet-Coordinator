@@ -11,8 +11,11 @@ and this file is where they agree:
   3. the registry carries the same title the thread carries, found by the session id.
 
 The store is MiniMax Code's own session table; the letter lives in the Operator
-registry, which is one file for the fleet.  This host reads that file locally when the
-deployment points at the shared store — there is no SSH fallback with a private alias.
+registry, which is one file for the fleet.  A host that keeps no local copy - or that is
+given an explicit transport - asks the registry host through the transport command, the same
+kind of hop the other letter paths make.  An explicit MM_OPERATOR_REGISTRY_CMD always wins
+over a local file:  after the store moves, a retired local file left behind must never become
+a second allocator.
 
 A thread and its child both hold a letter, and they are placed the way every other platform
 places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
@@ -233,6 +236,106 @@ def _interrupt_on_signal(signum, frame):
     raise KeyboardInterrupt("interrupted by signal %s" % signum)
 
 
+# The transport to the host that holds the Operator's registry:  a command, not a
+# host.  The command carries the host, the remote path and the remote interpreter, so
+# this helper names no host, no user, no alias, no ssh flag and no remote path
+# anywhere.  It is host configuration, never a guess.  (Ported from PR #1255 by Jay
+# Wedgeworth;  the explicit-destination precedence over a local file is the cutover
+# requirement added with the port.)
+ENV_TRANSPORT = "MM_OPERATOR_REGISTRY_CMD"
+DEFAULT_TRANSPORT = "mm-operator-registry"
+# The whole hop, inside the hook's own timeout:  the hooks that call this run with eight
+# to ten seconds, so a hop that waits longer is a hook the runtime kills instead of one
+# that reports its own fault and goes on.
+REMOTE_TIMEOUT = 6
+
+# The registry's own guard answers this when the host that holds the registry keeps
+# none.  It is a configuration state, not a fault of this call, so it carries the code
+# the helper already used for it.
+NO_REGISTRY_ERROR = "no Operator registry on this host"
+
+
+def _with_registry_code(answer: dict) -> dict:
+    """A registry answer, with the code the helper uses for a host that keeps no registry."""
+    if answer.get("error") == NO_REGISTRY_ERROR and not answer.get("code"):
+        return dict(answer, code="no_registry")
+    return answer
+
+
+def remote_registry_call(args: list, transport: str = "", timeout: int = REMOTE_TIMEOUT) -> dict:
+    """Ask the registry host through the transport command.
+
+    The transport is host configuration:  the helper names the command and the command
+    carries the host, so this helper never names a host, a user, an alias, an ssh
+    flag, a remote path or a remote interpreter.  A transport command name that is not
+    a plain command name is refused, never run.
+    """
+    dest = transport or DEFAULT_TRANSPORT
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
+        # Something the shell could read as an option or a second word:  refuse it
+        # rather than run it.  A refused transport is a fault of this host's
+        # configuration, never a call that never happened.
+        return {
+            "error": "the configured registry transport is not a plain command name",
+            "code": "remote_refused",
+        }
+    cmd = [dest] + list(args)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        # The hop started, so the write may have landed before the answer was lost:
+        # an unknown outcome, never a call that never happened.
+        return {
+            "error": "the registry host did not answer in time",
+            "code": "timeout",
+            "outcome": "outcome_unknown",
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        # A missing command is errno 2:  it is its own failure, the way a missing
+        # local registry tool is:  the operator has to know which one.
+        code = "missing_tool" if getattr(exc, "errno", None) == 2 else "remote_unreachable"
+        return {
+            "error": "the registry host did not answer (%s)" % type(exc).__name__,
+            "code": code,
+        }
+    out = (proc.stdout or "").strip()
+    if not out:
+        return {
+            "error": "the registry host gave no answer",
+            "code": "remote_empty",
+            "outcome": "outcome_unknown",
+        }
+    try:
+        answer = json.loads(out.splitlines()[-1])
+    except json.JSONDecodeError:
+        return {
+            "error": "the registry host's answer was not readable",
+            "code": "remote_unparseable",
+            "outcome": "outcome_unknown",
+        }
+    if not isinstance(answer, dict):
+        return {
+            "error": "the registry host's answer was not an object",
+            "code": "remote_unparseable",
+            "outcome": "outcome_unknown",
+        }
+    if proc.returncode and "error" not in answer:
+        # A nonzero exit with a success-shaped answer is a contradiction:  the write may
+        # have landed before the exit, so this is an unknown outcome, never a success.
+        return {
+            "error": "the registry host exited %s after answering" % proc.returncode,
+            "code": "remote_failed",
+            "outcome": "outcome_unknown",
+        }
+    return _with_registry_code(answer)
+
+
 def _install_signal_handlers() -> dict:
     """Catch the signals that would end this process without unwinding.
 
@@ -278,13 +381,20 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
+    transport = str(os.environ.get(ENV_TRANSPORT) or "").strip()
     local_db = registry_db()
     scripts = repo_scripts_dir()
+    if transport:
+        # An explicit transport IS the destination:  it wins over any local file, so a
+        # retired store left behind after the move can never become a second allocator.
+        return remote_registry_call(args, transport=transport)
     if not local_db or not scripts:
-        return {
-            "error": "the operator registry is not available on this host",
-            "code": "no_registry",
-        }
+        # This host keeps no registry of its own, so the Operator's one is on the host
+        # that holds it:  the transport command carries that host, and the registry's
+        # own CLI runs there, so both sides speak one dialect.  The hop has its own
+        # bound:  it has to finish inside the hook's timeout, not inside the timeout
+        # the local call would use.
+        return remote_registry_call(args)
     cmd = [sys.executable, "-m", "simple_tools.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None

@@ -94,6 +94,24 @@ class WrapperRouteTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 2, argv)
             self.assertIn(DISPATCH_PREFIX + " config-invalid", proc.stdout, argv)
 
+    def test_simple_chat_operator_registry_route_when_configured(self):
+        self._write_config()
+        proc = self._run(SIMPLE_CHAT, ["operator-registry", "sweep", "--platform", "minimax"])
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn(DISPATCH_PREFIX + " docker-unavailable", proc.stdout)
+
+    def test_simple_chat_operator_registry_without_config_behaves_as_before(self):
+        proc = self._run(SIMPLE_CHAT, ["operator-registry", "sweep", "--platform", "minimax"])
+        self.assertNotIn(DISPATCH_PREFIX, proc.stdout + proc.stderr)
+
+    def test_simple_chat_operator_registry_rejects_a_caller_supplied_db(self):
+        # The --db refusal itself is covered at dispatcher level (refused in every form, before
+        # any exec);  at wrapper level the call still reaches the dispatcher, never a local store.
+        self._write_config()
+        proc = self._run(SIMPLE_CHAT, ["operator-registry", "sweep", "--db", "/tmp/other.sqlite3"])
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn(DISPATCH_PREFIX, proc.stdout)
+
     def test_other_verbs_are_never_shadowed(self):
         self._write_config()
         proc = self._run(SIMPLE_CHAT, ["letter"])  # no subcommand:  claude_letter's own usage, not the route
