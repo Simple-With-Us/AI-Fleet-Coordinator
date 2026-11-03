@@ -4557,9 +4557,7 @@ class Daemon:
                 self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
             return self._chat_queues[seat]
 
-    def session_letter_details(
-        self, rows: list[dict[str, Any]]
-    ) -> dict[str, dict[str, str]]:
+    def session_letter_details(self, rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
         """The registered letter details for each row, keyed by the row's stable id.
 
         Each value carries the letter, its cross-seat reference form, the registered
