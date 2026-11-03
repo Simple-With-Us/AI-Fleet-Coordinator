@@ -496,14 +496,14 @@ and `docs/fleet-skills/sentence-gap/SKILL.md`.
 
 Say every time on the owner's clock, 12-hour, with am or pm.  That clock is
 **America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15am`, or
-`Sun, Oct 5, 2026 at 3:15am` when the day matters).  The zone is assumed and
+`Sun, Oct 5, 2026 at 3:15am` when the day matters).  The zone is assumed and
 never named either:  `Central` is as wrong as `CST`, and `America/Chicago`
 does not belong beside a time (owner 2026-10-29, reaffirmed 2026-11-03).
 Never lead with Zulu
 in chat, Notes, Zulip, Linear, or PRs.  Give only the Central time: convert UTC
-first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous calendar day during
+first, with no stamp beside it (owner 2026-10-18).  A log line at `11:42Z` is `6:42am` on a summer day and `5:42am` in winter.  `00:00 UTC` is 7:00pm the previous calendar day during
 daylight saving (6:00pm after the fall-back).  Binding for every agent, bot,
-and platform.  Product UI stays the viewer's timezone.  Canonical:
+and platform.  Product UI stays the viewer's timezone.  A market bell stays as the market writes it (`9:30 AM ET`), and a machine-readable field keeps its own format, so a build number or a commit stamp is build provenance and not an owner-facing sentence.  Quote a field you repeat verbatim as it is;  convert only when you write the time in prose.  Canonical:
 `~/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time.
 
 ## Secrets & Infrastructure (binding — all agents)
