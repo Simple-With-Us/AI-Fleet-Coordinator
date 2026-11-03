@@ -53,6 +53,16 @@ Private audit documents are excluded by default.  The explicit `--private-docs-
 
 On servers where the lane guard protects the whole Code root, creating or refreshing `Code/Docs` requires an owner-approved narrow placement exception.  Do not disable the guard or use another tool route to bypass its refusal.  Keep a complete preview in the owned lane until placement is authorized.
 
+## Remote Sources Without A Safe Checkout
+
+`scripts/export-repo-git-source.py` uses the installed `simple-git` CLI and an existing process `SIMPLE_TOOLS_BEARER`; it never reads a credential file, authenticates a new connection or changes a source repository.  Pass an exact `--owner-repo`, `--expected-repository-id`, `--visibility`, pinned default-branch `--commit` and new `--output` descriptor path.  Private sources also require the exact `--private-docs-repo` identity at export and import, from the existing verified private-repository allowlist.
+
+The exporter verifies repository metadata and the default branch's signed commit proof, reconstructs its Git object ID and root tree, and walks bounded nonrecursive trees to verify every tracked path's object binding.  The branch response supplies the commit proof without fetching changed-file patches.  It requests only the documents and linked assets selected by the shared collection policy, pinned to that commit, and verifies each blob's object ID and length.  Excluded content is never requested to determine byte size; unavailable provider tree sizes remain null with an explicit catalog reason.  Unsupported signatures, missing or truncated trees, unrepresentable paths, content over the relay's 512 KiB limit, incomplete content and exhausted bounds fail the export.
+
+The descriptor and adjacent `<descriptor>.receipt.json` are owner-owned mode 0600 files in a mode 0700 directory.  The separate provider receipt binds the repository identity, visibility, default ref, pinned commit, root tree and canonical descriptor SHA-256.  Import is offline and repeats the commit, tree, path, blob, size and selection checks before acquiring the collection writer lock.  The receipt detects export/import rebinding or accidental tampering; it is not an independently signed provider attestation, and local root compromise is outside this boundary.
+
+Pass repeatable `--git-source-descriptor PATH` options to the named collector, first with `--check`, then through the authorized central collection route after review and merge.  `--repo-path` continues to mean a local repository directory.  Remote descriptors support the owner-only central collection and cannot generate public index previews.  Their catalogs and manifests record the source transport, identity, root tree, descriptor and receipt digests, while immutable version paths add a `git-relay` suffix.  Existing selection, additive writes, library locking, journal recovery and restrictive output modes remain shared with local sources.
+
 ## Backup And Verification
 
 Versioned source reports are protected by their Git remotes and the existing source archive job where that job includes the repository.  The generated central collection can be rebuilt from the recorded source commits; its existence alone does not prove that an external-folder backup ran.  Do not claim a draft is backed up until its committed remote copy or another verified backup exists.

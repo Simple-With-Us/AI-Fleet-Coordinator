@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import remote_git_source
 import repo_catalog
 
 SCHEMA_VERSION = 2
@@ -69,6 +70,7 @@ class RepoInfo:
     name: str
     ref: str
     commit: str
+    snapshot: remote_git_source.Snapshot | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +179,8 @@ def _run_git(
 
 
 def _read_git_blobs(repo: RepoInfo, blobs: dict[str, Blob]) -> dict[str, bytes]:
+    if repo.snapshot is not None:
+        return {path: _read_source_blob(repo, path) for path in blobs}
     object_ids = list(dict.fromkeys(blob.object_id for blob in blobs.values()))
     if not object_ids:
         return {}
@@ -209,6 +213,15 @@ def _read_git_blobs(repo: RepoInfo, blobs: dict[str, Blob]) -> dict[str, bytes]:
     if offset != len(output):
         raise CollectionError("Git object batch response has trailing data")
     return {path: contents[blob.object_id] for path, blob in blobs.items()}
+
+
+def _read_source_blob(repo: RepoInfo, path: str) -> bytes:
+    if repo.snapshot is not None:
+        try:
+            return repo.snapshot.read_blob(path)
+        except remote_git_source.SourceError as exc:
+            raise CollectionError(str(exc)) from exc
+    return _run_git(repo.path, "show", f"{repo.commit}:{path}")
 
 
 def _github_owner_repo(remote: str) -> tuple[str, str] | None:
@@ -281,6 +294,8 @@ def discover_repositories(
     code_root: Path | None,
     requested: str | None = None,
     repo_paths: list[Path] | None = None,
+    git_source_descriptors: list[Path] | None = None,
+    private_docs_repo: str | None = None,
 ) -> tuple[list[RepoInfo], list[str]]:
     candidates: list[RepoInfo] = []
     if repo_paths:
@@ -290,13 +305,56 @@ def discover_repositories(
             info = _repo_info(path)
             if info is not None and (requested is None or info.name == requested):
                 candidates.append(info)
-    else:
+    elif not git_source_descriptors:
         if code_root is None or not code_root.is_dir() or code_root.is_symlink():
             raise CollectionError("Code root must be an existing real directory")
         for entry in sorted(code_root.iterdir(), key=lambda item: item.name.casefold()):
             info = _repo_info(entry)
             if info is not None and (requested is None or info.name == requested):
                 candidates.append(info)
+
+    for descriptor in git_source_descriptors or []:
+        try:
+            snapshot = remote_git_source.load_descriptor(Path(descriptor).expanduser())
+            identity = snapshot.identity
+            owner, name = identity["owner_repo"].split("/")
+            if identity["visibility"] == "private" and private_docs_repo != identity["owner_repo"]:
+                raise CollectionError(
+                    "Private remote source requires its exact --private-docs-repo identity"
+                )
+            if (
+                identity["visibility"] == "private"
+                and identity["owner_repo"].casefold() not in VERIFIED_PRIVATE_DOC_REPOS
+            ):
+                raise CollectionError(
+                    "Private remote source is not configured for a verified private repository"
+                )
+            if requested is not None and name != requested:
+                continue
+            info = RepoInfo(
+                Path(descriptor).expanduser().absolute(),
+                owner,
+                name,
+                identity["source_ref"],
+                identity["source_commit"],
+                snapshot,
+            )
+            selected, _, _ = _select_blobs(
+                info,
+                _parse_tree(info),
+                include_private_audits=private_docs_repo == identity["owner_repo"],
+            )
+            snapshot.require_selected(set(selected))
+            candidates.append(info)
+        except (remote_git_source.SourceError, KeyError, TypeError, RecursionError) as exc:
+            raise CollectionError(
+                "Remote source validation failed: "
+                + (
+                    str(exc)
+                    if isinstance(exc, remote_git_source.SourceError)
+                    else "malformed descriptor"
+                )
+            ) from exc
 
     groups: dict[tuple[str, str], list[RepoInfo]] = {}
     for info in candidates:
@@ -309,6 +367,8 @@ def discover_repositories(
         identity = (group[0].owner.casefold(), group[0].name.casefold())
         identities_by_name.setdefault(group[0].name.casefold(), set()).add(identity)
     for key, group in sorted(groups.items()):
+        if len(group) > 1 and any(repo.snapshot is not None for repo in group):
+            raise CollectionError("Remote source duplicates another requested repository identity")
         owners_names = {(repo.owner.casefold(), repo.name.casefold()) for repo in group}
         name_key = group[0].name.casefold()
         if len(identities_by_name.get(name_key, set())) > 1:
@@ -327,6 +387,8 @@ def discover_repositories(
 
 
 def _parse_tree(repo: RepoInfo) -> dict[str, Blob]:
+    if repo.snapshot is not None:
+        return {path: Blob(**item) for path, item in repo.snapshot.entries.items()}
     raw = _run_git(repo.path, "ls-tree", "-rz", "--full-tree", repo.commit)
     files: dict[str, Blob] = {}
     for record in raw.split(b"\0"):
@@ -521,7 +583,7 @@ def _select_blobs(
         if source_path in content:
             continue
         blob = tree[source_path]
-        data = _run_git(repo.path, "show", f"{repo.commit}:{source_path}")
+        data = _read_source_blob(repo, source_path)
         content[source_path] = data
         if not _is_human_document(source_path, allow_private_audit=include_private_audits):
             continue
@@ -969,6 +1031,15 @@ def _build_manifest(
             "source_path": path,
             "source_commit": repo.commit,
             "sha256": _sha256(content[path]),
+            **(
+                {
+                    "mode": selected[path].mode,
+                    "object_id": selected[path].object_id,
+                    "size_bytes": len(content[path]),
+                }
+                if repo.snapshot is not None
+                else {}
+            ),
         }
         for path in sorted(selected)
     }
@@ -992,6 +1063,8 @@ def _build_manifest(
     }
     if private_docs_opt_in is not None:
         manifest["private_docs_opt_in"] = private_docs_opt_in
+    if repo.snapshot is not None:
+        manifest["source_provenance"] = repo.snapshot.provenance()
     manifest["catalog_version_path"] = f"reports/{_manifest_version_key(manifest)}/catalog.json"
     return manifest
 
@@ -1007,6 +1080,8 @@ def _manifest_version_key(manifest: dict[str, Any]) -> str:
         commit = f"{commit}-{'-'.join(policies)}"
     if manifest.get("private_docs_opt_in"):
         commit = f"{commit}-private-docs"
+    if manifest.get("source_provenance"):
+        commit = f"{commit}-git-relay"
     return commit
 
 
@@ -1391,6 +1466,13 @@ def collect_repository(
         copied_paths=set(selected),
         private_docs_opt_in=private_audit_opt_in,
     )
+    if repo.snapshot is not None:
+        catalog["source_provenance"] = repo.snapshot.provenance()
+        for item in catalog["files"]:
+            if item["size_bytes"] is None and item["object_type"] == "blob":
+                item["size_unavailable_reason"] = (
+                    "blob byte size is unavailable in provider tree metadata"
+                )
     catalog_bytes = _json_bytes(catalog)
     repo_root = _safe_output_path(output_root, repo.name)
     if repo_root.is_symlink():
@@ -1549,11 +1631,14 @@ def _collect_unlocked(
     check_only: bool = False,
     repo_paths: list[Path] | None = None,
     private_docs_repo: str | None = None,
+    resolved_repositories: tuple[list[RepoInfo], list[str]] | None = None,
 ) -> list[str]:
     output_root = Path(os.path.abspath(output_root))
     if output_root.exists() and output_root.is_symlink():
         raise CollectionError("Output root must not be a symlink")
-    repositories, skipped = discover_repositories(code_root, requested, repo_paths)
+    repositories, skipped = resolved_repositories or discover_repositories(
+        code_root, requested, repo_paths
+    )
     private_repo: tuple[str, str] | None = None
     if private_docs_repo is not None:
         private_repo = _github_owner_repo(f"https://github.com/{private_docs_repo}.git")
@@ -1721,11 +1806,23 @@ def collect(
     check_only: bool = False,
     repo_paths: list[Path] | None = None,
     private_docs_repo: str | None = None,
+    git_source_descriptors: list[Path] | None = None,
 ) -> list[str]:
     output_root = Path(os.path.abspath(output_root))
     if output_root.exists() and output_root.is_symlink():
         raise CollectionError("Output root must not be a symlink")
-    repositories, _ = discover_repositories(code_root, requested, repo_paths)
+    discovered = discover_repositories(
+        code_root, requested, repo_paths, git_source_descriptors, private_docs_repo
+    )
+    repositories, _ = discovered
+    if git_source_descriptors and private_docs_repo is not None:
+        private_identity = private_docs_repo.casefold()
+        if private_identity not in VERIFIED_PRIVATE_DOC_REPOS or not any(
+            f"{repo.owner}/{repo.name}".casefold() == private_identity for repo in repositories
+        ):
+            raise CollectionError(
+                "Private-docs opt-in must match an exact verified repository in this collection"
+            )
     for repo in repositories:
         if _paths_overlap(output_root, repo.path):
             raise CollectionError("Output root must not overlap a source repository")
@@ -1737,6 +1834,7 @@ def collect(
             check_only=check_only,
             repo_paths=repo_paths,
             private_docs_repo=private_docs_repo,
+            resolved_repositories=discovered,
         )
 
 
@@ -1754,6 +1852,13 @@ def _arg_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="explicit repository worktree; repeat for multiple repositories",
+    )
+    parser.add_argument(
+        "--git-source-descriptor",
+        type=Path,
+        action="append",
+        default=[],
+        help="offline verified remote Git descriptor; repeat for multiple repositories",
     )
     parser.add_argument(
         "--output-root", type=Path, help="library root; defaults to <code-root>/Docs"
@@ -1793,8 +1898,18 @@ def _arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _arg_parser().parse_args(argv)
-    if args.code_root is None and not args.repo_path:
-        print("error: pass --code-root, set FLEET_CODE_ROOT, or pass --repo-path", file=sys.stderr)
+    if args.code_root is None and not args.repo_path and not args.git_source_descriptor:
+        print(
+            "error: pass --code-root, set FLEET_CODE_ROOT, --repo-path or --git-source-descriptor",
+            file=sys.stderr,
+        )
+        return 2
+    if args.git_source_descriptor and (
+        args.indexes_only or args.print_indexes_json or args.index_preview_root
+    ):
+        print(
+            "error: remote descriptors support owner-only central collection only", file=sys.stderr
+        )
         return 2
     if args.indexes_only and not args.index_preview_root:
         print("error: --indexes-only requires --index-preview-root", file=sys.stderr)
@@ -1857,6 +1972,7 @@ def main(argv: list[str] | None = None) -> int:
                 check_only=check_only,
                 repo_paths=args.repo_path,
                 private_docs_repo=args.private_docs_repo,
+                git_source_descriptors=args.git_source_descriptor,
             )
             if args.index_preview_root:
                 repositories, _ = discover_repositories(code_root, args.repo, args.repo_path)
