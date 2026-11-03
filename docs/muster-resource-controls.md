@@ -1,6 +1,6 @@
 # Muster Resource Controls
 
-AFC-598 adds six controls for the shared coding workload pool to Muster's Server Resource Limits view.  The updated app, broker, scoped writer credential, and controller installation prerequisites below are not deployed yet; source changes and mock tests do not establish runtime readiness.
+AFC-598 adds six controls for the shared coding workload pool to Muster's Server Resource Limits view.  The installation contract below keeps policy edits restricted and requires observed runtime evidence before reporting a change applied.
 
 ## Controls And Resource Semantics
 
@@ -13,13 +13,13 @@ The source of truth is the complete `CODING_RAM_POLICY` JSON value in Infisical,
 | Pressure RAM Budget | `budget_bytes` | Whole GiB in the editor; bytes in policy | Sets the shared soft RAM target under pressure and in normal mode when borrowing is disabled |
 | Critical RAM Budget | `critical_budget_bytes` | Whole GiB; positive and no greater than the pressure budget | Sets the shared soft RAM target during critical pressure |
 | Host RAM Reserve | `reserve_bytes` | Whole GiB; at least 2 GiB, with pressure budget plus reserve no greater than total host RAM | Preserves the headroom used by the controller's borrowing calculation and production protection |
-| Borrow Idle Capacity | `allow_borrowing` | Boolean; defaults to true when absent | Allows a larger soft RAM target in normal mode while host headroom permits |
+| Borrow Idle Memory | `allow_borrowing` | Boolean; defaults to true when absent | Allows a larger soft RAM target in normal mode while host headroom permits |
 
-CPU cores are an affinity pool shared by coding workloads, rather than a separate allocation per workload.  CPU weight is relative priority when units compete.  Unit CPU changes write only the kernel `cpuset.cpus` and `cpu.weight` controls after ownership and cgroup-identity checks; `systemctl show` remains discovery-only.  They do not reconcile systemd properties, which can reset unrelated hard controls.  Docker receives the CPU set; its existing CPU quota and CPU shares remain intact.
+CPU cores are an affinity pool shared by coding workloads, rather than a separate allocation per workload.  CPU weight is relative priority when units compete.  All CPU changes write only guarded kernel controls: units use `cpuset.cpus` and `cpu.weight`, and Docker containers use `cpuset.cpus` alone.  Both `systemctl show` and `docker inspect` are discovery-only.  They do not invoke systemd property updates or Docker updates, which can reconcile unrelated hard controls.  Docker HostConfig, CPU weight, CPU shares, and CPU quotas remain unchanged.
 
 RAM controls write `memory.high` and the existing production `memory.low` protection.  They do not allocate physical RAM, set a hard memory cap, change swap limits, kill processes, or restart or reparent coding jobs.  In normal mode, borrowing can increase the soft target using current coding usage plus available host memory minus the reserve; pressure and critical modes return to their respective policy budgets.  Disabling borrowing keeps the normal soft target at the pressure budget.
 
-Docker targets require an explicit nonempty configured CPU set and a readable nonempty kernel CPU baseline before ownership.  Inherited Docker CPU sets are unavailable because an empty Docker update cannot safely restore inheritance; no all-CPU substitute is invented.  Missing cgroup CPU files are also unavailable, and the controller does not enable or restructure the cgroup hierarchy.
+Empty or inherited CPU baselines are restored by writing a newline directly to `cpuset.cpus`; no all-CPU substitute is invented.  Docker configuration is left untouched during both apply and rollback.  Missing cgroup CPU files are also unavailable, and the controller does not enable or restructure the cgroup hierarchy.
 
 An initial policy without CPU fields leaves CPU settings alone.  An absent borrowing field retains the existing true default.  Host-local exclusions and suspended controls continue to take precedence over controller writes.
 
@@ -47,15 +47,15 @@ The broker also checks receipt age, required fields, host bounds, and the expect
 
 Touch ID belongs to the app's confirmation flow.  The server independently enforces the fixed command grammar, allowlist, policy schema, host bounds, and expected revision.
 
-## Installation Prerequisites: Not Deployed Yet
+## Installation Contract
 
-These are installation and verification requirements, rather than a claim that deployment has occurred:
+Install and verify these components together:
 
 - Install the updated Muster build and configure its fixed `fleet-ops-ctl` SSH alias with batch mode, strict host-key checking, and the dedicated control key.  Keep host addresses and installation inventory outside this repository.
 - Run the reviewed `scripts/hetzner/install-resource-control.sh` as root on Linux with no arguments.  It installs the fixed broker payload under `/usr/local/lib/fleet-resource-control` as protected root-owned code, with mode-0755 directories and mode-0644 files.  Credentials, SSH keys, and runtime state remain untouched; the installer does not provision credentials or configure SSH.
 - Install the reviewed operations helper, `fleet_resource_control.py`, and its Python dependencies as root-owned code that other users cannot replace; enable `server.resourcePolicy` in the updated allowlist.  The dedicated key must have a restricted, fixed `/usr/bin/python3 -I /usr/local/lib/fleet-resource-control/fleet-ops-control.py --from-ssh` forced command and must not permit a shell, PTY, forwarding, or agent access.  Follow the existing [control-route installation contract](protocols/fleet-tool-parity.md#the-control-route-fleet-ops-ctl-owner-step); use the SSH endpoint where the host's SSH daemon enforces that forced command.
 - Provision a dedicated Infisical service token that reads and updates only Fleet-OPS `prod:/coding-memory` and the existing `CODING_RAM_POLICY` value.  The broker requires its dedicated private mode-0600 credential and project metadata files; it does not use ambient credentials or endpoint overrides.  Record credential scope and expiry in the service-token inventory without its value.
-- Keep the controller's existing scoped read-only systemd credential separate from the broker writer.  Install the reviewed `fleet_coding_memory.py` and sibling `coding_resources.py` together, retain the existing host exclusions and credential files, and provide the public receipt directory with mode 0755 and receipt mode 0644.
+- Keep the controller's existing scoped read-only systemd credential separate from the broker writer.  Install the reviewed `fleet_coding_memory.py` and sibling `coding_resources.py` together, retain the existing host exclusions and credential files, and provide the public receipt directory with mode 0755 and receipt mode 0644.  The memory installer reloads systemd metadata only when the service unit changes.
 - Confirm the broker's fixed controller-HUP command is permitted in its installed execution context.  Confirm status and plans over the actual forced route, rejection of invalid verbs and targets, and an observed receipt with the expected revision before reporting the feature deployed.
 
 Read-only status can project the controller receipt without a writer credential.  Planning or applying a policy change requires the dedicated scoped writer to read and validate the authoritative policy.
@@ -68,7 +68,7 @@ The broker lock serializes requests through this broker only.  This Infisical t
 
 To reverse a saved setting, review and apply the earlier value against a fresh revision.  Runtime ownership is separate: the private CPU journal records each field's baseline, last owned value, target identity, and pending write receipt.  Removing an optional CPU field restores only that field when its current value still matches the controller's last write; the other configured field remains owned.  An external edit wins and is preserved, including a narrower CPU set.
 
-Graceful shutdown and removal or exclusion of a managed target use the same matching-value and cgroup-identity guards.  Partial writes are read back and journaled; an unsuccessful restoration retains only the still-owned field for a later safe retry.  Unit CPU intent is applied at controller startup and cgroup recreation, while same-identity external edits remain protected.  Existing persistent systemd CPU properties are preserved, and no rollback changes CPU quotas, hard RAM limits, swap limits, or coding-job lifecycle.
+Graceful shutdown and removal or exclusion of a managed target use the same matching-value and cgroup-identity guards.  Partial writes are read back and journaled; an unsuccessful restoration retains only the still-owned field for a later safe retry.  CPU intent for units and containers is applied at controller startup and cgroup recreation, while same-identity external edits remain protected.  Existing persistent systemd CPU properties are preserved, and no rollback changes CPU quotas, hard RAM limits, swap limits, or coding-job lifecycle.
 
 ## Verification
 
@@ -77,6 +77,7 @@ CI runs both controller suites, the offline installer suite, and the resource br
 ```sh
 python3 -m unittest discover -s scripts/hetzner -p 'test_fleet_coding_memory.py' -v
 python3 -m unittest discover -s scripts/hetzner -p 'test_coding_resources.py' -v
+python3 -m unittest discover -s scripts/hetzner -p 'test_install_resource_control.py' -v
 python3 -m unittest discover -s scripts/hetzner -p 'test_install_resource_control.py' -v
 python3 scripts/test_fleet_resource_control.py
 ```

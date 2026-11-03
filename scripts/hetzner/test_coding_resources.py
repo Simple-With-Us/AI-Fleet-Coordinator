@@ -60,7 +60,9 @@ class CPUFixture(unittest.TestCase):
                 if control.stat().st_ino != identity:
                     continue
                 self.kernel_writes.append([str(control), data.decode().strip()])
-                key = "unit:user.slice"
+                key = (
+                    "unit:user.slice" if path.name == "user.slice" else "docker:botfleet-vps-shared"
+                )
                 field = "cpus" if filename == "cpuset.cpus" else "weight"
                 journal = self.persisted[-1]["cpu_owned"][key]["fields"][field]
                 self.assertEqual(journal["pending"], data.decode().strip())
@@ -85,24 +87,13 @@ class CPUFixture(unittest.TestCase):
             return subprocess.CompletedProcess(
                 args, 0, f"/botfleet-vps-shared|21|{self.docker_configured}\n", ""
             )
-        self.assertNotEqual(args[:2], ["systemctl", "set-property"])
-        if args[:2] == ["docker", "update"]:
-            path = self.paths["docker.scope"]
-            self.assertEqual(args[3], "--")
-            self.assertEqual(args[4], "botfleet-vps-shared")
-            self.assertTrue(args[2].startswith("--cpuset-cpus="))
-            cpus = args[2].split("=", 1)[1]
-            (path / "cpuset.cpus").write_text(cpus)
-            (path / "cpuset.cpus.effective").write_text(cpus)
-        return subprocess.CompletedProcess(args, 0, "", "")
+        self.fail("only read-only CPU discovery commands are permitted")
 
     def discover(self):
         self.controller.discover(self.policy)
 
     def writes(self):
-        return self.kernel_writes + [
-            args for args in self.calls if args[:2] == ["docker", "update"]
-        ]
+        return self.kernel_writes
 
     def test_noncontiguous_online_ids_and_two_cpu_reserve(self):
         self.assertEqual(r.selected_cpus("0-3,8-11", 5), "0,1,2,3,8")
@@ -111,7 +102,7 @@ class CPUFixture(unittest.TestCase):
             with self.assertRaises(ValueError):
                 r.selected_cpus("0-3,8-11", count)
 
-    def test_unit_kernel_writes_and_fixed_docker_argv_leave_hard_controls_unchanged(
+    def test_all_cpu_kernel_writes_leave_hard_controls_unchanged(
         self,
     ):
         before = {
@@ -126,13 +117,12 @@ class CPUFixture(unittest.TestCase):
             [
                 [str(self.paths["user.slice"] / "cpuset.cpus"), "0,1,2,3,8"],
                 [str(self.paths["user.slice"] / "cpu.weight"), "50"],
+                [str(self.paths["docker.scope"] / "cpuset.cpus"), "0,1,2,3,8"],
             ],
         )
-        self.assertEqual(
-            [args for args in self.calls if args[:2] == ["docker", "update"]],
-            [["docker", "update", "--cpuset-cpus=0,1,2,3,8", "--", "botfleet-vps-shared"]],
+        self.assertTrue(
+            all(args[:2] in (["systemctl", "show"], ["docker", "inspect"]) for args in self.calls)
         )
-        self.assertFalse(any(args[:2] == ["systemctl", "set-property"] for args in self.calls))
         self.assertEqual(
             self.controller.observe(self.policy),
             {
@@ -195,30 +185,36 @@ class CPUFixture(unittest.TestCase):
         self.controller.apply(self.policy)
         self.controller.restore()
         self.assertEqual((path / "cpuset.cpus").read_text().strip(), "")
-        self.assertEqual(
-            self.kernel_writes[-2:],
-            [[str(path / "cpuset.cpus"), ""], [str(path / "cpu.weight"), "100"]],
-        )
+        self.assertEqual((path / "cpuset.cpus").read_bytes(), b"\n")
+        self.assertIn([str(path / "cpuset.cpus"), ""], self.kernel_writes)
 
-    def test_docker_inherited_configured_cpu_baseline_refuses_all_mutation(self):
+    def test_docker_inherited_configured_cpu_baseline_remains_untouched(self):
         self.docker_configured = ""
         self.controller.discover(self.policy, excluded_units={"user.slice"})
         self.controller.apply(self.policy)
-        self.assertEqual(self.controller.missing, 1)
-        self.assertEqual(self.controller.targets, {})
-        self.assertEqual(self.writes(), [])
-        self.assertNotIn("cpu_owned", self.state)
-        self.assertEqual((self.paths["docker.scope"] / "cpuset.cpus").read_text(), "0-3")
+        self.assertEqual(self.controller.missing, 0)
+        self.assertEqual(self.controller.failures, 0)
+        self.assertEqual(self.docker_configured, "")
+        self.controller.restore()
+        self.assertEqual(
+            (self.paths["docker.scope"] / "cpuset.cpus").read_text().strip(), "0,1,2,3"
+        )
+        self.assertEqual(self.docker_configured, "")
+        self.assertTrue(all(args[:2] == ["docker", "inspect"] for args in self.calls))
 
-    def test_docker_empty_kernel_cpu_baseline_also_refuses_mutation(self):
-        (self.paths["docker.scope"] / "cpuset.cpus").write_text("")
+    def test_docker_empty_kernel_cpu_baseline_restores_inheritance_with_newline(self):
+        path = self.paths["docker.scope"]
+        (path / "cpuset.cpus").write_text("")
         self.controller.discover(self.policy, excluded_units={"user.slice"})
         self.controller.apply(self.policy)
-        self.assertEqual(self.controller.missing, 1)
-        self.assertEqual(self.writes(), [])
-        self.assertNotIn("cpu_owned", self.state)
+        self.assertEqual(self.controller.missing, 0)
+        self.assertEqual(self.controller.failures, 0)
+        self.controller.restore()
+        self.assertEqual(self.controller.failures, 0)
+        self.assertEqual((path / "cpuset.cpus").read_bytes(), b"\n")
+        self.assertEqual(self.state["cpu_owned"], {})
 
-    def test_legacy_docker_empty_baseline_handback_remains_owned_and_failed(self):
+    def test_legacy_docker_empty_baseline_handback_restores_directly(self):
         self.discover()
         self.controller.apply(self.policy)
         record = self.state["cpu_owned"]["docker:botfleet-vps-shared"]
@@ -226,10 +222,54 @@ class CPUFixture(unittest.TestCase):
         self.calls.clear()
         self.kernel_writes.clear()
         self.controller.restore()
-        self.assertEqual(self.controller.failures, 1)
-        self.assertIn("docker:botfleet-vps-shared", self.state["cpu_owned"])
-        self.assertFalse(any(args[:2] == ["docker", "update"] for args in self.calls))
-        self.assertEqual((self.paths["docker.scope"] / "cpuset.cpus").read_text(), "0,1,2,3,8")
+        self.assertEqual(self.controller.failures, 0)
+        self.assertEqual(self.state["cpu_owned"], {})
+        self.assertEqual(self.calls, [])
+        self.assertEqual((self.paths["docker.scope"] / "cpuset.cpus").read_bytes(), b"\n")
+
+    def test_docker_cpu_cores_11_to_12_preserves_hard_controls_and_host_config(self):
+        self.online.write_text("0-15")
+        self.docker_configured = "0-11"
+        path = self.paths["docker.scope"]
+        (path / "cpuset.cpus").write_text("0-11")
+        (path / "cpuset.cpus.effective").write_text("0-11")
+        (path / "memory.swap.max").write_text("max")
+        before = {
+            key: (path / key).read_bytes()
+            for key in ("memory.max", "memory.swap.max", "cpu.max", "cpu.weight")
+        }
+        self.controller.discover(self.policy)
+        self.controller.apply({**self.policy, "cpu_cores": 11})
+        self.controller.apply({**self.policy, "cpu_cores": 12})
+        self.assertEqual(self.controller.failures, 0)
+        self.assertEqual(r.cpu_ids((path / "cpuset.cpus").read_text()), list(range(12)))
+        self.assertEqual({key: (path / key).read_bytes() for key in before}, before)
+        self.assertEqual(self.docker_configured, "0-11")
+        self.assertTrue(
+            all(args[:2] in (["systemctl", "show"], ["docker", "inspect"]) for args in self.calls)
+        )
+
+    def test_docker_recreated_inode_reapplies_only_the_runtime_cpuset(self):
+        self.discover()
+        self.controller.apply(self.policy)
+        path = self.paths["docker.scope"]
+        old_inode = path.stat().st_ino
+        path.rename(self.root / "old-docker.scope")
+        path.mkdir()
+        for key, value in {
+            "cpuset.cpus": "0-3",
+            "cpuset.cpus.effective": "0-3",
+            "cpu.weight": "100",
+        }.items():
+            (path / key).write_text(value)
+        self.calls.clear()
+        self.kernel_writes.clear()
+        self.controller.apply(self.policy)
+        self.assertNotEqual(path.stat().st_ino, old_inode)
+        self.assertEqual(self.controller.failures, 0)
+        self.assertEqual(self.kernel_writes, [[str(path / "cpuset.cpus"), "0,1,2,3,8"]])
+        self.assertEqual(self.calls, [])
+        self.assertEqual((path / "cpu.weight").read_text(), "100")
 
     def test_missing_cpuset_controller_is_unavailable_without_enabling_hierarchy(self):
         for path in self.paths.values():
@@ -269,7 +309,12 @@ class CPUFixture(unittest.TestCase):
         self.calls.clear()
         self.kernel_writes.clear()
         self.controller.restore()
-        self.assertFalse(self.kernel_writes)
+        self.assertFalse(
+            any(
+                path.startswith(str(self.paths["user.slice"]) + "/")
+                for path, _ in self.kernel_writes
+            )
+        )
         self.assertEqual((self.paths["user.slice"] / "cpu.weight").read_text().strip(), "50")
 
     def test_suspended_control_is_left_untouched(self):
@@ -315,7 +360,12 @@ class CPUFixture(unittest.TestCase):
         self.assertEqual(self.writes(), [])
         self.assertEqual(self.controller.observe(self.policy)["cpuMismatches"], 1)
         self.controller.apply({**self.policy, "cpu_cores": 6})
-        self.assertFalse(self.kernel_writes)
+        self.assertFalse(
+            any(
+                path.startswith(str(self.paths["user.slice"]) + "/")
+                for path, _ in self.kernel_writes
+            )
+        )
         self.controller.restore()
         self.assertEqual((path / "cpuset.cpus").read_text().strip(), "0-1")
 
@@ -434,6 +484,7 @@ class CPUFixture(unittest.TestCase):
         self.assertEqual(self.controller.failures, 1)
         self.assertEqual((self.paths["user.slice"] / "cpuset.cpus").read_text().strip(), "0-3")
         self.assertEqual((self.paths["user.slice"] / "cpu.weight").read_text().strip(), "100")
+        self.kernel_writes.clear()
         self.controller.apply(self.policy)
         self.assertEqual(self.controller.failures, 0)
         self.assertEqual(self.controller.observe(self.policy)["cpuMismatches"], 0)

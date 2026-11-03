@@ -158,9 +158,7 @@ class CPUManager:
                 omitted.add(kind + ":" + name)
                 return
             target = {"kind": kind, "name": name, "path": str(path)}
-            _, values = self._read(target)
-            if kind == "docker" and not values["cpus"]:
-                raise ValueError("Docker requires an explicit kernel CPU baseline")
+            self._read(target)
             self.targets[kind + ":" + name] = target
 
         for name in policy["coding_units"]:
@@ -193,8 +191,7 @@ class CPUManager:
                 actual, pid, configured = raw.split("|")
                 if actual.lstrip("/") != name or not pid.isdigit() or int(pid) <= 0:
                     raise ValueError("missing container")
-                if not cpu_ids(configured):
-                    raise ValueError("Docker requires an explicit configured CPU baseline")
+                cpu_ids(configured)
                 lines = (self.proc / pid / "cgroup").read_text().splitlines()
                 rel = next(line[3:] for line in lines if line.startswith("0::"))
                 add("docker", name, self._path(rel))
@@ -208,18 +205,9 @@ class CPUManager:
     def _write(self, target, values, inode, expected):
         if not values or set(values) - {"cpus", "weight"}:
             raise ValueError("invalid CPU control write")
-        if target["kind"] == "docker":
-            if set(values) != {"cpus"}:
-                raise ValueError("Docker CPU weight is unmanaged")
-            if not values["cpus"]:
-                # Docker ignores an empty update rather than restoring inheritance.
-                raise ValueError("Docker inherited CPU baseline cannot be restored")
-            actual_inode, actual = self._read(target)
-            if actual_inode != inode or actual["cpus"] != expected["cpus"]:
-                raise RuntimeError("CPU ownership changed before write")
-            self._run(["docker", "update", "--cpuset-cpus=" + values["cpus"], "--", target["name"]])
-            return
-        if target["kind"] != "unit":
+        if target["kind"] == "docker" and set(values) != {"cpus"}:
+            raise ValueError("Docker CPU weight is unmanaged")
+        if target["kind"] not in ("unit", "docker"):
             raise ValueError("invalid CPU control target")
         path = self._path(Path(target["path"]).relative_to(self.root))
         flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
@@ -227,8 +215,8 @@ class CPUManager:
         try:
             if os.fstat(directory).st_ino != inode:
                 raise RuntimeError("CPU target identity changed before write")
-            # Write only these kernel CPU files.  systemd property reconciliation
-            # can also reset unrelated memory/swap controls during a CPU update.
+            # Both systemd and Docker reconciliation can reset unrelated hard
+            # controls.  Runtime CPU changes therefore write only these files.
             for field, filename in (("cpus", "cpuset.cpus"), ("weight", "cpu.weight")):
                 if field not in values:
                     continue

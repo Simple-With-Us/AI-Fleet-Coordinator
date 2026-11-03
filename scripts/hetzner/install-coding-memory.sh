@@ -29,8 +29,10 @@ temporary.write_text('INFISICAL_FLEET_OPS_PROJECT_ID=' + metadata + '\n'
 temporary.chmod(0o600)
 os.replace(temporary, target)
 PY
-install -m 0644 "$here/fleet-coding-memory.service" /etc/systemd/system/fleet-coding-memory.service
-systemctl daemon-reload
+if ! cmp -s "$here/fleet-coding-memory.service" /etc/systemd/system/fleet-coding-memory.service; then
+  install -m 0644 "$here/fleet-coding-memory.service" /etc/systemd/system/fleet-coding-memory.service
+  systemctl daemon-reload
+fi
 if [[ "$mode" == --enable ]]; then
   systemctl enable --now fleet-coding-memory.service
 fi
