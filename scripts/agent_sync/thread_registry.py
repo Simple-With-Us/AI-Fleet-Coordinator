@@ -41,7 +41,7 @@ import re
 import threading
 import time
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,21 +49,21 @@ from . import live as L
 from .identity import seat_tag_for
 
 __all__ = [
+    "ENV_STORE_PATH",
     "HEADERS",
     "SHEET_TAB",
     "SPREADSHEET_ID",
     "SPREADSHEET_URL",
-    "ENV_STORE_PATH",
     "SheetHeaderError",
     "ThreadRegistryStore",
-    "thread_store_path",
-    "thread_key",
-    "participant_tag",
     "extract_linear_issues",
     "extract_pr_references",
-    "status_for",
+    "participant_tag",
     "plan_upserts",
+    "status_for",
     "sync_to_sheet",
+    "thread_key",
+    "thread_store_path",
 ]
 
 #: The workbook the connector created for this registry (Tue, Nov 3, 2026).  The id is not a
@@ -192,7 +192,7 @@ def status_for(topic: str, last_activity: float, now: float) -> str:
 
 
 def _iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _as_int(value: Any) -> int | None:
@@ -293,15 +293,11 @@ class ThreadRegistryStore:
             record["first_seen"] = min(float(record.get("first_seen") or ts), ts)
             if ts >= float(record.get("last_activity") or 0):
                 record["last_activity"] = ts
-                record["last_message_id"] = max(
-                    int(record.get("last_message_id") or 0), message_id
-                )
+                record["last_message_id"] = max(int(record.get("last_message_id") or 0), message_id)
             # Linear Issues contract:  keys mentioned in the topic name or in any message
             # body join the thread's set, deduplicated;  the union only ever grows, so a
             # key once added is never removed by a later, quieter message.
-            mentioned = set(extract_linear_issues(content)) | set(
-                extract_linear_issues(topic)
-            )
+            mentioned = set(extract_linear_issues(content)) | set(extract_linear_issues(topic))
             record["linear_issues"] = sorted(set(record.get("linear_issues") or []) | mentioned)
             record["pr_references"] = sorted(
                 set(record.get("pr_references") or []) | set(extract_pr_references(content))
@@ -383,9 +379,7 @@ def _merged_cells(existing: list[str], desired: list[str]) -> list[str]:
     return cells
 
 
-def plan_upserts(
-    existing: list[Mapping[str, Any]], desired: list[list[str]]
-) -> dict[str, Any]:
+def plan_upserts(existing: list[Mapping[str, Any]], desired: list[list[str]]) -> dict[str, Any]:
     """Plan one sync.  `existing` rows carry {rowNumber, cells} (1-based sheet rows, header
     is row 1).  Returns {updates: [(rowNumber, cells)], appends: [cells], unchanged: int,
     duplicate_rows: [rowNumber]}.  When the sheet somehow holds two rows with one Thread
@@ -415,7 +409,9 @@ def plan_upserts(
         if _cells_match(current_cells, cells):
             unchanged += 1
         else:
-            updates.append((int(current.get("rowNumber") or 0), _merged_cells(current_cells, cells)))
+            updates.append(
+                (int(current.get("rowNumber") or 0), _merged_cells(current_cells, cells))
+            )
     return {
         "updates": updates,
         "appends": appends,
@@ -424,7 +420,9 @@ def plan_upserts(
     }
 
 
-def sync_to_sheet(store: ThreadRegistryStore, adapter: Any, *, now: float | None = None) -> dict[str, Any]:
+def sync_to_sheet(
+    store: ThreadRegistryStore, adapter: Any, *, now: float | None = None
+) -> dict[str, Any]:
     """Upsert the store's rows through `adapter` and report exactly what happened.
 
     Adapter protocol (the live implementation is thread_registry_export.mjs's drain;  the
@@ -441,9 +439,7 @@ def sync_to_sheet(store: ThreadRegistryStore, adapter: Any, *, now: float | None
     Thread Key — the same discipline as operator_sheets_export.mjs's drain."""
     headers = [str(h) for h in adapter.validate_headers()]
     if headers != HEADERS:
-        raise SheetHeaderError(
-            "sheet header mismatch: expected %r, found %r" % (HEADERS, headers)
-        )
+        raise SheetHeaderError("sheet header mismatch: expected %r, found %r" % (HEADERS, headers))
     moment = now if now is not None else time.time()
     plan = plan_upserts(adapter.read_rows(), store.rows(now=moment))
     result: dict[str, Any] = {

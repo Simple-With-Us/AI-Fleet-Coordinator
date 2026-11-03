@@ -66,9 +66,9 @@ from . import operator_registration_ask as ORASK
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
-from . import thread_registry as TR
 from . import session_ids as SI
 from . import subscribe_all as SUB
+from . import thread_registry as TR
 from . import typing_signal as TYPING
 from . import wakes as W
 from . import zulip as Z
