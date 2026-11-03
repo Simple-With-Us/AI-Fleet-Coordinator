@@ -12,9 +12,11 @@ import json
 import logging
 import os
 import pathlib
+import secrets
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -52,8 +54,12 @@ else:
     print(json.dumps(secrets))
 """
 
-SIGNING = "sentinelSIGNINGkey0123456789abcdefghijklmnop"
-UNRELATED = "unrelatedSecretSentinelValue9876543210"
+def fixture_service_token() -> str:
+    return "st." + secrets.token_urlsafe(32)
+
+
+SIGNING = secrets.token_urlsafe(32)
+UNRELATED = secrets.token_urlsafe(24)
 
 
 class FakeInfisical:
@@ -98,6 +104,29 @@ class FakeInfisical:
             return []
         return [json.loads(line) for line in self.automation_file.read_text().splitlines() if line]
 
+    def fetch_project(self, project_id, path, env, *, names=None, timeout=None):
+        """Fake the shared REST helper at its API boundary without invoking a CLI or network."""
+        token = env.get("INFISICAL_AI_FLEET_COORDINATOR_TOKEN")
+        with self.calls_file.open("a") as fh:
+            fh.write(json.dumps({"project": project_id, "path": path, "names": sorted(names) if names is not None else None}) + "\n")
+        with self.tokens_file.open("a") as fh:
+            fh.write(json.dumps(token) + "\n")
+        with self.automation_file.open("a") as fh:
+            fh.write(json.dumps({"id": env.get("INFISICAL_AUTOMATION_CLIENT_ID"), "secret": env.get("INFISICAL_AUTOMATION_CLIENT_SECRET")}) + "\n")
+        cfg = json.loads(self.config.read_text())
+        if cfg["mode"] == "hang":
+            raise TimeoutError("fake bounded helper timeout")
+        if cfg["mode"] == "fail":
+            raise RuntimeError("fake provider failure " + cfg.get("leak", ""))
+        if cfg["mode"] == "garbage":
+            return object()
+        secrets = cfg["secrets"]
+        if cfg.get("shape") == "list":
+            return [{"key": k, "value": v} for k, v in secrets.items()]
+        if cfg.get("shape") == "api":
+            return {"secrets": [{"secretKey": k, "secretValue": v} for k, v in secrets.items()]}
+        return secrets
+
 
 class KnobTestCase(unittest.TestCase):
     """Fresh HOME, fake CLI first and only on PATH, no INFISICAL_ENV*, clean module state."""
@@ -114,23 +143,26 @@ class KnobTestCase(unittest.TestCase):
             "HOME": str(self.home),
             "PATH": str(self.fake.bin_dir),
             "FAKE_INFISICAL_CONFIG": str(self.fake.config),
+            source.ENV_KNOBS_TOKEN: fixture_service_token(),
         }
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
         for var in source.ENV_NAMES:
             os.environ.pop(var, None)
-        # The automation pair too:  these tests set whichever half they mean to set, and an
-        # ambient pair on the host (the Hetzner server exports it) would make a half-set case
-        # look complete and flip the reason token.
-        for var in (source.ENV_AUTOMATION_ID, source.ENV_AUTOMATION_SECRET):
+        # Keep old machine-auth variables out of test setup so each case's explicit scoped token
+        # determines whether an automated fetch can run.
+        for var in (
+            "INFISICAL_AUTOMATION_CLIENT_ID",
+            "INFISICAL_AUTOMATION_CLIENT_SECRET",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+        ):
             os.environ.pop(var, None)
         fallback = mock.patch.object(source, "FALLBACK_DIRS", ())
         fallback.start()
         self.addCleanup(fallback.stop)
-        # No fleet-secrets helper:  the real one would read this Mac's keychains.  A test that
-        # covers the machine identity patches source.HELPER_LOADER with a fake helper itself.
-        helper = mock.patch.object(source, "HELPER_LOADER", lambda: None)
+        helper = mock.patch.object(source, "HELPER_LOADER", return_value=self.fake)
         helper.start()
         self.addCleanup(helper.stop)
         knobs.reset_for_tests()

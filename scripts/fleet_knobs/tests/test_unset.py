@@ -5,13 +5,14 @@ from __future__ import annotations
 import io
 import json
 import os
+from unittest import mock
 
 from fleet_knobs import __main__ as cli
 from fleet_knobs import setter
 
-from ._fake import KnobTestCase
+from ._fake import KnobTestCase, fixture_service_token
 
-WRITE_TOKEN = "fakeWriteTokenSentinel0123456789abcdef"
+WRITE_TOKEN = fixture_service_token()
 LIVE = {"FLEET_AUTOPUSH_MODE": "off"}
 
 
@@ -20,6 +21,10 @@ class UnsetTests(KnobTestCase):
         super().setUp()
         self.fake.set(secrets=LIVE)
         self.audit_file = str(self.home / ".agent-sync" / "listener" / "knobs.jsonl")
+        from fleet_secrets import core
+        verifier = mock.patch.object(core, "verify_service_token", return_value=("/",))
+        verifier.start()
+        self.addCleanup(verifier.stop)
 
     def run_unset(self, name, mode, environ=None, **kw):
         env = dict(os.environ)

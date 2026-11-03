@@ -1,8 +1,7 @@
 """Credentials, HTTP, embeddings, and a small Qdrant client for the fleet-agents corpus.
 
-Credentials come from the environment when set, otherwise from Infisical via a machine
-identity in the environment, otherwise from `fleet-secrets` when that command is installed
-(the Mac).  Nothing reads the old flat credentials file any more (OPS-818).
+Credentials come from the environment when set, otherwise from Infisical via an explicitly bound scoped
+read-only service token.  Nothing reads the old flat credentials file any more (OPS-818).
 Values are never printed or logged.
 
 Run your own: set QDRANT_URL, QDRANT_API_KEY, TEI_URL, TEI_API_KEY and
@@ -47,6 +46,7 @@ SHARED_ENV = "prod"
 NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000fee7")
 
 READ_KEYS = ("TEI_URL", "TEI_API_KEY", "QDRANT_URL", "QDRANT_FLEET_COLLECTION")
+INFISICAL_READ_TOKEN = "FLEET_RECALL_INFISICAL_TOKEN"
 WRITE_KEYS = ("QDRANT_API_KEY",)
 OPTIONAL_KEYS = (
     "QDRANT_READONLY_API_KEY",
@@ -227,40 +227,16 @@ def infisical_env() -> str:
 def handoff_file() -> pathlib.Path | None:
     """An explicit credentials file of the caller's own, or None.
 
-    FLEET_RAG_HANDOFF_FILE names it.  There is no default file:  the old flat
-    credentials file is retired (OPS-818), and the Mac reads Infisical through
-    `fleet-secrets` instead (see fleet_secrets_many()).  Only the client id / secret lines are
-    ever read, and no value is printed or logged.
+    FLEET_RAG_HANDOFF_FILE names it.  There is no default file, and the file is
+    configuration owned by the caller rather than an Infisical authentication source.  Values are never printed or logged.
     """
     override = os.environ.get("FLEET_RAG_HANDOFF_FILE")
     return pathlib.Path(override).expanduser() if override else None
 
 
-def _identity(prefix: str) -> tuple[str | None, str | None]:
-    """The machine-identity client id and secret:  environment, then the explicit file, then
-    `fleet-secrets get` (the Mac).  `run` refuses INFISICAL_* names, so the identity is fetched
-    with `get`, one name at a time, only when the earlier sources left a half missing."""
-    cid = (os.environ.get(f"{prefix}_CLIENT_ID") or "").strip() or None
-    csec = (os.environ.get(f"{prefix}_CLIENT_SECRET") or "").strip() or None
-    if cid and csec:
-        return cid, csec
-    path = handoff_file()
-    if path is not None and path.exists():
-        try:
-            lines = path.read_text().splitlines()
-        except OSError:
-            lines = []
-        for line in lines:
-            m = re.match(rf"^{prefix}_CLIENT_ID=(.*)$", line)
-            if m and not cid:
-                cid = m.group(1).strip().strip('"').strip("'")
-            m = re.match(rf"^{prefix}_CLIENT_SECRET=(.*)$", line)
-            if m and not csec:
-                csec = m.group(1).strip().strip('"').strip("'")
-    if not (cid and csec):
-        cid = cid or fleet_secret_get(f"{prefix}_CLIENT_ID")
-        csec = csec or fleet_secret_get(f"{prefix}_CLIENT_SECRET")
-    return cid, csec
+def _identity(prefix: str) -> tuple[None, None]:
+    """Legacy compatibility seam; recall never resolves shared machine identities."""
+    return None, None
 
 
 FLEET_SECRETS_TIMEOUT = 60
@@ -327,57 +303,58 @@ def fleet_secret_get(name: str) -> str | None:
 
 
 def infisical_login() -> str | None:
-    """Return a short-lived Infisical access token via the shared machine identity, or None."""
-    for prefix in ("INFISICAL_SHARED", "INFISICAL_AUTOMATION"):
-        cid, csec = _identity(prefix)
-        if not cid or not csec:
-            continue
-        try:
-            return http_json(
-                f"{infisical_api()}/v1/auth/universal-auth/login",
-                {"clientId": cid, "clientSecret": csec},
-                retries=1,
-            )["accessToken"]
-        except (FleetRagError, KeyError):
-            continue
-    return None
+    """The explicit read-only service-token binding, without a login."""
+    from fleet_secrets import core as secrets
+    env = dict(os.environ)
+    token = (env.get(INFISICAL_READ_TOKEN) or "").strip()
+    if not token:
+        if any((env.get(name) or "").strip() for name in
+               (secrets.ENV_TOKEN, secrets.ENV_AI_FLEET_COORDINATOR_TOKEN, secrets.ENV_WRITE_TOKEN)):
+            raise FleetRagError(f"bind the recall reader as {INFISICAL_READ_TOKEN}")
+        return None
+    try:
+        return secrets.check_service_token(token)
+    except secrets.SecretsError:
+        raise FleetRagError("invalid scoped Infisical read-token binding") from None
+
+
+def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
+    """Read this configured project's root; never borrow Fleet-OPS credentials."""
+    from fleet_secrets import core as secrets
+    infisical_env()
+    env = dict(os.environ)
+    env[secrets.ENV_API] = infisical_api()
+    try:
+        return secrets.fetch_project(infisical_project(), "/", env,
+                                     token=env.get(INFISICAL_READ_TOKEN), names=wanted)
+    except secrets.SecretsError as exc:
+        raise FleetRagError("Infisical scoped read failed: " + exc.message) from None
 
 
 def load_config(need_write: bool = False, extra: Iterable[str] = ()) -> dict[str, str]:
     """Environment first, then Infisical.  Returns the keys that were found.
 
     Environment-only operation is fully supported: when QDRANT_URL, QDRANT_API_KEY, TEI_URL,
-    TEI_API_KEY and QDRANT_FLEET_COLLECTION are all set (plus any `extra`), the Infisical
-    fallback is still consulted only for the OPTIONAL_KEYS, and with no machine identity in the
-    environment that consultation makes no network call at all -- so a third party needs
-    neither Infisical nor a credentials file.  If a required key is still missing, it is then
-    asked of `fleet-secrets` when that is installed (the Mac), in one call.
+    TEI_API_KEY and QDRANT_FLEET_COLLECTION are all set (plus any `extra`), no Infisical call
+    is needed.  Otherwise Infisical reads require the dedicated FLEET_RECALL_INFISICAL_TOKEN,
+    whose exact project, prod environment, and folder scope are verified before reading.
 
     Raises FleetRagError listing the missing required keys (never their values).
     """
     wanted = list(ALL_KEYS) + [k for k in extra if k not in ALL_KEYS]
     cfg = {k: os.environ[k] for k in wanted if os.environ.get(k)}
     required = list(READ_KEYS) + (list(WRITE_KEYS) if need_write else []) + list(extra)
-    if all(k in cfg for k in required) and all(k in cfg for k in OPTIONAL_KEYS if k in wanted):
+    # A complete environment is supported standalone, so an unrelated service-token
+    # binding must not turn an offline configuration into an Infisical authentication attempt.
+    if all(k in cfg for k in required) and not (os.environ.get(INFISICAL_READ_TOKEN) or "").strip():
         return cfg
     tok = infisical_login()
+    if all(k in cfg for k in required) and (tok is None or all(k in cfg for k in OPTIONAL_KEYS if k in wanted)):
+        return cfg
     if tok:
-        try:
-            got = http_json(
-                f"{infisical_api()}/v3/secrets/raw?workspaceId={infisical_project()}"
-                f"&environment={infisical_env()}&secretPath=%2F",
-                headers={"Authorization": f"Bearer {tok}"},
-                retries=1,
-            )
-            for s in got.get("secrets", []):
-                if s["secretKey"] in wanted:
-                    cfg.setdefault(s["secretKey"], s["secretValue"])
-        except FleetRagError:
-            pass
-    if any(k not in cfg for k in required):
-        # A required key is still missing:  ask `fleet-secrets` (one fetch) for every gap.
-        for k, v in fleet_secrets_many([k for k in wanted if k not in cfg]).items():
-            cfg.setdefault(k, v)
+        # An explicit binding that fails verification is not a fallback invitation.
+        for key, value in infisical_fetch([k for k in wanted if k not in cfg]).items():
+            cfg.setdefault(key, value)
     missing = [k for k in required if k not in cfg]
     if missing:
         raise FleetRagError(

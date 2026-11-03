@@ -6,14 +6,15 @@ import io
 import json
 import os
 import stat
+from unittest import mock
 
 from fleet_knobs import __main__ as cli
 from fleet_knobs import knobs, lkg, setter, source
 
-from ._fake import SIGNING, KnobTestCase
+from ._fake import SIGNING, KnobTestCase, fixture_service_token
 
-WRITE_TOKEN = "fakeWriteTokenSentinel0123456789abcdef"
-READ_TOKEN = "fakeReadTokenSentinel0123456789abcdef"
+WRITE_TOKEN = fixture_service_token()
+READ_TOKEN = fixture_service_token()
 LIVE = {"FLEET_AUTOPUSH_MODE": "off", "FLEET_FACTS_SIGNING_KEY": SIGNING}
 
 
@@ -22,9 +23,13 @@ class SetTestCase(KnobTestCase):
         super().setUp()
         self.fake.set(secrets=LIVE)
         self.audit_file = str(self.home / ".agent-sync" / "listener" / "knobs.jsonl")
+        from fleet_secrets import core as secrets
+        verifier = mock.patch.object(secrets, "verify_service_token", return_value=("/",))
+        verifier.start()
+        self.addCleanup(verifier.stop)
 
     def set_calls(self) -> list:
-        return [c for c in self.fake.calls() if c[:2] == ["secrets", "set"]]
+        return [c for c in self.fake.calls() if isinstance(c, list) and c[:2] == ["secrets", "set"]]
 
     def audit_rows(self) -> list:
         if not os.path.exists(self.audit_file):
@@ -109,12 +114,25 @@ class WriteTests(SetTestCase):
         (row,) = self.audit_rows()
         self.assertEqual((row["key"], row["result"]), ("FLEET_AUTOPUSH_MODE", "refused"))
 
+    def test_invalid_write_tokens_refuse_without_cli_or_keychain_fallback(self):
+        for token in ("not-a-token", "st.short", "st." + "x" * 2049, "st.bad token"):
+            with self.subTest(token_shape=(len(token), token.startswith("st."))):
+                answer, code = self.run_set(
+                    "FLEET_AUTOPUSH_MODE",
+                    "report",
+                    "yes",
+                    {setter.ENV_WRITE_TOKEN: token},
+                    platform="linux",
+                )
+                self.assertEqual((code, answer["detail"]), (2, "no write token"))
+                self.assertEqual(self.set_calls(), [])
+
     def test_token_only_in_the_child_env_and_never_in_output(self):
         environ = {
             setter.ENV_WRITE_TOKEN: WRITE_TOKEN,
             source.ENV_TOKEN: READ_TOKEN,
-            source.ENV_AUTOMATION_ID: "fake-id",
-            source.ENV_AUTOMATION_SECRET: "fake-secret",
+            "INFISICAL_AUTOMATION_CLIENT_ID": "fake-id",
+            "INFISICAL_AUTOMATION_CLIENT_SECRET": "fake-secret",
             "AGENT_SEAT": "CLAUDE",
         }
         answer, code = self.run_set(
@@ -148,7 +166,7 @@ class WriteTests(SetTestCase):
             },
         )
 
-    def test_keychain_is_read_on_the_mac(self):
+    def test_mac_write_does_not_read_a_keychain_fallback(self):
         seen = []
 
         def runner(argv, *, timeout, env=None, want_stdout=False):
@@ -165,20 +183,19 @@ class WriteTests(SetTestCase):
             runner=runner,
             reader=lambda name: ("off", "infisical"),
         )
-        self.assertEqual(code, 0, answer)
-        self.assertEqual(
-            seen[0],
-            [
-                "/usr/bin/security",
-                "find-generic-password",
-                "-s",
-                "fleet-knobs-write",
-                "-a",
-                "INFISICAL_TOKEN",
-                "-w",
-            ],
-        )
-        self.assertEqual(self.fake.tokens()[-1], WRITE_TOKEN)
+        self.assertEqual((code, answer["detail"]), (2, "no write token"), answer)
+        self.assertEqual(seen, [])
+        self.assertEqual(self.set_calls(), [])
+
+    def test_writer_scope_is_verified_before_cli_write(self):
+        from fleet_secrets import core as secrets
+        with mock.patch.object(secrets, "verify_service_token", side_effect=secrets.SecretsError("scope")):
+            answer, code = self.run_set(
+                "FLEET_AUTOPUSH_MODE", "report", "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("write token does not prove", answer["detail"])
+        self.assertEqual(self.set_calls(), [])
 
     def test_cli_failure_is_failed(self):
         self.fake.set(mode="fail", code=4, leak=WRITE_TOKEN)

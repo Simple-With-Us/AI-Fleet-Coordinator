@@ -6,24 +6,24 @@ Stdlib only.  One ThreadingHTTPServer that imports fleet_rag.recall_api and expo
   GET  /health               no auth   {ok, version, collection, points, backend_ok}
   GET  /recall/stats         bearer    recall_stats()
   POST /recall/search        bearer    recall_search(**body)
-  POST /recall/contribute    bearer    recall_contribute(**body)   (seat REQUIRED)
+  POST /recall/contribute    auth      recall_contribute(**body)   (seat REQUIRED)
   POST /mcp                  bearer    streamable-HTTP JSON-RPC: initialize,
                                        notifications/*, ping, tools/list, tools/call,
                                        server/discover (same framing as seat-mcp)
 
-Auth is `Authorization: Bearer <RECALL_API_TOKEN>` on everything except /health, compared in
+Auth is `Authorization: Bearer $RECALL_API_TOKEN` on everything except /health, compared in
 constant time over bytes (a non-ASCII bearer is just wrong, never a traceback).  Configuration
 Logs go
 to stdout and never include bodies, tokens, or query strings.
 
-Configuration is Infisical-first: on startup the service loads its managed settings
+Configuration is Infisical-first: on startup the service requires the scoped ``INFISICAL_TOKEN``
+service token and loads its managed settings
 (QDRANT_*, TEI_*, RECALL_*) from the "AI Fleet Coordinator" Infisical project into an
 in-memory cache (see INFISICAL.md at the repo root), exports the backend keys into the
 process environment for the fleet_rag library, and refreshes the cache in the background
 (daemon thread, SIGHUP, or POST /admin/reload-settings).  All runtime reads come from the
-cache -- no per-request Infisical fetch exists anywhere in the request path.  When no
-Infisical machine identity is configured (local dev), the managed keys are read from the
-process environment exactly as before.
+cache -- no per-request Infisical fetch exists anywhere in the request path.  Missing or
+invalid service tokens fail startup closed.
 
 Keep-alive discipline: the server speaks HTTP/1.1 and sits behind Traefik, which pools
 connections.  Any reply sent BEFORE the request body was consumed (401, 413, 404/405 on a POST,
@@ -90,8 +90,8 @@ DEFAULT_SOCKET_TIMEOUT = 15.0
 REQUIRED_ENV = ("QDRANT_URL", "QDRANT_API_KEY", "QDRANT_FLEET_COLLECTION", "TEI_URL", "TEI_API_KEY")
 OPTIONAL_ENV = ("QDRANT_READONLY_API_KEY", "TEI_EMBED_MODEL")
 
-# Every key the service owns.  Values live in Infisical (project below); the process
-# environment is only the bootstrap fallback when no Infisical identity is configured.
+# Every key the service owns.  Values live in Infisical (project below); process environment
+# values backfill keys that have not been stored there yet.
 MANAGED_KEYS = (
     REQUIRED_ENV
     + OPTIONAL_ENV
@@ -448,7 +448,7 @@ def _dispatch_rpc(msg: JsonDict, rid: Any) -> JsonDict | None:
 
 
 def bearer_ok(header: str | None, token: str) -> bool:
-    """Constant-time check of `Authorization: Bearer <token>`.
+    """Constant-time check of `Authorization: Bearer $RECALL_API_TOKEN`.
 
     Compared as bytes: http.server decodes header values as latin-1, and hmac.compare_digest on
     str raises TypeError for anything non-ASCII, which would turn a garbage bearer into a
@@ -476,8 +476,8 @@ def log(msg: str) -> None:
 def socket_timeout(env: dict[str, str] | None = None) -> float:
     """Per-connection socket timeout in seconds: RECALL_SOCKET_TIMEOUT, else DEFAULT_SOCKET_TIMEOUT.
 
-    Reads the Infisical-backed settings cache first (which already includes the process
-    environment when no Infisical identity is configured), then the environment directly
+    Reads the Infisical-backed settings cache first (which includes configured environment
+    backfills), then the environment directly
     when settings are not initialized (tests).  An explicit `env` dict keeps its old
     meaning for callers that pin a mapping.  A missing, empty, unparsable, or
     non-positive value falls back to the default so a typo can never disable the
@@ -863,10 +863,7 @@ def _on_settings_refresh() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     # Infisical is the source of truth for every managed key (INFISICAL.md).  The settings
-    # module needs the project + environment before anything else; the machine identity
-    # (INFISICAL_AUTOMATION_CLIENT_ID/SECRET in the environment)
-    # authorizes the fetch.  With no identity, managed keys fall back to the process
-    # environment and the old env-only behavior is preserved.
+    # module requires a scoped INFISICAL_TOKEN service token for its fetch.
     # The environment is prod.  An unset or empty INFISICAL_ENVIRONMENT means prod and any
     # other slug is refused, so a stale dev/staging override exits 2 with a clear log line.
     environment = (

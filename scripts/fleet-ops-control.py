@@ -33,8 +33,8 @@ What it promises:
     resource, so no uuid or host is kept in this repo.  The Coolify token is read through
     `fleet-secrets` into memory, sent in one request header and never printed, logged or
     passed in an argv.  A forced command has only the environment sshd gives it, so
-    fleet-secrets logs in with the Infisical identity in `~/.config/fleet-tools/ops-control.env`
-    (0600) when that file exists.  `--check-token` reads the token the same way and asks
+    `fleet-secrets` receives the scoped Fleet Ops Control token from `ops-control.env` (0600).
+    `--check-token` reads the token the same way and asks
     Coolify for its version, which proves the whole path and changes nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
     `SSH_ORIGINAL_COMMAND`, refuses any shell metacharacter, splits it with `shlex`, and
@@ -117,10 +117,17 @@ COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
 # The Infisical identity fleet-secrets may be handed from the credential file, and nothing
 # else from it.
 CREDENTIAL_NAMES = (
-    "INFISICAL_TOKEN",
-    "INFISICAL_AUTOMATION_CLIENT_ID",
-    "INFISICAL_AUTOMATION_CLIENT_SECRET",
+    "FLEET_OPS_CONTROL_INFISICAL_TOKEN",
 )
+SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
+# Keep this boundary independent of optional fleet-secrets imports.
+SHARED_AUTH_ENV_NAMES = frozenset({
+    "INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", "INFISICAL_WRITE_TOKEN",
+    "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_AUTOMATION_CLIENT_ID",
+    "INFISICAL_AUTOMATION_CLIENT_SECRET", "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+    "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET", "INFISICAL_SHARED_CLIENT_ID",
+    "INFISICAL_SHARED_CLIENT_SECRET", "WISE_RELAY_INFISICAL_TOKEN",
+})
 CREDENTIALS_MAX_BYTES = 8 * 1024
 COMMAND_TIMEOUT = 90
 SECRET_TIMEOUT = 30
@@ -721,17 +728,21 @@ def read_coolify_token(ctx):
 def secrets_env(ctx):
     """The environment the fleet-secrets child runs with.  Raises Failed.
 
-    When the credential file exists it is the one source of the Infisical identity: the
-    process's own CREDENTIAL_NAMES are dropped and the file's are used, so a run over ssh
-    and a run from a root shell log in the same way.  The file must be a regular file of
-    ours with no group or other bits, holding only `NAME=value` lines (no quotes) for
-    INFISICAL_TOKEN, or for both INFISICAL_AUTOMATION_CLIENT_ID and _SECRET.  Its values
-    reach this one child only, never an argv, a launchctl or systemctl child, the answer or
-    the audit.  With no file, the process environment is used as it is."""
+    The private file supplies only this caller's scoped read-only service token.  It is mapped
+    to INFISICAL_TOKEN for the one fleet-secrets child, never to an argv or a service-control
+    child.  Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
+    process_token = env.pop(SCOPED_TOKEN_NAME, "")
+    for name in SHARED_AUTH_ENV_NAMES:
+        env.pop(name, None)
     try:
         fd = os.open(str(ctx.credentials_path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
+        value = process_token
+        if value:
+            if not value.startswith("st.") or not 20 <= len(value) <= 2048 or any(c.isspace() for c in value):
+                raise Failed("the scoped Infisical token is malformed")
+            env["INFISICAL_TOKEN"] = value
         return env
     except OSError:
         raise Failed("the Infisical credential file cannot be read") from None
@@ -767,12 +778,13 @@ def secrets_env(ctx):
         ):
             raise Failed("the Infisical credential file is malformed")
         values[name] = value
-    pair = [n for n in CREDENTIAL_NAMES[1:] if n in values]
-    if len(pair) == 1 or not ("INFISICAL_TOKEN" in values or pair):
+    if SCOPED_TOKEN_NAME not in values:
         raise Failed("the Infisical credential file is malformed")
-    for name in CREDENTIAL_NAMES:
-        env.pop(name, None)
-    env.update(values)
+    token = values.get(SCOPED_TOKEN_NAME)
+    if token and (not token.startswith("st.") or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token)):
+        raise Failed("the Infisical credential file is malformed")
+    if token:
+        env["INFISICAL_TOKEN"] = token
     return env
 
 
