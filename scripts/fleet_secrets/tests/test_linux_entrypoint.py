@@ -1,385 +1,88 @@
-"""Scoped Linux authentication; only synthetic credentials and no network."""
+"""Linux entrypoint accepts only a valid service-token bearer and delegates safely."""
+
+from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
-import json
+import importlib.util
 import os
-import shutil
-import signal
-import stat
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
-spec = importlib.util.spec_from_file_location(
-    "linux_entrypoint", Path(__file__).parents[1] / "linux-entrypoint.py"
+_SPEC = importlib.util.spec_from_file_location(
+    "fleet_secrets_linux_entrypoint", Path(__file__).parents[1] / "linux-entrypoint.py"
 )
-entry = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(entry)
-
-PAIR = {
-    "INFISICAL_AUTOMATION_CLIENT_ID": "synthetic-id",
-    "INFISICAL_AUTOMATION_CLIENT_SECRET": "synthetic-secret",
-}
+entry = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(entry)
+TOKEN = "st.fixture-service-token-for-tests"
 
 
-class BootstrapTests(unittest.TestCase):
-    def bootstrap_context(self, payload=None, *, directory=None, file=None):
-        stack = contextlib.ExitStack()
-        self.addCleanup(stack.close)
-        stack.enter_context(mock.patch.object(entry.core, "is_linux", return_value=True))
-        stack.enter_context(mock.patch.object(entry.os, "geteuid", return_value=0))
-        opened = stack.enter_context(
-            mock.patch.object(entry.core.os, "open", side_effect=[10, 11, 12, 13, 14])
-        )
-        closed = stack.enter_context(mock.patch.object(entry.core.os, "close"))
-        directory = directory or SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFDIR | 0o700)
-        file = file or SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFREG | 0o600, st_nlink=1)
-        stack.enter_context(
-            mock.patch.object(entry.core.os, "fstat", side_effect=[directory] * 3 + [file])
-        )
-        payload_bytes = (json.dumps(PAIR) if payload is None else payload).encode("utf-8")
-        stream = io.BytesIO(payload_bytes)
-        stack.enter_context(mock.patch.object(entry.core.os, "fdopen", return_value=stream))
-        return opened, closed
-
-    def test_private_bootstrap_is_descriptor_scoped_and_validated(self):
-        opened, closed = self.bootstrap_context()
-        self.assertEqual(entry.private_bootstrap(), PAIR)
-        self.assertEqual(opened.call_args.args[0], entry.core.LINUX_ROOT_PRIVATE_BOOTSTRAP_BASENAME)
-        self.assertEqual(opened.call_args.kwargs["dir_fd"], 13)
-        self.assertTrue(opened.call_args.args[1] & os.O_NOFOLLOW)
-        self.assertEqual(
-            closed.call_args_list, [mock.call(10), mock.call(11), mock.call(12), mock.call(13)]
-        )
-
-    def test_private_bootstrap_rejects_schema_and_duplicate_keys_without_values(self):
-        cases = [
-            "[]",
-            "null",
-            "{}",
-            json.dumps(dict(PAIR, extra="private")),
-            json.dumps({key: 1 for key in PAIR}),
-            '{"INFISICAL_AUTOMATION_CLIENT_ID":"synthetic-secret",'
-            + '"INFISICAL_AUTOMATION_CLIENT_ID":"duplicate"}',
-            "x" * 16385,
-        ]
-        for payload in cases:
-            with self.subTest(payload=payload[:20]):
-                self.bootstrap_context(payload)
+class ServiceTokenEntryTests(unittest.TestCase):
+    def test_missing_and_malformed_tokens_fail_closed(self):
+        for token in (None, "", "not-a-token", "st.short", "st.fixture has-space"):
+            with self.subTest(token=token), mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token or ""}, clear=True):
                 with self.assertRaises(entry.EntryError) as caught:
-                    entry.private_bootstrap()
-                self.assertEqual(
-                    str(caught.exception), "root-private bootstrap is invalid or unsafe"
-                )
+                    entry.authenticated_env()
+                self.assertRegex(str(caught.exception), "scoped service token|scoped service-token|scoped reader")
 
-    def test_private_bootstrap_rejects_permissions_owner_type_and_links(self):
-        for changes in (
-            {"st_uid": 1},
-            {"st_gid": 1},
-            {"st_mode": stat.S_IFREG | 0o644},
-            {"st_mode": stat.S_IFIFO | 0o600},
-            {"st_nlink": 2},
-        ):
-            values = {"st_uid": 0, "st_gid": 0, "st_mode": stat.S_IFREG | 0o600, "st_nlink": 1}
-            values.update(changes)
-            self.bootstrap_context(file=SimpleNamespace(**values))
-            with self.assertRaises(entry.EntryError):
-                entry.private_bootstrap()
-        self.bootstrap_context(
-            directory=SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFDIR | 0o755)
-        )
-        with self.assertRaises(entry.EntryError):
-            entry.private_bootstrap()
-
-    def test_private_bootstrap_never_reads_on_other_platform_or_nonroot(self):
-        for linux, uid in ((False, 0), (True, 1000)):
-            with (
-                mock.patch.object(entry.core, "is_linux", return_value=linux),
-                mock.patch.object(entry.os, "geteuid", return_value=uid),
-                mock.patch.object(entry.core.os, "open") as opened,
-            ):
-                self.assertEqual(entry.private_bootstrap(), {})
-            opened.assert_not_called()
-
-    def test_bootstrap_fallback_does_not_mix_partial_environment_pairs(self):
-        with mock.patch.object(entry, "private_bootstrap", return_value=PAIR) as read:
-            self.assertEqual(entry.load_machine_credentials({}), list(PAIR.values()))
-            read.assert_called_once()
-        with mock.patch.object(entry, "private_bootstrap") as read:
-            with self.assertRaises(entry.EntryError):
-                entry.load_machine_credentials({entry.core.ENV_AUTOMATION_ID: "inherited"})
-            read.assert_not_called()
-
-    def test_unsafe_open_is_sanitized_and_descriptor_closed(self):
-        with (
-            mock.patch.object(entry.core, "is_linux", return_value=True),
-            mock.patch.object(entry.os, "geteuid", return_value=0),
-            mock.patch.object(entry.core.os, "open", side_effect=[10, OSError("synthetic-secret")]),
-            mock.patch.object(entry.core.os, "close") as closed,
-        ):
-            with self.assertRaises(entry.EntryError) as caught:
-                entry.private_bootstrap()
-            self.assertNotIn("synthetic-secret", str(caught.exception))
-        closed.assert_called_once_with(10)
-
-    def process(self, stdout="synthetic-token\n", returncode=0):
-        proc = mock.Mock(returncode=returncode)
-        proc.communicate.return_value = (stdout, "synthetic-private-output")
-        proc.poll.return_value = returncode
-        return proc
-
-    def delegate(self, tmpdir="delegate"):
-        """A real, executable stand-in for the plain CLI, so the delegate check passes and the
-        test reaches the login it is actually about."""
-        path = Path(tempfile.mkdtemp()) / tmpdir / "fleet-secrets"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("#!/bin/sh\nexit 0\n")
-        path.chmod(0o755)
-        self.addCleanup(shutil.rmtree, path.parent, True)
-        return path
-
-    def test_environment_login_uses_resolved_cli_and_confines_credentials(self):
-        proc = self.process()
-        with (
-            mock.patch.dict(os.environ, PAIR, clear=True),
-            mock.patch.object(entry.core, "find_cli", return_value="/synthetic/infisical"),
-            mock.patch.object(entry.subprocess, "Popen", return_value=proc) as run,
-            mock.patch("builtins.open", side_effect=AssertionError("credential files forbidden")),
+    def test_scoped_reader_and_writer_tokens_are_preserved_separately(self):
+        with mock.patch.dict(
+            os.environ,
+            {"INFISICAL_TOKEN": TOKEN, "INFISICAL_WRITE_TOKEN": "st.write-token-fixture", "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy"},
+            clear=True,
         ):
             env = entry.authenticated_env()
-        self.assertEqual(env, {"INFISICAL_TOKEN": "synthetic-token"})
-        argv = " ".join(run.call_args.args[0])
-        self.assertNotIn("synthetic-secret", argv)
-        self.assertNotIn("synthetic-id", argv)
-        child = run.call_args.kwargs["env"]
-        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_SECRET", child)
-        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_ID", child)
-        self.assertEqual(child["INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"], "synthetic-secret")
-        self.assertEqual(child["INFISICAL_DISABLE_UPDATE_CHECK"], "true")
-        self.assertEqual(run.call_args.kwargs["cwd"], "/")
+        self.assertEqual(
+            env,
+            {"INFISICAL_TOKEN": TOKEN, "INFISICAL_WRITE_TOKEN": "st.write-token-fixture"},
+        )
 
-    def test_inherited_token_wins_and_strips_all_machine_credentials(self):
-        with (
-            mock.patch.dict(os.environ, dict(PAIR, INFISICAL_TOKEN="synthetic-token"), clear=True),
-            mock.patch.object(entry, "load_machine_credentials") as load,
+    def test_malformed_optional_writer_does_not_block_valid_reader(self):
+        with mock.patch.dict(
+            os.environ,
+            {"INFISICAL_TOKEN": TOKEN, "INFISICAL_WRITE_TOKEN": "not-a-token"},
+            clear=True,
         ):
-            self.assertEqual(entry.authenticated_env(), {"INFISICAL_TOKEN": "synthetic-token"})
-        load.assert_not_called()
+            self.assertEqual(
+                entry.authenticated_env(),
+                {"INFISICAL_TOKEN": TOKEN, "INFISICAL_WRITE_TOKEN": "not-a-token"},
+            )
 
-    def test_missing_environment_credentials_are_named_without_values(self):
-        for missing in PAIR:
-            env = {key: value for key, value in PAIR.items() if key != missing}
-            with self.assertRaises(entry.EntryError) as caught:
-                entry.load_machine_credentials(env)
-            self.assertIn(missing, str(caught.exception))
-            self.assertNotIn("synthetic-secret", str(caught.exception))
-
-    def test_failed_login_suppresses_private_child_output(self):
-        stderr = io.StringIO()
-        with (
-            mock.patch.dict(
-                os.environ,
-                dict(PAIR, FLEET_SECRETS_CLI=str(self.delegate())),
-                clear=True,
-            ),
-            mock.patch.object(entry.core, "find_cli", return_value="/synthetic/infisical"),
-            mock.patch.object(
-                entry.subprocess, "Popen", return_value=self.process("PRIVATE_CHILD", 1)
-            ),
-            contextlib.redirect_stderr(stderr),
-        ):
-            self.assertEqual(entry.main(), 4)
-        self.assertNotIn("PRIVATE_CHILD", stderr.getvalue())
-        self.assertNotIn("synthetic-secret", stderr.getvalue())
-
-    def test_timeout_reaps_the_child_and_restores_the_signal_handler(self):
-        proc = self.process()
-        proc.poll.return_value = None
-        proc.communicate.side_effect = [subprocess.TimeoutExpired("login", 25), ("", "")]
-        original = signal.getsignal(signal.SIGTERM)
-        with mock.patch.object(entry.subprocess, "Popen", return_value=proc):
-            with self.assertRaises(subprocess.TimeoutExpired):
-                entry._login("/synthetic/infisical", {})
-        proc.terminate.assert_called_once()
-        self.assertIs(signal.getsignal(signal.SIGTERM), original)
-
-    def test_interruption_reaps_the_child(self):
-        proc = self.process()
-        proc.poll.return_value = None
-        proc.communicate.side_effect = [entry.Interrupted(signal.SIGTERM), ("", "")]
-        with mock.patch.object(entry.subprocess, "Popen", return_value=proc):
-            with self.assertRaises(entry.Interrupted):
-                entry._login("/synthetic/infisical", {})
-        proc.terminate.assert_called_once()
-
-    def test_delegating_to_the_entry_point_itself_is_refused(self):
-        # FLEET_SECRETS_BIN names the fleet-secrets command, which on the server is this
-        # script:  exec'ing it would re-authenticate and exec again, forever.
-        self_file = Path(entry.__file__)
-        with tempfile.TemporaryDirectory() as home:
-            install = Path(home) / "share"
-            install.mkdir()
-            (install / "fleet-secrets").symlink_to(self_file)
-            for env in (
-                {"FLEET_SECRETS_CLI": str(self_file), "HOME": "/nonexistent"},
-                {"FLEET_SECRETS_HOME": str(install), "HOME": "/nonexistent"},
-            ):
-                with self.subTest(env=sorted(env)):
-                    with (
-                        mock.patch.dict(os.environ, dict(PAIR, **env), clear=True),
-                        mock.patch.object(entry, "authenticated_env") as auth,
-                        contextlib.redirect_stderr(io.StringIO()),
-                    ):
-                        self.assertEqual(entry.main(), 127)
-                    auth.assert_not_called()
-
-    def test_a_missing_cli_is_reported_before_the_login(self):
-        # The delegate is checked first, so a mis-pathed CLI costs no login and is named.
-        stderr = io.StringIO()
-        with (
-            mock.patch.dict(
-                os.environ, dict(PAIR, FLEET_SECRETS_CLI="/nonexistent/fleet-secrets"), clear=True
-            ),
-            mock.patch.object(entry, "authenticated_env") as auth,
-            contextlib.redirect_stderr(stderr),
-        ):
-            self.assertEqual(entry.main(), 127)
-        auth.assert_not_called()
-        self.assertIn("FLEET_SECRETS_CLI", stderr.getvalue())
-
-    def test_usage_requests_skip_the_login_and_carry_no_credential(self):
-        # `--help` reads no secret:  no network login, and the delegate gets no machine credential.
-        for argv in ([], ["--help"], ["-h"], ["help"]):
+    def test_help_delegates_without_any_auth_material(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "fleet-secrets"
+            target.write_text("#!/bin/sh\nexit 0\n")
+            target.chmod(0o755)
             with (
-                self.subTest(argv=argv),
-                mock.patch.dict(
-                    os.environ,
-                    dict(
-                        PAIR,
-                        INFISICAL_TOKEN="synthetic-token",
-                        FLEET_SECRETS_CLI=str(self.delegate()),
-                    ),
-                    clear=True,
-                ),
-                mock.patch.object(entry.sys, "argv", ["fleet-secrets", *argv]),
-                mock.patch.object(entry, "authenticated_env") as auth,
+                mock.patch.dict(os.environ, {"FLEET_SECRETS_CLI": str(target), "INFISICAL_TOKEN": TOKEN}, clear=True),
+                mock.patch.object(entry.sys, "argv", ["fleet-secrets", "--help"]),
                 mock.patch.object(entry.os, "execve") as execve,
             ):
                 entry.main()
-            auth.assert_not_called()
-            sent = execve.call_args.args[2]
-            self.assertFalse(set(sent) & set(entry.core.AUTH_ENV_VARS))
+            self.assertFalse(set(execve.call_args.args[2]) & set(entry.core.AUTH_ENV_VARS))
 
-    def test_a_command_that_reads_secrets_still_logs_in(self):
-        with (
-            mock.patch.dict(
-                os.environ, dict(PAIR, FLEET_SECRETS_CLI=str(self.delegate())), clear=True
-            ),
-            mock.patch.object(entry.sys, "argv", ["fleet-secrets", "names"]),
-            mock.patch.object(
-                entry, "authenticated_env", return_value={"INFISICAL_TOKEN": "t"}
-            ) as auth,
-            mock.patch.object(entry.os, "execve") as execve,
-        ):
-            entry.main()
-        auth.assert_called_once()
-        self.assertEqual(execve.call_args.args[2], {"INFISICAL_TOKEN": "t"})
-
-    def test_missing_cli_has_a_distinct_exit_status(self):
-        # The delegate is present, so this is the infisical CLI that is missing.
-        with (
-            mock.patch.dict(
-                os.environ,
-                dict(PAIR, FLEET_SECRETS_CLI=str(self.delegate())),
-                clear=True,
-            ),
-            mock.patch.object(entry.core, "find_cli", return_value=None),
-            contextlib.redirect_stderr(io.StringIO()),
-        ):
-            self.assertEqual(entry.main(), 127)
-
-    def test_no_wrapper_identity_delegates_existing_session_policy_without_login(self):
-        for command in ("get", "get-verified", "set", "doctor"):
+    def test_secret_command_requires_token_then_execs_plain_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "fleet-secrets"
+            target.write_text("#!/bin/sh\nexit 0\n")
+            target.chmod(0o755)
+            stderr = io.StringIO()
             with (
-                self.subTest(command=command),
-                mock.patch.dict(
-                    os.environ,
-                    {"HOME": "/synthetic", "FLEET_SECRETS_CLI": str(self.delegate())},
-                    clear=True,
-                ),
-                mock.patch.object(entry, "private_bootstrap", return_value={}),
-                mock.patch.object(entry.core, "find_cli") as find,
-                mock.patch.object(entry.subprocess, "Popen") as login,
-                mock.patch.object(entry.sys, "argv", ["fleet-secrets", command]),
-                mock.patch.object(entry.os, "execve") as delegate,
+                mock.patch.dict(os.environ, {"FLEET_SECRETS_CLI": str(target)}, clear=True),
+                mock.patch.object(entry.sys, "argv", ["fleet-secrets", "names"]),
+                contextlib.redirect_stderr(stderr),
             ):
-                self.assertIsNone(entry.main())
-                self.assertEqual(delegate.call_args.args[1][1:], [command])
-                self.assertEqual(delegate.call_args.args[2]["HOME"], "/synthetic")
-                self.assertFalse(set(delegate.call_args.args[2]) & entry.core.AUTH_ENV_VARS)
-                find.assert_not_called()
-                login.assert_not_called()
-
-    def test_session_delegation_keeps_core_verified_read_and_write_refusals(self):
-        env = {"INFISICAL_FLEET_OPS_PROJECT_ID": "00000000-0000-4000-8000-000000000001"}
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            mock.patch.object(entry, "private_bootstrap", return_value={}),
-        ):
-            delegated = entry.authenticated_env()
-        with (
-            mock.patch.object(entry.core, "find_cli", return_value="/synthetic/infisical"),
-            mock.patch.object(entry.core, "auth_mode", return_value="session"),
-            mock.patch.object(entry.core, "_api_json") as api,
-        ):
-            with self.assertRaisesRegex(entry.core.SecretsError, "read-needs-machine-identity"):
-                entry.core.fetch_verified("GITHUB_TOKEN", "/cli-logins/CODEX", delegated)
-            with self.assertRaisesRegex(entry.core.SecretsError, "write-needs-machine-identity"):
-                entry.core.put_secret("CACHE_TEST", "/linear", "synthetic-value", delegated)
-            api.assert_not_called()
-
-    def test_partial_pair_does_not_downgrade_to_session_or_bootstrap(self):
-        for name, value in PAIR.items():
+                self.assertEqual(entry.main(), 4)
+            self.assertIn("scoped service token", stderr.getvalue())
             with (
-                self.subTest(name=name),
-                mock.patch.dict(os.environ, {name: value}, clear=True),
-                mock.patch.object(entry, "private_bootstrap") as bootstrap,
-                mock.patch.object(entry.subprocess, "Popen") as login,
+                mock.patch.dict(os.environ, {"FLEET_SECRETS_CLI": str(target), "INFISICAL_TOKEN": TOKEN}, clear=True),
+                mock.patch.object(entry.sys, "argv", ["fleet-secrets", "names"]),
+                mock.patch.object(entry.os, "execve") as execve,
             ):
-                with self.assertRaises(entry.EntryError):
-                    entry.authenticated_env()
-                bootstrap.assert_not_called()
-                login.assert_not_called()
-
-    def test_unsafe_bootstrap_does_not_downgrade_to_session(self):
-        with (
-            mock.patch.dict(os.environ, {}, clear=True),
-            mock.patch.object(entry, "private_bootstrap", side_effect=entry.EntryError("unsafe")),
-            mock.patch.object(entry.subprocess, "Popen") as login,
-        ):
-            with self.assertRaises(entry.EntryError):
-                entry.authenticated_env()
-            login.assert_not_called()
-
-    def test_valid_bootstrap_still_uses_existing_machine_login(self):
-        with (
-            mock.patch.dict(os.environ, {}, clear=True),
-            mock.patch.object(entry, "private_bootstrap", return_value=PAIR),
-            mock.patch.object(entry.core, "find_cli", return_value="/synthetic/infisical"),
-            mock.patch.object(entry, "_login", return_value="synthetic-token") as login,
-        ):
-            self.assertEqual(entry.authenticated_env(), {"INFISICAL_TOKEN": "synthetic-token"})
-            login.assert_called_once()
-
-    def test_inherited_token_is_validated_without_falling_back(self):
-        with mock.patch.dict(os.environ, dict(PAIR, INFISICAL_TOKEN="invalid token"), clear=True):
-            with self.assertRaises(entry.EntryError):
-                entry.authenticated_env()
+                entry.main()
+            self.assertEqual(execve.call_args.args[2]["INFISICAL_TOKEN"], TOKEN)
 
 
 if __name__ == "__main__":

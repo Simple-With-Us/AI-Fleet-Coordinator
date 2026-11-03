@@ -23,7 +23,8 @@ from fleet_secrets import core
 from fleet_secrets import sync_cli_login as sync
 
 VAL = "SENTINEL_LOGIN_VALUE_4c7d"
-TOKEN = "SENTINEL_TOKEN_9a2b"
+TOKEN = "st.SENTINEL_WRITER_TOKEN_9a2b"
+READ_TOKEN = "st.SENTINEL_READ_TOKEN_7c1d"
 PATH = "/cli-logins/OPENCODE"
 
 
@@ -39,20 +40,35 @@ class SyncTests(unittest.TestCase):
         self.api: list = []
         self.written: dict = {}
         self.token_calls: list = []
+        self.folder_tokens: list = []
+        self.write_tokens: list = []
+        self.read_tokens: list = []
 
     def fake_api(self, method, path, token, body, env):
         self.api.append((method, path, token, dict(body or {})))
         return 200
 
-    def fake_api_json(self, method, path, token, body, env):
+    def fake_api_json(self, method, path, token, body, env, **kwargs):
         self.api.append((method, path, token, dict(body or {})))
+        if path == "/v2/service-token":
+            return 200, {"workspace": self.env[core.ENV_PROJECT], "permissions": ["read", "write"],
+                "scopes": [{"environment": "prod", "secretPath": PATH}]}
         return 200, {"message": "ok"}
 
-    def _resolve_token(self, env, cli=None, mode=None):
-        self.token_calls.append((cli, mode))
-        return TOKEN
+    def _resolve_token(self, env, cli=None, mode=None, *, writer=False, project_name=core.DEFAULT_PROJECT):
+        self.token_calls.append((writer, project_name))
+        return TOKEN if writer else READ_TOKEN
 
-    def fake_fetch(self, path, env, project_name=core.DEFAULT_PROJECT, token=None):
+    def fake_ensure_folder(self, path, env, token):
+        self.folder_tokens.append(token)
+
+    def fake_put(self, name, path, value, env, token=None):
+        self.write_tokens.append(token)
+        return "updated"
+
+    def fake_fetch(self, path, env, project_name=core.DEFAULT_PROJECT, token=None, writer=False):
+        self.read_tokens.append(token)
+        self.assertFalse(writer)
         return dict(self.written)
 
     def run_sync(self, argv=None, env=None):
@@ -62,6 +78,8 @@ class SyncTests(unittest.TestCase):
             mock.patch.object(core, "_api_json", self.fake_api_json),
             mock.patch.object(core, "fetch_all", self.fake_fetch),
             mock.patch.object(core, "resolve_token", self._resolve_token),
+            mock.patch.object(core, "ensure_folder", self.fake_ensure_folder),
+            mock.patch.object(core, "put_secret", self.fake_put),
         ):
             code = sync.main(
                 argv if argv is not None else ["--name", "GH_TOKEN", "--path", PATH],
@@ -94,11 +112,14 @@ class SyncTests(unittest.TestCase):
         self.assertIn("write allowlist", err)
         self.assertEqual(self.api, [])
 
-    def test_the_token_is_resolved_once_and_used_for_every_call(self):
+    def test_writer_and_reader_tokens_are_separate(self):
         self.written = {"GH_TOKEN": VAL}
         code, _out, err = self.run_sync()
         self.assertEqual(code, 0, err)
-        self.assertEqual(len(self.token_calls), 1)
+        self.assertEqual(self.token_calls, [(True, core.DEFAULT_PROJECT), (False, core.DEFAULT_PROJECT)])
+        self.assertEqual(self.folder_tokens, [TOKEN])
+        self.assertEqual(self.write_tokens, [TOKEN])
+        self.assertEqual(self.read_tokens, [READ_TOKEN])
 
     def test_a_read_back_that_does_not_match_is_a_failure(self):
         self.written = {"GH_TOKEN": "SOMETHING_ELSE"}

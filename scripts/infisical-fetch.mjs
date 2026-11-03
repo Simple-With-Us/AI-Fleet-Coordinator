@@ -3,7 +3,7 @@
 // workflow reads its signing certificate the way BotFleet's release.yml does.
 // Keep the two copies in step until the fleet has a shared action.
 //
-// CI-side Infisical fetch: universal-auth login, one bulk secrets list, then
+// CI-side Infisical fetch: scoped service-token bearer, one bulk secrets list, then
 // per requested name mask + export into $GITHUB_ENV -- falling back to a
 // same-named GH_FALLBACK_<NAME> step env var, warning when a name stays
 // empty everywhere, and failing only for a name listed in `required`.
@@ -35,61 +35,176 @@ function stripTrailingSlash(url) {
   return String(url ?? "").replace(/\/+$/, "");
 }
 
-/** POST .../api/v1/auth/universal-auth/login -- returns the bearer token
- * string only.  Body is built with JSON.stringify, never string
- * interpolation, so a client secret containing a quote cannot break the
- * request shape. */
-export async function loginUniversalAuth({ siteUrl, clientId, clientSecret, fetchImpl = fetch, timeoutMs = 30_000 }) {
-  const res = await fetchImpl(`${siteUrl}/api/v1/auth/universal-auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ clientId, clientSecret }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    throw new Error(`Infisical login failed: HTTP ${res.status}`);
-  }
-  const body = await res.json();
-  const token = body && body.accessToken;
-  if (!token) {
-    throw new Error("Infisical login response carried no accessToken");
+const SERVICE_TOKEN = /^st\.\S{17,2045}$/;
+
+export function requireServiceToken(value) {
+  const token = String(value ?? "").trim();
+  if (!SERVICE_TOKEN.test(token)) {
+    throw new Error("INFISICAL_TOKEN must be a valid scoped Infisical service token.");
   }
   return token;
 }
 
-/** GET .../api/v3/secrets/raw for the whole path in one call -- returns a
- * Map<secretKey, secretValue>.  viewSecretValue is always "true" here; this
- * script only ever runs where values are needed (it exists to populate
- * GITHUB_ENV), unlike the probe path in server/infisical.ts.
- *
- * expandSecretReferences is "true": a secret whose stored value is a bare
- * reference such as ${prod.some-folder.NAME} (the Fleet-OPS root, OPS-818) comes
- * back as the referenced value.  With "false" the literal reference string
- * would land in GITHUB_ENV as if it were the credential.  Expanding needs the
- * reading identity to be able to read the referenced folder too. */
+export class MetadataVerificationError extends Error {}
+export class SecretListingError extends Error {
+  constructor(message, { recoverable = false } = {}) {
+    super(message);
+    this.recoverable = recoverable;
+  }
+}
+
+const PROJECT_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const EXPIRY_TZ = /(?:Z|[+-]\d{2}:\d{2})$/;
+const MAX_METADATA_BYTES = 128 * 1024;
+const MAX_SECRETS_BYTES = 16 * 1024 * 1024;
+
+function validateSiteUrl(raw) {
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("INFISICAL_SITE_URL must be a valid HTTPS URL.");
+  }
+  const localHttp = parsed.protocol === "http:" &&
+    (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]");
+  if ((parsed.protocol !== "https:" && !localHttp) || !parsed.hostname || parsed.username || parsed.password ||
+      parsed.search || parsed.hash || (parsed.pathname !== "/" && parsed.pathname !== "")) {
+    throw new Error("INFISICAL_SITE_URL must be a valid HTTPS URL.");
+  }
+  return parsed.origin;
+}
+
+async function readJsonBounded(response, limit, stage) {
+  if (!response.body || typeof response.body.getReader !== "function") {
+    throw new Error(`Infisical ${stage} response was invalid.`);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        throw new Error(`Infisical ${stage} response exceeded the size limit.`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
+  } catch {
+    throw new Error(`Infisical ${stage} response was invalid.`);
+  }
+}
+
+async function requestJson({ url, token, fetchImpl, timeoutMs, limit, stage, metadata = false }) {
+  let res;
+  try {
+    res = await fetchImpl(url, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: "error",
+    });
+  } catch {
+    if (metadata) throw new MetadataVerificationError(`Infisical ${stage} verification failed.`);
+    throw new SecretListingError(`Infisical ${stage} request failed.`, { recoverable: true });
+  }
+  if (!res.ok) {
+    if (metadata) throw new MetadataVerificationError(`Infisical ${stage} verification failed.`);
+    const status = Number(res.status);
+    throw new SecretListingError(
+      `Infisical ${stage} request failed: HTTP ${status}.`,
+      { recoverable: status >= 500 },
+    );
+  }
+  try {
+    return await readJsonBounded(res, limit, stage);
+  } catch (error) {
+    if (metadata) throw new MetadataVerificationError(`Infisical ${stage} verification failed.`);
+    throw new SecretListingError(error.message, { recoverable: false });
+  }
+}
+
+export function validateServiceTokenMetadata(metadata, { projectId, environment, secretPath, tokenId }) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) ||
+      typeof metadata.id !== "string" || !metadata.id ||
+      (tokenId && metadata.id !== tokenId) ||
+      (metadata._id !== undefined && metadata._id !== metadata.id) ||
+      typeof metadata.name !== "string" || !metadata.name ||
+      metadata.projectId !== projectId || metadata.workspace !== projectId) {
+    throw new MetadataVerificationError("Infisical service-token metadata did not match the requested project.");
+  }
+  if (!Array.isArray(metadata.scopes) || metadata.scopes.length !== 1 ||
+      !metadata.scopes[0] || typeof metadata.scopes[0] !== "object" ||
+      Object.keys(metadata.scopes[0]).sort().join(",") !== "environment,secretPath" ||
+      metadata.scopes[0].environment !== environment || metadata.scopes[0].secretPath !== secretPath ||
+      !Array.isArray(metadata.permissions) || metadata.permissions.length !== 1 ||
+      metadata.permissions[0] !== "read") {
+    throw new MetadataVerificationError("Infisical service-token metadata did not match the requested scope.");
+  }
+  if (typeof metadata.expiresAt !== "string" || !EXPIRY_TZ.test(metadata.expiresAt)) {
+    throw new MetadataVerificationError("Infisical service-token expiry metadata is invalid.");
+  }
+  const expiry = Date.parse(metadata.expiresAt);
+  if (!Number.isFinite(expiry) || expiry <= Date.now()) {
+    throw new MetadataVerificationError("Infisical service-token expiry metadata is invalid.");
+  }
+}
+
+export async function verifyServiceToken({ siteUrl, token, projectId, environment, secretPath, fetchImpl = fetch, timeoutMs = 30_000 }) {
+  siteUrl = validateSiteUrl(stripTrailingSlash(siteUrl));
+  token = requireServiceToken(token);
+  if (!PROJECT_ID.test(projectId) || environment !== "prod" || !secretPath.startsWith("/") ||
+      secretPath.split("/").some((part) => part === "." || part === "..")) {
+    throw new MetadataVerificationError("Infisical project, environment, or folder configuration is invalid.");
+  }
+  const metadata = await requestJson({
+    url: `${siteUrl}/api/v2/service-token`, token, fetchImpl, timeoutMs,
+    limit: MAX_METADATA_BYTES, stage: "service-token metadata", metadata: true,
+  });
+  validateServiceTokenMetadata(metadata, { projectId, environment, secretPath });
+}
+
+/** GET one exact folder after verifying the service token's own grant. */
 export async function listSecretsRaw({ siteUrl, token, projectId, environment, secretPath, fetchImpl = fetch, timeoutMs = 30_000 }) {
+  await verifyServiceToken({ siteUrl, token, projectId, environment, secretPath, fetchImpl, timeoutMs });
+  siteUrl = validateSiteUrl(stripTrailingSlash(siteUrl));
+  token = requireServiceToken(token);
   const qs = new URLSearchParams({
     workspaceId: projectId,
     environment,
     secretPath,
     viewSecretValue: "true",
-    expandSecretReferences: "true",
+    expandSecretReferences: "false",
+    recursive: "false",
     include_imports: "false",
   });
-  const res = await fetchImpl(`${siteUrl}/api/v3/secrets/raw?${qs.toString()}`, {
-    method: "GET",
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(timeoutMs),
+  const body = await requestJson({
+    url: `${siteUrl}/api/v3/secrets/raw?${qs.toString()}`,
+    token, fetchImpl, timeoutMs, limit: MAX_SECRETS_BYTES, stage: "secrets list",
   });
-  if (!res.ok) {
-    throw new Error(`Infisical secrets list failed: HTTP ${res.status}`);
+  if (!body || typeof body !== "object" || Array.isArray(body) || !Array.isArray(body.secrets) ||
+      (body.totalCount !== undefined && body.totalCount !== body.secrets.length)) {
+    throw new SecretListingError("Infisical secrets list was incomplete or invalid.");
   }
-  const body = await res.json();
   const values = new Map();
-  for (const s of body?.secrets ?? []) {
-    if (s && s.secretKey && s.secretValue) {
-      values.set(s.secretKey, s.secretValue);
+  for (const s of body.secrets) {
+    if (!s || typeof s !== "object" || Array.isArray(s) ||
+        s.type !== "shared" || s.secretValueHidden === true ||
+        (s.workspace !== undefined && s.workspace !== projectId) ||
+        (s.environment !== undefined && s.environment !== environment) ||
+        (s.secretPath !== undefined && s.secretPath !== secretPath) ||
+        typeof s.secretKey !== "string" || !s.secretKey || typeof s.secretValue !== "string" ||
+        values.has(s.secretKey)) {
+      throw new SecretListingError("Infisical secrets list contained unverified records.");
     }
+    values.set(s.secretKey, s.secretValue);
   }
   return values;
 }
@@ -138,7 +253,7 @@ export function writeGithubEnvValue(path, name, value, appendFileImpl = appendFi
  * ${prod.some-folder.NAME}: the server did not expand it (target missing, or
  * the reading identity cannot read the referenced folder).  Exporting it would
  * hand a workflow the literal reference string as if it were the credential. */
-export const UNRESOLVED_REFERENCE = /^\$\{[^}]+\}$/;
+export const UNRESOLVED_REFERENCE = /\$\{[^}]+\}/;
 
 export function isUnresolvedReference(value) {
   return UNRESOLVED_REFERENCE.test(String(value ?? "").trim());
@@ -147,21 +262,13 @@ export function isUnresolvedReference(value) {
 /** Resolves the vault snapshot (empty map when unconfigured or the fetch
  * failed) -- never throws; a failure is reported through `log` and the
  * caller proceeds on GH_FALLBACK_<NAME> alone. */
-async function resolveVaultValues({ siteUrl, projectId, clientId, clientSecret, environment, secretPath, fetchImpl, log }) {
-  if (!projectId || !clientId || !clientSecret) {
-    return new Map();
-  }
+async function resolveVaultValues({ siteUrl, projectId, token, environment, secretPath, fetchImpl, log }) {
   try {
-    const token = await loginUniversalAuth({ siteUrl, clientId, clientSecret, fetchImpl });
-    // The access token rides in an Authorization header below and is never
-    // printed; mask it anyway so no future error path can surface it.
-    maskValue(token, log);
     return await listSecretsRaw({ siteUrl, token, projectId, environment, secretPath, fetchImpl });
   } catch (err) {
-    // Never interpolate the raw error body -- Infisical error payloads have
-    // echoed request fields on some 4xx responses in the past, and none of
-    // that belongs in a public Actions log.
-    const reason = err instanceof Error ? err.message : "unknown error";
+    if (err instanceof MetadataVerificationError) throw err;
+    if (err instanceof SecretListingError && !err.recoverable) throw err;
+    const reason = err instanceof SecretListingError ? err.message : "request failed";
     log(`::warning::Infisical ${environment} fetch unavailable (${reason}); using GitHub secret fallbacks only.`);
     return new Map();
   }
@@ -170,15 +277,18 @@ async function resolveVaultValues({ siteUrl, projectId, clientId, clientSecret, 
 export async function run({ env = process.env, fetchImpl = fetch, log = (line) => console.log(line) } = {}) {
   const names = splitNames(env.INFISICAL_NAMES);
   const required = new Set(splitNames(env.INFISICAL_REQUIRED));
-  const siteUrl = stripTrailingSlash(env.INFISICAL_SITE_URL || "https://app.infisical.com");
+  const siteUrl = validateSiteUrl(stripTrailingSlash(env.INFISICAL_SITE_URL || "https://app.infisical.com"));
   const projectId = env.INFISICAL_PROJECT_ID || "";
   const environment = env.INFISICAL_ENVIRONMENT || "prod";
   const secretPath = env.INFISICAL_SECRET_PATH || "/";
-  const clientId = env.INFISICAL_CLIENT_ID || "";
-  const clientSecret = env.INFISICAL_CLIENT_SECRET || "";
+  const token = requireServiceToken(env.INFISICAL_TOKEN);
   const githubEnvPath = env.GITHUB_ENV || "";
+  if (!PROJECT_ID.test(projectId) || environment !== "prod" || !secretPath.startsWith("/") ||
+      secretPath.split("/").some((part) => part === "." || part === "..")) {
+    throw new Error("Infisical project, environment, or folder configuration is invalid.");
+  }
 
-  const vaultValues = await resolveVaultValues({ siteUrl, projectId, clientId, clientSecret, environment, secretPath, fetchImpl, log });
+  const vaultValues = await resolveVaultValues({ siteUrl, projectId, token, environment, secretPath, fetchImpl, log });
 
   const missingRequired = [];
   const unresolved = [];

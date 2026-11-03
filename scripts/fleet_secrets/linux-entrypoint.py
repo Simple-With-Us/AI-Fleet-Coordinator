@@ -1,5 +1,5 @@
 #!/usr/bin/env -S python3 -I
-"""Scoped Linux auth for fleet-secrets, with an existing root-private bootstrap fallback."""
+"""Scoped Linux auth for fleet-secrets, without machine-identity or credential-file fallback."""
 
 import importlib.util
 import os
@@ -34,90 +34,21 @@ class Interrupted(Exception):
         self.signum = signum
 
 
-def private_bootstrap():
-    try:
-        return core.load_linux_root_private_bootstrap()
-    except core.SecretsError as exc:
-        raise EntryError(exc.message) from None
-
-
-def load_machine_credentials(env):
-    names = (core.ENV_AUTOMATION_ID, core.ENV_AUTOMATION_SECRET)
-    if not any((env.get(name) or "").strip() for name in names):
-        env = private_bootstrap()
-        if not env:
-            # No wrapper-owned identity: let the plain CLI apply its existing
-            # command-specific auth policy (session reads, machine-only writes).
-            return None
-    missing = [name for name in names if not (env.get(name) or "").strip()]
-    if missing:
-        raise EntryError("missing required environment variables: " + ", ".join(missing))
-    values = [env[name].strip() for name in names]
-    if any("\0" in value or "\n" in value or "\r" in value for value in values):
-        raise EntryError("invalid automation environment credentials")
-    return values
-
-
-def _login(cli, child):
-    """Bound the login and reap its child when timeout or interruption unwinds it."""
-    proc = None
-    previous = signal.getsignal(signal.SIGTERM)
-
-    def interrupted(signum, frame):
-        raise Interrupted(signum)
-
-    signal.signal(signal.SIGTERM, interrupted)
-    try:
-        proc = subprocess.Popen(
-            [cli, "login", "--method=universal-auth", "--plain", "--silent"],
-            env=child,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            cwd="/",
-        )
-        stdout, _stderr = proc.communicate(timeout=25)
-        token = stdout.strip()
-        if proc.returncode or not token or any(char.isspace() for char in token) or "\0" in token:
-            raise EntryError("automation environment authentication failed")
-        return token
-    finally:
-        try:
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.communicate(timeout=3)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.communicate(timeout=3)
-        finally:
-            signal.signal(signal.SIGTERM, previous)
-
-
 def authenticated_env():
-    env = dict(os.environ)
-    token = (env.get(core.ENV_TOKEN) or "").strip()
-    if token:
-        if any(char.isspace() for char in token) or "\0" in token:
-            raise EntryError("invalid INFISICAL_TOKEN")
-        env[core.ENV_TOKEN] = token
-    else:
-        credentials = load_machine_credentials(env)
-        if credentials is None:
-            return {key: value for key, value in env.items() if key not in core.AUTH_ENV_VARS}
-        client_id, client_secret = credentials
-        cli = core.find_cli(env)
-        if not cli:
-            raise EntryError("infisical CLI is unavailable", 127)
-        child = core._base_env(env)
-        for name in core.AUTH_ENV_VARS:
-            child.pop(name, None)
-        child[core.ENV_CLIENT_ID] = client_id
-        child[core.ENV_CLIENT_SECRET] = client_secret
-        env[core.ENV_TOKEN] = _login(cli, child)
-    for name in core.AUTH_ENV_VARS - {core.ENV_TOKEN}:
-        env.pop(name, None)
+    """Pass explicit service tokens only; never inspect a credential store."""
+    token_names = (core.ENV_TOKEN, core.ENV_AI_FLEET_COORDINATOR_TOKEN, core.ENV_WRITE_TOKEN)
+    env = {key: value for key, value in os.environ.items()
+           if key not in core.AUTH_ENV_VARS or key in token_names}
+    # Validate read bindings early, but let a bad optional writer fail only when a
+    # write is attempted inside the CLI.
+    for name in token_names[:2]:
+        if env.get(name):
+            try:
+                env[name] = core.check_service_token(env[name].strip())
+            except core.SecretsError:
+                raise EntryError(f"invalid scoped reader binding: {name}") from None
+    if not any((env.get(name) or "").strip() for name in token_names) and not sys.stdin.isatty():
+        raise EntryError("a scoped service token is required for noninteractive commands")
     return env
 
 
@@ -168,14 +99,14 @@ def main():
         print("fleet-secrets: " + str(exc), file=sys.stderr)
         return exc.code
     except subprocess.TimeoutExpired:
-        print("fleet-secrets: automation environment authentication timed out", file=sys.stderr)
+        print("fleet-secrets: service-token authentication timed out", file=sys.stderr)
         return 124
     except Interrupted as exc:
         return 128 + exc.signum
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError, subprocess.SubprocessError):
-        print("fleet-secrets: automation environment authentication failed", file=sys.stderr)
+        print("fleet-secrets: service-token authentication failed", file=sys.stderr)
         return 4
 
 
