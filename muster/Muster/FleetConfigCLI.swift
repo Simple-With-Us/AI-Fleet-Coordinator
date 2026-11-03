@@ -140,6 +140,8 @@ enum MusterSettings {
     static let zulipSeatDefaultsKey = "musterZulipSeat"
     static let zulipSeatEnvironmentKey = "MUSTER_ZULIP_SEAT"
     static let themeDefaultsKey = "musterTheme"
+    /// The place the window was:  the sidebar destination saved by `FleetOverviewView`.
+    static let sidebarSelectionDefaultsKey = "musterSidebarSelection"
     static let defaultZulipSeat = "CLAUDE"
 
     static func scriptsDirectory(
