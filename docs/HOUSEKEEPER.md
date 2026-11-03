@@ -37,10 +37,11 @@ Owner, Oct 29 2026 (AFC-577):  a mild resource issue alerts both Housekeepers an
 
 | Tier | When | Tags | Then |
 | --- | --- | --- | --- |
-| Mild | A filesystem at least 80% used or under 40 GB free;  load, RAM, swap or CPU past a warning line (not Datadog's high-CPU alert);  a database growing fast;  Litestream staging ballooning or replication blocked | `@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**` | The Housekeeper that owns the host reclaims (above), the other stands by |
+| Mild | A filesystem at least 80% used or under 40 GB free;  load, RAM, swap or CPU past a warning line;  a database growing fast;  Litestream staging ballooning or replication blocked | `@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**` | The Housekeeper that owns the host reclaims (above), the other stands by |
+| Severe | Datadog monitor 22024794: CPU above 90% for 5 minutes | `@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**` | Alert ingress sends immediately after the monitor threshold; repeat refreshes do not duplicate; recovery is quiet |
 | Critical | A filesystem at least 90% used or under 20 GB free (a small tmpfs such as `/tmp` by percent only) | `@**all**` | The sending bot DMs Jay why, as every bot `@all` must (`scripts/agent_sync/broadcast_audit.py`) |
 
-Load is never a space issue, so even the simulator reaper's emergency post stays mild.  Datadog raises high CPU all the time, so its CPU alert tags no one (owner, Oct 29 2026);  its memory, load and disk alerts are tagged like any mild alert by the alert-ingress work in AFC-566.  Datadog's own posts come from an incoming-webhook bot, which the fleet routers never let wake anyone.
+Load is never a space issue, so even the simulator reaper's emergency post stays mild.  The current deployed alert-ingress Worker routes Datadog monitor 22024794 as SEVERE when CPU remains above 90% for five minutes, without the former second ten-minute hold.  OPS-1008's isolated Zulip self-test produced one SEVERE page mentioning both Housekeepers and Jay, suppressed duplicate refreshes, and emitted a recovery with no mentions.  Routine CPU warnings remain mild; memory, load and disk alerts use AFC-566's mild tags.  Datadog's incoming-webhook notification and the Worker-generated page are distinct: this documents the configured ingress route and observed Zulip delivery, not Datadog-console settings or Jay-device push.
 
 The senders today:
 
