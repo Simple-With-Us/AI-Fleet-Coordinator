@@ -2,9 +2,12 @@
 
 The CLI twin of the notes_* tools:  one verb per tool and one option per argument (mcp/notes-tools.json is the
 contract;  tests/test_notes_parity.py keeps them equal).  It runs the same code as the tools (notes_client.call), so
-it works the same on every host:  on a Mac apple-notes-coding.sh runs directly and no credential is needed;
-anywhere else the request goes to the Operator's notes queue and the command waits for the Mac runner's result
-(up to --wait seconds, 300 by default).  No Zulip message is involved.  The body never reaches a command line of
+it works the same on every host:  on a Mac the calling bot's own fleet bearer is confirmed with the hosted
+gateway before every action (notes_client.confirm_local_seat;  --fleet-bearer-file names the file to confirm
+with and the action still runs directly, never moved to the remote queue);  anywhere else the request goes to
+the hosted gateway as this bot's own fleet bearer (--fleet-bearer-file, or the bot's own private file from its
+seat) and the command waits for the Mac runner's result (up to --wait seconds, 300 by default) - never the
+shared service credential.  No Zulip message is involved.  The body never reaches a command line of
 ours:  it comes from standard input or --body-file (or --html for an HTML file), and is handed to the script on stdin.
 
 `runner` is the Mac runner itself (notes_runner.py), run by the LaunchAgent com.jay.operator-notes-runner.
@@ -67,7 +70,7 @@ def add_parsers(
             "--fleet-bearer-file",
             default=argparse.SUPPRESS,
             metavar="PATH",
-            help="use this bot's private fleet bearer file via the hosted gateway; no direct fallback",
+            help="authenticate as this bot with its private fleet bearer file (on a Mac the action still runs directly, elsewhere through the hosted gateway); no shared-credential fallback",
         )
         p.add_argument(
             "--identity",
@@ -210,7 +213,7 @@ def add_parsers(
         "--fleet-bearer-file",
         default=argparse.SUPPRESS,
         metavar="PATH",
-        help="use this bot's private fleet bearer file; no direct fallback",
+            help="authenticate as this bot with its private fleet bearer file (on a Mac the action still runs directly, elsewhere through the hosted gateway); no shared-credential fallback",
     )
     # No --identity:  the log is the whole fleet's (any seat may read every Coding note), so it acts as no one;
     # --by-seat filters it.
@@ -226,7 +229,7 @@ def add_parsers(
         default=None,
         help="how long one claim waits for work (default 25)",
     )
-    q = add(sub, "status", "where a request sent through the Operator stands")
+    q = add(sub, "status", "where a request sent off this Mac stands")
     q.add_argument("request_id", metavar="REQUEST_ID")
     identity_opt(q)
 
@@ -325,12 +328,14 @@ def _home(rt: Any) -> Path:
     )
 
 
-def _host(rt: Any, identity: str | None, bearer_file: str | None = None) -> NC.Host:
+def _host(
+    rt: Any, identity: str | None, bearer_file: str | None = None, own_seat: str | None = None
+) -> NC.Host:
     home = _home(rt)
     store = (
         IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json")) if identity else None
     )
-    return NC.Host(rt.env, home, store, caller="cli", bearer_file=bearer_file)
+    return NC.Host(rt.env, home, store, caller="cli", bearer_file=bearer_file, own_seat=own_seat)
 
 
 def _wait(args: argparse.Namespace) -> int:
@@ -410,7 +415,32 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
         raise Z.CredentialError("fleet bearer file path is empty; no fallback was used")
     use_json = bool(getattr(args, "json", False))
     if action == "log":
-        host = _host(rt, None, getattr(args, "fleet_bearer_file", None))
+        bearer_file = getattr(args, "fleet_bearer_file", None)
+        if bearer_file is not None:
+            # The log's identity comes from the explicit file, exactly as the other verbs' does:  a seat flag
+            # that names another bot is refused, never overridden, and the same file authenticates the read.
+            from .fleet_bearer import Client, FleetError
+
+            try:
+                own_seat = Client(bearer_file, identity_env=rt.env).seat
+            except FleetError as exc:
+                raise Z.CredentialError(str(exc)) from None
+            selected = getattr(args, "as_seat", None) or getattr(args, "default_seat", None)
+            if selected and I.canonical_seat(selected) != own_seat:
+                raise Z.UsageError("--identity/--as cannot override the fleet bearer identity")
+        else:
+            own_seat = None
+        if bearer_file is None:
+            # The log is read as the calling bot's own bearer on every host:  off a Mac a seat is needed to
+            # find its file, and on a Mac that seat's own bearer is confirmed before this Mac's file is read.
+            # A launcher that assigns no seat, or a shell with none, gets notes_client's refusal, which names
+            # this.
+            own_seat = I.resolve_seat(
+                rt.env,
+                flag=getattr(args, "as_seat", None) or getattr(args, "identity", None),
+                default=getattr(args, "default_seat", None),
+            ).seat
+        host = _host(rt, None, bearer_file, own_seat=own_seat)
         try:
             info = NC.log(
                 host,

@@ -379,6 +379,11 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
+def transport() -> str:
+    """The configured registry transport, or the empty string for the local file."""
+    return str(os.environ.get(ENV_TRANSPORT) or "").strip()
+
+
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
     transport = str(os.environ.get(ENV_TRANSPORT) or "").strip()
@@ -600,12 +605,23 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     helper keeps the pair space:  a chat that held a pair comes back with a pair, and a
     reopen that would hand it a single letter is refused before anything is written.
 
-    The registry is opened here rather than through the CLI, because the CLI has no
-    reopen verb.  It is the same file the CLI is pointed at, and the same writer.
+    With the fleet transport set, the reopen runs against the canonical store even
+    while a local registry file is still on this host:  two allocator writes for the
+    same letter space would hand the same letter to two threads.  Without the
+    transport, a host that has no local registry file routes the same way.
     """
     db = registry_db()
-    if not db:
-        raise RegistryError("the operator registry is not available on this host", "no_registry")
+    if transport() or not db:
+        argv = [
+            "reopen",
+            "--record-id=" + record_id,
+            "--actor=" + SEAT,
+            "--source=the MM seat's session-letter hook",
+            "--letter-pick=" + LETTER_PICK,
+        ]
+        if parent_session_id:
+            argv.append("--parent-session-id=" + parent_session_id)
+        return _require_registry(registry_call(argv), needs_label=True)
     from simple_tools import operator_registry as OR
     from simple_tools import platform_letter
 
@@ -841,8 +857,31 @@ def held_letters(session_id: str) -> tuple[str, ...]:
     is read and fixed again, while a title that loses an acronym is not.
     """
     db = registry_db()
-    if not db:
-        return ()
+    if transport() or not db:
+        # The canonical store answers.  A transport fault returns the empty history, and
+        # that empty history never stands in for a stale local file:  the caller falls
+        # back to the shape rules, which is the safe direction.
+        answer = registry_call([
+            "held",
+            "--platform=" + PLATFORM,
+            *_registry_identity_args(),
+            "--session-id=" + session_id,
+        ])
+        # Only a successful answer with a letters list of letter strings counts.  A
+        # bare string is not a one-letter list (it would split into characters), a
+        # non-iterable is not a list at all, and any malformed entry voids the whole
+        # answer:  the empty history keeps the conservative fallback.
+        if answer.get("error"):
+            return ()
+        letters = answer.get("letters")
+        if not isinstance(letters, list):
+            return ()
+        held: list[str] = []
+        for letter in letters:
+            if not isinstance(letter, str) or not re.fullmatch(r"[A-Z]{1,2}", letter):
+                return ()
+            held.append(letter)
+        return tuple(held)
     from simple_tools import operator_registry as OR
 
     # The read-only handle:  it never writes, never creates the file, and never takes

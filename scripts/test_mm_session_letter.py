@@ -1563,12 +1563,16 @@ class MmReopenStrictTouchTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "reopen_failed")
 
     def test_a_reopen_without_a_registry_is_a_registry_error_too(self):
-        # A host that keeps no registry answers no_registry, and that travels as one
-        # error type as well.
-        with mock.patch.object(M, "registry_db", return_value=""):
+        # A host that keeps no registry file routes the reopen to the transport;  a
+        # host whose PATH also holds no transport surfaces the transport fault, and
+        # that travels as the same one error type:  the registry is out of reach.
+        with (
+            mock.patch.object(M, "registry_db", return_value=""),
+            mock.patch.dict(os.environ, {"PATH": os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep) if "mm-operator-registry" not in p)}),
+        ):
             with self.assertRaises(M.RegistryError) as caught:
                 M.reopen_closed("r1")
-        self.assertEqual(caught.exception.code, "no_registry")
+        self.assertIn(caught.exception.code, ("missing_tool", "remote_unreachable", "no_registry"))
 
 
 class TransportTests(unittest.TestCase):
@@ -1656,6 +1660,73 @@ class TransportTests(unittest.TestCase):
         self.assertNotEqual(out.get("letter"), "AA")
         self.assertEqual(out.get("outcome"), "outcome_unknown")
         self.assertIn("error", out)
+
+    def test_reopen_closed_goes_to_the_transport_not_a_stale_local_store(self):
+        self.registry.write_bytes(b"stale")  # a retired local store must not be written
+        self._transport(answer='{"record_id": "r1", "label": "AB", "generation": 3, "previous": "AA", "outcome": "reopened"}')
+        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            answer = M.reopen_closed("r1", "parent-session-1")
+        self.assertEqual(answer["label"], "AB")
+        self.assertEqual(answer["generation"], 3)
+        logged = self.log.read_text()
+        self.assertIn("reopen --record-id=r1", logged)
+        self.assertIn("--parent-session-id=parent-session-1", logged)
+        self.assertEqual(self.registry.read_bytes(), b"stale")  # untouched
+
+    def test_reopen_closed_space_lost_from_the_transport_keeps_its_code(self):
+        self._transport(answer='{"error": "the pair went to another chat", "code": "space_lost"}')
+        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            with self.assertRaises(M.RegistryError) as ctx:
+                M.reopen_closed("r1")
+        self.assertEqual(ctx.exception.code, "space_lost")
+
+    def test_held_letters_come_from_the_transport_not_a_stale_local_store(self):
+        # A retired local store that still answers must not win over the transport.
+        self.registry.write_bytes(b"stale")
+        self._transport(answer='{"letters": ["AB", "AA"]}')
+        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            held = M.held_letters("session-0001")
+        self.assertEqual(held, ("AB", "AA"))
+        self.assertIn("held --platform=minimax", self.log.read_text())
+        self.assertIn("--session-id=session-0001", self.log.read_text())
+
+    def test_held_letters_rejects_a_string_answer_not_its_characters(self):
+        self._transport(answer='{"letters": "AB"}')
+        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            self.assertEqual(M.held_letters("session-0001"), ())
+
+    def test_held_letters_rejects_a_non_list_answer_without_crashing(self):
+        self._transport(answer='{"letters": 5}')
+        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            self.assertEqual(M.held_letters("session-0001"), ())
+
+    def test_held_letters_rejects_a_list_with_a_malformed_entry(self):
+        for bad in ('{"letters": ["AA", 7]}', '{"letters": ["AA", "abc"]}', '{"letters": ["AA", "TOOLONG"]}'):
+            self._transport(answer=bad)
+            with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+                self.assertEqual(M.held_letters("session-0001"), (), bad)
+            self.log.unlink()
+
+    def test_held_letters_rejects_an_error_answer_even_with_valid_letters(self):
+        self._transport(answer='{"error": "registry exploded", "code": "held_failed", "letters": ["AB", "AA"]}')
+        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            self.assertEqual(M.held_letters("session-0001"), ())
+
+    def test_held_letters_accepts_single_letters_and_pairs(self):
+        self._transport(answer='{"letters": ["AB", "B"]}')
+        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            self.assertEqual(M.held_letters("session-0001"), ("AB", "B"))
+
+    def test_held_letters_on_a_transport_fault_is_empty_never_the_local_store(self):
+        # The stale local store holds letters for this session;  a transport fault must
+        # still return the empty history rather than the local answer.
+        self.registry.write_bytes(b"stale")
+        cmd = self.bin / "mm-operator-registry"
+        cmd.write_text("#!/bin/sh\nexit 1\n")
+        cmd.chmod(0o755)
+        with mock.patch.dict(os.environ, dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"), clear=False):
+            held = M.held_letters("session-0001")
+        self.assertEqual(held, ())
 
     def test_the_far_side_no_registry_guard_maps_to_no_registry(self):
         self._transport(answer='{"error": "no Operator registry on this host"}')

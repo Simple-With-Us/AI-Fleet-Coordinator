@@ -31,6 +31,7 @@ import pathlib
 import re
 import secrets
 import sqlite3
+import sys
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -2369,6 +2370,38 @@ def main(argv: list[str] | None = None) -> int:
     h.add_argument("--db", default="", help="the registry file (default: the shared path)")
     h.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     h.add_argument("--limit", type=int, default=50)
+    rp = sub.add_parser(
+        "reopen",
+        help="give a closed session its letter again",
+    )
+    rp.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rp.add_argument("--record-id", required=True, help="the registry record of the closed session")
+    rp.add_argument("--actor", default="registry")
+    rp.add_argument("--source", default="registry")
+    rp.add_argument(
+        "--letter-pick",
+        default="primary",
+        choices=sorted(LETTER_PICKS),
+        help="how a free letter is chosen (default: the next main-chat pair)",
+    )
+    rp.add_argument(
+        "--parent-session-id",
+        default="",
+        help="the session that started this one:  take the first free pair after its pair",
+    )
+    hd = sub.add_parser(
+        "held",
+        help="the letters one session holds, newest first (read-only)",
+    )
+    hd.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    hd.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    hd.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    hd.add_argument("--scope", required=True)
+    hd.add_argument("--session-id", required=True)
     t = sub.add_parser("touch", help="stamp last_seen_at for one live session")
     t.add_argument("--db", default="", help="the registry file (default: the shared path)")
     t.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
@@ -2541,6 +2574,59 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": str(exc)}))
             return 2
         print(json.dumps(rows))
+        return 0
+    if args.command == "reopen":
+        from . import platform_letter  # lazy:  platform_letter imports this module
+
+        reg = SessionRegistry(db)
+        try:
+            letter, generation, previous = platform_letter.operator_reopen(
+                sys.modules[__name__],
+                db,
+                reg,
+                args.record_id,
+                actor=args.actor,
+                source=args.source,
+                pick=args.letter_pick,
+                parent=args.parent_session_id,
+            )
+        except platform_letter.SpaceLost as exc:
+            # A pair-holding chat would come back with a single letter:  refused before
+            # anything is written.
+            print(json.dumps({"error": str(exc), "code": "space_lost"}))
+            return 2
+        except LabelExhausted as exc:
+            print(json.dumps({"error": str(exc), "code": "label_exhausted"}))
+            return 2
+        except (UnknownRecord, KeyError, ValueError, OSError) as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        finally:
+            reg.close_db()
+        print(json.dumps({
+            "record_id": args.record_id,
+            "label": letter,
+            "generation": generation,
+            "previous": previous,
+            "outcome": "reopened",
+        }))
+        return 0
+    if args.command == "held":
+        reg = SessionRegistry(db, read_only=True)
+        try:
+            row = reg.session_by_identity(
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
+            )
+            held = () if row is None else reg.letters_held(row["record_id"])
+        except (RegistryUnavailable, sqlite3.Error, OSError, ValueError) as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        finally:
+            reg.close_db()
+        print(json.dumps({"letters": list(held)}))
         return 0
     try:
         print(json.dumps({"marked": mark_exported(db, args.outbox_ids)}))

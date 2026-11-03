@@ -90,15 +90,18 @@ ALLOWED_REGISTRY_OPS = frozenset({"register", "title", "touch", "close"})
 ALLOWED_PLATFORM_OPS = frozenset({"register", "title", "touch", "close", "show"})
 ALLOWED_MODULE_VERBS = frozenset({
     "register", "relabel", "resolve", "update", "close", "sweep", "touch",
-    "history", "pending-outbox", "mark-exported", "wake-target",
+    "history", "pending-outbox", "mark-exported", "wake-target", "reopen", "held",
 })
 #: Verbs where an identical-argv retry after an uncertain outcome is PROVEN safe:
 #: the read-only verbs, and the writes the independent review verified idempotent
 #: (same-record/same-letter/no-second-effect).  Anything else - relabel --force increments
 #: the generation again, an unproven write may double-apply - reconciles by READING the
 #: registry first (resolve/history/show), never by blind retry.
-READ_ONLY_VERBS = frozenset({"pending-outbox", "wake-target", "resolve", "history"})
-PROVEN_IDEMPOTENT_WRITES = frozenset({"register", "touch", "close", "mark-exported"})
+READ_ONLY_VERBS = frozenset({"pending-outbox", "wake-target", "resolve", "history", "held"})
+PROVEN_IDEMPOTENT_WRITES = frozenset({"register", "touch", "close", "mark-exported", "reopen"})
+# reopen is proven idempotent by the registry's own contract:  an already-open session comes
+# back with the same letter and nothing written, and a retry of a write that never landed
+# performs the same reopen.  A refusal (space_lost, label_exhausted) repeats as the same refusal.
 MAX_TIMEOUT = 60
 
 
