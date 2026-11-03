@@ -456,7 +456,11 @@ export function teamForSlug(slug) {
  * repeated create updates the same row instead of adding a second one.
  */
 export async function stableUuid(kind, key) {
-  const raw = new TextEncoder().encode(`simple-tools-mcp:linear:v1:${kind}:${key}`);
+  // The hash prefix is an opaque storage contract, NOT a display name:  rows the
+  // live worker already created carry UUIDs derived from the legacy prefix bytes,
+  // so the input stays frozen at those bytes forever.  Renaming it would make a
+  // repeated create hash to a new UUID and insert a duplicate instead of updating.
+  const raw = new TextEncoder().encode(`agent-sync-mcp:linear:v1:${kind}:${key}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", raw)).slice(0, 16);
   // Clear the version and variant bits, as uuid.UUID(..., version=4) does.
   digest[6] = (digest[6] & 0x0f) | 0x40;
