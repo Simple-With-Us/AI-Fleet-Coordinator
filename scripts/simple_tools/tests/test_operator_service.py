@@ -211,14 +211,18 @@ class ConfigTests(unittest.TestCase):
     def test_operator_cannot_use_file(self):
         self.assertTrue(self.config(creds="file").errors)
 
-    def test_operator_partition_mac(self):
+    def test_operator_partition_server(self):
+        # Single-server consolidation (owner direction, Nov 2 2026):  the Operator and the
+        # nine seats that used to be the Mac instance all belong to the server instance.
         from pathlib import Path
 
         partition, error = C.load_partition(
             str(Path(__file__).resolve().parents[3] / "docs/protocols/simple-tools-partition.toml")
         )
         self.assertIsNone(error)
-        self.assertEqual(partition["OPERATOR"], "mac")
+        self.assertEqual(partition["OPERATOR"], "server")
+        for seat in ("CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC"):
+            self.assertEqual(partition[seat], "server", seat)
 
 
 if __name__ == "__main__":

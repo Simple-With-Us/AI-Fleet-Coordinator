@@ -148,6 +148,24 @@ class RegistryTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(cells[R.SESSIONS_HEADERS.index("Last Seen At")], row["last_seen_at"])
 
+    def test_the_bridge_never_creates_a_missing_store(self):
+        missing = os.path.join(os.path.dirname(self.db), "no-such-registry.sqlite3")
+        with self.assertRaises(R.RegistryUnavailable):
+            R.pending_outbox(missing)
+        with self.assertRaises(R.RegistryUnavailable):
+            R.mark_exported(missing, ["o1"])
+        self.assertFalse(os.path.exists(missing), "the bridge created a second store")
+
+    def test_the_bridge_cli_reports_a_missing_store_as_an_error(self):
+        missing = os.path.join(os.path.dirname(self.db), "no-such-registry.sqlite3")
+        for verb in (["pending-outbox"], ["mark-exported", "o1"]):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = R.main(verb + ["--db", missing])
+            self.assertEqual(code, 2, verb)
+            self.assertIn("missing", json.loads(out.getvalue())["error"])
+        self.assertFalse(os.path.exists(missing))
+
     def test_mark_exported_then_crash_rerun(self):
         self.reg.resolve_or_register(ident())
         pending = R.pending_outbox(self.db)
@@ -229,12 +247,12 @@ class RegistryTest(unittest.TestCase):
         )
 
     def test_the_default_pick_is_the_lowest_free_letter(self):
-        a = self._pair("n-1")
+        a = self._pair("nat-0001")
         self.reg.close(a["record_id"])
         self.assertEqual((a["label"], self._pair("n-2")["label"]), ("AA", "AA"))
 
     def test_the_oldest_pick_leaves_a_retired_letter_alone_while_unused_ones_remain(self):
-        a = self._pair("n-1", "oldest")
+        a = self._pair("nat-0001", "oldest")
         self.reg.close(a["record_id"])
         self.assertEqual([self._pair(n, "oldest")["label"] for n in ("n-2", "n-3")], ["AB", "AC"])
 
@@ -251,7 +269,7 @@ class RegistryTest(unittest.TestCase):
 
     def test_exhaustion_says_which_space_was_full(self):
         with mock.patch.dict(R.LETTER_SPACES, {"single": ("A",), "double": ("AA",)}):
-            self.reg.resolve_or_register(ident(platform="claude", native="n-1"))
+            self.reg.resolve_or_register(ident(platform="claude", native="nat-0001"))
             self.reg.resolve_or_register(
                 ident(platform="claude", native="n-2", letter_space="double")
             )
@@ -311,7 +329,7 @@ class RegistryTest(unittest.TestCase):
         self.assertIn("1 letters are active", lines[1]["error"])
 
     def test_reopen_gives_a_chat_its_own_letter_back_when_it_is_free(self):
-        pair = self._pair("n-1", "oldest")
+        pair = self._pair("nat-0001", "oldest")
         single = self.reg.resolve_or_register(ident(platform="claude", native="n-2"))
         for made in (pair, single):
             self.reg.close(made["record_id"])
@@ -321,7 +339,7 @@ class RegistryTest(unittest.TestCase):
 
     def test_reopen_allocates_in_the_space_of_the_letter_it_held(self):
         with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB")}):
-            held = self._pair("n-1", "oldest")  # AA
+            held = self._pair("nat-0001", "oldest")  # AA
             self.reg.close(held["record_id"])
             self._pair("n-2", "oldest")  # AB
             self._pair("n-3", "oldest")  # AA again, generation 2
@@ -350,10 +368,10 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(sorted(order), sorted(R.LETTER_SPACES["double"]))
 
     def test_main_chats_take_the_doubled_pairs_in_order(self):
-        self.assertEqual(self._labels(["n-1", "n-2", "n-3"]), ["AA", "BB", "CC"])
+        self.assertEqual(self._labels(["nat-0001", "n-2", "n-3"]), ["AA", "BB", "CC"])
 
     def test_a_freed_doubled_pair_is_the_next_main_chat_s(self):
-        first = self._pair("n-1", "primary")
+        first = self._pair("nat-0001", "primary")
         self._labels(["n-2", "n-3"])  # BB, CC
         self.reg.close(first["record_id"])
         # Sequentially means the lowest free doubled pair, so a freed AA is taken before DD.
@@ -368,7 +386,7 @@ class RegistryTest(unittest.TestCase):
             self.reg.resolve_or_register(ident(platform="claude", native=n, letter_pick="primary"))[
                 "label"
             ]
-            for n in ("n-1", "n-2")
+            for n in ("nat-0001", "n-2")
         ]
         self.assertEqual(labels, ["A", "B"])
 
@@ -441,7 +459,7 @@ class RegistryTest(unittest.TestCase):
         # Past Z the row wraps to A, which would be AA, the row's doubled pair:  it is skipped for AB.
         self.assertEqual(self._pair("p-1", "primary", "p")["label"], "AB")
         self.assertEqual(
-            self._pair("n-new", "primary")["label"], "AA"
+            self._pair("nat-0new", "primary")["label"], "AA"
         )  # and a main chat still gets it
 
     def test_an_unknown_closed_single_or_own_parent_is_no_parent(self):
@@ -509,7 +527,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual((letter, previous), ("CE", "CD"))
 
     def test_a_reopened_main_chat_takes_the_next_doubled_pair_when_its_own_is_gone(self):
-        first = self._pair("n-1", "primary")  # AA
+        first = self._pair("nat-0001", "primary")  # AA
         self.reg.close(first["record_id"])
         self._labels(["n-2"])  # AA again
         self.assertEqual(self.reg.reopen(first["record_id"], pick="primary")[0], "BB")
@@ -1414,3 +1432,112 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WakeTargetTest(unittest.TestCase):
+    """resolve_wake_target / wake_targets:  candidate sessions vs a verified delivery binding.
+
+    No production writer establishes a binding through a verified adapter yet, so the
+    supported set is EMPTY and resolution never returns a target:  it reports
+    binding_unverified (candidates exist) or no_active_session (none), never found=True.
+    A stored string - "native" included - is data, not a binding.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        R.SessionRegistry(self.db).close_db()
+
+    def _register(self, native, seat="CLAUDE", capability="native", title="t", thread=""):
+        return R.register_session(
+            self.db,
+            platform="claude",
+            verified_host="server",
+            profile_scope="default",
+            native_session_id=native,
+            seat=seat,
+            source="test",
+            title=title,
+            thread_link=thread,
+            wake_capability=capability,
+            issuer=R.ISSUER_OPERATOR,
+        )
+
+    def test_no_registry_file_is_no_target_and_creates_nothing(self):
+        missing = os.path.join(self.tmp.name, "absent", "registry.sqlite3")
+        answer = R.resolve_wake_target(missing, "CLAUDE")
+        self.assertEqual(answer, {"found": False, "seat": "CLAUDE",
+                                  "reason": "no_active_session", "candidates": 0})
+        self.assertFalse(os.path.exists(missing), "a read never mints the file")
+
+    def test_a_seat_is_required(self):
+        self.assertEqual(R.resolve_wake_target(self.db, "")["reason"], "seat_required")
+        self.assertEqual(R.resolve_wake_target(self.db, "  ")["reason"], "seat_required")
+
+    def test_a_stored_token_is_data_not_a_binding(self):
+        # The independent review's repro:  any platform/host/session string plus the
+        # literal "native" must NOT resolve, because nothing verified that binding.
+        self._register("nat-0001", title="AFC work", thread="https://chat/#narrow/topic/afc")
+        answer = R.resolve_wake_target(self.db, "claude")  # seat case is normalized
+        self.assertEqual(answer["found"], False)
+        self.assertEqual(answer["reason"], "binding_unverified")
+        self.assertEqual(answer["candidates"], 1)
+        self.assertNotIn("target", answer)
+        self.assertEqual(R.wake_targets(self.db, "CLAUDE"), [])
+
+    def test_capture_only_sessions_are_never_targets(self):
+        for capability in ("", "unknown", "none", "inbox", "unsupported"):
+            self._register("nat-%s" % (capability or "nonee"), capability=capability)
+        self.assertEqual(R.wake_targets(self.db, "CLAUDE"), [])
+        answer = R.resolve_wake_target(self.db, "CLAUDE")
+        self.assertEqual(answer["reason"], "binding_unverified")
+        self.assertEqual(answer["candidates"], 5)
+
+    def test_an_arbitrary_token_is_not_a_delivery_binding(self):
+        # The denylist shape let any other string deliver:  "false" returned found=true.
+        for i, capability in enumerate(("false", "yes", "0", "Native-ish", "cursor-cloud")):
+            self._register("nat-f%04d" % i, capability=capability)
+        self.assertEqual(R.wake_targets(self.db, "CLAUDE"), [])
+        self.assertEqual(R.resolve_wake_target(self.db, "CLAUDE")["reason"], "binding_unverified")
+
+    def test_the_freshest_candidate_order_is_deterministic_but_not_delivery(self):
+        self._register("nat-0o1d")
+        self._register("nat-0new")
+        R.touch_session(self.db, platform="claude", verified_host="server",
+                        profile_scope="default", native_session_id="nat-0new")
+        candidates = R._candidate_sessions(self.db, "CLAUDE")
+        self.assertEqual([c["native_session_id"] for c in candidates], ["nat-0new", "nat-0o1d"])
+        answer = R.resolve_wake_target(self.db, "CLAUDE")
+        self.assertEqual(answer["found"], False)
+        self.assertEqual(answer["reason"], "binding_unverified")
+        self.assertEqual(answer["candidates"], 2)
+
+    def test_a_closed_session_is_not_a_candidate(self):
+        self._register("nat-live")
+        self._register("nat-gone")
+        R.close_session(self.db, platform="claude", verified_host="server",
+                        profile_scope="default", native_session_id="nat-gone", reason="test")
+        candidates = R._candidate_sessions(self.db, "CLAUDE")
+        self.assertEqual([c["native_session_id"] for c in candidates], ["nat-live"])
+        R.close_session(self.db, platform="claude", verified_host="server",
+                        profile_scope="default", native_session_id="nat-live", reason="test")
+        answer = R.resolve_wake_target(self.db, "CLAUDE")
+        self.assertEqual(answer["reason"], "no_active_session")
+        self.assertEqual(answer["candidates"], 0)
+
+    def test_another_seats_session_is_not_this_seats_target(self):
+        self._register("nat-0001", seat="CODEX")
+        self.assertEqual(R.resolve_wake_target(self.db, "CLAUDE")["reason"], "no_active_session")
+        self.assertEqual(R.resolve_wake_target(self.db, "CODEX")["reason"], "binding_unverified")
+
+    def test_the_cli_answers_the_same_json(self):
+        self._register("nat-0001")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["wake-target", "--db", self.db, "--seat", "CLAUDE"])
+        self.assertEqual(code, 0)
+        answer = json.loads(out.getvalue())
+        self.assertEqual(answer["found"], False)
+        self.assertEqual(answer["reason"], "binding_unverified")
+        self.assertEqual(answer["candidates"], 1)

@@ -100,6 +100,9 @@ class ServerHarness(ListenerHarness):
             GB_COMPILER_ROUTINE_KEY=self.routine_key,
             SIMPLE_TOOLS_INSTANCE="server",
             SIMPLE_TOOLS_CONFIG=str(self.config_file),
+            # The server suites exercise the shipped sample against the real partition, not the
+            # mac-side fixture ListenerHarness pins for the per-instance daemon tests.
+            SIMPLE_TOOLS_PARTITION=os.path.join(C.REPO_ROOT, C.PARTITION_RELPATH),
             AGENT_SEAT=None,
             CLAUDE_CODE_SESSION_ID=None,
         )
@@ -1051,20 +1054,30 @@ class PartitionTests(ServerHarness):
         log = (self.state_dir / "logs" / "listener.log").read_text()
         self.assertIn('"refused-start"', log)
 
-    def test_the_partition_file_keeps_claude_off_the_server_and_gb_off_the_mac(self) -> None:
-        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
-        err = self.refused(self.server_env())
+    def test_the_partition_gives_every_held_seat_to_the_server(self) -> None:
+        # Single-server consolidation:  every held seat belongs to the server instance, so the Mac
+        # listener refuses each one and a seat on no instance is refused by both.  These assertions
+        # read the real partition, not the mac-side fixture ListenerHarness pins.
+        real = os.path.join(C.REPO_ROOT, C.PARTITION_RELPATH)
+        self.write_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=real))
         self.assertIn(
-            "seat CLAUDE is configured here (the 'server' listener), but it belongs to the 'mac' instance",
+            "seat CLAUDE is configured here (the 'mac' listener), but it belongs to the 'server' instance",
             err,
         )
         self.assertIn("simple-tools-partition.toml", err)
         self.write_config(
             seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.GB-COMPILER]\nenabled = false\nbot = "GB-Compiler"\n'
         )
-        err = self.refused(self.env())
+        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=real))
         self.assertIn(
             "seat GB-COMPILER is configured here (the 'mac' listener), but it belongs to the 'server'",
+            err,
+        )
+        self.write_server_config(seats='[seat.BF-PLUMBER]\ncreds = "env"\n')
+        err = self.refused(self.server_env())
+        self.assertIn(
+            "seat BF-PLUMBER is configured here (the 'server' listener), but no listener instance holds it",
             err,
         )
 
@@ -1072,7 +1085,8 @@ class PartitionTests(ServerHarness):
         self.write_config(
             seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.BF-PLUMBER]\nbot = "BF-Plumber"\n'
         )
-        err = self.refused(self.env())
+        real = os.path.join(C.REPO_ROOT, C.PARTITION_RELPATH)
+        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=real))
         self.assertIn(
             "seat BF-PLUMBER is configured here (the 'mac' listener), but no listener instance holds it",
             err,
@@ -1103,7 +1117,7 @@ class PartitionTests(ServerHarness):
         self.write_config(
             seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.ZED]\nbot = "Zed"\nenabled = false\n'
         )
-        err = self.refused(self.env())
+        err = self.refused(self.env(SIMPLE_TOOLS_PARTITION=os.path.join(C.REPO_ROOT, C.PARTITION_RELPATH)))
         self.assertIn(
             "seat ZED is configured here (the 'mac' listener), but %s does not list it" % PARTITION,
             err,
@@ -1202,7 +1216,9 @@ class PartitionTests(ServerHarness):
         self.assertEqual(self.fake.registrations, [])
 
     def test_the_cli_run_returns_2_without_waiting(self) -> None:
-        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\n')
+        # A seat on no instance (BF-PLUMBER) is the refusal this CLI run reports;  the server now
+        # holds CLAUDE, so it is no longer a refusing example.
+        self.write_server_config(seats='[seat.BF-PLUMBER]\ncreds = "env"\n')
         result = self.run_cli("daemon", "run", "--wait-lock", env=self.server_env())
         self.assertEqual(result.code, 2)
         self.assertIn("refusing to start", result.err)
@@ -1210,13 +1226,13 @@ class PartitionTests(ServerHarness):
 
     def test_a_reload_that_adds_a_seat_of_the_other_instance_keeps_the_running_config(self) -> None:
         daemon = self.started()
-        self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        self.write_server_config(seats='[seat.BF-FIXER]\ncreds = "env"\n')
         daemon.reload()
         self.assertEqual(sorted(daemon.seats), [SEAT])
-        self.assertNotIn("CLAUDE", daemon.config.seats)
+        self.assertNotIn("BF-FIXER", daemon.config.seats)
         daemon.write_status()
         status = L.read_json(os.path.join(self.root, "listener", "status.json"))
-        self.assertIn("seat CLAUDE is configured here", " ".join(status["config_errors"]))
+        self.assertIn("seat BF-FIXER is configured here", " ".join(status["config_errors"]))
         self.write_server_config()
         daemon.reload()
         self.assertEqual(daemon.reload_refused, [])
@@ -1224,7 +1240,7 @@ class PartitionTests(ServerHarness):
     def test_the_repo_partition_and_both_sample_configs_agree(self) -> None:
         partition, error = C.load_partition(str(PARTITION))
         self.assertIsNone(error)
-        self.assertEqual(partition["CLAUDE"], "mac")
+        self.assertEqual(partition["CLAUDE"], "server")
         gb = sorted(s for s in partition if s.startswith("GB-"))
         self.assertEqual(len(gb), 12)
         self.assertEqual({partition[s] for s in gb}, {"server"})
@@ -1238,10 +1254,9 @@ class PartitionTests(ServerHarness):
         )
         self.assertEqual({s for s, v in bf.items() if v == "none"}, bf_names - {"BF-DIRECTOR"})
         self.assertEqual(
-            {s for s, v in partition.items() if v == "mac"} - S.SERVICE_SEATS,
-            set(launchd.READER_SEATS),
-            "the Mac holds every Mac seat (owner, Thu, Oct 8), the deterministic service "
-            "identities excepted (they hold no reader seat)",
+            {s for s, v in partition.items() if v == "mac"},
+            set(),
+            "the single-server consolidation left the Mac listener holding no seat",
         )
         for seat in ["MA", "JET", "GROK-WEB", "ECHO", "WISE"]:
             self.assertEqual(partition.get(seat), "server", "%s is a cloud seat" % seat)
@@ -1252,7 +1267,11 @@ class PartitionTests(ServerHarness):
         )
         mac = C.from_dict(tomllib.loads(launchd.sample_config(str(self.secrets_dir))))
         self.assertEqual(mac.instance, "mac")
-        self.assertEqual(C.partition_errors(mac, partition, env_instance="mac"), [])
+        # The Mac sample still carries CLAUDE, which the partition now gives to the server:  the
+        # disagreement is refused fail-closed until the Mac's listener is retired.
+        self.assertTrue(
+            any("CLAUDE" in e for e in C.partition_errors(mac, partition, env_instance="mac"))
+        )
         self.assertEqual(sorted(mac.seats), ["CLAUDE"])
         self.assertTrue(
             bf_names <= mac.outgoing_webhook_seats,
@@ -1273,8 +1292,10 @@ class PartitionTests(ServerHarness):
         )
         self.assertEqual(
             sorted(server.seats),
-            sorted(list(gb) + list(CLOUD_SEATS)),
-            "the enabled seats are every GB persona and the five cloud seats",
+            sorted(list(gb) + list(CLOUD_SEATS) + ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK",
+                                                  "CLUTCH", "FX", "MM", "MC"]),
+            "the enabled seats are every GB persona, the five cloud seats and the nine seats the "
+            "single-server consolidation moved to the server",
         )
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]

@@ -78,10 +78,15 @@ class ResolveSeatTests(Harness):
         self.assertIn("answered as", I.check_bot(bot, "BF-PLUMBER", CODEX_EMAIL))
 
     def test_partition(self) -> None:
-        self.assertEqual(I.served_here("CLAUDE", {}), (True, ""))
+        # Single-server consolidation:  the Mac listener serves no seat, the server serves CLAUDE.
+        served, why = I.served_here("CLAUDE", {})
+        self.assertFalse(served)
+        self.assertIn("seat CLAUDE is not served by the Mac listener", why)
+        self.assertTrue(I.served_here("CLAUDE", {"SIMPLE_TOOLS_INSTANCE": "server"})[0])
         served, why = I.served_here("BF-PLUMBER", {})
         self.assertFalse(served)
         self.assertIn("seat BF-PLUMBER is not served by the Mac listener", why)
+        self.assertFalse(I.served_here("BF-PLUMBER", {"SIMPLE_TOOLS_INSTANCE": "server"})[0])
         self.assertFalse(I.served_here("NOT-A-SEAT", {})[0])
         self.assertTrue(I.served_here("GB-COMPILER", {"SIMPLE_TOOLS_INSTANCE": "server"})[0])
         missing = {"SIMPLE_TOOLS_PARTITION": str(self.tmp / "nope.toml")}

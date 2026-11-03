@@ -50,8 +50,11 @@ def folder(path: str) -> str:
 # --------------------------------------------------------------------------------------------
 
 class FakeInfisical:
-    def __init__(self, client_id: str, client_secret: str, secrets_map: dict[str, str]) -> None:
+    def __init__(self, client_id: str, client_secret: str, secrets_map: dict[str, str],
+                 operator: dict[str, str] | None = None) -> None:
         self.client_id, self.client_secret, self.secrets = client_id, client_secret, secrets_map
+        # The Fleet-OPS project's /zulip_operator folder;  None is a host whose project has no such folder.
+        self.operator = operator
         self.token = "tok-" + secrets.token_hex(16)
         self.login_status = 200
         self.read_failures = 0          # 5xx answers before a good read
@@ -87,6 +90,11 @@ class FakeInfisical:
                 if fake.read_failures:
                     fake.read_failures -= 1
                     return self._send(503, {"message": "busy"})
+                if "secretPath=%2Fzulip_operator" in self.path:
+                    if fake.operator is None or "environment=prod" not in self.path:
+                        return self._send(404, {"message": "no folder"})
+                    return self._send(200, {"secrets": [{"secretKey": k, "secretValue": v}
+                                                        for k, v in fake.operator.items()]})
                 if "secretPath=%2Fzulip" not in self.path or "environment=prod" not in self.path:
                     return self._send(404, {"message": "no folder"})
                 self._send(200, {"secrets": [{"secretKey": k, "secretValue": v} for k, v in fake.secrets.items()]})
@@ -120,7 +128,8 @@ class InfisicalEnvTests(unittest.TestCase):
             "ZULIP_ALERT_GB_FIXER_HEADER": "Authorization: Bearer crsr_never",
             "ZULIP_JET_EMAIL": "openai-dot-bot@zulip.test",
             "ZULIP_BF_COMPILER_API_KEY": "bf-" + secrets.token_hex(8),     # a BotFleet bot:  not a server seat
-            "ZULIP_CLAUDE_API_KEY": "mac-" + secrets.token_hex(8),         # a Mac seat
+            "ZULIP_CLAUDE_API_KEY": "zk-" + secrets.token_hex(8),         # CLAUDE:  a server seat now
+            "ZULIP_GROK_BUILD_API_KEY": "gb-" + secrets.token_hex(8),     # GROK-BUILD:  on no instance
             "ZULIP_SITE": "https://evil.test",                             # never from Infisical
             "PATH": "/nowhere",
         }
@@ -138,15 +147,15 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             out, line = IE.build_env(self.env(fake, ZULIP_GB_FIXER_API_KEY="stale-coolify-copy"))
         for name in ("ZULIP_GB_FIXER_EMAIL", "ZULIP_GB_FIXER_API_KEY", "ZULIP_ALERT_GB_FIXER_ENDPOINT",
-                     "ZULIP_ALERT_GB_FIXER_KEY", "ZULIP_JET_EMAIL"):
+                     "ZULIP_ALERT_GB_FIXER_KEY", "ZULIP_JET_EMAIL", "ZULIP_CLAUDE_API_KEY"):
             self.assertEqual(out[name], self.values[name], "%s comes from Infisical, which wins" % name)
-        for name in ("ZULIP_ALERT_GB_FIXER_HEADER", "ZULIP_BF_COMPILER_API_KEY", "ZULIP_CLAUDE_API_KEY"):
+        for name in ("ZULIP_ALERT_GB_FIXER_HEADER", "ZULIP_BF_COMPILER_API_KEY", "ZULIP_GROK_BUILD_API_KEY"):
             self.assertNotIn(name, out)
         self.assertEqual(out["ZULIP_SITE"], "https://simplewithus.zulipchat.com")
         self.assertNotEqual(out["PATH"], "/nowhere")
         self.assertNotIn("INFISICAL_CLIENT_ID", out)
         self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
-        self.assertIn("loaded 5 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other", line)
+        self.assertIn("loaded 6 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other", line)
         for value in list(self.values.values()) + [self.csecret, fake.token]:
             self.assertNotIn(value, line)
 
@@ -158,7 +167,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(out["SENTRY_FLEET_DSN"], "https://k@o1.ingest.us.sentry.io/1")
         self.assertNotIn("SENTRY_API_TOKEN", out)
         self.assertNotIn("SIMPLE_TOOLS_SENTRY_DSN_OTHER", out)
-        self.assertIn("loaded 6 variables", line)
+        self.assertIn("loaded 7 variables", line)
         self.assertNotIn("k@o1", line)
 
     def test_a_refused_login_falls_back_to_the_container_environment_without_a_body(self) -> None:
@@ -172,7 +181,7 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             fake.read_failures = 1
             out, line = IE.build_env(self.env(fake), sleep=lambda s: None)
-        self.assertIn("loaded 5 variables", line)
+        self.assertIn("loaded 6 variables", line)
         # The /zulip read is retried once;  then the notes-queue keys' own folder is read once (AFC-486).
         self.assertEqual([m for m, _ in fake.requests], ["POST", "GET", "GET", "GET"])
         self.assertEqual([folder(p) for m, p in fake.requests if m == "GET"], ["/zulip", "/zulip", "/operator"])
@@ -199,9 +208,112 @@ class InfisicalEnvTests(unittest.TestCase):
         # never a credential, so they are shared names the loader copies from the store.
         self.assertIn("OPERATOR_ZULIP_USER_ID", names)
         self.assertIn("OPERATOR_ZULIP_EMAIL", names)
-        for name in ("ZULIP_CLAUDE_API_KEY", "ZULIP_BF_COMPILER_EMAIL", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE",
-                     "ZULIP_ALERT_GB_TRADER_HEADER"):
+        # CLAUDE moved to the server in the single-server consolidation, so its names load there now.
+        self.assertIn("ZULIP_CLAUDE_API_KEY", names)
+        self.assertIn("CLAUDE_ZULIP_KEY", names)
+        for name in ("ZULIP_GROK_BUILD_API_KEY", "ZULIP_BF_COMPILER_EMAIL", "ZULIP_EMAIL", "ZULIP_API_KEY",
+                     "ZULIP_SITE", "ZULIP_ALERT_GB_TRADER_HEADER"):
             self.assertNotIn(name, names)
+
+    FLEET_OPS = "123e4567-e89b-42d3-a456-426614174000"
+
+    def operator_folder_reads(self, fake: FakeInfisical) -> list[str]:
+        return [p for m, p in fake.requests if m == "GET" and "zulip_operator" in p]
+
+    def test_the_operator_service_identity_loads_from_its_own_project(self) -> None:
+        ops = {
+            "ZULIP_OPERATOR_EMAIL": "operator-bot@zulip.test",
+            "ZULIP_OPERATOR_API_KEY": "zk-" + secrets.token_hex(12),
+            "OPERATOR_ZULIP_USER_ID": "1217148",
+            "OPERATOR_ZULIP_EMAIL": "operator-bot@zulip.test",
+            "ZULIP_CLAUDE_API_KEY": "not-the-operator-folder's-name",  # not a service name:  dropped here
+        }
+        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:
+            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))
+        for name in ("OPERATOR_ZULIP_USER_ID", "OPERATOR_ZULIP_EMAIL"):
+            self.assertEqual(out[name], ops[name], "%s comes from the Fleet-OPS folder" % name)
+        # The credential pair is NEVER injected into the environment, even though the folder
+        # carries it:  the Operator's credentials reach the daemon only through the
+        # scoped-service-token reader, per the owner's clarified normal method.
+        self.assertNotIn("ZULIP_OPERATOR_EMAIL", out)
+        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out)
+        self.assertEqual(out["ZULIP_CLAUDE_API_KEY"], self.values["ZULIP_CLAUDE_API_KEY"],
+                         "a non-service name in the folder is never injected")
+        self.assertIn("Operator service identity from /zulip_operator: 2 of 2", line)
+        reads = self.operator_folder_reads(fake)
+        self.assertEqual(len(reads), 1)
+        self.assertIn("workspaceId=%s" % self.FLEET_OPS, reads[0])
+        for value in ops.values():
+            self.assertNotIn(value, line)
+
+    def test_a_folder_pin_that_disagrees_with_the_host_pin_is_refused(self) -> None:
+        ops = {
+            "ZULIP_OPERATOR_EMAIL": "operator-bot@zulip.test",
+            "ZULIP_OPERATOR_API_KEY": "zk-" + secrets.token_hex(12),
+            "OPERATOR_ZULIP_USER_ID": "1217148",
+            "OPERATOR_ZULIP_EMAIL": "other-bot@zulip.test",
+        }
+        env = self.env  # bound before the with, for readability below
+        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:
+            out, line = IE.build_env(env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS,
+                                         OPERATOR_ZULIP_EMAIL="operator-bot@zulip.test"))
+        self.assertNotIn("OPERATOR_ZULIP_USER_ID", out, "both pins are refused on a disagreement")
+        self.assertEqual(out["OPERATOR_ZULIP_EMAIL"], "operator-bot@zulip.test",
+                         "the host keeps its own pin;  the folder never overrides it")
+        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out, "the pair never loads, pin or no pin")
+        self.assertIn("Operator service pins refused (folder pin disagrees with the host pin)", line)
+        self.assertNotIn(ops["ZULIP_OPERATOR_API_KEY"], line)
+        self.assertNotIn("other-bot@zulip.test", line)
+
+    def test_the_operator_credential_pair_is_never_injected(self) -> None:
+        # Even with no pins anywhere, the folder's credential pair does not enter the
+        # environment:  no Zulip key pair rides env on the normal service-token path.
+        ops = {
+            "ZULIP_OPERATOR_EMAIL": "someone-else@zulip.test",
+            "ZULIP_OPERATOR_API_KEY": "zk-" + secrets.token_hex(12),
+        }
+        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:
+            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))
+        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out)
+        self.assertNotIn("ZULIP_OPERATOR_EMAIL", out)
+        self.assertNotIn(ops["ZULIP_OPERATOR_API_KEY"], line)
+        self.assertNotIn("someone-else@zulip.test", line)
+
+    def test_a_non_numeric_operator_user_id_is_refused_alone(self) -> None:
+        ops = {
+            "ZULIP_OPERATOR_EMAIL": "operator-bot@zulip.test",
+            "ZULIP_OPERATOR_API_KEY": "zk-" + secrets.token_hex(12),
+            "OPERATOR_ZULIP_USER_ID": "not-a-number",
+            "OPERATOR_ZULIP_EMAIL": "operator-bot@zulip.test",
+        }
+        with FakeInfisical(self.cid, self.csecret, self.values, operator=ops) as fake:
+            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))
+        self.assertNotIn("OPERATOR_ZULIP_USER_ID", out)
+        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out, "the pair never loads")
+        self.assertIn("OPERATOR_ZULIP_USER_ID refused (not a positive id)", line)
+        self.assertNotIn("not-a-number", line)
+
+    def test_no_operator_folder_is_a_note_not_a_stop(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:  # operator=None: no such folder
+            out, line = IE.build_env(self.env(fake, INFISICAL_FLEET_OPS_PROJECT_ID=self.FLEET_OPS))
+        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out)
+        self.assertIn("Operator service identity not loaded", line)
+        self.assertEqual(len(self.operator_folder_reads(fake)), 1, "the folder was asked for once")
+
+    def test_the_allowlist_covers_every_name_the_sample_seats_read(self) -> None:
+        # The loader and the shipped config must agree exactly:  every email_env/key_env a server
+        # seat section reads is allowlisted, or the loader never injects it and the seat cannot
+        # connect.  GROK's section reads the GROK_BUILD stem names (its bot file is Grok-Build).
+        sample = tomllib.loads((SERVER_DIR / "listener.toml").read_text())
+        names = IE.allowed_names(IE.server_codes(IE.PARTITION_DEFAULT))
+        read = set()
+        for section in sample.get("seat", {}).values():
+            for field in ("email_env", "key_env"):
+                if section.get(field):
+                    read.add(section[field])
+        self.assertTrue(read, "the sample's seat sections name their variables")
+        self.assertEqual(read - names, set())
+        self.assertIn("GROK_BUILD_ZULIP_KEY", read & names)
 
     # ---- the launcher and the entrypoint as processes
 
@@ -216,7 +328,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(got, {"ZULIP_ALERT_GB_FIXER_KEY": self.values["ZULIP_ALERT_GB_FIXER_KEY"],
                                "INFISICAL_CLIENT_SECRET": None, "INFISICAL_CLIENT_ID": None,
                                "ZULIP_ALERT_GB_FIXER_HEADER": None})
-        self.assertIn("simple-chat: loaded 5 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 6 variables from Infisical", run.stderr)
         self.assertNotIn(self.csecret, run.stderr)
 
     def entrypoint(self, env: dict[str, str]) -> subprocess.CompletedProcess:
@@ -229,7 +341,7 @@ class InfisicalEnvTests(unittest.TestCase):
             run = self.entrypoint(self.env(fake))
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse(json.loads(run.stdout)["running"], "simple-chat daemon status --json ran with the given arguments")
-        self.assertIn("simple-chat: loaded 5 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 6 variables from Infisical", run.stderr)
         self.assertEqual([p.split("?")[0] for _, p in fake.requests],
                          ["/api/v1/auth/universal-auth/login", "/api/v3/secrets/raw", "/api/v3/secrets/raw"])
         # one login, then /zulip and the notes-queue keys' /operator folder (AFC-486)
@@ -438,13 +550,13 @@ class ApplyLiveConfigTests(unittest.TestCase):
         self.assertTrue(self.live.read_text().endswith(enabled))
 
     def test_a_result_that_would_not_load_is_refused_and_nothing_is_written(self) -> None:
-        # A Mac seat in the server's live file is a partition problem the merge cannot fix.
-        self.live.write_text(self.live.read_text() + '\n[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
+        # A seat that is on no instance in the server's live file is a partition problem the merge cannot fix.
+        self.live.write_text(self.live.read_text() + '\n[seat.GROK-BUILD]\nbot = "Grok"\nwake = "http"\n')
         before = self.live.read_text()
         code, out = self.run_main("--apply")
         self.assertEqual(code, 2, out)
         self.assertIn("refused:  the result would not load", out)
-        self.assertIn("seat CLAUDE", out)
+        self.assertIn("seat GROK-BUILD", out)
         self.assertEqual(self.live.read_text(), before)
         self.assertEqual(list(self.tmp.glob("*.bak-*")), [])
 
