@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:1250dba1d29d4b254504e36127b11de1aaaf30e4547bde75236e469a578f35c5 -->
 # FLEET-PROTOCOL — Fleet Tools Manual
 
 This is the manual every AI agent seat uses to reach the owner's tools:  the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
@@ -567,6 +567,8 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | Grok:  web and iOS | GROK-WEB | grok-web-bot@ | A different surface, so a different default. |
 | Clutch | CLUTCH | clutch-bot@ | One seat for every model Clutch runs. |
 | MiniMax Code | MM | mm-bot@ | |
+| Kimi Code (`kimi` CLI) | KIMI | kimi-bot@ | |
+| Z Code desktop IDE | ZCODE | zcode-bot@ | |
 | fx | FX | fx-bot@ | Whatever provider fx is logged into. |
 | Muse Code (`muse` CLI) | MC | mc-bot@ | The `muse-seat` wrapper keeps an assigned seat. |
 | OpenCode (`opencode` CLI) | OPENCODE | opencode-bot@ | The default is for a session Jay opens himself, whatever provider or model OpenCode runs. |
@@ -574,7 +576,7 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | Jet (ChatGPT, OpenAI dot) | JET, its own identity | openai-dot-bot@ | An ordinary Codex thread never signs JET. |
 | **Any session BotFleet launched** | **No default** | the role's own bot | The engine is not the bot's identity.  Only BotFleet assigns `BF-<ROLE>`. |
 | **A Cursor cloud agent Grok Bot drives** | **No default** | the GB persona's bot | Grok Bot assigns `GB-<NAME>`. |
-| **Engine-only CLIs** (Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they ask. |
+| **Engine-only CLIs** (Droid, Hermes, Qwen, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine not registered as a seat) | **No default** | none | Not seats.  Outside a launcher they ask. |
 | **Headless runs** (`claude -p`, `codex exec`, an SDK call, cron) | **No default** | none | A script that wants a seat is a launcher and sets one. |
 | **An app several seats share** | **No default** | none | Conductor runs Claude Code, Codex, Cursor and OpenCode in one workspace app and sets no launcher variable, so each tool inside still reads its own platform file. |
 
@@ -590,6 +592,8 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | GROK-WEB | `Grok Web` | none (cloud seat, no lanes) | none | grok-web-bot@ |
 | CLUTCH | `Clutch` | `clutch/` | `clutch` | clutch-bot@ |
 | MM | `MiniMax` | `minimax/` | `minimax` | mm-bot@ |
+| KIMI | `Kimi` | `kimi/` | `kimi` | kimi-bot@ |
+| ZCODE | `ZCode` | `zcode/` | `zcode` | zcode-bot@ |
 | FX | `Fx` | `fx/` | `fx` | fx-bot@ |
 | MC | `Muse Code` | `muse-code/` | `muse-code` | mc-bot@ |
 | OPENCODE | `OpenCode` | `opencode/` | `opencode` | opencode-bot@ |
@@ -606,13 +610,12 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 
 ### Availability
 
-- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, FX, MC, OPENCODE, MA, ECHO, WISE, and the BotFleet role bots.
+- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, KIMI, ZCODE, FX, MC, OPENCODE, MA, ECHO, WISE, and the BotFleet role bots.
 - **Retired.**  Never assign work to these seats, accept work from them, leave their work In Progress, or wait on them.  Unclaim any leftover lanes.
   - MONET (owner 2026-10-07):  the Monet Claude account and app are no longer used.
   - RENOIR (owner 2026-10-07):  the seat never opened; the Renoir Claude account and app are no longer used.
   - HARNESS (owner 2026-10-07):  replaced by CLUTCH.
   - DSH, DeepSeek Harness (2026-09-19):  use CLUTCH for the Clutch repository.
-  - KIMI, Kimi (owner 2026-08-21):  retired long-term.
   - Retired tags:  `GROK-BUILD` (an accepted spelling of GROK), `DEEPSEEK`, `MINIMAX` (now MM), `MUSE` (now MA).
 - Retired seats and tags have no Zulip bot.  Historical posts under them still mean those seats.  Existing `monet/`, `renoir/` and `harness/` branches and lanes stay readable.
 ## Posting
@@ -812,11 +815,12 @@ One limit is worth knowing:  a sentence end inside an inline code span is still 
 - Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central (`America/Chicago`) (owner 2026-08-09; broadened 2026-08-11, amended 2026-08-12, strengthened 2026-08-22, amended 2026-10-05, reaffirmed and tightened 2026-10-18).
 - This binds every agent, every bot and every platform, in every sentence the owner reads: chat, Zulip messages in every channel and topic, Linear issues and comments, PRs, Notes, commits, release notes and bot-to-bot.
 - Never lead with Zulu, a 24-hour UTC stamp, or a Unix epoch.  Converting is the writer's job.
-- Never type CDT, CST or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT`, not `3:15 CT`, not `08:15Z`.  This covers chat, Linear issues and comments, `STATUS.md`, rollout notes, Zulip #Work-In-Progress and every other topic, GitHub issue and PR bodies, Apple Notes and release notes.  The abbreviations exist only so the writer can do the conversion; they are never part of the sentence.
+- Never type CDT, CST or CT.  The owner assumes am/pm is their time.  The zone is assumed and never named either:  `Central` is as wrong as `CST`, and `America/Chicago` does not belong beside a time (owner 2026-10-29, reaffirmed 2026-11-03).  Write `3:15am`, not `3:15am CDT`, not `3:15 CT`, not `08:15Z`.  This covers chat, Linear issues and comments, `STATUS.md`, rollout notes, Zulip #Work-In-Progress and every other topic, GitHub issue and PR bodies, Apple Notes and release notes.  The abbreviations exist only so the writer can do the conversion; they are never part of the sentence.
 - When the calendar day matters, write `Mon, Oct 5, 2026 at 3:15am`.
-- Give only the Central time (owner 2026-10-18).  Convert every other zone before writing, and do not add the UTC stamp beside it:  a log line at `11:42Z` is `6:42am`, and the market opens at `8:30am`.  This includes times read from logs, APIs, CI and dashboards, which are usually UTC.  Quote a raw stamp only when the owner asks for one, or inside a code block that is itself machine output.
+- Give only the Central time (owner 2026-10-18).  Convert every other zone before writing, and do not add the UTC stamp beside it:  a log line at `11:42Z` is `6:42am` on a summer day and `5:42am` in winter, and the market opens at `8:30am`.  This includes times read from logs, APIs, CI and dashboards, which are usually UTC.  Quote a raw stamp only when the owner asks for one, or inside a code block that is itself machine output.
 - Never guess the conversion.  Use `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Offsets for checking:  [Appendix A](#appendix-a-reference-tables).
 - Machine-readable fields that are ISO-8601 by contract (API responses, JSON payloads, log lines, DB columns) stay UTC.  The rule is about prose a human reads, not wire formats.
+- The rule covers the times a human reads in agent prose:  a market bell stays as the market writes it (`9:30 AM ET`), and a machine-readable field keeps its own format, so a build number or a commit stamp is build provenance and not an owner-facing sentence.  Quote a field you repeat verbatim as it is;  convert only when you write the time in prose.
 - **Exception (owner 2026-08-12):** in product UI, the iOS app and any browser or desktop UI render times in the viewer's device timezone.  A user in another zone seeing their own trade times in Central would be the bug.  The exception covers end-user product surfaces only.  It never relaxes the Central rule for agent-to-agent or agent-to-owner writing.  It also does not apply to server-side console pages that pin a market-day boundary: `app/console/lib/format.ts` pins `America/Chicago` on purpose to match `startOfDayInTimeZone` in `src/lib/db-execution.ts`, so "today's P&L" agrees with the accounting day boundary.
 
 ### Copy Accuracy
