@@ -758,6 +758,9 @@ def _perm_within_ceiling(requested: dict, ceiling: dict) -> str | None:
     return None
 
 
+RAW_MINT_EXCLUDED = frozenset({"administration"})
+
+
 def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
     if self.app_minter is None:
         raise ServerUnavailable("app-token minting is not configured on this relay")
@@ -771,6 +774,11 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         missing = _perm_within_ceiling(requested, ceiling)
         if missing:
             raise PolicyDenied(f"seat ceiling does not cover permission {missing!r}")
+        # Keys only typed workflow verbs may use never cross to a caller-held
+        # raw token;  the verbs mint them internally per call.
+        excluded = sorted(set(requested) & RAW_MINT_EXCLUDED)
+        if excluded:
+            raise PolicyDenied(f"permission {excluded[0]!r} is typed-verb only")
         token, expiry = self.app_minter.token_for(app_slug, repo, dict(requested))
         return {
             "token": token,
