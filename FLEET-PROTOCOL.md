@@ -575,7 +575,7 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | Jet (ChatGPT, OpenAI dot) | JET, its own identity | openai-dot-bot@ | An ordinary Codex thread never signs JET. |
 | **Any session BotFleet launched** | **No default** | the role's own bot | The engine is not the bot's identity.  Only BotFleet assigns `BF-<ROLE>`. |
 | **A Cursor cloud agent Grok Bot drives** | **No default** | the GB persona's bot | Grok Bot assigns `GB-<NAME>`. |
-| **Engine-only CLIs** (Droid, Hermes, Qwen, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they ask. |
+| **Engine-only CLIs** (Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they ask. |
 | **Headless runs** (`claude -p`, `codex exec`, an SDK call, cron) | **No default** | none | A script that wants a seat is a launcher and sets one. |
 | **An app several seats share** | **No default** | none | Conductor runs Claude Code, Codex, Cursor and OpenCode in one workspace app and sets no launcher variable, so each tool inside still reads its own platform file. |
 
@@ -597,8 +597,6 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | MA | `Muse Assist` | `muse-assist/` | `muse-assist` | muse-assist-bot@ |
 | ECHO | `Echo` | `echo/`, `instinct/` | `echo` | instinct-bat-bot@ |
 | WISE | `Wise` | `wise/`, `instinct/` | `wise` | instinct-owl-bot@ |
-| KIMI | `Kimi` | `kimi/` | `kimi` | kimi-bot@ |
-| ZCODE | `ZCode` | `zcode/` | `zcode` | zcode-bot@ |
 
 - **Tags.**  The seat column is the tag:  `[CLAUDE]`, `[AG]`, `[MM]`, and so on.  A seat with sessions carries a session suffix in the same bracket.  Mention names and credential file codes are in the guide's [Who's Here](docs/protocols/zulip-fleet-guide.md#whos-here).
 - **Lanes.**  New lanes are `~/apps/lanes/<Repo>/<lane token>-<slug>`, where `<Repo>` is the repo's folder name under `~/Code`.  The short tokens `ag` and `mm` are accepted aliases.
@@ -609,12 +607,13 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 
 ### Availability
 
-- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, FX, MC, OPENCODE, MA, ECHO, WISE, KIMI, ZCODE, and the BotFleet role bots.
+- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, FX, MC, OPENCODE, MA, ECHO, WISE, and the BotFleet role bots.
 - **Retired.**  Never assign work to these seats, accept work from them, leave their work In Progress, or wait on them.  Unclaim any leftover lanes.
   - MONET (owner 2026-10-07):  the Monet Claude account and app are no longer used.
   - RENOIR (owner 2026-10-07):  the seat never opened; the Renoir Claude account and app are no longer used.
   - HARNESS (owner 2026-10-07):  replaced by CLUTCH.
   - DSH, DeepSeek Harness (2026-09-19):  use CLUTCH for the Clutch repository.
+  - KIMI, Kimi (owner 2026-08-21):  retired long-term.
   - Retired tags:  `GROK-BUILD` (an accepted spelling of GROK), `DEEPSEEK`, `MINIMAX` (now MM), `MUSE` (now MA).
 - Retired seats and tags have no Zulip bot.  Historical posts under them still mean those seats.  Existing `monet/`, `renoir/` and `harness/` branches and lanes stay readable.
 ## Posting

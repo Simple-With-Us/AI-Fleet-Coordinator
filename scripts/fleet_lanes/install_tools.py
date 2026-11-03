@@ -7772,6 +7772,10 @@ def _seed_fake_home(home: str) -> None:
         ".grok/hooks/imported-from-claude.json",
         {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}},
     )
+    put(
+        ".zcode/cli/config.json",
+        {"hooks": {"events": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}}},
+    )
     os.makedirs(
         os.path.join(home, ".minimax", "plugins"), exist_ok=True
     )  # MiniMax Code: an empty plugins dir
