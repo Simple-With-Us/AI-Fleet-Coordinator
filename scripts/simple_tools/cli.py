@@ -2918,7 +2918,7 @@ REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 REMOTE_TIMEOUT_S = 40
 REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read")
-REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm", "edit")
+REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm", "edit", "resolve")
 REMOTE_VERBS = REMOTE_READ_VERBS + REMOTE_WRITE_VERBS
 
 
@@ -3270,7 +3270,8 @@ def _remote_call(
 def _remote_write_args(
     rt: Runtime, cmd: str, args: argparse.Namespace
 ) -> tuple[str, dict[str, Any]]:
-    """post / reply / react / dm to the hosted zulip_* tool of the same meaning.  A write needs its own switch
+    """post / reply / react / dm / edit / resolve to the hosted zulip_* tool of the same meaning.  A write
+    needs its own switch
     (SIMPLE_CHAT_REMOTE_WRITES=1) on top of SIMPLE_CHAT_REMOTE=1;  the hosted server still applies its own
     tagging, secret scan, recipient rules and rate limits.  Options with no hosted equivalent are refused."""
     if str(rt.env.get("SIMPLE_CHAT_REMOTE_WRITES", "")).strip() != "1":
@@ -3290,6 +3291,8 @@ def _remote_write_args(
             raise RemoteError(f"{flag} has no hosted equivalent in remote mode")
     if cmd == "react":
         return "zulip_react", {"message_id": args.id, "emoji": args.emoji}
+    if cmd == "resolve":
+        return "zulip_resolve_topic", {"channel": args.channel, "topic": args.topic}
     words = list(getattr(args, "text", None) or [])
     text = rt.stdin.read() if words == ["-"] else " ".join(words)
     if not text.strip():

@@ -38,7 +38,7 @@ class RemoteRecall(unittest.TestCase):
 
         def fake(url, headers, body, timeout):
             calls.append((url, headers, json.loads(body)))
-            return answer
+            return answer(calls[-1]) if callable(answer) else answer
 
         def boom(*a, **k):
             raise AssertionError("the direct or public route was reached in remote mode")
@@ -110,15 +110,56 @@ class RemoteRecall(unittest.TestCase):
         self.assertEqual((code, calls), (2, []))
         self.assertIn("SIMPLE_RECALL_REMOTE_WRITES", err)
 
-    def test_contribute_maps_to_recall_contribute_without_a_caller_seat(self):
+    IDENTITIES = {"default_identity": "CODEX", "authenticated_seat": "CODEX", "transport": "hosted",
+                  "identities": [{"identity": "CODEX", "zulip": "configured", "linear": "configured",
+                                  "recall": "configured"}]}
+
+    def seat_then(self, structured, contribute_answer=None):
+        """Answers identities with `structured`, then recall_contribute with the stored answer."""
+        def answer(call):
+            if call[2]["params"]["name"] == "identities":
+                return reply(structured)
+            return contribute_answer or reply({"id": "1", "doc_id": "d", "seat": "CODEX", "duplicate": False}, "stored")
+        return answer
+
+    def test_contribute_names_the_connections_verified_seat(self):
         code, out, err, calls = self.run_cli(
             ["contribute", self.LESSON, "--category", "lesson", "--app", "fleet", "--title", "pm2", "--url", "https://x.example/1"],
-            reply({"id": "1", "doc_id": "d", "seat": "CODEX", "duplicate": False}, "stored"), env=self.W)
+            self.seat_then(self.IDENTITIES), env=self.W)
         self.assertEqual(code, 0, err)
-        self.assertEqual(calls[0][2]["params"], {"name": "recall_contribute", "arguments": {
-            "text": self.LESSON, "category": "lesson", "app": "fleet", "title": "pm2", "url": "https://x.example/1"}})
-        self.assertNotIn("idempotency_key", calls[0][2]["params"]["arguments"])
-        self.assertNotIn("seat", calls[0][2]["params"]["arguments"])
+        self.assertEqual([c[2]["params"]["name"] for c in calls], ["identities", "recall_contribute"])
+        self.assertEqual(calls[0][2]["params"]["arguments"], {})
+        args = calls[1][2]["params"]["arguments"]
+        self.assertEqual(args, {"text": self.LESSON, "category": "lesson", "app": "fleet",
+                                "title": "pm2", "url": "https://x.example/1", "identity": "CODEX"})
+        self.assertNotIn("idempotency_key", args)
+        self.assertNotIn("seat", args)
+
+    def test_contribute_without_a_proven_seat_sends_no_write(self):
+        for structured in (
+            {"default_identity": "CODEX", "authenticated_seat": "ECHO",  # disagrees with default
+             "identities": [{"identity": "CODEX"}, {"identity": "ECHO"}]},
+            {"default_identity": "CODEX", "authenticated_seat": "", "identities": [{"identity": "CODEX"}]},
+            {"default_identity": "CODEX", "authenticated_seat": "CODEX",
+             "identities": [{"identity": "ECHO"}]},  # own seat not listed as callable
+            {"default_identity": "CODEX", "authenticated_seat": "CODEX", "identities": "nope"},
+            {"authenticated_seat": "CODEX", "identities": [{"identity": "CODEX"}]},  # no default to agree with
+        ):
+            with self.subTest(structured=structured):
+                code, _, err, calls = self.run_cli(
+                    ["contribute", self.LESSON, "--category", "lesson"],
+                    self.seat_then(structured), env=self.W)
+                self.assertEqual(code, 2)
+                self.assertEqual([c[2]["params"]["name"] for c in calls], ["identities"])
+                self.assertIn("write was not sent", err)
+
+    def test_contribute_when_the_identity_check_fails_no_write_is_sent(self):
+        def answer(call):
+            return reply({"code": "not_authorized"}, is_error=True)
+        code, _, err, calls = self.run_cli(["contribute", self.LESSON, "--category", "lesson"], answer, env=self.W)
+        self.assertEqual(code, 2)
+        self.assertEqual([c[2]["params"]["name"] for c in calls], ["identities"])
+        self.assertIn("not_authorized", err)
 
     def test_contribute_refuses_seat_and_force(self):
         for extra in (["--seat", "ECHO"], ["--force"]):
