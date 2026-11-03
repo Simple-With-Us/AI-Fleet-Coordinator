@@ -445,13 +445,22 @@ class GitHubClient:
         if len(parts) != 2 or not all(parts) or ".." in repo:
             raise ValueError(f"repo must look like owner/name, got {repo!r}")
 
-    def open_pr(self, repo: str, base: str, head: str, title: str, body: str) -> dict:
+    def open_pr(
+        self, repo: str, base: str, head: str, title: str, body: str, draft: bool = False
+    ) -> dict:
         self._check_repo(repo)
+        if type(draft) is not bool:
+            raise ValueError("draft must be a boolean")
+        payload = {"title": title, "head": head, "base": base, "body": body}
+        if draft:
+            payload["draft"] = True
         data = self._call(
             "POST",
             f"/repos/{repo}/pulls",
-            {"title": title, "head": head, "base": base, "body": body},
+            payload,
         )
+        if draft and data.get("draft") is not True:
+            raise RelayGitHubError(502, "draft PR creation outcome unverifiable")
         return {"number": data.get("number"), "url": data.get("html_url")}
 
     def edit_pr(

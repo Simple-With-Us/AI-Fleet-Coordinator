@@ -284,7 +284,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_open_pr",
     title: "Open Pull Request",
     description: "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
-    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" } }),
+    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" } }),
   },
   {
     name: "gr_edit_pr",

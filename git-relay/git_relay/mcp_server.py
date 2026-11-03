@@ -55,6 +55,7 @@ TOOLS = [
                 "head": {"type": "string"},
                 "title": {"type": "string"},
                 "body": {"type": "string"},
+                "draft": {"type": "boolean"},
             },
             "required": ["repo", "base", "head", "title", "body"],
         },
@@ -173,6 +174,8 @@ def _validate_args(name: str, args: dict) -> str | None:
             return f"argument {key!r} must be a string"
         if kind == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
             return f"argument {key!r} must be an integer"
+        if kind == "boolean" and type(value) is not bool:
+            return f"argument {key!r} must be a boolean"
         if kind == "object" and not isinstance(value, dict):
             return f"argument {key!r} must be an object"
     thread_id = args.get("thread_id")

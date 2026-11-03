@@ -212,6 +212,29 @@ test("gr_open_pr runs through the front and returns the relay's answer", async (
   assert.equal(seen[0].body.repo, "a/b");
 });
 
+test("draft creation is optional, strictly boolean and uses the existing open route", async () => {
+  const args = { repo: "a/b", base: "main", head: "feature", title: "Title", body: "Body" };
+  const seen = [];
+  const tools = grHarness(new GrRelayClient({
+    baseUrl: "https://git-relay.example.test", accessId: "test-access-id",
+    accessSecret: "test-access-secret", bearer: "sbt_jet-chat_testbearer",
+    fetch: async (url, init) => {
+      seen.push({ url, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ number: 1, url: "url" }), { status: 200 });
+    },
+  }));
+  for (const extra of [{}, { draft: false }, { draft: true }]) {
+    const result = await tools.call("gr_open_pr", { ...args, ...extra });
+    assert.ok(!result.isError, result.content[0].text);
+    assert.deepEqual(seen.at(-1), { url: "https://git-relay.example.test/v1/open_pr", body: { ...args, ...extra } });
+  }
+  for (const draft of [null, "true", "false", 1, 0, [], {}]) {
+    const result = await tools.call("gr_open_pr", { ...args, draft });
+    assert.equal(result.isError, true);
+  }
+  assert.equal(seen.length, 3);
+});
+
 test("gr tools answer not_configured when the front is absent, and a relay 4xx surfaces as relay_refused", async () => {
   const bare = grHarness(null);
   const missing = await bare.call("gr_merge_pr", { repo: "a/b", number: 1 });
