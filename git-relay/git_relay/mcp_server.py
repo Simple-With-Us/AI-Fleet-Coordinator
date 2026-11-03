@@ -249,6 +249,11 @@ class RelayMcp:
         return _error(message, -32601, f"unknown method {method!r}")
 
     def _call_tool(self, message: dict, name: str, args: dict) -> dict:
+        if name == "open_pr" and "draft" in args:
+            if type(args["draft"]) is not bool:
+                return _error(message, -32602, "argument 'draft' must be a boolean")
+            if args["draft"] is False:
+                args = {key: value for key, value in args.items() if key != "draft"}
         req = urllib.request.Request(
             f"{self._url}/v1/{name}",
             method="POST",

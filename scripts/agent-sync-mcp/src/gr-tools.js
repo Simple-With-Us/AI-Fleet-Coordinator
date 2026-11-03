@@ -209,6 +209,13 @@ export class GrRelayClient {
    * and HTTP status.  Never throws on a relay refusal - a 4xx body is data
    * the tool caller should see (its own allowlist answer). */
   async call(action, args) {
+    if (action === "open_pr" && args && Object.hasOwn(args, "draft")) {
+      if (typeof args.draft !== "boolean") return { status: 400, body: { error: "draft_must_be_boolean" } };
+      if (args.draft === false) {
+        args = { ...args };
+        delete args.draft;
+      }
+    }
     const body = JSON.stringify(args ?? {});
     const credential = await this.#credential(action, body);
     if (credential === null) return { status: 503, body: { error: "not_configured" }, localFailure: true };
