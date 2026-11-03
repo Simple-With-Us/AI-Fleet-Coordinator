@@ -228,7 +228,9 @@ class LargeTextEndToEndTests(unittest.TestCase):
         status, body = self.post(
             "wf_git_blob_create", {"repo": "example/repo", "text": "x", "allow_large_text": False}
         )
-        self.assertEqual((status, body), (200, {"blob": {"sha": GitObjectsClient.blob_sha(b"x"), "size": 1}}))
+        self.assertEqual(
+            (status, body), (200, {"blob": {"sha": GitObjectsClient.blob_sha(b"x"), "size": 1}})
+        )
         status, body = self.post(
             "wf_git_tree_create",
             {
@@ -243,7 +245,11 @@ class LargeTextEndToEndTests(unittest.TestCase):
         self.client.blob_raw = raw
         status, body = self.post(
             "wf_git_blob_get",
-            {"repo": "example/repo", "sha": GitObjectsClient.blob_sha(raw), "allow_large_text": False},
+            {
+                "repo": "example/repo",
+                "sha": GitObjectsClient.blob_sha(raw),
+                "allow_large_text": False,
+            },
         )
         self.assertEqual(status, 200)
         self.assertEqual(body["blob"]["text"], "x")

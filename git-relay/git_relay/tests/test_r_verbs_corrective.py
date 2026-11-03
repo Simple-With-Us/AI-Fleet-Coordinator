@@ -437,9 +437,7 @@ class LargeTextTests(unittest.TestCase):
         )
         self.assertEqual(out["tree"]["files"], 1)
         s, _ = svc({"sha": self.blob_sha(b"x")})
-        out = s.run(
-            "wf_git_blob_create", {"repo": REPO, "text": "x", "allow_large_text": False}
-        )
+        out = s.run("wf_git_blob_create", {"repo": REPO, "text": "x", "allow_large_text": False})
         self.assertEqual(out["blob"]["sha"], self.blob_sha(b"x"))
         raw = b"x"
         reply = {
@@ -499,8 +497,6 @@ class LargeTextTests(unittest.TestCase):
         out = s.run("wf_git_blob_get", {"repo": REPO, "sha": sha, "allow_large_text": True})
         self.assertEqual(out["blob"]["text"], self.TEXT)
 
-
-
     def test_large_text_envelope_actions_and_full_scan(self):
         from git_relay.secret_scan import MAX_SCAN_NODES, SecretInputError, scan_args
         from git_relay.server import (
@@ -516,6 +512,7 @@ class LargeTextTests(unittest.TestCase):
         text = "a" * 150000 + "\n-----BEGIN " + "PRIVATE KEY-----"
         with self.assertRaises(SecretInputError):
             scan_args({"text": text}, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
+
 
 if __name__ == "__main__":
     unittest.main()
