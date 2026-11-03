@@ -20,10 +20,33 @@ from simple_tools import notes as N
 from simple_tools import session_ids as S
 from simple_tools.tests import test_mcp_identity as TI
 from simple_tools.tests.harness import SESSION, Harness
+from simple_tools.tests.test_notes_client import FakeConfirm
 
 EXEMPT = ("GROK-BOT", "GB-FIXER", "MA", "JET", "WISE", "ECHO")
 SID = "thread-id-0001"
 SCRIPT = Path("/fake/apple-notes-coding.sh")
+
+
+class ProvisionedConfirm:
+    """A deliberate Mac bearer provision for these fixtures, never a skipped confirmation:  every seat a test
+    authenticates as has its own bearer file and the hosted gateway confirms it fresh on every action - the strict
+    notes_client.confirm_local_seat contract (one bounded whoami rpc per action, exact seat match), answered by the
+    same FakeConfirm the notes_client and MCP notes tests use.  Auth refusals (another seat's bearer, revocation,
+    rotation, an unreachable gateway) are covered in those modules;  this module's subject is session ids."""
+
+    def __init__(self):
+        self.by_seat: dict = {}
+
+    def factory(self, path, expected_seat=None, identity_env=None):
+        confirm = self.by_seat.get(expected_seat)
+        if confirm is None:
+            confirm = self.by_seat[expected_seat] = FakeConfirm(seat=expected_seat)
+        confirm.constructed.append((str(path), expected_seat))
+        return confirm
+
+    @property
+    def confirms(self):
+        return sum(confirm.confirms for confirm in self.by_seat.values())
 
 
 class FakeRun:
@@ -244,14 +267,18 @@ class DirectRunnerTests(unittest.TestCase):
 
 class ToolTests(TI.IdentityHarness):
     """The stdio tools on the Mac's direct path:  the script is found and its runs are faked, so every write that the
-    session rule lets through reaches self.run.  CLAUDE has CLAUDE_CODE_SESSION_ID in the harness environment."""
+    session rule lets through reaches self.run.  CLAUDE has CLAUDE_CODE_SESSION_ID in the harness environment.
+    The Mac's bearer provision is faked deliberately (ProvisionedConfirm:  each seat's own bearer, confirmed fresh
+    per action) - never skipped."""
 
     def setUp(self):
         super().setUp()
         self.run = FakeRun()
+        self.confirm = ProvisionedConfirm()
         for patch in (
             mock.patch.object(N, "direct_available", return_value=SCRIPT),
             mock.patch.object(N, "_run_helper", self.run),
+            mock.patch("simple_tools.fleet_bearer.Client", self.confirm.factory),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -386,6 +413,7 @@ class CliTests(Harness):
         with (
             mock.patch.object(N, "direct_available", return_value=SCRIPT),
             mock.patch.object(N, "_run_helper", run),
+            mock.patch("simple_tools.fleet_bearer.Client", ProvisionedConfirm().factory),
         ):
             return run, self.run_cli("create", "[AFC, Claude] cli t", *argv, stdin="body\n", env=environ, prog="simple-notes")
 
