@@ -20,9 +20,7 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location(
-    "fleet_vm_status", HERE / "fleet-vm-status.py"
-)
+spec = importlib.util.spec_from_file_location("fleet_vm_status", HERE / "fleet-vm-status.py")
 collector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(collector)
 
@@ -52,10 +50,17 @@ def make_host_proc(root):
 def git(repo, *args):
     subprocess.run(
         ["git", "-C", str(repo)] + list(args),
-        check=True, capture_output=True, text=True,
-        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1",
-             "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
-             "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"},
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
     )
 
 
@@ -67,7 +72,9 @@ class OmissionTests(unittest.TestCase):
             proc = Path(tmp) / "proc"
             proc.mkdir()
             metrics = collector.collect_host_metrics(
-                proc=proc, cpu_count=lambda: None, getloadavg=lambda: (_ for _ in ()).throw(OSError())
+                proc=proc,
+                cpu_count=lambda: None,
+                getloadavg=lambda: (_ for _ in ()).throw(OSError()),
             )
             for key in ("uptimeSec", "load1", "load5", "load15", "cpuCount", "memory", "swap"):
                 self.assertNotIn(key, metrics, key)
@@ -79,7 +86,9 @@ class OmissionTests(unittest.TestCase):
             make_host_proc(proc)
             metrics = collector.collect_host_metrics(proc=proc, cpu_count=lambda: 4)
             self.assertEqual(metrics["uptimeSec"], 3600)
-            self.assertEqual((metrics["load1"], metrics["load5"], metrics["load15"]), (1.5, 0.5, 0.25))
+            self.assertEqual(
+                (metrics["load1"], metrics["load5"], metrics["load15"]), (1.5, 0.5, 0.25)
+            )
             self.assertEqual(metrics["cpuCount"], 4)
             self.assertEqual(metrics["memory"]["totalBytes"], 1024000 * 1024)
             self.assertEqual(metrics["swap"]["freeBytes"], 102400 * 1024)
@@ -120,7 +129,12 @@ class ProcessTests(unittest.TestCase):
             proc.mkdir()
             make_host_proc(proc)
             # exe symlink basename drives the name: rename targets to allowlisted names.
-            for pid, name, start in ((101, "muse", 2000), (102, "muse", 1000), (103, "node", 3000), (104, "evil", 1)):
+            for pid, name, start in (
+                (101, "muse", 2000),
+                (102, "muse", 1000),
+                (103, "node", 3000),
+                (104, "evil", 1),
+            ):
                 folder = proc / str(pid)
                 folder.mkdir()
                 rest = ["S"] + ["0"] * 18 + [str(start)] + ["0"] * 5
@@ -164,7 +178,9 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual(collector.collect_processes(proc=proc, clock_ticks=100), [])
 
     def test_missing_proc_omits_processes_section(self):
-        self.assertIsNone(collector.collect_processes(proc=Path("/no-such-proc-xyz"), clock_ticks=100))
+        self.assertIsNone(
+            collector.collect_processes(proc=Path("/no-such-proc-xyz"), clock_ticks=100)
+        )
 
 
 class HostLabelTests(unittest.TestCase):
@@ -253,7 +269,8 @@ class ReportShapeTests(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 code_rc = collector.main(
                     ["--json", "--home", str(home), "--code-root", str(code)],
-                    proc=proc, env={"FLEET_VM_HOST_LABEL": "vm-a", "FLEET_VM_SEATS": "MC"},
+                    proc=proc,
+                    env={"FLEET_VM_HOST_LABEL": "vm-a", "FLEET_VM_SEATS": "MC"},
                 )
             self.assertEqual(code_rc, 0)
             doc = json.loads(out.getvalue())

@@ -73,11 +73,11 @@ HOST_LABEL_FILE = Path(".config/fleet-tools/vm-host-label")
 
 def utc_now() -> str:
     """The time this report was made,  in the spelling the doctor uses."""
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def iso_from_timestamp(value: float) -> str:
-    moment = datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+    moment = datetime.datetime.fromtimestamp(value, datetime.UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -242,9 +242,7 @@ def collect_disks(root_mount, code_root, statvfs=os.statvfs):
     return disks
 
 
-def collect_host_metrics(
-    proc=Path("/proc"), cpu_count=os.cpu_count, getloadavg=None
-):
+def collect_host_metrics(proc=Path("/proc"), cpu_count=os.cpu_count, getloadavg=None):
     """Load,  cpus,  memory,  swap and uptime.  Each unmeasurable one is left out."""
     if getloadavg is None:
         getloadavg = getattr(os, "getloadavg", None)
@@ -407,10 +405,7 @@ def collect_harness_sessions(home):
         count = 0
         newest = None
         for directory, dirnames, filenames in os.walk(folder):
-            dirnames[:] = [
-                name for name in dirnames
-                if not (Path(directory) / name).is_symlink()
-            ]
+            dirnames[:] = [name for name in dirnames if not (Path(directory) / name).is_symlink()]
             for filename in filenames:
                 if count >= SESSION_FILE_CAP:
                     break
@@ -452,9 +447,7 @@ def _checkout_unpushed(repo, run_command):
     """
     upstream = _git(repo, ["rev-parse", "--abbrev-ref", "@{upstream}"], run_command)
     if upstream and upstream.strip():
-        ahead = _git(
-            repo, ["rev-list", "--count", "@{upstream}..HEAD"], run_command
-        )
+        ahead = _git(repo, ["rev-list", "--count", "@{upstream}..HEAD"], run_command)
         if ahead is None:
             return None
         try:
@@ -480,9 +473,7 @@ def collect_checkout(repo, run_command=run):
     has_head = bool(head and head.strip())
     if has_head:
         row["headShort"] = head.strip()
-    status = _git(
-        repo, ["status", "--porcelain=v1", "--untracked-files=normal"], run_command
-    )
+    status = _git(repo, ["status", "--porcelain=v1", "--untracked-files=normal"], run_command)
     if status is not None:
         tracked = 0
         untracked = 0
@@ -524,8 +515,16 @@ def collect_checkouts(code_root, run_command=run):
 # MARK: - The report
 
 
-def build_report(home, code_root, proc=Path("/proc"), env=None, run_command=run,
-                 statvfs=os.statvfs, cpu_count=os.cpu_count, clock_ticks=None):
+def build_report(
+    home,
+    code_root,
+    proc=Path("/proc"),
+    env=None,
+    run_command=run,
+    statvfs=os.statvfs,
+    cpu_count=os.cpu_count,
+    clock_ticks=None,
+):
     """The report,  as Muster will read it.  Unmeasured sections are omitted."""
     home = Path(home)
     env = os.environ if env is None else env
@@ -561,9 +560,7 @@ def write_report(path, document):
     then renamed over.  The folder is created 0700 when it is absent."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    handle, temporary = tempfile.mkstemp(
-        prefix=".vm-status.", suffix=".tmp", dir=str(path.parent)
-    )
+    handle, temporary = tempfile.mkstemp(prefix=".vm-status.", suffix=".tmp", dir=str(path.parent))
     try:
         os.fchmod(handle, 0o600)
         with os.fdopen(handle, "w") as output:
@@ -585,19 +582,26 @@ def parse_args(argv=None):
         description="Write the fleet VM status report that Muster reads."
     )
     parser.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="print the report to stdout and write nothing (for a forced-command pull)",
     )
     parser.add_argument(
-        "--home", type=Path, default=Path.home(),
+        "--home",
+        type=Path,
+        default=Path.home(),
         help="the home folder the default paths are under (default: this user's home)",
     )
     parser.add_argument(
-        "--code-root", type=Path, default=None,
+        "--code-root",
+        type=Path,
+        default=None,
         help="the folder the checkouts live in (default: FLEET_VM_CODE_ROOT, else ~/Code)",
     )
     parser.add_argument(
-        "--output", type=Path, default=None,
+        "--output",
+        type=Path,
+        default=None,
         help="where to write (default: <home>/.local/state/fleet-tools/vm-status.json)",
     )
     return parser.parse_args(argv)
@@ -607,9 +611,7 @@ def main(argv=None, proc=Path("/proc"), env=None, run_command=run):
     args = parse_args(argv)
     env = os.environ if env is None else env
     code_root = resolve_code_root(args.home, env, explicit=args.code_root)
-    document = build_report(
-        args.home, code_root, proc=proc, env=env, run_command=run_command
-    )
+    document = build_report(args.home, code_root, proc=proc, env=env, run_command=run_command)
     if args.json:
         json.dump(document, sys.stdout, indent=2)
         sys.stdout.write("\n")
