@@ -120,6 +120,15 @@ public struct PM2Client {
     /// the menu bar app sit busy for far longer than twenty seconds.
     public static let mcpSettleWindow: TimeInterval = 20
 
+    /// How long the MCP server is given to answer after a start, before the
+    /// start is treated as having done nothing.
+    ///
+    /// The server is a local process that answers its own health endpoint
+    /// within a second or two, so a start that has not brought it up by now
+    /// did not bring it up at all.  The window is short so a start on a stale
+    /// record, which starts nothing, is repaired without a long wait.
+    public static let mcpStartProbeWindow: TimeInterval = 5
+
     private let commands: CommandRunning
     private let environment: [String: String]
     private let nodePath: String?
@@ -272,10 +281,11 @@ public struct PM2Client {
     /// restart carries the same ecosystem-file fallback as any other.
     ///
     /// `stale` is the set the caller already read, so a start does not pay for
-    /// a second listing.  Pass `nil` when the caller has none.
+    /// a listing of its own.  `nil` means the caller has no set:  the start is
+    /// then a plain start, because a start that does not bring the application
+    /// up is the caller's own signal that the record was stale.
     public func start(appName: String, stale: Set<String>? = nil) throws {
-        let staleSet = stale ?? (snapshot()?.stale ?? [])
-        if staleSet.contains(appName) {
+        if let stale, stale.contains(appName) {
             try restart(appName: appName)
             return
         }
@@ -325,11 +335,12 @@ public struct PM2Client {
         // An application pm2 has no record of is stopped,  the same reading
         // `state(ofApp:)` gives,  and a pm2 that could not be asked at all is
         // unknown.  One listing answers both the state and the stale set.
-        let current = snapshot.map { $0.states[appName] ?? .stopped } ?? .unknown
+        guard let snapshot else { return .unknown }
+        let current = snapshot.states[appName] ?? .stopped
         if current == wanted { return current }
         if current == .unknown { return current }
         if running {
-            try start(appName: appName, stale: snapshot?.stale)
+            try start(appName: appName, stale: snapshot.stale)
         } else {
             try stop(appName: appName)
         }
@@ -415,21 +426,40 @@ public final class McpServerControl {
     /// observed state is never acted on: the Control app does not stop a
     /// service it cannot see, and it does not start one it cannot prove is
     /// missing.
+    ///
+    /// A start is one pm2 command, and the listing that would tell a stale
+    /// record from a running one is a second command that every start would
+    /// pay for.  The start is not paid for that listing instead:  pm2 answers
+    /// a start on a record it believes is online with "already started" and
+    /// starts nothing, so a start that leaves the server down has proved the
+    /// record was stale, and the record is then restarted.
     @discardableResult
     public func setRunning(_ running: Bool, within: TimeInterval = PM2Client.mcpSettleWindow) async throws -> ManagedServiceState {
         let wanted: ManagedServiceState = running ? .running : .stopped
         let current = await state()
         if current == wanted { return current }
         if current == .unknown { return current }
+        if running {
+            try runPM2Change { try pm2.start(appName: PM2Client.mcpAppName) }
+        } else {
+            try runPM2Change { try pm2.stop(appName: PM2Client.mcpAppName) }
+        }
+        let settled = await ManagedServices.settle(to: wanted,
+                                                   within: min(within, PM2Client.mcpStartProbeWindow)) {
+            await self.state()
+        }
+        guard running, settled != wanted else { return settled }
+        // The start did not bring the server up, so the record was stale:  it
+        // is restarted, which runs the application's script again, and the
+        // restart carries the same ecosystem-file fallback as any other.
+        try runPM2Change { try pm2.restart(appName: PM2Client.mcpAppName) }
+        return await ManagedServices.settle(to: wanted, within: within) { await self.state() }
+    }
+
+    /// Runs a pm2 change and says what went wrong, in the Control app's words.
+    private func runPM2Change(_ change: () throws -> Void) throws {
         do {
-            if running {
-                // The stale set is read here so a record that pm2 believes is
-                // online is restarted rather than answered with "already
-                // started",  which is what it would otherwise do.
-                try pm2.start(appName: PM2Client.mcpAppName, stale: pm2.snapshot()?.stale)
-            } else {
-                try pm2.stop(appName: PM2Client.mcpAppName)
-            }
+            try change()
         } catch let error as McpServerError {
             throw error
         } catch let error as CommandExitError {
@@ -444,7 +474,6 @@ public final class McpServerControl {
         } catch {
             throw McpServerError.refused("pm2 could not change the BotFleet MCP Server.")
         }
-        return await ManagedServices.settle(to: wanted, within: within) { await self.state() }
     }
 
     /// Restarts the MCP server and reports what was seen.

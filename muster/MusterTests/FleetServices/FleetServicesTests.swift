@@ -324,9 +324,20 @@ final class FleetServicesTests: XCTestCase {
     func testStartingAPM2ApplicationRunsPM2Start() throws {
         let commands = FleetServiceCommands()
         try pm2(commands).start(appName: "shellular")
-        // The start looks at the listing first, because a stale record cannot
-        // be started with `pm2 start`, and then it starts the application.
-        XCTAssertEqual(commands.calls, [["jlist"], ["start", "shellular"]])
+        // A start is one pm2 command.  The listing that would tell a stale
+        // record from a running one is a second command, and a caller that
+        // cannot tell them apart finds out from a start that achieved
+        // nothing rather than from a listing every start would pay for.
+        XCTAssertEqual(commands.calls, [["start", "shellular"]])
+    }
+
+    func testAStartWithNoStaleSetReadsNoListing() throws {
+        // The reconciler reads the listing and hands the stale set over, so a
+        // start never has to read one of its own.
+        let commands = FleetServiceCommands()
+        commands.pm2Listing = #"[{"name": "botfleet-mcp", "pm2_env": {"status": "online"}}]"#
+        try pm2(commands).start(appName: "botfleet-mcp")
+        XCTAssertEqual(commands.calls, [["start", "botfleet-mcp"]])
     }
 
     func testStartingAStaleApplicationRestartsItInsteadOfStartingIt() throws {
@@ -335,8 +346,7 @@ final class FleetServicesTests: XCTestCase {
         // never come back and the start would report a success it did not
         // achieve.  A stale record is restarted, which runs the script again.
         let commands = FleetServiceCommands()
-        commands.pm2Listing = #"[{"name": "botfleet-mcp", "pm2_env": {"status": "online"}}]"#
-        try pm2(commands).start(appName: "botfleet-mcp")
+        try pm2(commands).start(appName: "botfleet-mcp", stale: ["botfleet-mcp"])
         XCTAssertTrue(commands.calls.contains { $0 == ["restart", "botfleet-mcp"] })
         XCTAssertFalse(commands.calls.contains { $0.first == "start" })
     }
@@ -350,13 +360,11 @@ final class FleetServicesTests: XCTestCase {
         try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
         try Data().write(to: home.appendingPathComponent("apps/pm2-ecosystem.config.cjs"))
         let commands = FleetServiceCommands()
-        commands.pm2Listing = #"[{"name": "botfleet-mcp", "pm2_env": {"status": "online"}}]"#
         commands.restartFailure = CommandExitError(output: "pm2 said no")
-        try pm2(commands, home: home).start(appName: "botfleet-mcp")
-        XCTAssertEqual(commands.calls.count, 3)
-        XCTAssertEqual(commands.calls[0], ["jlist"])
-        XCTAssertEqual(commands.calls[1], ["restart", "botfleet-mcp"])
-        XCTAssertEqual(commands.calls[2], ["start",
+        try pm2(commands, home: home).start(appName: "botfleet-mcp", stale: ["botfleet-mcp"])
+        XCTAssertEqual(commands.calls.count, 2)
+        XCTAssertEqual(commands.calls[0], ["restart", "botfleet-mcp"])
+        XCTAssertEqual(commands.calls[1], ["start",
                                           home.appendingPathComponent("apps/pm2-ecosystem.config.cjs").path,
                                           "--only", "botfleet-mcp"])
     }
