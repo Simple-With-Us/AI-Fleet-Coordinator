@@ -308,7 +308,7 @@ struct ResourcePolicyReading: Equatable {
             }
             let collectorAge = sourceAge
             guard let directReceiptAt else {
-                return .init(snapshot: snapshot, state: .unavailable, reason: "No direct server read time is available. Refresh before reviewing changes.", receiptAge: nil, collectorAge: collectorAge, directReceiptAt: nil, observationAge: observationAge)
+                return .init(snapshot: snapshot, state: .unavailable, reason: "No direct server read time is available.\u{00A0} Refresh before reviewing changes.", receiptAge: nil, collectorAge: collectorAge, directReceiptAt: nil, observationAge: observationAge)
             }
             let receiptAge = now.timeIntervalSince(directReceiptAt)
             if receiptAge < 0 {
