@@ -74,7 +74,7 @@ Sync guarantees:
 | I | First Seen (UTC) | Minimum `timestamp` over observed messages, ISO-8601 UTC. |
 | J | Last Activity (UTC) | Maximum `timestamp` over observed messages, ISO-8601 UTC. |
 | K | Last Message ID | The Zulip message id at Last Activity — the anchor a reader uses to open or read the thread's recent messages. |
-| L | Linear Issues | Deterministic regex extraction from message content:  `[A-Z][A-Z0-9]{1,9}-{digits}` (AFC-412 shape), sorted, deduplicated.  A mention, not a verified link — a string shaped like an issue id is recorded whether or not the issue exists. |
+| L | Linear Issues | Deterministic regex extraction from BOTH the thread's topic name and message content:  `[A-Z][A-Z0-9]{1,9}-{digits}` (AFC-412 shape).  The cell is the thread's accumulated set rendered comma-separated, sorted and deduplicated.  The set only ever grows:  a key mentioned in any observed message — or carried by the topic name itself — is added on that sync and never removed afterwards, even if later messages never repeat it.  A mention, not a verified link — a string shaped like an issue id is recorded whether or not the issue exists. |
 | M | PR References | Deterministic regex extraction from message content:  GitHub pull URLs and `owner/repo#N` (both normalised to `owner/repo#N`), plus bare `PR #N`, sorted, deduplicated. |
 | N | Purpose | **Blank.**  No deterministic source exists in a message event, and the registry never invents a summary.  A human may type a purpose into the sheet;  the sync preserves it (see above). |
 | O | Registry Updated At (UTC) | The sync run's clock, stamped on rows that run actually writes.  Unchanged rows keep their older stamp, so the column reads as "when this row last changed in the sheet". |

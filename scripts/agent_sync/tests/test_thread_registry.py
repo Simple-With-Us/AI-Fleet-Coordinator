@@ -227,5 +227,69 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(result["appended"], 2)  # "release notes" thread already existed
 
 
+class LinearIssuesTest(unittest.TestCase):
+    """The Linear Issues column (index 11):  a key mentioned in a thread's topic name or in
+    any message body joins that thread's row as one comma-separated list — sorted,
+    deduplicated, accumulated as new mentions are observed, and never removed once added.
+    Ordinary text produces no key."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = TR.ThreadRegistryStore(os.path.join(self.tmp.name, "t.json"))
+
+    def test_extraction_collects_every_key_in_a_body(self):
+        found = TR.extract_linear_issues("landed CT-2442, back to AFC-412 and UM-1863")
+        self.assertEqual(found, ["AFC-412", "CT-2442", "UM-1863"])
+
+    def test_topic_name_alone_contributes_its_key(self):
+        self.store.observe(message(1, topic="AFC-565 linkifiers", content="no keys in here"))
+        row = self.store.rows(now=T0 + 60)[0]
+        self.assertEqual(row[11], "AFC-565")
+
+    def test_topic_and_body_mentions_merge_into_one_list(self):
+        self.store.observe(message(1, topic="AFC-412 letters", content="also CT-2442"))
+        row = self.store.rows(now=T0 + 60)[0]
+        self.assertEqual(row[11], "AFC-412, CT-2442")
+
+    def test_repeated_mentions_are_deduplicated(self):
+        self.store.observe(message(1, topic="AFC-412 letters",
+                                   content="AFC-412 AFC-412, see AFC-412 again"))
+        self.store.observe(message(2, topic="AFC-412 letters",
+                                   content="AFC-412 once more"))
+        row = self.store.rows(now=T0 + 60)[0]
+        self.assertEqual(row[11], "AFC-412")
+
+    def test_keys_accumulate_and_are_never_removed(self):
+        self.store.observe(message(1, topic="letters", content="starting AFC-412"))
+        self.store.observe(message(2, topic="letters", content="nothing to add"))
+        self.store.observe(message(3, topic="letters", content="now also CT-2442"))
+        self.store.observe(message(4, topic="letters", content="quiet again"))
+        row = self.store.rows(now=T0 + 60)[0]
+        self.assertEqual(row[11], "AFC-412, CT-2442")
+
+    def test_accumulation_lands_in_the_sheet_across_sync_runs(self):
+        adapter = FakeAdapter()
+        self.store.observe(message(1, topic="letters", content="starting AFC-412"))
+        first = TR.sync_to_sheet(self.store, adapter, now=T0 + 60)
+        self.assertEqual(first["appended"], 1)
+        self.assertEqual(adapter.rows[0][11], "AFC-412")
+        self.store.observe(message(2, topic="letters", content="picked up CT-2442 too"))
+        second = TR.sync_to_sheet(self.store, adapter, now=T0 + 120)
+        self.assertEqual((second["updated"], second["appended"]), (1, 0))
+        self.assertEqual(len(adapter.rows), 1)  # same row updated, never a second row
+        self.assertEqual(adapter.rows[0][11], "AFC-412, CT-2442")
+        third = TR.sync_to_sheet(self.store, adapter, now=T0 + 180)
+        self.assertEqual(third["unchanged"], 1)  # settled:  a quiet re-run writes nothing
+
+    def test_non_issue_text_yields_no_keys(self):
+        text = ("the follow-up lands 2026-11-03; afc-412 in lowercase is not a key, "
+                "neither is a bare 412, an AFC- with no number, or well-known prose")
+        self.assertEqual(TR.extract_linear_issues(text), [])
+        self.store.observe(message(1, topic="release notes", content=text))
+        row = self.store.rows(now=T0 + 60)[0]
+        self.assertEqual(row[11], "")
+
+
 if __name__ == "__main__":
     unittest.main()

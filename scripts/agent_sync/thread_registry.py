@@ -108,8 +108,11 @@ ACTIVE_WINDOW_S = 24 * 3600
 IDLE_WINDOW_S = 14 * 24 * 3600
 
 # A Linear issue mention:  two or more capitals/digits, a dash, and a number (AFC-412,
-# AFC-565).  This is a mention extractor, not a verifier:  a string shaped like an issue id
-# is recorded whether or not the issue exists.
+# AFC-565).  Mentions are harvested from BOTH sources the listener sees for a thread — the
+# topic name and each message body — and the per-thread set only ever grows:  deduplicated,
+# sorted, never removed once added, so a key named once stays on the thread's row for good.
+# This is a mention extractor, not a verifier:  a string shaped like an issue id is recorded
+# whether or not the issue exists.
 _LINEAR_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d{1,7}\b")
 # PR references, three cheap shapes:  a full GitHub pull URL, an explicit "PR #123", and a
 # repo-qualified "owner/repo#123".  URLs are normalised to owner/repo#123 so the same PR
@@ -157,6 +160,8 @@ def participant_tag(message: Mapping[str, Any]) -> str:
 
 
 def extract_linear_issues(content: str) -> list[str]:
+    """The Linear issue keys mentioned in one text.  Callers feed it both a thread's topic
+    name and each message body;  the returned list is sorted and deduplicated."""
     return sorted(set(_LINEAR_RE.findall(content or "")))
 
 
@@ -291,9 +296,13 @@ class ThreadRegistryStore:
                 record["last_message_id"] = max(
                     int(record.get("last_message_id") or 0), message_id
                 )
-            record["linear_issues"] = sorted(
-                set(record.get("linear_issues") or []) | set(extract_linear_issues(content))
+            # Linear Issues contract:  keys mentioned in the topic name or in any message
+            # body join the thread's set, deduplicated;  the union only ever grows, so a
+            # key once added is never removed by a later, quieter message.
+            mentioned = set(extract_linear_issues(content)) | set(
+                extract_linear_issues(topic)
             )
+            record["linear_issues"] = sorted(set(record.get("linear_issues") or []) | mentioned)
             record["pr_references"] = sorted(
                 set(record.get("pr_references") or []) | set(extract_pr_references(content))
             )
