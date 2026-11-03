@@ -151,6 +151,9 @@ class RegisterPathTests(unittest.TestCase):
     def test_the_register_cli_prints_the_letter_and_the_title_form(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = OR.registry_db_path(tmp)
+            # The CLI never brings a registry into being, so the file is there first:
+            # the Operator's own service is what creates one, in process.
+            OR.SessionRegistry(db).close_db()
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 code = OR.main(
