@@ -51,13 +51,26 @@ class PrControls(unittest.TestCase):
     def test_graphql_error_types_are_bounded_without_reflected_prose(self):
         for kind in ("FORBIDDEN", "NOT_FOUND", "UNPROCESSABLE", "RATE_LIMITED"):
             with self.subTest(kind=kind):
-                c = Client({"node_id": "PR_abc"}, {
-                    "data": {"markPullRequestReadyForReview": {
-                        "pullRequest": {"id": "PR_abc", "isDraft": False}}},
-                    "errors": [{"type": kind, "message": "private provider text",
-                                "extensions": {"token": "private provider text"}}],
-                })
-                h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_ready", REPO)
+                c = Client(
+                    {"node_id": "PR_abc"},
+                    {
+                        "data": {
+                            "markPullRequestReadyForReview": {
+                                "pullRequest": {"id": "PR_abc", "isDraft": False}
+                            }
+                        },
+                        "errors": [
+                            {
+                                "type": kind,
+                                "message": "private provider text",
+                                "extensions": {"token": "private provider text"},
+                            }
+                        ],
+                    },
+                )
+                h = WorkflowVerbs(
+                    c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_ready", REPO
+                )
                 with self.assertRaises(RelayGitHubError) as error:
                     h.run("wf_pr_ready", {"repo": REPO, "number": 1})
                 self.assertEqual(error.exception.status, 502)
@@ -66,14 +79,19 @@ class PrControls(unittest.TestCase):
 
     def test_graphql_malformed_mixed_and_hostile_types_are_omitted(self):
         for errors in (
-            [{"type": "private provider text"}], [{"type": ["FORBIDDEN"]}],
+            [{"type": "private provider text"}],
+            [{"type": ["FORBIDDEN"]}],
             [{"type": "FORBIDDEN"}, {"type": "NOT_FOUND"}],
-            [{"type": "FORBIDDEN"}, {}], [None], "FORBIDDEN",
+            [{"type": "FORBIDDEN"}, {}],
+            [None],
+            "FORBIDDEN",
             [{"type": "FORBIDDEN"}] * 21,
         ):
             with self.subTest(errors=errors):
                 c = Client({"node_id": "PR_abc"}, {"data": None, "errors": errors})
-                h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_draft", REPO)
+                h = WorkflowVerbs(
+                    c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_draft", REPO
+                )
                 with self.assertRaises(RelayGitHubError) as error:
                     h.run("wf_pr_draft", {"repo": REPO, "number": 1})
                 self.assertEqual(error.exception.status, 502)
@@ -89,18 +107,35 @@ class PrControls(unittest.TestCase):
                 return "synthetic-own-app-bearer", 0
 
         token = "s" * 32
-        policy = SeatPolicy(json.dumps({"swu-codex": {
-            "token": token, "app_slug": "swu-codex", "repos": [REPO],
-            "actions": ["wf_pr_draft"],
-            "mint_permissions": {"pull_requests": "write", "metadata": "read"},
-        }}))
-        client = Client({"node_id": "PR_abc"}, {
-            "data": None, "errors": [{"type": "FORBIDDEN", "message": "private provider text"}],
-        })
+        policy = SeatPolicy(
+            json.dumps(
+                {
+                    "swu-codex": {
+                        "token": token,
+                        "app_slug": "swu-codex",
+                        "repos": [REPO],
+                        "actions": ["wf_pr_draft"],
+                        "mint_permissions": {"pull_requests": "write", "metadata": "read"},
+                    }
+                }
+            )
+        )
+        client = Client(
+            {"node_id": "PR_abc"},
+            {
+                "data": None,
+                "errors": [{"type": "FORBIDDEN", "message": "private provider text"}],
+            },
+        )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "audit.jsonl"
-            relay = Relay(policy, client, AuditLog(str(path)), app_minter=Minter(),
-                          workflow_verbs_enabled=True)
+            relay = Relay(
+                policy,
+                client,
+                AuditLog(str(path)),
+                app_minter=Minter(),
+                workflow_verbs_enabled=True,
+            )
             args = {"repo": REPO, "number": 1}
             status, result = relay.handle(token, "wf_pr_draft", args)
             self.assertEqual(status, 502, result)
