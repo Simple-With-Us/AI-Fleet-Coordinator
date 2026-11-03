@@ -284,9 +284,7 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
 
 
 _LEGACY_KIMI_MIRROR_SHA256 = "27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6"
-_LEGACY_KIMI_ENGINE_ONLY_ROW = (
-    "Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine"
-)
+_LEGACY_KIMI_ENGINE_ONLY_ROW = "Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine"
 _GENERATED_BODY_SHA256 = re.compile(
     r"\A<!--\s*GENERATED[^\n]*body-sha256:([0-9a-f]{64})\s*-->\n", re.IGNORECASE
 )

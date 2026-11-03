@@ -111,9 +111,7 @@ class AgentSyncRows(unittest.TestCase):
         self.assertIsNotNone(row)
         updated_row = row.group(1) + ", Kimi"
         body = body[: row.start(1)] + updated_row + body[row.end(1) :]
-        changed_mirror = (
-            HEADER.format(sha=hashlib.sha256(body.encode("utf-8")).hexdigest()) + body
-        )
+        changed_mirror = HEADER.format(sha=hashlib.sha256(body.encode("utf-8")).hexdigest()) + body
 
         errors = reg.engine_only_errors(
             {"seats": [{"tag": "KIMI", "notesName": "Kimi"}]}, changed_mirror
