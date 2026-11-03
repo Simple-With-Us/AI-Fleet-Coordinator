@@ -1620,7 +1620,8 @@ class MmReopenStrictTouchTest(unittest.TestCase):
                         if "mm-operator-registry" not in p
                     )
                 },
-            ),self.assertRaises(M.RegistryError) as caught
+            ),
+            self.assertRaises(M.RegistryError) as caught,
         ):
             M.reopen_closed("r1")
         self.assertIn(caught.exception.code, ("missing_tool", "remote_unreachable", "no_registry"))
@@ -1744,11 +1745,14 @@ class TransportTests(unittest.TestCase):
 
     def test_reopen_closed_space_lost_from_the_transport_keeps_its_code(self):
         self._transport(answer='{"error": "the pair went to another chat", "code": "space_lost"}')
-        with mock.patch.dict(
-            os.environ,
-            dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
-            clear=False,
-        ), self.assertRaises(M.RegistryError) as ctx:
+        with (
+            mock.patch.dict(
+                os.environ,
+                dict(self._env, MM_OPERATOR_REGISTRY_CMD="mm-operator-registry"),
+                clear=False,
+            ),
+            self.assertRaises(M.RegistryError) as ctx,
+        ):
             M.reopen_closed("r1")
         self.assertEqual(ctx.exception.code, "space_lost")
 
