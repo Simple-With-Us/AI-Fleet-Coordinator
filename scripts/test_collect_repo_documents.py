@@ -235,13 +235,20 @@ class CollectorTests(unittest.TestCase):
         )
         repo.write(
             "docs/guides/index.html",
-            '<a href="/docs/guides/setup.adoc">guide</a><img src="/docs/guides/images/topology.svg">\n',
+            '<a href="/docs/guides/setup.adoc">guide</a>'
+            '<img src="/docs/guides/images/topology.svg">'
+            '<img src="/vendor/docs/upstream.svg">'
+            '<img src="/build/docs/generated.svg">'
+            '<img src="/tests/fixtures/example.svg">\n',
         )
         repo.write("docs/guides/images/topology.svg", "<svg></svg>")
         repo.write("docs/guides/evidence/results.csv", "check,result\nready,yes\n")
         repo.write("vendor/docs/upstream.md", "Third party.\n")
+        repo.write("vendor/docs/upstream.svg", "<svg></svg>")
         repo.write("build/docs/generated.md", "Generated.\n")
+        repo.write("build/docs/generated.svg", "<svg></svg>")
         repo.write("tests/fixtures/example.md", "Fixture.\n")
+        repo.write("tests/fixtures/example.svg", "<svg></svg>")
         repo.write("credentials/token.md", "Never copy.\n")
         repo.write("infra/main.tf", 'resource "x" "y" {}\n')
         repo.commit_published()
@@ -285,13 +292,21 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(rows["build/docs/generated.md"]["role"], "generated-output")
         self.assertEqual(rows["tests/fixtures/example.md"]["role"], "test-fixture")
         self.assertEqual(rows["infra/main.tf"]["role"], "deployment-config")
+        manifest = json.loads((mirror / "manifest.json").read_text())
         for path in (
             "vendor/docs/upstream.md",
+            "vendor/docs/upstream.svg",
             "build/docs/generated.md",
+            "build/docs/generated.svg",
             "tests/fixtures/example.md",
+            "tests/fixtures/example.svg",
             "credentials/token.md",
         ):
+            self.assertFalse(rows[path]["copied_to_documents"], path)
             self.assertFalse((mirror / "documents" / path).exists(), path)
+            self.assertFalse(
+                any(item["target_path"] == path for item in manifest["missing_local_links"]), path
+            )
 
     def test_v1_manifest_remains_readable_and_immutable_during_policy_migration(self) -> None:
         repo = self.make_repo()
@@ -356,6 +371,10 @@ class CollectorTests(unittest.TestCase):
         new_version = mirror / "reports" / collector._manifest_version_key(new_manifest)
         self.assertTrue((new_version / "manifest.json").is_file())
         self.assertEqual(new_manifest["collection_policy_id"], "human-docs-v2")
+        prior_policy = {**new_manifest, "collection_policy_id": "human-docs-v1"}
+        catalog = json.loads((mirror / "catalog.json").read_text())
+        readme = collector._repo_readme(collector._repo_info(repo.path), prior_policy, catalog)
+        self.assertIn("collection policy `human-docs-v1`", readme.decode("utf-8"))
 
     def test_second_process_cannot_recover_a_live_writer_transaction(self) -> None:
         repo = self.make_repo()
