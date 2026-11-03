@@ -203,6 +203,48 @@ class InitTests(_SettingsCase):
         s.init()
         self.assertIsNone(s.get("SOME_RANDOM_KEY"))
 
+    def test_unmanaged_reference_template_does_not_block_managed_settings(self):
+        self.world.secrets = {"API_TOKEN": "tok", "SOME_RANDOM_KEY": "prefix-${prod.other.SECRET}"}
+        s = self.make()
+        s.init()
+        self.assertEqual(s.get("API_TOKEN"), "tok")
+        self.assertIsNone(s.get("SOME_RANDOM_KEY"))
+        self.assertEqual([call[1].split("?")[0] for call in self.world.calls],
+                         ["/api/v2/service-token", "/api/v3/secrets/raw"])
+
+    def test_managed_reference_is_refused_without_environment_fallback(self):
+        for value in ("${prod.other.SECRET}", "prefix-${prod.other.SECRET}-suffix"):
+            with self.subTest(value=value):
+                self.world.secrets = {"API_TOKEN": value}
+                s = self.make()
+                with mock.patch.dict(os.environ, {"API_TOKEN": "env-must-not-win"}):
+                    with self.assertRaisesRegex(mod.SettingsError, "scope validation"):
+                        s.init()
+
+    def test_unmanaged_record_still_requires_valid_provenance(self):
+        s = self.make()
+        with mock.patch.object(s, "_request", side_effect=[
+            (200, {"workspace": PROJECT, "permissions": ["read"],
+                   "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}),
+            (200, {"secrets": [{"secretKey": "SOME_RANDOM_KEY", "secretValue": "ignored",
+                                "type": "shared", "workspace": "wrong-project"}]}),
+        ]):
+            with self.assertRaisesRegex(mod.SettingsError, "scope validation"):
+                s.init()
+
+    def test_duplicate_managed_or_unmanaged_records_are_refused(self):
+        for key in ("API_TOKEN", "SOME_RANDOM_KEY"):
+            with self.subTest(key=key):
+                s = self.make()
+                record = {"secretKey": key, "secretValue": "synthetic", "type": "shared"}
+                with mock.patch.object(s, "_request", side_effect=[
+                    (200, {"workspace": PROJECT, "permissions": ["read"],
+                           "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}),
+                    (200, {"secrets": [record, dict(record)]}),
+                ]):
+                    with self.assertRaisesRegex(mod.SettingsError, "scope validation"):
+                        s.init()
+
 
 class WriteThroughTests(_SettingsCase):
     def test_set_writes_infisical_before_cache(self):

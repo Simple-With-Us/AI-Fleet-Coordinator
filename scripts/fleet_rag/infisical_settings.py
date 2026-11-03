@@ -245,6 +245,7 @@ class InfisicalSettings:
                 f"{self.project_id} environment {self.environment}; see INFISICAL.md"
             )
         out: dict[str, str] = {}
+        seen: dict[str, None] = {}
         if not isinstance(payload, dict) or not isinstance(payload.get("secrets"), list):
             raise SettingsError("Infisical secret response is invalid")
         for secret in payload["secrets"]:
@@ -263,7 +264,11 @@ class InfisicalSettings:
                         "/",
                         single_scope=len(declared_paths(os.environ, "/")) == 1,
                     )
-                    reject_unresolved({key: value})
+                    if key in seen:
+                        raise SecretsError("unverified-source")
+                    seen[key] = None
+                    if key in self.managed_keys:
+                        reject_unresolved({key: value})
                 except SecretsError:
                     raise SettingsError(
                         "Infisical secret response failed scope validation"

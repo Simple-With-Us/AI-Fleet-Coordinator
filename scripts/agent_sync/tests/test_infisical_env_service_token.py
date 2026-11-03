@@ -166,6 +166,23 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.LoadError, "unresolved reference"):
                 MODULE.fetch(self.env(), expected_paths=("/zulip", "/operator"))
 
+    def test_child_environment_drops_present_bootstrap_credentials(self):
+        credentials = {
+            "INFISICAL_LISTENER_READ_TOKEN": "st.synthetic-secondary-token",
+            "INFISICAL_CLIENT_ID": "legacy-id-sentinel",
+            "INFISICAL_CLIENT_SECRET": "legacy-secret-sentinel",
+        }
+        env = dict(self.env(), **credentials, KEEP_CONFIG="retained")
+        with patch.object(MODULE, "server_codes", return_value={"TEST"}), patch.object(
+            MODULE, "fetch", return_value={"ZULIP_TEST_EMAIL": "fixture@example.test"}
+        ):
+            child, _ = MODULE.build_env(env)
+        self.assertEqual(child["ZULIP_TEST_EMAIL"], "fixture@example.test")
+        self.assertEqual(child["KEEP_CONFIG"], "retained")
+        self.assertEqual(child["INFISICAL_PROJECT_ID"], PROJECT)
+        for name in {"INFISICAL_TOKEN", *credentials}:
+            self.assertNotIn(name, child)
+
 
 if __name__ == "__main__":
     unittest.main()

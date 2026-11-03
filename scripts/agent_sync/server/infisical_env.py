@@ -61,6 +61,14 @@ from datetime import UTC, datetime
 API_DEFAULT = "https://app.infisical.com/api"
 TOKEN = "INFISICAL_TOKEN"
 LISTENER_READ_TOKEN = "INFISICAL_LISTENER_READ_TOKEN"
+AUTH_ENV_VARS = frozenset(
+    {
+        TOKEN,
+        LISTENER_READ_TOKEN,
+        "INFISICAL_CLIENT_ID",
+        "INFISICAL_CLIENT_SECRET",
+    }
+)
 REQUIRED = (TOKEN, "INFISICAL_PROJECT_ID")
 SERVICE_TOKEN_RE = re.compile(r"^st\.\S{17,2045}$")
 PROJECT_ID_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
@@ -400,8 +408,8 @@ def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[d
 
 
 def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
-    """(the environment to exec with, the one log line).  The service token is always removed."""
-    out = {k: v for k, v in env.items() if k not in {TOKEN, LISTENER_READ_TOKEN}}
+    """(the environment to exec with, the one log line).  Bootstrap credentials are removed."""
+    out = {k: v for k, v in env.items() if k not in AUTH_ENV_VARS}
     # Opt-in native secondary keys never fall back to primary-project or container copies.
     secondary_names = {code + "_ROUTINE_KEY" for code in LISTENER_READ_CODES}
     if (env.get(LISTENER_READ_PROJECT) or "").strip():

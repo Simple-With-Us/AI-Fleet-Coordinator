@@ -195,12 +195,30 @@ class ScopedTokens(unittest.TestCase):
             self.assertNotIn(secret, out.getvalue() + err.getvalue())
 
     def test_run_removes_both_bootstrap_tokens_and_rejects_reserved_injection(self):
+        self.env.update(
+            INFISICAL_CLIENT_ID="legacy-id-sentinel",
+            INFISICAL_CLIENT_SECRET="legacy-secret-sentinel",
+        )
         child = []
         with mock.patch.object(cli.os, "execvpe", side_effect=lambda *args: child.append(args[2])):
             cli.main(["run", "--only", "ALPHA", "--", "synthetic-command"], env=self.env)
         self.assertEqual(child[0]["ALPHA"], VALUE)
         self.assertNotIn(core.ENV_TOKEN, child[0])
         self.assertNotIn(core.ENV_WRITE_TOKEN, child[0])
+        self.assertNotIn("INFISICAL_CLIENT_ID", child[0])
+        self.assertNotIn("INFISICAL_CLIENT_SECRET", child[0])
+
+    def test_named_read_ignores_unrequested_references_but_bulk_read_refuses_them(self):
+        self.records.append(
+            dict(
+                self.records[0], secretKey="UNREQUESTED", secretValue="prefix-${prod.other.SECRET}"
+            )
+        )
+        self.assertEqual(
+            core.fetch_project(PROJECT, "/", self.env, names=["ALPHA"]), {"ALPHA": VALUE}
+        )
+        with self.assertRaisesRegex(core.SecretsError, "unresolved-reference"):
+            core.fetch_project(PROJECT, "/", self.env)
 
     def test_knobs_named_read_preserves_project_folder_names_and_budget(self):
         env = {**self.env, knobs.ENV_KNOBS_TOKEN: COORDINATOR_READ}
