@@ -537,6 +537,14 @@ def codex_mcp_expected(bin_dir: Path) -> dict:
     }
 
 
+def assigned_codex_mcp_expected(home: Path) -> dict:
+    """The owner's assigned hosted transport; only recognize it, never install or rewrite it."""
+    return {
+        **codex_mcp_expected(home / ".local/bin"),
+        "command": str(home / ".local/libexec/codex-simple-tools"),
+    }
+
+
 def migrate_codex_mcp(home: Path, files: dict) -> None:
     """Rewrite a host's pre-rename Codex registration to `[mcp_servers.simple-chat]`, in `files` if it applies.
 
@@ -546,6 +554,8 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
     rewritten, and only when the host's table is exactly the registration this tool wrote (same
     `env_vars`, command one of those two wrappers).  The old key is not kept.  Anything else is still a
     conflict and still refused:  this never rewrites a hand-edited registration.
+    A current-key registration for the owner's assigned hosted transport is also recognized,
+    with the exact standard environment passthrough, and always left untouched.
     """
     bin_dir = home / ".local/bin"
     expected = codex_mcp_expected(bin_dir)
@@ -563,7 +573,7 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
     if not isinstance(servers, dict):
         raise Refused("invalid_codex_config")
     current = servers.get(CODEX_KEY)
-    if current is not None and current != expected:
+    if current is not None and current not in (expected, assigned_codex_mcp_expected(home)):
         raise Refused("existing_simple_chat_mcp_conflict")
     present = servers.get(LEGACY_CODEX_KEY)
     if present is None:
