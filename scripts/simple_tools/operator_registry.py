@@ -292,6 +292,10 @@ def cross_seat_ref(seat: str, letter: str, generation: int) -> str:
 
 ENV_REGISTRY_PATH = "SIMPLE_TOOLS_OPERATOR_REGISTRY"
 
+#: The state root the listener reads.  The registry lives under it unless the registry
+#: override names another file.
+ENV_STATE_DIR = "SIMPLE_TOOLS_STATE_DIR"
+
 #: The seat that may issue a letter.
 #:
 #: The owner ruled (Oct 21 2026) that no agent issues its own letter:  the
@@ -2208,15 +2212,26 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
         conn.close()
 
 
-def _default_db() -> str:
-    """The shared registry location, from the same environment the listener reads."""
-    root = os.environ.get("SIMPLE_TOOLS_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".simple-tools"
-    )
-    return registry_db_path(root, os.environ)
+def default_db(env: Mapping[str, str] | None = None) -> str:
+    """The shared registry location, resolved from the caller's environment.
+
+    The env is the caller's:  a caller that hands in its own mapping is answered about
+    the file its own CLI would open, so a guard and the CLI it guards can never name two
+    different registries.  The resolution is the listener's own state root (the override,
+    then the home directory), so the two agree on every part of it, the tilde included.
+    """
+    env = os.environ if env is None else env
+    override = env.get(ENV_STATE_DIR)
+    if override:
+        root = os.path.expanduser(override)
+    else:
+        home = env.get("HOME") or os.path.expanduser("~")
+        root = os.path.join(home, ".simple-tools")
+    return registry_db_path(root, env)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
+    env = os.environ if env is None else env
     parser = argparse.ArgumentParser(prog="operator-registry")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pending-outbox")
@@ -2405,7 +2420,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--scope", required=True, help="the profile scope")
     t.add_argument("--session-id", required=True, help="the native session id")
     args = parser.parse_args(argv)
-    db = getattr(args, "db", "") or _default_db()
+    db = getattr(args, "db", "") or default_db(env)
     if args.command == "pending-outbox":
         # The bridge's own reviewed contract:  a missing store is its error, exit 2.
         try:

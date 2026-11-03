@@ -930,7 +930,7 @@ def registry_main(
         return _emit(stdout, {"error": "a registration needs a seat"}, 2)
     args.seat = args.seat or "OPERATOR"
     args.source = args.source.strip() or "platform-letter:" + args.platform
-    db = args.db or OR.registry_db_path(L.state_root(env), env)
+    db = args.db or OR.default_db(env)
     if not os.path.isfile(db):
         # Never create one: a second registry would hand out letters that collide with the one the Operator keeps.
         return _emit(stdout, {"error": "no Operator registry on this host"}, 3)
