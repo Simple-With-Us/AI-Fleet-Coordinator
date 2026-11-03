@@ -6,6 +6,7 @@
   python3 scripts/fleet-ops-control.py server start|stop|restart UNIT     (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server logs UNIT                   (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server update NAME                 (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server update-status fleet-cli.ID   --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -133,8 +134,10 @@ SUDO = "/usr/bin/sudo"
 UPDATE_SYSTEMCTL = "/usr/bin/systemctl"
 FLEET_CLI_UPDATE_UNIT = "fleet-cli-git-update.service"
 UPDATE_PROBE_TIMEOUT = 3
-UPDATE_POLL_ATTEMPTS = 8
+UPDATE_POLL_ATTEMPTS = 25
 UPDATE_POLL_INTERVAL = 0.5
+UPDATE_VERIFY_SECONDS = 12
+UPDATE_STATUS_RE = re.compile(r"fleet-cli\.([0-9a-f]{32})")
 UPDATE_PROPERTIES = (
     "LoadState",
     "ActiveState",
@@ -419,6 +422,7 @@ class Context:
         pm2_node=None,
         pm2_script=None,
         sleep=None,
+        monotonic=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -441,6 +445,7 @@ class Context:
         self.pm2_node = pm2_node
         self.pm2_script = pm2_script
         self.sleep = sleep or time.sleep
+        self.monotonic = monotonic or time.monotonic
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -649,10 +654,20 @@ def update_command(ctx, name, entry):
                 "this system update has no approved application route",
                 error_code="update_route_unavailable",
             )
+        if not os.path.isfile(UPDATE_SYSTEMCTL) or not os.access(UPDATE_SYSTEMCTL, os.X_OK):
+            raise Refused(
+                "the approved systemctl executable is unavailable",
+                error_code="update_executable_unavailable",
+            )
         argv = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
     else:
         argv = _systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])
     if entry["scope"] == "system" and ctx.uid != 0:
+        if not os.path.isfile(SUDO) or not os.access(SUDO, os.X_OK):
+            raise Refused(
+                "the approved authorization executable is unavailable",
+                error_code="authorization_unavailable",
+            )
         # Query this exact argv; never grant permission or elevate the broker itself.
         status, _ = ctx.runner(
             [SUDO, "-n", "-l", "--"] + argv,
@@ -668,7 +683,7 @@ def update_command(ctx, name, entry):
     return argv
 
 
-def update_unit_state(ctx, entry):
+def update_unit_state(ctx, entry, timeout=UPDATE_PROBE_TIMEOUT):
     status, raw = ctx.runner(
         _systemctl_argv(
             entry["scope"],
@@ -676,7 +691,7 @@ def update_unit_state(ctx, entry):
             entry["unit"],
             "--property=" + ",".join(UPDATE_PROPERTIES),
         ),
-        timeout=UPDATE_PROBE_TIMEOUT,
+        timeout=timeout,
         env=ctx.child_env(),
         want_stdout=True,
         max_bytes=16 * 1024,
@@ -773,11 +788,18 @@ def execute_update(ctx, config, target, commands):
         detail="the update was submitted; completion has not been observed",
     )
     invocation = None
+    deadline = ctx.monotonic() + UPDATE_VERIFY_SECONDS
     for attempt in range(UPDATE_POLL_ATTEMPTS):
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
         if attempt:
-            ctx.sleep(UPDATE_POLL_INTERVAL)
+            ctx.sleep(min(UPDATE_POLL_INTERVAL, remaining))
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
         try:
-            state = update_unit_state(ctx, entry)
+            state = update_unit_state(ctx, entry, timeout=min(UPDATE_PROBE_TIMEOUT, remaining))
         except Refused:
             answer["detail"] = "the update was submitted; completion status is unavailable"
             return answer, 0
@@ -788,38 +810,65 @@ def execute_update(ctx, config, target, commands):
             answer["detail"] = (
                 "the update was submitted; another invocation replaced its completion status"
             )
+            answer.pop("invocationID", None)
+            answer.update(executionState="expired", errorCode="invocation_replaced")
             return answer, 0
         invocation = current
-        answer["invocationID"] = current
-        terminal = state["ActiveState"] in ("inactive", "failed") and not state["Job"]
-        if not terminal:
-            continue
-        if state["Result"] and state["Result"] != "success":
-            answer.update(
-                ok=False,
-                result="failed",
-                executionState="failed",
-                verified=True,
-                errorCode="update_invocation_failed",
-                detail="the new update service invocation failed",
-            )
-            return answer, 1
-        started = state["ExecMainStartTimestampMonotonic"]
-        if (
-            state["Result"] == "success"
-            and state["ExecMainCode"] == 1
-            and state["ExecMainStatus"] == 0
-            and started > before["ExecMainStartTimestampMonotonic"]
-            and state["ExecMainExitTimestampMonotonic"] >= started
-        ):
-            answer.update(
-                result="done",
-                executionState="completed",
-                verified=True,
-                detail="a new update service invocation completed successfully",
-            )
-            return answer, 0
+        answer, code = update_observation(state, current, before["ExecMainStartTimestampMonotonic"])
+        if answer["verified"]:
+            return answer, code
     return answer, 0
+
+
+def update_observation(state, invocation, previous_start=0):
+    answer = dict(
+        ok=True, result="submitted", executionState="submitted", verified=False,
+        invocationID=invocation,
+        detail="the update invocation has not completed with a verified result",
+    )
+    if state["InvocationID"] != invocation:
+        answer.update(
+            executionState="expired",
+            errorCode="invocation_not_current",
+            detail="the captured update invocation is no longer current; its completion cannot be verified",
+        )
+        return answer, 0
+    terminal = state["ActiveState"] in ("inactive", "failed") and not state["Job"]
+    if not terminal:
+        return answer, 0
+    if state["Result"] and state["Result"] != "success":
+        answer.update(
+            ok=False, result="failed", executionState="failed", verified=True,
+            errorCode="update_invocation_failed", detail="the captured update service invocation failed",
+        )
+        return answer, 1
+    started = state["ExecMainStartTimestampMonotonic"]
+    if (
+        state["Result"] == "success" and state["ActiveState"] == "inactive"
+        and state["ExecMainCode"] == 1
+        and state["ExecMainStatus"] == 0 and started > previous_start
+        and state["ExecMainExitTimestampMonotonic"] >= started
+    ):
+        answer.update(
+            result="done", executionState="completed", verified=True,
+            detail="the captured update service invocation completed successfully",
+        )
+    return answer, 0
+
+
+def update_status(ctx, config, target, mode):
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused("update status is read only; pass --plan", error_code="read_only_required")
+    match = UPDATE_STATUS_RE.fullmatch(target or "")
+    if not match:
+        raise Refused("update status requires a captured fleet-cli invocation ID", error_code="invocation_id_invalid")
+    entry = config["updates"].get("fleet-cli")
+    if entry != {"unit": FLEET_CLI_UPDATE_UNIT, "scope": "system"}:
+        raise Refused("the fleet-cli status route is unavailable", error_code="update_route_unavailable")
+    # Never submit or query sudo on this path, and never substitute a newer ID.
+    state = update_unit_state(ctx, entry)
+    return update_observation(state, match.group(1))
 
 
 def _server_only(ctx):
@@ -1166,6 +1215,10 @@ def handle(ctx, scope, action, target, mode):
         if mode not in ("plan", "yes"):
             raise Refused("pass --plan to see the commands or --yes to run them")
         config = load_config(ctx.config_path)
+        if scope == "server" and action == "update-status":
+            receipt, code = update_status(ctx, config, target, mode)
+            answer.update(receipt)
+            return answer, code
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
                 raise Refused("coding resource controls are not in the allowlist")
@@ -1214,7 +1267,7 @@ def handle(ctx, scope, action, target, mode):
         if exc.error_code:
             answer["errorCode"] = exc.error_code
         code = 1
-    if mode == "yes":
+    if mode == "yes" and not (scope == "server" and action == "update-status"):
         if scope == "server" and action == "redeploy" and audit_target == target:
             audit_target = "coolify resource"  # refused before the name was known: no uuid
         audit(
@@ -1279,6 +1332,7 @@ def parse_ssh_command(text):
         raise Refused("only a server verb with one target is accepted over ssh")
     if plain[1] not in ACTIONS + (
         "update",
+        "update-status",
         "redeploy",
         "logs",
         "resource-status",

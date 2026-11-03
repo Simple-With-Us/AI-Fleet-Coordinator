@@ -504,6 +504,18 @@ class UpdateReceiptTests(Base):
             ],
         )
 
+    def test_missing_pinned_executables_refuse_before_sudo_query(self):
+        for missing, expected in (
+            (foc.UPDATE_SYSTEMCTL, "update_executable_unavailable"),
+            (foc.SUDO, "authorization_unavailable"),
+        ):
+            ctx = self.ctx()
+            with mock.patch.object(foc.os.path, "isfile", side_effect=lambda path: path != missing):
+                with self.assertRaises(foc.Refused) as raised:
+                    foc.update_command(ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT})
+            self.assertEqual(raised.exception.error_code, expected)
+            self.assertEqual(self.runner.calls, [])
+
     def test_invalid_probe_cannot_verify_completion(self):
         code, answer = self.update([update_state(), update_state(), b"LoadState=loaded\n"])
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
@@ -564,6 +576,123 @@ class UpdateReceiptTests(Base):
             ExecMainExitTimestampMonotonic="210",
         )
         code, answer = self.update([old, old, running, replaced])
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
+        self.assertNotIn("invocationID", answer)
+        self.assertEqual(answer["executionState"], "expired")
+        self.assertEqual(answer["errorCode"], "invocation_replaced")
+
+    def test_verification_has_a_monotonic_deadline(self):
+        clock = [0.0]
+        waits = []
+
+        def runner(argv, **kwargs):
+            if "show" in argv:
+                clock[0] += kwargs["timeout"]
+                return 0, update_state()
+            return 0, b""
+
+        def sleep(seconds):
+            waits.append(seconds)
+            clock[0] += seconds
+
+        ctx = self.ctx(runner=runner)
+        ctx.monotonic = lambda: clock[0]
+        ctx.sleep = sleep
+        code, answer = self.run_main(["server", "update", "fleet-cli", "--yes", "--json"], ctx)
+        self.assertEqual((code, answer["result"]), (0, "submitted"))
+        # Two pre-submission probes consume six seconds; observation has its own 12s bound.
+        self.assertLessEqual(clock[0], 2 * foc.UPDATE_PROBE_TIMEOUT + foc.UPDATE_VERIFY_SECONDS)
+        self.assertTrue(waits)
+
+    def test_update_longer_than_old_window_can_complete(self):
+        clock = [0.0]
+        probes = [0]
+
+        def runner(argv, **kwargs):
+            if "show" not in argv:
+                return 0, b""
+            probes[0] += 1
+            if probes[0] <= 2:
+                return 0, update_state()
+            return 0, update_state(
+                InvocationID="b" * 32,
+                ActiveState="inactive" if clock[0] >= 5 else "activating",
+                ExecMainStartTimestampMonotonic="200", ExecMainExitTimestampMonotonic="210",
+            )
+
+        ctx = self.ctx(runner=runner)
+        ctx.monotonic = lambda: clock[0]
+        ctx.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        code, answer = self.run_main(["server", "update", "fleet-cli", "--yes", "--json"], ctx)
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "done", True))
+        self.assertGreater(clock[0], 3.5)
+
+
+class UpdateStatusTests(Base):
+    def status(self, state=None, target=None, mode="--plan", config=None):
+        if config is not None:
+            self.config_path.write_text(json.dumps(config))
+        self.status_calls = []
+
+        def runner(argv, **kwargs):
+            self.status_calls.append(argv)
+            self.assertNotIn(foc.SUDO, argv)
+            self.assertIn("show", argv)
+            return 0, state or update_state(InvocationID="b" * 32)
+
+        return self.run_main(
+            ["server", "update-status", target or ("fleet-cli." + "b" * 32), mode, "--json"],
+            self.ctx(runner=runner),
+        )
+
+    def test_exact_captured_success_is_read_only(self):
+        code, answer = self.status()
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "done", True))
+        self.assertEqual(answer["invocationID"], "b" * 32)
+        self.assertEqual(self.audit_rows(), [])
+        self.assertEqual(len(self.status_calls), 1)
+
+    def test_running_invocation_remains_submitted(self):
+        code, answer = self.status(update_state(InvocationID="b" * 32, ActiveState="activating"))
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
+
+    def test_failed_invocation_reports_verified_failure(self):
+        code, answer = self.status(update_state(InvocationID="b" * 32, ActiveState="failed", Result="exit-code"))
+        self.assertEqual((code, answer["result"], answer["verified"]), (1, "failed", True))
+
+    def test_old_or_replaced_success_never_verifies_requested_id(self):
+        for other in ("a" * 32, "c" * 32, ""):
+            code, answer = self.status(update_state(InvocationID=other))
+            self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
+            self.assertEqual(answer["invocationID"], "b" * 32)
+            self.assertEqual(answer["errorCode"], "invocation_not_current")
+            self.assertEqual(answer["executionState"], "expired")
+
+    def test_no_captured_or_malformed_id_refused_before_probe(self):
+        for target in ("fleet-cli", "fleet-cli.", "fleet-cli." + "B" * 32, "other." + "b" * 32, "fleet-cli." + "b" * 32 + ".extra"):
+            code, answer = self.status(target=target)
+            self.assertEqual((code, answer["errorCode"]), (2, "invocation_id_invalid"))
+            self.assertEqual(self.status_calls, [])
+
+    def test_yes_is_refused_without_mutation_or_audit(self):
+        code, answer = self.status(mode="--yes")
+        self.assertEqual((code, answer["errorCode"]), (2, "read_only_required"))
+        self.assertEqual(self.status_calls, [])
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_config_cannot_retarget_the_status_unit(self):
+        config = json.loads(json.dumps(CONFIG))
+        config["server"]["updates"][0]["unit"] = "sshd.service"
+        code, answer = self.status(config=config)
+        self.assertEqual((code, answer["errorCode"]), (2, "update_route_unavailable"))
+        self.assertEqual(self.status_calls, [])
+
+    def test_ssh_gate_accepts_typed_read_only_receipt(self):
+        words = foc.parse_ssh_command("server update-status fleet-cli." + "b" * 32 + " --plan --json")
+        self.assertEqual(words[1], "update-status")
+
+    def test_invalid_process_status_cannot_verify(self):
+        code, answer = self.status(update_state(InvocationID="b" * 32, ExecMainCode="0"))
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
 
 
