@@ -10,9 +10,11 @@ export const BEARER_ONLY_SEATS = Object.freeze({
   CLUTCH: Object.freeze({ prefix: "CLUTCH", email: "clutch-bot@simplewithus.zulipchat.com" }),
   FX: Object.freeze({ prefix: "FX", email: "fx-bot@simplewithus.zulipchat.com" }),
   GROK: Object.freeze({ prefix: "GROK_BUILD", email: "grok-build-bot@simplewithus.zulipchat.com" }),
+  KIMI: Object.freeze({ prefix: "KIMI", email: "kimi-bot@simplewithus.zulipchat.com" }),
   MC: Object.freeze({ prefix: "MC", email: "mc-bot@simplewithus.zulipchat.com" }),
   MM: Object.freeze({ prefix: "MM", email: "mm-bot@simplewithus.zulipchat.com" }),
   OPENCODE: Object.freeze({ prefix: "OPENCODE", email: "opencode-bot@simplewithus.zulipchat.com" }),
+  ZCODE: Object.freeze({ prefix: "ZCODE", email: "zcode-bot@simplewithus.zulipchat.com" }),
 });
 // Explicit BotFleet roles: BotFleet server/launch-identity.ts at
 // 79348fc2778a8ca31ce69c612c2f9822c21652ac, cross-checked against active
