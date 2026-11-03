@@ -354,7 +354,7 @@ def _run_capped(argv, timeout, env, max_bytes, combine_stderr=False):
             return 124, b""
         return proc.returncode, bytes(kept)
     except BaseException:
-        # This child is only the bounded, read-only journal capture.  Keep its
+        # This is a bounded journal/status capture or update submission.  Keep its
         # lifetime inside this call even when capture or waiting is interrupted.
         try:
             if proc.poll() is None:
@@ -1107,7 +1107,7 @@ def execute_logs(ctx, commands):
     return f"{lines} journal lines", text, lines
 
 
-def audit(ctx, scope, action, target, result, lines=None):
+def audit(ctx, scope, action, target, result, lines=None, route=None, invocation_id=None, verified=None):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
     A finished logs run adds its line count and nothing of the text."""
     row = {
@@ -1119,6 +1119,12 @@ def audit(ctx, scope, action, target, result, lines=None):
     }
     if lines is not None:
         row["lines"] = lines
+    if route == "sudo-system-update":
+        row["route"] = route
+    if isinstance(invocation_id, str) and re.fullmatch(r"[0-9a-f]{32}", invocation_id):
+        row["invocationID"] = invocation_id
+    if isinstance(verified, bool):
+        row["verified"] = verified
     path = ctx.audit_path
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1216,6 +1222,14 @@ def handle(ctx, scope, action, target, mode):
             (audit_target or "")[:120],
             answer["result"],
             lines=log_lines if answer["result"] == "done" else None,
+            route=(
+                "sudo-system-update"
+                if scope == "server" and action == "update"
+                and answer["commands"] == [[SUDO, "-n", UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]]
+                else None
+            ),
+            invocation_id=answer.get("invocationID"),
+            verified=answer.get("verified"),
         )
     return answer, code
 

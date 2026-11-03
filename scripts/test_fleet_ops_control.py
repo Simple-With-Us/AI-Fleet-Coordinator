@@ -366,6 +366,9 @@ class UpdateReceiptTests(Base):
         code, answer = self.update()
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
         self.assertNotIn("invocationID", answer)
+        audit = self.audit_rows()[0]
+        self.assertEqual(audit["route"], "sudo-system-update")
+        self.assertFalse(audit["verified"])
 
     def test_new_success_is_verified(self):
         old = update_state()
@@ -378,6 +381,9 @@ class UpdateReceiptTests(Base):
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "done", True))
         self.assertEqual(answer["invocationID"], "b" * 32)
         self.assertEqual(answer["executionState"], "completed")
+        audit = self.audit_rows()[0]
+        self.assertEqual(audit["invocationID"], "b" * 32)
+        self.assertTrue(audit["verified"])
 
     def test_new_invocation_with_old_process_times_is_not_completion(self):
         code, answer = self.update(
