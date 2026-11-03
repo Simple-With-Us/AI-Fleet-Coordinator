@@ -1194,3 +1194,14 @@ test('v2: blob_create response size follows the allow_large_text opt-in',()=>{
   assert.equal(validWfV1Response('wf_git_blob_create',mk(100001),{repo,allow_large_text:true}),false);
   assert.equal(validWfV1Response('wf_git_blob_create',mk(40000),{repo}),true);
 });
+test('v2: blob_create custody dispatch end-to-end follows the opt-in',async()=>{
+  const S40b='a'.repeat(40);
+  const okLarge=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:50000}})));
+  assert.ok(!(await okLarge.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000),allow_large_text:true})).isError);
+  const noFlag=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:50000}})));
+  assert.ok((await noFlag.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000)})).isError);
+  const falseOk=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:40000}})));
+  assert.ok(!(await falseOk.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000),allow_large_text:false})).isError);
+  const falseOver=harness(async()=>new Response(JSON.stringify({blob:{sha:S40b,size:40001}})));
+  assert.ok((await falseOver.call('gr_wf_git_blob_create',{repo,text:'x'.repeat(30000),allow_large_text:false})).isError);
+});
