@@ -60,6 +60,7 @@ class ServiceTokenAuthTests(KnobTestCase):
         helper.fetch_project.assert_called_once()
         args, kwargs = helper.fetch_project.call_args
         self.assertEqual(args[0:2], (source.PROJECT_ID, "/"))
+        self.assertEqual(kwargs["token"], FAKE_TOKEN)
         self.assertEqual(args[2][source.ENV_AI_FLEET_COORDINATOR_TOKEN], FAKE_TOKEN)
         self.assertNotIn(source.ENV_TOKEN, args[2])
         self.assertNotIn("INFISICAL_WRITE_TOKEN", args[2])

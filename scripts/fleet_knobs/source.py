@@ -143,7 +143,12 @@ def _scoped_fetch(
     env.pop(ENV_KNOBS_TOKEN, None)
     try:
         result = helper.fetch_project(
-            project_id, path, env, names=wanted if named else None, timeout=TIMEOUT_SECONDS
+            project_id,
+            path,
+            env,
+            token=token,
+            names=wanted if named else None,
+            timeout=TIMEOUT_SECONDS,
         )
     except TimeoutError:
         raise FetchFailed("timeout") from None

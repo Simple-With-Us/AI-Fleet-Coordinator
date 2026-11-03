@@ -170,8 +170,9 @@ class PackagingTests(KnobTestCase):
         helper.mkdir()
         (helper / "core.py").write_text(
             "class SecretsError(Exception): pass\n"
-            "def fetch_project(project, path, env, *, names=None, timeout=None):\n"
+            "def fetch_project(project, path, env, *, token=None, names=None, timeout=None):\n"
             "    assert env.get('INFISICAL_AI_FLEET_COORDINATOR_TOKEN', '').startswith('st.')\n"
+            "    assert token == env['INFISICAL_AI_FLEET_COORDINATOR_TOKEN']\n"
             "    values = {'CLAIM_EXPIRY_MODE': 'ping-only', 'FLEET_AUTOPUSH_MODE': 'off'}\n"
             "    return values if names is None else {k: v for k, v in values.items() if k in names}\n",
             encoding="utf-8",

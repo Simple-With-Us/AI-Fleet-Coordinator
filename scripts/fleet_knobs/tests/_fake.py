@@ -1,13 +1,13 @@
-"""A fake ``infisical`` executable and the hermetic environment the knob tests run in.
+"""Hermetic helper boundaries and a loopback API for real-verifier subprocess tests.
 
-The fake is a real script on PATH, so the code under test runs its normal subprocess path.
-It records every argv, so a test can prove how many fetches ran and that ``--env=prod`` was
-the only environment ever asked for.  Nothing here touches the network, the real CLI, the
-real HOME or any credential folder.
+The legacy executable fixture records every argv.  The injected helper records explicit
+reader tokens and named requests, while ScopedReadAPI exercises real HTTP verification on
+loopback only.  Tests use synthetic values and temporary homes, without a real credential store.
 """
 
 from __future__ import annotations
 
+import http.server
 import json
 import logging
 import os
@@ -16,7 +16,9 @@ import secrets
 import stat
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.parse
 from unittest import mock
 
 from fleet_knobs import knobs, source
@@ -62,6 +64,87 @@ SIGNING = secrets.token_urlsafe(32)
 UNRELATED = secrets.token_urlsafe(24)
 
 
+class ScopedReadAPI:
+    """Loopback metadata and named rows for subprocesses using the real verifier."""
+
+    def __init__(self, values, *, project=source.PROJECT_ID, path="/"):
+        self.values = dict(values)
+        self.project, self.path = project, path
+        self.token = fixture_service_token()
+        self.metadata_override = {}
+        self.requests = []
+        self.status = 200
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                fake.requests.append(self.path)
+                status, payload = 404, {}
+                parsed = urllib.parse.urlsplit(self.path)
+                query = urllib.parse.parse_qs(parsed.query)
+                if self.headers.get("Authorization") != "Bearer " + fake.token:
+                    status = 401
+                elif parsed.path == "/api/v2/service-token":
+                    status = fake.status
+                    payload = {
+                        "workspace": fake.project,
+                        "scopes": [{"environment": "prod", "secretPath": fake.path}],
+                        "permissions": ["read"],
+                        "expiresAt": None,
+                    }
+                    payload.update(fake.metadata_override)
+                elif parsed.path.startswith("/api/v3/secrets/raw/") and query == {
+                    "workspaceId": [fake.project],
+                    "environment": ["prod"],
+                    "secretPath": [fake.path],
+                    "viewSecretValue": ["true"],
+                    "expandSecretReferences": ["false"],
+                    "recursive": ["false"],
+                    "include_imports": ["false"],
+                }:
+                    name = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
+                    if name in fake.values:
+                        status = 200
+                        payload = {
+                            "secret": {
+                                "secretKey": name,
+                                "secretValue": fake.values[name],
+                                "workspace": fake.project,
+                                "environment": "prod",
+                                "secretPath": fake.path,
+                                "type": "shared",
+                            }
+                        }
+                data = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def env(self):
+        return {
+            source.ENV_KNOBS_TOKEN: self.token,
+            "FLEET_SECRETS_API": "http://127.0.0.1:%d/api" % self.server.server_address[1],
+        }
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+
 class FakeInfisical:
     def __init__(self, root: pathlib.Path) -> None:
         self.bin_dir = root / "bin"
@@ -104,9 +187,10 @@ class FakeInfisical:
             return []
         return [json.loads(line) for line in self.automation_file.read_text().splitlines() if line]
 
-    def fetch_project(self, project_id, path, env, *, names=None, timeout=None):
+    def fetch_project(self, project_id, path, env, *, token=None, names=None, timeout=None):
         """Fake the shared REST helper at its API boundary without invoking a CLI or network."""
-        token = env.get("INFISICAL_AI_FLEET_COORDINATOR_TOKEN")
+        if token != env.get("INFISICAL_AI_FLEET_COORDINATOR_TOKEN"):
+            raise AssertionError("explicit scoped reader required")
         with self.calls_file.open("a") as fh:
             fh.write(
                 json.dumps(

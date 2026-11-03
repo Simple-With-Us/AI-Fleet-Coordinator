@@ -47,3 +47,5 @@ The reusable Wise workflow retains the secret-based project configuration route 
 Provisioning and registering either token is a separate setup step.  This code change
 does not establish that either GitHub secret has been configured; deployment remains
 off until the token binding and registry scope are verified.
+
+The fleet-facts and needs-owner standalone installers carry the existing low-level scoped verifier (`fleet_secrets/__init__.py` and `core.py`) alongside fleet_knobs.  They do not install the fleet-secrets CLI.  Before activating either consumer, install its reviewed stable copy and stage its dedicated `FLEET_KNOBS_INFISICAL_TOKEN` reader with the established AI Fleet Coordinator project, prod environment, exact root folder, and read-only permission.  The explicit reader is still checked against that independent expected authority before any named secret read; no ambient project selector or machine login supplies a fallback.

@@ -20,7 +20,9 @@ class FakeHelper:
         self.error = error
         self.calls = []
 
-    def fetch_project(self, project_id, path, env, *, names=None, timeout=None):
+    def fetch_project(self, project_id, path, env, *, token=None, names=None, timeout=None):
+        if token != env.get(source.ENV_AI_FLEET_COORDINATOR_TOKEN):
+            raise AssertionError("explicit scoped reader required")
         self.calls.append((project_id, path, dict(env), names, timeout))
         if self.error:
             raise self.error
