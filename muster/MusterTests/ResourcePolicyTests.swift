@@ -190,4 +190,3 @@ final class ResourcePolicyTests: XCTestCase {
         ResourcePolicyReading.decode(data, now: now, directReceiptAt: now.addingTimeInterval(-receiptAge))
     }
 }
-

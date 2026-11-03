@@ -177,9 +177,9 @@ enum OpsAction: Equatable {
         case "cpu-cores": return "CPU Cores"
         case "cpu-weight": return "CPU Weight"
         case "ram-budget-gib": return "RAM Budget"
-        case "ram-critical-gib": return "RAM Critical Threshold"
+        case "ram-critical-gib": return "Critical RAM Budget"
         case "ram-reserve-gib": return "Host RAM Reserve"
-        case "borrow-idle": return "Idle Capacity Borrowing"
+        case "borrow-idle": return "Idle Memory Borrowing"
         default: return "Resource Policy"
         }
     }

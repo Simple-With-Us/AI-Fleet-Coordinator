@@ -15,9 +15,11 @@ The source of truth is the complete `CODING_RAM_POLICY` JSON value in Infisical,
 | Host RAM Reserve | `reserve_bytes` | Whole GiB; at least 2 GiB, with pressure budget plus reserve no greater than total host RAM | Preserves the headroom used by the controller's borrowing calculation and production protection |
 | Borrow Idle Capacity | `allow_borrowing` | Boolean; defaults to true when absent | Allows a larger soft RAM target in normal mode while host headroom permits |
 
-CPU cores are an affinity pool shared by coding workloads, rather than a separate allocation per workload.  CPU weight is relative priority when units compete.  Docker receives the CPU set; its existing CPU quota and CPU shares remain intact.
+CPU cores are an affinity pool shared by coding workloads, rather than a separate allocation per workload.  CPU weight is relative priority when units compete.  Unit CPU changes write only the kernel `cpuset.cpus` and `cpu.weight` controls after ownership and cgroup-identity checks; `systemctl show` remains discovery-only.  They do not reconcile systemd properties, which can reset unrelated hard controls.  Docker receives the CPU set; its existing CPU quota and CPU shares remain intact.
 
 RAM controls write `memory.high` and the existing production `memory.low` protection.  They do not allocate physical RAM, set a hard memory cap, change swap limits, kill processes, or restart or reparent coding jobs.  In normal mode, borrowing can increase the soft target using current coding usage plus available host memory minus the reserve; pressure and critical modes return to their respective policy budgets.  Disabling borrowing keeps the normal soft target at the pressure budget.
+
+Docker targets require an explicit nonempty configured CPU set and a readable nonempty kernel CPU baseline before ownership.  Inherited Docker CPU sets are unavailable because an empty Docker update cannot safely restore inheritance; no all-CPU substitute is invented.  Missing cgroup CPU files are also unavailable, and the controller does not enable or restructure the cgroup hierarchy.
 
 An initial policy without CPU fields leaves CPU settings alone.  An absent borrowing field retains the existing true default.  Host-local exclusions and suspended controls continue to take precedence over controller writes.
 
@@ -66,7 +68,7 @@ The broker lock serializes requests through this broker only.  This Infisical t
 
 To reverse a saved setting, review and apply the earlier value against a fresh revision.  Runtime ownership is separate: the private CPU journal records each field's baseline, last owned value, target identity, and pending write receipt.  Removing an optional CPU field restores only that field when its current value still matches the controller's last write; the other configured field remains owned.  An external edit wins and is preserved, including a narrower CPU set.
 
-Graceful shutdown and removal or exclusion of a managed target use the same matching-value and cgroup-identity guards.  Partial writes are read back and journaled; an unsuccessful restoration retains only the still-owned field for a later safe retry.  Existing persistent systemd CPU properties are preserved, and no rollback changes CPU quotas, hard RAM limits, swap limits, or coding-job lifecycle.
+Graceful shutdown and removal or exclusion of a managed target use the same matching-value and cgroup-identity guards.  Partial writes are read back and journaled; an unsuccessful restoration retains only the still-owned field for a later safe retry.  Unit CPU intent is applied at controller startup and cgroup recreation, while same-identity external edits remain protected.  Existing persistent systemd CPU properties are preserved, and no rollback changes CPU quotas, hard RAM limits, swap limits, or coding-job lifecycle.
 
 ## Verification
 

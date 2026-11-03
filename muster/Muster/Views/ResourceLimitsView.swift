@@ -133,7 +133,7 @@ struct ResourceLimitsView: View {
                     .cpuWeight,
                     snapshot: snapshot,
                     range: 1...10_000,
-                    step: 25,
+                    step: 1,
                     observed: snapshot.observed.cpuWeight.map(String.init),
                     help: "CPU weight sets relative priority when services compete.\u{00A0} 50 is low priority; 100 is normal."
                 )
@@ -252,9 +252,26 @@ struct ResourceLimitsView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(field.title).font(.headline)
                 Spacer()
-                Text(display(draft(for: field, snapshot: snapshot), unit: field.unit))
-                    .font(.system(.body, design: .monospaced).weight(.semibold))
-                    .monospacedDigit()
+                if field == .cpuWeight, let persisted = field.persistedValue(in: snapshot) {
+                    TextField("CPU Weight", value: Binding(
+                        get: { drafts[field] ?? persisted },
+                        set: { value in
+                            guard value.isFinite, (1...10_000).contains(value), value.rounded() == value else { return }
+                            drafts[field] = value
+                        }
+                    ), format: .number.precision(.fractionLength(0)))
+                        .font(.system(.body, design: .monospaced).weight(.semibold))
+                        .monospacedDigit()
+                        .multilineTextAlignment(.trailing)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 92)
+                        .disabled(!hasReviewableReceipt)
+                        .accessibilityLabel("CPU Weight")
+                } else {
+                    Text(display(draft(for: field, snapshot: snapshot), unit: field.unit))
+                        .font(.system(.body, design: .monospaced).weight(.semibold))
+                        .monospacedDigit()
+                }
             }
             if let range, range.lowerBound <= range.upperBound,
                let persisted = field.persistedValue(in: snapshot) {
@@ -361,4 +378,3 @@ struct ResourceLimitsView: View {
         }
     }
 }
-
