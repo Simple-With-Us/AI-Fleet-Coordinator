@@ -41,7 +41,7 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,9 +56,9 @@ __all__ = [
     "SheetHeaderError",
     "extract_linear_issues",
     "open_registry_readonly",
+    "plan_upserts",
     "project_rows",
     "session_records",
-    "plan_upserts",
     "sync_to_sheet",
 ]
 
@@ -109,7 +109,7 @@ def extract_linear_issues(text: str) -> list[str]:
 
 
 def _iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --------------------------------------------------------------------------------------------
@@ -163,9 +163,7 @@ def session_records(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
     event_counts: dict[str, int] = {}
     issues: dict[str, set[str]] = {}
-    for row in conn.execute(
-        "SELECT session_record_id, details FROM events"
-    ).fetchall():
+    for row in conn.execute("SELECT session_record_id, details FROM events").fetchall():
         record_id = str(row["session_record_id"])
         event_counts[record_id] = event_counts.get(record_id, 0) + 1
         found = extract_linear_issues(str(row["details"] or ""))
@@ -268,9 +266,7 @@ def _cells_match(existing: list[str], desired: list[str]) -> bool:
     return True
 
 
-def plan_upserts(
-    existing: list[dict[str, Any]], desired: list[list[str]]
-) -> dict[str, Any]:
+def plan_upserts(existing: list[dict[str, Any]], desired: list[list[str]]) -> dict[str, Any]:
     """Plan one sync.  `existing` rows carry {rowNumber, cells} (1-based sheet rows, header
     is row 1).  Returns {updates: [(rowNumber, cells)], appends: [cells], unchanged: int,
     duplicate_rows: [rowNumber]}.  When the sheet somehow holds two rows with one Record
@@ -309,9 +305,7 @@ def plan_upserts(
     }
 
 
-def sync_to_sheet(
-    db_path: str, adapter: Any, *, now: float | None = None
-) -> dict[str, Any]:
+def sync_to_sheet(db_path: str, adapter: Any, *, now: float | None = None) -> dict[str, Any]:
     """Upsert the registry's rows through `adapter` and report exactly what happened.
 
     Adapter protocol (the live implementation is session_registry_export.mjs's drain;
@@ -328,9 +322,7 @@ def sync_to_sheet(
     reconciles by Record ID — the same discipline as the thread registry's sync."""
     headers = [str(h) for h in adapter.validate_headers()]
     if headers != HEADERS:
-        raise SheetHeaderError(
-            "sheet header mismatch: expected %r, found %r" % (HEADERS, headers)
-        )
+        raise SheetHeaderError("sheet header mismatch: expected %r, found %r" % (HEADERS, headers))
     moment = now if now is not None else time.time()
     plan = plan_upserts(adapter.read_rows(), load_rows(db_path, now=moment))
     result: dict[str, Any] = {
@@ -364,9 +356,12 @@ def _main(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(prog="session_registry")
     parser.add_argument("command", choices=["export-rows", "stats"])
-    parser.add_argument("--registry", default=None,
-                        help="registry store path (default: the AGENT_SYNC_OPERATOR_REGISTRY"
-                        " override or <state root>/operator/registry.sqlite3)")
+    parser.add_argument(
+        "--registry",
+        default=None,
+        help="registry store path (default: the AGENT_SYNC_OPERATOR_REGISTRY"
+        " override or <state root>/operator/registry.sqlite3)",
+    )
     parser.add_argument("--state-root", default=None)
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
