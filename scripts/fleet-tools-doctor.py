@@ -165,6 +165,12 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_export.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
+        # Mirrors the release EXACT entries:  the reviewed host-side registry route (a Python
+        # module under server/, outside the glob rule), and the AFC-428 exporter runner and its
+        # real sheets adapter (data files beside the Python modules).
+        "scripts/simple_tools/server/operator_registry_dispatch.py",
+        "scripts/simple_tools/operator_sheets_export_run.mjs",
+        "scripts/simple_tools/operator_sheets_adapter.mjs",
         "docs/protocols/simple-tools-guide.md",
         "scripts/simple_tools/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
