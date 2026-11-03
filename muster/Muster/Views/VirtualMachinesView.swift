@@ -162,7 +162,8 @@ struct VirtualMachinesView: View {
         VStack(alignment: .leading, spacing: 4) {
             if let load = report.loadText {
                 let cpus = report.cpuCount.map { " on \($0) \($0 == 1 ? "cpu" : "cpus")" } ?? ""
-                metricRow("Load", "\(load)\(cpus)", fraction: report.loadFraction)
+                metricRow(
+                    "Load", "\(load)\(cpus)", fraction: report.loadFraction, driftAt: 1.0, missingAt: 2.0)
             }
             if let memory = report.memory, let total = memory.totalBytes {
                 let available = memory.availableBytes.map { ServerStatusFormat.bytes($0) } ?? "not read"
@@ -300,14 +301,21 @@ struct VirtualMachinesView: View {
     }
 
     /// One measured number,  with a bar when there is a share to draw.
-    private func metricRow(_ label: String, _ text: String, fraction: Double?) -> some View {
+    ///
+    /// The tint cutoffs are the metric's own:  shares of a whole (memory,  swap,
+    /// disks) turn at 0.85 and 0.95,  while load is graded at 1.0 and 2.0,  the
+    /// same cutoffs `VmStatusReport.state` uses,  so the bar never outruns its badge.
+    private func metricRow(
+        _ label: String, _ text: String, fraction: Double?,
+        driftAt: Double = 0.85, missingAt: Double = 0.95
+    ) -> some View {
         HStack(spacing: 10) {
             Text(label)
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 140, alignment: .leading)
-            usageBar(fraction)
+            usageBar(fraction, driftAt: driftAt, missingAt: missingAt)
             if let fraction {
                 Text(String(format: "%.0f%%", fraction * 100))
                     .font(.system(size: 10, design: .monospaced))
@@ -323,13 +331,13 @@ struct VirtualMachinesView: View {
         .padding(.vertical, 1)
     }
 
-    private func usageBar(_ fraction: Double?) -> some View {
+    private func usageBar(_ fraction: Double?, driftAt: Double, missingAt: Double) -> some View {
         let width: CGFloat = 160
         let share = min(max(fraction ?? 0, 0), 1)
         let tint: Color = {
             guard let fraction else { return .secondary }
-            if fraction >= 0.95 { return .red }
-            if fraction >= 0.85 { return .orange }
+            if fraction >= missingAt { return .red }
+            if fraction >= driftAt { return .orange }
             return .green
         }()
         return ZStack(alignment: .leading) {

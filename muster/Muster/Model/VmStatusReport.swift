@@ -29,6 +29,11 @@ enum VmStatusContract {
 
     /// The config the owner writes so the doctor pulls the VMs at all.
     static let configPathText = "~/.config/fleet-tools/vm-hosts.json"
+
+    /// The largest report the reader will load:  the doctor refuses to keep an
+    /// answer over this size (`MAX_VM_STATUS_BYTES`),  so a bigger file in the
+    /// folder did not come from the pull and is never faulted into memory whole.
+    static let maxReportBytes = 512 * 1024
 }
 
 // MARK: - The rows
@@ -319,6 +324,14 @@ enum VmStatusReportReader {
         var reading = VmStatusReading()
         reading.label = url.deletingPathExtension().lastPathComponent
         reading.path = url.path
+
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber,
+            size.intValue > VmStatusContract.maxReportBytes
+        {
+            reading.problem =
+                "The report is \(size.intValue) bytes;\(ServerStatusCopy.sentenceGap)this app reads at most \(VmStatusContract.maxReportBytes), the cap the doctor keeps to."
+            return reading
+        }
 
         let data: Data
         do {

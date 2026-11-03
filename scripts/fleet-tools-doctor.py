@@ -3110,6 +3110,11 @@ def vm_status_valid(status) -> bool:
         return False
     if status.get("tool") != VM_STATUS_TOOL or status.get("schemaVersion") != VM_STATUS_SCHEMA_VERSION:
         return False
+    # Muster can only ever show a report whose generatedAt it can read (a timeless
+    # one reads unknown forever), so keeping such an answer would overwrite the
+    # last good file with one that can never be current.
+    if parse_utc(status.get("generatedAt")) is None:
+        return False
     return json_within_limits(status, max_nodes=MAX_REMOTE_NODES // 2)
 
 

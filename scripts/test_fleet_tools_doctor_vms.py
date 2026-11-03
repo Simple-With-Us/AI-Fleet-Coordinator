@@ -106,6 +106,17 @@ class VmPullTests(unittest.TestCase):
         self.assertFalse(result[0]["ok"])
         self.assertEqual(json.loads(old.read_text()), GOOD)
 
+    def test_timeless_report_keeps_the_old_report(self):
+        self.write_config([{"label": "fixture-vm", "destination": "vm-ro"}])
+        self.state.mkdir(parents=True)
+        old = self.state / "fixture-vm.json"
+        old.write_text(json.dumps(GOOD))
+        timeless = {key: value for key, value in GOOD.items() if key != "generatedAt"}
+        for bad in (timeless, {**GOOD, "generatedAt": "not-a-time"}, {**GOOD, "generatedAt": 42}):
+            result = self.pull(ssh_runner(json.dumps(bad).encode()))
+            self.assertFalse(result[0]["ok"], bad.get("generatedAt"))
+            self.assertEqual(json.loads(old.read_text()), GOOD)
+
     def test_wrong_tool_or_version_keeps_the_old_report(self):
         self.write_config([{"label": "fixture-vm", "destination": "vm-ro"}])
         self.state.mkdir(parents=True)

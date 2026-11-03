@@ -176,6 +176,18 @@ final class VmStatusReportTests: XCTestCase {
         XCTAssertTrue(fleet.vms.isEmpty)
     }
 
+    func testOversizeReportIsRefusedBeforeReading() throws {
+        // A valid report padded past the doctor's own cap with one long seat name:
+        // over the cap it reads as a problem, never as a decoded report.
+        let padding = String(repeating: "x", count: VmStatusContract.maxReportBytes)
+        let json = fullReport(generatedAt: time(60))
+            .replacingOccurrences(of: "\"MC\", \"CODEX\"", with: "\"\(padding)\"")
+        let reading = try read(json)
+        XCTAssertNotNil(reading.problem)
+        XCTAssertNil(reading.report)
+        XCTAssertEqual(reading.state, .unknown)
+    }
+
     func testMissingDirectoryReadsAsNoVms() throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
