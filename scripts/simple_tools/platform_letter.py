@@ -91,6 +91,12 @@ ENV_LOCATION_FALLBACK = "CLAUDE_LETTER_LOCATION"
 # registry's host.  It is configuration, not source: the installer writes it into the hook's own command (--remote).
 ENV_REMOTE = "SESSION_LETTER_REMOTE"
 ENV_REMOTE_FALLBACK = "CLAUDE_LETTER_REMOTE"
+# The explicit ssh destination of the host that holds the Operator's registry, decoupled from where
+# this chat runs:  when it is set the registry call takes the hop even on the Mac, so a Mac session
+# registers in the canonical registry and never creates a local registry file.  Location stays the
+# truth about where the session runs;  this names where the registry lives.  Keep in step with
+# claude_letter.ENV_REGISTRY_REMOTE.
+ENV_REGISTRY_REMOTE = "LETTER_REGISTRY_REMOTE"
 ENV_CLOSE_ON = "SESSION_LETTER_CLOSE_ON"
 REMOTE_COMMAND = '"$HOME"/.local/bin/' + ENTRY + " registry"
 CONNECT_TIMEOUT = (
@@ -1150,14 +1156,21 @@ class Chat:
         argv = self.argv(op, title, parent)
         if self.transport is not None:
             return _answer(dict(self.transport(argv)))
-        if self.location == "mac":
+        # An explicit registry destination wins over the location default:  the Mac-local branch is
+        # taken only when no destination is configured, so a Mac chat with one set registers over
+        # the hop and this host keeps no registry file.
+        dest_name = ENV_REGISTRY_REMOTE
+        dest = str(self.env.get(ENV_REGISTRY_REMOTE) or "").strip()
+        if self.location == "mac" and not dest:
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
             return _answer(_last_json(out.getvalue()))
-        dest = self.remote
+        if not dest:
+            dest_name = ENV_REMOTE
+            dest = self.remote
         if not DEST_RE.fullmatch(dest):
             # Empty, or something ssh could read as an option: refuse it rather than run it.
-            return {"error": "%s does not name an ssh destination" % ENV_REMOTE}
+            return {"error": "%s does not name an ssh destination" % dest_name}
         if self.now < registry_down_until(self.env, dest) <= self.now + RETRY_SECONDS:
             # Another chat of this host found the registry host silent a moment ago: not a second timeout for this one.
             # (A mark further off than any wait is a clock that moved, and holds nothing.)

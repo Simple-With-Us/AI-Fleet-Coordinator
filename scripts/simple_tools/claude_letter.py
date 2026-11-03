@@ -127,6 +127,12 @@ ENV_LOCATION = "CLAUDE_LETTER_LOCATION"
 # The ssh destination (a name from the host's own ssh config) that holds the registry, for a chat that is not on the
 # registry's host.  It is configuration, not source:  `letter install --remote` writes it into settings.json.
 ENV_REMOTE = "CLAUDE_LETTER_REMOTE"
+# The explicit ssh destination of the host that holds the Operator's registry, decoupled from where
+# this chat runs:  when it is set the registry call takes the hop even on the Mac, so a Mac session
+# registers in the canonical registry and never creates a local registry file.  Location stays the
+# truth about where the session runs;  this names where the registry lives.  Keep in step with
+# platform_letter.ENV_REGISTRY_REMOTE.
+ENV_REGISTRY_REMOTE = "LETTER_REGISTRY_REMOTE"
 # The desktop app's own id for the chat, set on the chat's process (it is never the parent's).
 ENV_HOST_SESSION = "CLAUDE_CODE_HOST_SESSION_ID"
 REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat letter registry'
@@ -827,6 +833,21 @@ class Chat:
             # The desktop app's id for this chat, so the registry side (which runs on the Mac, where the app's record
             # of the chat is) can tell whether another chat started it.
             extra = ["--host-session-id=" + host] + (["--after-clear"] if after_clear else [])
+            if str(self.env.get(ENV_REGISTRY_REMOTE) or "").strip():
+                # The registry lives on another host now, so the app record of this chat is not
+                # there to read:  resolve the parent here, where the record is, and name it.  A
+                # chat no record names a starter for is placed like any other.
+                try:
+                    parent, _why = AL.lookup(
+                        str(self.env.get("HOME") or ""),
+                        host_session_id=host,
+                        cli_session_id=self.session_id,
+                        allow_lag=after_clear,
+                    )
+                except Exception:  # noqa: BLE001 - a hint, never a reason to leave a chat without a letter
+                    parent = ""
+                if parent:  # AL.lookup answers a session UUID or "";  the registry side validates
+                    extra.append("--parent-session-id=" + parent)
             answer = self._call(argv + extra)
             if not str(answer.get("error") or "").startswith("bad arguments"):
                 return answer
@@ -835,14 +856,21 @@ class Chat:
         return self._call(argv)
 
     def _call(self, argv: list[str]) -> dict[str, Any]:
-        if self.location == "mac":
+        # An explicit registry destination wins over the location default:  the Mac-local branch is
+        # taken only when no destination is configured, so a Mac chat with one set registers over
+        # the hop and this host keeps no registry file.
+        dest_name = ENV_REGISTRY_REMOTE
+        dest = str(self.env.get(ENV_REGISTRY_REMOTE) or "").strip()
+        if self.location == "mac" and not dest:
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
             return _answer(_last_json(out.getvalue()))
-        dest = str(self.env.get(ENV_REMOTE) or "").strip()
+        if not dest:
+            dest_name = ENV_REMOTE
+            dest = str(self.env.get(ENV_REMOTE) or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
             # Empty, or something ssh could read as an option:  refuse it rather than run it.
-            return {"error": "%s does not name an ssh destination" % ENV_REMOTE}
+            return {"error": "%s does not name an ssh destination" % dest_name}
         remote = REMOTE_COMMAND + " " + " ".join(shlex.quote(a) for a in argv)
         cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT]
         cmd += ["--", dest, remote]

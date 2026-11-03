@@ -270,6 +270,12 @@ class ListenerHarness(Harness):
         pins: dict[str, str | None] = {
             "OPERATOR_ZULIP_USER_ID": str(OPERATOR_USER_ID),
             "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL,
+            # The daemon suites run per-instance configs from before the single-server
+            # consolidation, so they pin the pre-consolidation partition fixture rather than
+            # the real partition, which now gives every seat to the server instance.
+            "SIMPLE_TOOLS_PARTITION": str(
+                Path(__file__).resolve().parent / "fixtures" / "listener-test-partition.toml"
+            ),
         }
         pins.update(overrides)
         return super().env(**pins)

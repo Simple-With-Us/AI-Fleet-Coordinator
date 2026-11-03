@@ -60,8 +60,10 @@ def operator_bot(user, env, owner_id):
 
 
 def operator_credentials(env, home=None, fetch=None):
-    """Read only the two named Operator values, through the installed fleet-secrets reader (the
-    environment first, then `fleet-secrets run --only`); no local credential-file fallback."""
+    """Read only the named Operator values, never from the ambient environment:  the
+    server-native scoped-service-token reader (operator_identity_reader) when this host has
+    one, else the installed fleet-secrets reader;  no local credential-file fallback.  A
+    reader present but unsafe or unqualified is a CredentialError, never a fallback."""
     from . import zulip as Z
 
     _, expected_email = operator_identity(env)
@@ -78,6 +80,44 @@ def operator_credentials(env, home=None, fetch=None):
         if fetch is not None:
             values = fetch(names)
         else:
+            from . import operator_identity_reader as OIR
+
+            reader_home = home if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
+            try:
+                reader = OIR.reader_for(reader_home)  # memoized:  the 600 s cache survives callers
+            except OIR.ReaderError as exc:  # present but unsafe/unqualified:  never a fallback
+                OIR.evict_reader(reader_home)
+                raise Z.CredentialError(f"{where}: service-token reader: {exc}") from None
+            if reader is not None:
+                if reader.project_id != project:
+                    # The pinned reader must serve the same Fleet-OPS project the factory is
+                    # pinned to;  a contradiction is a misconfiguration, never a fallback.
+                    OIR.evict_reader(reader_home)
+                    raise Z.CredentialError(f"{where}: service-token reader serves another project")
+                try:
+                    values = reader.credentials()
+                except OIR.ReaderError as exc:  # a reason token, never a value
+                    OIR.evict_reader(reader_home)
+                    raise Z.CredentialError(f"{where}: service-token reader: {exc}") from None
+                selected = {n: values.get(n, "") for n in names}
+                unresolved = [
+                    n
+                    for n, value in selected.items()
+                    if isinstance(value, str) and re.fullmatch(r"\$\{[^}]+\}", value.strip())
+                ]
+                if unresolved:
+                    raise Z.CredentialError("Operator unresolved reference: " + ", ".join(unresolved))
+                selected["ZULIP_SITE"] = values.get("ZULIP_OPERATOR_SITE", "")
+                creds = Z.env_credentials(
+                    selected, email_env=names[0], key_env=names[1], site_env="ZULIP_SITE", label=OPERATOR
+                )
+                creds = replace(
+                    creds,
+                    source=f"infisical Fleet-OPS prod {OPERATOR_INFISICAL_PATH} {names[1]} (scoped service token)",
+                )
+                if creds.email.casefold() != expected_email:
+                    raise Z.CredentialError(f"{where}: not the pinned service bot")
+                return creds
             child = dict(env)
             child[Z.ENV_INFISICAL_PROJECT] = project  # Fleet-OPS, where /zulip_operator lives
             try:

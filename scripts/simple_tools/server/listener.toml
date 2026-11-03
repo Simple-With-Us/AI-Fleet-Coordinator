@@ -277,3 +277,88 @@ creds = "env"                     # ZULIP_GB_ENGINEER_EMAIL, ZULIP_GB_ENGINEER_A
 wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_ENGINEER_ENDPOINT", key_env = "ZULIP_ALERT_GB_ENGINEER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
+
+# ---------------------------------------------------------------------------
+# The nine seats moved off the owner's Mac (single-server consolidation, owner direction
+# Nov 2 2026: one server eavesdropper, the Operator's registry and wake functions on the
+# server too).  Each holds a queue with inbox capture here:  its @-mentions and DMs are
+# captured at zero tokens under /data/<SEAT>/, and its key is checked at connect (a member
+# or moderator bot, and the key's own bot must be the seat).
+#
+# wake = "inbox" is deliberate and fail-closed:  a seat's wake adapter is enabled only when
+# that seat's native exact-thread delivery binding is grounded and reviewed per seat.  No
+# generic replacement runtime is configured for these seats, and no paid runtime is armed
+# here.  Mac-local exact-thread execution (for example the CODEX desktop queue) is the thin
+# Mac alerter's hook mode (scripts/simple_tools/wake_alerter.py), a narrow actuator, never
+# another queue-holding eavesdropper.
+#
+# Each section reads the seat's existing Fleet-OPS /zulip pair by name (<STEM>_ZULIP_EMAIL
+# and <STEM>_ZULIP_KEY, the same names the Mac read), injected into the container environment
+# by server/infisical_env.py at start;  the loader's allowlist covers exactly these names for
+# the seats this file configures.  The site comes from ZULIP_SITE as with every server seat.
+# A name absent from the folder is reported in the loader's startup line (names only) and the
+# seat connects when its pair appears on a later restart.
+
+[seat.CLAUDE]
+instance = "server"
+creds = "env"
+email_env = "CLAUDE_ZULIP_EMAIL"
+key_env = "CLAUDE_ZULIP_KEY"
+wake = "inbox"
+
+[seat.CODEX]
+instance = "server"
+creds = "env"
+email_env = "CODEX_ZULIP_EMAIL"
+key_env = "CODEX_ZULIP_KEY"
+wake = "inbox"
+
+[seat.AG]
+instance = "server"
+creds = "env"
+email_env = "AG_ZULIP_EMAIL"
+key_env = "AG_ZULIP_KEY"
+wake = "inbox"
+
+[seat.CURSOR]
+instance = "server"
+creds = "env"
+email_env = "CURSOR_ZULIP_EMAIL"
+key_env = "CURSOR_ZULIP_KEY"
+wake = "inbox"
+
+# GROK posts as grok-build-bot@:  its Fleet-OPS /zulip names carry the Grok-Build stem.
+[seat.GROK]
+instance = "server"
+creds = "env"
+email_env = "GROK_BUILD_ZULIP_EMAIL"
+key_env = "GROK_BUILD_ZULIP_KEY"
+wake = "inbox"
+
+[seat.CLUTCH]
+instance = "server"
+creds = "env"
+email_env = "CLUTCH_ZULIP_EMAIL"
+key_env = "CLUTCH_ZULIP_KEY"
+wake = "inbox"
+
+[seat.FX]
+instance = "server"
+creds = "env"
+email_env = "FX_ZULIP_EMAIL"
+key_env = "FX_ZULIP_KEY"
+wake = "inbox"
+
+[seat.MM]
+instance = "server"
+creds = "env"
+email_env = "MM_ZULIP_EMAIL"
+key_env = "MM_ZULIP_KEY"
+wake = "inbox"
+
+[seat.MC]
+instance = "server"
+creds = "env"
+email_env = "MC_ZULIP_EMAIL"
+key_env = "MC_ZULIP_KEY"
+wake = "inbox"

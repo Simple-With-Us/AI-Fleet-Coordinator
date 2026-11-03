@@ -136,6 +136,15 @@ def start():
 
     sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+    # The registry route:  on a host that holds the reviewed dispatch config, the dispatcher owns
+    # `registry` and `show` outright (fail-closed).  Hooks and a host without the config are untouched.
+    if sys.argv[1:2] in (["registry"], ["show"]):
+        from simple_tools.server.operator_registry_dispatch import main_if_configured  # noqa: E402
+
+        _dispatch_code = main_if_configured(["platform-letter"] + sys.argv[1:])
+        if _dispatch_code is not None:
+            sys.exit(_dispatch_code)
+
     if raw is not None:
         import io
 

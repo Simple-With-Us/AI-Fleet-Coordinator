@@ -32,7 +32,11 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
-MAX_FILES = 146
+# The 147th is simple_tools/operator_identity_reader.py (the letters' pinned identity read);  the 148th is
+# simple_tools/server/operator_registry_dispatch.py (the reviewed host registry route the managed wrappers
+# hand the exact registry argv shapes to);  the 149th and 150th are operator_sheets_export_run.mjs and
+# operator_sheets_adapter.mjs (the exporter's runner and its real AFC-428 adapter).
+MAX_FILES = 150
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The simple-tools Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -104,6 +108,11 @@ EXACT = frozenset(
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
+        # The reviewed host-side registry route (a Python module under server/, outside the glob rule).
+        "scripts/simple_tools/server/operator_registry_dispatch.py",
+        # AFC-428:  the exporter's runner and its real sheets adapter, data files beside the Python modules.
+        "scripts/simple_tools/operator_sheets_export_run.mjs",
+        "scripts/simple_tools/operator_sheets_adapter.mjs",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
@@ -157,6 +166,10 @@ TOOL_REQUIRED = frozenset(
         "scripts/simple_tools/fleet_bearer.py",
         # New stdio bundles must carry the hard-imported own-bearer gate. Older rollback targets stay valid.
         "scripts/simple_tools/mcp/bearer_gate.py",
+        # The reviewed registry route:  a new bundle must carry it (the managed wrappers route the
+        # registry argv shapes to it when its config is present);  a retained older release stays a
+        # valid rollback target (its wrappers predate the route).
+        "scripts/simple_tools/server/operator_registry_dispatch.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED

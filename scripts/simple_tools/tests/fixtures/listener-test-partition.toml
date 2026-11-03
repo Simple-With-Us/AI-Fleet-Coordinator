@@ -1,0 +1,47 @@
+# Test partition for the daemon suites:  their configs are per-instance listener configs from
+# before the single-server consolidation (the real partition now gives every seat to the server
+# instance), and what they exercise is daemon behaviour, not the partition itself.  This file
+# keeps the pre-consolidation mapping so those tests mean what they always meant.  Tests of the
+# partition itself read the real one (docs/protocols/simple-tools-partition.toml).
+version = 1
+
+[seats]
+OPERATOR = "mac"
+CLAUDE = "mac"
+CODEX = "mac"
+AG = "mac"
+CURSOR = "mac"
+GROK = "mac"
+CLUTCH = "mac"
+FX = "mac"
+MM = "mac"
+MC = "mac"
+MA = "server"
+JET = "server"
+GROK-WEB = "server"
+WISE = "server"
+ECHO = "server"
+GB-DIRECTOR = "server"
+GB-FIXER = "server"
+GB-DESIGNER = "server"
+GB-COMPILER = "server"
+GB-HOUSEKEEPER = "server"
+GB-PUBLISHER = "server"
+GB-DEPLOYER = "server"
+GB-MONITOR = "server"
+GB-PLUMBER = "server"
+GB-ORACLE = "server"
+GB-TRADER = "server"
+GB-ENGINEER = "server"
+BF-DIRECTOR = "server"
+BF-BUILDER = "none"
+BF-COMPILER = "none"
+BF-DEPLOYER = "none"
+BF-DESIGNER = "none"
+BF-FIXER = "none"
+BF-HOUSEKEEPER = "none"
+BF-MONITOR = "none"
+BF-ORACLE = "none"
+BF-PLUMBER = "none"
+BF-PUBLISHER = "none"
+GROK-BUILD = "none"

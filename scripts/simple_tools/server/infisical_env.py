@@ -10,9 +10,12 @@ the environment, removes the identity from it, and execs <program> with that env
 listener as the container's PID 1, so SIGTERM still reaches the daemon and it deletes its queues on the way out.
 
 The allowlist is built from the seat partition (every seat it gives to "server"), so nothing else in the folder
-(BotFleet bots, Mac seats, webhook HEADER entries, generic names) ever reaches the container:
+(BotFleet bots, webhook HEADER entries, generic names) ever reaches the container:
 
     ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY            a seat's Zulip pair
+    <STEM>_ZULIP_EMAIL, <STEM>_ZULIP_KEY                the same pair under its Fleet-OPS file-stem name
+                                                         (CLAUDE_ZULIP_EMAIL, GROK_BUILD_ZULIP_KEY, ...), for
+                                                         the seats the single-server consolidation moved here
     ZULIP_OUTGOING_<CODE>_TOKEN                         an optional Zulip outgoing-webhook token
     ZULIP_ALERT_<CODE>_ENDPOINT, ZULIP_ALERT_<CODE>_KEY  a Grok Bot routine webhook (URL and bare key)
     <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY               the listener's default routine names
@@ -23,6 +26,17 @@ The allowlist is built from the seat partition (every seat it gives to "server")
                                                          Operator opened (dm_policy.py)
     OPERATOR_NOTES_{WORKER,SERVER,RUNNER}_KEY            the notes queue's three keys, from the folder /operator
                                                          (AFC-486), with the same login
+
+The Operator's own credential pair (ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY) and identity pins
+(OPERATOR_ZULIP_USER_ID, OPERATOR_ZULIP_EMAIL) live in the Fleet-OPS project's /zulip_operator folder
+(service_identity.py), NOT in this loader's primary /zulip folder.  When INFISICAL_FLEET_OPS_PROJECT_ID is
+set, this loader makes one more read of that folder with the same login and injects exactly those four
+names, so the daemon's supported Operator factory (service_identity.operator_credentials) and the DM
+policy's identity pins resolve on the server, which has no fleet-secrets binary.  Two guards keep the
+injected identity pinned:  an OPERATOR_ZULIP_EMAIL that disagrees with one already pinned in the
+container environment is refused (neither pin is injected), and a ZULIP_OPERATOR_EMAIL credential that
+disagrees with the pin is refused (the pair is not injected).  Both refusals are one log line naming the
+stage, never a value.  Without INFISICAL_FLEET_OPS_PROJECT_ID the folder is not read and the line says so.
 
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
@@ -82,6 +96,18 @@ OPERATOR_PATH = "/operator"
 OPERATOR_NAMES = frozenset(
     {"OPERATOR_NOTES_WORKER_KEY", "OPERATOR_NOTES_SERVER_KEY", "OPERATOR_NOTES_RUNNER_KEY"}
 )
+# The Operator service identity (scripts/simple_tools/service_identity.py):  ONLY the pinned service
+# bot's two non-secret identity pins, from the Fleet-OPS project's own folder.  The credential pair
+# (ZULIP_OPERATOR_EMAIL / ZULIP_OPERATOR_API_KEY) is NEVER loaded into the environment:  those values
+# reach the daemon only through the scoped-service-token reader (operator_identity_reader.py), per the
+# owner's clarified normal method - service tokens, nothing sensitive in env.  The project id is
+# INFISICAL_FLEET_OPS_PROJECT_ID, the same setting every other fleet credential read uses.
+FLEET_OPS_PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
+OPERATOR_SERVICE_PATH = "/zulip_operator"
+OPERATOR_SERVICE_NAMES = frozenset({"OPERATOR_ZULIP_USER_ID", "OPERATOR_ZULIP_EMAIL"})
+_PROJECT_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
+)
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
 
@@ -103,12 +129,28 @@ def server_codes(partition_file: str) -> set[str]:
     }
 
 
+# The prefix of a seat's Fleet-OPS /zulip key names:  the credential-file stem in upper case with
+# non-alphanumerics as underscores (zulip.infisical_prefix_for_stem over zulip.credential_file_name,
+# copied here because this loader runs before the package is importable - keep the two in step).
+# For every seat that is the code itself (CLAUDE -> CLAUDE_ZULIP_EMAIL, MM -> MM_ZULIP_KEY);  the
+# overrides are the seats whose credential FILE stem is not the plain code (GROK's file is
+# Grok-Build, so GROK -> GROK_BUILD_ZULIP_KEY).
+_STEM_OVERRIDES = {"GROK": "GROK_BUILD"}
+
+
+def seat_stem_prefix(code: str) -> str:
+    return _STEM_OVERRIDES.get(code, code)
+
+
 def allowed_names(codes: set[str]) -> set[str]:
     names: set[str] = set(SHARED_NAMES)
     for code in codes:
+        stem = seat_stem_prefix(code)
         names |= {
             "ZULIP_%s_EMAIL" % code,
             "ZULIP_%s_API_KEY" % code,
+            "%s_ZULIP_EMAIL" % stem,
+            "%s_ZULIP_KEY" % stem,
             "ZULIP_OUTGOING_%s_TOKEN" % code,
             "ZULIP_ALERT_%s_ENDPOINT" % code,
             "ZULIP_ALERT_%s_KEY" % code,
@@ -296,6 +338,64 @@ def listener_read_keys(
         return {}, "; listener read keys not loaded (%s)" % exc
 
 
+def operator_service_identity(
+    env: Mapping[str, str], token: str, **kw
+) -> tuple[dict[str, str], str]:
+    """The pinned Operator service identity from Fleet-OPS /zulip_operator, same login.
+
+    Returns ({name: value}, one log fragment).  Opt-in:  no read at all without a well-formed
+    INFISICAL_FLEET_OPS_PROJECT_ID.  The identity stays pinned two ways, each a refusal of the
+    affected names with a log line, never a stopped listener and never a value:
+      * an OPERATOR_ZULIP_EMAIL the folder carries that disagrees with one already pinned in the
+        container environment refuses both pins (the host keeps its pin;  nothing overrides it);
+      The folder's credential pair is not read here at all (the loader injects pins only).
+    """
+    project = (env.get(FLEET_OPS_PROJECT_ENV) or "").strip()
+    if not project:
+        return {}, "; Operator service identity not loaded (%s not set)" % FLEET_OPS_PROJECT_ENV
+    if not _PROJECT_ID_RE.fullmatch(project):
+        return {}, "; Operator service identity not loaded (invalid %s)" % FLEET_OPS_PROJECT_ENV
+    source = dict(env, INFISICAL_PROJECT_ID=project, INFISICAL_ENVIRONMENT="prod")
+    try:
+        found = fetch(
+            source,
+            path=OPERATOR_SERVICE_PATH,
+            token=token,
+            stage="read operator service",
+            strict=True,
+            **kw,
+        )
+    except LoadError as exc:
+        return {}, "; Operator service identity not loaded (%s)" % exc
+    values = {name: found[name] for name in OPERATOR_SERVICE_NAMES if name in found}
+    pinned_env = (env.get("OPERATOR_ZULIP_EMAIL") or "").strip()
+    pin = (values.get("OPERATOR_ZULIP_EMAIL") or "").strip()
+    if pinned_env and pin and pin.casefold() != pinned_env.casefold():
+        values.pop("OPERATOR_ZULIP_USER_ID", None)
+        values.pop("OPERATOR_ZULIP_EMAIL", None)
+        pin = pinned_env
+        refused = "; Operator service pins refused (folder pin disagrees with the host pin)"
+    else:
+        refused = ""
+    if (values.get("OPERATOR_ZULIP_USER_ID") or "").strip():
+        try:
+            if int(values["OPERATOR_ZULIP_USER_ID"].strip()) <= 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            values.pop("OPERATOR_ZULIP_USER_ID", None)
+            refused += "; OPERATOR_ZULIP_USER_ID refused (not a positive id)"
+    loaded = sorted(values)
+    note = "; Operator service identity from %s: %d of %d" % (
+        OPERATOR_SERVICE_PATH,
+        len(loaded),
+        len(OPERATOR_SERVICE_NAMES),
+    )
+    missing = sorted(OPERATOR_SERVICE_NAMES - set(loaded))
+    if missing:
+        note += " (not loaded: " + ", ".join(missing) + ")"
+    return values, note + refused
+
+
 def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     """(the environment to exec with, the one log line).  The identity is always removed."""
     out = {k: v for k, v in env.items() if k not in IDENTITY}
@@ -347,11 +447,12 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         )
     except LoadError as exc:
         operator, operator_note = {}, "; notes-queue keys not loaded (%s)" % exc
+    service_id, service_note = operator_service_identity(env, token, **kw)
     read_keys, read_note = listener_read_keys(env, codes, token, **kw)
     if (env.get(LISTENER_READ_PROJECT) or "").strip():
         found = {name: value for name, value in found.items() if name not in secondary_names}
-    found = dict(found, **operator, **read_keys)
-    allowed = allowed | set(operator)
+    found = dict(found, **operator, **service_id, **read_keys)
+    allowed = allowed | set(operator) | set(service_id)
     loaded = sorted(name for name in found if name in allowed)
     replaced = sum(1 for name in loaded if name in env)
     for name in loaded:
@@ -378,7 +479,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     ignored = len(found) - len(loaded)
     return out, (
         f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "
-        f"{ignored} other names in the folder ignored){coverage}{operator_note}{read_note}"
+        f"{ignored} other names in the folder ignored){coverage}{operator_note}{service_note}{read_note}"
     )
 
 

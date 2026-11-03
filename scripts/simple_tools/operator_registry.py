@@ -1919,6 +1919,122 @@ def candidates_for_letter(db_path: str, letter: str) -> list[dict[str, Any]]:
     return out
 
 
+# ---- exact wake-target resolution (single-server consolidation, Nov 2 2026) -------------
+
+#: The wake_capability tokens that name a VERIFIED delivery binding:  a session may be woken
+#: at its native thread only when its own platform binding set one of these at
+#: register/update time.  EMPTY TODAY, deliberately:  no production writer establishes a
+#: binding through a verified adapter (the platform implemented, the host real, the exact
+#: native session's existence checked), so a stored string - "native", "false", anything -
+#: is data, never a binding.  A token enters this set only with the reviewed adapter code
+#: that grounds that binding's delivery path, in the same change;  resolution then returns
+#: the token so the actuator knows which verified binding to use, and a token is trusted
+#: only with a native session id:  the pair is the exact target, and nothing here invents
+#: one.
+SUPPORTED_WAKE_CAPABILITIES: frozenset[str] = frozenset()
+
+_TARGET_COLUMNS = (
+    "record_id",
+    "platform",
+    "seat",
+    "verified_host",
+    "profile_scope",
+    "native_session_id",
+    "title",
+    "project",
+    "thread_link",
+    "state",
+    "wake_capability",
+    "registered_at",
+    "last_seen_at",
+)
+
+
+def _candidate_sessions(db_path: str, want: str) -> list[dict[str, Any]]:
+    """The seat's live sessions that carry a native session id, newest first.
+
+    Newest first (last_seen_at, then registered_at, then record_id:  a total order).
+    Read-only;  a registry that is missing or unreadable answers [] like the other
+    wake-path reads.  These are CANDIDATES:  presence here says nothing about delivery.
+    """
+    if not want or not db_path or not os.path.isfile(str(db_path)):
+        return []
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception:
+        return []
+    try:
+        rows = registry._conn.execute(
+            "SELECT "
+            + ", ".join("s.%s AS %s" % (c, c) for c in _TARGET_COLUMNS)
+            + " FROM sessions s"
+            " WHERE s.seat = ? AND s.closed_at IS NULL AND s.state = 'active'"
+            " AND s.native_session_id != ''"
+            " ORDER BY s.last_seen_at DESC, s.registered_at DESC, s.record_id ASC",
+            (want,),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    return [{c: str(row[c] or "") for c in _TARGET_COLUMNS} for row in rows]
+
+
+def wake_targets(db_path: str, seat: str) -> list[dict[str, Any]]:
+    """The seat's live sessions that carry a VERIFIED wake delivery binding.
+
+    Empty while SUPPORTED_WAKE_CAPABILITIES is empty:  no stored token is a binding, so
+    this answers [] for every seat today, and it keeps answering [] for "false", "yes",
+    typos and future adapter names until reviewed adapter code grounds that token.
+    """
+    want = str(seat or "").strip().upper()
+    if not want:
+        return []
+    out = []
+    for found in _candidate_sessions(db_path, want):
+        capability = found["wake_capability"].strip().lower()
+        if capability not in SUPPORTED_WAKE_CAPABILITIES:
+            continue
+        found["wake_capability"] = capability
+        out.append(found)
+    return out
+
+
+def resolve_wake_target(db_path: str, seat: str) -> dict[str, Any]:
+    """The one exact native wake target for a seat, or a refusal with its reason.
+
+    The answer is deterministic and fails closed:  the freshest live session of the seat
+    that carries both a verified delivery token and its native session id.  No token, no
+    id, no active session:  found is false and the reason says which, never a guess and
+    never a substitute chat.  "binding_unverified" means live candidate sessions exist but
+    no production writer has established a verified delivery binding for any of them - the
+    normal answer until a reviewed adapter lands;  it is information, never a target.
+    """
+    want = str(seat or "").strip().upper()
+    if not want:
+        return {"found": False, "seat": "", "reason": "seat_required"}
+    candidates = _candidate_sessions(db_path, want)
+    targets = [
+        found
+        for found in candidates
+        if found["wake_capability"].strip().lower() in SUPPORTED_WAKE_CAPABILITIES
+    ]
+    if not targets:
+        reason = "binding_unverified" if candidates else "no_active_session"
+        return {"found": False, "seat": want, "reason": reason, "candidates": len(candidates)}
+    best = targets[0]
+    best["wake_capability"] = best["wake_capability"].strip().lower()
+    return {
+        "found": True,
+        "seat": want,
+        "target": best,
+        "candidates": len(candidates),
+    }
+
+
 # ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
 
 
@@ -2018,9 +2134,53 @@ def lookup_label(
 # ---- outbox bridge for the async exporter (AFC-412 PR2) -------------------------
 
 
-def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(str(db_path))
+def _connect_existing(db_path: str) -> sqlite3.Connection:
+    """Open the registry read-write, and only an existing one.
+
+    A plain sqlite3.connect CREATES a missing path, so a bridge pointed at the wrong store
+    would silently start a second, empty registry and export nothing from it while rows
+    piled up in the real one.  mode=rw never creates the file (the same contract the
+    registry's own read handle documents);  a missing store surfaces as RegistryUnavailable
+    instead of a new database.  The URI comes from as_uri(), as the read handle's comment
+    explains.
+    """
+    try:
+        conn = sqlite3.connect(
+            "%s?mode=rw" % pathlib.Path(os.path.abspath(str(db_path))).as_uri(),
+            uri=True,
+        )
+    except sqlite3.OperationalError as exc:
+        raise RegistryUnavailable(
+            "registry store is missing or unwritable: %s" % db_path
+        ) from exc
+    try:
+        # Existing is not enough:  mode=rw opens any database, so an argument pointing at
+        # some other sqlite file would drain garbage while the real outbox backs up.  The
+        # store must carry the registry's own schema markers before the bridge trusts it.
+        found = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    except sqlite3.DatabaseError as exc:
+        conn.close()
+        raise RegistryUnavailable(
+            "registry store is unreadable: %s" % db_path
+        ) from exc
+    required = {"schema_migrations", "sessions", "alias_assignments", "events",
+                "export_outbox"}
+    if not required <= found:
+        conn.close()
+        raise RegistryUnavailable(
+            "not an Operator registry store (missing registry tables): %s" % db_path
+        )
     conn.row_factory = sqlite3.Row
+    return conn
+
+
+def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
+    conn = _connect_existing(db_path)
     try:
         # rowid is the commit order (one writer, appended under the write lock), and it is the only
         # correct key here:  created_at can be caller-supplied (close(at=...), mark_seen(at=...)),
@@ -2043,7 +2203,7 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
     if not outbox_ids:
         return 0
     at = exported_at or _utcnow()
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_existing(db_path)
     try:
         with conn:
             cur = conn.executemany(
@@ -2069,6 +2229,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("pending-outbox")
     p.add_argument("--db", required=True)
     p.add_argument("--limit", type=int, default=50)
+    w = sub.add_parser(
+        "wake-target",
+        help="resolve the seat's one exact native wake target; today no binding is verified, so this reports binding_unverified, never a target",
+    )
+    w.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    w.add_argument("--seat", required=True)
     m = sub.add_parser("mark-exported")
     m.add_argument("--db", required=True)
     m.add_argument("outbox_ids", nargs="+")
@@ -2215,7 +2381,14 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--session-id", required=True, help="the native session id")
     args = parser.parse_args(argv)
     if args.command == "pending-outbox":
-        print(json.dumps(pending_outbox(args.db, args.limit)))
+        try:
+            print(json.dumps(pending_outbox(args.db, args.limit)))
+        except RegistryUnavailable as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        return 0
+    if args.command == "wake-target":
+        print(json.dumps(resolve_wake_target(args.db or _default_db(), args.seat)))
         return 0
     if args.command == "resolve":
         try:
@@ -2358,7 +2531,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(rows))
         return 0
-    print(json.dumps({"marked": mark_exported(args.db, args.outbox_ids)}))
+    try:
+        print(json.dumps({"marked": mark_exported(args.db, args.outbox_ids)}))
+    except RegistryUnavailable as exc:
+        print(json.dumps({"error": str(exc)}))
+        return 2
     return 0
 
 

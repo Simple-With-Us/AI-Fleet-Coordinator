@@ -5,14 +5,15 @@ the kill switch live here and in listener/pause.json (owner decision 2026-10-07)
 never stops the daemon:  `load()` returns the errors, the daemon shows red in status, sends one
 notify-owner and keeps running with what it could read (a seat with a bad section gets no queue).
 
-Two instances of this package run the listener (owner decision, Thu, Oct 8):  `mac` holds
-the nine Mac seats (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM), and `server`
-(a container on the Coolify box) holds the Grok Bot personas and the other cloud seats.  The
-one exception to "never stops" is the seat partition (docs/protocols/simple-tools-partition.toml,
-required on both instances).  It fails closed:  a daemon whose config holds a seat, enabled or
-not, that the partition does not give to its own instance (a seat of the other instance, a
-`none` seat, or a seat the partition does not list), or a section that reads another listed
-seat's credential, refuses to start, so a seat is never held twice.
+One instance of this package runs the listener (single-server consolidation, owner direction
+Mon, Nov 2 2026):  `server`, a container on the Coolify box, holds every seat - the nine seats
+whose execution tools live on the owner's Mac (AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC
+and MM), the Grok Bot personas, the other cloud seats and the Operator service.  The Mac
+listener is retired to a thin wake alerter.  The one exception to "never stops" is the seat
+partition (docs/protocols/simple-tools-partition.toml).  It fails closed:  a daemon whose
+config holds a seat, enabled or not, that the partition does not give to its own instance (a
+seat of another instance, a `none` seat, or a seat the partition does not list), or a section
+that reads another listed seat's credential, refuses to start, so a seat is never held twice.
 
 Credentials:  `creds = "file"` (the default) is the seat's own bot, named by `bot` (its credential
 file stem, e.g. Grok-Build):  read from Infisical Fleet-OPS /zulip as <BOT>_ZULIP_EMAIL, _KEY and _SITE

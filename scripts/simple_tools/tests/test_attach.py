@@ -38,6 +38,7 @@ class AttachHarness(ListenerHarness):
 
     def hook_env(self, **overrides):
         env = {"HOME": str(self.home), "SIMPLE_TOOLS_STATE_DIR": self.root, "CLAUDE_CODE_ENTRYPOINT": "cli",
+               "SIMPLE_TOOLS_PARTITION": self.env()["SIMPLE_TOOLS_PARTITION"],
                "CLAUDE_PID": str(PID), "SIMPLE_TOOLS_REWAKE_POLL": "0.05", "SIMPLE_TOOLS_REWAKE_COALESCE": "0.05"}
         env.update({k: v for k, v in overrides.items() if v is not None})
         for name, value in overrides.items():

@@ -1,24 +1,29 @@
-# simple-chat listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08).
+# simple-chat listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08);
+# single-server consolidation directed by the owner on Mon, Nov 2 2026 ("the target is one
+# server eavesdropper, with the Operator's registry and wake functions there too").
 #
-# The listener runs as two instances of the same package (scripts/simple_tools):
-#   mac     the owner's Mac (LaunchAgent com.jay.operator):  every seat that runs on
-#           the Mac.  CLAUDE gets live delivery and the tool-less claude -p wake; the others get
-#           inbox capture (owner, Thu, Oct 8:  "grok build is on the mac too").
-#   server  the Coolify container on the Hetzner box:  the cloud seats (owner, Thu, Oct 8:
-#           OpenAI dot (Jet), Muse Assist, the Grok Bots, Instinct and Echo, plus GROK-WEB).
-#           GB personas wake through their Grok Bot routine webhooks.  The other cloud seats (MA,
-#           JET, GROK-WEB, WISE and ECHO) hold a queue with inbox capture since Fri, Oct 9 (no
-#           Mac config can hold them), and get a wake adapter when one exists.
+# The listener now runs as ONE instance of the same package (scripts/simple_tools):
+#   server  the Coolify container on the Hetzner box:  every seat, including the nine seats
+#           whose execution tools live on the owner's Mac (AG, CLAUDE, CLUTCH, CODEX, CURSOR,
+#           FX, GROK, MC and MM) and the Operator service.  GB personas wake through their
+#           Grok Bot routine webhooks, JET through its hosted MCP routine.  The seats moved
+#           off the Mac hold a queue with inbox capture until each one's native exact-thread
+#           delivery binding is grounded per seat (no generic replacement runtime);  the Mac
+#           keeps only the thin wake alerter (scripts/simple_tools/wake_alerter.py) as a narrow
+#           execution actuator, not a polling eavesdropper.
+#   mac     no seats.  The Mac instance of the listener is retired once its pending state is
+#           carried over;  only the alerter and Mac-bound surfaces (Apple Notes runner,
+#           iMessage boundary, Muster) remain.
 #   none    no listener instance holds the seat.  BotFleet handles its BF bots natively.
 #
-# A seat must never be configured in both instances:  two listeners would each hold a queue for
+# A seat must never be configured in two instances:  two listeners would each hold a queue for
 # the same bot and each wake it, and a reply could go out twice.  Every listener reads this file
-# (the Mac reads the checkout's copy, the container image carries one) and it fails closed.  A
-# listener refuses to start when its listener.toml configures a seat, enabled or not, that this
-# file does not give to its own instance:  a seat of the other instance, a `none` seat, or a seat
-# that is not listed here at all.  It also refuses a section that reads another listed seat's
-# credential (for example [seat.GBC] with bot = "GB-Compiler"), and at connect it refuses a key
-# whose users/me identity is not the seat's own bot.  A missing file refuses every seat.
+# (the container image carries one) and it fails closed.  A listener refuses to start when its
+# listener.toml configures a seat, enabled or not, that this file does not give to its own
+# instance:  a seat of another instance, a `none` seat, or a seat that is not listed here at
+# all.  It also refuses a section that reads another listed seat's credential (for example
+# [seat.GBC] with bot = "GB-Compiler"), and at connect it refuses a key whose users/me identity
+# is not the seat's own bot.  A missing file refuses every seat.
 #
 # Change an entry only with the owner's OK, in the PR that enables the seat.  Move a seat by
 # removing it from one instance's listener.toml before adding it to the other's.
@@ -26,19 +31,22 @@
 version = 1
 
 [seats]
-# The Operator:  a deterministic service, not an agent roster entry.
-OPERATOR = "mac"
+# The Operator:  a deterministic service, not an agent roster entry.  Its registry, wake
+# functions and voice live on the server instance (single-server consolidation, Nov 2 2026).
+OPERATOR = "server"
 
-# Mac seats
-CLAUDE = "mac"
-CODEX = "mac"
-AG = "mac"
-CURSOR = "mac"
-GROK = "mac"
-CLUTCH = "mac"
-FX = "mac"
-MM = "mac"
-MC = "mac"
+# The nine seats whose execution tools live on the owner's Mac.  Their queues, cursors and
+# wake routing are the server instance's now;  each keeps inbox capture until its own native
+# exact-thread delivery binding is grounded and enabled per seat.
+CLAUDE = "server"
+CODEX = "server"
+AG = "server"
+CURSOR = "server"
+GROK = "server"
+CLUTCH = "server"
+FX = "server"
+MM = "server"
+MC = "server"
 
 # Cloud seats
 MA = "server"
