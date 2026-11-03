@@ -946,7 +946,8 @@ def _registry_functions(db_path: str):
     return registrations, register
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
+    env = os.environ if env is None else env
     parser = argparse.ArgumentParser(prog="operator-registration")
     parser.add_argument("--db", default="", help="the registry file (default: the shared path)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -972,7 +973,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from . import operator_registry as OR  # path resolution only;  no handle is opened
 
-    db_path = args.db or OR._default_db()
+    db_path = args.db or OR.default_db(env)
 
     if args.command == "sweep":
         print(json.dumps({"dropped": sweep(db_path)}))

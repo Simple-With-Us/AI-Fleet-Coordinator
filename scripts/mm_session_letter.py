@@ -49,9 +49,9 @@ from collections.abc import Iterator
 
 from simple_tools import secretscan
 from simple_tools.operator_registry import (
+    default_db,
     letter_space_of,
     pairs_after,
-    registry_db_path,
 )
 
 SEAT = "MM"
@@ -129,10 +129,7 @@ def registry_db() -> str:
     if override:
         path = os.path.expanduser(override)
         return path if os.path.isfile(path) else ""
-    root = os.environ.get("SIMPLE_TOOLS_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".simple-tools"
-    )
-    path = registry_db_path(root, os.environ)
+    path = default_db()
     return path if os.path.isfile(path) else ""
 
 

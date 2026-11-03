@@ -707,7 +707,7 @@ def registry_main(
     except SystemExit:
         return _emit(stdout, {"error": "bad arguments:  %s" % " ".join(argv)[:200]}, 2)
     args.home = str(env.get("HOME") or os.path.expanduser("~"))
-    db = OR.registry_db_path(L.state_root(env), env)
+    db = OR.default_db(env)
     if not os.path.isfile(db):
         # Never create one:  a second registry would hand out letters that collide with the one the Operator keeps.
         return _emit(stdout, {"error": "no Operator registry on this host"}, 3)
