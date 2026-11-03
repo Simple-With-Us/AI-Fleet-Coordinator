@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:ffdfd1c04b6f38b77ca919d77840c4b2f7c2bd10e7aafead98fe5d2e6b799f4d -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:5f7d2d9908eb97b9cfedee6eac9a13983b36b1c35b8b02118a6d051d99d73a43 -->
 # FLEET-PROTOCOL — Fleet Tools Manual
 
 This is the manual every AI agent seat uses to reach the owner's tools:  the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
