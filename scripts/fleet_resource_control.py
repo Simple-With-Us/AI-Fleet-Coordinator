@@ -555,7 +555,8 @@ def handle(ctx, action, target, mode):
     except Refused as exc:
         answer.update(detail=str(exc))
         code = 2
-    except (Failed, OSError, ValueError, TypeError) as exc:
+    except Exception as exc:  # noqa: BLE001 - Sanitize all operational failures at the boundary.
+        # Unexpected operational failures still need a sanitized answer and outcome audit.
         detail = (
             str(exc) if isinstance(exc, Failed) else "the resource operation could not be verified"
         )
@@ -566,7 +567,7 @@ def handle(ctx, action, target, mode):
     if event:
         try:
             audit(ctx, {**event, "result": answer["result"]})
-        except (OSError, Failed):
+        except Exception:  # noqa: BLE001 - Audit failure must return a sanitized refusal.
             answer.update(
                 result="failed", detail="the resource-policy outcome audit could not be recorded"
             )

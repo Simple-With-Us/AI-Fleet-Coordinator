@@ -390,6 +390,51 @@ class BrokerTests(unittest.TestCase):
         self.assertFalse(self.store.saves)
         self.assertNotIn("private", answer["detail"])
 
+    def test_unexpected_failure_after_intent_never_saves_or_reloads(self):
+        original = self.store.get
+        reads = []
+
+        def get():
+            reads.append(True)
+            if len(reads) == 2:
+                raise RuntimeError("private backend detail")
+            return original()
+
+        self.store.get = get
+        answer, code = self.call()
+        self.assertEqual((code, answer["result"]), (1, "failed"))
+        self.assertNotIn("private", answer["detail"])
+        self.assertFalse(self.store.saves)
+        self.assertFalse(self.commands)
+        self.assertEqual([e["result"] for e in self.events], ["intent", "failed"])
+
+    def test_unexpected_reload_failure_reports_saved_but_unverified_and_audits(self):
+        def runner(argv, **kwargs):
+            self.commands.append(argv)
+            raise RuntimeError("private runner detail")
+
+        self.ctx.runner = runner
+        answer, code = self.call()
+        self.assertEqual((code, answer["result"]), (1, "failed"))
+        self.assertTrue(answer["detail"].startswith("SavedButApplyUnverified:"))
+        self.assertNotIn("private", answer["detail"])
+        self.assertEqual(len(self.store.saves), 1)
+        self.assertEqual(self.commands, [r.RELOAD])
+        self.assertEqual([e["result"] for e in self.events], ["intent", "failed"])
+
+    def test_unexpected_audit_failure_is_sanitized_and_prevents_save(self):
+        def audit(record):
+            raise RuntimeError("private audit detail")
+
+        self.ctx.resource_audit = audit
+        answer, code = self.call()
+        self.assertEqual((code, answer["result"]), (1, "failed"))
+        self.assertEqual(
+            answer["detail"], "the resource-policy outcome audit could not be recorded"
+        )
+        self.assertFalse(self.store.saves)
+        self.assertFalse(self.commands)
+
     def test_short_audit_writes_complete_intent_and_result_records(self):
         del self.ctx.resource_audit
         original = os.write

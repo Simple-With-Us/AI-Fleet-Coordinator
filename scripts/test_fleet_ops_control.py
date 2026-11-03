@@ -972,6 +972,79 @@ class LogsAndPm2Tests(Base):
         self.assertEqual(len(out), 1000)
         self.assertTrue(out.endswith(b"TAILMARK"))
 
+    def _assert_capped_capture_interrupt_cleans_up(self, stage):
+        class Pipe:
+            def __init__(self):
+                self.closed = False
+
+            def fileno(self):
+                return 42
+
+            def close(self):
+                self.closed = True
+
+        class Process:
+            def __init__(self):
+                self.stdout = Pipe()
+                self.killed = False
+                self.wait_calls = 0
+
+            def poll(self):
+                return None if not self.killed else -9
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if stage == "wait" and not self.killed:
+                    raise KeyboardInterrupt
+                return -9
+
+        class Selector:
+            def __init__(self):
+                self.closed = False
+
+            def register(self, fd, events):
+                return None
+
+            def select(self, timeout):
+                if stage == "selector":
+                    raise KeyboardInterrupt
+                return [object()]
+
+            def close(self):
+                self.closed = True
+
+        process = Process()
+        selector = Selector()
+        with (
+            mock.patch.object(foc.subprocess, "Popen", return_value=process),
+            mock.patch.object(foc.selectors, "DefaultSelector", return_value=selector),
+            mock.patch.object(
+                foc.os,
+                "read",
+                side_effect=KeyboardInterrupt if stage == "read" else None,
+                return_value=b"",
+            ),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            foc._run_capped(["journalctl"], 30, None, 100)
+
+        self.assertTrue(process.killed)
+        self.assertEqual(process.wait_calls, 2 if stage == "wait" else 1)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(selector.closed)
+
+    def test_capped_capture_selector_interrupt_kills_and_reaps_child(self):
+        self._assert_capped_capture_interrupt_cleans_up("selector")
+
+    def test_capped_capture_read_interrupt_kills_and_reaps_child(self):
+        self._assert_capped_capture_interrupt_cleans_up("read")
+
+    def test_capped_capture_wait_interrupt_kills_and_reaps_child(self):
+        self._assert_capped_capture_interrupt_cleans_up("wait")
+
     def test_text_output_strips_terminal_escapes_but_json_keeps_the_field(self):
         dirty = "a\x1b[31mred\x1b[0m\x07b\x1b]0;title\x07c\nd\te\x7f\x85f"
         answer = {

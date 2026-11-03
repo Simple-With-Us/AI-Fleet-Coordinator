@@ -1,5 +1,34 @@
 import XCTest
 
+final class FleetServicesPanelRoutingTests: XCTestCase {
+    func test_launch_agents_use_admin_when_allowlist_is_missing_or_empty() {
+        let serviceID = "com.jay.unlisted-agent"
+
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: serviceID, label: serviceID, allowlist: nil
+        ))
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: serviceID, label: serviceID, allowlist: OpsAllowlist()
+        ))
+    }
+
+    func test_listed_launch_agent_uses_controller_and_server_keeps_admin_route() {
+        let label = "com.jay.allowed-agent"
+        let allowlist = OpsAllowlist(macAgents: [
+            OpsAllowlist.Entry(name: label, actions: [OpsVerb.start.rawValue])
+        ])
+
+        XCTAssertFalse(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: label, label: label, allowlist: allowlist
+        ))
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: FleetServiceRegistry.server.id,
+            label: FleetServiceRegistry.server.id,
+            allowlist: allowlist
+        ))
+    }
+}
+
 // The operations control:  the argv Muster builds for each action,  how it reads a
 // helper's answer,  and the plan,  confirm and run flow with an injected runner.
 //
