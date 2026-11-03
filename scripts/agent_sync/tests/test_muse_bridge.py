@@ -18,6 +18,7 @@ import types
 import unittest
 from unittest import mock
 
+from .. import adapters as A
 from .. import chat_nudges as CN
 from .. import config as C
 from .. import live as L
@@ -711,3 +712,178 @@ class LoopSwitchTests(unittest.TestCase):
             cfg.wake_loop_prevention = False
             self.assertFalse(MB.source_blocked(root, cfg, row))
             self.assertEqual(guard.count(key), 3)
+
+
+class BridgePinAdvisoryTest(unittest.TestCase):
+    """The bridge pin under the owner's 2026-11-03 ruling:  a recorded pin that drifted is
+    advisory (the consult proceeds on the installed build and the drift is logged), while a pin
+    file that is absent still holds the consult, exactly as before."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.bin = pathlib.Path(self.root) / "bin"
+        self.bin.mkdir()
+        self.build = self.bin / "muse-bin-1.4.12-R6909.1"
+        self.build.write_text("#!/bin/sh\n")
+        self.build.chmod(0o755)
+        self.logged: list[tuple[str, dict]] = []
+        logged = self.logged
+
+        class FakeLog:
+            def write(self, event: str, **fields: object) -> None:
+                logged.append((event, dict(fields)))
+
+        self.daemon = types.SimpleNamespace(
+            root=self.root,
+            log=FakeLog(),
+            config=_mac_config("MM"),
+            wake_path=str(self.bin),
+        )
+        self.bridge = MBM.MacBridge.__new__(MBM.MacBridge)
+        self.bridge.daemon = self.daemon
+        self.bridge.path = os.path.join(L.listener_dir(self.root), MBM.STATE_NAME)
+
+    def write_pin(self, pinned_binary: str) -> None:
+        os.makedirs(L.listener_dir(self.root), exist_ok=True)
+        pin = {
+            "muse": A.binary_pin(pinned_binary),
+            "fingerprint": MBM.fingerprint(),
+            "model": C.MUSE_DEFAULT_MODEL,
+            "effort": A.MUSE_REASONING_EFFORT,
+        }
+        with open(os.path.join(L.listener_dir(self.root), MBM.PIN_NAME), "w") as fh:
+            json.dump(pin, fh)
+
+    def events(self, name: str) -> list[dict]:
+        return [fields for event, fields in self.logged if event == name]
+
+    def test_a_matching_pin_is_ready_and_reports_no_drift(self) -> None:
+        self.write_pin(str(self.build))
+        self.assertEqual(
+            MBM.pin_state(self.root, str(self.build), C.MUSE_DEFAULT_MODEL), (True, "ready")
+        )
+        self.assertIsNone(MBM.pin_drift(self.root, str(self.build), C.MUSE_DEFAULT_MODEL))
+
+    def test_a_drifted_pin_is_stale_not_missing_and_reports_the_pair(self) -> None:
+        self.write_pin(str(pathlib.Path(self.root) / "muse-bin-1.4.11-R6667.1"))
+        self.assertEqual(
+            MBM.pin_state(self.root, str(self.build), C.MUSE_DEFAULT_MODEL),
+            (False, "bridge_pin_stale"),
+        )
+        drift = MBM.pin_drift(self.root, str(self.build), C.MUSE_DEFAULT_MODEL)
+        self.assertIsNotNone(drift)
+        self.assertIn("muse-bin-1.4.11-R6667.1", str(drift["pinned_muse"]))
+        self.assertEqual(drift["muse"], os.path.realpath(str(self.build)))
+
+    def test_an_absent_pin_still_holds_and_reports_no_drift(self) -> None:
+        self.assertEqual(
+            MBM.pin_state(self.root, str(self.build), C.MUSE_DEFAULT_MODEL),
+            (False, "bridge_pin_missing"),
+        )
+        self.assertIsNone(MBM.pin_drift(self.root, str(self.build), C.MUSE_DEFAULT_MODEL))
+
+    def test_run_once_proceeds_on_a_drifted_pin_and_logs_it_once(self) -> None:
+        self.write_pin(str(pathlib.Path(self.root) / "muse-bin-1.4.11-R6667.1"))
+        self.bridge.run_once()
+        self.bridge.run_once()
+        (drift,) = self.events("wake-pin-drift")
+        self.assertEqual(drift["runtime"], "muse")
+        self.assertEqual(drift["why"], "pin_stale")
+        self.assertIn("muse-bin-1.4.11-R6667.1", str(drift["pinned"]))
+        self.assertIn("muse-bin-1.4.12-R6909.1", str(drift["current"]))
+        self.assertEqual(
+            self.events("muse-bridge-held"), [], "a drifted pin never holds the consult"
+        )
+
+    def test_run_once_holds_on_an_absent_pin(self) -> None:
+        self.bridge.run_once()
+        (held,) = self.events("muse-bridge-held")
+        self.assertEqual(held["reason"], "bridge_pin_missing")
+        self.assertEqual(self.events("wake-pin-drift"), [])
+
+
+class BridgeConsultDegradeTest(unittest.TestCase):
+    """A consult run that fails used to record a permanent `hold` for the item, suppressing the
+    deterministic route the daemon had already declined to take.  Since the owner's 2026-11-03
+    ruling it degrades to that route when the item has one:  a native item (a server seat with
+    an http wake) falls back to the seat's own routine.  Items with no native target keep the
+    hold, and a model that answered but chose badly is not a run failure and never degrades."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.logged: list[tuple[str, dict]] = []
+        logged = self.logged
+
+        class FakeLog:
+            def write(self, event: str, **fields: object) -> None:
+                logged.append((event, dict(fields)))
+
+        self.result = A.RunResult()
+        self.result.error = "no parseable result"
+        self.daemon = types.SimpleNamespace(
+            root=self.root,
+            log=FakeLog(),
+            config=_mac_config("MM"),
+            env={},
+            home=self.root,
+            wake_path=self.root,
+            scrub=lambda text: text,
+            muse_runner=types.SimpleNamespace(run=lambda *a, **k: self.result),
+        )
+        self.bridge = MBM.MacBridge.__new__(MBM.MacBridge)
+        self.bridge.daemon = self.daemon
+        self.bridge._resources = lambda item: []
+
+    def item(self, **extra) -> dict:
+        row = {
+            "source_seat": "MM",
+            "id": 42,
+            "type": "stream",
+            "channel": "agent-sync",
+            "topic": "t",
+            "content": "hi",
+            "sender": "peer",
+            "owner": False,
+            "ts": time.time(),
+            "native": True,
+        }
+        row.update(extra)
+        return row
+
+    def events(self, name: str) -> list[dict]:
+        return [fields for event, fields in self.logged if event == name]
+
+    def test_a_failed_consult_degrades_a_native_item_to_its_own_routine(self) -> None:
+        decision = self.bridge._decide(self.item(), "muse", C.MUSE_DEFAULT_MODEL)
+        self.assertEqual(
+            decision,
+            {
+                "kind": "native",
+                "target": MB.native_target_id("MM"),
+                "model_attempted": True,
+            },
+        )
+        (degraded,) = self.events("muse-bridge-consult-degraded")
+        self.assertEqual(degraded["seat"], "MM")
+        self.assertEqual(degraded["id"], 42)
+        self.assertEqual(degraded["reason"], "model_unavailable")
+
+    def test_a_consult_that_ran_the_wrong_model_degrades_the_same_way(self) -> None:
+        self.result.error = None
+        self.result.result = {}
+        self.result.models = ["some-other-model"]
+        decision = self.bridge._decide(self.item(), "muse", C.MUSE_DEFAULT_MODEL)
+        self.assertEqual(decision["kind"], "native")
+        self.assertEqual(len(self.events("muse-bridge-consult-degraded")), 1)
+
+    def test_a_failed_consult_still_holds_an_item_with_no_native_target(self) -> None:
+        decision = self.bridge._decide(self.item(native=False), "muse", C.MUSE_DEFAULT_MODEL)
+        self.assertEqual(
+            decision,
+            {"kind": "hold", "reason": "model_unavailable", "model_attempted": True},
+        )
+        self.assertEqual(self.events("muse-bridge-consult-degraded"), [])

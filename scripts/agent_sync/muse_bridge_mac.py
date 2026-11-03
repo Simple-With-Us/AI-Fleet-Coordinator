@@ -85,14 +85,43 @@ def pin_state(root: str, binary: str | None, model: str) -> tuple[bool, str]:
     if not binary:
         return False, "no_muse"
     pin = L.read_json(os.path.join(L.listener_dir(root), PIN_NAME))
+    if not pin.get("muse"):
+        # No pin was ever recorded for the bridge:  the consult still holds, exactly as before.
+        # A fresh install waits for its canary (`probe_pin`) rather than consulting a build
+        # nobody verified.
+        return False, "bridge_pin_missing"
     if (
         pin.get("muse") != A.binary_pin(binary)
         or pin.get("fingerprint") != fingerprint()
         or pin.get("model") != model
         or pin.get("effort") != A.MUSE_REASONING_EFFORT
     ):
-        return False, "bridge_pin_missing_or_stale"
+        # A pin exists but no longer matches:  drift, not absence.  Since the owner's 2026-11-03
+        # ruling the bridge pin is advisory like the daemon's -- `run_once` proceeds with the
+        # consult on what is installed and logs the drift -- so this reason no longer holds the
+        # consult; it only names why the recorded pin and the installed build differ.
+        return False, "bridge_pin_stale"
     return True, "ready"
+
+
+def pin_drift(root: str, binary: str | None, model: str) -> dict[str, Any] | None:
+    """The recorded-vs-installed pair for the drift log, or None when there is nothing to report:
+    no binary, no pin recorded (absence still holds the consult), or a pin that still matches."""
+    if not binary:
+        return None
+    pin = L.read_json(os.path.join(L.listener_dir(root), PIN_NAME))
+    if not pin.get("muse"):
+        return None
+    if (
+        pin.get("muse") == A.binary_pin(binary)
+        and pin.get("fingerprint") == fingerprint()
+        and pin.get("model") == model
+        and pin.get("effort") == A.MUSE_REASONING_EFFORT
+    ):
+        return None
+    return {"pinned_muse": pin.get("muse"), "muse": os.path.realpath(binary)}
+
+
 
 
 def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> dict[str, Any]:
@@ -364,6 +393,28 @@ class MacBridge:
             schema=W.schema_text(strict=True),
         )
         if not result.ok or result.models != [model]:
+            if item.get("native") is True:
+                # The consult run itself failed (owner ruling, 2026-11-03):  degrade to the
+                # deterministic route rather than holding the wake.  A native item's
+                # deterministic outcome is the seat's own routine -- the native target is in
+                # the offered resources for exactly this seat, and the server runs that same
+                # routine when the model chooses it -- so the degrade returns the same
+                # decision shape a model-chosen native route returns.  The pre-checks above
+                # (loop guard, stale, paused) already ran, and submit re-verifies the source
+                # row, so the degrade inherits every guard the model's answer would have met.
+                # Items with no native target (local Mac items, server seats without an http
+                # wake) have no deterministic route inside the bridge and keep the hold below.
+                self.daemon.log.write(
+                    "muse-bridge-consult-degraded",
+                    seat=source,
+                    id=item["id"],
+                    reason="model_unavailable",
+                )
+                return {
+                    "kind": "native",
+                    "target": MB.native_target_id(source),
+                    "model_attempted": True,
+                }
             return {"kind": "hold", "reason": "model_unavailable", "model_attempted": True}
         obj, why = W.validate(result.parsed)
         if (
@@ -617,12 +668,31 @@ class MacBridge:
         model = C.MUSE_DEFAULT_MODEL
         binary = resolve_bridge_muse(self.daemon.wake_path)
         pinned, why = pin_state(self.daemon.root, binary, model)
+        if not pinned and why == "bridge_pin_stale":
+            # The pin drifted and the consult proceeds on the installed build (owner ruling,
+            # 2026-11-03), with the drift logged once per change rather than on every 5-second
+            # tick.  An absent pin (`bridge_pin_missing`) and no binary at all still hold below.
+            drift = pin_drift(self.daemon.root, binary, model)
+            if drift is not None and getattr(self, "_last_pin_drift", None) != drift:
+                self.daemon.log.write(
+                    "wake-pin-drift",
+                    runtime="muse",
+                    why="pin_stale",
+                    pinned=drift["pinned_muse"],
+                    current=drift["muse"],
+                )
+                self._last_pin_drift = drift
+            pinned = True
         if not pinned:
             if getattr(self, "_last_pin_reason", None) != why:
                 self.daemon.log.write("muse-bridge-held", reason=why)
                 self._last_pin_reason = why
             return
         self._last_pin_reason = None
+        if why == "ready":
+            # The marker clears only when the pin itself matches again;  clearing it on a
+            # drift proceed would re-log the same drift on the next tick.
+            self._last_pin_drift = None
         state = self._state()
         cursors = state.setdefault("cursors", {})
         decisions = state.setdefault("decisions", {})

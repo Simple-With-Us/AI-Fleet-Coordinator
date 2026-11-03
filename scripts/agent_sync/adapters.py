@@ -438,7 +438,10 @@ def pin_state(paths: L.SeatPaths, claude: str | None) -> dict[str, Any]:
     """Why the wake pin does or does not match the binary (AFC-256).  `pinned()` is a plain bool and
     cannot tell a seat that was never pinned from one whose pin went stale, and the two need different
     answers from the owner:  the first is a fresh install waiting on manual test 3, the second means a
-    claude auto-update moved the realpath and every wake since has been degrading to inbox-only.
+    claude auto-update moved the realpath out from under the pin.  The state is reported, never
+    repaired here -- no read ever rewrites a pin -- and which states hold a wake is the daemon's
+    call:  since the owner's 2026-11-03 ruling a drifted pin is advisory (the daemon logs the drift
+    and runs the installed binary), while a seat that was never pinned still waits.
 
     `why` is None when pinned, else `no_claude` (no binary to pin), `not_pinned` (nothing recorded yet)
     or `pin_stale` (a pin was recorded and the binary has since moved).  `pinned_claude` is the realpath
@@ -1035,9 +1038,12 @@ def muse_pin_state(paths: L.SeatPaths, muse: str | None) -> dict[str, Any]:
     yet), `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing
     about this command), `pin_stale` (the binary moved, or the command, contract or schema changed
     under it), or `pin_unreadable` (the contract or schema could not be read, so nothing can be
-    verified).  A seat whose muse pin has never been verified HOLDS and says why:  it never
-    self-heals, because the pin records that a person checked this build's wake contract.  The
-    last three are named apart because the remediation differs:  a moved binary and a changed
+    verified).  The state is reported, never repaired here:  no read ever rewrites a pin, because
+    the pin records that a person checked this build's wake contract.  Which states hold a wake
+    and which merely drift is the daemon's call -- since the owner's 2026-11-03 ruling a recorded
+    pin that drifted (`pin_stale`, `pin_unverified`) is advisory and the wake runs on the
+    installed build, while no pin, no binary and an unreadable contract still hold.  The last
+    three are named apart because the remediation differs:  a moved binary and a changed
     contract both end in re-pinning, an unreadable contract does not, and only one of them is a
     moved binary."""
     if not muse:
@@ -1777,8 +1783,10 @@ def mcode_wake_fingerprint(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> str 
 def mcode_pin_state(
     paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAULT_MODEL
 ) -> dict[str, Any]:
-    """Why the fallback pin does or does not match the command.  Same never-self-heal rule as the
-    other two, on its own file, so a fallback is only trusted once a person verified it.
+    """Why the fallback pin does or does not match the command.  Same reporting discipline as the
+    other two, on its own file:  the states are named apart, never repaired on read, and the
+    daemon decides which of them hold the fallback (a recorded pin that drifted is advisory
+    since the owner's 2026-11-03 ruling, exactly as for the primaries).
 
     `why` is None when pinned, else `no_mcode` (no binary to pin), `not_pinned` (nothing recorded),
     `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing about

@@ -2420,38 +2420,6 @@ class Daemon:
                 lost=lost,
             )
 
-    def _notify_muse_pin_stale(self, runner: SeatRunner, pending: W.Pending) -> None:
-        """The `pin_stale` owner notice for a MUSE seat.
-
-        It names the muse build and the muse pin file.  When the seat's config no longer names
-        the build it is running, the note also says to repoint ``seat.X.muse``:  the launcher
-        deletes that build on the next release, so re-pinning alone breaks the seat again at
-        every release (Kody, PR #880).
-        """
-        muse = A.resolve_muse(runner.cfg.muse, self.wake_path)
-        pin = A.muse_pin_state(runner.paths, muse)
-        current = pin.get("muse") or "<unresolved>"
-        recorded = pin.get("pinned_muse") or "<none>"
-        note = (
-            "pinned %s, on disk %s; run `simple-chat daemon test-wake --seat %s --run` "
-            "then `--pin`.  It is never re-pinned automatically:  the pin records "
-            "that a person checked this build's wake contract." % (recorded, current, runner.seat)
-        )
-        if A.muse_configured_path_missing(runner.cfg.muse):
-            note += (
-                "  seat.%s.muse names a build that is gone (%s); repoint it to %s, or the next "
-                "muse release will break this seat again." % (runner.seat, runner.cfg.muse, current)
-            )
-        self.notifier.notify(
-            runner.seat,
-            "simple-chat %s" % runner.seat,
-            "the muse binary changed (%s), so %s wakes are inbox-only until it is "
-            "re-pinned" % (current, runner.seat),
-            kind="wake-pin_stale",
-            key="wake:%s:%s" % (runner.seat, "pin_stale"),
-            note=note,
-            trigger_ids=pending.trigger_ids,
-        )
 
     def _notify_openrouter_pin_stale(self, runner: SeatRunner, pending: W.Pending) -> None:
         """The `pin_stale` owner notice for an OPENROUTER seat.  There is no binary to name:  the pin
@@ -2496,38 +2464,15 @@ class Daemon:
             return
         # A stale pin is the one refusal whose fix is a command, so the notice names it (AFC-256):  a
         # bare "not_pinned" read like a seat nobody had set up yet, and nine wakes went by that way.
-        # `pin` is re-read here because `_pinned_claude` ran earlier in the same call frame; between
-        # then and now the binary may have been re-pinned, re-pointed or removed, so guard the format
-        # against `claude` or `pinned_claude` coming back None.
+        # Only the OpenRouter pin still drops a wake this way:  it vouches for a request shape, not
+        # a binary, so its gating is unchanged (owner ruling, 2026-11-03).  The binary runtimes
+        # never arrive here with `pin_stale` any more -- a drifted pin proceeds on the installed
+        # binary and is logged as `wake-pin-drift` at dispatch instead.
         if reason == "pin_stale":
-            # The notice must name the runtime that went stale.  It used to resolve the claude
-            # binary and read the claude pin file for every seat, so a muse seat whose build
-            # moved was told that "the claude binary changed" and was pointed at the claude pin
-            # (Kody, PR #880).
-            if runner.cfg.wake == "muse":
-                self._notify_muse_pin_stale(runner, pending)
-                return
             if runner.cfg.wake == "openrouter":
                 self._notify_openrouter_pin_stale(runner, pending)
-                return
-            claude = A.resolve_claude(runner.cfg.claude, self.wake_path)
-            pin = A.pin_state(runner.paths, claude)
-            current = pin.get("claude") or "<unresolved>"
-            recorded = pin.get("pinned_claude") or "<none>"
-            self.notifier.notify(
-                runner.seat,
-                "simple-chat %s" % runner.seat,
-                "the claude binary changed (%s), so %s wakes are inbox-only until it is "
-                "re-pinned" % (current, runner.seat),
-                kind="wake-" + reason,
-                key="wake:%s:%s" % (runner.seat, reason),
-                note="pinned %s, on disk %s; run `simple-chat daemon test-wake --seat %s --run` "
-                "then `--pin`.  It is never re-pinned automatically:  the pin records "
-                "that a person checked this build's wake contract."
-                % (recorded, current, runner.seat),
-                trigger_ids=pending.trigger_ids,
-            )
             return
+
         if reason in ("no_claude", "no_muse"):
             # The binary the seat's wake needs is not there:  a typo'd path, a missing install or a PATH
             # that lost it.  Every wake drops until it is fixed, so the notice names the setting.
@@ -2704,34 +2649,58 @@ class Daemon:
             trigger_ids=pending.trigger_ids,
         )
 
-    def _pinned_claude(self, runner: SeatRunner) -> tuple[str | None, str | None]:
-        """(the realpath to run, why not).  Resolved once, so the pin check and the argv agree.
+    def _pinned_claude(
+        self, runner: SeatRunner
+    ) -> tuple[str | None, str | None, dict[str, Any] | None]:
+        """(the realpath to run, why not, the drifted pin state when the wake proceeds on drift).
+        Resolved once, so the pin check and the argv agree.
 
-        A stale pin (a claude auto-update moved the realpath) is reported as `pin_stale`, not
-        `not_pinned`:  it holds for a reason no one asked for and clears by running `test-wake --run`
-        then `--pin` on the new binary, and it is worth saying so rather than reading like a seat that
-        was never set up (AFC-256).  It is never re-pinned here:  the pin exists because a person
-        verified that build's wake contract, and an auto-update is exactly when that proof is stale."""
+        Pins are advisory for a binary runtime (owner ruling, 2026-11-03):  a pin that was recorded
+        and no longer matches -- for claude the only drift state is `pin_stale`, a moved realpath --
+        no longer holds the wake.  The wake runs on the binary that is installed, the dispatcher
+        logs the drift once (`_log_pin_drift`), and the pin file is left exactly as recorded:
+        advisory is not self-healing, and `test-wake --pin` stays the only way a pin is written.
+        A drifted pin is still reported as `pin_stale`, not `not_pinned`, because the two need
+        different answers from the owner (AFC-256).
+
+        What still holds is what was never a drift:  no binary (`no_claude`), and no pin at all
+        (`not_pinned` -- a fresh install still waits for its manual test rather than running a
+        build nobody ever verified)."""
         claude = A.resolve_claude(runner.cfg.claude, self.wake_path)
         if not claude:
-            return None, "no_claude"
+            return None, "no_claude", None
         state = A.pin_state(runner.paths, claude)
-        if not state["pinned"]:
-            return None, str(state["why"] or "not_pinned")
-        return str(state["claude"]), None
+        if state["pinned"]:
+            return str(state["claude"]), None, None
+        why = str(state["why"] or "not_pinned")
+        if why == "pin_stale":
+            return str(state["claude"]), None, state
+        return None, why, None
 
-    def _pinned_muse(self, runner: SeatRunner) -> tuple[str | None, str | None]:
-        """(the realpath to run, why not), for a `muse` seat.  Same discipline as _pinned_claude and
-        on the muse seat's own pin file, so a verified claude build can never stand in for a muse
-        one.  It never self-heals:  the pin records that a person checked this build's wake
-        contract, and a muse auto-update is exactly when that proof goes stale."""
+    def _pinned_muse(
+        self, runner: SeatRunner
+    ) -> tuple[str | None, str | None, dict[str, Any] | None]:
+        """(the realpath to run, why not, the drifted pin state when the wake proceeds on drift),
+        for a `muse` seat.  Same discipline as _pinned_claude and on the muse seat's own pin file,
+        so a verified claude build can never stand in for a muse one.
+
+        The advisory states are `pin_stale` (the binary moved, or the command, contract or schema
+        changed under the pin) and `pin_unverified` (the binary is the same one the pin names, but
+        the pin predates the fingerprint, so it vouches for nothing about this command).  Both are
+        a recorded pin that drifted, so both proceed on the installed build with the drift logged.
+        `pin_unreadable` still holds:  the wake contract or schema cannot be read, so the wake
+        cannot even be constructed, and re-pinning cannot fix it -- it would re-read the same
+        unreadable file and refuse forever.  No binary and no pin hold as they always have."""
         muse = A.resolve_muse(runner.cfg.muse, self.wake_path)
         if not muse:
-            return None, "no_muse"
+            return None, "no_muse", None
         state = A.muse_pin_state(runner.paths, muse)
-        if not state["pinned"]:
-            return None, str(state["why"] or "not_pinned")
-        return str(state["muse"]), None
+        if state["pinned"]:
+            return str(state["muse"]), None, None
+        why = str(state["why"] or "not_pinned")
+        if why in ("pin_stale", "pin_unverified"):
+            return str(state["muse"]), None, state
+        return None, why, None
 
     def _pinned_openrouter(self, runner: SeatRunner, role: str) -> tuple[str | None, str | None]:
         """(the model to call, why not), for an `openrouter` primary or fallback.  The runtime has no
@@ -2747,22 +2716,59 @@ class Daemon:
             return None, str(state["why"] or "not_pinned")
         return model, None
 
-    def _pinned_fallback(self, runner: SeatRunner) -> tuple[str | None, str | None]:
-        """(the realpath to run, why not), for the seat's fallback runtime.  Same never-self-heal
-        rule as the primaries:  a fallback that was never verified by a person is not trusted, and a
-        fallback whose binary moved holds rather than re-pinning itself.  For `openrouter` the
-        "realpath" is the model slug."""
+    def _pinned_fallback(
+        self, runner: SeatRunner
+    ) -> tuple[str | None, str | None, dict[str, Any] | None]:
+        """(the realpath to run, why not, the drifted pin state when the fallback proceeds on
+        drift), for the seat's fallback runtime.  Same advisory rule as the primaries (owner
+        ruling, 2026-11-03):  for the mcode fallback, a recorded pin that drifted (`pin_stale`,
+        `pin_unverified`) proceeds on the installed binary with the drift logged, while no
+        fallback, no binary, no pin and an unreadable contract still hold.  The OpenRouter
+        fallback is untouched -- its pin vouches for a request shape, not a binary, and its
+        gating is unchanged -- so it reports no drift.  For `openrouter` the "realpath" is the
+        model slug."""
         if not runner.cfg.fallback:
-            return None, "no_fallback"
+            return None, "no_fallback", None
         if runner.cfg.fallback == "openrouter":
-            return self._pinned_openrouter(runner, A.OPENROUTER_ROLE_FALLBACK)
+            binary, why = self._pinned_openrouter(runner, A.OPENROUTER_ROLE_FALLBACK)
+            return binary, why, None
         mcode = A.resolve_mcode(runner.cfg.mcode, self.wake_path)
         if not mcode:
-            return None, "no_mcode"
+            return None, "no_mcode", None
         state = A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model)
-        if not state["pinned"]:
-            return None, str(state["why"] or "not_pinned")
-        return str(state["mcode"]), None
+        if state["pinned"]:
+            return str(state["mcode"]), None, None
+        why = str(state["why"] or "not_pinned")
+        if why in ("pin_stale", "pin_unverified"):
+            return str(state["mcode"]), None, state
+        return None, why, None
+
+    def _log_pin_drift(self, runner: SeatRunner, runtime: str, state: Mapping[str, Any]) -> None:
+        """One log event for a wake dispatch that proceeds on a drifted pin (owner ruling,
+        2026-11-03).  The pin is the last-known-good record, not a gate:  the event names the seat,
+        the runtime, the pinned value and the value on disk now (and the cause, where the pin
+        state provides one), and the wake runs on what is installed.  A run that then fails
+        surfaces as an ordinary wake failure in the log and is fixed at discovery.  The pin file
+        is never rewritten here."""
+        if runtime == "muse":
+            pinned_value, current_value = state.get("pinned_muse"), state.get("muse")
+            cause = A.muse_pin_cause(state)
+        elif runtime == "mcode":
+            pinned_value, current_value = state.get("pinned_mcode"), state.get("mcode")
+            cause = A.mcode_pin_cause(state)
+        else:  # claude:  the state names no second cause;  the two realpaths are the story
+            pinned_value, current_value = state.get("pinned_claude"), state.get("claude")
+            cause = None
+        fields: dict[str, Any] = {
+            "seat": runner.seat,
+            "runtime": runtime,
+            "why": state.get("why"),
+            "pinned": pinned_value,
+            "current": current_value,
+        }
+        if cause:
+            fields["cause"] = cause
+        self.log.write("wake-pin-drift", **fields)
 
     def run_fallback(
         self,
@@ -2813,7 +2819,7 @@ class Daemon:
                 primary_error=primary_error,
             )
             return None
-        binary, why = self._pinned_fallback(runner)
+        binary, why, drift = self._pinned_fallback(runner)
         if binary is None:
             self.log.write(
                 "wake-fallback-held",
@@ -2823,6 +2829,8 @@ class Daemon:
                 primary_error=primary_error,
             )
             return None
+        if drift is not None:
+            self._log_pin_drift(runner, runner.cfg.fallback, drift)
         self.log.write(
             "wake-fallback",
             seat=runner.seat,
@@ -3003,29 +3011,36 @@ class Daemon:
             return None
         return A.quota_block(runner.cfg.provider or "", self.clock.time())
 
-    def _primary_state(self, runner: SeatRunner) -> tuple[str | None, str | None]:
-        """(what the primary runs, why it cannot run now), for a `claude`, `muse` or `openrouter` seat.
+    def _primary_state(
+        self, runner: SeatRunner
+    ) -> tuple[str | None, str | None, dict[str, Any] | None]:
+        """(what the primary runs, why it cannot run now, the drifted pin state when it runs on
+        drift), for a `claude`, `muse` or `openrouter` seat.
 
-        What it runs is the pinned realpath of the binary, or the model slug for `openrouter`.  Why not
-        is the pin reason (`not_pinned`, `pin_stale`, `no_claude`, `no_muse`, ...) or, when the pin is
-        fine, the CodeCaps quota reading that says the provider has nothing left.  The order is the one
-        `_wake_block` always had:  the pin first, then the quota.  Both are decided before any child or
-        call exists, so a held seat costs nothing."""
+        What it runs is the realpath of the binary (the pinned one, or the installed one when the
+        pin drifted and the wake proceeds on it), or the model slug for `openrouter`.  Why not is
+        the pin reason that still holds (`not_pinned`, `pin_unreadable`, `no_claude`, `no_muse`,
+        ...) or, when the pin does not hold the seat, the CodeCaps quota reading that says the
+        provider has nothing left.  The order is the one `_wake_block` always had:  the pin first,
+        then the quota.  Both are decided before any child or call exists, so a held seat costs
+        nothing."""
         wake = runner.cfg.wake
         if wake == "claude":
-            binary, why = self._pinned_claude(runner)
+            binary, why, drift = self._pinned_claude(runner)
         elif wake == "muse":
-            binary, why = self._pinned_muse(runner)
+            binary, why, drift = self._pinned_muse(runner)
         elif wake == "openrouter":
             binary, why = self._pinned_openrouter(runner, A.OPENROUTER_ROLE_PRIMARY)
+            drift = None
         else:
-            return None, "wake_type_not_runnable"
+            return None, "wake_type_not_runnable", None
         if why:
-            return None, why
+            return None, why, None
         spent = self._quota_reason(runner)
         if spent:
-            return None, spent
-        return binary, None
+            return None, spent, None
+        return binary, None, drift
+
 
     def _fallback_stands_in(self, runner: SeatRunner) -> bool:
         """Can the seat's OpenRouter fallback answer in place of a primary that cannot run now?
@@ -3052,7 +3067,7 @@ class Daemon:
             # One preflight for every primary, before any child (or HTTP call) exists.  It was briefly wired
             # into the muse branch alone, which left a capped CLAUDE seat spawning a child every
             # time:  the helper accepted both wake types, but only one of them called it.
-            _, hold = self._primary_state(runner)
+            _, hold, _drift = self._primary_state(runner)
             if hold and not self._fallback_stands_in(runner):
                 return hold
             if (
@@ -3379,8 +3394,8 @@ class Daemon:
             # verified as a primary.
             self._drop(runner, pending, "wake_type_not_runnable", now)
             return
-        binary, why = self._primary_state(runner)
-        # A primary that cannot run now (a stale or missing pin, no binary, a provider with no quota
+        binary, why, drift = self._primary_state(runner)
+        # A primary that cannot run now (a missing pin, no binary, a provider with no quota
         # left) is skipped when the seat's OpenRouter fallback stands in for it;  `_wake_block` above
         # let this wake through for exactly that reason.  With no fallback the wake is dropped, as ever.
         primary_skipped: str | None = None
@@ -3389,6 +3404,11 @@ class Daemon:
                 self._drop(runner, pending, why or "not_pinned", now)
                 return
             primary_skipped = why or "not_pinned"
+        if drift is not None:
+            # The pin drifted and the wake proceeds on the installed binary (owner ruling,
+            # 2026-11-03):  logged once here, where the drop used to be decided, and never
+            # anywhere else in the dispatch, so one wake attempt is one drift event.
+            self._log_pin_drift(runner, runner.cfg.wake, drift)
         # The other half of the preflight, before any budget is spent or any child exists: this runs
         # on the seat's own wake worker, which may wait for the Operator client to be built (the router
         # never does).  A wake whose reply could not be posted is not run at all.
@@ -7501,10 +7521,11 @@ class Daemon:
                 red.append(runner.error)
             if runner.down_since is not None and now - runner.down_since > DOWN_NOTIFY_SECONDS:
                 red.append("down for %d minutes" % ((now - runner.down_since) // 60))
-            # A claude auto-update moves the binary's realpath and the pin with it, and every wake after
-            # that silently degrades to inbox-only.  `pin` says which state this is (AFC-256):  a seat
-            # that was never pinned is an install still waiting on its manual test, a stale pin is a
-            # verified build that has moved under us.  It is also red, because it holds every wake.
+            # A claude auto-update moves the binary's realpath and the pin with it.  `pin` says which
+            # state this is (AFC-256):  a seat that was never pinned is an install still waiting on
+            # its manual test, a stale pin is a verified build that has moved under us.  It stays
+            # red even though wakes now proceed on the installed build (owner ruling, 2026-11-03):
+            # an un-repinned drift is exactly the drift the owner wants to see and clear.
             pin = A.pin_state(runner.paths, claude) if claude else None
             if pin and pin["why"] == "pin_stale":
                 red.append(
@@ -7538,9 +7559,9 @@ class Daemon:
                 # fault, but the CONFIG is what breaks at the next release, and re-pinning alone
                 # records a build the launcher will delete (Kody, PR #880).
                 red.append(A.muse_repoint_red_entry(seat, muse, runner.cfg.muse))
-            # The fallback pin reports on its own file too.  It gates the fallback on its own, so a
-            # stale one holds every fallback wake; without a red entry here a seat whose fallback
-            # silently stopped looks exactly as healthy as a seat that never configured one.
+            # The fallback pin reports on its own file too, for the same reason:  without a red
+            # entry here a seat whose fallback pin drifted looks exactly as healthy as a seat that
+            # never configured one, and the drift would go unnoticed until the fallback was needed.
             mcode_pin = (
                 A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model) if mcode else None
             )
