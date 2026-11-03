@@ -90,9 +90,16 @@ def pin_state(root: str, binary: str | None, model: str) -> tuple[bool, str]:
         # A fresh install waits for its canary (`probe_pin`) rather than consulting a build
         # nobody verified.
         return False, "bridge_pin_missing"
+    current = fingerprint()
+    if current is None:
+        # The contract or schema could not be read, so nothing can be verified:  unreadable
+        # still holds the consult, exactly like `pin_unreadable` on the daemon's wake pins.
+        # It is not drift -- there is no installed fingerprint to drift from -- so `run_once`
+        # must not proceed on it as it does for `bridge_pin_stale`.
+        return False, "bridge_pin_unreadable"
     if (
         pin.get("muse") != A.binary_pin(binary)
-        or pin.get("fingerprint") != fingerprint()
+        or pin.get("fingerprint") != current
         or pin.get("model") != model
         or pin.get("effort") != A.MUSE_REASONING_EFFORT
     ):
@@ -112,9 +119,13 @@ def pin_drift(root: str, binary: str | None, model: str) -> dict[str, Any] | Non
     pin = L.read_json(os.path.join(L.listener_dir(root), PIN_NAME))
     if not pin.get("muse"):
         return None
+    current = fingerprint()
+    if current is None:
+        # Unreadable is a hold, not drift (`bridge_pin_unreadable`):  there is no pair to report.
+        return None
     if (
         pin.get("muse") == A.binary_pin(binary)
-        and pin.get("fingerprint") == fingerprint()
+        and pin.get("fingerprint") == current
         and pin.get("model") == model
         and pin.get("effort") == A.MUSE_REASONING_EFFORT
     ):

@@ -784,6 +784,19 @@ class BridgePinAdvisoryTest(unittest.TestCase):
         )
         self.assertIsNone(MBM.pin_drift(self.root, str(self.build), C.MUSE_DEFAULT_MODEL))
 
+    def test_an_unreadable_contract_holds_as_unreadable_not_stale(self) -> None:
+        self.write_pin(str(self.build))
+        with mock.patch.object(MBM, "fingerprint", return_value=None):
+            self.assertEqual(
+                MBM.pin_state(self.root, str(self.build), C.MUSE_DEFAULT_MODEL),
+                (False, "bridge_pin_unreadable"),
+            )
+            self.assertIsNone(MBM.pin_drift(self.root, str(self.build), C.MUSE_DEFAULT_MODEL))
+            self.bridge.run_once()
+        (held,) = self.events("muse-bridge-held")
+        self.assertEqual(held["reason"], "bridge_pin_unreadable")
+        self.assertEqual(self.events("wake-pin-drift"), [])
+
     def test_run_once_proceeds_on_a_drifted_pin_and_logs_it_once(self) -> None:
         self.write_pin(str(pathlib.Path(self.root) / "muse-bin-1.4.11-R6667.1"))
         self.bridge.run_once()
