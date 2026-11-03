@@ -1,4 +1,5 @@
 """Offline installer checks; root ownership and the root filesystem are simulated."""
+
 import json
 import os
 import stat
@@ -29,10 +30,12 @@ class InstallerTests(unittest.TestCase):
         self.destination = self.root / "usr/local/lib/fleet-resource-control"
 
     def install(self, source=SCRIPTS):
-        with mock.patch.object(self.module.os, "geteuid", return_value=0), \
-             mock.patch.object(self.module.os, "fchown"), \
-             mock.patch.object(self.module.os, "fsync"), \
-             mock.patch.object(self.module.sys, "platform", "linux"):
+        with (
+            mock.patch.object(self.module.os, "geteuid", return_value=0),
+            mock.patch.object(self.module.os, "fchown"),
+            mock.patch.object(self.module.os, "fsync"),
+            mock.patch.object(self.module.sys, "platform", "linux"),
+        ):
             self.module.install(source)
 
     def test_fixed_payload_modes_isolated_imports_and_preserved_state(self):
@@ -44,12 +47,28 @@ class InstallerTests(unittest.TestCase):
         state.parent.mkdir(parents=True)
         state.write_text('{"untouched":true}')
         self.install()
-        expected = {"fleet-ops-control.py", "fleet-ops-control.json", "fleet_resource_control.py",
-                    "hetzner/__init__.py", "hetzner/fleet_coding_memory.py", "hetzner/coding_resources.py"}
-        expected.update("fleet_secrets/" + path.name for path in (SCRIPTS / "fleet_secrets").glob("*.py"))
-        actual = {str(path.relative_to(self.destination)) for path in self.destination.rglob("*") if path.is_file()}
+        expected = {
+            "fleet-ops-control.py",
+            "fleet-ops-control.json",
+            "fleet_resource_control.py",
+            "hetzner/__init__.py",
+            "hetzner/fleet_coding_memory.py",
+            "hetzner/coding_resources.py",
+        }
+        expected.update(
+            "fleet_secrets/" + path.name for path in (SCRIPTS / "fleet_secrets").glob("*.py")
+        )
+        actual = {
+            str(path.relative_to(self.destination))
+            for path in self.destination.rglob("*")
+            if path.is_file()
+        }
         self.assertEqual(actual, expected)
-        for path in (self.destination, self.destination / "fleet_secrets", self.destination / "hetzner"):
+        for path in (
+            self.destination,
+            self.destination / "fleet_secrets",
+            self.destination / "hetzner",
+        ):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o755)
         for relative in expected:
             path = self.destination / relative
@@ -60,11 +79,19 @@ class InstallerTests(unittest.TestCase):
         trap = self.root / "untrusted-cwd"
         trap.mkdir()
         (trap / "fleet_resource_control.py").write_text("raise RuntimeError('untrusted import')")
-        code = ("import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-                "import fleet_resource_control,fleet_secrets.core,hetzner.fleet_coding_memory;"
-                "runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')")
-        result = subprocess.run([sys.executable, "-I", "-c", code, str(self.destination)],
-                                cwd=trap, env={"PYTHONPATH": str(trap)}, capture_output=True, text=True, timeout=20)
+        code = (
+            "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
+            "import fleet_resource_control,fleet_secrets.core,hetzner.fleet_coding_memory;"
+            "runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", code, str(self.destination)],
+            cwd=trap,
+            env={"PYTHONPATH": str(trap)},
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "imports-ok")
         self.install()  # Existing protected installation can be refreshed without state changes.
@@ -109,9 +136,11 @@ class InstallerTests(unittest.TestCase):
 
     def test_nonroot_or_nonlinux_refused_before_any_destination_write(self):
         for uid, platform in ((1, "linux"), (0, "darwin")):
-            with self.subTest(uid=uid, platform=platform), \
-                 mock.patch.object(self.module.os, "geteuid", return_value=uid), \
-                 mock.patch.object(self.module.sys, "platform", platform):
+            with (
+                self.subTest(uid=uid, platform=platform),
+                mock.patch.object(self.module.os, "geteuid", return_value=uid),
+                mock.patch.object(self.module.sys, "platform", platform),
+            ):
                 with self.assertRaises(RuntimeError):
                     self.module.install(SCRIPTS)
                 self.assertFalse(self.destination.exists())

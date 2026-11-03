@@ -924,6 +924,7 @@ def handle(ctx, scope, action, target, mode):
             if scripts not in sys.path:
                 sys.path.insert(0, scripts)
             from fleet_resource_control import handle as handle_resource
+
             return handle_resource(ctx, action, target, mode)
         commands, note, audit_target = plan_request(ctx, config, scope, action, target)
         answer["commands"] = commands
@@ -998,7 +999,13 @@ def parse_ssh_command(text):
     plain = [w for w in words if not w.startswith("-")]
     if len(plain) != 3 or plain[0] != "server":
         raise Refused("only a server verb with one target is accepted over ssh")
-    if plain[1] not in ACTIONS + ("update", "redeploy", "logs", "resource-status", "resource-policy"):
+    if plain[1] not in ACTIONS + (
+        "update",
+        "redeploy",
+        "logs",
+        "resource-status",
+        "resource-policy",
+    ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
         raise Refused("the verb and target come first")

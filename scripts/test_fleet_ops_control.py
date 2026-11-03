@@ -731,8 +731,14 @@ class ResourceDispatchTests(Base):
         target = "cpu-weight.50." + "a" * 64
         command = "server resource-policy " + target + " --plan --json"
         context = self.ctx(environ={"SSH_ORIGINAL_COMMAND": command})
-        reply = {"ok": True, "verb": "server resource-policy", "target": target,
-                 "commands": [], "result": "planned", "detail": "bounded test"}
+        reply = {
+            "ok": True,
+            "verb": "server resource-policy",
+            "target": target,
+            "commands": [],
+            "result": "planned",
+            "detail": "bounded test",
+        }
         with mock.patch("fleet_resource_control.handle", return_value=(reply, 0)) as handler:
             code, answer = self.run_main(["--from-ssh"], context)
         self.assertEqual((code, answer["result"]), (0, "planned"))
@@ -742,17 +748,33 @@ class ResourceDispatchTests(Base):
     def test_resource_status_yes_is_refused_and_status_needs_no_writer(self):
         self.enable()
         context = self.ctx()
-        context.resource_snapshot = lambda: {}
-        with mock.patch("fleet_resource_control.InfisicalStore", side_effect=__import__("fleet_resource_control").Refused("no writer")):
-            code, answer = self.run_main(["server", "resource-status", "coding", "--plan", "--json"], context)
-            self.assertEqual((code, answer["result"], answer["resourcePolicy"]["status"]), (0, "planned", "unavailable"))
-        code, answer = self.run_main(["server", "resource-status", "coding", "--yes", "--json"], context)
+        context.resource_snapshot = dict
+        with mock.patch(
+            "fleet_resource_control.InfisicalStore",
+            side_effect=__import__("fleet_resource_control").Refused("no writer"),
+        ):
+            code, answer = self.run_main(
+                ["server", "resource-status", "coding", "--plan", "--json"], context
+            )
+            self.assertEqual(
+                (code, answer["result"], answer["resourcePolicy"]["status"]),
+                (0, "planned", "unavailable"),
+            )
+        code, answer = self.run_main(
+            ["server", "resource-status", "coding", "--yes", "--json"], context
+        )
         self.assertEqual((code, answer["result"]), (2, "refused"))
         self.assertEqual(self.runner.calls, [])
 
     def test_resource_ssh_rejects_shell_or_extra_arguments(self):
         target = "cpu-weight.50." + "a" * 64
-        for suffix in (" --plan;id", " --plan --json extra", " --plan\n", " --plan --yes", " --plan --config=x"):
+        for suffix in (
+            " --plan;id",
+            " --plan --json extra",
+            " --plan\n",
+            " --plan --yes",
+            " --plan --config=x",
+        ):
             with self.subTest(suffix=suffix), self.assertRaises(foc.Refused):
                 foc.parse_ssh_command("server resource-policy " + target + suffix)
 

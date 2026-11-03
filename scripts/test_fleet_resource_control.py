@@ -1,4 +1,5 @@
 """Resource broker tests; every network, reload, clock and policy store is fake."""
+
 import copy
 import json
 import os
@@ -14,24 +15,59 @@ NOW = 1800000000
 
 
 def policy():
-    return dict(schema_version=1, budget_bytes=8*r.GIB, critical_budget_bytes=6*r.GIB,
-                reserve_bytes=6*r.GIB, pressure_available_bytes=4*r.GIB,
-                critical_available_bytes=2*r.GIB, recovery_available_bytes=8*r.GIB,
-                pressure_some_avg10=2.0, critical_full_avg10=5.0, recovery_some_avg10=0.5,
-                recovery_seconds=60, tick_seconds=5, refresh_seconds=300, discovery_seconds=30,
-                coding_units=["private.service"], coding_containers=["private-container"],
-                production_container_prefixes=["private-prefix"], production_name_prefixes=["private-name"],
-                cpu_cores=12, cpu_weight=50, allow_borrowing=True)
+    return dict(
+        schema_version=1,
+        budget_bytes=8 * r.GIB,
+        critical_budget_bytes=6 * r.GIB,
+        reserve_bytes=6 * r.GIB,
+        pressure_available_bytes=4 * r.GIB,
+        critical_available_bytes=2 * r.GIB,
+        recovery_available_bytes=8 * r.GIB,
+        pressure_some_avg10=2.0,
+        critical_full_avg10=5.0,
+        recovery_some_avg10=0.5,
+        recovery_seconds=60,
+        tick_seconds=5,
+        refresh_seconds=300,
+        discovery_seconds=30,
+        coding_units=["private.service"],
+        coding_containers=["private-container"],
+        production_container_prefixes=["private-prefix"],
+        production_name_prefixes=["private-name"],
+        cpu_cores=12,
+        cpu_weight=50,
+        allow_borrowing=True,
+    )
 
 
 def snapshot(p, **changes):
-    o = dict(cpuOnline=16, cpuCores=p.get("cpu_cores", 12), cpuWeight=p.get("cpu_weight", 50), cpuGroups=3, cpuMismatches=0,
-             ramTotalBytes=32*r.GIB, ramCurrentBytes=4*r.GIB, ramTargetBytes=8*r.GIB,
-             mode="normal", codingGroups=3, productionGroups=4, controlWriteFailures=0,
-             controlSuspended=0, policyStale=False, actualHighMismatches=0, updatedAt=r._stamp(NOW))
+    o = dict(
+        cpuOnline=16,
+        cpuCores=p.get("cpu_cores", 12),
+        cpuWeight=p.get("cpu_weight", 50),
+        cpuGroups=3,
+        cpuMismatches=0,
+        ramTotalBytes=32 * r.GIB,
+        ramCurrentBytes=4 * r.GIB,
+        ramTargetBytes=8 * r.GIB,
+        mode="normal",
+        codingGroups=3,
+        productionGroups=4,
+        controlWriteFailures=0,
+        controlSuspended=0,
+        policyStale=False,
+        actualHighMismatches=0,
+        updatedAt=r._stamp(NOW),
+    )
     o.update(changes)
-    return dict(schemaVersion=1, generatedAt=r._stamp(NOW), policyRevision=r.revision(p),
-                desired=r.desired(p), observed=o, status="applied")
+    return dict(
+        schemaVersion=1,
+        generatedAt=r._stamp(NOW),
+        policyRevision=r.revision(p),
+        desired=r.desired(p),
+        observed=o,
+        status="applied",
+    )
 
 
 class Store:
@@ -56,15 +92,28 @@ class BrokerTests(unittest.TestCase):
         self.store = Store()
         self.commands, self.events = [], []
         self.clock = [0]
+
         def runner(argv, **kwargs):
             self.commands.append(argv)
             return 0, b""
+
         def sleep(seconds):
             self.clock[0] += seconds
-        self.ctx = types.SimpleNamespace(platform="linux", home=Path(self.tmp.name), uid=os.getuid(), now=lambda: NOW,
-            resource_store=self.store, resource_host_bounds=lambda: (16, 32*r.GIB),
-            resource_snapshot=lambda: snapshot(self.store.p), resource_audit=self.events.append,
-            runner=runner, child_env=lambda: {}, resource_monotonic=lambda: self.clock[0], resource_sleep=sleep)
+
+        self.ctx = types.SimpleNamespace(
+            platform="linux",
+            home=Path(self.tmp.name),
+            uid=os.getuid(),
+            now=lambda: NOW,
+            resource_store=self.store,
+            resource_host_bounds=lambda: (16, 32 * r.GIB),
+            resource_snapshot=lambda: snapshot(self.store.p),
+            resource_audit=self.events.append,
+            runner=runner,
+            child_env=dict,
+            resource_monotonic=lambda: self.clock[0],
+            resource_sleep=sleep,
+        )
 
     def target(self, field="cpu-weight", value=100, p=None):
         return f"{field}.{value}.{r.revision(p or self.store.p)}"
@@ -75,7 +124,10 @@ class BrokerTests(unittest.TestCase):
     def test_plan_contains_before_and_full_revision_without_private_inventory(self):
         answer, code = self.call("plan")
         self.assertEqual(code, 0)
-        self.assertEqual(answer["commands"], [["resource-policy", "cpu-weight", "100", "50", r.revision(policy())]])
+        self.assertEqual(
+            answer["commands"],
+            [["resource-policy", "cpu-weight", "100", "50", r.revision(policy())]],
+        )
         self.assertNotIn("private", json.dumps(answer))
         self.assertFalse(self.store.saves)
         self.assertFalse(self.commands)
@@ -91,25 +143,58 @@ class BrokerTests(unittest.TestCase):
         self.assertTrue(all(e["source"] == "fleet-ops-ctl-owner-key" for e in self.events))
 
     def test_all_fields_and_bool(self):
-        for field, value in (("cpu-cores", 10), ("cpu-weight", 500), ("ram-budget-gib", 10), ("ram-critical-gib", 5), ("ram-reserve-gib", 4), ("borrow-idle", 0), ("borrow-idle", 1)):
+        for field, value in (
+            ("cpu-cores", 10),
+            ("cpu-weight", 500),
+            ("ram-budget-gib", 10),
+            ("ram-critical-gib", 5),
+            ("ram-reserve-gib", 4),
+            ("borrow-idle", 0),
+            ("borrow-idle", 1),
+        ):
             with self.subTest(field=field, value=value):
                 answer, code = self.call("plan", field, value)
                 self.assertEqual(code, 0, answer)
 
     def test_noncanonical_and_ssh_injections_refused(self):
         rev = r.revision(self.store.p)
-        for value in (f"cpu-weight.010.{rev}", f"cpu-weight.0.{rev}", f"borrow-idle.2.{rev}", f"borrow-idle.true.{rev}", f"cpu-weight.+10.{rev}", f"cpu-weight.10.{rev.upper()}", f"cpu-weight.10.{rev};id", f"cpu-weight.10.{rev}\n", "../../file", f"secret.1.{rev}", f"cpu-weight.10.{rev} --yes"):
+        for value in (
+            f"cpu-weight.010.{rev}",
+            f"cpu-weight.0.{rev}",
+            f"borrow-idle.2.{rev}",
+            f"borrow-idle.true.{rev}",
+            f"cpu-weight.+10.{rev}",
+            f"cpu-weight.10.{rev.upper()}",
+            f"cpu-weight.10.{rev};id",
+            f"cpu-weight.10.{rev}\n",
+            "../../file",
+            f"secret.1.{rev}",
+            f"cpu-weight.10.{rev} --yes",
+        ):
             with self.subTest(value=value):
                 self.assertEqual(r.handle(self.ctx, "resource-policy", value, "yes")[1], 2)
         self.assertFalse(self.store.saves)
 
     def test_bounds_and_crossfield_thresholds(self):
-        for field, value in (("cpu-cores", 15), ("cpu-weight", 10001), ("ram-critical-gib", 9), ("ram-budget-gib", 27), ("ram-reserve-gib", 1), ("ram-budget-gib", 5)):
+        for field, value in (
+            ("cpu-cores", 15),
+            ("cpu-weight", 10001),
+            ("ram-critical-gib", 9),
+            ("ram-budget-gib", 27),
+            ("ram-reserve-gib", 1),
+            ("ram-budget-gib", 5),
+        ):
             with self.subTest(field=field):
                 self.assertEqual(self.call("plan", field, value)[1], 2)
 
     def test_complete_policy_invalid_unrelated_field_refused(self):
-        for change in ({"tick_seconds": True}, {"unexpected": 1}, {"critical_full_avg10": float("nan")}, {"coding_units": []}, {"critical_available_bytes": 9*r.GIB}):
+        for change in (
+            {"tick_seconds": True},
+            {"unexpected": 1},
+            {"critical_full_avg10": float("nan")},
+            {"coding_units": []},
+            {"critical_available_bytes": 9 * r.GIB},
+        ):
             self.store.p = {**policy(), **change}
             # Invalid JSON numbers may not be hashed by the target constructor.
             answer, code = r.handle(self.ctx, "resource-policy", self.target(p=policy()), "yes")
@@ -122,11 +207,13 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(r.handle(self.ctx, "resource-policy", target, "plan")[1], 2)
         self.store.p = policy()
         original = self.store.get
+
         def get():
             value = original()
             if self.store.reads > 1:
                 value["tick_seconds"] = 9
             return value
+
         self.store.reads = 0
         self.store.get = get
         self.assertEqual(r.handle(self.ctx, "resource-policy", target, "yes")[1], 2)
@@ -136,6 +223,7 @@ class BrokerTests(unittest.TestCase):
         def save(value):
             self.store.saves.append(value)
             raise r.Failed("the policy write outcome is uncertain; it was not retried")
+
         self.store.save = save
         answer, code = self.call()
         self.assertEqual(code, 1)
@@ -166,12 +254,25 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(answer["resourcePolicy"]["status"], "drift")
 
     def test_stale_missing_mismatch_suspended_snapshots_never_applied(self):
-        for change in ({"updatedAt": r._stamp(NOW-61)}, {"cpuMismatches": 1}, {"cpuCores": 10}, {"cpuWeight": 99}, {"actualHighMismatches": 1}, {"controlSuspended": 1}, {"policyStale": True}, {"cpuGroups": 0}):
-            self.assertNotEqual(r.public_snapshot(snapshot(policy(), **change), NOW)["status"], "applied")
+        for change in (
+            {"updatedAt": r._stamp(NOW - 61)},
+            {"cpuMismatches": 1},
+            {"cpuCores": 10},
+            {"cpuWeight": 99},
+            {"actualHighMismatches": 1},
+            {"controlSuspended": 1},
+            {"policyStale": True},
+            {"cpuGroups": 0},
+        ):
+            self.assertNotEqual(
+                r.public_snapshot(snapshot(policy(), **change), NOW)["status"], "applied"
+            )
         self.assertEqual(r.public_snapshot({}, NOW)["status"], "unavailable")
         raw = snapshot(policy())
-        raw["generatedAt"] = r._stamp(NOW-61)
-        self.assertEqual(r.sanitize_snapshot(raw, NOW, require_fresh=False)["status"], "unavailable")
+        raw["generatedAt"] = r._stamp(NOW - 61)
+        self.assertEqual(
+            r.sanitize_snapshot(raw, NOW, require_fresh=False)["status"], "unavailable"
+        )
         self.assertEqual(r.sanitize_snapshot(raw, NOW)["generatedAt"], raw["generatedAt"])
 
     def test_status_readonly_without_credentials(self):
@@ -195,7 +296,7 @@ class BrokerTests(unittest.TestCase):
         p = policy()
         for key in ("cpu_cores", "cpu_weight", "allow_borrowing"):
             del p[key]
-        r.validate(p, (16, 32*r.GIB))
+        r.validate(p, (16, 32 * r.GIB))
         self.assertNotIn("cpuCores", r.desired(p))
         self.assertTrue(r.desired(p)["allowBorrowing"])
 
@@ -210,25 +311,30 @@ class BrokerTests(unittest.TestCase):
                 r.private_text(path, self.ctx.uid)
         path.chmod(0o600)
         with self.assertRaises(r.Refused):
-            r.private_text(path, self.ctx.uid+1)
+            r.private_text(path, self.ctx.uid + 1)
         link = self.ctx.home / "link"
         link.symlink_to(path)
         with self.assertRaises(r.Refused):
             r.private_text(link, self.ctx.uid)
-        path.write_bytes(b"x"*8193)
+        path.write_bytes(b"x" * 8193)
         with self.assertRaises(r.Refused):
             r.private_text(path, self.ctx.uid)
 
     def credentials(self):
         token = self.ctx.home / ".config/fleet-tools/resource-policy-token"
         project = self.ctx.home / ".agent-sync/fleet-ops-project-id"
-        for path, value in ((token, "dedicated-test-token"), (project, "12345678-1234-1234-1234-123456789abc")):
+        for path, value in (
+            (token, "dedicated-test-token"),
+            (project, "12345678-1234-1234-1234-123456789abc"),
+        ):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(value)
             path.chmod(0o600)
 
     def test_no_ambient_credential_or_endpoint_fallback(self):
-        with mock.patch.dict(os.environ, {"INFISICAL_TOKEN": "ambient", "INFISICAL_API_URL": "https://evil.invalid"}):
+        with mock.patch.dict(
+            os.environ, {"INFISICAL_TOKEN": "ambient", "INFISICAL_API_URL": "https://evil.invalid"}
+        ):
             with self.assertRaises(r.Refused):
                 r.InfisicalStore(self.ctx)
             self.credentials()
@@ -239,30 +345,34 @@ class BrokerTests(unittest.TestCase):
     def test_backend_verified_get_and_single_fixed_patch_no_create_fallback(self):
         self.credentials()
         store = r.InfisicalStore(self.ctx)
-        with mock.patch.object(store.core, "fetch_verified", return_value=json.dumps(policy())) as get:
+        with mock.patch.object(
+            store.core, "fetch_verified", return_value=json.dumps(policy())
+        ) as get:
             self.assertEqual(store.get(), policy())
             self.assertEqual(get.call_args.args[:2], (r.KEY, r.FOLDER))
             self.assertEqual(get.call_args.kwargs["token"], "dedicated-test-token")
         for status in (0, 400, 404, 500):
             calls = []
+
             def api(*args, **kwargs):
                 calls.append(copy.deepcopy((args, kwargs)))
                 return status, {"secretValue": "private"}
+
             with mock.patch.object(store.core, "_api_json", side_effect=api):
                 with self.assertRaises(r.Failed):
                     store.save(policy())
             self.assertEqual(len(calls), 1)
             args, kwargs = calls[0]
             self.assertEqual(args[:2], ("PATCH", "/v3/secrets/raw/CODING_RAM_POLICY"))
-            self.assertEqual(set(args[3]), {"workspaceId", "environment", "secretPath", "secretValue", "type"})
+            self.assertEqual(
+                set(args[3]), {"workspaceId", "environment", "secretPath", "secretValue", "type"}
+            )
             self.assertEqual(args[3]["environment"], "prod")
             self.assertNotIn("If-Match", args[3])
 
     def test_lock_serializes_processes_and_refuses_symlink(self):
-        with r.broker_lock(self.ctx):
-            with self.assertRaises(r.Refused):
-                with r.broker_lock(self.ctx):
-                    self.fail("nested writer entered")
+        with r.broker_lock(self.ctx), self.assertRaises(r.Refused), r.broker_lock(self.ctx):
+            self.fail("nested writer entered")
         path = self.ctx.home / ".local/state/fleet-tools/resource-policy.lock"
         path.unlink()
         path.symlink_to(self.ctx.home / "not-a-lock")
@@ -273,6 +383,7 @@ class BrokerTests(unittest.TestCase):
     def test_audit_intent_failure_prevents_save(self):
         def audit(record):
             raise OSError("private path must not leak")
+
         self.ctx.resource_audit = audit
         answer, code = self.call()
         self.assertEqual(code, 1)
@@ -283,9 +394,11 @@ class BrokerTests(unittest.TestCase):
         del self.ctx.resource_audit
         original = os.write
         chunks = []
+
         def short_write(fd, data):
             chunks.append(len(data))
             return original(fd, data[:7])
+
         with mock.patch.object(r.os, "write", side_effect=short_write):
             answer, code = self.call()
         self.assertEqual((code, answer["result"]), (0, "done"))
@@ -301,11 +414,13 @@ class BrokerTests(unittest.TestCase):
         for partial in (False, True):
             with self.subTest(partial=partial):
                 wrote = []
+
                 def incomplete(fd, data):
                     if partial and not wrote:
                         wrote.append(True)
                         return original(fd, data[:7])
                     return 0
+
                 with mock.patch.object(r.os, "write", side_effect=incomplete):
                     answer, code = self.call()
                 self.assertEqual(code, 1)
@@ -315,8 +430,12 @@ class BrokerTests(unittest.TestCase):
 
     def test_snapshot_requires_every_mandatory_ram_receipt_field(self):
         for section, fields in (
-                ("desired", ("ramPressureGiB", "ramCriticalGiB", "reserveGiB", "allowBorrowing")),
-                ("observed", ("ramTotalBytes", "ramCurrentBytes", "ramTargetBytes", "mode", "productionGroups"))):
+            ("desired", ("ramPressureGiB", "ramCriticalGiB", "reserveGiB", "allowBorrowing")),
+            (
+                "observed",
+                ("ramTotalBytes", "ramCurrentBytes", "ramTargetBytes", "mode", "productionGroups"),
+            ),
+        ):
             for field in fields:
                 with self.subTest(section=section, field=field):
                     raw = snapshot(policy())
@@ -327,24 +446,34 @@ class BrokerTests(unittest.TestCase):
 
     def test_snapshot_rejects_invalid_ram_bounds_counters_and_timestamps(self):
         cases = (
-            ("desired", "ramPressureGiB", 0), ("desired", "ramCriticalGiB", -1),
-            ("desired", "ramCriticalGiB", 9), ("desired", "ramPressureGiB", 30),
-            ("desired", "reserveGiB", 1), ("desired", "reserveGiB", float("inf")),
-            ("desired", "ramPressureGiB", float("nan")), ("desired", "allowBorrowing", 1),
+            ("desired", "ramPressureGiB", 0),
+            ("desired", "ramCriticalGiB", -1),
+            ("desired", "ramCriticalGiB", 9),
+            ("desired", "ramPressureGiB", 30),
+            ("desired", "reserveGiB", 1),
+            ("desired", "reserveGiB", float("inf")),
+            ("desired", "ramPressureGiB", float("nan")),
+            ("desired", "allowBorrowing", 1),
             ("desired", "ramPressureGiB", 10**1000),
-            ("observed", "ramTotalBytes", 0), ("observed", "ramCurrentBytes", 33*r.GIB),
-            ("observed", "ramTargetBytes", 0), ("observed", "ramTargetBytes", 33*r.GIB),
-            ("observed", "productionGroups", -1), ("observed", "controlWriteFailures", True),
-            ("observed", "controlSuspended", -1), ("observed", "ramCurrentBytes", 2**63),
-            ("observed", "updatedAt", "invalid"), ("observed", "updatedAt", r._stamp(NOW+6)),
-            ("observed", "updatedAt", r._stamp(NOW-61)), ("observed", "mode", "unknown"),
+            ("observed", "ramTotalBytes", 0),
+            ("observed", "ramCurrentBytes", 33 * r.GIB),
+            ("observed", "ramTargetBytes", 0),
+            ("observed", "ramTargetBytes", 33 * r.GIB),
+            ("observed", "productionGroups", -1),
+            ("observed", "controlWriteFailures", True),
+            ("observed", "controlSuspended", -1),
+            ("observed", "ramCurrentBytes", 2**63),
+            ("observed", "updatedAt", "invalid"),
+            ("observed", "updatedAt", r._stamp(NOW + 6)),
+            ("observed", "updatedAt", r._stamp(NOW - 61)),
+            ("observed", "mode", "unknown"),
         )
         for section, field, value in cases:
             with self.subTest(section=section, field=field, value=value):
                 raw = snapshot(policy())
                 raw[section][field] = value
                 self.assertEqual(r.public_snapshot(raw, NOW)["status"], "unavailable")
-        for stamp in ("invalid", r._stamp(NOW+6), r._stamp(NOW-61)):
+        for stamp in ("invalid", r._stamp(NOW + 6), r._stamp(NOW - 61)):
             raw = snapshot(policy())
             raw["generatedAt"] = stamp
             self.assertEqual(r.public_snapshot(raw, NOW)["status"], "unavailable")
@@ -354,10 +483,12 @@ class BrokerTests(unittest.TestCase):
 
     def test_persisted_verification_read_failure_has_sanitized_partial_result(self):
         original = self.store.get
+
         def get():
             if self.store.saves:
                 raise r.Failed("the resource policy could not be read from its verified source")
             return original()
+
         self.store.get = get
         answer, code = self.call()
         self.assertEqual(code, 1)
