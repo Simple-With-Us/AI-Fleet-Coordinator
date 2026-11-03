@@ -45,7 +45,7 @@ try:
     print(json.dumps(fetch_export(os.environ), separators=(",", ":")))
 except Exception as exc:
     message = str(exc)
-    if message.startswith("service-token-required"):
+    if message.startswith(("service-token-required", "telemetry-project-id-required")):
         print(message, file=sys.stderr)
     else:
         print("telemetry Infisical scoped read failed", file=sys.stderr)

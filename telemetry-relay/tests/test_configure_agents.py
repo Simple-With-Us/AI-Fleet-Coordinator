@@ -20,7 +20,7 @@ from relay_common import CONFIGURE, PRODUCERS
 
 scripts_path = Path(__file__).resolve().parents[2] / "scripts"
 sys.path[:0] = [str(scripts_path), str(scripts_path / "telemetry")]
-from configure_agents import PROJECT_ID, fetch_export
+from configure_agents import fetch_export
 from fleet_secrets import core
 
 
@@ -43,7 +43,7 @@ class ConfigureAgentsTests(unittest.TestCase):
             "RELAY_BEARER_GROK": _token(),
             "RELAY_BEARER_SHIM": _token(),
         }
-        self.project = PROJECT_ID
+        self.project = "00000000-0000-4000-8000-000000000042"
         self.service_token = "st." + secrets.token_urlsafe(32)
         self.metadata = {
             "projectId": self.project,
@@ -291,12 +291,22 @@ class ConfigureAgentsTests(unittest.TestCase):
                 fetch_export(self.env)
         self.assertEqual(calls, ["/v2/service-token"])
 
-    def test_helper_rejects_another_configured_project(self) -> None:
-        with self.assertRaisesRegex(core.SecretsError, "project-id-mismatch"):
-            fetch_export(
-                {**self.env, "INFISICAL_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
-            )
+    def test_helper_rejects_missing_or_malformed_configured_project_without_network(self) -> None:
+        for project in ("", "invalid-project"):
+            with (
+                self.subTest(project=project),
+                self.assertRaisesRegex(core.SecretsError, "set INFISICAL_PROJECT_ID"),
+            ):
+                fetch_export({**self.env, "INFISICAL_PROJECT_ID": project})
         self.assertEqual(self.requests, [])
+
+    def test_helper_configured_project_is_authority_and_token_must_match(self) -> None:
+        with mock.patch.object(core, "_api_json", return_value=(200, self.metadata)) as api:
+            with self.assertRaisesRegex(core.SecretsError, "token-scope-mismatch"):
+                fetch_export(
+                    {**self.env, "INFISICAL_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
+                )
+        self.assertEqual(api.call_count, 1)
 
 
 if __name__ == "__main__":

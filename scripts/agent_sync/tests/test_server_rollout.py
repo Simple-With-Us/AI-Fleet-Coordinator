@@ -27,7 +27,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "server-listener-live-o
 TARGETS = ["JET"] + ["GB-" + r for r in ("DIRECTOR", "FIXER", "DESIGNER", "COMPILER", "HOUSEKEEPER", "PUBLISHER",
                                           "DEPLOYER", "MONITOR", "PLUMBER", "ORACLE", "TRADER", "ENGINEER")]
 UNTOUCHED = ["MA", "GROK-WEB", "WISE", "ECHO"]
-INFISICAL_PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
+INFISICAL_PROJECT_ID = "00000000-0000-4000-8000-000000000042"
 
 
 def _load(name: str):

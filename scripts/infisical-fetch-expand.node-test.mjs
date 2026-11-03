@@ -15,7 +15,7 @@ import {
 
 const REFERENCE = "${prod.global-api-keys.SENTINEL_KEY_ref_3c9e}";
 const RESOLVED = "sentinel-resolved-value-5d1a";
-const PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5";
+const PROJECT = "00000000-0000-4000-8000-000000000042";
 
 /** Stub both metadata and the list call; never contacts Infisical. */
 function stubFetch(vaultSecrets, listUrls = [], { metadataPatch = {}, rawStatus = 200, metadataFailure = false } = {}) {
@@ -134,9 +134,14 @@ test("metadata project, path, permission, and expiry mismatches fail closed befo
   try {
     const invalidMetadata = [
       { projectId: "wrong-project" },
+      { projectId: null },
       { scopes: [{ environment: "prod", secretPath: "/other" }] },
       { permissions: ["read", "write"] },
       { expiresAt: "2000-01-01T00:00:00Z" },
+      { expiresAt: "2099-01-01T00:00:00" },
+      { expiresAt: "invalid" },
+      { expiresAt: 123 },
+      { workspace: "wrong-project" },
     ];
     for (let index = 0; index < invalidMetadata.length; index += 1) {
       const envFile = join(dir, `env-${index}`);
@@ -149,6 +154,25 @@ test("metadata project, path, permission, and expiry mismatches fail closed befo
         (error) => error instanceof MetadataVerificationError,
       );
       assert.equal(existsSync(envFile), false);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workspace-only grants allow null or absent expiry while contradictory projectId stays fatal", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "metadata-compatible-"));
+  try {
+    for (const expiresAt of [null, undefined]) {
+      const envFile = join(dir, expiresAt === null ? "null-expiry" : "absent-expiry");
+      const listUrls = [];
+      await run({
+        env: baseEnv(envFile, "FOO"),
+        fetchImpl: stubFetch({ FOO: RESOLVED }, listUrls, { metadataPatch: { projectId: undefined, expiresAt } }),
+        log: () => {},
+      });
+      assert.equal(listUrls.length, 1);
+      assert.ok(readFileSync(envFile, "utf8").includes(RESOLVED));
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

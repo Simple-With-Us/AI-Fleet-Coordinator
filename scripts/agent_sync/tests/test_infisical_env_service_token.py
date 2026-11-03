@@ -73,9 +73,14 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
     def test_wrong_project_path_permission_or_expiry_fails_before_raw_read(self):
         bad_grants = [
             metadata(project="different-project"),
+            dict(metadata(), projectId="different-project"),
+            dict(metadata(), projectId=None),
             metadata(paths=("/zulip", "/operator", "/extra")),
             metadata(permissions=("read", "write")),
             metadata(expiry="2000-01-01T00:00:00Z"),
+            metadata(expiry="2099-01-01T00:00:00"),
+            metadata(expiry="invalid"),
+            metadata(expiry=123),
         ]
         for grant in bad_grants:
             with self.subTest(grant=grant):
@@ -90,6 +95,20 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
                         MODULE.fetch(self.env(), expected_paths=("/zulip", "/operator"))
                 self.assertEqual(len(calls), 1)
                 self.assertTrue(calls[0].endswith("/v2/service-token"))
+
+    def test_null_or_absent_expiry_accepts_canonical_workspace_metadata(self):
+        for absent in (False, True):
+            grant = metadata(expiry=None)
+            grant.pop("projectId")
+            if absent:
+                grant.pop("expiresAt")
+            with self.subTest(absent=absent), patch.object(
+                MODULE, "_request", side_effect=[grant, {"secrets": []}]
+            ) as request:
+                self.assertEqual(
+                    MODULE.fetch(self.env(), expected_paths=("/zulip", "/operator")), {}
+                )
+                self.assertEqual(request.call_count, 2)
 
     def test_returned_record_requires_exact_source_provenance(self):
         calls = []

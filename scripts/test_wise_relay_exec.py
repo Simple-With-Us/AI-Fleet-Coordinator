@@ -14,6 +14,7 @@ spec = importlib.util.spec_from_file_location(
 )
 w = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(w)
+PROJECT = "00000000-0000-4000-8000-000000000042"
 
 
 class AdapterTests(unittest.TestCase):
@@ -144,7 +145,13 @@ class AdapterTests(unittest.TestCase):
             "WISE_RELAY_INFISICAL_TOKEN: ${{ secrets.WISE_RELAY_INFISICAL_TOKEN || secrets.wise_infisical_token }}",
             source,
         )
-        self.assertIn("def fetch_infisical_configuration(token, request=request_json):", source)
+        self.assertIn(
+            "INFISICAL_FLEET_OPS_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID || secrets.wise_infisical_project_id }}",
+            source,
+        )
+        self.assertIn(
+            "def fetch_infisical_configuration(token, request=request_json, env=None):", source
+        )
         self.assertIn('"/v2/service-token"', source)
         self.assertIn('"include_imports": "false"', source)
         self.assertNotIn("from fleet_secrets", source)
@@ -192,8 +199,8 @@ class AdapterTests(unittest.TestCase):
             calls.append((path, request_token, dict(env)))
             if path == "/v2/service-token":
                 return 200, {
-                    "workspace": w.FLEETOPS_PROJECT,
-                    "projectId": w.FLEETOPS_PROJECT,
+                    "workspace": PROJECT,
+                    "projectId": PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": w.FOLDER}],
                     "expiresAt": None,
@@ -204,7 +211,7 @@ class AdapterTests(unittest.TestCase):
                         "secretKey": key,
                         "secretValue": value,
                         "type": "shared",
-                        "workspace": w.FLEETOPS_PROJECT,
+                        "workspace": PROJECT,
                         "environment": "prod",
                         "secretPath": w.FOLDER,
                     }
@@ -213,7 +220,7 @@ class AdapterTests(unittest.TestCase):
             }
 
         with mock.patch.object(w.scoped_secrets, "_api_json", api):
-            got = w.fetch_configuration({w.INFISICAL_TOKEN_ENV: token})
+            got = w.fetch_configuration({w.INFISICAL_TOKEN_ENV: token, w.PROJECT_ENV: PROJECT})
         self.assertEqual(w.configuration(got), self.config())
         self.assertEqual(calls[0][0], "/v2/service-token")
         self.assertTrue(calls[1][0].startswith("/v3/secrets/raw?"))
@@ -226,8 +233,8 @@ class AdapterTests(unittest.TestCase):
         def api(method, path, request_token, body, env, **kwargs):
             calls.append(path)
             return 200, {
-                "workspace": w.FLEETOPS_PROJECT,
-                "projectId": w.FLEETOPS_PROJECT,
+                "workspace": PROJECT,
+                "projectId": PROJECT,
                 "permissions": ["read"],
                 "scopes": [{"environment": "prod", "secretPath": "/wrong"}],
                 "expiresAt": None,
@@ -235,8 +242,25 @@ class AdapterTests(unittest.TestCase):
 
         with mock.patch.object(w.scoped_secrets, "_api_json", api):
             with self.assertRaisesRegex(w.Refused, "scoped-folder"):
-                w.fetch_configuration({w.INFISICAL_TOKEN_ENV: "st." + "x" * 32})
+                w.fetch_configuration(
+                    {w.INFISICAL_TOKEN_ENV: "st." + "x" * 32, w.PROJECT_ENV: PROJECT}
+                )
         self.assertEqual(calls, ["/v2/service-token"])
+
+    def test_missing_or_malformed_expected_project_stops_before_network(self):
+        for project in ("", "invalid-project"):
+            with (
+                self.subTest(project=project),
+                mock.patch.object(w.scoped_secrets, "_api_json") as api,
+            ):
+                with self.assertRaisesRegex(w.Refused, w.PROJECT_ENV):
+                    w.fetch_configuration(
+                        {
+                            w.INFISICAL_TOKEN_ENV: "st." + "x" * 32,
+                            w.PROJECT_ENV: project,
+                        }
+                    )
+                api.assert_not_called()
 
     def test_child_exec_strips_every_shared_infisical_auth_alias(self):
         captured = {}
@@ -263,6 +287,9 @@ class AdapterTests(unittest.TestCase):
 
 class InlineWorkflowTests(unittest.TestCase):
     def setUp(self):
+        project_binding = mock.patch.dict(os.environ, {w.PROJECT_ENV: PROJECT})
+        project_binding.start()
+        self.addCleanup(project_binding.stop)
         source = (
             Path(__file__).resolve().parent.parent / ".github/workflows/auto-merge-reusable.yml"
         ).read_text()
@@ -284,8 +311,8 @@ class InlineWorkflowTests(unittest.TestCase):
 
     def metadata(self, **overrides):
         result = {
-            "workspace": w.FLEETOPS_PROJECT,
-            "projectId": w.FLEETOPS_PROJECT,
+            "workspace": PROJECT,
+            "projectId": PROJECT,
             "permissions": ["read"],
             "scopes": [{"environment": "prod", "secretPath": w.FOLDER}],
             "expiresAt": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
@@ -301,7 +328,7 @@ class InlineWorkflowTests(unittest.TestCase):
                 "secretKey": key,
                 "secretValue": value,
                 "type": "shared",
-                "workspace": w.FLEETOPS_PROJECT,
+                "workspace": PROJECT,
                 "environment": "prod",
                 "secretPath": w.FOLDER,
             }
@@ -330,7 +357,7 @@ class InlineWorkflowTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "https://app.infisical.com/api/v2/service-token")
         self.assertEqual(calls[0][1]["Authorization"], "Bearer st." + "x" * 32)
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[1][0]).query)
-        self.assertEqual(query["workspaceId"], [w.FLEETOPS_PROJECT])
+        self.assertEqual(query["workspaceId"], [PROJECT])
         self.assertEqual(query["environment"], ["prod"])
         self.assertEqual(query["secretPath"], [w.FOLDER])
         self.assertEqual(query["expandSecretReferences"], ["false"])
@@ -357,6 +384,16 @@ class InlineWorkflowTests(unittest.TestCase):
                     )
                 self.assertEqual(len(calls), 1)
 
+    def test_missing_or_malformed_project_cannot_be_supplied_by_token_metadata(self):
+        for env in ({}, {w.PROJECT_ENV: "invalid-project"}):
+            with self.subTest(env=env):
+                request = mock.Mock(return_value=self.metadata())
+                with self.assertRaisesRegex(self.namespace["Refused"], w.PROJECT_ENV):
+                    self.namespace["fetch_infisical_configuration"](
+                        "st." + "x" * 32, request=request, env=env
+                    )
+                request.assert_not_called()
+
     def test_bad_secret_provenance_import_and_reference_are_rejected(self):
         invalid_records = (
             self.records()[0] | {"workspace": "wrong-project"},
@@ -378,7 +415,7 @@ class InlineWorkflowTests(unittest.TestCase):
 
     def test_all_infisical_bindings_are_removed_before_consumer_exec(self):
         namespace = self.namespace
-        namespace["fetch_infisical_configuration"] = lambda token: self.configuration
+        namespace["fetch_infisical_configuration"] = lambda token, **kwargs: self.configuration
         namespace["mint_verified"] = lambda config, request=None: "ghs_synthetic"
         captured = {}
 

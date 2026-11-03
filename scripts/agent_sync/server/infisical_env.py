@@ -236,7 +236,7 @@ def verify_service_token(
         or ("_id" in metadata and metadata.get("_id") != token_id)
         or not isinstance(metadata.get("name"), str)
         or not metadata["name"]
-        or metadata.get("projectId") != project_id
+        or ("projectId" in metadata and metadata.get("projectId") != project_id)
         or metadata.get("workspace") != project_id
     ):
         raise LoadError("service-token metadata: project identity did not match")
@@ -264,6 +264,8 @@ def verify_service_token(
     ):
         raise LoadError("service-token metadata: read-only permission did not match")
     expires_at = metadata.get("expiresAt")
+    if expires_at is None:
+        return
     if not isinstance(expires_at, str):
         raise LoadError("service-token metadata: expiry is invalid")
     try:

@@ -1074,10 +1074,10 @@ class TestFetchVerified(unittest.TestCase):
     """fetch_verified:  the REST row's own fields prove the folder."""
 
     ENV = {
-        "INFISICAL_FLEET_OPS_PROJECT_ID": "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5",
+        "INFISICAL_FLEET_OPS_PROJECT_ID": "00000000-0000-4000-8000-000000000042",
         core.ENV_TOKEN: "st.test-service-token-fixture",
     }
-    PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+    PROJECT = "00000000-0000-4000-8000-000000000042"
     PATH = "/git-relay-owner"
 
     def _secret(self, **overrides):

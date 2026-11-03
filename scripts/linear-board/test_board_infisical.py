@@ -79,13 +79,16 @@ class MockInfisical:
                     if self.headers.get("Authorization") != "Bearer " + expected_token:
                         return self._send(401, {})
                     if path == "/api/v2/service-token":
-                        if mock.metadata_override is not None:
-                            return self._send(200, mock.metadata_override)
                         permissions = (
                             ["read", "write"]
                             if method == "GET" and expected_token == mock.write_token
                             else ["read"]
                         )
+                        if mock.metadata_override is not None:
+                            metadata = dict(mock.metadata_override)
+                            if expected_token == mock.write_token:
+                                metadata["permissions"] = permissions
+                            return self._send(200, metadata)
                         return self._send(
                             200,
                             {
@@ -249,6 +252,44 @@ class InfisicalTests(T.BoardTest):
         self.assertFalse(
             any(path == "/api/v3/secrets/raw" for _method, path in self.vault.requests)
         )
+
+    def test_workspace_only_metadata_supports_read_and_write_grants(self):
+        self.vault.metadata_override = {
+            "workspace": "proj-afc",
+            "permissions": ["read"],
+            "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+            "expiresAt": None,
+        }
+        self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
+        self.assertIn("LINEAR_FLEET_CACHE_TOKEN", self.vault.secrets)
+        self.assertTrue(any(method == "POST" for method, _ in self.vault.requests))
+
+    def test_contradictory_project_or_expiry_metadata_stops_before_secret_read(self):
+        valid = {
+            "workspace": "proj-afc",
+            "permissions": ["read"],
+            "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+            "expiresAt": None,
+        }
+        for patch in (
+            {"projectId": "wrong-project"},
+            {"projectId": None},
+            {"workspace": "wrong-project"},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
+            {"expiresAt": "invalid"},
+            {"expiresAt": 123},
+        ):
+            with self.subTest(patch=patch):
+                self.vault.requests.clear()
+                self.vault.metadata_override = dict(valid, **patch)
+                self.board(
+                    "whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env())
+                )
+                self.assertTrue(self.vault.requests)
+                self.assertTrue(
+                    all(path == "/api/v2/service-token" for _, path in self.vault.requests)
+                )
 
     def test_the_ai_fleet_pair_is_read_through_fleet_secrets_and_not_through_infisical(self):
         cid, secret = self.seat_app("CLAUDE", "Claude", file=False)

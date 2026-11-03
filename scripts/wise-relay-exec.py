@@ -20,7 +20,7 @@ from fleet_secrets import core as scoped_secrets
 AUTH_ENV_VARS = scoped_secrets.AUTH_ENV_VARS
 
 FOLDER = "/gr-front/wise-st"
-FLEETOPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
 INFISICAL_TOKEN_ENV = "WISE_RELAY_INFISICAL_TOKEN"
 REPO = "Simple-With-Us/Socratic-Trade"
 ACTOR = "swu-wise[bot]"
@@ -71,10 +71,12 @@ def fetch_configuration(source):
     env = infisical_environment(source)
     token = env.pop("INFISICAL_TOKEN")
     env[scoped_secrets.ENV_READ_PATHS] = FOLDER
-    env[scoped_secrets.ENV_PROJECT] = FLEETOPS_PROJECT
+    project = (env.get(PROJECT_ENV) or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", project):
+        raise Refused(f"set {PROJECT_ENV} to the expected project UUID")
     env[scoped_secrets.ENV_TOKEN] = token
     try:
-        return scoped_secrets.fetch_project(FLEETOPS_PROJECT, FOLDER, env, token=token)
+        return scoped_secrets.fetch_project(project, FOLDER, env, token=token)
     except scoped_secrets.SecretsError:
         raise Refused("Infisical scoped-folder fetch failed") from None
 

@@ -146,6 +146,9 @@ on:
       wise_infisical_token:
         description: Dedicated read-only service token for Fleet-OPS prod /gr-front/wise-st
         required: false
+      wise_infisical_project_id:
+        description: Independently configured expected Fleet-OPS project UUID for the Wise reader
+        required: false
       merge_token:
         description: >-
           PAT or GitHub App installation token with contents + pull-requests
@@ -788,6 +791,7 @@ jobs:
         if: inputs.use_wise_relay
         env:
           WISE_RELAY_INFISICAL_TOKEN: ${{ secrets.WISE_RELAY_INFISICAL_TOKEN || secrets.wise_infisical_token }}
+          INFISICAL_FLEET_OPS_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID || secrets.wise_infisical_project_id }}
           EXPECTED_MERGE_ACTOR: ${{ inputs.expected_merge_actor }}
           EXPECTED_HEAD: ${{ needs.classify.outputs.head }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -873,7 +877,7 @@ jobs:
           import urllib.request
 
           FOLDER = "/gr-front/wise-st"
-          FLEETOPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+          PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
           INFISICAL_API = "https://app.infisical.com/api"
           AUTH_ENV_VARS = {
               "INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", "INFISICAL_WRITE_TOKEN",
@@ -976,7 +980,11 @@ jobs:
                   raise Refused("authenticated service request failed") from None
 
 
-          def fetch_infisical_configuration(token, request=request_json):
+          def fetch_infisical_configuration(token, request=request_json, env=None):
+              source = os.environ if env is None else env
+              project = (source.get(PROJECT_ENV) or "").strip()
+              if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", project):
+                  raise Refused(f"set {PROJECT_ENV} to the expected project UUID")
               if (not isinstance(token, str) or not token.startswith("st.")
                       or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token)):
                   raise Refused("dedicated Infisical service token required")
@@ -986,8 +994,8 @@ jobs:
                   raise Refused("Infisical token metadata is malformed")
               permissions = metadata.get("permissions")
               scopes = metadata.get("scopes")
-              if (metadata.get("workspace") != FLEETOPS_PROJECT
-                      or ("projectId" in metadata and metadata.get("projectId") != FLEETOPS_PROJECT)
+              if (metadata.get("workspace") != project
+                      or ("projectId" in metadata and metadata.get("projectId") != project)
                       or permissions != ["read"] or not isinstance(scopes, list)):
                   raise Refused("Infisical token project or permissions mismatch")
               granted = []
@@ -1007,7 +1015,7 @@ jobs:
                   except (AttributeError, TypeError, ValueError):
                       raise Refused("Infisical token expiry is invalid") from None
               query = urllib.parse.urlencode({
-                  "workspaceId": FLEETOPS_PROJECT,
+                  "workspaceId": project,
                   "environment": "prod",
                   "secretPath": FOLDER,
                   "viewSecretValue": "true",
@@ -1024,7 +1032,7 @@ jobs:
                   if (not isinstance(record, dict) or record.get("type") != "shared"
                           or record.get("secretValueHidden") is True):
                       raise Refused("Infisical returned an unverified secret record")
-                  for field, expected in (("workspace", FLEETOPS_PROJECT),
+                  for field, expected in (("workspace", project),
                                           ("environment", "prod"), ("secretPath", FOLDER)):
                       if field in record and record[field] != expected:
                           raise Refused("Infisical secret provenance mismatch")
@@ -1080,7 +1088,7 @@ jobs:
               }:
                   env.pop(key, None)
               try:
-                  config = configuration(fetch_infisical_configuration(token))
+                  config = configuration(fetch_infisical_configuration(token, env=env))
               except Refused:
                   raise Refused("Infisical scoped-folder fetch failed") from None
               # The caller's configured merge principal must be the relay principal; never overwrite it silently.

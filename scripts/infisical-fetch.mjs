@@ -137,7 +137,7 @@ export function validateServiceTokenMetadata(metadata, { projectId, environment,
       (tokenId && metadata.id !== tokenId) ||
       (metadata._id !== undefined && metadata._id !== metadata.id) ||
       typeof metadata.name !== "string" || !metadata.name ||
-      metadata.projectId !== projectId || metadata.workspace !== projectId) {
+      ("projectId" in metadata && metadata.projectId !== projectId) || metadata.workspace !== projectId) {
     throw new MetadataVerificationError("Infisical service-token metadata did not match the requested project.");
   }
   if (!Array.isArray(metadata.scopes) || metadata.scopes.length !== 1 ||
@@ -148,6 +148,7 @@ export function validateServiceTokenMetadata(metadata, { projectId, environment,
       metadata.permissions[0] !== "read") {
     throw new MetadataVerificationError("Infisical service-token metadata did not match the requested scope.");
   }
+  if (metadata.expiresAt == null) return;
   if (typeof metadata.expiresAt !== "string" || !EXPIRY_TZ.test(metadata.expiresAt)) {
     throw new MetadataVerificationError("Infisical service-token expiry metadata is invalid.");
   }

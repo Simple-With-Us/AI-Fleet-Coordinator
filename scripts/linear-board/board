@@ -861,7 +861,10 @@ class Infisical:
         expected_permissions = {"read", "write"} if writer else {"read"}
         if (
             payload.get("workspace") != self._expected_project
-            or payload.get("projectId") != self._expected_project
+            or (
+                "projectId" in payload
+                and payload.get("projectId") != self._expected_project
+            )
             or not isinstance(scopes, list)
             or len(scopes) != 1
             or scopes[0] != {"environment": "prod", "secretPath": INFISICAL_LINEAR_PATH}
@@ -878,7 +881,7 @@ class Infisical:
                 parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
                 if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
                     raise ValueError
-            except (TypeError, ValueError):
+            except (AttributeError, TypeError, ValueError):
                 self._off("token-expired-or-invalid")
                 return None
         self._verified_tokens.add(key)
