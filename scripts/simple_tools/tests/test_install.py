@@ -6,6 +6,7 @@ scripts/simple-tools, so the real home, LaunchAgents and credential folders are 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -54,10 +55,13 @@ class InstallTests(unittest.TestCase):
         self,
     ) -> None:
         text = INSTALL.read_text()
-        self.assertIn(
-            'DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime"', text
-        )
-        self.assertNotIn('DEFAULT_CHECKOUT="/Users/jay/Code', text)
+        match = re.search(r'^DEFAULT_CHECKOUT="([^"]+)"$', text, re.MULTILINE)
+        self.assertIsNotNone(match)
+        default = Path(match.group(1))
+        self.assertTrue(default.is_absolute())
+        managed = Path("apps/lanes/_managed/fleet/simple-tools-runtime")
+        self.assertEqual(default.parts[-len(managed.parts):], managed.parts)
+        self.assertNotIn("Code", default.parts)
 
     def test_the_runtime_sync_script_is_executable_and_parses(self) -> None:
         script = Path(__file__).resolve().parents[2] / "simple-tools-runtime-sync.sh"
