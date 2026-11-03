@@ -398,8 +398,10 @@ class UpdateReceiptTests(Base):
             return 0, update_state(InvocationID=original_id)
 
         later, later_code = foc.update_status(
-            self.ctx(runner=status_runner), foc.validate_config(CONFIG),
-            "fleet-cli." + original_id + "." + str(answer["baselineStartMonotonic"]), "plan",
+            self.ctx(runner=status_runner),
+            foc.validate_config(CONFIG),
+            "fleet-cli." + original_id + "." + str(answer["baselineStartMonotonic"]),
+            "plan",
         )
         self.assertEqual((later_code, later["result"], later["verified"]), (0, "submitted", False))
         self.assertEqual(later["baselineStartMonotonic"], answer["baselineStartMonotonic"])
@@ -688,10 +690,15 @@ class UpdateStatusTests(Base):
 
     def test_no_captured_or_malformed_id_refused_before_probe(self):
         for target in (
-            "fleet-cli", "fleet-cli.", "fleet-cli." + "B" * 32 + ".0",
-            "other." + "b" * 32 + ".0", "fleet-cli." + "b" * 32 + ".extra",
-            "fleet-cli." + "b" * 32, "fleet-cli." + "b" * 32 + ".00",
-            "fleet-cli." + "b" * 32 + ".-1", "fleet-cli." + "b" * 32 + ".18446744073709551616",
+            "fleet-cli",
+            "fleet-cli.",
+            "fleet-cli." + "B" * 32 + ".0",
+            "other." + "b" * 32 + ".0",
+            "fleet-cli." + "b" * 32 + ".extra",
+            "fleet-cli." + "b" * 32,
+            "fleet-cli." + "b" * 32 + ".00",
+            "fleet-cli." + "b" * 32 + ".-1",
+            "fleet-cli." + "b" * 32 + ".18446744073709551616",
         ):
             code, answer = self.status(target=target)
             self.assertEqual((code, answer["errorCode"]), (2, "invocation_id_invalid"))
