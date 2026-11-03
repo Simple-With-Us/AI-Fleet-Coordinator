@@ -119,7 +119,9 @@ def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> dict[str
     return _scoped_fetch(names, project_id, path, named=True)
 
 
-def _scoped_fetch(names: Iterable[str], project_id: str, path: str, *, named: bool) -> dict[str, str]:
+def _scoped_fetch(
+    names: Iterable[str], project_id: str, path: str, *, named: bool
+) -> dict[str, str]:
     refusal = environment_refusal()
     if refusal:
         raise FetchFailed("environment-refused")
@@ -129,14 +131,20 @@ def _scoped_fetch(names: Iterable[str], project_id: str, path: str, *, named: bo
     wanted = set(names)
     env = dict(os.environ)
     token = (env.get(ENV_KNOBS_TOKEN) or "").strip()
-    if not token.startswith("st.") or not 20 <= len(token) <= 8192 or any(c.isspace() for c in token):
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 8192
+        or any(c.isspace() for c in token)
+    ):
         raise FetchFailed("service-token-required")
     env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"] = token
     env.pop(ENV_TOKEN, None)
     env.pop("INFISICAL_WRITE_TOKEN", None)
     env.pop(ENV_KNOBS_TOKEN, None)
     try:
-        result = helper.fetch_project(project_id, path, env, names=wanted if named else None, timeout=TIMEOUT_SECONDS)
+        result = helper.fetch_project(
+            project_id, path, env, names=wanted if named else None, timeout=TIMEOUT_SECONDS
+        )
     except TimeoutError:
         raise FetchFailed("timeout") from None
     except Exception:
@@ -195,7 +203,11 @@ def child_env() -> dict[str, str]:
     """Return an isolated child environment with the dedicated knob reader binding."""
     env = dict(os.environ)
     token = (env.get(ENV_KNOBS_TOKEN) or "").strip()
-    if not token.startswith("st.") or not 20 <= len(token) <= 8192 or any(c.isspace() for c in token):
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 8192
+        or any(c.isspace() for c in token)
+    ):
         raise FetchFailed("service-token-required")
     env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"] = token
     env.pop(ENV_TOKEN, None)

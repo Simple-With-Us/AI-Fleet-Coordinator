@@ -24,6 +24,7 @@ class SetTestCase(KnobTestCase):
         self.fake.set(secrets=LIVE)
         self.audit_file = str(self.home / ".agent-sync" / "listener" / "knobs.jsonl")
         from fleet_secrets import core as secrets
+
         verifier = mock.patch.object(secrets, "verify_service_token", return_value=("/",))
         verifier.start()
         self.addCleanup(verifier.stop)
@@ -189,7 +190,10 @@ class WriteTests(SetTestCase):
 
     def test_writer_scope_is_verified_before_cli_write(self):
         from fleet_secrets import core as secrets
-        with mock.patch.object(secrets, "verify_service_token", side_effect=secrets.SecretsError("scope")):
+
+        with mock.patch.object(
+            secrets, "verify_service_token", side_effect=secrets.SecretsError("scope")
+        ):
             answer, code = self.run_set(
                 "FLEET_AUTOPUSH_MODE", "report", "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}
             )

@@ -140,10 +140,12 @@ assert len(MAPPING) == 72 and len({(d, n) for _, _, _, d, n in MAPPING}) == 72
 # declares exactly the folders that project reads, including Fleet-OPS destinations checked before writing.
 READ_PATHS_BY_PROJECT = {
     AFC: tuple(sorted({source_path for workspace, source_path, *_ in MAPPING if workspace == AFC})),
-    FLEETOPS: tuple(sorted(
-        {source_path for workspace, source_path, *_ in MAPPING if workspace == FLEETOPS}
-        | {destination_path for _, _, _, destination_path, _ in MAPPING}
-    )),
+    FLEETOPS: tuple(
+        sorted(
+            {source_path for workspace, source_path, *_ in MAPPING if workspace == FLEETOPS}
+            | {destination_path for _, _, _, destination_path, _ in MAPPING}
+        )
+    ),
 }
 
 BASE = "https://app.infisical.com"
@@ -451,11 +453,8 @@ def check_scoped_tokens(read_tokens, write_token):
         return False
     needed = {
         AFC: {(ENV, path or "/") for ws, path, *_ in MAPPING if ws == AFC},
-        FLEETOPS: {
-            (ENV, path or "/")
-            for ws, path, *_ in MAPPING
-            if ws == FLEETOPS
-        } | {(ENV, dest_path) for _, _, _, dest_path, _ in MAPPING},
+        FLEETOPS: {(ENV, path or "/") for ws, path, *_ in MAPPING if ws == FLEETOPS}
+        | {(ENV, dest_path) for _, _, _, dest_path, _ in MAPPING},
     }
     for ws, paths in needed.items():
         if not check_token_scope(read_tokens[ws], ws, paths, READ_TOKEN_ENVS[ws], ("read",)):

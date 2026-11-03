@@ -35,7 +35,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import pathlib
 import threading
 import urllib.error
 import urllib.request
@@ -194,7 +193,8 @@ class InfisicalSettings:
         if token:
             req.add_header("Authorization", "Bearer " + token)
         try:
-            from fleet_secrets.core import _opener, MAX_OUTPUT_BYTES
+            from fleet_secrets.core import MAX_OUTPUT_BYTES, _opener
+
             with _opener().open(req, timeout=HTTP_TIMEOUT) as resp:
                 raw = resp.read(MAX_OUTPUT_BYTES + 1)
                 if len(raw) > MAX_OUTPUT_BYTES:
@@ -208,15 +208,22 @@ class InfisicalSettings:
             return e.code, payload
 
     def _verify_service_scope(self, token: str, *, writer: bool = False) -> None:
-        from fleet_secrets.core import declared_paths, validate_service_metadata, SecretsError
+        from fleet_secrets.core import SecretsError, declared_paths, validate_service_metadata
+
         status, metadata = self._request("GET", "/api/v2/service-token", token=token)
         if status != 200:
             raise SettingsError("Infisical service-token metadata verification failed")
         try:
-            validate_service_metadata(metadata, self.project_id, declared_paths(os.environ, "/", writer=writer),
-                                      ("read", "write") if writer else ("read",))
+            validate_service_metadata(
+                metadata,
+                self.project_id,
+                declared_paths(os.environ, "/", writer=writer),
+                ("read", "write") if writer else ("read",),
+            )
         except SecretsError:
-            raise SettingsError("Infisical service-token scope does not match this project use") from None
+            raise SettingsError(
+                "Infisical service-token scope does not match this project use"
+            ) from None
 
     def _fetch_all(self, token: str, source: str) -> dict[str, str]:
         self._require_prod()
@@ -242,13 +249,25 @@ class InfisicalSettings:
             raise SettingsError("Infisical secret response is invalid")
         for secret in payload["secrets"]:
             if source == SOURCE_SERVICE_TOKEN:
-                from fleet_secrets.core import validate_secret_record, declared_paths, reject_unresolved, SecretsError
+                from fleet_secrets.core import (
+                    SecretsError,
+                    declared_paths,
+                    reject_unresolved,
+                    validate_secret_record,
+                )
+
                 try:
-                    key, value = validate_secret_record(secret, self.project_id, "/",
-                        single_scope=len(declared_paths(os.environ, "/")) == 1)
+                    key, value = validate_secret_record(
+                        secret,
+                        self.project_id,
+                        "/",
+                        single_scope=len(declared_paths(os.environ, "/")) == 1,
+                    )
                     reject_unresolved({key: value})
                 except SecretsError:
-                    raise SettingsError("Infisical secret response failed scope validation") from None
+                    raise SettingsError(
+                        "Infisical secret response failed scope validation"
+                    ) from None
             else:
                 key, value = secret.get("secretKey"), str(secret.get("secretValue") or "")
             if key in self.managed_keys:

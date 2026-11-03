@@ -28,15 +28,27 @@ class ScopedSeatKeyTests(unittest.TestCase):
                 }
             name = path.split("/v3/secrets/raw/", 1)[1].split("?", 1)[0]
             value = {"EMAIL": "seat@example.test", "KEY": "synthetic-zulip-key"}[name]
-            return 200, {"secret": {
-                "secretKey": name, "secretValue": value, "type": "shared",
-                "workspace": seat_key.INFISICAL_PROJECT, "environment": "prod", "secretPath": "/zulip",
-            }}
+            return 200, {
+                "secret": {
+                    "secretKey": name,
+                    "secretValue": value,
+                    "type": "shared",
+                    "workspace": seat_key.INFISICAL_PROJECT,
+                    "environment": "prod",
+                    "secretPath": "/zulip",
+                }
+            }
 
-        with mock.patch.dict(os.environ, {seat_key.INFISICAL_TOKEN_ENVS[seat_key.INFISICAL_PROJECT]: token}):
-            with mock.patch.object(seat_key.scoped_secrets, "_api_json", api):
-                self.assertEqual(seat_key.infisical_pair("EMAIL", "KEY"),
-                                 ("seat@example.test", "synthetic-zulip-key"))
+        with (
+            mock.patch.dict(
+                os.environ, {seat_key.INFISICAL_TOKEN_ENVS[seat_key.INFISICAL_PROJECT]: token}
+            ),
+            mock.patch.object(seat_key.scoped_secrets, "_api_json", api),
+        ):
+            self.assertEqual(
+                seat_key.infisical_pair("EMAIL", "KEY"),
+                ("seat@example.test", "synthetic-zulip-key"),
+            )
         self.assertEqual(calls[0][0], "/v2/service-token")
         self.assertTrue(calls[1][0].startswith("/v3/secrets/raw/EMAIL?"))
         self.assertTrue(calls[2][0].startswith("/v3/secrets/raw/KEY?"))

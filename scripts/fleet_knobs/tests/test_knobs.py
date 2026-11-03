@@ -39,8 +39,15 @@ class FetchTests(KnobTestCase):
         self.assertEqual(calls[0]["project"], source.PROJECT_ID)
         self.assertEqual(calls[0]["path"], "/")
         self.assertTrue(
-            {"FLEET_AUTOPUSH_MODE", "FLEET_AUTOPUSH_REPOS", "FLEET_AUTOPUSH_IDLE_HOURS",
-             "ASK_CAPTURE_CAPS", "CONSULT_ENABLED", "CLAIM_EXPIRY_MODE", "FLEET_FACTS_SIGNING_KEY"}
+            {
+                "FLEET_AUTOPUSH_MODE",
+                "FLEET_AUTOPUSH_REPOS",
+                "FLEET_AUTOPUSH_IDLE_HOURS",
+                "ASK_CAPTURE_CAPS",
+                "CONSULT_ENABLED",
+                "CLAIM_EXPIRY_MODE",
+                "FLEET_FACTS_SIGNING_KEY",
+            }
             <= set(calls[0]["names"])
         )
         self.assertNotIn("QDRANT_API_KEY", calls[0]["names"])

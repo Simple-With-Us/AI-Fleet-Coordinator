@@ -30,7 +30,9 @@ class FakeHelper:
 class FetchNamedTests(KnobTestCase):
     def setUp(self):
         super().setUp()
-        self.helper = FakeHelper({"CLAUDE_ZULIP_KEY": "k", "CLAUDE_ZULIP_EMAIL": "e", "OTHER": "drop"})
+        self.helper = FakeHelper(
+            {"CLAUDE_ZULIP_KEY": "k", "CLAUDE_ZULIP_EMAIL": "e", "OTHER": "drop"}
+        )
         self.loader = mock.patch.object(source, "HELPER_LOADER", return_value=self.helper)
         self.loader.start()
         self.addCleanup(self.loader.stop)
@@ -38,6 +40,7 @@ class FetchNamedTests(KnobTestCase):
     def test_named_fetch_routes_exact_project_path_and_name_set_with_only_scoped_binding(self):
         os_token = source.ENV_KNOBS_TOKEN
         from os import environ
+
         environ[os_token] = TOKEN
         environ[source.ENV_TOKEN] = GENERIC_TOKEN
         environ["INFISICAL_WRITE_TOKEN"] = WRITER_TOKEN
@@ -61,11 +64,14 @@ class FetchNamedTests(KnobTestCase):
                 self.new_process()
                 if token is None:
                     from os import environ
+
                     environ.pop(source.ENV_KNOBS_TOKEN, None)
                 else:
                     from os import environ
+
                     environ[source.ENV_KNOBS_TOKEN] = token
                 from os import environ
+
                 environ[source.ENV_TOKEN] = TOKEN
                 environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "legacy-test-client"
                 environ["INFISICAL_AUTOMATION_CLIENT_SECRET"] = "legacy-test-secret"
@@ -78,6 +84,7 @@ class FetchNamedTests(KnobTestCase):
 
     def test_helper_failure_is_sanitized_and_never_retried(self):
         from os import environ
+
         environ[source.ENV_KNOBS_TOKEN] = TOKEN
         self.helper.error = RuntimeError("provider body includes secret-like sentinel")
 
@@ -90,6 +97,7 @@ class FetchNamedTests(KnobTestCase):
 
     def test_unresolved_bare_reference_fails_closed_but_embedded_reference_is_data(self):
         from os import environ
+
         environ[source.ENV_KNOBS_TOKEN] = TOKEN
         self.helper.result = {"A": "${prod.some-folder.SENTINEL_REF}"}
         with self.assertRaises(source.FetchFailed) as ctx:
@@ -98,4 +106,7 @@ class FetchNamedTests(KnobTestCase):
         self.assertNotIn("SENTINEL_REF", str(ctx.exception))
 
         self.helper.result = {"A": "prefix-${prod.some-folder.B}"}
-        self.assertEqual(source.fetch_named(("A",), project_id=PROJECT, path="/zulip"), {"A": "prefix-${prod.some-folder.B}"})
+        self.assertEqual(
+            source.fetch_named(("A",), project_id=PROJECT, path="/zulip"),
+            {"A": "prefix-${prod.some-folder.B}"},
+        )

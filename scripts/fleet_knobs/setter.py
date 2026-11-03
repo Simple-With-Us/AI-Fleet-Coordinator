@@ -148,7 +148,9 @@ def verify_writer(token: str, environ: dict[str, str]) -> None:
     try:
         secrets.verify_service_token(token, source.PROJECT_ID, KNOB_PATH, environ, writer=True)
     except secrets.SecretsError:
-        raise Refused("write token does not prove the configured project, prod folder, and permissions") from None
+        raise Refused(
+            "write token does not prove the configured project, prod folder, and permissions"
+        ) from None
 
 
 def child_env(environ: dict[str, str], token: str) -> dict[str, str]:

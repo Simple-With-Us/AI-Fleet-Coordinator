@@ -16,7 +16,6 @@ import secrets
 import stat
 import sys
 import tempfile
-import time
 import unittest
 from unittest import mock
 
@@ -53,6 +52,7 @@ elif cfg.get("shape") == "api":
 else:
     print(json.dumps(secrets))
 """
+
 
 def fixture_service_token() -> str:
     return "st." + secrets.token_urlsafe(32)
@@ -108,11 +108,28 @@ class FakeInfisical:
         """Fake the shared REST helper at its API boundary without invoking a CLI or network."""
         token = env.get("INFISICAL_AI_FLEET_COORDINATOR_TOKEN")
         with self.calls_file.open("a") as fh:
-            fh.write(json.dumps({"project": project_id, "path": path, "names": sorted(names) if names is not None else None}) + "\n")
+            fh.write(
+                json.dumps(
+                    {
+                        "project": project_id,
+                        "path": path,
+                        "names": sorted(names) if names is not None else None,
+                    }
+                )
+                + "\n"
+            )
         with self.tokens_file.open("a") as fh:
             fh.write(json.dumps(token) + "\n")
         with self.automation_file.open("a") as fh:
-            fh.write(json.dumps({"id": env.get("INFISICAL_AUTOMATION_CLIENT_ID"), "secret": env.get("INFISICAL_AUTOMATION_CLIENT_SECRET")}) + "\n")
+            fh.write(
+                json.dumps(
+                    {
+                        "id": env.get("INFISICAL_AUTOMATION_CLIENT_ID"),
+                        "secret": env.get("INFISICAL_AUTOMATION_CLIENT_SECRET"),
+                    }
+                )
+                + "\n"
+            )
         cfg = json.loads(self.config.read_text())
         if cfg["mode"] == "hang":
             raise TimeoutError("fake bounded helper timeout")

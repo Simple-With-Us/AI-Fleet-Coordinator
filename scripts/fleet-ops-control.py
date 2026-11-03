@@ -116,18 +116,25 @@ COOLIFY_TOKEN_PATH = "/coolify"
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
 # The Infisical identity fleet-secrets may be handed from the credential file, and nothing
 # else from it.
-CREDENTIAL_NAMES = (
-    "FLEET_OPS_CONTROL_INFISICAL_TOKEN",
-)
+CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
 SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
 # Keep this boundary independent of optional fleet-secrets imports.
-SHARED_AUTH_ENV_NAMES = frozenset({
-    "INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", "INFISICAL_WRITE_TOKEN",
-    "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_AUTOMATION_CLIENT_ID",
-    "INFISICAL_AUTOMATION_CLIENT_SECRET", "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
-    "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET", "INFISICAL_SHARED_CLIENT_ID",
-    "INFISICAL_SHARED_CLIENT_SECRET", "WISE_RELAY_INFISICAL_TOKEN",
-})
+SHARED_AUTH_ENV_NAMES = frozenset(
+    {
+        "INFISICAL_TOKEN",
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        "INFISICAL_WRITE_TOKEN",
+        "INFISICAL_CLIENT_ID",
+        "INFISICAL_CLIENT_SECRET",
+        "INFISICAL_AUTOMATION_CLIENT_ID",
+        "INFISICAL_AUTOMATION_CLIENT_SECRET",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+        "INFISICAL_SHARED_CLIENT_ID",
+        "INFISICAL_SHARED_CLIENT_SECRET",
+        "WISE_RELAY_INFISICAL_TOKEN",
+    }
+)
 CREDENTIALS_MAX_BYTES = 8 * 1024
 COMMAND_TIMEOUT = 90
 SECRET_TIMEOUT = 30
@@ -740,7 +747,11 @@ def secrets_env(ctx):
     except FileNotFoundError:
         value = process_token
         if value:
-            if not value.startswith("st.") or not 20 <= len(value) <= 2048 or any(c.isspace() for c in value):
+            if (
+                not value.startswith("st.")
+                or not 20 <= len(value) <= 2048
+                or any(c.isspace() for c in value)
+            ):
                 raise Failed("the scoped Infisical token is malformed")
             env["INFISICAL_TOKEN"] = value
         return env
@@ -781,7 +792,11 @@ def secrets_env(ctx):
     if SCOPED_TOKEN_NAME not in values:
         raise Failed("the Infisical credential file is malformed")
     token = values.get(SCOPED_TOKEN_NAME)
-    if token and (not token.startswith("st.") or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token)):
+    if token and (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
         raise Failed("the Infisical credential file is malformed")
     if token:
         env["INFISICAL_TOKEN"] = token

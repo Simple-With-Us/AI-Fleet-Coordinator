@@ -215,11 +215,20 @@ def fleet_secrets_batch(names, project, path):
     """
     token_name = READ_TOKEN_AFC if project == AFC_SLUG else READ_TOKEN_FLEETOPS
     token = (os.environ.get(token_name) or "").strip()
-    if not token.startswith("st.") or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token):
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
         raise ReadError(f"{token_name} is missing or invalid")
     package = pathlib.Path(__file__).resolve().parent.parent / "fleet_secrets"
     env = dict(os.environ)
-    for name in ("INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", READ_TOKEN_AFC, READ_TOKEN_FLEETOPS):
+    for name in (
+        "INFISICAL_TOKEN",
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        READ_TOKEN_AFC,
+        READ_TOKEN_FLEETOPS,
+    ):
         env.pop(name, None)
     if project == AFC_SLUG:
         env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"] = token
@@ -386,7 +395,12 @@ def api(method, url, token, data=None, timeout=35, write=None):
 
 
 def require_service_token(token, name):
-    if not isinstance(token, str) or not token.startswith("st.") or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token):
+    if (
+        not isinstance(token, str)
+        or not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
         raise ReadError(f"{name} is missing or invalid")
     return token
 
@@ -402,7 +416,7 @@ def infisical_upsert(token, name, value):
     env[scoped_secrets.ENV_WRITE_PATHS] = SECRET_PATH
     try:
         scoped_secrets.verify_service_token(token, AFC, SECRET_PATH, env, writer=True)
-    except scoped_secrets.SecretsError as error:
+    except scoped_secrets.SecretsError:
         raise ReadError(f"{WRITE_TOKEN_AFC} scope verification failed") from None
     api(
         "POST",

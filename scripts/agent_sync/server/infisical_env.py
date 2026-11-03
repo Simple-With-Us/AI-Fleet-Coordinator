@@ -55,8 +55,8 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 
 API_DEFAULT = "https://app.infisical.com/api"
 TOKEN = "INFISICAL_TOKEN"
@@ -198,8 +198,10 @@ def _request(
 
 
 def _safe_folder(path: str) -> str:
-    if not isinstance(path, str) or not path.startswith("/") or any(
-        part in (".", "..") for part in path.split("/")
+    if (
+        not isinstance(path, str)
+        or not path.startswith("/")
+        or any(part in (".", "..") for part in path.split("/"))
     ):
         raise LoadError("configuration: invalid Infisical folder")
     return path
@@ -268,7 +270,7 @@ def verify_service_token(
         expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
     except ValueError:
         raise LoadError("service-token metadata: expiry is invalid") from None
-    if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+    if expiry.tzinfo is None or expiry <= datetime.now(UTC):
         raise LoadError("service-token metadata: expiry is invalid")
 
 
@@ -296,9 +298,7 @@ def fetch(
     grant_paths = expected_paths or (requested_path,)
     if requested_path not in grant_paths:
         raise LoadError("service-token metadata: requested folder is outside the verified grant")
-    verify_service_token(
-        env, token, project_id=project_id, expected_paths=tuple(grant_paths), **kw
-    )
+    verify_service_token(env, token, project_id=project_id, expected_paths=tuple(grant_paths), **kw)
     query = urllib.parse.urlencode(
         {
             "workspaceId": project_id,
@@ -310,7 +310,9 @@ def fetch(
             "include_imports": "false",
         }
     )
-    got = _request(stage, base + "/v3/secrets/raw?" + query, token=token, max_bytes=MAX_RESPONSE_BYTES, **kw)
+    got = _request(
+        stage, base + "/v3/secrets/raw?" + query, token=token, max_bytes=MAX_RESPONSE_BYTES, **kw
+    )
     secrets = got.get("secrets")
     if (
         not isinstance(secrets, list)
@@ -358,9 +360,7 @@ LISTENER_READ_CODES = frozenset(
 )
 
 
-def listener_read_keys(
-    env: Mapping[str, str], codes: set[str], **kw
-) -> tuple[dict[str, str], str]:
+def listener_read_keys(env: Mapping[str, str], codes: set[str], **kw) -> tuple[dict[str, str], str]:
     """An opt-in second project read with its own exact-scope token binding."""
     project = (env.get(LISTENER_READ_PROJECT) or "").strip()
     if not project:

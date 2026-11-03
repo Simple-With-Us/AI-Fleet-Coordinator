@@ -30,7 +30,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from fleet_rag.core import (
     FleetRagError,
-    http_json,
     infisical_api,
     infisical_env,
     infisical_project,
@@ -42,12 +41,14 @@ TOKEN_ENV = "FLEET_RECALL_INFISICAL_TOKEN"
 
 def env_identity() -> tuple[str | None, None, None]:
     """Report only whether the recall-specific service-token binding exists."""
-    return (TOKEN_ENV, None, None) if (os.environ.get(TOKEN_ENV) or "").strip() else (None, None, None)
+    return (
+        (TOKEN_ENV, None, None) if (os.environ.get(TOKEN_ENV) or "").strip() else (None, None, None)
+    )
 
 
 def fetch(token: str, wanted: list[str]) -> dict[str, str]:
-    from fleet_rag.core import infisical_api, infisical_env, infisical_project
     from fleet_secrets import core as secrets
+
     env = dict(os.environ)
     env[secrets.ENV_API] = infisical_api()
     try:
@@ -101,7 +102,10 @@ def write_env_file(path: pathlib.Path, values: dict[str, str]) -> None:
 def main(argv: list[str]) -> int:
     if len(argv) >= 1 and argv[0] == "--identity":
         prefix, _, _ = env_identity()
-        print(f"service-token-binding: {'true' if prefix else 'false'}" + (f" ({prefix})" if prefix else ""))
+        print(
+            f"service-token-binding: {'true' if prefix else 'false'}"
+            + (f" ({prefix})" if prefix else "")
+        )
         return 0 if prefix else 3
     if len(argv) < 3 or argv[0] != "--env-file":
         print("usage: fleet-infisical-fetch.py --env-file PATH KEY [KEY ...]", file=sys.stderr)

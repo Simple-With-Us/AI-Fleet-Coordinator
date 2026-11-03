@@ -243,14 +243,21 @@ def infisical_pair(
     if token_name is None:
         fail("unsupported Infisical project")
     token = os.environ.get(token_name, "").strip()
-    if not token.startswith("st.") or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token):
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
         fail(f"{token_name} is missing or is not a valid service token")
-    env = {key: value for key, value in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS}
+    env = {
+        key: value for key, value in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS
+    }
     env[scoped_secrets.ENV_API] = INFISICAL_API + "/api"
     env[scoped_secrets.ENV_READ_PATHS] = INFISICAL_PATH
     token_binding = (
         scoped_secrets.ENV_AI_FLEET_COORDINATOR_TOKEN
-        if project == INFISICAL_PROJECT else scoped_secrets.ENV_TOKEN
+        if project == INFISICAL_PROJECT
+        else scoped_secrets.ENV_TOKEN
     )
     env[token_binding] = token
     try:

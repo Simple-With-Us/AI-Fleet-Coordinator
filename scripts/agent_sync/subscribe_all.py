@@ -122,7 +122,11 @@ def mac_credentials() -> list[Z.Credentials]:
 
 def _service_token() -> str:
     token = os.environ.get(INFISICAL_TOKEN_ENV, "").strip()
-    if not token.startswith("st.") or not 20 <= len(token) <= 2048 or any(c.isspace() for c in token):
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
         raise Failure(f"{INFISICAL_TOKEN_ENV} is missing or is not a valid service token")
     return token
 
@@ -155,17 +159,19 @@ def infisical_credentials(realm: str) -> list[Z.Credentials]:
     except ModuleNotFoundError as exc:
         if exc.name not in {"fleet_secrets", "fleet_secrets.core"}:
             raise
-        raise Failure("Infisical source unavailable (fleet-secrets helper is not installed)") from None
+        raise Failure(
+            "Infisical source unavailable (fleet-secrets helper is not installed)"
+        ) from None
 
     token = _service_token()
-    env = {key: value for key, value in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS}
+    env = {
+        key: value for key, value in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS
+    }
     env[scoped_secrets.ENV_READ_PATHS] = INFISICAL_PATH
     env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = INFISICAL_PROJECT
     env[scoped_secrets.ENV_AI_FLEET_COORDINATOR_TOKEN] = token
     try:
-        found = scoped_secrets.fetch_project(
-            INFISICAL_PROJECT, INFISICAL_PATH, env, token=token
-        )
+        found = scoped_secrets.fetch_project(INFISICAL_PROJECT, INFISICAL_PATH, env, token=token)
     except scoped_secrets.SecretsError as exc:
         raise Failure("Infisical scoped read failed (" + exc.message + ")") from None
     out = []

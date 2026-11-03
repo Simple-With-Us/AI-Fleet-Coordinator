@@ -42,9 +42,7 @@ class ServiceTokenAuthTests(KnobTestCase):
 
                 self.assertIn(knob.source, ("default", "lkg"))
                 self.assertTrue(knob.stale)
-                self.assertEqual(
-                    knobs.report()["fetch_reason"], "service-token-required"
-                )
+                self.assertEqual(knobs.report()["fetch_reason"], "service-token-required")
                 self.assertEqual(self.fake.calls(), [])
 
     def test_scoped_token_is_isolated_to_child_and_overrides_generic_token(self):
@@ -54,7 +52,6 @@ class ServiceTokenAuthTests(KnobTestCase):
         os.environ["INFISICAL_AUTOMATION_CLIENT_SECRET"] = "legacy-test-secret"
         self.fake.set(secrets=GOOD)
 
-        from unittest import mock
         helper = mock.Mock()
         helper.fetch_project.return_value = GOOD
         with mock.patch.object(source, "HELPER_LOADER", return_value=helper):
@@ -87,13 +84,17 @@ class ServiceTokenAuthTests(KnobTestCase):
         self.assertEqual((knob.source, knob.stale), ("default", True))
         self.assertEqual(report["fetch_reason"], "scoped-read-failed")
         self.assertNotIn(FAKE_TOKEN, json.dumps(report))
-        self.assertEqual(len(self.fake.calls()), 1, "one failed scoped request and no auth fallback")
+        self.assertEqual(
+            len(self.fake.calls()), 1, "one failed scoped request and no auth fallback"
+        )
 
     def test_named_fetch_uses_the_same_required_scoped_token(self):
         os.environ[source.ENV_KNOBS_TOKEN] = FAKE_TOKEN
         self.fake.set(secrets={"A": "1"})
 
-        self.assertEqual(source.fetch_named(["A"], project_id=source.PROJECT_ID, path="/"), {"A": "1"})
+        self.assertEqual(
+            source.fetch_named(["A"], project_id=source.PROJECT_ID, path="/"), {"A": "1"}
+        )
         self.assertEqual(self.fake.tokens(), [FAKE_TOKEN])
 
 

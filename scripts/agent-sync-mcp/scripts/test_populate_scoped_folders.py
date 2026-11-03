@@ -43,7 +43,10 @@ class FakeInfisical:
     def __init__(self, scopes=None, values=None, fail=None, read_tokens=None, write_token=None):
         self.scopes = scopes
         self.values = values or {}
-        self.read_tokens = read_tokens or {psf.AFC: fixture_service_token(), psf.FLEETOPS: fixture_service_token()}
+        self.read_tokens = read_tokens or {
+            psf.AFC: fixture_service_token(),
+            psf.FLEETOPS: fixture_service_token(),
+        }
         self.write_token = write_token or fixture_service_token()
         # ("read", (ws, path, name)) -> fleet-secrets exit code;  ("upsert", name) -> HTTP code
         self.fail = fail or {}
@@ -59,17 +62,30 @@ class FakeInfisical:
             permissions = ["read"]
         elif token == self.read_tokens[psf.FLEETOPS]:
             project = psf.FLEETOPS
-            paths = {(psf.ENV, path or "/") for ws, path, *_ in psf.MAPPING if ws == project} | DEST_PATHS
+            paths = {
+                (psf.ENV, path or "/") for ws, path, *_ in psf.MAPPING if ws == project
+            } | DEST_PATHS
             permissions = ["read"]
         else:
             project = psf.FLEETOPS
             paths = DEST_PATHS
             permissions = ["read", "write"]
-        scopes = self.scopes if self.scopes is not None else [
-            {"environment": environment, "secretPath": path} for environment, path in sorted(paths)
-        ]
-        return {"id": "fixture-service-token", "workspace": project, "projectId": project, "permissions": permissions,
-                "scopes": scopes, "expiresAt": None}
+        scopes = (
+            self.scopes
+            if self.scopes is not None
+            else [
+                {"environment": environment, "secretPath": path}
+                for environment, path in sorted(paths)
+            ]
+        )
+        return {
+            "id": "fixture-service-token",
+            "workspace": project,
+            "projectId": project,
+            "permissions": permissions,
+            "scopes": scopes,
+            "expiresAt": None,
+        }
 
     def _err(self, url, code, body="server message"):
         raise urllib.error.HTTPError(
@@ -360,14 +376,23 @@ class TestApply(Base):
             expected_token = os.environ[
                 psf.READ_TOKEN_ENVS[psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS]
             ]
-            token_var = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN" if slug == "ai-fleet-coordinator" else "INFISICAL_TOKEN"
+            token_var = (
+                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
+                if slug == "ai-fleet-coordinator"
+                else "INFISICAL_TOKEN"
+            )
             self.assertEqual(env[token_var], expected_token)
             workspace = psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
             self.assertEqual(
                 fleet_secrets_core.declared_paths(env, argv[4]),
                 psf.READ_PATHS_BY_PROJECT[workspace],
             )
-            self.assertNotIn("INFISICAL_TOKEN" if token_var != "INFISICAL_TOKEN" else "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", env)
+            self.assertNotIn(
+                "INFISICAL_TOKEN"
+                if token_var != "INFISICAL_TOKEN"
+                else "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+                env,
+            )
             for dropped in psf.CHILD_DROPPED_ENV:
                 if dropped == token_var:
                     continue

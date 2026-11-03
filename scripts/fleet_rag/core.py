@@ -305,11 +305,18 @@ def fleet_secret_get(name: str) -> str | None:
 def infisical_login() -> str | None:
     """The explicit read-only service-token binding, without a login."""
     from fleet_secrets import core as secrets
+
     env = dict(os.environ)
     token = (env.get(INFISICAL_READ_TOKEN) or "").strip()
     if not token:
-        if any((env.get(name) or "").strip() for name in
-               (secrets.ENV_TOKEN, secrets.ENV_AI_FLEET_COORDINATOR_TOKEN, secrets.ENV_WRITE_TOKEN)):
+        if any(
+            (env.get(name) or "").strip()
+            for name in (
+                secrets.ENV_TOKEN,
+                secrets.ENV_AI_FLEET_COORDINATOR_TOKEN,
+                secrets.ENV_WRITE_TOKEN,
+            )
+        ):
             raise FleetRagError(f"bind the recall reader as {INFISICAL_READ_TOKEN}")
         return None
     try:
@@ -321,12 +328,14 @@ def infisical_login() -> str | None:
 def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
     """Read this configured project's root; never borrow Fleet-OPS credentials."""
     from fleet_secrets import core as secrets
+
     infisical_env()
     env = dict(os.environ)
     env[secrets.ENV_API] = infisical_api()
     try:
-        return secrets.fetch_project(infisical_project(), "/", env,
-                                     token=env.get(INFISICAL_READ_TOKEN), names=wanted)
+        return secrets.fetch_project(
+            infisical_project(), "/", env, token=env.get(INFISICAL_READ_TOKEN), names=wanted
+        )
     except secrets.SecretsError as exc:
         raise FleetRagError("Infisical scoped read failed: " + exc.message) from None
 
@@ -349,7 +358,9 @@ def load_config(need_write: bool = False, extra: Iterable[str] = ()) -> dict[str
     if all(k in cfg for k in required) and not (os.environ.get(INFISICAL_READ_TOKEN) or "").strip():
         return cfg
     tok = infisical_login()
-    if all(k in cfg for k in required) and (tok is None or all(k in cfg for k in OPTIONAL_KEYS if k in wanted)):
+    if all(k in cfg for k in required) and (
+        tok is None or all(k in cfg for k in OPTIONAL_KEYS if k in wanted)
+    ):
         return cfg
     if tok:
         # An explicit binding that fails verification is not a fallback invitation.
