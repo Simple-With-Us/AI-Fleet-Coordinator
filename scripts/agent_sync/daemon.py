@@ -2420,7 +2420,6 @@ class Daemon:
                 lost=lost,
             )
 
-
     def _notify_openrouter_pin_stale(self, runner: SeatRunner, pending: W.Pending) -> None:
         """The `pin_stale` owner notice for an OPENROUTER seat.  There is no binary to name:  the pin
         vouches for the request (endpoint, model, schema, contract, policy), so the note says which of
@@ -3040,7 +3039,6 @@ class Daemon:
         if spent:
             return None, spent, None
         return binary, None, drift
-
 
     def _fallback_stands_in(self, runner: SeatRunner) -> bool:
         """Can the seat's OpenRouter fallback answer in place of a primary that cannot run now?

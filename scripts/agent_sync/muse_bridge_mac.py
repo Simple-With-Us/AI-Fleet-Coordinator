@@ -122,8 +122,6 @@ def pin_drift(root: str, binary: str | None, model: str) -> dict[str, Any] | Non
     return {"pinned_muse": pin.get("muse"), "muse": os.path.realpath(binary)}
 
 
-
-
 def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> dict[str, Any]:
     """Operator-run positive canary for the bridge contract; never run during ordinary startup."""
     binary = resolve_bridge_muse(wake_path)
