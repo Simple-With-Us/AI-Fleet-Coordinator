@@ -12,11 +12,7 @@ and this file is where they agree:
 
 The store is MiniMax Code's own session table; the letter lives in the Operator
 registry, which is one file for the fleet.  This host reads that file locally when the
-deployment points at the shared store, and when it keeps no copy it asks the host that
-holds the registry through the transport command, the same hop the Claude path makes.
-The transport is host configuration:  the helper names the command
-(MM_OPERATOR_REGISTRY_CMD, default mm-operator-registry) and never names a host, a
-user, an alias, an ssh flag, a remote path or a remote interpreter itself.
+deployment points at the shared store — there is no SSH fallback with a private alias.
 
 A thread and its child both hold a letter, and they are placed the way every other platform
 places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
@@ -73,22 +69,6 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 # The Mac's checkout of AI-Fleet-Coordinator, on the Operator host and here.
 REPO_REL = "AI-Fleet-Coordinator/scripts"
-
-# The transport to the host that holds the Operator's registry:  a command, not a
-# host.  The command carries the host, the remote path and the remote interpreter, so
-# this helper names no host, no user, no alias, no ssh flag and no remote path
-# anywhere.  It is host configuration, never a guess.
-ENV_TRANSPORT = "MM_OPERATOR_REGISTRY_CMD"
-DEFAULT_TRANSPORT = "mm-operator-registry"
-# The whole hop, inside the hook's own timeout:  the hooks that call this run with eight
-# to ten seconds, so a hop that waits longer is a hook the runtime kills instead of one
-# that reports its own fault and goes on.
-REMOTE_TIMEOUT = 6
-
-# The registry's own guard answers this when the host that holds the registry keeps
-# none.  It is a configuration state, not a fault of this call, so it carries the code
-# the helper already used for it.
-NO_REGISTRY_ERROR = "no Operator registry on this host"
 
 
 class RegistryError(RuntimeError):
@@ -154,17 +134,14 @@ def registry_db() -> str:
 
 
 def repo_scripts_dir() -> str:
-    """Where the registry CLI lives on this host.
+    """This host's checkout of the fleet scripts, where the registry CLI lives.
 
-    The checkout this script runs in comes first:  the helper and the CLI it calls
-    have to be the same version, or a verb the helper sends is an unknown one to the
-    CLI.  The other candidates are the host's own configuration, in the order the
-    house keeps them:  the code root comes from the environment, the fleet's code
-    root sits beside its apps root, the Mac has its own layout.
+    The checkout is host configuration, so the host names it and this file never
+    writes a path:  the code root comes from the environment, the fleet's code root
+    sits beside its apps root, the Mac has its own layout, and a checkout running
+    this script is its own parent.
     """
     candidates = []
-    # A checkout running this script:  the scripts sit beside it.
-    candidates.append(os.path.dirname(os.path.realpath(__file__)))
     code_root = os.environ.get("FLEET_CODE_ROOT", "").strip()
     if code_root:
         candidates.append(os.path.join(code_root, "AI-Fleet-Coordinator", "scripts"))
@@ -176,6 +153,8 @@ def repo_scripts_dir() -> str:
     candidates.append(
         os.path.join(os.path.expanduser("~"), "Code", "AI-Fleet-Coordinator", "scripts")
     )
+    # A checkout running this script:  the scripts sit beside it.
+    candidates.append(os.path.dirname(os.path.realpath(__file__)))
     for candidate in candidates:
         if os.path.isdir(candidate) and os.path.isfile(
             os.path.join(candidate, "agent_sync", "operator_registry.py")
@@ -297,105 +276,15 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def _with_registry_code(answer: dict) -> dict:
-    """A registry answer, with the code the helper uses for a host that keeps no registry.
-
-    The registry's own guard answers one way when the host that holds it has no
-    registry file:  that is a configuration state, not a fault of this call, and the
-    helper keeps it quiet.
-    """
-    if answer.get("error") == NO_REGISTRY_ERROR and not answer.get("code"):
-        return dict(answer, code="no_registry")
-    return answer
-
-
-def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> dict:
-    """Ask the registry host through the transport command, the way the Claude path does.
-
-    The transport is host configuration:  the helper names the command and the command
-    carries the host, so this helper never names a host, a user, an alias, an ssh
-    flag, a remote path or a remote interpreter.  A transport command name that is not
-    a plain command name is refused, never run.
-    """
-    dest = str(os.environ.get(ENV_TRANSPORT) or "").strip() or DEFAULT_TRANSPORT
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
-        # Something the shell could read as an option or a second word:  refuse it
-        # rather than run it.  A refused transport is a fault of this host's
-        # configuration, never a call that never happened.
-        return {
-            "error": "the configured registry transport is not a plain command name",
-            "code": "remote_refused",
-        }
-    cmd = [dest] + list(args)
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        # The hop started, so the write may have landed before the answer was lost:
-        # an unknown outcome, never a call that never happened.
-        return {
-            "error": "the registry host did not answer in time",
-            "code": "timeout",
-            "outcome": "outcome_unknown",
-        }
-    except (OSError, subprocess.SubprocessError) as exc:
-        # A missing command is errno 2:  it is its own failure, the way a missing
-        # local registry tool is:  the operator has to know which one.
-        code = "missing_tool" if getattr(exc, "errno", None) == 2 else "remote_unreachable"
-        return {
-            "error": "the registry host did not answer (%s)" % type(exc).__name__,
-            "code": code,
-        }
-    out = (proc.stdout or "").strip()
-    if not out:
-        # The host answered with nothing:  the call may have landed, so the outcome
-        # is unknown rather than never.  The far side's own words are not copied
-        # here:  they can echo an argument the caller built, and a title is not
-        # something to write into an error message.
-        return {
-            "error": "the registry host answered with no result (status %s)"
-            % (proc.returncode if proc.returncode is not None else "none"),
-            "code": "remote_empty",
-            "outcome": "outcome_unknown",
-        }
-    try:
-        answer = json.loads(out.splitlines()[-1])
-    except json.JSONDecodeError:
-        return {
-            "error": "the registry host answered with something else",
-            "code": "remote_unparseable",
-            "outcome": "outcome_unknown",
-        }
-    if not isinstance(answer, dict):
-        return {
-            "error": "the registry host answered with something else",
-            "code": "remote_unparseable",
-            "outcome": "outcome_unknown",
-        }
-    if proc.returncode and "error" not in answer:
-        # The far side's exit code counts:  a call that failed with a non-zero exit is
-        # not a success, whatever its answer looks like.  This is the same rule the
-        # local path applies.
-        answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
-    return _with_registry_code(answer)
-
-
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
     local_db = registry_db()
     scripts = repo_scripts_dir()
     if not local_db or not scripts:
-        # This host keeps no registry of its own, so the Operator's one is on the host
-        # that holds it:  the transport command carries that host, and the registry's
-        # own CLI runs there, so both sides speak one dialect.
-        # The hop has its own bound:  it has to finish inside the hook's timeout, not
-        # inside the timeout the local call would use.
-        return remote_registry_call(args)
+        return {
+            "error": "the operator registry is not available on this host",
+            "code": "no_registry",
+        }
     cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None
@@ -461,7 +350,7 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         }
     if proc.returncode and "error" not in answer:
         answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
-    return _with_registry_code(answer)
+    return answer
 
 
 def _require_registry(answer: dict, *, needs_label: bool = False) -> dict:
@@ -601,20 +490,48 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     helper keeps the pair space:  a chat that held a pair comes back with a pair, and a
     reopen that would hand it a single letter is refused before anything is written.
 
-    The reopen goes through the registry's own CLI, the same call as every other verb:
-    a host that keeps no registry asks the host that holds one, so a chat that comes
-    back to life gets its letter back there too.
+    The registry is opened here rather than through the CLI, because the CLI has no
+    reopen verb.  It is the same file the CLI is pointed at, and the same writer.
     """
-    args = [
-        "reopen",
-        "--record-id=" + record_id,
-        "--actor=" + SEAT,
-        "--source=the MM seat's session-letter hook",
-        "--letter-pick=" + LETTER_PICK,
-    ]
-    if parent_session_id:
-        args += ["--parent-session-id=" + parent_session_id]
-    return _require_registry(registry_call(args))
+    db = registry_db()
+    if not db:
+        raise RegistryError("the operator registry is not available on this host", "no_registry")
+    from agent_sync import operator_registry as OR
+    from agent_sync import platform_letter
+
+    reg = OR.SessionRegistry(db)
+    try:
+        letter, generation, previous = platform_letter.operator_reopen(
+            OR,
+            db,
+            reg,
+            record_id,
+            actor=SEAT,
+            source="the MM seat's session-letter hook",
+            pick=LETTER_PICK,
+            parent=parent_session_id,
+        )
+    except platform_letter.SpaceLost as exc:
+        # A chat that held a pair would come back with a single letter.  That is refused
+        # before anything is written, and the chat waits for a pair instead.
+        raise RegistryError(str(exc), "space_lost", "reopen_refused")
+    except OR.LabelExhausted as exc:
+        # Every letter in the space is live, so there is nothing to hand back.
+        raise RegistryError(str(exc), "label_exhausted", "reopen_refused")
+    except (OR.UnknownRecord, KeyError, ValueError, OSError) as exc:
+        # A record that is not there, or a registry file that cannot be read or written.
+        # Both are a registry fault, so both travel as one:  a caller never has to know
+        # which storage failure it was.
+        raise RegistryError(str(exc), "reopen_failed", "reopen_refused")
+    finally:
+        reg.close_db()
+    return {
+        "record_id": record_id,
+        "label": letter,
+        "generation": generation,
+        "previous": previous,
+        "outcome": "reopened",
+    }
 
 
 def update_title(session_id: str, title: str, directories: list[str] | None = None) -> dict:
@@ -1454,15 +1371,7 @@ def hook_stop() -> int:
     if ok:
         try:
             update_title(session_id, title)
-        except RegistryError as exc:
-            # A registry that cannot be reached is not a reason to block the stop:  the
-            # chat already holds its letter, and a Stop hook that exits 2 keeps the
-            # agent in a loop while the far host is asleep.
-            _report_registry_fault(exc)
-            return 0
-        except ValueError as exc:
-            # The title carries a credential:  the refusal names the problem and never
-            # the value.
+        except (RegistryError, ValueError) as exc:
             sys.stderr.write("Could not update the registry: %s\n" % exc)
             return 2
         return 0
@@ -1486,11 +1395,7 @@ def hook_stop() -> int:
         return 2
     try:
         update_title(session_id, fallback)
-    except RegistryError as exc:
-        # The thread carries the title in the store;  the registry copy is a second
-        # copy, and the sweep carries it later.  A fault here never blocks the stop.
-        _report_registry_fault(exc)
-    except ValueError as exc:
+    except (RegistryError, ValueError) as exc:
         sys.stderr.write("Could not update the registry: %s\n" % exc)
         return 2
     sys.stderr.write("The thread was renamed to %r.\n" % fallback)
