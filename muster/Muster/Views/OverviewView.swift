@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// The counts come off the store's cells, which are the same cells the grid paints,
 /// so the overview cannot disagree with the grid it points at.  A run that could not
-/// be trusted leaves every count unknown:  the store has cleared its results, and a
+/// be trusted leaves every engine count unknown:  the store has cleared its results, and a
 /// count of zero would read as a fleet with nothing wrong.
 struct OverviewView: View {
     @EnvironmentObject private var store: FleetStore
@@ -62,13 +62,13 @@ struct OverviewView: View {
                         systemImage: "clock.badge.exclamationmark",
                         count: counts.stale,
                         tint: counts.stale.map { $0 > 0 ? .orange : .secondary } ?? .secondary,
-                        subtitle: "Cells checked before the rest",
+                        subtitle: "Cells checked apart from the rest",
                         destination: .complianceGrid
                     )
                     countCard(
                         title: "Drift History",
                         systemImage: "exclamationmark.triangle",
-                        count: monitor.redCount == nil ? nil : monitor.transitions.count,
+                        count: monitor.transitions.count,
                         tint: .secondary,
                         subtitle: "Turns to red on record",
                         destination: .driftHistory

@@ -97,4 +97,25 @@ final class MusterNavigationTests: XCTestCase {
             trusted: true, commonCheckedAt: common)
         XCTAssertEqual(counts.stale, 1)
     }
+
+    /// Stale counts a cell checked after the shared time beyond the same tolerance
+    func test_stale_counts_cells_checked_after_the_shared_time_like_the_grid() {
+        func checkedCell(_ checkedAt: String) -> GridCell {
+            cell(.passed, rules: [
+                CheckResult(
+                    ruleId: "r", seat: "MM", platform: "minimax", kind: "skills",
+                    state: "PASS", reason: "ok", reasonCode: "ok",
+                    expected: [:], observed: [:],
+                    proofLevelRequired: "L0", proofLevelAchieved: "L0",
+                    collector: "mac", checkType: "marked_block_hash",
+                    checkedAt: checkedAt, expiresAt: nil, ttlSeconds: 900,
+                    stale: false, failing: false)
+            ])
+        }
+        let common = FleetTime.parse("2026-10-21T09:00:00Z")
+        let counts = OverviewCounts.make(
+            cells: [checkedCell("2026-10-21T09:00:59Z"), checkedCell("2026-10-21T09:01:01Z")],
+            trusted: true, commonCheckedAt: common)
+        XCTAssertEqual(counts.stale, 1)
+    }
 }

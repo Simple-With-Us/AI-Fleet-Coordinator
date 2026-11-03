@@ -85,7 +85,7 @@ struct OverviewCounts: Equatable {
 
     /// The counts the cells give, when the run could be trusted.
     ///
-    /// A cell is stale when its oldest observation predates the run's shared check
+    /// A cell is stale when its oldest observation differs from the run's shared check
     /// time by more than the grid's own sixty-second tolerance, which is a rule
     /// served from the cache and checked apart from the rest.  With no shared check
     /// time there is nothing to be stale against, so the count stays unknown rather
@@ -100,7 +100,7 @@ struct OverviewCounts: Equatable {
         if let commonCheckedAt {
             counts.stale = cells.filter { cell in
                 guard let checkedAt = cell.checkedAt else { return false }
-                return commonCheckedAt.timeIntervalSince(checkedAt) > 60
+                return abs(commonCheckedAt.timeIntervalSince(checkedAt)) > 60
             }.count
         }
         return counts
