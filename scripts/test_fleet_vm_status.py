@@ -314,7 +314,7 @@ class ReportShapeTests(unittest.TestCase):
                 collector.write_report(link / "vm-status.json", {"schemaVersion": 1})
             self.assertEqual(list(real.iterdir()), [])
 
-    def test_write_report_directory_fsync_failure_propagates(self):
+    def test_write_report_directory_fsync_failure_is_best_effort(self):
         calls = []
 
         def flaky_fsync(fd):
@@ -325,8 +325,8 @@ class ReportShapeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state" / "vm-status.json"
             with unittest.mock.patch.object(collector.os, "fsync", flaky_fsync):
-                with self.assertRaises(OSError):
-                    collector.write_report(path, {"schemaVersion": 1})
+                collector.write_report(path, {"schemaVersion": 1})
+            self.assertEqual(json.loads(path.read_text()), {"schemaVersion": 1})
 
     def test_collector_source_avoids_python311_datetime_utc(self):
         source = (HERE / "fleet-vm-status.py").read_text()

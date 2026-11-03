@@ -600,17 +600,26 @@ def write_report(path, document):
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
     except BaseException:
         try:
             os.unlink(temporary)
         except OSError:
             pass
         raise
+    # The rename has already replaced the report atomically; syncing the folder only makes
+    # that rename survive a power cut. Some file systems refuse a directory fsync, and a
+    # lost rename only leaves the previous report, which a reader ages out to unknown,
+    # so this step is best effort (same contract as fleet-tools-doctor.write_report).
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(directory_fd)
 
 
 def parse_args(argv=None):
