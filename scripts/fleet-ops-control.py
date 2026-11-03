@@ -1107,7 +1107,9 @@ def execute_logs(ctx, commands):
     return f"{lines} journal lines", text, lines
 
 
-def audit(ctx, scope, action, target, result, lines=None, route=None, invocation_id=None, verified=None):
+def audit(
+    ctx, scope, action, target, result, lines=None, route=None, invocation_id=None, verified=None
+):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
     A finished logs run adds its line count and nothing of the text."""
     row = {
@@ -1224,8 +1226,10 @@ def handle(ctx, scope, action, target, mode):
             lines=log_lines if answer["result"] == "done" else None,
             route=(
                 "sudo-system-update"
-                if scope == "server" and action == "update"
-                and answer["commands"] == [[SUDO, "-n", UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]]
+                if scope == "server"
+                and action == "update"
+                and answer["commands"]
+                == [[SUDO, "-n", UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]]
                 else None
             ),
             invocation_id=answer.get("invocationID"),
