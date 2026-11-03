@@ -61,6 +61,10 @@ class MuseArgvTest(unittest.TestCase):
         self.assertNotIn("--disable-sandbox", argv)
         self.assertNotIn("--yolo", argv)
         self.assertEqual(argv[argv.index("--output-schema") + 1], A.MUSE_SCHEMA_SLOT)
+        # Contributor mode is named, not inherited from the ambient settings flag (owner
+        # directive, 2026-11-03):  the flag is a per-run override that is never persisted, so
+        # the run stays on contributor terms even if the ambient setting ever flips.
+        self.assertEqual(argv[argv.index("--contributor-mode") + 1], "on")
 
     def test_the_contributor_tier_is_the_default_and_the_dear_one_is_never_chosen(self) -> None:
         self.assertEqual(C.MUSE_DEFAULT_MODEL, "muse-spark-1.3-contributor")

@@ -537,6 +537,7 @@ def pin_candidate(paths: L.SeatPaths, claude: str, now: float) -> str | None:
 # (owner 2026-10-11:  cost is not the concern;  spam and cascade are).
 #
 #     muse exec --model muse-spark-1.3-contributor --reasoning-effort minimal
+#               --contributor-mode on
 #               --prompt-file <prompt> --output-schema <schema>
 #               --json --approval-mode never
 #               --disable-shell --disable-write --disable-web-tools
@@ -712,7 +713,12 @@ def muse_argv(muse: str, model: str) -> list[str]:
 
     The three path slots are filled in by MuseRunner.run against the wake dir;  the fleet tag set
     (the enum of the schema's route seat) travels in the schema file itself (wakes.schema_text),
-    which is why it is not an argv parameter here."""
+    which is why it is not an argv parameter here.
+
+    Contributor mode is named on the command line, not inherited (owner directive, 2026-11-03):
+    the wake's model is the contributor tier, and `--contributor-mode on` is a per-run override
+    that is never persisted, so naming it keeps the run on contributor terms even if the ambient
+    settings.json flag ever flips off under it."""
     return [
         muse,
         "exec",
@@ -724,6 +730,8 @@ def muse_argv(muse: str, model: str) -> list[str]:
         MUSE_REASONING_EFFORT,
         "--provider",
         MUSE_PROVIDER,
+        "--contributor-mode",
+        "on",
         "--prompt-file",
         MUSE_PROMPT_SLOT,
         "--output-schema",

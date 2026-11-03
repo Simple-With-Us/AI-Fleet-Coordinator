@@ -335,7 +335,7 @@ env -i HOME=$HOME USER=$USER LOGNAME=$USER LANG=en_US.UTF-8 TMPDIR=$TMPDIR \
     PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin \
   muse-bin-1.4.7-R6101.1 exec \
     -c 'run.toolset=[]' \
-    --model muse-spark-1.3-contributor --reasoning-effort minimal --provider meta \
+    --model muse-spark-1.3-contributor --reasoning-effort minimal --provider meta --contributor-mode on \
     --prompt-file <wake>/prompt.md --output-schema <wake>/schema.json \
     --json --approval-mode never \
     --disable-shell --disable-write --disable-web-tools --disable-reminders \
