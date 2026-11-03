@@ -6,7 +6,12 @@ import unittest
 from http.server import ThreadingHTTPServer
 
 from git_relay.secret_scan import scan_args
-from git_relay.server import MAX_FILE_REQUEST_BYTES, MAX_REQUEST_BYTES, make_handler
+from git_relay.server import (
+    MAX_FILE_REQUEST_BYTES,
+    MAX_LARGE_TEXT_REQUEST_BYTES,
+    MAX_REQUEST_BYTES,
+    make_handler,
+)
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
 
@@ -28,6 +33,8 @@ class FileEnvelopeTests(unittest.TestCase):
             for action, cap in [
                 ("wf_file_put", MAX_FILE_REQUEST_BYTES),
                 ("wf_files_put", MAX_FILE_REQUEST_BYTES),
+                ("wf_git_blob_create", MAX_LARGE_TEXT_REQUEST_BYTES),
+                ("wf_git_tree_create", MAX_LARGE_TEXT_REQUEST_BYTES),
                 ("wf_runs", MAX_REQUEST_BYTES),
             ]:
                 for delta in (0, 1):

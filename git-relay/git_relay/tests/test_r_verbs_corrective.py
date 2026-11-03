@@ -467,6 +467,23 @@ class LargeTextTests(unittest.TestCase):
         self.assertEqual(out["blob"]["text"], self.TEXT)
 
 
+
+    def test_large_text_envelope_actions_and_full_scan(self):
+        from git_relay.secret_scan import MAX_SCAN_NODES, SecretInputError, scan_args
+        from git_relay.server import (
+            LARGE_TEXT_REQUEST_ACTIONS,
+            MAX_LARGE_TEXT_REQUEST_BYTES,
+        )
+
+        self.assertEqual(
+            LARGE_TEXT_REQUEST_ACTIONS,
+            frozenset({"wf_git_blob_create", "wf_git_tree_create"}),
+        )
+        self.assertGreaterEqual(MAX_LARGE_TEXT_REQUEST_BYTES, 100000)
+        text = "a" * 150000 + "\n-----BEGIN " + "PRIVATE KEY-----"
+        with self.assertRaises(SecretInputError):
+            scan_args({"text": text}, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
+
 if __name__ == "__main__":
     unittest.main()
 

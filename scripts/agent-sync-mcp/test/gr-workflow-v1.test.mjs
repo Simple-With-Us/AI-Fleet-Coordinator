@@ -1186,3 +1186,11 @@ test('v2: custody verbs dispatch end-to-end with args forwarded',async()=>{
   assert.equal(seen.url,'https://broker.invalid/v1/wf_pr_close');
   assert.deepEqual(seen.body,args);
 });
+test('v2: blob_create response size follows the allow_large_text opt-in',()=>{
+  const S40b='a'.repeat(40);
+  const mk=(size)=>({blob:{sha:S40b,size}});
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(50000),{repo,allow_large_text:true}),true);
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(50000),{repo}),false);
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(100001),{repo,allow_large_text:true}),false);
+  assert.equal(validWfV1Response('wf_git_blob_create',mk(40000),{repo}),true);
+});

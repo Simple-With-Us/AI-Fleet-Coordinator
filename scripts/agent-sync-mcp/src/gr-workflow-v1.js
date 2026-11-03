@@ -459,7 +459,7 @@ const gitResponses={
     wf_git_blob_binary_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(32000),content_b64:z.string().max(42668).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)}).strict().refine(v=>{const raw=atob(v.content_b64);return raw.length===v.size&&btoa(raw)===v.content_b64&&!gitCredential.test(raw);})}).strict(),
 
     wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000).refine(v=>!gitCredential.test(v))}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
-    wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
+    wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(100000)}).strict()}).strict(),
     wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024).refine(v=>v.length>0)}).strict()).max(100)}).strict()}).strict(),
    };
 const commitStatus=z.object({id:positive,state:z.enum(['error','failure','pending','success']),context:z.string().min(1).refine(v=>v.trim()!==''&&new TextEncoder().encode(v).length<=255),description:z.string().refine(v=>new TextEncoder().encode(v).length<=140).nullable(),created_at:z.string().max(100).nullable()}).strict();
@@ -637,7 +637,7 @@ export function validWfV1Response(action, body, args) {
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768).refine(v=>!gitCredential.test(v)),author:gitWho,committer:gitWho,author_account:gitAccount,committer_account:gitAccount}).strict();
    const schemas={
     wf_git_blob_get:gitResponseSchema,
-    wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
+    wf_git_blob_create:(args&&args.allow_large_text===true?z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(100000)}).strict()}).strict():z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict()),
     wf_git_commit_get:z.object({commit:commitRead}).strict(),
     wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024).refine(v=>v.length>0)}).strict()).max(100)}).strict()}).strict(),
     wf_git_tree_create:z.object({tree:z.object({sha:gitSha,files:z.number().int().min(1).max(20)}).strict()}).strict(),
