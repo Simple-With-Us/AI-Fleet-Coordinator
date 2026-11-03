@@ -56,11 +56,11 @@ test("Claude callback lookalikes, native callbacks, unlisted CIMD and missing/pl
   }
 });
 
-test("CLAUDE accepts only its own member bot, never JET or an administrator", () => {
+test("CLAUDE accepts its own accepted-role bot, never JET or an owner", () => {
   const expected = { seat: "CLAUDE", email: "claude-bot@simplewithus.zulipchat.com" };
   const me = { email: expected.email, full_name: "Claude", is_bot: true, role: 400, is_admin: false, is_owner: false };
   assert.equal(seatProblem(me, expected), null);
-  for (const override of [{ email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet" }, { role: 200, is_admin: true }, { role: 100, is_owner: true }, { is_bot: false }]) {
+  for (const override of [{ email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet" }, { role: 100, is_admin: true, is_owner: true }, { role: 100, is_owner: true }, { is_bot: false }]) {
     assert.ok(seatProblem({ ...me, ...override }, expected));
   }
 });

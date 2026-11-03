@@ -10,7 +10,7 @@ import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
 // A port of scripts/simple_tools/mcp/tools.py over the Zulip REST API, with the
 // hosted rules on top:  the seat only from the grant, the channel rule (any
 // public channel the seat's bot is subscribed to, src/channels.js) by stream
-// id on every tool, the member-only role check, spacing,
+// id on every tool, the verified bot role check, spacing,
 // budgets and idempotency in the seat's SeatGate, and one audit row per call.
 //
 // No `cloudflare:` imports:  the Worker hands in a ZulipClient and a SeatGate
@@ -145,7 +145,9 @@ const SIDE_CHATS_STREAM_ID = 646987;
 import { CHANNEL_CACHE, lookupChannel, loadChannelSet } from "./channels.js";
 
 export const TRANSPORT = "hosted";
-export const MEMBER_ROLE = 400; // spec 3.6:  hosted seats accept member only
+export const MEMBER_ROLE = 400;
+export const HOSTED_BOT_ROLES = Object.freeze([200, 300, MEMBER_ROLE]);
+const HOSTED_ROLE_POLICY = 2;
 export const RECONCILE_DELAY_MS = 15_000;
 export const RECONCILE_WINDOW_S = 300;
 export const IDEM_EXPLICIT_TTL_MS = 24 * 3600 * 1000;
@@ -474,7 +476,7 @@ export class HostedTools {
       this.requireScope(publicName);
       if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP + GR-MCP Admin.");
       // Every delegated service call first verifies the selected role's own
-      // Zulip bot is present, matches its email and is a member (role 400).
+      // Zulip bot is present, matches its email and has an accepted bot role.
       if (this.callerGate !== this.gate || this.verifySeat) await this.ensureSeat();
       const preparedArgs = withDefaults(spec.inputSchema, args);
       result = Object.hasOwn(FLEETLINK_BY_NAME, publicName)
@@ -587,7 +589,7 @@ export class HostedTools {
 
   // ---------------------------------------------------------------- seat binding
 
-  /** Spec 3.6:  users/me on first use and every 10 minutes;  member bots of this seat only. */
+  /** Spec 3.6:  users/me on first use and every 10 minutes;  verified bots of this seat at administrator, moderator or member role. */
   async ensureSeat() {
     if (!this.zulip) {
       throw new ToolError("not_authorized", `No Zulip key is installed for ${this.seat}.  The owner installs it (scripts/simple-tools-mcp/install_seat_key.py).`);
@@ -601,7 +603,7 @@ export class HostedTools {
     // Object.hasOwn, not a null comparison:  a pre-pin row carries no owner
     // field at all, and an absent pin must not grandfather it for a borrowed
     // seat (seatProblem itself fails closed when the pin is missing there).
-    if (cached && Object.hasOwn(cached, "owner") && cached.owner === ownerPin) {
+    if (cached && Object.hasOwn(cached, "owner") && cached.owner === ownerPin && cached.policy === HOSTED_ROLE_POLICY) {
       if (!cached.ok) throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${cached.reason}`);
       this.me = { user_id: cached.user_id, role: cached.role };
       return;
@@ -614,13 +616,13 @@ export class HostedTools {
       // record it so the admin card names the cause instead of "not checked yet" (AFC-347).
       if (err?.status === 401 || err?.status === 403) {
         const reason = `Zulip refused the installed key (HTTP ${err.status});  reinstall it with install_seat_key.py ${this.seat} --apply`;
-        await this.gate.roleSet({ ok: false, user_id: null, role: null, reason, owner: this.config?.ownerUserId ?? null });
+        await this.gate.roleSet({ ok: false, user_id: null, role: null, reason, owner: this.config?.ownerUserId ?? null, policy: HOSTED_ROLE_POLICY });
         throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${reason}`);
       }
       throw err;
     }
     const problem = seatProblem(me, { seat: this.seat, email: this.email, ownerUserId: ownerPin });
-    await this.gate.roleSet({ ok: !problem, user_id: isInt(me.user_id) ? me.user_id : null, role: isInt(me.role) ? me.role : null, reason: problem ?? "", owner: ownerPin });
+    await this.gate.roleSet({ ok: !problem, user_id: isInt(me.user_id) ? me.user_id : null, role: isInt(me.role) ? me.role : null, reason: problem ?? "", owner: ownerPin, policy: HOSTED_ROLE_POLICY });
     if (problem) throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${problem}`);
     this.me = { user_id: me.user_id, role: me.role };
   }
@@ -2098,8 +2100,8 @@ export function seatProblem(me, { seat, email, ownerUserId = null }) {
   if (String(me.email ?? "").toLowerCase() !== email) return "the key belongs to another bot";
   const expectedTag = SEAT_TAG_EXPECTATIONS[seat] ?? seat;
   if (seatTagFor(me) !== expectedTag) return "the key signs as another seat";
-  if (me.is_admin === true || me.is_owner === true || me.role !== MEMBER_ROLE) {
-    return `its live Zulip role is ${isInt(me.role) ? me.role : "unknown"}; hosted seats accept member (400) only`;
+  if (me.is_owner === true || !HOSTED_BOT_ROLES.includes(me.role)) {
+    return `its live Zulip role is ${isInt(me.role) ? me.role : "unknown"}; hosted seats accept administrator (200), moderator (300) and member (400) bots, never owners`;
   }
   // A borrowed-bot seat rides a peer's bot:  the grant requires the pinned
   // owner, and the peer is ineligible while the owner pin is unavailable
