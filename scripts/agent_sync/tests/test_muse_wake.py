@@ -429,6 +429,25 @@ class MuseEnvTest(unittest.TestCase):
         self.assertNotIn("AGENT_SEAT", env)
         self.assertNotIn("AGENT_LAUNCHER", env)
 
+    def test_the_meta_api_key_is_carried_through_when_the_daemon_carries_one(self) -> None:
+        # The daemon's own environment is the injection point (owner, 2026-11-03):  a headless
+        # run cannot read the login Keychain item, so the key the operator staged in the
+        # daemon's environment reaches the run, with and without a seat named.
+        for seat in (None, "MM"):
+            env = A.muse_env(
+                {"USER": "fixture-user", "META_API_KEY": "fixture-meta-key"},
+                "/home/fixture-user",
+                "/wake/path",
+                seat=seat,
+            )
+            self.assertEqual(env["META_API_KEY"], "fixture-meta-key")
+
+    def test_no_meta_api_key_is_invented_when_the_daemon_has_none(self) -> None:
+        # Absent and empty both invent nothing:  the run then uses the subscription login.
+        for source in ({"USER": "fixture-user"}, {"USER": "fixture-user", "META_API_KEY": ""}):
+            env = A.muse_env(source, "/home/fixture-user", "/wake/path", seat="MM")
+            self.assertNotIn("META_API_KEY", env)
+
 
 class MuseEnvelopeTest(unittest.TestCase):
     """The MSP records, not claude's stream-json."""

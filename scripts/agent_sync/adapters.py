@@ -748,6 +748,11 @@ def muse_env(
 
     Every ANTHROPIC_*, CLAUDE_*, AGENT_*, ZULIP_* and MUSE_* variable is dropped, so the run uses
     the muse subscription login the daemon's user already has and never a second seat's identity.
+    One credential is carried through on purpose:  META_API_KEY, when the environment the daemon
+    itself runs in carries one.  A headless run cannot read the login Keychain item (the consent
+    prompt is unreachable to it), so the daemon's environment is the injection point the owner
+    authorized (2026-11-03);  the key stays out of config files and off the command line, and an
+    absent or empty value invents nothing -- the run then uses the subscription login as before.
     With `seat` (a wake, or test-wake) the listener is the reference launcher (FLEET-PROTOCOL
     Identity Rules):  it names the seat it is waking and clears every inherited identity variable
     first.  The wake has no tools and posts nothing itself (the daemon posts its validated reply as
@@ -761,6 +766,9 @@ def muse_env(
         "TMPDIR": env.get("TMPDIR") or "/tmp",
         "PATH": wake_path,
     }
+    api_key = env.get("META_API_KEY")
+    if api_key:
+        out["META_API_KEY"] = api_key
     if seat:
         out.update(
             {
