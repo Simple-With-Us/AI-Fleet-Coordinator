@@ -194,7 +194,8 @@ def role_refusal(seat: str, role: Any) -> str:
         "the %s key has role %s; the listener refuses owner keys and any other role - it accepts "
         "administrator (200), moderator (300) and member (400) bots, because a bot that is also an "
         "administrator is still the fleet's bot; human keys stay moderator/member only, except for "
-        "the OPERATOR seat, which also accepts an administrator (200), never an owner" % (seat, role)
+        "the OPERATOR seat, which also accepts an administrator (200), never an owner"
+        % (seat, role)
     )
 
 

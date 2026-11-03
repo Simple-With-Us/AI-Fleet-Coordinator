@@ -156,7 +156,6 @@ class RegistryTest(unittest.TestCase):
             R.mark_exported(missing, ["o1"])
         self.assertFalse(os.path.exists(missing), "the bridge created a second store")
 
-
     def test_the_bridge_cli_reports_a_missing_store_as_an_error(self):
         missing = os.path.join(os.path.dirname(self.db), "no-such-registry.sqlite3")
         for verb in (["pending-outbox"], ["mark-exported", "o1"]):
@@ -166,6 +165,7 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(code, 2, verb)
             self.assertIn("missing", json.loads(out.getvalue())["error"])
         self.assertFalse(os.path.exists(missing))
+
     def test_mark_exported_then_crash_rerun(self):
         self.reg.resolve_or_register(ident())
         pending = R.pending_outbox(self.db)
@@ -1734,7 +1734,13 @@ class RegistryGuardTest(unittest.TestCase):
                 "--session-id=s-1",
             ],
             ["reopen", "--record-id=r1"],
-            ["held", "--platform=minimax", "--location=mac", "--scope=main", "--session-id=thread-0001"],
+            [
+                "held",
+                "--platform=minimax",
+                "--location=mac",
+                "--scope=main",
+                "--session-id=thread-0001",
+            ],
         ]
         for argv in allocating:
             with self.subTest(op=argv[0]):

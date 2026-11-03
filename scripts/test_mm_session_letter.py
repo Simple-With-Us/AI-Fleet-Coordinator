@@ -1018,7 +1018,11 @@ class MmSessionLetterTest(unittest.TestCase):
         # The thread carries the title in the store;  the registry copy is a second
         # copy, and the sweep carries it later.
         payload = json.dumps({"session_id": SESSION_ID, "stop_hook_active": True}).encode()
-        row = {"session_id": SESSION_ID, "title": "no letter prefix", "session_kind": "conversation"}
+        row = {
+            "session_id": SESSION_ID,
+            "title": "no letter prefix",
+            "session_kind": "conversation",
+        }
         stderr = io.StringIO()
         with (
             mock.patch.object(sys, "stdin", _StdinBytes(payload)),
@@ -1419,9 +1423,7 @@ class ScriptsDirTest(unittest.TestCase):
         # from the checkout the helper itself is in, never from a stale checkout the
         # environment happens to name.
         stale = self._checkout(self.tmp.name)
-        with mock.patch.dict(
-            os.environ, {"FLEET_CODE_ROOT": self.tmp.name, "FLEET_APPS_ROOT": ""}
-        ):
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": self.tmp.name, "FLEET_APPS_ROOT": ""}):
             self.assertEqual(M.repo_scripts_dir(), self.here)
         # The competing root is a real candidate:  without the running checkout in
         # front of it, it is what the search returns.
