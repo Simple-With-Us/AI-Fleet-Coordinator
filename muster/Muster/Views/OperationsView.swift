@@ -13,6 +13,7 @@ struct OperationsView: View {
     @State private var loading = false
     @State private var collectingAgents = false
     @State private var refreshAgentsAfterCollection = false
+    @State private var refreshMetadataAfterRead = false
     @ObservedObject private var controller = OpsController.shared
 
     var body: some View {
@@ -323,28 +324,31 @@ struct OperationsView: View {
 
     /// Read local operations data and, when requested, obtain a fresh agent snapshot.
     private func load(collectAgents: Bool = true) async {
+        refreshMetadataAfterRead = true
+        if collectAgents { refreshAgentsAfterCollection = true }
         guard !loading else { return }
-        loading = true
-        let servicesURL = MacServicesReportReader.reportURL()
-        let allowlistURL = OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
-        let auditURL = OpsAuditLog.logURL()
-        let (readServices, readAllowlist, readAudit) = await Task.detached(priority: .userInitiated) {
-            (
-                MacServicesReportReader.read(at: servicesURL),
-                OpsAllowlist.read(at: allowlistURL),
-                OpsAuditLog.read(at: auditURL)
-            )
-        }.value
-        if services == nil { services = readServices }
-        allowlist = readAllowlist
-        allowlistPath = allowlistURL.path
-        audit = readAudit
-        loading = false
-        guard collectAgents else { return }
-        if collectingAgents {
-            refreshAgentsAfterCollection = true
-            return
+        do {
+            loading = true
+            defer { loading = false }
+            repeat {
+                refreshMetadataAfterRead = false
+                let servicesURL = MacServicesReportReader.reportURL()
+                let allowlistURL = OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
+                let auditURL = OpsAuditLog.logURL()
+                let (readServices, readAllowlist, readAudit) = await Task.detached(priority: .userInitiated) {
+                    (
+                        MacServicesReportReader.read(at: servicesURL),
+                        OpsAllowlist.read(at: allowlistURL),
+                        OpsAuditLog.read(at: auditURL)
+                    )
+                }.value
+                if services == nil { services = readServices }
+                allowlist = readAllowlist
+                allowlistPath = allowlistURL.path
+                audit = readAudit
+            } while refreshMetadataAfterRead
         }
+        guard refreshAgentsAfterCollection, !collectingAgents else { return }
         collectingAgents = true
         defer { collectingAgents = false }
         repeat {
