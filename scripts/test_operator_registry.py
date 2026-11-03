@@ -1430,6 +1430,109 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
         self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-7"), [])
 
 
+class ReopenHeldCliTest(unittest.TestCase):
+    """The reopen and held verbs:  the allocator write and the canonical read.
+
+    The MM seat's session-letter hook reopens a closed session and reads the letters
+    a session holds through these verbs when the fleet transport sends it to the
+    canonical store.  Neither verb ever brings a store into being.
+    """
+
+    IDENTITY = ["--platform", "minimax", "--location", "mac", "--scope", "main"]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        R.SessionRegistry(self.db).close_db()
+
+    def _run(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(argv)
+        return code, json.loads(out.getvalue())
+
+    def _register(self, session_id, extra=()):
+        code, answer = self._run(
+            ["register", "--db", self.db]
+            + self.IDENTITY
+            + ["--session-id", session_id, "--seat", "MM1", "--source", "test"]
+            + list(extra)
+        )
+        self.assertEqual(code, 0, answer)
+        return answer
+
+    def _close(self, session_id):
+        code, answer = self._run(["close", "--db", self.db] + self.IDENTITY + ["--session-id", session_id])
+        self.assertEqual(code, 0, answer)
+
+    def _held(self, session_id):
+        return self._run(["held", "--db", self.db] + self.IDENTITY + ["--session-id", session_id])
+
+    def test_held_lists_the_session_letters(self):
+        reg = self._register("thread-0001")
+        self._close("thread-0001")
+        code, answer = self._held("thread-0001")
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["letters"], [reg["label"]])
+
+    def test_held_of_an_unknown_session_is_empty(self):
+        code, answer = self._held("thread-9999")
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["letters"], [])
+
+    def test_reopen_returns_the_closed_letter_and_the_repeat_loses_nothing(self):
+        reg = self._register("thread-0001")
+        self._close("thread-0001")
+        code, first = self._run(["reopen", "--db", self.db, "--record-id", reg["record_id"]])
+        self.assertEqual(code, 0)
+        self.assertEqual(first["label"], reg["label"])
+        self.assertEqual(first["previous"], reg["label"])
+        self.assertEqual(first["outcome"], "reopened")
+        # The transport's retry after a lost response:  the session is already open,
+        # the answer is the same letter, and nothing new is written.
+        code, second = self._run(["reopen", "--db", self.db, "--record-id", reg["record_id"]])
+        self.assertEqual(code, 0)
+        self.assertEqual(second["label"], first["label"])
+        self.assertEqual(second["generation"], first["generation"])
+
+    def test_reopen_with_an_occupied_old_letter_allocates_and_reports_previous(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB")}):
+            reg = self._register("thread-0001", ["--letter-space", "double"])
+            self._close("thread-0001")
+            taken = self._register("thread-0002", ["--letter-space", "double"])
+            self.assertEqual(taken["label"], reg["label"], "the freed letter went to the next chat")
+            code, answer = self._run(["reopen", "--db", self.db, "--record-id", reg["record_id"]])
+            self.assertEqual(code, 0)
+            self.assertEqual(answer["previous"], reg["label"])
+            self.assertNotEqual(answer["label"], taken["label"])
+
+    def test_reopen_with_every_letter_live_answers_labels_exhausted(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA",)}):
+            reg = self._register("thread-0001", ["--letter-space", "double"])
+            self._close("thread-0001")
+            self._register("thread-0002", ["--letter-space", "double"])
+            code, answer = self._run(["reopen", "--db", self.db, "--record-id", reg["record_id"]])
+            self.assertEqual(code, 2)
+            self.assertEqual(answer["code"], "label_exhausted")
+
+    def test_reopen_of_an_unknown_record_is_an_error(self):
+        code, answer = self._run(["reopen", "--db", self.db, "--record-id", "no-such-record"])
+        self.assertEqual(code, 2)
+        self.assertIn("error", answer)
+
+    def test_neither_verb_creates_a_missing_store(self):
+        missing = os.path.join(self.tmp.name, "no-such-registry.sqlite3")
+        for verb in (
+            ["reopen", "--record-id", "x"],
+            ["held"] + self.IDENTITY + ["--session-id", "thread-0001"],
+        ):
+            code, answer = self._run(verb + ["--db", missing])
+            self.assertEqual(code, 3, verb)
+            self.assertIn("no Operator registry", answer["error"])
+        self.assertFalse(os.path.exists(missing), "a verb created a second store")
+
+
 if __name__ == "__main__":
     unittest.main()
 
