@@ -637,7 +637,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
         coord = _coord()
         self.assertIn("MiniMax (MM): `MM` (display `MiniMax`, prefix `minimax/`", coord)
-        self.assertIn("Retired: MONET, RENOIR, HARNESS, DSH, KIMI have no bot", coord)
+        self.assertIn("Retired: MONET, RENOIR, HARNESS, DSH have no bot", coord)
         self.assertNotIn("MiniMax: `[MINIMAX]`", coord)
         self.assertNotIn("DeepSeek: `[DEEPSEEK]`", coord)
 
