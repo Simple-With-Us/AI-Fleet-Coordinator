@@ -55,7 +55,7 @@ enum OpsControlRoute {
 
     /// A plan only reads,  so it is short.
     static let planTimeout: TimeInterval = 90
-    /// An update can take minutes:  `systemctl start` waits for a oneshot unit to finish.
+    /// Allow time for an update helper's bounded completion check after submission.
     static let runTimeout: TimeInterval = 900
     /// How long a timed-out helper has to exit after SIGTERM before it gets SIGKILL.
     static let killGrace: TimeInterval = 5
@@ -325,6 +325,10 @@ struct OpsCommandBuilder {
         }
     }
 
+    static func isInvocationID(_ value: String) -> Bool {
+        value.count == 32 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
     /// A pm2 application name in the helper's own shape:  the registry's lowercase
     /// names, never a flag or a path.
     static func isPM2Name(_ value: String) -> Bool {
@@ -467,6 +471,27 @@ struct OpsCommandBuilder {
         return environment
     }
 
+    /// The sole receipt recheck route is observation of a captured fleet-cli invocation.
+    func updateStatusInvocation(name: String, invocationID: String, baselineStartMonotonic: UInt64) throws -> OpsInvocation {
+        guard name == "fleet-cli", Self.isInvocationID(invocationID) else {
+            throw OpsControlError.invalidArgument("update invocation receipt")
+        }
+        return serverInvocation(
+            tail: ["server", "update-status", "\(name).\(invocationID).\(baselineStartMonotonic)", "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
+    private func serverInvocation(tail: [String], timeout: TimeInterval) -> OpsInvocation {
+        OpsInvocation(
+            executable: OpsControlRoute.ssh,
+            arguments: OpsControlRoute.sshOptions + [OpsControlRoute.serverAlias, "--"] + tail,
+            workingDirectory: "/",
+            environment: sshEnvironment,
+            timeout: timeout
+        )
+    }
+
     /// The one invocation for an action and a mode.
     func invocation(for action: OpsAction, mode: OpsMode) throws -> OpsInvocation {
         try Self.validate(action)
@@ -504,13 +529,7 @@ struct OpsCommandBuilder {
             // `--` ends ssh's own options,  so nothing after the alias is read as one.  The
             // server's forced command reads the rest from SSH_ORIGINAL_COMMAND and checks it
             // against its own allowlist again.
-            return OpsInvocation(
-                executable: OpsControlRoute.ssh,
-                arguments: OpsControlRoute.sshOptions + [OpsControlRoute.serverAlias, "--"] + tail,
-                workingDirectory: "/",
-                environment: sshEnvironment,
-                timeout: timeout
-            )
+            return serverInvocation(tail: tail, timeout: timeout)
         }
     }
 }
@@ -671,9 +690,14 @@ struct OpsResult: Decodable, Equatable {
     let lines: Int?
     /// The server's direct coding resource-policy receipt,  when the status verb returned one.
     let resourcePolicy: ResourcePolicySnapshot?
+    let executionState: String?
+    let verified: Bool
+    let invocationID: String?
+    let baselineStartMonotonic: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
+        case executionState, verified, invocationID, baselineStartMonotonic
         case oldSource = "old_source"
     }
 
@@ -694,6 +718,10 @@ struct OpsResult: Decodable, Equatable {
         output = try? container.decodeIfPresent(String.self, forKey: .output)
         lines = try? container.decodeIfPresent(Int.self, forKey: .lines)
         resourcePolicy = try? container.decodeIfPresent(ResourcePolicySnapshot.self, forKey: .resourcePolicy)
+        executionState = try? container.decodeIfPresent(String.self, forKey: .executionState)
+        verified = (try? container.decodeIfPresent(Bool.self, forKey: .verified)) == true
+        invocationID = try? container.decodeIfPresent(String.self, forKey: .invocationID)
+        baselineStartMonotonic = try? container.decodeIfPresent(UInt64.self, forKey: .baselineStartMonotonic)
     }
 }
 
@@ -745,6 +773,7 @@ struct OpsKnobChange: Equatable {
 /// The helper's result word.
 enum OpsResultKind: String {
     case planned
+    case submitted
     case done
     case refused
     case failed
@@ -769,6 +798,10 @@ struct OpsOutcome: Equatable {
     var logLines: Int? = nil
     /// The direct resource-policy receipt,  when a status read supplied one.
     var resourcePolicy: ResourcePolicySnapshot? = nil
+    /// Only a fixed-shape systemd receipt is displayed, never arbitrary helper output.
+    var invocationID: String? = nil
+    var executionState: String? = nil
+    var baselineStartMonotonic: UInt64? = nil
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -835,10 +868,34 @@ enum OpsResultParser {
         var detail = ApplyCopy.normalize(answer.detail ?? "")
         // A plan changes nothing.  A plan that answers "done" is a helper that did something
         // it was not asked to,  and the app says so rather than calling it a plan.
-        if mode == .plan && kind == .done {
+        if mode == .plan && (kind == .done || kind == .submitted) {
+            let reported = kind.rawValue
             kind = .failed
-            let warning = "The helper answered \"done\" to a plan."
+            let warning = "The helper answered \"\(reported)\" to a plan."
             detail = detail.isEmpty ? warning : ApplyCopy.join(warning, detail)
+        }
+        let invocationID = answer.invocationID.flatMap { value -> String? in
+            OpsCommandBuilder.isInvocationID(value) ? value : nil
+        }
+        if mode == .yes && kind == .done {
+            let completed: Bool
+            switch action {
+            case .serverUpdate:
+                completed = answer.verified && answer.executionState == "completed" && invocationID != nil
+            case .coolifyRedeploy:
+                completed = answer.verified && answer.executionState == "completed"
+            default:
+                completed = answer.executionState == nil || answer.executionState == "completed"
+            }
+            if !answer.ok || result.exitCode != 0 {
+                kind = .failed
+            } else if !completed {
+                kind = .submitted
+                detail = "The request was submitted; completion has not been verified."
+            }
+        }
+        if kind == .submitted && (!answer.ok || result.exitCode != 0) {
+            kind = .failed
         }
         if detail.isEmpty {
             detail = defaultDetail(kind: kind, exitCode: result.exitCode)
@@ -874,7 +931,10 @@ enum OpsResultParser {
             knobChange: knobChange,
             logText: logText,
             logLines: logLines,
-            resourcePolicy: answer.resourcePolicy
+            resourcePolicy: answer.resourcePolicy,
+            invocationID: invocationID,
+            executionState: answer.executionState,
+            baselineStartMonotonic: answer.baselineStartMonotonic
         )
     }
 
@@ -919,6 +979,7 @@ enum OpsResultParser {
     private static func defaultDetail(kind: OpsResultKind, exitCode: Int32) -> String {
         switch kind {
         case .planned: return "Nothing has run yet."
+        case .submitted: return "The request was submitted; completion has not been verified."
         case .done: return "Done."
         case .refused: return "The helper refused the action."
         case .failed: return "The helper said the action failed (exit \(exitCode))."
@@ -953,6 +1014,43 @@ enum OpsResultParser {
             return "The helper printed no answer (exit \(result.exitCode))."
         }
         return ApplyCopy.join("The helper printed no answer (exit \(result.exitCode)).", tail)
+    }
+}
+
+/// Observes one captured update invocation without starting another update.
+struct OpsUpdateReceiptReader {
+    var runner: OpsRunning = OpsProcessRunner()
+    var makeBuilder: () -> OpsCommandBuilder = {
+        OpsCommandBuilder(repoRoot: FleetConfigLocation.resolve().repoRoot)
+    }
+
+    func read(name: String, invocationID: String, baselineStartMonotonic: UInt64) async -> OpsOutcome {
+        func unverified(_ detail: String, expired: Bool = false) -> OpsOutcome {
+            OpsOutcome(kind: .submitted, ok: false, commands: [], detail: detail, exitCode: 0,
+                       invocationID: OpsCommandBuilder.isInvocationID(invocationID) ? invocationID : nil,
+                       executionState: expired ? "expired" : "submitted",
+                       baselineStartMonotonic: baselineStartMonotonic)
+        }
+        do {
+            let invocation = try makeBuilder().updateStatusInvocation(name: name, invocationID: invocationID, baselineStartMonotonic: baselineStartMonotonic)
+            let process = try await runner.run(invocation)
+            guard !process.timedOut, let answer = OpsResultParser.decode(process.stdout),
+                  answer.invocationID == invocationID,
+                  answer.baselineStartMonotonic == baselineStartMonotonic else {
+                return unverified("The recorded service invocation could not be read; completion remains unverified.")
+            }
+            if answer.executionState == "expired" {
+                return unverified("The recorded service invocation is no longer current; its completion cannot be verified by rechecking.", expired: true)
+            }
+            // The transport uses --plan and cannot mutate; these result words describe
+            // the recorded invocation, not an update executed by this read.
+            let outcome = OpsResultParser.parse(process, mode: .yes, action: .serverUpdate(name: name), timeout: invocation.timeout)
+            if outcome.isSuccess(for: .yes) { return outcome }
+            if outcome.kind == .failed, answer.verified, answer.executionState == "failed" { return outcome }
+            return unverified("The recorded update has no verified terminal result yet.\(ServerStatusCopy.sentenceGap)Recheck observes the same invocation and never starts another update.")
+        } catch {
+            return unverified("The receipt could not be checked; completion remains unverified.\(ServerStatusCopy.sentenceGap)\(error.localizedDescription)")
+        }
     }
 }
 
@@ -1115,6 +1213,7 @@ final class OpsController: ObservableObject {
     @Published private(set) var notice: String?
     /// Counts every `--yes` run that ended,  so a view can read its data again.
     @Published private(set) var completedRuns = 0
+    @Published private(set) var isRechecking = false
 
     private let runner: OpsRunning
     private let makeBuilder: () -> OpsCommandBuilder
@@ -1138,6 +1237,7 @@ final class OpsController: ObservableObject {
 
     /// True while a helper is running.
     var isBusy: Bool {
+        if isRechecking { return true }
         switch phase {
         case .planning, .running: return true
         default: return false
@@ -1146,6 +1246,31 @@ final class OpsController: ObservableObject {
 
     /// True while there is anything to show in the sheet.
     var isPresenting: Bool { phase != .idle }
+
+    var canRecheckUpdate: Bool {
+        guard case .finished(.serverUpdate(let name), let outcome) = phase else { return false }
+        return name == "fleet-cli" && outcome.kind == .submitted && outcome.invocationID != nil
+            && outcome.baselineStartMonotonic != nil && outcome.executionState != "expired"
+    }
+
+    /// A receipt read has no approval or write path and may be closed while pending.
+    func recheckSubmittedUpdate() {
+        guard canRecheckUpdate, task == nil,
+              case .finished(let action, let previous) = phase,
+              case .serverUpdate(let name) = action, let invocationID = previous.invocationID,
+              let baseline = previous.baselineStartMonotonic else { return }
+        isRechecking = true
+        notice = nil
+        let reader = OpsUpdateReceiptReader(runner: runner, makeBuilder: makeBuilder)
+        task = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            let outcome = await reader.read(name: name, invocationID: invocationID, baselineStartMonotonic: baseline)
+            guard !Task.isCancelled, let self else { return }
+            self.phase = .finished(action, outcome)
+            self.isRechecking = false
+            self.task = nil
+        }
+    }
 
     /// Plan an action and show the plan.
     ///
@@ -1188,6 +1313,14 @@ final class OpsController: ObservableObject {
     /// Close the sheet.  A run in flight is never cut short,  so this does nothing while a
     /// helper is running.
     func dismiss() {
+        if isRechecking {
+            task?.cancel()
+            task = nil
+            isRechecking = false
+            phase = .idle
+            notice = nil
+            return
+        }
         guard !isBusy else { return }
         phase = .idle
         notice = nil
