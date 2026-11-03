@@ -59,6 +59,17 @@ CONFIG = {
 }
 
 
+def update_state(**changes):
+    state = {
+        "LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead", "Job": "",
+        "Type": "oneshot", "InvocationID": "a" * 32, "Result": "success",
+        "ExecMainCode": "1", "ExecMainStatus": "0",
+        "ExecMainStartTimestampMonotonic": "100", "ExecMainExitTimestampMonotonic": "110",
+    }
+    state.update(changes)
+    return "".join(f"{key}={value}\n" for key, value in state.items()).encode()
+
+
 class FakeRunner:
     """Records every argv;  answers `launchctl print` with `loaded` and the rest with `status`."""
 
@@ -73,10 +84,15 @@ class FakeRunner:
         self.jlist = jlist
         self.max_bytes_seen = []
 
-    def __call__(self, argv, timeout=None, env=None, want_stdout=False, max_bytes=None):
+    def __call__(
+        self, argv, timeout=None, env=None, want_stdout=False, max_bytes=None,
+        combine_stderr=False,
+    ):
         assert isinstance(argv, list) and all(isinstance(a, str) for a in argv)
         self.calls.append((list(argv), dict(env or {})))
         self.max_bytes_seen.append(max_bytes)
+        if "show" in argv and "fleet-cli-git-update.service" in argv:
+            return 0, update_state()
         if argv[1:2] == ["print"]:
             return (0 if self.loaded else 113), b""
         if argv[1:2] == ["get"]:
@@ -120,6 +136,7 @@ class Base(unittest.TestCase):
             fleet_secrets="/fake/bin/fleet-secrets",
             pm2_node="/fake/bin/node",
             pm2_script="/fake/lib/pm2",
+            sleep=lambda _: None,
         )
 
     def run_main(self, argv, ctx):
@@ -293,8 +310,10 @@ class ServerVerbTests(Base):
     def test_update_starts_the_update_unit(self):
         code, ans = self.run_main(["server", "update", "fleet-cli", "--yes", "--json"], self.ctx())
         self.assertEqual(code, 0)
-        ((argv, _env),) = self.runner.calls
-        self.assertEqual(argv[1:], ["start", "--no-block", "fleet-cli-git-update.service"])
+        argv = next(argv for argv, _ in self.runner.calls if "--no-block" in argv and "-l" not in argv)
+        self.assertEqual(argv[-3:], ["start", "--no-block", "fleet-cli-git-update.service"])
+        self.assertEqual(ans["result"], "submitted")
+        self.assertFalse(ans["verified"])
         code, _ = self.run_main(["server", "update", "everything", "--yes", "--json"], self.ctx())
         self.assertEqual(code, 2)
 
@@ -310,6 +329,159 @@ class ServerVerbTests(Base):
         )
         self.assertEqual(code, 0)
         self.assertTrue(text.startswith("planned: server start"))
+
+
+class UpdateReceiptTests(Base):
+    def update(self, states=None, submit=(0, b""), permission=0, uid=1001):
+        sequence = list(states or [update_state()])
+        self.update_calls = []
+
+        def runner(argv, **kwargs):
+            self.update_calls.append((argv, kwargs))
+            if "show" in argv:
+                return 0, sequence.pop(0) if len(sequence) > 1 else sequence[0]
+            if argv[:4] == [foc.SUDO, "-n", "-l", "--"]:
+                return permission, b""
+            return submit
+
+        ctx = self.ctx(runner=runner)
+        ctx.uid = uid
+        return self.run_main(["server", "update", "fleet-cli", "--yes", "--json"], ctx)
+
+    def test_old_success_is_never_completion(self):
+        code, answer = self.update()
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
+        self.assertNotIn("invocationID", answer)
+
+    def test_new_success_is_verified(self):
+        old = update_state()
+        new = update_state(
+            InvocationID="b" * 32, ExecMainStartTimestampMonotonic="200",
+            ExecMainExitTimestampMonotonic="210",
+        )
+        code, answer = self.update([old, old, new])
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "done", True))
+        self.assertEqual(answer["invocationID"], "b" * 32)
+        self.assertEqual(answer["executionState"], "completed")
+
+    def test_new_invocation_with_old_process_times_is_not_completion(self):
+        code, answer = self.update([update_state(), update_state(), update_state(InvocationID="b" * 32)])
+        self.assertEqual((code, answer["result"]), (0, "submitted"))
+
+    def test_busy_update_is_refused_without_submission(self):
+        for changes in ({"ActiveState": "activating"}, {"Job": "7"}):
+            code, answer = self.update([update_state(**changes)])
+            self.assertEqual((code, answer["errorCode"]), (2, "update_busy"))
+            self.assertTrue(all("show" in argv for argv, _ in self.update_calls))
+
+    def test_busy_recheck_refuses_race_after_plan(self):
+        code, answer = self.update([update_state(), update_state(ActiveState="activating")])
+        self.assertEqual((code, answer["errorCode"]), (2, "update_busy"))
+        self.assertFalse(any("--no-block" in argv and "-l" not in argv for argv, _ in self.update_calls))
+
+    def test_missing_unit_is_refused_without_sudo(self):
+        code, answer = self.update([b"LoadState=not-found\n"])
+        self.assertEqual((code, answer["errorCode"]), (2, "unit_unavailable"))
+        self.assertEqual(len(self.update_calls), 1)
+
+    def test_missing_authorization_is_refused_without_submission(self):
+        code, answer = self.update(permission=1)
+        self.assertEqual((code, answer["errorCode"]), (2, "authorization_unavailable"))
+        self.assertEqual(len(self.update_calls), 2)
+
+    def test_execution_rechecks_permission_and_refuses_revocation(self):
+        count = 0
+
+        def runner(argv, **kwargs):
+            nonlocal count
+            if "show" in argv:
+                return 0, update_state()
+            if "-l" in argv:
+                count += 1
+                return (0 if count == 1 else 1), b""
+            self.fail("no mutation is allowed after permission revocation")
+
+        code, answer = self.run_main(
+            ["server", "update", "fleet-cli", "--yes", "--json"], self.ctx(runner=runner),
+        )
+        self.assertEqual((code, answer["errorCode"], count), (2, "authorization_unavailable", 2))
+
+    def test_sudo_wraps_only_exact_systemctl_argv(self):
+        self.update()
+        commands = [argv for argv, _ in self.update_calls if "--no-block" in argv]
+        self.assertEqual(commands, [
+            [foc.SUDO, "-n", "-l", "--", foc._systemctl(), "start", "--no-block", "fleet-cli-git-update.service"],
+            [foc.SUDO, "-n", "-l", "--", foc._systemctl(), "start", "--no-block", "fleet-cli-git-update.service"],
+            [foc.SUDO, "-n", foc._systemctl(), "start", "--no-block", "fleet-cli-git-update.service"],
+        ])
+
+    def test_config_cannot_select_another_privileged_update(self):
+        for name, unit in (("other", "fleet-cli-git-update.service"), ("fleet-cli", "sshd.service")):
+            ctx = self.ctx()
+            with self.assertRaises(foc.Refused) as raised:
+                foc.update_command(ctx, name, {"scope": "system", "unit": unit})
+            self.assertEqual(raised.exception.error_code, "update_route_unavailable")
+            self.assertEqual(self.runner.calls, [])
+
+    def test_other_system_controls_never_gain_sudo_fallback(self):
+        ctx = self.ctx()
+        config = foc.validate_config(CONFIG)
+        commands, _ = foc.server_unit_commands(ctx, config, "restart", "fleet-cli-git-update.timer")
+        self.assertEqual(commands, [[foc._systemctl(), "restart", "fleet-cli-git-update.timer"]])
+        self.assertEqual(self.runner.calls, [])
+
+    def test_privileged_executable_is_not_selected_from_candidates(self):
+        with mock.patch.object(foc, "_systemctl", return_value="/untrusted/systemctl"):
+            command = foc.update_command(self.ctx(), "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT})
+        self.assertEqual(command, [foc.SUDO, "-n", "/usr/bin/systemctl", "start", "--no-block", foc.FLEET_CLI_UPDATE_UNIT])
+
+    def test_invalid_probe_cannot_verify_completion(self):
+        code, answer = self.update([update_state(), update_state(), b"LoadState=loaded\n"])
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
+
+    def test_plan_checks_permission_without_mutation(self):
+        code, answer = self.run_main(
+            ["server", "update", "fleet-cli", "--plan", "--json"], self.ctx(),
+        )
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+        self.assertEqual(answer["commands"][0][:3], [foc.SUDO, "-n", "/usr/bin/systemctl"])
+        self.assertFalse(any("--no-block" in argv and "-l" not in argv for argv, _ in self.runner.calls))
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_root_uses_direct_systemctl(self):
+        self.update(uid=0)
+        self.assertFalse(any(argv[0] == foc.SUDO for argv, _ in self.update_calls))
+
+    def test_private_stderr_is_classified_and_never_returned(self):
+        marker = b"Access denied SECRET_HOST_AND_TOKEN"
+        code, answer = self.update(submit=(1, marker))
+        self.assertEqual((code, answer["errorCode"]), (1, "authorization_unavailable"))
+        self.assertNotIn("SECRET", json.dumps(answer))
+        self.assertNotIn("SECRET", (self.state / "ops-audit.jsonl").read_text())
+
+    def test_submission_timeout_and_missing_executable_have_fixed_codes(self):
+        for status, expected in ((124, "update_submit_timeout"), (127, "update_executable_unavailable")):
+            code, answer = self.update(submit=(status, b"private detail"))
+            self.assertEqual((code, answer["errorCode"]), (1, expected))
+
+    def test_new_failed_invocation_is_reported(self):
+        old = update_state()
+        failed = update_state(InvocationID="b" * 32, ActiveState="failed", Result="exit-code", ExecMainStatus="1")
+        code, answer = self.update([old, old, failed])
+        self.assertEqual((code, answer["result"], answer["verified"]), (1, "failed", True))
+        self.assertEqual(answer["errorCode"], "update_invocation_failed")
+
+    def test_running_invocation_remains_submitted(self):
+        old = update_state()
+        code, answer = self.update([old, old, update_state(InvocationID="b" * 32, ActiveState="activating")])
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
+
+    def test_replaced_invocation_is_not_credited(self):
+        old = update_state()
+        running = update_state(InvocationID="b" * 32, ActiveState="activating")
+        replaced = update_state(InvocationID="c" * 32, ExecMainStartTimestampMonotonic="200", ExecMainExitTimestampMonotonic="210")
+        code, answer = self.update([old, old, running, replaced])
+        self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
 
 
 class MacVerbTests(Base):
@@ -416,7 +588,8 @@ class RedeployTests(Base):
     def test_yes_sends_the_token_only_in_a_header_and_audits_the_name(self):
         self.write_status(self.ROWS)
         code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx())
-        self.assertEqual((code, ans["result"]), (0, "done"), ans)
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        self.assertFalse(ans["verified"])
         ((url, headers),) = self.http_calls
         self.assertEqual(url, f"http://127.0.0.1:8000/api/v1/deploy?uuid={UUID}")
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
@@ -560,7 +733,7 @@ class CredentialTests(Base):
     def test_file_is_the_one_identity_and_reaches_only_fleet_secrets(self):
         self.credentials(self.pair_text())
         code, ans = self.redeploy()
-        self.assertEqual((code, ans["result"]), (0, "done"), ans)
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
         env = self.secrets_env()
         for key, value in self.PAIR.items():
             self.assertEqual(env[key], value)
@@ -665,7 +838,7 @@ class SshGateTests(Base):
         code, ans = self.ssh("server restart fleet-server-status.timer --plan --json")
         self.assertEqual((code, ans["result"]), (0, "planned"))
         code, ans = self.ssh("server update fleet-cli --yes")
-        self.assertEqual((code, ans["result"]), (0, "done"))
+        self.assertEqual((code, ans["result"]), (0, "submitted"))
 
     def test_rejects_everything_else(self):
         for command in (
@@ -967,6 +1140,17 @@ class LogsAndPm2Tests(Base):
             timeout=30,
             want_stdout=True,
             max_bytes=1000,
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(len(out), 1000)
+        self.assertTrue(out.endswith(b"TAILMARK"))
+
+    def test_private_stderr_capture_is_bounded(self):
+        import sys
+
+        status, out = foc.run_command(
+            [sys.executable, "-c", "import sys; sys.stderr.write('x' * 300000 + 'TAILMARK')"],
+            timeout=30, want_stdout=True, max_bytes=1000, combine_stderr=True,
         )
         self.assertEqual(status, 0)
         self.assertEqual(len(out), 1000)

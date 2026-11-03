@@ -19,8 +19,9 @@ What it promises:
   * `--plan` prints the commands it would run and changes nothing.  `--yes` runs them.  With
     neither it refuses.
   * Every command is an argv list run without a shell.  Labels and unit names must match a
-    strict pattern before they reach an argv, and their output is thrown away: only an exit
-    status is reported.  `server logs` is the one deliberate exception: a `--yes` run returns
+    strict pattern before they reach an argv, and their output is kept private.  Update
+    stderr is bounded and classified into fixed error codes, never returned verbatim.
+    `server logs` is the deliberate exception: a `--yes` run returns
     the last 200 journal lines (at most 64 KiB, with a truncation note when cut) in the
     answer's `output`, while a `--plan` carries no log text at all.  Mac LaunchAgents have
     no log verb, because launchd has no uniform log file to tail.  `pm2` verbs act on the
@@ -44,7 +45,10 @@ What it promises:
     (0600): time, host role, verb, target and result.  No command output is recorded, and a
     redeploy is recorded by its resource name, never its uuid.
 
-Exit status: 0 planned or done, 1 a command failed, 2 refused.
+An update is submitted until a new successful service invocation is observed; API acceptance
+of a redeploy is also submitted.  Neither is called completed from submission alone.
+
+Exit status: 0 planned, submitted or done, 1 a command failed, 2 refused.
 """
 
 from __future__ import annotations
@@ -125,6 +129,17 @@ CREDENTIALS_MAX_BYTES = 8 * 1024
 COMMAND_TIMEOUT = 90
 SECRET_TIMEOUT = 30
 HTTP_TIMEOUT = 30
+SUDO = "/usr/bin/sudo"
+UPDATE_SYSTEMCTL = "/usr/bin/systemctl"
+FLEET_CLI_UPDATE_UNIT = "fleet-cli-git-update.service"
+UPDATE_PROBE_TIMEOUT = 3
+UPDATE_POLL_ATTEMPTS = 8
+UPDATE_POLL_INTERVAL = 0.5
+UPDATE_PROPERTIES = (
+    "LoadState", "ActiveState", "SubState", "Job", "Type", "InvocationID", "Result",
+    "ExecMainCode", "ExecMainStatus", "ExecMainStartTimestampMonotonic",
+    "ExecMainExitTimestampMonotonic",
+)
 # The only variables a launchctl or systemctl child sees.  A pm2 child also needs
 # PM2_HOME, which names a directory and never a credential.
 CHILD_ENV_KEEP = (
@@ -141,9 +156,17 @@ CHILD_ENV_KEEP = (
 class Refused(Exception):
     """The request is not allowed.  The text is a fixed phrase that names no secret."""
 
+    def __init__(self, message, *, error_code=None):
+        super().__init__(message)
+        self.error_code = error_code
+
 
 class Failed(Exception):
     """An allowed command ran and did not succeed."""
+
+    def __init__(self, message, *, error_code=None):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 # MARK: - The allowlist
@@ -240,21 +263,25 @@ def _actions(row, bad):
 # MARK: - Running things
 
 
-def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False, max_bytes=None):
-    """(exit status, stdout bytes).  An argv list, never a shell; stderr is dropped.
+def run_command(
+    argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False, max_bytes=None,
+    combine_stderr=False,
+):
+    """(exit status, captured bytes).  An argv list, never a shell.
 
     With `max_bytes` the capture itself is capped, keeping only the last bytes.  A timeout
-    is status 124 and a missing binary 127, like a shell would say."""
+    is status 124 and a missing binary 127, like a shell would say.  Stderr is discarded
+    unless explicitly merged for bounded private classification by the update path."""
     if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
         raise Refused("internal: not an argv list")
     if want_stdout and max_bytes:
-        return _run_capped(argv, timeout, env, max_bytes)
+        return _run_capped(argv, timeout, env, max_bytes, combine_stderr=combine_stderr)
     try:
         proc = subprocess.run(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE if want_stdout else subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if combine_stderr and want_stdout else subprocess.DEVNULL,
             timeout=timeout,
             env=env,
             cwd="/",
@@ -268,14 +295,14 @@ def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False, max_
     return proc.returncode, (proc.stdout or b"") if want_stdout else b""
 
 
-def _run_capped(argv, timeout, env, max_bytes):
+def _run_capped(argv, timeout, env, max_bytes, combine_stderr=False):
     """Capture stdout without ever holding more than its last `max_bytes` bytes."""
     try:
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if combine_stderr else subprocess.DEVNULL,
             env=env,
             cwd="/",
             shell=False,
@@ -379,6 +406,7 @@ class Context:
         credentials_path=None,
         pm2_node=None,
         pm2_script=None,
+        sleep=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -400,6 +428,7 @@ class Context:
         )
         self.pm2_node = pm2_node
         self.pm2_script = pm2_script
+        self.sleep = sleep or time.sleep
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -592,11 +621,158 @@ def server_update_commands(ctx, config, name):
     entry = config["updates"].get(name)
     if entry is None:
         raise Refused("the update is not in the allowlist")
-    # --no-block: an update can run for minutes, and the Mac is waiting over ssh.  The unit's
-    # own result shows in the services list on the next status report.
-    return [
-        _systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])
-    ], "runs in the background"
+    before = update_unit_state(ctx, entry)
+    require_update_idle(before)
+    return [update_command(ctx, name, entry)], (
+        "submits the update and checks a new service invocation for bounded completion"
+    )
+
+
+def update_command(ctx, name, entry):
+    # General OS sudo access is not general app authority.  Only this immutable mapping
+    # may use the existing grant; config cannot choose another privileged executable/unit.
+    if entry["scope"] == "system":
+        if name != "fleet-cli" or entry["unit"] != FLEET_CLI_UPDATE_UNIT:
+            raise Refused(
+                "this system update has no approved application route",
+                error_code="update_route_unavailable",
+            )
+        argv = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
+    else:
+        argv = _systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])
+    if entry["scope"] == "system" and ctx.uid != 0:
+        # Query this exact argv; never grant permission or elevate the broker itself.
+        status, _ = ctx.runner(
+            [SUDO, "-n", "-l", "--"] + argv,
+            timeout=UPDATE_PROBE_TIMEOUT, env=ctx.child_env(),
+        )
+        if status != 0:
+            raise Refused(
+                "the update needs existing noninteractive permission for this exact system unit",
+                error_code="authorization_unavailable",
+            )
+        argv = [SUDO, "-n"] + argv
+    return argv
+
+
+def update_unit_state(ctx, entry):
+    status, raw = ctx.runner(
+        _systemctl_argv(
+            entry["scope"], "show", entry["unit"],
+            "--property=" + ",".join(UPDATE_PROPERTIES),
+        ),
+        timeout=UPDATE_PROBE_TIMEOUT, env=ctx.child_env(),
+        want_stdout=True, max_bytes=16 * 1024,
+    )
+    if status != 0:
+        raise Refused("the update unit status is unavailable", error_code="unit_status_unavailable")
+    state = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        key, sep, value = line.partition("=")
+        if not sep or key not in UPDATE_PROPERTIES or key in state:
+            raise Refused("the update unit status is invalid", error_code="unit_status_invalid")
+        state[key] = value
+    if state.get("LoadState") in ("not-found", "masked", "error", "bad-setting"):
+        raise Refused("the update unit is missing or unavailable", error_code="unit_unavailable")
+    if set(state) != set(UPDATE_PROPERTIES) or state["LoadState"] != "loaded":
+        raise Refused("the update unit status is incomplete", error_code="unit_status_invalid")
+    if state["Type"] != "oneshot":
+        raise Refused("the update unit must be a oneshot service", error_code="unit_type_unsupported")
+    if state["InvocationID"] and not re.fullmatch(r"[0-9a-f]{32}", state["InvocationID"]):
+        raise Refused("the update invocation status is invalid", error_code="unit_status_invalid")
+    for key in (
+        "ExecMainCode", "ExecMainStatus", "ExecMainStartTimestampMonotonic",
+        "ExecMainExitTimestampMonotonic",
+    ):
+        if not re.fullmatch(r"[0-9]{1,20}", state[key]):
+            raise Refused("the update process status is invalid", error_code="unit_status_invalid")
+        state[key] = int(state[key])
+    return state
+
+
+def require_update_idle(state):
+    if state["ActiveState"] not in ("inactive", "failed") or state["Job"]:
+        raise Refused("the update is already running or has a pending job", error_code="update_busy")
+
+
+def update_failure_code(status, output):
+    """Classify bounded private stderr; none of its text reaches the receipt or audit."""
+    text = output.decode("utf-8", "replace").lower()
+    if status == 124:
+        return "update_submit_timeout"
+    if status == 127:
+        return "update_executable_unavailable"
+    if any(word in text for word in (
+        "access denied", "permission denied", "authentication required",
+        "authentication is required", "password is required", "not allowed to execute",
+        "a terminal is required", "incorrect password",
+    )):
+        return "authorization_unavailable"
+    if "not found" in text or "does not exist" in text or "masked" in text:
+        return "unit_unavailable"
+    return "update_submit_failed"
+
+
+def execute_update(ctx, config, target, commands):
+    entry = config["updates"][target]
+    # Recheck immediately before submission, rather than trusting an earlier plan.
+    before = update_unit_state(ctx, entry)
+    require_update_idle(before)
+    command = update_command(ctx, target, entry)
+    if commands != [command]:
+        raise Refused("the update execution route changed", error_code="update_route_changed")
+    status, output = ctx.runner(
+        command, timeout=UPDATE_PROBE_TIMEOUT, env=ctx.child_env(),
+        want_stdout=True, max_bytes=8192, combine_stderr=True,
+    )
+    if status != 0:
+        raise Failed(
+            "the update submission was not confirmed",
+            error_code=update_failure_code(status, output),
+        )
+    answer = dict(
+        ok=True, result="submitted", executionState="submitted", verified=False,
+        detail="the update was submitted; completion has not been observed",
+    )
+    invocation = None
+    for attempt in range(UPDATE_POLL_ATTEMPTS):
+        if attempt:
+            ctx.sleep(UPDATE_POLL_INTERVAL)
+        try:
+            state = update_unit_state(ctx, entry)
+        except Refused:
+            answer["detail"] = "the update was submitted; completion status is unavailable"
+            return answer, 0
+        current = state["InvocationID"]
+        if not current or current == before["InvocationID"]:
+            continue
+        if invocation is not None and current != invocation:
+            answer["detail"] = "the update was submitted; another invocation replaced its completion status"
+            return answer, 0
+        invocation = current
+        answer["invocationID"] = current
+        terminal = state["ActiveState"] in ("inactive", "failed") and not state["Job"]
+        if not terminal:
+            continue
+        if state["Result"] and state["Result"] != "success":
+            answer.update(
+                ok=False, result="failed", executionState="failed", verified=True,
+                errorCode="update_invocation_failed", detail="the new update service invocation failed",
+            )
+            return answer, 1
+        started = state["ExecMainStartTimestampMonotonic"]
+        if (
+            state["Result"] == "success" and state["ExecMainCode"] == 1
+            and state["ExecMainStatus"] == 0
+            and started > before["ExecMainStartTimestampMonotonic"]
+            and state["ExecMainExitTimestampMonotonic"] >= started
+        ):
+            answer.update(
+                result="done", executionState="completed", verified=True,
+                detail="a new update service invocation completed successfully",
+            )
+            return answer, 0
+    return answer, 0
 
 
 def _server_only(ctx):
@@ -955,6 +1131,16 @@ def handle(ctx, scope, action, target, mode):
             detail, text, log_lines = execute_logs(ctx, commands)
             answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
             code = 0
+        elif scope == "server" and action == "update":
+            receipt, code = execute_update(ctx, config, target, commands)
+            answer.update(receipt)
+        elif scope == "server" and action == "redeploy":
+            detail = execute(ctx, scope, action, target, commands)
+            answer.update(
+                ok=True, result="submitted", detail=detail,
+                executionState="submitted", verified=False,
+            )
+            code = 0
         else:
             answer.update(
                 ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
@@ -962,9 +1148,13 @@ def handle(ctx, scope, action, target, mode):
             code = 0
     except Refused as exc:
         answer.update(ok=False, result="refused", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
         code = 2
     except Failed as exc:
         answer.update(ok=False, result="failed", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
         code = 1
     if mode == "yes":
         if scope == "server" and action == "redeploy" and audit_target == target:
