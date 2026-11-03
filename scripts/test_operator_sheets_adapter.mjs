@@ -3,7 +3,7 @@
 // Everything is faked:  no network, no service account, no token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createAdapter, getGoogleAccessToken } from "./simple_tools/operator_sheets_adapter.mjs";
+import { createAdapter, getGoogleAccessToken, DEFAULT_SPREADSHEET_ID } from "./simple_tools/operator_sheets_adapter.mjs";
 import { generateKeyPairSync } from "node:crypto";
 import { SESSIONS_HEADERS, EVENTS_HEADERS } from "./simple_tools/operator_sheets_export.mjs";
 
@@ -243,7 +243,7 @@ test("an expiring cached token is refreshed (the --loop case)", async () => {
 
 test("the default binding is the fleet reference workbook", () => {
   const adapter = createAdapter({ env: {}, tokenProvider });
-  assert.equal(adapter.spreadsheetId, "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY");
+  assert.equal(adapter.spreadsheetId, DEFAULT_SPREADSHEET_ID);
 });
 
 test("credential custody: Infisical fleet-secrets only, scrubbed child env, no env fallback", async () => {

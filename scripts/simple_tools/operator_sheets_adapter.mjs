@@ -30,7 +30,7 @@ import { join } from "node:path";
 import crypto from "node:crypto";
 import { SESSIONS_HEADERS, EVENTS_HEADERS } from "./operator_sheets_export.mjs";
 
-const DEFAULT_SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
+export const DEFAULT_SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
 const TABS = Object.freeze({ sessions: "Sessions", events: "Events" });
 const HEADERS = Object.freeze({ sessions: SESSIONS_HEADERS, events: EVENTS_HEADERS });
 // The live tab identity of the fleet reference workbook (Reference/Sessions/Events), as
