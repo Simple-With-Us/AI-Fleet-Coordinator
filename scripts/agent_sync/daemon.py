@@ -54,6 +54,7 @@ from . import heldback as HELD
 from . import host_load as HL
 from . import inbox_delivery as IDEL
 from . import listener_api as LAPI
+from . import listener_registry as LREG
 from . import live as L
 from . import muse_bridge as MB
 from . import muse_bridge_mac as MBM
@@ -776,6 +777,12 @@ class Daemon:
         # (_configure_listener_api), None while [linear_projects] is off.
         self.linear_projects_hook: Any | None = None
         self._linear_projects_spec: tuple[Any, ...] | None = None
+        # The Operator's session registry API (listener_registry.py), served by the
+        # listener API under /registry/v1/:  rebuilt with the API server on every start
+        # and reload (_configure_listener_api), None while the listener API is off or
+        # no principal has a key.
+        self.registry_service: LREG.RegistryService | None = None
+        self._registry_spec: tuple[Any, ...] | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {
@@ -1171,11 +1178,44 @@ class Daemon:
         self._linear_projects_spec = (token,)
         return hook
 
+    def _configure_registry(self) -> LREG.RegistryService | None:
+        """The Operator's session registry API for the listener API to serve under /registry/v1/, or None:
+        off unless at least one principal has a key.  The principals are the seats this instance holds, keyed
+        exactly as the read API keys them (the seat's routine `key_env` key), plus the OPERATOR principal,
+        whose key is the value of the env var listener_registry.OPERATOR_KEY_ENV when it is set.  Every key
+        value is hidden from the log by listener_api_keys / here, before anything can print it.  A reload that
+        leaves the principals and the store as they were keeps the same service object.  Construction opens
+        no file:  the service opens the registry per call, through the registry's own functions."""
+        old = getattr(self, "registry_service", None)
+        old_spec = getattr(self, "_registry_spec", None)
+        self.registry_service = None
+        self._registry_spec = None
+        keys = self.listener_api_keys()
+        operator_key = Z._strip_quotes(self.env.get(LREG.OPERATOR_KEY_ENV) or "")
+        if operator_key:
+            self.hide_values([operator_key])
+            keys[LREG.OPERATOR] = operator_key
+        usable = sorted(name for name, key in keys.items() if len(key) >= LREG.MIN_KEY_LEN)
+        if not usable:
+            return None
+        db_path = OR.registry_db_path(self.root, self.env)
+        spec = (db_path, tuple(sorted((name, key) for name, key in keys.items())))
+        if old is not None and old_spec == spec:
+            service = old
+        else:
+            service = LREG.RegistryService(
+                db_path, keys, clock=self.clock.time, log=self.log.write
+            )
+        self.registry_service = service
+        self._registry_spec = spec
+        return service
+
     def _configure_listener_api(self) -> None:
         """Start the optional signed read API (AFC-330) for the seats this instance holds, and with it the Operator's
-        notes queue (AFC-486) under /notes/v1/ and the Linear project webhook (AFC-565) under /linear/v1/.  The server
+        notes queue (AFC-486) under /notes/v1/, the Linear project webhook (AFC-565) under /linear/v1/ and the
+        Operator's session registry under /registry/v1/.  The server
         starts when any of them has someone to serve:  a seat with a read-API key, a notes-queue principal with a key,
-        or the projects hook.  A reload rebuilds the server, the queue and the hook, keeping the queue object when its
+        the projects hook, or a registry principal.  A reload rebuilds the server, the queue and the hook, keeping the queue object when its
         principals did not change (_configure_notes_queue) and the hook when its token did not."""
         old = self.listener_api_server
         self.listener_api_server = None
@@ -1186,6 +1226,8 @@ class Daemon:
             self._notes_queue_spec = None
             self.linear_projects_hook = None
             self._linear_projects_spec = None
+            self.registry_service = None
+            self._registry_spec = None
             if self.config.notes_queue_enabled:
                 self.log.write(
                     "notes-queue-off",
@@ -1200,10 +1242,11 @@ class Daemon:
         keys = self.listener_api_keys()
         notes = self._configure_notes_queue()
         hook = self._configure_linear_projects()
-        if not keys and notes is None and hook is None:
+        registry = self._configure_registry()
+        if not keys and notes is None and hook is None and registry is None:
             self.log.write(
                 "listener-api-deny-all",
-                reason="no seat key, no notes-queue principal and no projects hook,"
+                reason="no seat key, no notes-queue principal, no projects hook and no registry principal,"
                 " so the API server is not started",
             )
             return
@@ -1219,6 +1262,7 @@ class Daemon:
                 log=self.log.write,
                 notes=notes,
                 linear_projects=hook,
+                registry=registry,
             )
             server.start()
         except OSError as exc:
@@ -1227,6 +1271,8 @@ class Daemon:
             self._notes_queue_spec = None
             self.linear_projects_hook = None
             self._linear_projects_spec = None
+            self.registry_service = None
+            self._registry_spec = None
             return
         self.listener_api_server = server
         host, port = server.address
@@ -1244,6 +1290,12 @@ class Daemon:
             self.log.write("notes-queue-started", **fields)
         if hook is not None:
             self.log.write("linear-projects-started", path="/linear/v1/projects")
+        if registry is not None:
+            self.log.write(
+                "registry-api-started",
+                path="/registry/v1/",
+                principals=sorted(registry.keys),
+            )
 
     def _accept_outgoing_webhook(self, seat: str, bot_email: str, message_id: int) -> str:
         """Persist an authenticated webhook ID.  Message content comes only from a later REST read."""
@@ -8151,6 +8203,8 @@ class Daemon:
             self.listener_api_server.close()
             self.listener_api_server = None
         self.notes_queue = None
+        self.registry_service = None
+        self._registry_spec = None
         with self.child_lock:
             children = list(self.children)
         for child in children:
