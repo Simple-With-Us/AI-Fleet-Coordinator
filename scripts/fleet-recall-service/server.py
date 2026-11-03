@@ -16,14 +16,16 @@ constant time over bytes (a non-ASCII bearer is just wrong, never a traceback). 
 Logs go
 to stdout and never include bodies, tokens, or query strings.
 
-Configuration is Infisical-first: on startup the service requires the scoped ``INFISICAL_TOKEN``
-service token and loads its managed settings
+Configuration is Infisical-first: when ``INFISICAL_TOKEN`` is bound, the service verifies
+the scoped reader before loading its managed settings
 (QDRANT_*, TEI_*, RECALL_*) from the "AI Fleet Coordinator" Infisical project into an
 in-memory cache (see INFISICAL.md at the repo root), exports the backend keys into the
 process environment for the fleet_rag library, and refreshes the cache in the background
 (daemon thread, SIGHUP, or POST /admin/reload-settings).  All runtime reads come from the
-cache -- no per-request Infisical fetch exists anywhere in the request path.  Missing or
-invalid service tokens fail startup closed.
+cache -- no per-request Infisical fetch exists anywhere in the request path.  A present
+malformed reader or mismatched grant fails startup without environment fallback.  With no
+reader bound, the existing complete explicit-environment configuration route remains;
+required ``RECALL_API_TOKEN`` configuration still refuses startup if absent.
 
 Keep-alive discipline: the server speaks HTTP/1.1 and sits behind Traefik, which pools
 connections.  Any reply sent BEFORE the request body was consumed (401, 413, 404/405 on a POST,
@@ -863,7 +865,8 @@ def _on_settings_refresh() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     # Infisical is the source of truth for every managed key (INFISICAL.md).  The settings
-    # module requires a scoped INFISICAL_TOKEN service token for its fetch.
+    # module verifies a scoped INFISICAL_TOKEN service token when its read route is used;
+    # with no reader bound, its existing explicit-environment configuration route remains.
     # The environment is prod.  An unset or empty INFISICAL_ENVIRONMENT means prod and any
     # other slug is refused, so a stale dev/staging override exits 2 with a clear log line.
     environment = (

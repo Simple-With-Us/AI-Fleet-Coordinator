@@ -7,10 +7,11 @@
 #
 # ${SERVICE_PASSWORD_RECALLTOKEN} is Coolify's magic variable: it generates the bearer token and
 # shows it under the resource's environment variables.  Infisical is the source of truth
-# for the service's settings (see INFISICAL.md at the repo root): the server requires a scoped
-# read token and loads QDRANT_* / TEI_* / RECALL_* from the "AI Fleet Coordinator" project at
-# startup.  Bind INFISICAL_TOKEN from the Recall read grant and, separately, INFISICAL_WRITE_TOKEN
-# if admin settings writes are needed.  No token value lives in this file.
+# for the service's settings (see INFISICAL.md at the repo root): its Infisical-read route verifies
+# a scoped read token before loading QDRANT_* / TEI_* / RECALL_* at startup.  Bind INFISICAL_TOKEN
+# for that route and, separately, INFISICAL_WRITE_TOKEN if admin settings writes are needed.
+# With no reader, the existing complete explicit-environment route remains; required
+# RECALL_API_TOKEN configuration still refuses startup if absent.  No token value lives here.
 #
 # Network reality check (2026-09-02, from a python:3.12-slim container on the `coolify` network):
 # http://100.69.77.26:6333/healthz -> 200 and http://100.69.77.26:8081/health -> 200.  The docker0

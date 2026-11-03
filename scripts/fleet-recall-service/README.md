@@ -55,7 +55,7 @@ install the pinned gitleaks release (`GITLEAKS_VERSION`, default `8.30.1`) for t
 the download fails the service still starts, the log says so, and every contribution's
 `scrubbed` list carries `gitleaks-unavailable` so callers can see the gate was regex-only.
 
-Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): on startup the service requires a scoped read service token in `INFISICAL_TOKEN` and loads every key below from the **AI Fleet Coordinator** Infisical project into an in-memory cache, refreshed in the background; the container never reads `~/.secrets`.  Missing or invalid tokens fail startup closed.  Admin writes use the separate `INFISICAL_WRITE_TOKEN`; without it, write-through is refused.  Admin changes can also go through the Infisical UI/API plus `POST /admin/reload-settings` / `SIGHUP`.
+Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): when `INFISICAL_TOKEN` is bound, the service verifies that scoped reader before loading managed settings from the **AI Fleet Coordinator** Infisical project into an in-memory cache, refreshed in the background; the container never reads `~/.secrets`.  A present malformed token or mismatched grant fails the read and startup without falling back to environment copies.  With no reader bound, the existing complete explicit-environment configuration route remains available; required `RECALL_API_TOKEN` configuration still refuses startup if absent.  Admin writes use the separate `INFISICAL_WRITE_TOKEN`; without it, write-through is refused.  Admin changes can also go through the Infisical UI/API plus `POST /admin/reload-settings` / `SIGHUP`.
 
 | Variable | Required | Notes |
 |---|---|---|
