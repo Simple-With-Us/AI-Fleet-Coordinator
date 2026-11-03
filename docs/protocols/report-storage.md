@@ -24,16 +24,26 @@ Code/
       README.md
       documents/
         <original repository-relative paths>
+      catalog.json
       manifest.json
+      reports/
+        <source-commit>-<collection-policy>-<catalog-policy>/
+          catalog.json
+          manifest.json
+          README.md
 ```
 
-For example, the folders are `Usage-Monitor`, `Socratic-Trade`, `Congress.Trade` and `congress-trading-shared`, matching their GitHub repositories and Code integration folders.  The central collection contains copies with source provenance; the committed repository file is authoritative.  Each manifest records the source Git ref, exact commit and content hashes.  Rebuild the collection from those sources, and publish revisions through the normal branch, review and merge workflow.
+Source-folder roles, repository profiles and inspected migration surfaces are defined in [Repository Layout And Migration Contract](repository-layout.md).
+
+For example, the folders are `Usage-Monitor`, `Socratic-Trade`, `Congress.Trade` and `congress-trading-shared`, matching their GitHub repositories and Code integration folders.  The central collection contains copies with source provenance; the committed repository file is authoritative.  Each manifest records the source Git ref, exact commit and content hashes.  `catalog.json` is generated from the published Git tree and is the canonical per-repository file inventory; rows include original paths, Git modes, object IDs and types, byte sizes, inferred roles, selected-copy status and an exclusion reason where applicable.  Its structural inventory summarizes tracked top-level entries, application and deployment roots, build manifests, and package boundaries from those same Git paths.  The catalog reads Git metadata only and never reads excluded source file contents.  The repository README is a generated view of that catalog, grouped by canonical source path.  Rebuild the collection from those sources, and publish revisions through the normal branch, review and merge workflow.
 
 The collection is owner-only because it can include private repositories.  It is a document directory, not another Git checkout or application runtime.  Never copy untracked files, dirty worktree content, environment files, credential stores or symlink targets into it.  A private draft must first be saved to its approved private repository before joining the collected library.
 
 ## Collection And Refresh
 
-`scripts/collect-repo-documents.py` is an on-demand collector.  It reads published Git refs and writes the central copies and indexes without changing the source checkouts.  Use its preview and check modes before applying an update; conflicting user-edited output must be reviewed instead of overwritten.  Use explicit owned worktree sources when running through a server lane guard.
+`scripts/collect-repo-documents.py` is an on-demand collector.  It reads published Git refs and writes the central copies and indexes without changing the source checkouts.  Collection policy `human-docs-v2` includes tracked Markdown, reStructuredText, AsciiDoc, plain text, office and PDF documents throughout the repository, including root instructions, handbooks, guides, runbooks, skills, plans and client documentation.  It also copies linked local images and document-root evidence files.  Credential stores, credential-shaped files, vendor and dependency trees, generated output, caches, test fixtures and snapshots, submodule contents, and symlink targets are excluded with catalog reasons; private Fleet-OPS audit paths still require the explicit opt-in below.  Use its preview and check modes before applying an update; conflicting user-edited output must be reviewed instead of overwritten.  Use explicit owned worktree sources when running through a server lane guard.
+
+Collection version paths include the source commit and policy identifiers.  When a policy changes, the collector writes a new immutable manifest, catalog and report README under the new version path; it keeps prior versioned records and continues to read legacy manifests.  The root manifest, catalog and path-grouped README identify the current collection.  This avoids rewriting a historical manifest when the same source commit is collected under broader coverage.
 
 The collector also stages proposed `docs/reports/README.md` files for publication from owned lanes.  It does not commit, push or merge those proposals, change an integration tree, install a schedule, or register a background process.
 
