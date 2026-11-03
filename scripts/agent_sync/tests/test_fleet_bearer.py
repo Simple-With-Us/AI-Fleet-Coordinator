@@ -326,3 +326,123 @@ class TransportTests(FleetBearerTests):
             tls.return_value.close.assert_called()
             with self.assertRaises(ValueError):
                 transport.open(F.urllib.request.Request("https://evil.test/", data=b"{}", method="POST"))
+
+
+WHOAMI_OK = {"structuredContent": {"seat": "CODEX", "authenticated_seat": "CODEX"}}
+TOOL_OK = {"structuredContent": {"accepted": True}}
+
+
+class VerifyCacheTests(unittest.TestCase):
+    """The 60-second whoami verification cache (R3):  a second process inside
+    the TTL skips the whoami RPC;  every anomaly falls back to the live
+    verification, and the cache never holds the bearer itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.path = self.home / "bearer"
+        self.token = "sbt_codex_" + "x" * 43
+        self.path.write_text(self.token)
+        self.path.chmod(0o600)
+        self.root = self.home / "state"
+        self.root.mkdir()
+        self.env = patch.dict(os.environ, {F.STATE_DIR_ENV: str(self.root)})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def client(self, answers):
+        client = F.Client(self.path)
+        rpc = patch.object(client, "rpc", side_effect=list(answers))
+        rpc.start()
+        self.addCleanup(rpc.stop)
+        return client
+
+    def cache_file(self):
+        return self.root / "CODEX" / F.VERIFY_CACHE_FILE
+
+    def test_second_process_inside_the_ttl_skips_whoami(self):
+        first = self.client([WHOAMI_OK, TOOL_OK])
+        first.call("whoami", {})
+        self.assertEqual(first.rpc.call_count, 2)
+        second = self.client([TOOL_OK])
+        second.call("zulip_read", {"channel": "general"})
+        self.assertEqual(second.rpc.call_count, 1, "the cached verification replaced the whoami RPC")
+
+    def test_cache_file_holds_only_hashes_and_is_private(self):
+        first = self.client([WHOAMI_OK, TOOL_OK])
+        first.call("whoami", {})
+        cache = self.cache_file()
+        self.assertTrue(cache.is_file())
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+        raw = cache.read_bytes()
+        self.assertNotIn(self.token.encode(), raw)
+        entry = json.loads(raw)
+        self.assertEqual(entry["seat"], "CODEX")
+        self.assertIn("token_sha256", entry)
+        self.assertIn("bearer_path_sha256", entry)
+
+    def test_stale_entry_verifies_live_again(self):
+        first = self.client([WHOAMI_OK, TOOL_OK])
+        first.call("whoami", {})
+        entry = json.loads(self.cache_file().read_text())
+        entry["verified_at"] -= F.VERIFY_CACHE_TTL_SECONDS + 1
+        self.cache_file().write_text(json.dumps(entry))
+        self.cache_file().chmod(0o600)
+        second = self.client([WHOAMI_OK, TOOL_OK])
+        second.call("zulip_read", {})
+        self.assertEqual(second.rpc.call_count, 2, "an entry past the TTL is a miss")
+
+    def test_rotated_bearer_verifies_live_again(self):
+        first = self.client([WHOAMI_OK, TOOL_OK])
+        first.call("whoami", {})
+        rotated = "sbt_codex_" + "y" * 43
+        self.path.write_text(rotated)
+        self.path.chmod(0o600)
+        second = self.client([WHOAMI_OK, TOOL_OK])
+        second.call("zulip_read", {})
+        self.assertEqual(second.rpc.call_count, 2, "a different bearer's hash is a miss")
+
+    def test_same_bearer_at_another_path_verifies_live_again(self):
+        first = self.client([WHOAMI_OK, TOOL_OK])
+        first.call("whoami", {})
+        other = self.home / "bearer-copy"
+        other.write_text(self.token)
+        other.chmod(0o600)
+        client = F.Client(other)
+        with patch.object(client, "rpc", side_effect=[WHOAMI_OK, TOOL_OK]) as rpc:
+            client.call("zulip_read", {})
+        self.assertEqual(rpc.call_count, 2, "the entry binds the bearer file it was proven through")
+
+    def test_malformed_or_loose_cache_is_a_miss_never_an_error(self):
+        cache = self.cache_file()
+        cache.parent.mkdir(parents=True)
+        cache.write_text("not json at all")
+        cache.chmod(0o600)
+        client = self.client([WHOAMI_OK, TOOL_OK])
+        client.call("zulip_read", {})
+        self.assertEqual(client.rpc.call_count, 2)
+        cache.write_text(json.dumps({"seat": "CODEX"}))
+        cache.chmod(0o644)
+        client = self.client([WHOAMI_OK, TOOL_OK])
+        client.call("zulip_read", {})
+        self.assertEqual(client.rpc.call_count, 2, "loose permissions are a miss, not a shortcut")
+
+    def test_no_state_root_means_live_verification_and_nothing_created(self):
+        missing = self.home / "no-such-root"
+        with patch.dict(os.environ, {F.STATE_DIR_ENV: str(missing)}):
+            first = self.client([WHOAMI_OK, TOOL_OK])
+            first.call("whoami", {})
+            second = self.client([WHOAMI_OK, TOOL_OK])
+            second.call("zulip_read", {})
+            self.assertEqual(second.rpc.call_count, 2)
+        self.assertFalse(missing.exists(), "the cache never creates the state root")
+
+    def test_failed_verification_is_never_cached(self):
+        bad = {"structuredContent": {"seat": "ECHO", "authenticated_seat": "ECHO"}}
+        client = self.client([bad])
+        with self.assertRaises(F.FleetError):
+            client.call("zulip_read", {})
+        self.assertFalse(self.cache_file().exists())

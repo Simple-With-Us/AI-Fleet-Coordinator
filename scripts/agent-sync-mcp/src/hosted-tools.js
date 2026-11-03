@@ -325,8 +325,9 @@ export class HostedTools {
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
    * @param {object|null} [o.gr]           a GrRelayClient for this bearer identity (src/gr-tools.js), or null when the GR front is not configured
+   * @param {function|null} [o.audit]      the Worker's isolate audit buffer sink (src/audit-batch.js):  (key, gate, row);  null writes each row to the gate at once
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, audit = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -361,6 +362,10 @@ export class HostedTools {
     this.notes = notes ?? null;
     if (this.notes) this.known.push(...this.notes.secrets().filter(Boolean));
     this.gate = gate;
+    // The audit sink the Worker installs (src/audit-batch.js, R2):  null
+    // keeps the immediate per-row gate write every other construction -
+    // unit tests included - has always made.
+    this.auditSink = audit;
     this.whatsappGate = whatsappGate ?? gate;
     this.cf = cf ?? {};
     this.now = now;
@@ -423,7 +428,7 @@ export class HostedTools {
   async call(name, rawArgs) {
     const spec = Object.hasOwn(HOSTED_TOOLS_BY_NAME, name) ? HOSTED_TOOLS_BY_NAME[name] : null;
     if (!spec) {
-      await this.safely(() => this.gate.auditCall({
+      await this.safely(() => this.auditRow(this.gate, {
         seat: this.seat,
         grant_ref: this.grantRef,
         client_id: this.clientId,
@@ -519,10 +524,23 @@ export class HostedTools {
       country: typeof this.cf.country === "string" ? this.cf.country.slice(0, 2) : null,
       ...audit,
     };
-    await this.safely(() => this.gate.auditCall(row));
-    if (this.callerGate !== this.gate) await this.safely(() => this.callerGate.auditCall(row));
+    await this.safely(() => this.auditRow(this.gate, row));
+    if (this.callerGate !== this.gate) await this.safely(() => this.auditRow(this.callerGate, row));
     this.log({ event: "tool", seat: this.seat, authenticated_seat: this.callerSeat, acting_identity: this.seat, tool: publicName, outcome: row.error_code ?? "ok", latency_ms: latency, grant_ref: this.grantRef });
     return result;
+  }
+
+  /**
+   * One per-call audit row for one gate (spec 3.9).  Direct to the gate,
+   * unless the Worker installed its isolate audit buffer as this
+   * instance's sink (R2, DO burn reduction):  the sink keys the row by the
+   * gate's own name - the acting seat for this gate, the caller seat for
+   * the caller gate - and batches it there.  No other construction passes
+   * a sink, so tests keep the immediate write.
+   */
+  async auditRow(gate, row) {
+    if (this.auditSink) return this.auditSink(gate === this.callerGate ? this.callerSeat : this.seat, gate, row);
+    return gate.auditCall(row);
   }
 
   async safely(fn) {

@@ -85,8 +85,18 @@ import { serveWa } from "./wa/index.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
+import { AuditBatcher } from "./audit-batch.js";
 
 export { SeatGate };
+
+// The isolate's per-call audit buffer (R2, DO burn reduction):  one
+// AuditBatcher per isolate, shared by every HostedTools this Worker
+// builds, so tool-call audit rows flush to each seat's gate in batches
+// instead of one Durable Object RPC per call.  The trade is stated in
+// src/audit-batch.js:  rows land seconds late, and an isolate evicted
+// mid-buffer loses its unflushed tail - audit only, never a control.
+const AUDIT_BATCHER = new AuditBatcher();
+const auditSink = (key, gate, row) => AUDIT_BATCHER.append(key, gate, row);
 
 const MAX_TOKEN_BODY = 16 * 1024;
 const CSRF_COOKIE = "__Host-agent-sync-csrf";
@@ -295,6 +305,7 @@ async function serveMcp(request, env, ctx) {
     zulip: key ? new ZulipClient({ email, key, ownerUserId: config.ownerUserId }) : null,
     key,
     gate: seatGate,
+    audit: auditSink,
     whatsappGate: gate(env, "JET"),
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     // Null when any recall secret is missing:  the recall tools then answer
@@ -403,8 +414,9 @@ async function serveGbBearerMcp(request, env, token) {
   const roles = (await resolveDelegatedCredentials(env)).roles;
   const credentials = roles.get(identity);
   if (!credentials) return refuse();
-  const state = await identityGate.getState();
-  if (state.paused) return invalidToken("This identity is paused.");
+  // The pause flag rides the bearer check's own answer (R1):  no second
+  // gate RPC for the one boolean, and the refusal stays in this position.
+  if (checked.paused) return invalidToken("This identity is paused.");
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
@@ -422,6 +434,7 @@ async function serveGbBearerMcp(request, env, token) {
     grantRef,
     paused: false,
     gate: identityGate,
+    audit: auditSink,
     // The GR front authenticates to the relay with this same bearer:  the
     // relay resolves it to the identity and applies its own allowlist.
     gr: grClientFromResolved(grSecrets, env, { bearer: token }),
@@ -488,8 +501,9 @@ async function serveSbtBearerMcp(request, env, token) {
   if (!credentials) return refuse();
   const { key, email } = credentials;
   if (checked.mcp_accept !== true) return refuse();
-  const state = await seatGate.getState();
-  if (state.paused) return invalidToken("This identity is paused.");
+  // The pause flag rides the bearer check's own answer (R1):  no second
+  // gate RPC for the one boolean, and the refusal stays in this position.
+  if (checked.paused) return invalidToken("This identity is paused.");
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`sbt-bearer:${seat}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
@@ -518,6 +532,7 @@ async function serveSbtBearerMcp(request, env, token) {
     zulip: new ZulipClient({ email, key, ownerUserId: config.ownerUserId }),
     key,
     gate: seatGate,
+    audit: auditSink,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromResolved(recallSecrets, env),
     linear: linearClientFromPair(await resolveLinearPair(env, seatTagForSeat(seat)), seat, { gate: seatGate, quota: linearQuotaFromEnv(env) }),

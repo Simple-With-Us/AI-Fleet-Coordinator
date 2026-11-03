@@ -2,15 +2,25 @@
 
 Vendored byte-for-byte by FleetLink's CLI. Only the gateway receives the bearer;
 provider credentials and account authorization stay on the servers.
+
+A successful whoami verification is remembered on disk for
+VERIFY_CACHE_TTL_SECONDS (see below), so a burst of one-shot CLI processes
+from one seat verifies once a minute instead of once per process.  The cache
+holds only the SHA-256 of the bearer, never the bearer;  it is a local
+pre-flight shortcut only - the gateway still runs its full gate on every
+call, so a revoked bearer is refused by the server immediately and only
+this client's own "identity confirmed" step can be up to a minute stale.
 """
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
 import re
 import stat
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -143,6 +153,20 @@ def canonical_hint(raw):
     return SEAT_ALIASES.get(text.upper(), text.upper())
 
 
+# The whoami verification cache:  one small JSON row beside the seat's
+# idempotency state (<state>/<SEAT>/mcp-idem.json), in the state root
+# agent_sync.state resolves ($AGENT_SYNC_STATE_DIR, else ~/.agent-sync).
+# The rule is mirrored here, not imported, so this file stays self-contained
+# for its vendored copies.  Every cache anomaly - missing, malformed, loose
+# permissions, wrong owner, a different bearer's hash, a stale or future
+# timestamp - is a miss, never an error:  the client falls back to the live
+# whoami it has always made, so the cache can only ever save a call, never
+# change an outcome.
+VERIFY_CACHE_TTL_SECONDS = 60.0
+VERIFY_CACHE_FILE = "fleet-bearer-verify.json"
+STATE_DIR_ENV = "AGENT_SYNC_STATE_DIR"
+
+
 class GatewayTransport:
     """One verified TLS connection per client. No redirects, proxy or retries."""
 
@@ -186,6 +210,7 @@ class Client:
         self.path = path
         self.seat, _ = private_bearer(path)
         identity_env = os.environ if identity_env is None else identity_env
+        self._env = identity_env
         # Non-secret launcher hints can restrict, never select another bearer.
         for name in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG"):
             value = canonical_hint(identity_env.get(name, ""))
@@ -304,20 +329,105 @@ class Client:
                 "gateway transport or response failed" + unknown,
             ) from None
 
+    def _verify_cache_path(self):
+        """The cache file for this seat, or None when no state root exists.
+
+        The state root itself is never created here:  a seat with no state
+        directory yet simply verifies live every time, as it did before the
+        cache existed.  The seat directory below an existing root is made
+        on first write, with the same privacy as the state it sits beside.
+        """
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9-]{0,39}", self.seat):
+            return None
+        override = self._env.get(STATE_DIR_ENV, "")
+        root = Path(override).expanduser() if override else Path.home() / ".agent-sync"
+        if not root.is_dir():
+            return None
+        return root / self.seat / VERIFY_CACHE_FILE
+
+    def _bearer_path_digest(self):
+        return hashlib.sha256(
+            str(Path(self.path).expanduser().absolute()).encode("utf-8")
+        ).hexdigest()
+
+    def _cached_verification(self, token):
+        """True only for a fresh entry naming this bearer file and its hash.
+
+        The entry binds the file's path as well as the bearer's hash, so a
+        verification proven through one bearer file can never be spent by a
+        client reading a different one that happens to share the state root.
+        """
+        try:
+            path = self._verify_cache_path()
+            if path is None:
+                return False
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as handle:
+                info = os.fstat(handle.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
+                    or info.st_nlink != 1
+                    or info.st_size > 1024
+                ):
+                    return False
+                entry = bounded_json(handle.read().decode("ascii"))
+            if not isinstance(entry, dict) or entry.get("seat") != self.seat:
+                return False
+            digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+            if entry.get("token_sha256") != digest:
+                return False
+            if entry.get("bearer_path_sha256") != self._bearer_path_digest():
+                return False
+            verified_at = entry.get("verified_at")
+            if not isinstance(verified_at, (int, float)) or isinstance(verified_at, bool):
+                return False
+            age = time.time() - verified_at
+            return -5.0 <= age < VERIFY_CACHE_TTL_SECONDS
+        except Exception:
+            return False
+
+    def _remember_verification(self, token):
+        """Best-effort:  record a just-proven verification for the next process.
+
+        Any failure is silent - the verification itself already happened
+        live, and a later process simply verifies live again.
+        """
+        try:
+            path = self._verify_cache_path()
+            if path is None:
+                return
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            entry = {
+                "seat": self.seat,
+                "token_sha256": hashlib.sha256(token.encode("ascii")).hexdigest(),
+                "bearer_path_sha256": self._bearer_path_digest(),
+                "verified_at": time.time(),
+            }
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(json.dumps(entry))
+        except Exception:
+            pass
+
     def call(self, name, arguments, write=False):
         _, token = private_bearer(self.path)
         if not self.verified or token != self._verified_token:
-            who = self.rpc("tools/call", {"name": "whoami", "arguments": {}}).get(
-                "structuredContent"
-            )
-            if (
-                not isinstance(who, dict)
-                or who.get("authenticated_seat") != self.seat
-                or who.get("seat") != self.seat
-            ):
-                raise FleetError(
-                    "not_authorized", "gateway identity did not match this bot; nothing was sent"
+            if not self._cached_verification(token):
+                who = self.rpc("tools/call", {"name": "whoami", "arguments": {}}).get(
+                    "structuredContent"
                 )
+                if (
+                    not isinstance(who, dict)
+                    or who.get("authenticated_seat") != self.seat
+                    or who.get("seat") != self.seat
+                ):
+                    raise FleetError(
+                        "not_authorized", "gateway identity did not match this bot; nothing was sent"
+                    )
+                self._remember_verification(token)
             self.verified = True
             self._verified_token = token
         return self.rpc("tools/call", {"name": name, "arguments": arguments}, write)
