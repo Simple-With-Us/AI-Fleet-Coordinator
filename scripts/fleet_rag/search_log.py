@@ -8,6 +8,7 @@ shared memory before diagnosing).
 Never raises: telemetry must never break a search caller.
 Never logs unscrubbed credentials: query strings pass through scrub before append.
 """
+
 from __future__ import annotations
 
 import json
@@ -48,7 +49,9 @@ def log_path(state_dir: str | None = None) -> str:
     return os.path.join(base, "search-log.jsonl")
 
 
-def _rotate_if_needed(path: str, max_bytes: int = DEFAULT_MAX_BYTES, keep_lines: int = DEFAULT_KEEP_LINES) -> None:
+def _rotate_if_needed(
+    path: str, max_bytes: int = DEFAULT_MAX_BYTES, keep_lines: int = DEFAULT_KEEP_LINES
+) -> None:
     try:
         if not os.path.exists(path) or os.path.getsize(path) < max_bytes:
             return
@@ -79,10 +82,7 @@ def log_search(
     try:
         now = int(now_ms if now_ms is not None else time.time() * 1000)
         resolved_seat = canonical_seat(
-            seat
-            or os.environ.get("AGENT_SEAT")
-            or os.environ.get("AGENT_TAG")
-            or "UNKNOWN"
+            seat or os.environ.get("AGENT_SEAT") or os.environ.get("AGENT_TAG") or "UNKNOWN"
         )
 
         # Sanitize query with the fleet scrub
@@ -184,7 +184,7 @@ def compute_ratios(
     search_seats: dict[str, int],
 ) -> list[dict]:
     """Compute search-to-contribute ratios for seats that contributed or searched.
-    
+
     A healthy seat searches before deriving (ratio >= 3.0).
     A warning is raised when a seat contributed >= 2 lessons but has ratio < 2.0.
     """
@@ -198,13 +198,15 @@ def compute_ratios(
         # Warning condition: at least 2 contributions but less than 2.0 searches per contribution
         is_warn = bool(c_count >= 2 and (ratio is None or ratio < 2.0))
 
-        rows.append({
-            "seat": seat,
-            "searches": s_count,
-            "contributions": c_count,
-            "ratio": ratio,
-            "warning": is_warn,
-        })
+        rows.append(
+            {
+                "seat": seat,
+                "searches": s_count,
+                "contributions": c_count,
+                "ratio": ratio,
+                "warning": is_warn,
+            }
+        )
 
     # Sort primarily by warning flag, then by total activity
     rows.sort(key=lambda x: (not x["warning"], -(x["searches"] + x["contributions"])))

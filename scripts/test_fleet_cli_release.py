@@ -78,7 +78,12 @@ class ReleaseTests(unittest.TestCase):
             patch.stop()
 
     def receive(self, bundle=None, install=True):
-        return release.receive(json.dumps(bundle or self.bundle).encode(), self.home, install, ("obsolete-tools", "obsolete-codex-mcp"))
+        return release.receive(
+            json.dumps(bundle or self.bundle).encode(),
+            self.home,
+            install,
+            ("obsolete-tools", "obsolete-codex-mcp"),
+        )
 
     def test_default_receive_keeps_unrelated_servers(self):
         config = self.home / ".codex/config.toml"
@@ -90,7 +95,11 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(servers["other"]["command"], "/owner/custom")
 
     def test_replacement_parameters_refuse_unsafe_keys_and_paths(self):
-        for replacement in (("../source", "wrapper"), ("source", "../wrapper"), ("simple-chat", "wrapper")):
+        for replacement in (
+            ("../source", "wrapper"),
+            ("source", "../wrapper"),
+            ("simple-chat", "wrapper"),
+        ):
             with self.subTest(replacement=replacement):
                 with self.assertRaisesRegex(release.Refused, "invalid_codex_replacement"):
                     release.migrate_codex_mcp(self.home, {}, replacement)
@@ -642,8 +651,10 @@ class ReleaseTests(unittest.TestCase):
         current = release.release_at(self.base, "current")
         meta = json.loads((current / "release.json").read_text())
         (current / "scripts/simple_tools").rename(current / "scripts/previous_package")
-        meta["files"] = {name.replace("scripts/simple_tools/", "scripts/previous_package/"): entry
-                         for name, entry in meta["files"].items()}
+        meta["files"] = {
+            name.replace("scripts/simple_tools/", "scripts/previous_package/"): entry
+            for name, entry in meta["files"].items()
+        }
         meta["bundle_sha256"] = release.manifest_digest(meta["files"])
         target = current.parent / meta["bundle_sha256"]
         current.rename(target)

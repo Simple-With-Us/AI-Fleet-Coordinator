@@ -215,9 +215,7 @@ def tunnel_ingress(cf: Cloudflare, tid: str) -> list[dict]:
     return tunnel_ingress_from_config(tunnel_config(cf, tid), tid)
 
 
-def tunnel_hosts(
-    cf: Cloudflare, hosts=None, tid: str | None = None
-) -> dict[str, list[str]]:
+def tunnel_hosts(cf: Cloudflare, hosts=None, tid: str | None = None) -> dict[str, list[str]]:
     """Map each hostname to the tunnel services an ingress rule points it at.
 
     `tid` reuses a tunnel id the caller already resolved, so a caller that
@@ -890,14 +888,24 @@ def main(argv: list[str]) -> None:
         action="store_true",
         help="check only:  skip the steps that need the Cloudflare key",
     )
-    ap.add_argument("--cleanup-target", action="append", default=[], metavar="ZONE:HOST",
-                    help="additional explicit cleanup target; requires separate approval before --apply")
+    ap.add_argument(
+        "--cleanup-target",
+        action="append",
+        default=[],
+        metavar="ZONE:HOST",
+        help="additional explicit cleanup target; requires separate approval before --apply",
+    )
     args = ap.parse_args(argv)
     targets = [(ZONE_NAME, HOST)]
     for value in args.cleanup_target:
         zone, sep, host = value.partition(":")
         valid = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
-        if not sep or not valid.fullmatch(zone) or not valid.fullmatch(host) or not (host == zone or host.endswith("." + zone)):
+        if (
+            not sep
+            or not valid.fullmatch(zone)
+            or not valid.fullmatch(host)
+            or not (host == zone or host.endswith("." + zone))
+        ):
             ap.error("--cleanup-target must be a DNS zone and a hostname within it: ZONE:HOST")
         if (zone, host) not in targets:
             targets.append((zone, host))

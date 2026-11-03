@@ -562,7 +562,11 @@ def migrate_codex_mcp(home: Path, files: dict, replacement: tuple[str, str] | No
     if replacement is None:
         return
     source_key, source_wrapper = replacement
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", source_key) or not re.fullmatch(r"[A-Za-z0-9_-]+", source_wrapper) or source_key == CODEX_KEY:
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_-]+", source_key)
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", source_wrapper)
+        or source_key == CODEX_KEY
+    ):
         raise Refused("invalid_codex_replacement")
     present = servers.get(source_key)
     if present is None:
@@ -596,7 +600,9 @@ def migrate_codex_mcp(home: Path, files: dict, replacement: tuple[str, str] | No
     files[config] = (after_raw, mode)
 
 
-def new_wrapper_plan(home: Path, replacement: tuple[str, str] | None = None) -> dict[Path, tuple[bytes, int]]:
+def new_wrapper_plan(
+    home: Path, replacement: tuple[str, str] | None = None
+) -> dict[Path, tuple[bytes, int]]:
     """On a routine update (no --install), the wrappers a newer release added that this host lacks.
     Only absent paths are written:  an existing file, managed or not, and a symlink are left alone.
     Without this, a command added after the first install (recall, lane, fleet-mode) would ship in
@@ -613,7 +619,9 @@ def new_wrapper_plan(home: Path, replacement: tuple[str, str] | None = None) -> 
     return files
 
 
-def install_plan(home: Path, replacement: tuple[str, str] | None = None) -> dict[Path, tuple[bytes, int]]:
+def install_plan(
+    home: Path, replacement: tuple[str, str] | None = None
+) -> dict[Path, tuple[bytes, int]]:
     bin_dir = home / ".local/bin"
     files = wrapper_files(home)
     for path in files:
@@ -675,8 +683,11 @@ def retained_paths(files: dict) -> dict[str, str]:
     the full base contract; all remaining paths still pass the current strict allowlist.
     """
     suffixes = ("/__init__.py", "/cli.py", "/mcp/stdio.py", "/mcp/tools.json")
-    roots = {name[:-len("/cli.py")] for name in files
-             if isinstance(name, str) and re.fullmatch(r"scripts/[a-z][a-z0-9_]*/cli\.py", name)}
+    roots = {
+        name[: -len("/cli.py")]
+        for name in files
+        if isinstance(name, str) and re.fullmatch(r"scripts/[a-z][a-z0-9_]*/cli\.py", name)
+    }
     roots = {root for root in roots if all(root + tail in files for tail in suffixes)}
     if len(roots) != 1:
         raise Refused("invalid_release_metadata")
@@ -685,7 +696,9 @@ def retained_paths(files: dict) -> dict[str, str]:
     for name in files:
         if not isinstance(name, str):
             raise Refused("invalid_release_metadata")
-        mapped = "scripts/simple_tools/" + name[len(root) + 1:] if name.startswith(root + "/") else name
+        mapped = (
+            "scripts/simple_tools/" + name[len(root) + 1 :] if name.startswith(root + "/") else name
+        )
         if re.fullmatch(r"docs/protocols/[a-z][a-z0-9-]*-partition\.toml", mapped):
             mapped = "docs/protocols/simple-tools-partition.toml"
         if mapped in result.values():
@@ -732,7 +745,9 @@ def verify_retained(release: Path) -> dict:
     return record
 
 
-def receive(raw: bytes, home: Path, install: bool = False, replacement: tuple[str, str] | None = None) -> dict:
+def receive(
+    raw: bytes, home: Path, install: bool = False, replacement: tuple[str, str] | None = None
+) -> dict:
     bundle, decoded = decode_bundle(raw)
     base = home / ".local/share/fleet-cli"
     safe_dir(base)
@@ -878,11 +893,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["receive", "status", "pause", "resume", "rollback"])
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--install", action="store_true")
-    parser.add_argument("--replace-codex-server", nargs=2, metavar=("KEY", "WRAPPER"), help="explicit managed Codex entry to replace with simple-chat")
+    parser.add_argument(
+        "--replace-codex-server",
+        nargs=2,
+        metavar=("KEY", "WRAPPER"),
+        help="explicit managed Codex entry to replace with simple-chat",
+    )
     args = parser.parse_args(argv)
     try:
         if args.command == "receive":
-            result = receive(sys.stdin.buffer.read(MAX_BUNDLE_BYTES + 1), args.home, args.install, tuple(args.replace_codex_server) if args.replace_codex_server else None)
+            result = receive(
+                sys.stdin.buffer.read(MAX_BUNDLE_BYTES + 1),
+                args.home,
+                args.install,
+                tuple(args.replace_codex_server) if args.replace_codex_server else None,
+            )
         else:
             result = control(args.home, args.command)
         print(json.dumps(result, sort_keys=True))

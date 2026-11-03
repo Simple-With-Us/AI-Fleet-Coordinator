@@ -232,7 +232,9 @@ class Notifier:
     def simple_tools(self, verb: str, *args: str, stdin: str | None = None):
         """`simple-chat VERB --as CLAUDE --session needsown ARGS...`:  the seat and session go right after the verb, because
         everything after a `--` is message text."""
-        return self.runner.simple_tools(verb, "--as", SEAT, "--session", SESSION, *args, stdin=stdin)
+        return self.runner.simple_tools(
+            verb, "--as", SEAT, "--session", SESSION, *args, stdin=stdin
+        )
 
     # ---- reading Zulip ----------------------------------------------------------------------
     def read(
@@ -869,7 +871,9 @@ class Notifier:
         return "rejected" if problems else "ignored"
 
     def post_reply(self, message_id: int, body: str) -> tuple[bool, int | None]:
-        result = self.simple_tools("reply", "--json", "--id", str(message_id), "--", "-", stdin=body)
+        result = self.simple_tools(
+            "reply", "--json", "--id", str(message_id), "--", "-", stdin=body
+        )
         return result.ok, (notifymod._message_id(result) if result.ok else None)
 
     def mirror(self, topic: str, message_id: int, request: replies.Request) -> str:

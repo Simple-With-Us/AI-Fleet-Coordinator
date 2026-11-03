@@ -65,9 +65,7 @@ def cursor_key(channel: str, topic: str) -> str:
 # A channel rename strands the cursors persisted under its old name.  Each current
 # channel (casefolded) maps to the legacy names its cursors may still live under;
 # reads fall back to them and the next advance re-keys the cursor forward.
-LEGACY_CHANNEL_NAMES: dict[str, tuple[str, ...]] = {
-
-}
+LEGACY_CHANNEL_NAMES: dict[str, tuple[str, ...]] = {}
 
 
 def _legacy_cursor_keys(channel: str, topic: str) -> list[str]:

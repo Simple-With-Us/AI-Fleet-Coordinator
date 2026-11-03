@@ -55,7 +55,9 @@ from pathlib import Path
 # The secret scanner lives in the managed simple-tools runtime, which is a
 # separate checkout and is not on the interpreter's path.  Add it before the
 # import, so the bridge does not depend on how it was launched.
-_SIMPLE_TOOLS_SCRIPTS = os.path.expanduser("~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts")
+_SIMPLE_TOOLS_SCRIPTS = os.path.expanduser(
+    "~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts"
+)
 if os.path.isdir(_SIMPLE_TOOLS_SCRIPTS) and _SIMPLE_TOOLS_SCRIPTS not in sys.path:
     sys.path.insert(0, _SIMPLE_TOOLS_SCRIPTS)
 

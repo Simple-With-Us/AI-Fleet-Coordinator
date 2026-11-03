@@ -405,7 +405,10 @@ class BranchRule(RepoCase):
         self.git("commit", "-q", "-m", "base")
         self.base_sha = self.git("rev-parse", "HEAD")
         self.write(mirror(OPS_BODY + "Changed.\n"), "docs/guide.md")
-        specs = (gm.GeneratedPath("FLEET-PROTOCOL.md", None), gm.GeneratedPath("docs/guide.md", None))
+        specs = (
+            gm.GeneratedPath("FLEET-PROTOCOL.md", None),
+            gm.GeneratedPath("docs/guide.md", None),
+        )
         problems, _ = gm.check(self.root, specs, self.base_sha, "claude/x")
         self.assertEqual([p for p, _ in problems], ["docs/guide.md"])
 

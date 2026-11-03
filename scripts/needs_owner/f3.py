@@ -10,6 +10,7 @@ these three files next to the `needs_owner` package.  In a checkout the same rel
     f3.secretscan.scan(text)
     f3.identity.resolve_seat(env), f3.identity.canonical_seat(raw), f3.identity.valid_seat(raw)
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -17,7 +18,9 @@ import os
 import sys
 from types import ModuleType
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the directory holding needs_owner/ and simple_tools/
+ROOT = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)  # the directory holding needs_owner/ and simple_tools/
 FILES = ("textsafe", "secretscan", "identity")
 
 
@@ -28,9 +31,14 @@ class F3Missing(RuntimeError):
 def _load(name: str) -> ModuleType:
     path = os.path.join(ROOT, "simple_tools", name + ".py")
     if not os.path.isfile(path):
-        raise F3Missing("needs-owner cannot find %s (the stable copy is incomplete;  run scripts/needs_owner/install.sh --apply)" % path)
+        raise F3Missing(
+            "needs-owner cannot find %s (the stable copy is incomplete;  run scripts/needs_owner/install.sh --apply)"
+            % path
+        )
     spec = importlib.util.spec_from_file_location("_needs_owner_f3_" + name, path)
-    if spec is None or spec.loader is None:  # pragma: no cover - importlib refuses only a non-.py name
+    if (
+        spec is None or spec.loader is None
+    ):  # pragma: no cover - importlib refuses only a non-.py name
         raise F3Missing("cannot load " + path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

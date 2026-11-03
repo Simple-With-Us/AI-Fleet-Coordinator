@@ -196,13 +196,9 @@ class SeatAndMcpTests(unittest.TestCase):
         self.touch(".claude.json", json.dumps({"mcpServers": {"unrelated-server": {}}}))
         rows = self.mcp_rows()
         self.assertEqual(rows["mcp:codex"]["status"], "WARN")
-        self.assertIn(
-            "missing simple-chat", rows["mcp:codex"]["detail"]
-        )
+        self.assertIn("missing simple-chat", rows["mcp:codex"]["detail"])
         self.assertEqual(rows["mcp:claude"]["status"], "WARN")
-        self.assertIn(
-            "missing simple-chat", rows["mcp:claude"]["detail"]
-        )
+        self.assertIn("missing simple-chat", rows["mcp:claude"]["detail"])
 
     def test_an_unreadable_token_listing_is_reported_as_unknown(self):
         self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
