@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import stat
 import subprocess
 import tempfile
@@ -130,7 +129,9 @@ class VmPullTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(GOOD).encode(), b"")
 
         result = self.pull(run)
-        self.assertEqual([(r["label"], r["ok"]) for r in result], [("down", False), ("fixture-vm", True)])
+        self.assertEqual(
+            [(r["label"], r["ok"]) for r in result], [("down", False), ("fixture-vm", True)]
+        )
         self.assertTrue((self.state / "fixture-vm.json").exists())
 
     def test_ssh_timeout_is_a_failed_pull_not_a_crash(self):

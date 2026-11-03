@@ -3104,12 +3104,17 @@ def vm_status_valid(status) -> bool:
     refused, never written:  the previous report stays and its age speaks."""
     if not isinstance(status, dict):
         return False
-    if status.get("tool") != VM_STATUS_TOOL or status.get("schemaVersion") != VM_STATUS_SCHEMA_VERSION:
+    if (
+        status.get("tool") != VM_STATUS_TOOL
+        or status.get("schemaVersion") != VM_STATUS_SCHEMA_VERSION
+    ):
         return False
     return json_within_limits(status, max_nodes=MAX_REMOTE_NODES // 2)
 
 
-def fetch_vm_status(target: str, runner: Callable = subprocess.run) -> tuple[dict | None, str | None]:
+def fetch_vm_status(
+    target: str, runner: Callable = subprocess.run
+) -> tuple[dict | None, str | None]:
     """One VM's report over its read-only key:  the forced command prints the collector's
     document whatever is asked, so nothing is sent.  (document, None) or (None, reason)."""
     try:
@@ -3161,20 +3166,40 @@ def pull_vms(
         if not isinstance(entries, list):
             raise ValueError("no vms list")
     except (OSError, ValueError, KeyError) as exc:
-        return [{"label": None, "ok": False, "error": f"{config_path} is not a readable vm-hosts config ({type(exc).__name__})"}]
+        return [
+            {
+                "label": None,
+                "ok": False,
+                "error": f"{config_path} is not a readable vm-hosts config ({type(exc).__name__})",
+            }
+        ]
     results = []
     for entry in entries:
         label = entry.get("label") if isinstance(entry, dict) else None
         destination = entry.get("destination") if isinstance(entry, dict) else None
         user = entry.get("user") if isinstance(entry, dict) else None
         if not isinstance(label, str) or not VM_LABEL_RE.fullmatch(label):
-            results.append({"label": label, "ok": False, "error": "the label is not a plain filename-safe name"})
+            results.append(
+                {
+                    "label": label,
+                    "ok": False,
+                    "error": "the label is not a plain filename-safe name",
+                }
+            )
             continue
         if not isinstance(destination, str) or not ALIAS_RE.fullmatch(destination):
-            results.append({"label": label, "ok": False, "error": "the destination is not a plain ssh alias or host"})
+            results.append(
+                {
+                    "label": label,
+                    "ok": False,
+                    "error": "the destination is not a plain ssh alias or host",
+                }
+            )
             continue
         if user is not None and (not isinstance(user, str) or not VM_USER_RE.fullmatch(user)):
-            results.append({"label": label, "ok": False, "error": "the user is not a plain login name"})
+            results.append(
+                {"label": label, "ok": False, "error": "the user is not a plain login name"}
+            )
             continue
         target = f"{user}@{destination}" if user else destination
         doc, error = fetch_vm_status(target, runner)
@@ -3184,7 +3209,13 @@ def pull_vms(
         try:
             write_report(state_dir / f"{label}.json", doc)
         except (OSError, ValueError) as exc:
-            results.append({"label": label, "ok": False, "error": f"the report could not be written ({type(exc).__name__})"})
+            results.append(
+                {
+                    "label": label,
+                    "ok": False,
+                    "error": f"the report could not be written ({type(exc).__name__})",
+                }
+            )
             continue
         results.append({"label": label, "ok": True, "error": None})
     return results
@@ -3427,7 +3458,11 @@ def run(
             )
         print(f"fleet-tools-doctor:  wrote {report_path}:  {host} {state_counts(doc)}{far}")
         for vm in vms:
-            line = f"vm {vm['label']}:  pulled" if vm["ok"] else f"vm {vm['label']}:  not pulled ({vm['error']})"
+            line = (
+                f"vm {vm['label']}:  pulled"
+                if vm["ok"]
+                else f"vm {vm['label']}:  not pulled ({vm['error']})"
+            )
             print(f"fleet-tools-doctor:  {line}")
     else:
         for row in report.rows:
@@ -3442,7 +3477,9 @@ def run(
             else:
                 print(f"-- server unreachable:  {server.get('error')}")
         for vm in vms:
-            print(f"-- vm {vm['label']}:  {'pulled' if vm['ok'] else 'not pulled (' + str(vm['error']) + ')'}")
+            print(
+                f"-- vm {vm['label']}:  {'pulled' if vm['ok'] else 'not pulled (' + str(vm['error']) + ')'}"
+            )
     return report, 1 if report.failed else 0
 
 
