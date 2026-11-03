@@ -98,7 +98,7 @@ class StrictSeatTests(RealRegistryCase):
                     I.seat_app(raw, registry=self.reg)
 
     def test_a_retired_seat_is_unknown_but_says_it_is_retired(self) -> None:
-        for raw in ("MONET", "RENOIR", "HARNESS", "DSH", "KIMI"):
+        for raw in ("MONET", "RENOIR", "HARNESS", "DSH"):
             with self.subTest(raw=raw):
                 with self.assertRaises(I.UnknownSeat) as cm:
                     I.strict_seat(raw, registry=self.reg)
@@ -153,7 +153,7 @@ class SeatAppTests(RealRegistryCase):
         want = {"CLAUDE": "claude-code", "CODEX": "codex", "CURSOR": "cursor", "GROK": "grok-terminal",
                 "GROK-WEB": "grok-web", "AG": "antigravity", "MM": "minimax-code", "MC": "muse-code",
                 "MA": "muse-assist", "CLUTCH": "clutch", "FX": "fx", "OPENCODE": "opencode", "GROK-BOT": "grok-bot",
-                "ECHO": "instinct", "WISE": "instinct"}
+                "ECHO": "instinct", "WISE": "instinct", "KIMI": "kimi", "ZC": "zcode"}
         self.assertEqual(dict(self.reg.by_seat), want)
         self.assertEqual(dict(self.reg.extra), {"AMP": "amp", "JET": "chatgpt", "JET-CHAT": "chatgpt", "OPERATOR": "operator"})
 
@@ -547,11 +547,11 @@ class OnboardScriptTests(unittest.TestCase):
 
     def test_a_retired_seat_gets_no_app_even_when_one_is_passed(self) -> None:
         was = self.before()
-        for extra in ((), ("--app", "kimi-code")):
+        for extra in ((), ("--app", "monet-code")):
             with self.subTest(extra=extra):
-                got = self.run_script("--tag", "KIMI", *extra)
+                got = self.run_script("--tag", "MONET", *extra)
                 self.assertEqual(got.returncode, 0, got.stderr)
-                self.assertIn("seat KIMI is retired", got.stdout)
+                self.assertIn("seat MONET is retired", got.stdout)
                 self.assertEqual(self.before(), was)
         self.assertEqual(load_check().seat_apps_errors(json.loads(self.before())), [])
 
