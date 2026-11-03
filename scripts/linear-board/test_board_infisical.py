@@ -69,7 +69,11 @@ class MockInfisical:
                     is_metadata = path == "/api/v2/service-token"
                     expected_token = (
                         mock.write_token
-                        if method in ("PATCH", "POST") or (is_metadata and self.headers.get("Authorization") == "Bearer " + mock.write_token)
+                        if method in ("PATCH", "POST")
+                        or (
+                            is_metadata
+                            and self.headers.get("Authorization") == "Bearer " + mock.write_token
+                        )
                         else mock.read_token
                     )
                     if self.headers.get("Authorization") != "Bearer " + expected_token:
@@ -77,11 +81,21 @@ class MockInfisical:
                     if path == "/api/v2/service-token":
                         if mock.metadata_override is not None:
                             return self._send(200, mock.metadata_override)
-                        permissions = ["read", "write"] if method == "GET" and expected_token == mock.write_token else ["read"]
-                        return self._send(200, {"projectId": "proj-afc", "workspace": "proj-afc",
-                            "permissions": permissions,
-                            "scopes": [{"environment": "prod", "secretPath": "/linear"}],
-                            "expiresAt": None})
+                        permissions = (
+                            ["read", "write"]
+                            if method == "GET" and expected_token == mock.write_token
+                            else ["read"]
+                        )
+                        return self._send(
+                            200,
+                            {
+                                "projectId": "proj-afc",
+                                "workspace": "proj-afc",
+                                "permissions": permissions,
+                                "scopes": [{"environment": "prod", "secretPath": "/linear"}],
+                                "expiresAt": None,
+                            },
+                        )
                     if path == "/api/v3/secrets/raw" and method == "GET":
                         return self._send(
                             200,
@@ -175,7 +189,8 @@ class InfisicalTests(T.BoardTest):
             )
         )
         metadata_auth = [
-            authorization for method, path, authorization in self.vault.authorizations
+            authorization
+            for method, path, authorization in self.vault.authorizations
             if method == "GET" and path == "/api/v2/service-token"
         ]
         self.assertIn("Bearer " + self.vault.read_token, metadata_auth)
@@ -218,15 +233,22 @@ class InfisicalTests(T.BoardTest):
 
     def test_malformed_permission_metadata_fails_closed(self):
         self.vault.metadata_override = {
-            "projectId": "proj-afc", "workspace": "proj-afc",
+            "projectId": "proj-afc",
+            "workspace": "proj-afc",
             "permissions": [{"read": True}],
             "scopes": [{"environment": "prod", "secretPath": "/linear"}],
             "expiresAt": None,
         }
-        p = self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()), code=0)
+        p = self.board(
+            "whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()), code=0
+        )
         self.assertNotIn("LINEAR_FLEET_CACHE_TOKEN", self.vault.secrets)
-        self.assertTrue(any(path == "/api/v2/service-token" for _method, path in self.vault.requests))
-        self.assertFalse(any(path == "/api/v3/secrets/raw" for _method, path in self.vault.requests))
+        self.assertTrue(
+            any(path == "/api/v2/service-token" for _method, path in self.vault.requests)
+        )
+        self.assertFalse(
+            any(path == "/api/v3/secrets/raw" for _method, path in self.vault.requests)
+        )
 
     def test_the_ai_fleet_pair_is_read_through_fleet_secrets_and_not_through_infisical(self):
         cid, secret = self.seat_app("CLAUDE", "Claude", file=False)

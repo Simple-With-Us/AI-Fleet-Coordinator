@@ -120,7 +120,9 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
     opts = _parse(rest, False, -1)
     names = [core.check_name(str(a)) for a in opts["args"]]  # type: ignore[union-attr]
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project, allow_session=sys.stdin.isatty())
+    secrets = core.fetch_all(
+        core.check_path(str(opts["path"])), env, project, allow_session=sys.stdin.isatty()
+    )
     # One export serves the whole batch:  a caller that needs an App's id and
     # private key pays one round trip, and the other folder values never cross
     # into its process.  Nothing is printed unless every name resolves.
@@ -171,7 +173,9 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
 def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
     opts = _parse(rest, False, 0)
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project, allow_session=sys.stdin.isatty())
+    secrets = core.fetch_all(
+        core.check_path(str(opts["path"])), env, project, allow_session=sys.stdin.isatty()
+    )
     # No value is used here, so none is rejected:  one key whose value is an
     # unexpanded reference must not hide every key name at the path (AFC-592).
     # `doctor` still reports the unresolved count, and `get`/`run` fail closed.
@@ -257,7 +261,7 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         except SecretsError:
             rep[f"{slug}_project_id_resolvable"] = False
         rep[f"{slug}_fetch_ok"] = False
-        if rep[f"{slug}_project_id_resolvable"] :
+        if rep[f"{slug}_project_id_resolvable"]:
             try:
                 core.fetch_all("/fleetlink", env, project)
                 rep[f"{slug}_fetch_ok"] = True

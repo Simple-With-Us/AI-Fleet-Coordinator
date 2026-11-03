@@ -64,11 +64,15 @@ class FakeCLI:
 
 class ServiceTokenTestCase(unittest.TestCase):
     def setUp(self):
-        self.token_env = mock.patch.dict(os.environ, {
-            provision.READ_TOKEN_AFC: "st." + "fixture-afc-read-token-value",
-            provision.READ_TOKEN_FLEETOPS: "st." + "fixture-fleetops-read-token",
-            provision.WRITE_TOKEN_AFC: "st." + "fixture-afc-write-token-value",
-        }, clear=False)
+        self.token_env = mock.patch.dict(
+            os.environ,
+            {
+                provision.READ_TOKEN_AFC: "st." + "fixture-afc-read-token-value",
+                provision.READ_TOKEN_FLEETOPS: "st." + "fixture-fleetops-read-token",
+                provision.WRITE_TOKEN_AFC: "st." + "fixture-afc-write-token-value",
+            },
+            clear=False,
+        )
         self.token_env.start()
         self.addCleanup(self.token_env.stop)
 
@@ -152,12 +156,20 @@ class ServiceTokenWrites(ServiceTokenTestCase):
             "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
             "expiresAt": None,
         }
-        with mock.patch.object(provision.scoped_secrets, "_api_json", return_value=(200, metadata)) as verify:
-            with mock.patch.object(provision, "api", fake_api):
-                provision.infisical_upsert("st." + "fixture-afc-write-token-value", "INGRESS_SHARED_TOKEN", "secret")
+        with (
+            mock.patch.object(
+                provision.scoped_secrets, "_api_json", return_value=(200, metadata)
+            ) as verify,
+            mock.patch.object(provision, "api", fake_api),
+        ):
+            provision.infisical_upsert(
+                "st." + "fixture-afc-write-token-value", "INGRESS_SHARED_TOKEN", "secret"
+            )
         verify.assert_called_once()
         self.assertEqual(verify.call_args.args[1], "/v2/service-token")
-        self.assertEqual(verify.call_args.args[4][provision.scoped_secrets.ENV_WRITE_PATHS], "/zulip")
+        self.assertEqual(
+            verify.call_args.args[4][provision.scoped_secrets.ENV_WRITE_PATHS], "/zulip"
+        )
         self.assertEqual(seen["method"], "POST")
         self.assertEqual(seen["data"]["secretValue"], "secret")
 
@@ -172,13 +184,17 @@ class ServiceTokenWrites(ServiceTokenTestCase):
         with mock.patch.object(provision.scoped_secrets, "_api_json", return_value=(200, metadata)):
             with mock.patch.object(provision, "api") as write:
                 with self.assertRaisesRegex(provision.ReadError, "scope verification"):
-                    provision.infisical_upsert("st." + "fixture-afc-write-token-value", "INGRESS_SHARED_TOKEN", "secret")
+                    provision.infisical_upsert(
+                        "st." + "fixture-afc-write-token-value", "INGRESS_SHARED_TOKEN", "secret"
+                    )
         write.assert_not_called()
 
     def test_an_absent_credential_is_refused(self):
         with self.assertRaises(provision.ReadError) as caught:
             provision.infisical_upsert("bad-token", "INGRESS_SHARED_TOKEN", "secret")
-        self.assertEqual(caught.exception.reason, provision.WRITE_TOKEN_AFC + " is missing or invalid")
+        self.assertEqual(
+            caught.exception.reason, provision.WRITE_TOKEN_AFC + " is missing or invalid"
+        )
 
 
 if __name__ == "__main__":

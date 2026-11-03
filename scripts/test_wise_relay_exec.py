@@ -5,9 +5,9 @@ import tempfile
 import textwrap
 import unittest
 import urllib.parse
-from datetime import datetime, timedelta, timezone
-from unittest import mock
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
     "wise_relay", Path(__file__).with_name("wise-relay-exec.py")
@@ -136,9 +136,14 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("fetch_project", source)
 
     def test_live_workflow_uses_the_same_scoped_token_contract(self):
-        workflow = Path(__file__).resolve().parent.parent / ".github/workflows/auto-merge-reusable.yml"
+        workflow = (
+            Path(__file__).resolve().parent.parent / ".github/workflows/auto-merge-reusable.yml"
+        )
         source = workflow.read_text()
-        self.assertIn("WISE_RELAY_INFISICAL_TOKEN: ${{ secrets.WISE_RELAY_INFISICAL_TOKEN || secrets.wise_infisical_token }}", source)
+        self.assertIn(
+            "WISE_RELAY_INFISICAL_TOKEN: ${{ secrets.WISE_RELAY_INFISICAL_TOKEN || secrets.wise_infisical_token }}",
+            source,
+        )
         self.assertIn("def fetch_infisical_configuration(token, request=request_json):", source)
         self.assertIn('"/v2/service-token"', source)
         self.assertIn('"include_imports": "false"', source)
@@ -182,6 +187,7 @@ class AdapterTests(unittest.TestCase):
     def test_configuration_fetch_verifies_exact_project_folder_before_read(self):
         token = "st." + "x" * 32
         calls = []
+
         def api(method, path, request_token, body, env, **kwargs):
             calls.append((path, request_token, dict(env)))
             if path == "/v2/service-token":
@@ -192,11 +198,20 @@ class AdapterTests(unittest.TestCase):
                     "scopes": [{"environment": "prod", "secretPath": w.FOLDER}],
                     "expiresAt": None,
                 }
-            return 200, {"secrets": [
-                {"secretKey": key, "secretValue": value, "type": "shared",
-                 "workspace": w.FLEETOPS_PROJECT, "environment": "prod", "secretPath": w.FOLDER}
-                for key, value in self.config().items()
-            ]}
+            return 200, {
+                "secrets": [
+                    {
+                        "secretKey": key,
+                        "secretValue": value,
+                        "type": "shared",
+                        "workspace": w.FLEETOPS_PROJECT,
+                        "environment": "prod",
+                        "secretPath": w.FOLDER,
+                    }
+                    for key, value in self.config().items()
+                ]
+            }
+
         with mock.patch.object(w.scoped_secrets, "_api_json", api):
             got = w.fetch_configuration({w.INFISICAL_TOKEN_ENV: token})
         self.assertEqual(w.configuration(got), self.config())
@@ -207,6 +222,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_wrong_scope_stops_before_fetching_configuration(self):
         calls = []
+
         def api(method, path, request_token, body, env, **kwargs):
             calls.append(path)
             return 200, {
@@ -216,6 +232,7 @@ class AdapterTests(unittest.TestCase):
                 "scopes": [{"environment": "prod", "secretPath": "/wrong"}],
                 "expiresAt": None,
             }
+
         with mock.patch.object(w.scoped_secrets, "_api_json", api):
             with self.assertRaisesRegex(w.Refused, "scoped-folder"):
                 w.fetch_configuration({w.INFISICAL_TOKEN_ENV: "st." + "x" * 32})
@@ -233,7 +250,9 @@ class AdapterTests(unittest.TestCase):
         with mock.patch.dict(os.environ, source_env, clear=True):
             with mock.patch.object(w, "fetch_configuration", return_value=self.config()):
                 with mock.patch.object(w, "mint_verified", return_value="ghs_synthetic"):
-                    with mock.patch.object(w.sys, "argv", ["wise-relay-exec.py", "--", "/bin/true"]):
+                    with mock.patch.object(
+                        w.sys, "argv", ["wise-relay-exec.py", "--", "/bin/true"]
+                    ):
                         with mock.patch.object(w.os, "execvpe", fake_exec):
                             w.main()
 
@@ -244,13 +263,17 @@ class AdapterTests(unittest.TestCase):
 
 class InlineWorkflowTests(unittest.TestCase):
     def setUp(self):
-        source = (Path(__file__).resolve().parent.parent / ".github/workflows/auto-merge-reusable.yml").read_text()
+        source = (
+            Path(__file__).resolve().parent.parent / ".github/workflows/auto-merge-reusable.yml"
+        ).read_text()
         marker = "<<'WISE_RELAY_PY'\n"
         start = source.index(marker) + len(marker)
         end = source.index("\n          WISE_RELAY_PY", start)
         python_source = textwrap.dedent(source[start:end])
         self.namespace = {"__name__": "inline_wise_test"}
-        exec(compile(python_source, "auto-merge-reusable.yml:WISE_RELAY_PY", "exec"), self.namespace)
+        exec(
+            compile(python_source, "auto-merge-reusable.yml:WISE_RELAY_PY", "exec"), self.namespace
+        )
         self.configuration = {
             "WISE_GIT_RELAY_BEARER": "synthetic-relay-bearer",
             "WISE_GIT_RELAY_URL": "https://relay.example.test",
@@ -265,7 +288,7 @@ class InlineWorkflowTests(unittest.TestCase):
             "projectId": w.FLEETOPS_PROJECT,
             "permissions": ["read"],
             "scopes": [{"environment": "prod", "secretPath": w.FOLDER}],
-            "expiresAt": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            "expiresAt": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
         }
         result.update(overrides)
         return result
@@ -274,8 +297,14 @@ class InlineWorkflowTests(unittest.TestCase):
         data = dict(self.configuration)
         data.update(overrides)
         return [
-            {"secretKey": key, "secretValue": value, "type": "shared",
-             "workspace": w.FLEETOPS_PROJECT, "environment": "prod", "secretPath": w.FOLDER}
+            {
+                "secretKey": key,
+                "secretValue": value,
+                "type": "shared",
+                "workspace": w.FLEETOPS_PROJECT,
+                "environment": "prod",
+                "secretPath": w.FOLDER,
+            }
             for key, value in data.items()
         ]
 
@@ -323,7 +352,9 @@ class InlineWorkflowTests(unittest.TestCase):
                     return answer
 
                 with self.assertRaises(self.namespace["Refused"]):
-                    self.namespace["fetch_infisical_configuration"]("st." + "x" * 32, request=fake_http)
+                    self.namespace["fetch_infisical_configuration"](
+                        "st." + "x" * 32, request=fake_http
+                    )
                 self.assertEqual(len(calls), 1)
 
     def test_bad_secret_provenance_import_and_reference_are_rejected(self):
@@ -341,7 +372,9 @@ class InlineWorkflowTests(unittest.TestCase):
                     return {"secrets": [record]}
 
                 with self.assertRaises(self.namespace["Refused"]):
-                    self.namespace["fetch_infisical_configuration"]("st." + "x" * 32, request=fake_http)
+                    self.namespace["fetch_infisical_configuration"](
+                        "st." + "x" * 32, request=fake_http
+                    )
 
     def test_all_infisical_bindings_are_removed_before_consumer_exec(self):
         namespace = self.namespace

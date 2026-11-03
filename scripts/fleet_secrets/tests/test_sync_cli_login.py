@@ -51,11 +51,16 @@ class SyncTests(unittest.TestCase):
     def fake_api_json(self, method, path, token, body, env, **kwargs):
         self.api.append((method, path, token, dict(body or {})))
         if path == "/v2/service-token":
-            return 200, {"workspace": self.env[core.ENV_PROJECT], "permissions": ["read", "write"],
-                "scopes": [{"environment": "prod", "secretPath": PATH}]}
+            return 200, {
+                "workspace": self.env[core.ENV_PROJECT],
+                "permissions": ["read", "write"],
+                "scopes": [{"environment": "prod", "secretPath": PATH}],
+            }
         return 200, {"message": "ok"}
 
-    def _resolve_token(self, env, cli=None, mode=None, *, writer=False, project_name=core.DEFAULT_PROJECT):
+    def _resolve_token(
+        self, env, cli=None, mode=None, *, writer=False, project_name=core.DEFAULT_PROJECT
+    ):
         self.token_calls.append((writer, project_name))
         return TOKEN if writer else READ_TOKEN
 
@@ -116,7 +121,9 @@ class SyncTests(unittest.TestCase):
         self.written = {"GH_TOKEN": VAL}
         code, _out, err = self.run_sync()
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.token_calls, [(True, core.DEFAULT_PROJECT), (False, core.DEFAULT_PROJECT)])
+        self.assertEqual(
+            self.token_calls, [(True, core.DEFAULT_PROJECT), (False, core.DEFAULT_PROJECT)]
+        )
         self.assertEqual(self.folder_tokens, [TOKEN])
         self.assertEqual(self.write_tokens, [TOKEN])
         self.assertEqual(self.read_tokens, [READ_TOKEN])

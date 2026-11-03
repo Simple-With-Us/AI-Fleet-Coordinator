@@ -1,8 +1,9 @@
 """Offline test of scripts/telemetry/configure-agents.sh (mock Infisical, temp HOME)."""
+
 from __future__ import annotations
 
-import json
 import http.server
+import json
 import os
 import secrets
 import stat
@@ -94,11 +95,21 @@ class ConfigureAgentsTests(unittest.TestCase):
                     params = urllib.parse.parse_qs(parsed.query)
                     owner.query = params
                     self.send_response(200)
-                    body = json.dumps({"secrets": [
-                        {"secretKey": key, "secretValue": value, "type": "shared",
-                         "workspace": owner.project, "environment": "prod", "secretPath": "/"}
-                        for key, value in owner.tokens.items()
-                    ]}).encode()
+                    body = json.dumps(
+                        {
+                            "secrets": [
+                                {
+                                    "secretKey": key,
+                                    "secretValue": value,
+                                    "type": "shared",
+                                    "workspace": owner.project,
+                                    "environment": "prod",
+                                    "secretPath": "/",
+                                }
+                                for key, value in owner.tokens.items()
+                            ]
+                        }
+                    ).encode()
                 else:
                     self.send_response(404)
                     body = b"{}"
@@ -175,29 +186,36 @@ class ConfigureAgentsTests(unittest.TestCase):
         self.assertEqual(self.query["workspaceId"], [self.project])
         self.assertEqual(self.query["environment"], ["prod"])
         self.assertEqual(self.query["secretPath"], ["/"])
-        self.assertEqual([path.split("?", 1)[0] for path, _ in self.requests],
-                         ["/api/v2/service-token", "/api/v3/secrets/raw"])
+        self.assertEqual(
+            [path.split("?", 1)[0] for path, _ in self.requests],
+            ["/api/v2/service-token", "/api/v3/secrets/raw"],
+        )
         self.assertTrue(all(auth == "Bearer " + self.service_token for _, auth in self.requests))
 
     def test_missing_dedicated_token_rejects_legacy_credentials_without_api_call(self) -> None:
-        proc = self._run(extra={
-            "INFISICAL_TELEMETRY_CONFIG_READ_TOKEN": "",
-            "INFISICAL_TOKEN": "st.generic-unrelated-token-fixture",
-            "INFISICAL_AUTOMATION_CLIENT_ID": "legacy-id-fixture",
-            "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy-secret-fixture",
-        })
+        proc = self._run(
+            extra={
+                "INFISICAL_TELEMETRY_CONFIG_READ_TOKEN": "",
+                "INFISICAL_TOKEN": "st.generic-unrelated-token-fixture",
+                "INFISICAL_AUTOMATION_CLIENT_ID": "legacy-id-fixture",
+                "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy-secret-fixture",
+            }
+        )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("INFISICAL_TELEMETRY_CONFIG_READ_TOKEN", proc.stderr)
         self.assertEqual(self.requests, [])
         self.assertFalse(self.out.exists())
 
     def test_inexact_metadata_fails_before_secret_read(self) -> None:
-        self.metadata["scopes"] = [{"environment": "prod", "secretPath": "/"},
-                                   {"environment": "prod", "secretPath": "/other"}]
+        self.metadata["scopes"] = [
+            {"environment": "prod", "secretPath": "/"},
+            {"environment": "prod", "secretPath": "/other"},
+        ]
         proc = self._run("--relay-url", "https://relay.example.test")
         self.assertNotEqual(proc.returncode, 0)
-        self.assertEqual([path.split("?", 1)[0] for path, _ in self.requests],
-                         ["/api/v2/service-token"])
+        self.assertEqual(
+            [path.split("?", 1)[0] for path, _ in self.requests], ["/api/v2/service-token"]
+        )
         self.assertFalse(self.out.exists())
 
     def test_empty_bearer_fails_closed(self) -> None:
@@ -231,11 +249,19 @@ class ConfigureAgentsTests(unittest.TestCase):
             calls.append((method, path, token))
             if path == "/v2/service-token":
                 return 200, self.metadata
-            return 200, {"secrets": [
-                {"secretKey": key, "secretValue": value, "type": "shared",
-                 "workspace": self.project, "environment": "prod", "secretPath": "/"}
-                for key, value in self.tokens.items()
-            ]}
+            return 200, {
+                "secrets": [
+                    {
+                        "secretKey": key,
+                        "secretValue": value,
+                        "type": "shared",
+                        "workspace": self.project,
+                        "environment": "prod",
+                        "secretPath": "/",
+                    }
+                    for key, value in self.tokens.items()
+                ]
+            }
 
         env = {
             **self.env,
@@ -246,8 +272,10 @@ class ConfigureAgentsTests(unittest.TestCase):
         with mock.patch.object(core, "_api_json", side_effect=api):
             result = fetch_export(env)
         self.assertEqual(result, self.tokens)
-        self.assertEqual([path.split("?", 1)[0] for _, path, _ in calls],
-                         ["/v2/service-token", "/v3/secrets/raw"])
+        self.assertEqual(
+            [path.split("?", 1)[0] for _, path, _ in calls],
+            ["/v2/service-token", "/v3/secrets/raw"],
+        )
         self.assertTrue(all(token == self.service_token for _, _, token in calls))
 
     def test_helper_rejects_invalid_metadata_before_secret_read(self) -> None:
@@ -265,7 +293,9 @@ class ConfigureAgentsTests(unittest.TestCase):
 
     def test_helper_rejects_another_configured_project(self) -> None:
         with self.assertRaisesRegex(core.SecretsError, "project-id-mismatch"):
-            fetch_export({**self.env, "INFISICAL_PROJECT_ID": "00000000-0000-4000-8000-000000000099"})
+            fetch_export(
+                {**self.env, "INFISICAL_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
+            )
         self.assertEqual(self.requests, [])
 
 

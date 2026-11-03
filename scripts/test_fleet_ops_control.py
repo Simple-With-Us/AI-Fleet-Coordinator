@@ -535,11 +535,18 @@ class CredentialTests(Base):
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
         for name in (
-            "INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", "INFISICAL_WRITE_TOKEN",
-            "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_AUTOMATION_CLIENT_ID",
-            "INFISICAL_AUTOMATION_CLIENT_SECRET", "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET", "INFISICAL_SHARED_CLIENT_ID",
-            "INFISICAL_SHARED_CLIENT_SECRET", "WISE_RELAY_INFISICAL_TOKEN",
+            "INFISICAL_TOKEN",
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+            "INFISICAL_WRITE_TOKEN",
+            "INFISICAL_CLIENT_ID",
+            "INFISICAL_CLIENT_SECRET",
+            "INFISICAL_AUTOMATION_CLIENT_ID",
+            "INFISICAL_AUTOMATION_CLIENT_SECRET",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+            "INFISICAL_SHARED_CLIENT_ID",
+            "INFISICAL_SHARED_CLIENT_SECRET",
+            "WISE_RELAY_INFISICAL_TOKEN",
         )
     }
     COORDINATES = {"INFISICAL_PROJECT_ID": "preserved-project", "INFISICAL_READ_PATHS": "/coolify"}
@@ -568,8 +575,12 @@ class CredentialTests(Base):
 
     def test_file_scoped_token_reaches_only_fleet_secrets(self):
         self.credentials(self.pair_text())
-        inherited = {"PATH": "/usr/bin", **self.SHARED_AUTH, **self.COORDINATES,
-                     self.TOKEN: "st.different-process-reader-token"}
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN: "st.different-process-reader-token",
+        }
         code, ans = self.redeploy(inherited)
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
         env = self.secrets_env()
@@ -584,7 +595,8 @@ class CredentialTests(Base):
         # A systemctl child never sees it.
         self.runner.calls.clear()
         self.run_main(
-            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx(environ=inherited)
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
+            self.ctx(environ=inherited),
         )
         ((argv, env),) = self.runner.calls
         self.assertNotIn("INFISICAL_TOKEN", env)
@@ -592,7 +604,12 @@ class CredentialTests(Base):
         self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
 
     def test_process_scoped_token_is_mapped_for_the_child(self):
-        inherited = {"PATH": "/usr/bin", **self.SHARED_AUTH, **self.COORDINATES, self.TOKEN: self.VALUE}
+        inherited = {
+            "PATH": "/usr/bin",
+            **self.SHARED_AUTH,
+            **self.COORDINATES,
+            self.TOKEN: self.VALUE,
+        }
         code, _ = self.redeploy(inherited)
         self.assertEqual(code, 0)
         env = self.secrets_env()
@@ -602,7 +619,8 @@ class CredentialTests(Base):
         self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
         self.runner.calls.clear()
         self.run_main(
-            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx(environ=inherited)
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
+            self.ctx(environ=inherited),
         )
         ((argv, env),) = self.runner.calls
         self.assertNotIn(self.TOKEN, env)
@@ -623,7 +641,14 @@ class CredentialTests(Base):
             ('FLEET_OPS_CONTROL_INFISICAL_TOKEN="quoted"\n', 0o600),
             ("PATH=/tmp/evil\n", 0o600),
             ("FLEET_OPS_CONTROL_INFISICAL_TOKEN=a b\n", 0o600),
-            ("FLEET_OPS_CONTROL_INFISICAL_TOKEN=st." + "x" * 20 + "\nFLEET_OPS_CONTROL_INFISICAL_TOKEN=st." + "y" * 20 + "\n", 0o600),
+            (
+                "FLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
+                + "x" * 20
+                + "\nFLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
+                + "y" * 20
+                + "\n",
+                0o600,
+            ),
             ("export FLEET_OPS_CONTROL_INFISICAL_TOKEN=st." + "x" * 25 + "\n", 0o600),
             ("# nothing\n", 0o600),
         ]

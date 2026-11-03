@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import contextlib
-import io
 import importlib.util
+import io
 import os
 import tempfile
 import unittest
@@ -22,15 +22,24 @@ TOKEN = "st.fixture-service-token-for-tests"
 class ServiceTokenEntryTests(unittest.TestCase):
     def test_missing_and_malformed_tokens_fail_closed(self):
         for token in (None, "", "not-a-token", "st.short", "st.fixture has-space"):
-            with self.subTest(token=token), mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token or ""}, clear=True):
+            with (
+                self.subTest(token=token),
+                mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token or ""}, clear=True),
+            ):
                 with self.assertRaises(entry.EntryError) as caught:
                     entry.authenticated_env()
-                self.assertRegex(str(caught.exception), "scoped service token|scoped service-token|scoped reader")
+                self.assertRegex(
+                    str(caught.exception), "scoped service token|scoped service-token|scoped reader"
+                )
 
     def test_scoped_reader_and_writer_tokens_are_preserved_separately(self):
         with mock.patch.dict(
             os.environ,
-            {"INFISICAL_TOKEN": TOKEN, "INFISICAL_WRITE_TOKEN": "st.write-token-fixture", "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy"},
+            {
+                "INFISICAL_TOKEN": TOKEN,
+                "INFISICAL_WRITE_TOKEN": "st.write-token-fixture",
+                "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy",
+            },
             clear=True,
         ):
             env = entry.authenticated_env()
@@ -56,7 +65,11 @@ class ServiceTokenEntryTests(unittest.TestCase):
             target.write_text("#!/bin/sh\nexit 0\n")
             target.chmod(0o755)
             with (
-                mock.patch.dict(os.environ, {"FLEET_SECRETS_CLI": str(target), "INFISICAL_TOKEN": TOKEN}, clear=True),
+                mock.patch.dict(
+                    os.environ,
+                    {"FLEET_SECRETS_CLI": str(target), "INFISICAL_TOKEN": TOKEN},
+                    clear=True,
+                ),
                 mock.patch.object(entry.sys, "argv", ["fleet-secrets", "--help"]),
                 mock.patch.object(entry.os, "execve") as execve,
             ):
@@ -77,7 +90,11 @@ class ServiceTokenEntryTests(unittest.TestCase):
                 self.assertEqual(entry.main(), 4)
             self.assertIn("scoped service token", stderr.getvalue())
             with (
-                mock.patch.dict(os.environ, {"FLEET_SECRETS_CLI": str(target), "INFISICAL_TOKEN": TOKEN}, clear=True),
+                mock.patch.dict(
+                    os.environ,
+                    {"FLEET_SECRETS_CLI": str(target), "INFISICAL_TOKEN": TOKEN},
+                    clear=True,
+                ),
                 mock.patch.object(entry.sys, "argv", ["fleet-secrets", "names"]),
                 mock.patch.object(entry.os, "execve") as execve,
             ):

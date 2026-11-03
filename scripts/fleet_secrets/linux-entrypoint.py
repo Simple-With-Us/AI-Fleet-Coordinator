@@ -3,7 +3,6 @@
 
 import importlib.util
 import os
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -37,8 +36,11 @@ class Interrupted(Exception):
 def authenticated_env():
     """Pass explicit service tokens only; never inspect a credential store."""
     token_names = (core.ENV_TOKEN, core.ENV_AI_FLEET_COORDINATOR_TOKEN, core.ENV_WRITE_TOKEN)
-    env = {key: value for key, value in os.environ.items()
-           if key not in core.AUTH_ENV_VARS or key in token_names}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in core.AUTH_ENV_VARS or key in token_names
+    }
     # Validate read bindings early, but let a bad optional writer fail only when a
     # write is attempted inside the CLI.
     for name in token_names[:2]:

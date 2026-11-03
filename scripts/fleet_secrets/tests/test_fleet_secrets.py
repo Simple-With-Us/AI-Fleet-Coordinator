@@ -48,7 +48,9 @@ class World:
         self.calls = []
         self.fetches = []
 
-    def fetch_project(self, project, path, env, *, token=None, writer=False, names=None, timeout=None):
+    def fetch_project(
+        self, project, path, env, *, token=None, writer=False, names=None, timeout=None
+    ):
         refusal = core.environment_refusal(env)
         if refusal:
             raise core.SecretsError(refusal, 2)
@@ -393,7 +395,8 @@ class RunTests(Base):
         self.assertEqual(env["ALPHA"], VAL_A)
         self.assertEqual(
             {k for k in env if k.startswith("INFISICAL_")},
-            {k for k in self.env if k.startswith("INFISICAL_")} - {
+            {k for k in self.env if k.startswith("INFISICAL_")}
+            - {
                 core.ENV_TOKEN,
                 core.ENV_AI_FLEET_COORDINATOR_TOKEN,
                 core.ENV_WRITE_TOKEN,
@@ -471,9 +474,7 @@ class ScopedServiceTokenTests(Base):
         world = self.use(World())
         code, _, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")
         self.assertEqual(code, 0)
-        self.assertEqual(
-            world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN]
-        )
+        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
 
 
 # Historical assertion examples for the retired Universal Auth/Keychain selection matrix.
@@ -827,7 +828,9 @@ class DoctorTests(Base):
             and rep["project_id_resolvable"]
             and rep["fetch_names_ok"]
         )
-        self.assertEqual((rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("token", 2, "0.43.141"))
+        self.assertEqual(
+            (rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("token", 2, "0.43.141")
+        )
         self.assertTrue(rep["reader_configured"])
         self.assertTrue(rep["writer_configured"])
         for v in rep.values():
@@ -847,6 +850,7 @@ class DoctorTests(Base):
     def test_doctor_session_mode_text_output(self):
         self.use(World())
         self.env.pop(core.ENV_TOKEN)
+
         class TTY:
             def isatty(self):
                 return True
@@ -912,7 +916,8 @@ class SetTests(Base):
         self.assertEqual((code, out, err), (0, "updated CACHE_MY_APP at /linear\n", ""))
         method, path, token, body = self.api[-1]
         self.assertEqual(
-            (method, path, token), ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.ENV_WRITE_TOKEN])
+            (method, path, token),
+            ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.ENV_WRITE_TOKEN]),
         )
         self.assertEqual(body["secretValue"], "VAL_TO_WRITE_1")
         self.assertEqual(
@@ -1114,7 +1119,9 @@ class TestFetchVerified(unittest.TestCase):
 
         with mock.patch.object(core, "_api_json", fake_api_json):
             try:
-                value = core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV, token=self.ENV[core.ENV_TOKEN])
+                value = core.fetch_verified(
+                    "GITHUB_TOKEN", self.PATH, self.ENV, token=self.ENV[core.ENV_TOKEN]
+                )
                 return value, calls, None
             except core.SecretsError as exc:
                 return None, calls, exc
@@ -1204,26 +1211,36 @@ class TestFetchVerified(unittest.TestCase):
         # The service-token metadata response is valid, while the raw-secret response is not.
         def fake_api(method, path, token, body, env, **kwargs):
             if path == "/v2/service-token":
-                return 200, {"workspace": self.PROJECT, "permissions": ["read"],
-                             "scopes": [{"environment": "prod", "secretPath": self.PATH}]}
+                return 200, {
+                    "workspace": self.PROJECT,
+                    "permissions": ["read"],
+                    "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                }
             return 200, None
 
         with mock.patch.object(core, "_api_json", fake_api):
             with self.assertRaises(core.SecretsError) as ctx:
-                core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV, token=self.ENV[core.ENV_TOKEN])
+                core.fetch_verified(
+                    "GITHUB_TOKEN", self.PATH, self.ENV, token=self.ENV[core.ENV_TOKEN]
+                )
         self.assertEqual(ctx.exception.code, 4)
         self.assertIn("bad-output", str(ctx.exception))
 
     def test_missing_service_token_is_refused(self):
         with self.assertRaises(core.SecretsError) as ctx:
-            core.fetch_verified("GITHUB_TOKEN", self.PATH, {"INFISICAL_FLEET_OPS_PROJECT_ID": self.PROJECT})
+            core.fetch_verified(
+                "GITHUB_TOKEN", self.PATH, {"INFISICAL_FLEET_OPS_PROJECT_ID": self.PROJECT}
+            )
         self.assertIn("INFISICAL_TOKEN", str(ctx.exception))
 
     def test_valid_service_token_is_used_when_not_passed_explicitly(self):
         def fake_api(method, path, token, body, env, **kwargs):
             if path == "/v2/service-token":
-                return 200, {"workspace": self.PROJECT, "permissions": ["read"],
-                             "scopes": [{"environment": "prod", "secretPath": self.PATH}]}
+                return 200, {
+                    "workspace": self.PROJECT,
+                    "permissions": ["read"],
+                    "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                }
             return 200, {"secret": self._secret()}
 
         with mock.patch.object(core, "_api_json", fake_api):

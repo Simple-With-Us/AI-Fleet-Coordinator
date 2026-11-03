@@ -8,7 +8,6 @@ CLI login session or credential-file fallback runs.  Values stay in memory.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 import os
 import re
 import shutil
@@ -19,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 
 ENVIRONMENT = "prod"
@@ -93,8 +93,17 @@ MACHINE_MODES = ()
 
 # Auth variables of this tool:  never handed on to the command `run` starts.
 AUTH_ENV_VARS = frozenset(
-    {ENV_TOKEN, ENV_AI_FLEET_COORDINATOR_TOKEN, ENV_WRITE_TOKEN, ENV_CLIENT_ID, ENV_CLIENT_SECRET, ENV_AUTOMATION_ID, ENV_AUTOMATION_SECRET,
-     "INFISICAL_SHARED_CLIENT_ID", "INFISICAL_SHARED_CLIENT_SECRET"}
+    {
+        ENV_TOKEN,
+        ENV_AI_FLEET_COORDINATOR_TOKEN,
+        ENV_WRITE_TOKEN,
+        ENV_CLIENT_ID,
+        ENV_CLIENT_SECRET,
+        ENV_AUTOMATION_ID,
+        ENV_AUTOMATION_SECRET,
+        "INFISICAL_SHARED_CLIENT_ID",
+        "INFISICAL_SHARED_CLIENT_SECRET",
+    }
 )
 
 REF_RE = re.compile(r"\$\{[^}]+\}")
@@ -232,7 +241,7 @@ def _base_env(env: Mapping[str, str]) -> dict[str, str]:
 
 def login_keychain() -> None:
     """Compatibility seam; implicit Keychain lookup is retired."""
-    return None
+    return
 
 
 def keychain_presence(keychain: str | None) -> tuple[bool, bool]:
@@ -280,12 +289,21 @@ def cli_version(cli: str, env: Mapping[str, str]) -> str | None:
 # --------------------------------------------------------------------------- fetch
 
 
-def fetch_all(path: str, env: Mapping[str, str], project_name: str = DEFAULT_PROJECT,
-              token: str | None = None, allow_session: bool = False,
-              writer: bool = False) -> dict[str, str]:
+def fetch_all(
+    path: str,
+    env: Mapping[str, str],
+    project_name: str = DEFAULT_PROJECT,
+    token: str | None = None,
+    allow_session: bool = False,
+    writer: bool = False,
+) -> dict[str, str]:
     """Read one declared folder using its read token unless writer is explicitly requested."""
     project = infisical_project_id(env, home_dir(env), project_name)
-    if token is None and not (env.get(project_token_name(project_name)) or "").strip() and allow_session:
+    if (
+        token is None
+        and not (env.get(project_token_name(project_name)) or "").strip()
+        and allow_session
+    ):
         return fetch_with_cli_session(project, path, env)
     return fetch_project(project, path, env, token=token, writer=writer)
 
@@ -316,11 +334,25 @@ def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> d
     if not cli:
         raise SecretsError("cli-missing")
     child = _base_env(env)
-    argv = [cli, "export", f"--env={ENVIRONMENT}", f"--projectId={project}", f"--path={path}",
-            "--format=json", "--silent"]
+    argv = [
+        cli,
+        "export",
+        f"--env={ENVIRONMENT}",
+        f"--projectId={project}",
+        f"--path={path}",
+        "--format=json",
+        "--silent",
+    ]
     try:
-        proc = subprocess.run(argv, stdin=None, capture_output=True, timeout=EXPORT_TIMEOUT,
-                              cwd="/", env=child, check=False)
+        proc = subprocess.run(
+            argv,
+            stdin=None,
+            capture_output=True,
+            timeout=EXPORT_TIMEOUT,
+            cwd="/",
+            env=child,
+            check=False,
+        )
     except (subprocess.TimeoutExpired, OSError):
         raise SecretsError("interactive-session-read-failed") from None
     if proc.returncode or len(proc.stdout) > MAX_OUTPUT_BYTES:
@@ -334,26 +366,43 @@ def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> d
 def declared_paths(env: Mapping[str, str], path: str, *, writer: bool = False) -> tuple[str, ...]:
     name = ENV_WRITE_PATHS if writer else ENV_READ_PATHS
     raw = env.get(name)
-    paths = tuple(check_path(item.strip()) for item in raw.split(",")) if raw is not None else (check_path(path),)
+    paths = (
+        tuple(check_path(item.strip()) for item in raw.split(","))
+        if raw is not None
+        else (check_path(path),)
+    )
     if not paths or len(paths) > 20 or len(paths) != len(set(paths)) or path not in paths:
         raise SecretsError("token-scope-mismatch: declared folders do not cover this operation")
     return paths
 
 
-def validate_service_metadata(metadata: object, project: str, paths: Iterable[str], permissions: Iterable[str]) -> None:
+def validate_service_metadata(
+    metadata: object, project: str, paths: Iterable[str], permissions: Iterable[str]
+) -> None:
     """Validate the token's own grant, never a successful secret query."""
-    if (not isinstance(metadata, dict) or metadata.get("workspace") != project
-            or ("projectId" in metadata and metadata.get("projectId") != project)):
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("workspace") != project
+        or ("projectId" in metadata and metadata.get("projectId") != project)
+    ):
         raise SecretsError("token-scope-mismatch")
     actual_permissions = metadata.get("permissions")
     scopes = metadata.get("scopes")
-    if (not isinstance(actual_permissions, list) or any(not isinstance(item, str) for item in actual_permissions)
-            or len(actual_permissions) != len(set(actual_permissions))
-            or set(actual_permissions) != set(permissions) or not isinstance(scopes, list)):
+    if (
+        not isinstance(actual_permissions, list)
+        or any(not isinstance(item, str) for item in actual_permissions)
+        or len(actual_permissions) != len(set(actual_permissions))
+        or set(actual_permissions) != set(permissions)
+        or not isinstance(scopes, list)
+    ):
         raise SecretsError("token-scope-mismatch")
     actual_paths = []
     for scope in scopes:
-        if not isinstance(scope, dict) or scope.get("environment") != ENVIRONMENT or not isinstance(scope.get("secretPath"), str):
+        if (
+            not isinstance(scope, dict)
+            or scope.get("environment") != ENVIRONMENT
+            or not isinstance(scope.get("secretPath"), str)
+        ):
             raise SecretsError("token-scope-mismatch")
         actual_paths.append(scope["secretPath"])
     if len(actual_paths) != len(set(actual_paths)) or set(actual_paths) != set(paths):
@@ -362,25 +411,40 @@ def validate_service_metadata(metadata: object, project: str, paths: Iterable[st
     if expiry is not None:
         try:
             parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-            if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):
+            if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
                 raise ValueError()
         except (ValueError, TypeError, AttributeError):
             raise SecretsError("token-expired-or-invalid") from None
 
 
 def check_service_token(token: str) -> str:
-    if not isinstance(token, str) or not token.startswith("st.") or not 20 <= len(token) <= 8192 or any(c.isspace() or c == "\0" for c in token):
+    if (
+        not isinstance(token, str)
+        or not token.startswith("st.")
+        or not 20 <= len(token) <= 8192
+        or any(c.isspace() or c == "\0" for c in token)
+    ):
         raise SecretsError("service-token-required: bind a scoped Infisical service token")
     return token
 
 
-def verify_service_token(token: str, project: str, path: str, env: Mapping[str, str], *, writer: bool = False, deadline: float | None = None) -> tuple[str, ...]:
+def verify_service_token(
+    token: str,
+    project: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    writer: bool = False,
+    deadline: float | None = None,
+) -> tuple[str, ...]:
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2)
     paths = declared_paths(env, path, writer=writer)
     check_service_token(token)
-    status, metadata = _api_json("GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024, deadline=deadline)
+    status, metadata = _api_json(
+        "GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024, deadline=deadline
+    )
     if status != 200:
         raise SecretsError("token-verification-failed")
     validate_service_metadata(metadata, project, paths, ("read", "write") if writer else ("read",))
@@ -388,15 +452,33 @@ def verify_service_token(token: str, project: str, path: str, env: Mapping[str, 
 
 
 def secret_query(project: str, path: str) -> str:
-    return urllib.parse.urlencode({"workspaceId": project, "environment": ENVIRONMENT,
-        "secretPath": path, "viewSecretValue": "true", "expandSecretReferences": "false",
-        "recursive": "false", "include_imports": "false"})
+    return urllib.parse.urlencode(
+        {
+            "workspaceId": project,
+            "environment": ENVIRONMENT,
+            "secretPath": path,
+            "viewSecretValue": "true",
+            "expandSecretReferences": "false",
+            "recursive": "false",
+            "include_imports": "false",
+        }
+    )
 
 
-def validate_secret_record(record: object, project: str, path: str, *, single_scope: bool = True) -> tuple[str, str]:
-    if not isinstance(record, dict) or record.get("type") != "shared" or record.get("secretValueHidden") is True:
+def validate_secret_record(
+    record: object, project: str, path: str, *, single_scope: bool = True
+) -> tuple[str, str]:
+    if (
+        not isinstance(record, dict)
+        or record.get("type") != "shared"
+        or record.get("secretValueHidden") is True
+    ):
         raise SecretsError("unverified-source")
-    for field, expected in (("workspace", project), ("environment", ENVIRONMENT), ("secretPath", path)):
+    for field, expected in (
+        ("workspace", project),
+        ("environment", ENVIRONMENT),
+        ("secretPath", path),
+    ):
         if record.get(field) != expected and not (single_scope and field not in record):
             raise SecretsError("unverified-source")
     key, value = record.get("secretKey"), record.get("secretValue")
@@ -405,8 +487,16 @@ def validate_secret_record(record: object, project: str, path: str, *, single_sc
     return key, value
 
 
-def fetch_project(project: str, path: str, env: Mapping[str, str], *, token: str | None = None,
-                  writer: bool = False, names: Iterable[str] | None = None, timeout: float = EXPORT_TIMEOUT) -> dict[str, str]:
+def fetch_project(
+    project: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    token: str | None = None,
+    writer: bool = False,
+    names: Iterable[str] | None = None,
+    timeout: float = EXPORT_TIMEOUT,
+) -> dict[str, str]:
     """Explicit project route shared with standalone recall and knobs consumers."""
     check_path(path)
     if token is None:
@@ -419,9 +509,20 @@ def fetch_project(project: str, path: str, env: Mapping[str, str], *, token: str
     if wanted is None:
         endpoints = [(None, "/v3/secrets/raw?" + secret_query(project, path))]
     else:
-        endpoints = [(check_name(name), "/v3/secrets/raw/" + urllib.parse.quote(name, safe="") + "?" + secret_query(project, path)) for name in sorted(wanted)]
+        endpoints = [
+            (
+                check_name(name),
+                "/v3/secrets/raw/"
+                + urllib.parse.quote(name, safe="")
+                + "?"
+                + secret_query(project, path),
+            )
+            for name in sorted(wanted)
+        ]
     for expected_name, endpoint in endpoints:
-        status, payload = _api_json("GET", endpoint, token, None, env, max_bytes=MAX_OUTPUT_BYTES, deadline=deadline)
+        status, payload = _api_json(
+            "GET", endpoint, token, None, env, max_bytes=MAX_OUTPUT_BYTES, deadline=deadline
+        )
         if expected_name is not None and status == 404:
             continue
         if status != 200 or not isinstance(payload, dict):
@@ -501,8 +602,12 @@ def fetch_verified(
     verify_service_token(token, project, path, env)
     query = secret_query(project, path)
     status, answer = _api_json(
-        "GET", "/v3/secrets/raw/{}?{}".format(urllib.parse.quote(name, safe=""), query),
-        token, None, env, max_bytes=MAX_VERIFIED_BYTES,
+        "GET",
+        "/v3/secrets/raw/{}?{}".format(urllib.parse.quote(name, safe=""), query),
+        token,
+        None,
+        env,
+        max_bytes=MAX_VERIFIED_BYTES,
     )
     if status in (400, 404):
         raise SecretsError(f"key {name} is not in Infisical at {path}", 3)
@@ -668,7 +773,14 @@ def ensure_folder(path: str, env: Mapping[str, str], token: str) -> None:
         raise SecretsError(refusal, 2)
     project = infisical_project_id(env, home_dir(env))
     verify_service_token(token, project, path, env, writer=True)
-    status, _ = _api_json("GET", "/v3/secrets/raw?" + secret_query(project, path), token, None, env, max_bytes=MAX_OUTPUT_BYTES)
+    status, _ = _api_json(
+        "GET",
+        "/v3/secrets/raw?" + secret_query(project, path),
+        token,
+        None,
+        env,
+        max_bytes=MAX_OUTPUT_BYTES,
+    )
     if status != 200:
         raise SecretsError("folder-missing-or-inaccessible: provisioning folders is separate")
 
@@ -681,8 +793,14 @@ def _is_existing_folder(answer: object) -> bool:
     return "already exists" in message.lower()
 
 
-def resolve_token(env: Mapping[str, str], cli: str | None = None, mode: str | None = None,
-                  *, writer: bool = False, project_name: str = DEFAULT_PROJECT) -> str:
+def resolve_token(
+    env: Mapping[str, str],
+    cli: str | None = None,
+    mode: str | None = None,
+    *,
+    writer: bool = False,
+    project_name: str = DEFAULT_PROJECT,
+) -> str:
     """Resolve one explicit binding, without cross-purpose or identity fallback."""
     if writer and project_name != DEFAULT_PROJECT:
         raise SecretsError("write-token-project-mismatch: writes are configured for Fleet-OPS only")
