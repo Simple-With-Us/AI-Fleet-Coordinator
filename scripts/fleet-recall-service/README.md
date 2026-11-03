@@ -60,7 +60,7 @@ Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): when
 | Variable | Required | Notes |
 |---|---|---|
 | `RECALL_API_TOKEN` | yes | bearer for every non-health route; the process refuses to start without it |
-| `INFISICAL_TOKEN` | yes | scoped read-only service token for the AI Fleet Coordinator project and settings path; bind from the Recall read grant |
+| `INFISICAL_TOKEN` | for Infisical reads | scoped read-only service token for the AI Fleet Coordinator project and settings path; bind from the Recall read grant when using managed settings |
 | `INFISICAL_WRITE_TOKEN` | no | separate write-capable service token for admin settings updates |
 | `RECALL_ADMIN_TOKEN` | for admin routes | bearer for `GET`/`POST` `/admin/settings` and `POST` `/admin/reload-settings`; the admin surface answers 403 until it is set |
 | `QDRANT_URL` | yes | `http://100.69.77.26:6333` from a container on the box (see *Network*) |
