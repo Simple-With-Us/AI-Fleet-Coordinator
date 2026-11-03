@@ -78,6 +78,5 @@ CI runs both controller suites, the offline installer suite, and the resource br
 python3 -m unittest discover -s scripts/hetzner -p 'test_fleet_coding_memory.py' -v
 python3 -m unittest discover -s scripts/hetzner -p 'test_coding_resources.py' -v
 python3 -m unittest discover -s scripts/hetzner -p 'test_install_resource_control.py' -v
-python3 -m unittest discover -s scripts/hetzner -p 'test_install_resource_control.py' -v
 python3 scripts/test_fleet_resource_control.py
 ```

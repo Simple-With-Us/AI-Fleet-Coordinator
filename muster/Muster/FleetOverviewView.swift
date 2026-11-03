@@ -149,6 +149,8 @@ struct FleetOverviewView: View {
             )
         case .hosts:
             FleetHostsView()
+        case .virtualMachines:
+            VirtualMachinesView()
         case .operations:
             OperationsView()
         }
