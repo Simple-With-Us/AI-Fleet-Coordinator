@@ -28,6 +28,20 @@ own store and never go in Infisical.
 
 Secret values are NEVER invented, guessed, or copied from anywhere: the five secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
 
+## Muster Server Resource Policy
+
+This control plane uses the **Fleet-OPS** project, separate from the recall service settings above.  The existing `CODING_RAM_POLICY` remains authoritative for the complete resource policy; the controller loads and refreshes it, and the broker saves only one allowlisted field against a reviewed full-policy revision.
+
+| Key | Folder | Kind And Consumer |
+| --- | --- | --- |
+| `CODING_RAM_POLICY` | `/coding-memory` | Nonsecret complete policy, including shared CPU cores and weight, pressure and critical RAM budgets, host reserve and idle-memory borrowing |
+| `CODING_RESOURCE_WRITE_TOKEN` | `/` | Secret dedicated broker service token, read/write scope only `prod:/coding-memory`; created Nov 3, 2026 with a 90-day lifetime, rotate before Feb 1, 2027 |
+| `MUSTER_OPS_SSH_PRIVATE_KEY` | `/` | Secret source of truth for the dedicated owner-control SSH key; the server binds its public key to the restricted forced command |
+
+The controller keeps its separate existing read-only systemd credential.  The broker requires its private dedicated writer binding and never falls back to a general automation or Coolify credential.  Values are never placed in public source or command arguments; deployment copies use private files or standard input.
+
+See [Muster Resource Controls](docs/muster-resource-controls.md) for validation, receipt status, concurrent-writer limits and guarded rollback.
+
 ## Hosted Agent-Sync: Cursor Cloud
 
 The CURSOR seat uses the existing `cursor-bot@simplewithus.zulipchat.com` member

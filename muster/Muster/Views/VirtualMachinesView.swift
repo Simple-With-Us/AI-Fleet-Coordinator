@@ -161,33 +161,69 @@ struct VirtualMachinesView: View {
     private func hostRows(_ report: VmStatusReport) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             if let load = report.loadText {
-                let cpus = report.cpuCount.map { " on \($0) \($0 == 1 ? "cpu" : "cpus")" } ?? ""
+                let loadValues = [report.load1, report.load5, report.load15].compactMap { $0 }
+                let loadIsValid = loadValues.count == 3 && loadValues.allSatisfy { $0.isFinite && $0 >= 0 }
+                let cpus = report.cpuCount.flatMap { count in
+                    count > 0 ? " on \(count) \(count == 1 ? "cpu" : "cpus")" : nil
+                } ?? ""
                 metricRow(
-                    "Load", "\(load)\(cpus)", fraction: report.loadFraction, driftAt: 1.0, missingAt: 2.0)
+                    "Load", loadIsValid ? "\(load)\(cpus)" : "Unknown",
+                    fraction: loadIsValid ? report.loadFraction : nil, driftAt: 1.0, missingAt: 2.0)
             }
-            if let memory = report.memory, let total = memory.totalBytes {
-                let available = memory.availableBytes.map { ServerStatusFormat.bytes($0) } ?? "not read"
+            if let memory = report.memory {
                 metricRow(
-                    "Memory",
-                    "\(available) free of \(ServerStatusFormat.bytes(total))",
-                    fraction: memory.usedFraction)
+                    "Memory", memoryText(memory), fraction: memory.usedFraction)
             }
-            if let swap = report.swap, let total = swap.totalBytes, total > 0 {
-                let free = swap.freeBytes.map { ServerStatusFormat.bytes($0) } ?? "not read"
-                metricRow("Swap", "\(free) free of \(ServerStatusFormat.bytes(total))", fraction: swap.usedFraction)
+            if let swap = report.swap, let total = swap.totalBytes, total != 0 {
+                metricRow("Swap", swapText(swap, total: total), fraction: swap.usedFraction)
             }
             ForEach(report.disks) { disk in
-                metricRow(disk.mount.isEmpty ? "disk" : disk.mount, diskText(disk), fraction: disk.usedFraction)
+                metricRow(
+                    disk.mount.isEmpty ? "disk" : disk.mount, diskText(disk),
+                    fraction: diskHasImpossibleFree(disk) ? nil : disk.usedFraction)
             }
         }
     }
 
+    private func memoryText(_ memory: HostMemory) -> String {
+        if let total = memory.totalBytes, total <= 0 { return "Unknown" }
+        if let available = memory.availableBytes, available < 0 { return "Unknown" }
+        guard let total = memory.totalBytes, let available = memory.availableBytes else {
+            if let total = memory.totalBytes {
+                return "not read free of \(ServerStatusFormat.bytes(total))"
+            }
+            if let available = memory.availableBytes {
+                return "\(ServerStatusFormat.bytes(available)) available; total not read"
+            }
+            return "not read"
+        }
+        guard available <= total else { return "Unknown" }
+        return "\(ServerStatusFormat.bytes(available)) free of \(ServerStatusFormat.bytes(total))"
+    }
+
+    private func swapText(_ swap: HostSwap, total: Int) -> String {
+        guard total > 0 else { return "Unknown" }
+        guard let free = swap.freeBytes else {
+            return "not read free of \(ServerStatusFormat.bytes(total))"
+        }
+        guard free >= 0, free <= total else { return "Unknown" }
+        return "\(ServerStatusFormat.bytes(free)) free of \(ServerStatusFormat.bytes(total))"
+    }
+
     private func diskText(_ disk: HostDisk) -> String {
+        if diskHasImpossibleFree(disk) { return "Unknown" }
         guard let free = disk.freeBytes else { return "not read" }
         if let total = disk.totalBytes {
             return "\(ServerStatusFormat.bytes(free)) free of \(ServerStatusFormat.bytes(total))"
         }
         return "\(ServerStatusFormat.bytes(free)) free"
+    }
+
+    private func diskHasImpossibleFree(_ disk: HostDisk) -> Bool {
+        if let total = disk.totalBytes, total <= 0 { return true }
+        if let free = disk.freeBytes, free < 0 { return true }
+        if let total = disk.totalBytes, let free = disk.freeBytes, free > total { return true }
+        return false
     }
 
     private func processRows(_ report: VmStatusReport) -> some View {

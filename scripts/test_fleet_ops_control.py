@@ -14,6 +14,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC = importlib.util.spec_from_file_location("foc", os.path.join(HERE, "fleet-ops-control.py"))
@@ -703,6 +704,79 @@ class SshGateTests(Base):
             "server update fleet-cli --plan", argv=("server", "update", "fleet-cli", "--from-ssh")
         )
         self.assertEqual(code, 2)
+
+
+class ResourceDispatchTests(Base):
+    def enable(self):
+        config = json.loads(self.config_path.read_text())
+        config["server"]["resourcePolicy"] = True
+        self.config_path.write_text(json.dumps(config))
+
+    def test_resource_controls_require_explicit_allowlist(self):
+        code, answer = self.run_main(
+            ["server", "resource-status", "coding", "--plan", "--json"], self.ctx()
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(self.runner.calls, [])
+
+    def test_resource_allowlist_is_a_boolean(self):
+        for value in (1, "true", [], None):
+            config = json.loads(self.config_path.read_text())
+            config["server"]["resourcePolicy"] = value
+            with self.subTest(value=value), self.assertRaises(foc.Refused):
+                foc.validate_config(config)
+
+    def test_ssh_resource_dispatch_uses_the_bounded_handler(self):
+        self.enable()
+        target = "cpu-weight.50." + "a" * 64
+        command = "server resource-policy " + target + " --plan --json"
+        context = self.ctx(environ={"SSH_ORIGINAL_COMMAND": command})
+        reply = {
+            "ok": True,
+            "verb": "server resource-policy",
+            "target": target,
+            "commands": [],
+            "result": "planned",
+            "detail": "bounded test",
+        }
+        with mock.patch("fleet_resource_control.handle", return_value=(reply, 0)) as handler:
+            code, answer = self.run_main(["--from-ssh"], context)
+        self.assertEqual((code, answer["result"]), (0, "planned"))
+        handler.assert_called_once_with(context, "resource-policy", target, "plan")
+        self.assertEqual(self.runner.calls, [])
+
+    def test_resource_status_yes_is_refused_and_status_needs_no_writer(self):
+        self.enable()
+        context = self.ctx()
+        context.resource_snapshot = dict
+        with mock.patch(
+            "fleet_resource_control.InfisicalStore",
+            side_effect=__import__("fleet_resource_control").Refused("no writer"),
+        ):
+            code, answer = self.run_main(
+                ["server", "resource-status", "coding", "--plan", "--json"], context
+            )
+            self.assertEqual(
+                (code, answer["result"], answer["resourcePolicy"]["status"]),
+                (0, "planned", "unavailable"),
+            )
+        code, answer = self.run_main(
+            ["server", "resource-status", "coding", "--yes", "--json"], context
+        )
+        self.assertEqual((code, answer["result"]), (2, "refused"))
+        self.assertEqual(self.runner.calls, [])
+
+    def test_resource_ssh_rejects_shell_or_extra_arguments(self):
+        target = "cpu-weight.50." + "a" * 64
+        for suffix in (
+            " --plan;id",
+            " --plan --json extra",
+            " --plan\n",
+            " --plan --yes",
+            " --plan --config=x",
+        ):
+            with self.subTest(suffix=suffix), self.assertRaises(foc.Refused):
+                foc.parse_ssh_command("server resource-policy " + target + suffix)
 
 
 class LogsAndPm2Tests(Base):

@@ -150,8 +150,11 @@ jobs:
     # Unwired tests are decoration:  a step is what makes the test real.
     - name: systemd unit template tests
       run: python3 -m unittest discover -s scripts/systemd -t scripts/systemd -v
-    - name: Coding memory controller tests
-      run: python3 -m unittest discover -s scripts/hetzner -p 'test_fleet_coding_memory.py' -v
+    - name: Coding CPU And Memory Controller Tests
+      run: |
+        python3 -m unittest discover -s scripts/hetzner -p 'test_fleet_coding_memory.py' -v
+        python3 -m unittest discover -s scripts/hetzner -p 'test_coding_resources.py' -v
+        python3 -m unittest discover -s scripts/hetzner -p 'test_install_resource_control.py' -v
     # fleet-server-status (AFC-548):  the server collector whose report the Muster
     # Server Status panel reads.  The drift against the previous report, the omission
     # of a measurement that could not be taken, the credential path filter and the
@@ -168,6 +171,7 @@ jobs:
       run: |
         python3 scripts/test_fleet_mac_services.py
         python3 scripts/test_fleet_ops_control.py
+        python3 scripts/test_fleet_resource_control.py
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would

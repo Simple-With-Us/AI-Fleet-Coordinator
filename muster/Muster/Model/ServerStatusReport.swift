@@ -581,10 +581,12 @@ struct ServerStatusReport: Decodable {
     let services: [ServerService]
     /// How many files the collector found,  when it said.
     let filesSummary: ServerFilesSummary?
+    /// The redacted resource receipt is optional; its absence never proves limits applied.
+    let resourcePolicy: ResourcePolicySnapshot?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, tool, generatedAt, host, coolify, processes, files
-        case hostMetrics, services, filesSummary
+        case hostMetrics, services, filesSummary, resourcePolicy
     }
 
     init(from decoder: Decoder) throws {
@@ -603,6 +605,7 @@ struct ServerStatusReport: Decodable {
         hostMetrics = try? container.decodeIfPresent(HostMetrics.self, forKey: .hostMetrics)
         services = (try? container.decodeIfPresent([ServerService].self, forKey: .services)) ?? []
         filesSummary = try? container.decodeIfPresent(ServerFilesSummary.self, forKey: .filesSummary)
+        resourcePolicy = try? container.decodeIfPresent(ResourcePolicySnapshot.self, forKey: .resourcePolicy)
     }
 }
 
@@ -634,6 +637,7 @@ struct ServerStatusReading {
     var services: [ServerService] = []
     /// How many files the collector found,  when the report says.
     var filesSummary: ServerFilesSummary?
+    var resourcePolicy: ResourcePolicySnapshot?
     /// The verdict for the whole report.
     var state: CellState = .unknown
 
@@ -783,6 +787,7 @@ enum ServerStatusReportReader {
         reading.hostMetrics = report.hostMetrics
         reading.services = report.services
         reading.filesSummary = report.filesSummary
+        reading.resourcePolicy = report.resourcePolicy
         // A report out of its window is not a reading:  the whole report reads unknown,
         // even where every row in it looks fine.
         reading.state = overall(of: reading)
