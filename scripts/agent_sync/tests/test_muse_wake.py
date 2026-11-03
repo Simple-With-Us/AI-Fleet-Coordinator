@@ -800,6 +800,15 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertIn("--model", argv)
         self.assertEqual(argv[argv.index("--model") + 1], C.MCODE_DEFAULT_MODEL)
 
+    def test_the_backup_names_its_reasoning_effort_on_the_command_line(self) -> None:
+        # Without `--effort`, mcode runs at MiniMax's own default effort, which is MAX — the
+        # highest, most expensive thinking tier — for a bounded four-message fallback prompt.
+        # The owner directed that the effort be named, never defaulted (2026-11-03), and his
+        # determination is that M3.1 at minimal is cheaper and faster than M3 at none.
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertEqual(argv[argv.index("--effort") + 1], A.MCODE_REASONING_EFFORT)
+        self.assertEqual(A.MCODE_REASONING_EFFORT, "minimal")
+
     def test_the_backup_model_is_one_the_catalog_serves(self) -> None:
         # The catalog holds `MiniMax-M3` and `MiniMax-M3.1-Flash`;  the -Preview id is stale.
         self.assertEqual(C.MCODE_DEFAULT_MODEL, "minimax/MiniMax-M3.1-Flash")

@@ -1437,7 +1437,7 @@ def quota_red(provider: str, now: float | None = None, path: str | None = None) 
 # --------------------------------------------------------------------------------------------
 #
 #   mcode exec --prompt-mode work --permission off --output-format json
-#             --model minimax/MiniMax-M3.1-Flash
+#             --model minimax/MiniMax-M3.1-Flash --effort minimal
 #             --output-schema <schema> --max-steps N --timeout 4m --cwd <inert dir>
 #             -o <last-message file> --prompt
 #
@@ -1479,6 +1479,14 @@ MCODE_MAX_STEPS = 16
 MCODE_TIMEOUT = "3m30s"
 MCODE_PROMPT_MODE = "work"
 MCODE_PERMISSION = "off"
+# The reasoning effort, named on every fallback run (owner directive, 2026-11-03:  "don't do
+# default").  An unset effort is not a neutral middle:  MiniMax's own default is MAX, the
+# highest and most expensive thinking tier, so a fallback wake left unset would pay the top
+# reasoning price for a bounded four-message prompt.  The owner's determination is that
+# MiniMax-M3.1 at minimal is cheaper and faster than M3 at none, so minimal is the floor this
+# run asks for, and it is asked for explicitly rather than inherited from whatever the
+# install's default happens to be.
+MCODE_REASONING_EFFORT = "minimal"
 # The fallback's PROMPT BOUND, and the reason the step budget is provable at all.  mcode has no
 # sandbox and no tool-deny switch, so `--max-steps` is the ONLY bound on how much the fallback may
 # act, and the step cost grows with the prompt:  the daemon can build a wake prompt with up to
@@ -1532,6 +1540,8 @@ def mcode_argv(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> list[str]:
         "json",
         "--model",
         model,
+        "--effort",
+        MCODE_REASONING_EFFORT,
         "--input",
         "-",
         "--output-schema",
