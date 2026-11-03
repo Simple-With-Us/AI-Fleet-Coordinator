@@ -326,8 +326,11 @@ export class HostedTools {
    * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
    * @param {object|null} [o.gr]           a GrRelayClient for this bearer identity (src/gr-tools.js), or null when the GR front is not configured
    * @param {function|null} [o.audit]      the Worker's isolate audit buffer sink (src/audit-batch.js):  (key, gate, row);  null writes each row to the gate at once
+   * @param {object|null} [o.identityCache]  the Worker's isolate verified-identity cache (src/identity-cache.js), or null
+   * @param {string|null} [o.identityKey]    this credential's cache key (the SHA-256 of the presented credential)
+   * @param {object|null} [o.identityEntry]  the route's fresh cache entry for this credential, or null when the route verified live for this request (the first call always pays the full gate price)
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, audit = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -366,6 +369,16 @@ export class HostedTools {
     // keeps the immediate per-row gate write every other construction -
     // unit tests included - has always made.
     this.auditSink = audit;
+    // The verified-identity cache (src/identity-cache.js, R4):  the route
+    // hands over the shared cache, this credential's key, and the entry it
+    // found fresh - an entry whose seat is not this seat is no entry at
+    // all.  A null entry means this request verified live and pays the
+    // full gate price;  a present entry marks every repeat-call shortcut
+    // this class takes (the read reserve, the role verdict).
+    this.identityCache = identityCache;
+    this.identityKey = identityKey;
+    this.identityEntry = identityEntry && identityEntry.seat === seat ? identityEntry : null;
+    this._identityHit = this.identityEntry !== null;
     this.whatsappGate = whatsappGate ?? gate;
     this.cf = cf ?? {};
     this.now = now;
@@ -603,8 +616,40 @@ export class HostedTools {
 
   // ---------------------------------------------------------------- seat binding
 
-  /** Spec 3.6:  users/me on first use and every 10 minutes;  member bots of this seat only. */
+  /** Drop this credential's cached verification (R4 eviction discipline). */
+  _evictIdentity() {
+    if (this.identityCache && this.identityKey) this.identityCache.evict(this.identityKey);
+    this.identityEntry = null;
+    this._identityHit = false;
+  }
+
+  /**
+   * The seat's verified role, from the identity cache when this request
+   * carries a fresh entry (R4):  the entry's role verdict stands in for
+   * roleGet inside the window.  Otherwise the live verification below
+   * runs, its verdict is recorded on the entry for later calls in the
+   * window, and any failure of it evicts the entry - a seat that cannot
+   * verify live never coasts on a cached verification.
+   */
   async ensureSeat() {
+    const role = this.identityEntry?.role;
+    if (this._identityHit && role?.ok) {
+      this.me = { user_id: role.user_id, role: role.role };
+      return;
+    }
+    try {
+      await this._ensureSeatVerified();
+    } catch (error) {
+      this._evictIdentity();
+      throw error;
+    }
+    if (this.identityCache && this.identityKey && this.me) {
+      this.identityCache.update(this.identityKey, { role: { ok: true, user_id: this.me.user_id, role: this.me.role } });
+    }
+  }
+
+  /** Spec 3.6:  users/me on first use and every 10 minutes;  member bots of this seat only. */
+  async _ensureSeatVerified() {
     if (!this.zulip) {
       throw new ToolError("not_authorized", `No Zulip key is installed for ${this.seat}.  The owner installs it (scripts/agent-sync-mcp/install_seat_key.py).`);
     }
@@ -647,14 +692,27 @@ export class HostedTools {
   }
 
   async reserve(kind) {
-    // A delegated persona cannot multiply the authenticated CURSOR grant's
-    // allowance.  Its own gate is a second, independent limit and token cache.
-    if (this.callerGate !== this.gate) {
-      const callerPolicy = this.callerSeat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
-      await this.reserveOn(this.callerGate, kind, callerPolicy);
+    // A read on a cached identity takes no slot inside the window (R4;
+    // the trade - read spacing, budgets and cooldown unenforced for
+    // reads - is stated in src/identity-cache.js).  Writes always
+    // reserve, cached or not.
+    if (this._identityHit && (kind === "read" || kind === "linear_read")) return;
+    try {
+      // A delegated persona cannot multiply the authenticated CURSOR grant's
+      // allowance.  Its own gate is a second, independent limit and token cache.
+      if (this.callerGate !== this.gate) {
+        const callerPolicy = this.callerSeat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
+        await this.reserveOn(this.callerGate, kind, callerPolicy);
+      }
+      const policy = this.seat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
+      await this.reserveOn(this.gate, kind, policy);
+    } catch (error) {
+      // A reserve refusal is a gate refusal for this credential (a pause
+      // above all):  the cached verification dies with it, so the next
+      // call re-verifies live instead of coasting (R4).
+      this._evictIdentity();
+      throw error;
     }
-    const policy = this.seat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
-    await this.reserveOn(this.gate, kind, policy);
   }
 
   async reserveOn(gate, kind, policy) {
