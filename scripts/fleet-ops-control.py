@@ -25,7 +25,10 @@ What it promises:
     answer's `output`, while a `--plan` carries no log text at all.  Mac LaunchAgents have
     no log verb, because launchd has no uniform log file to tail.  `pm2` verbs act on the
     Mac pm2 applications the allowlist names, with one `pm2 start|stop|restart NAME` argv
-    and no ecosystem fallback.
+    and no ecosystem fallback.  A `start` first reads `pm2 jlist`:  a stale record (online
+    with no process behind it) is planned as a restart, because pm2 answers a start on one
+    with "already started" and starts nothing, and an application pm2 no longer remembers
+    is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
     resource, so no uuid or host is kept in this repo.  The Coolify token is read through
     `fleet-secrets` into memory, sent in one request header and never printed, logged or
@@ -51,6 +54,7 @@ import datetime
 import json
 import os
 import re
+import selectors
 import shlex
 import stat
 import subprocess
@@ -233,12 +237,15 @@ def _actions(row, bad):
 # MARK: - Running things
 
 
-def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False):
+def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False, max_bytes=None):
     """(exit status, stdout bytes).  An argv list, never a shell; stderr is dropped.
 
-    A timeout is status 124 and a missing binary 127, like a shell would say."""
+    With `max_bytes` the capture itself is capped, keeping only the last bytes.  A timeout
+    is status 124 and a missing binary 127, like a shell would say."""
     if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
         raise Refused("internal: not an argv list")
+    if want_stdout and max_bytes:
+        return _run_capped(argv, timeout, env, max_bytes)
     try:
         proc = subprocess.run(
             argv,
@@ -256,6 +263,57 @@ def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False):
     except OSError:
         return 127, b""
     return proc.returncode, (proc.stdout or b"") if want_stdout else b""
+
+
+def _run_capped(argv, timeout, env, max_bytes):
+    """Capture stdout without ever holding more than its last `max_bytes` bytes."""
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            cwd="/",
+            shell=False,
+        )
+    except OSError:
+        return 127, b""
+    kept = bytearray()
+    deadline = time.monotonic() + timeout
+    fd = proc.stdout.fileno()
+    selector = selectors.DefaultSelector()
+    selector.register(fd, selectors.EVENT_READ)
+    timed_out = False
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            if not selector.select(remaining):
+                timed_out = True
+                break
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            kept += chunk
+            if len(kept) > max_bytes:
+                del kept[: len(kept) - max_bytes]
+    finally:
+        selector.close()
+        proc.stdout.close()
+    if timed_out:
+        proc.kill()
+        proc.wait()
+        return 124, b""
+    try:
+        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        return 124, b""
+    return proc.returncode, bytes(kept)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -420,9 +478,10 @@ def server_logs_commands(ctx, config, unit):
 
 
 def truncate_logs(raw):
-    """(text, kept line count) for a logs `--yes` answer.  At most the last
+    """(text, kept journal line count) for a logs `--yes` answer.  At most the last
     LOG_MAX_LINES lines and at most LOG_MAX_BYTES bytes, with the truncation
-    note first when anything was cut."""
+    note first when anything was cut.  The note is not a journal line, so the count
+    is journal lines only, which is how every consumer words it."""
     truncated = len(raw) > LOG_MAX_BYTES
     if truncated:
         raw = raw[-LOG_MAX_BYTES:]
@@ -451,6 +510,35 @@ def _pm2_prefix(ctx):
     return [node, script]
 
 
+def _pm2_record(ctx, name):
+    """(status, pid) pm2 has for `name`, "missing" when it has no record, else None.
+
+    None means pm2 could not be asked or its listing could not be read, so nothing is
+    known and the caller plans the plain verb."""
+    status, out = ctx.runner(
+        _pm2_prefix(ctx) + ["jlist"],
+        timeout=15,
+        env=ctx.pm2_env(),
+        want_stdout=True,
+        max_bytes=1024 * 1024,
+    )
+    if status != 0:
+        return None
+    try:
+        listing = json.loads((out or b"").decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(listing, list):
+        return None
+    for row in listing:
+        if not isinstance(row, dict) or row.get("name") != name:
+            continue
+        inner = row.get("pm2_env") if isinstance(row.get("pm2_env"), dict) else {}
+        pid = row.get("pid") if isinstance(row.get("pid"), int) else inner.get("pid")
+        return inner.get("status"), pid if isinstance(pid, int) else 0
+    return "missing"
+
+
 def pm2_commands(ctx, config, action, name):
     if not ctx.platform.startswith("darwin"):
         raise Refused("pm2 verbs run only on the Mac")
@@ -461,6 +549,16 @@ def pm2_commands(ctx, config, action, name):
         raise Refused("the pm2 application is not in the allowlist")
     if action not in allowed:
         raise Refused("that action is not allowed for this pm2 application")
+    if action == "start":
+        record = _pm2_record(ctx, name)
+        if record == "missing":
+            raise Refused(
+                "pm2 no longer remembers this application and this tool does not recreate it"
+            )
+        if record is not None:
+            status_word, pid = record
+            if status_word == "online" and pid <= 0:
+                return [_pm2_prefix(ctx) + ["restart", name]], "stale pm2 record, restarting it"
     return [_pm2_prefix(ctx) + [action, name]], "pm2 application"
 
 
@@ -741,7 +839,7 @@ def execute(ctx, scope, action, target, commands):
     for argv in commands:
         status, _ = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=env)
         if status != 0:
-            verb = next((a for a in argv[1:] if not a.startswith("-")), "")
+            verb = next((a for a in argv[1:] if not a.startswith("-") and "/" not in a), action)
             raise Failed(f"{os.path.basename(argv[0])} {verb} exited {status}")
     return "done" if commands else "nothing to do"
 
@@ -750,7 +848,13 @@ def execute_logs(ctx, commands):
     """(detail, text, line count) for a logs `--yes`.  The journal text goes to the
     answer only; the detail and the audit carry the count and nothing else."""
     argv = commands[0]
-    status, out = ctx.runner(argv, timeout=COMMAND_TIMEOUT, env=ctx.child_env(), want_stdout=True)
+    status, out = ctx.runner(
+        argv,
+        timeout=COMMAND_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=LOG_MAX_BYTES * 4,
+    )
     if status != 0:
         raise Failed(f"journalctl exited {status}")
     text, lines = truncate_logs(out or b"")
@@ -892,6 +996,36 @@ def parse_ssh_command(text):
     return words
 
 
+def sanitize_for_terminal(text):
+    """Journal text with escape and control sequences removed, for a terminal.
+
+    Newlines and tabs stay.  The JSON answer keeps the text as the journal held it."""
+    kept = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\x1b":
+            index += 1
+            if index < len(text) and text[index] == "[":
+                index += 1
+                while index < len(text) and not "@" <= text[index] <= "~":
+                    index += 1
+                index += 1
+            elif index < len(text) and text[index] == "]":
+                index += 1
+                while index < len(text) and text[index] not in ("\x07", "\x1b"):
+                    index += 1
+                if index < len(text) and text[index] == "\x07":
+                    index += 1
+            elif index < len(text):
+                index += 1
+            continue
+        if char in ("\n", "\t") or not (ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F):
+            kept.append(char)
+        index += 1
+    return "".join(kept)
+
+
 def emit(answer, as_json, out):
     if as_json:
         out.write(json.dumps(answer, sort_keys=True) + "\n")
@@ -901,7 +1035,7 @@ def emit(answer, as_json, out):
     for argv in answer["commands"]:
         out.write("  " + " ".join(shlex.quote(a) for a in argv) + "\n")
     if answer.get("output"):
-        out.write(answer["output"])
+        out.write(sanitize_for_terminal(answer["output"]))
 
 
 def main(argv=None, ctx=None, out=None):

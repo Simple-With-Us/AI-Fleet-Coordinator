@@ -61,20 +61,27 @@ CONFIG = {
 class FakeRunner:
     """Records every argv;  answers `launchctl print` with `loaded` and the rest with `status`."""
 
-    def __init__(self, loaded=True, status=0, secret=TOKEN, log_bytes=b"line one\nline two\n"):
+    def __init__(
+        self, loaded=True, status=0, secret=TOKEN, log_bytes=b"line one\nline two\n", jlist=None
+    ):
         self.calls = []
         self.loaded = loaded
         self.status = status
         self.secret = secret
         self.log_bytes = log_bytes
+        self.jlist = jlist
+        self.max_bytes_seen = []
 
-    def __call__(self, argv, timeout=None, env=None, want_stdout=False):
+    def __call__(self, argv, timeout=None, env=None, want_stdout=False, max_bytes=None):
         assert isinstance(argv, list) and all(isinstance(a, str) for a in argv)
         self.calls.append((list(argv), dict(env or {})))
+        self.max_bytes_seen.append(max_bytes)
         if argv[1:2] == ["print"]:
             return (0 if self.loaded else 113), b""
         if argv[1:2] == ["get"]:
             return (0, self.secret.encode()) if self.secret else (3, b"")
+        if argv[-1:] == ["jlist"]:
+            return self.status, (self.jlist if want_stdout and self.jlist is not None else b"")
         if "journalctl" in argv[0]:
             return self.status, (self.log_bytes if want_stdout else b"")
         return self.status, b""
@@ -810,6 +817,109 @@ class LogsAndPm2Tests(Base):
         text = swift.read_text() + mcp.read_text()
         for name in config["pm2"]:
             self.assertIn('"%s"' % name, text, name)
+
+    def pm2_listing(self, status="stopped", pid=0, name="shellular"):
+        return json.dumps(
+            [{"name": name, "pid": pid, "pm2_env": {"status": status, "pid": pid}}]
+        ).encode()
+
+    def test_pm2_start_on_a_stale_record_plans_a_restart(self):
+        runner = FakeRunner(jlist=self.pm2_listing(status="online", pid=0))
+        code, ans = self.run_main(
+            ["pm2", "start", "shellular", "--plan", "--json"], self.ctx("darwin", runner=runner)
+        )
+        self.assertEqual((code, ans["result"]), (0, "planned"), ans)
+        self.assertEqual(
+            ans["commands"], [["/fake/bin/node", "/fake/lib/pm2", "restart", "shellular"]]
+        )
+        self.assertIn("stale", ans["detail"])
+        ((argv, env),) = self.runner.calls
+        self.assertEqual(argv, ["/fake/bin/node", "/fake/lib/pm2", "jlist"])
+        self.assertIn("PM2_HOME", env)
+
+    def test_pm2_start_on_stopped_and_healthy_records_plans_a_plain_start(self):
+        for listing in (
+            self.pm2_listing(status="stopped", pid=0),
+            self.pm2_listing(status="online", pid=4242),
+            self.pm2_listing(status="errored", pid=0),
+            b"not json at all",
+        ):
+            runner = FakeRunner(jlist=listing)
+            code, ans = self.run_main(
+                ["pm2", "start", "shellular", "--plan", "--json"],
+                self.ctx("darwin", runner=runner),
+            )
+            self.assertEqual((code, ans["result"]), (0, "planned"), listing)
+            self.assertEqual(
+                ans["commands"],
+                [["/fake/bin/node", "/fake/lib/pm2", "start", "shellular"]],
+                listing,
+            )
+
+    def test_pm2_start_refuses_when_pm2_no_longer_remembers_the_app(self):
+        runner = FakeRunner(jlist=b"[]")
+        code, ans = self.run_main(
+            ["pm2", "start", "shellular", "--yes", "--json"], self.ctx("darwin", runner=runner)
+        )
+        self.assertEqual((code, ans["result"]), (2, "refused"), ans)
+        self.assertIn("no longer remembers", ans["detail"])
+        ((argv, _env),) = self.runner.calls
+        self.assertEqual(argv[-1], "jlist")
+
+    def test_pm2_failure_names_the_verb_and_not_the_script_path(self):
+        code, ans = self.run_main(
+            ["pm2", "stop", "shellular", "--yes", "--json"],
+            self.ctx("darwin", runner=FakeRunner(status=3)),
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"), ans)
+        self.assertEqual(ans["detail"], "node stop exited 3")
+
+    def test_logs_yes_asks_the_runner_to_cap_what_it_captures(self):
+        code, ans = self.run_main(
+            ["server", "logs", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        self.assertEqual(code, 0, ans)
+        self.assertEqual(self.runner.max_bytes_seen, [foc.LOG_MAX_BYTES * 4])
+
+    def test_capped_capture_keeps_only_the_tail(self):
+        import sys
+
+        status, out = foc.run_command(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write('x' * 300000 + 'TAILMARK')",
+            ],
+            timeout=30,
+            want_stdout=True,
+            max_bytes=1000,
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(len(out), 1000)
+        self.assertTrue(out.endswith(b"TAILMARK"))
+
+    def test_text_output_strips_terminal_escapes_but_json_keeps_the_field(self):
+        dirty = "a\x1b[31mred\x1b[0m\x07b\x1b]0;title\x07c\nd\te\x7f\x85f"
+        answer = {
+            "ok": True,
+            "verb": "server logs",
+            "target": "x.service",
+            "commands": [],
+            "result": "done",
+            "detail": "1 journal lines",
+            "output": dirty,
+        }
+        text_out = io.StringIO()
+        foc.emit(answer, False, text_out)
+        shown = text_out.getvalue()
+        self.assertNotIn("\x1b", shown)
+        self.assertNotIn("\x07", shown)
+        self.assertNotIn("\x7f", shown)
+        self.assertNotIn("\x85", shown)
+        self.assertIn("aredbc\nd\tef", shown)
+        json_out = io.StringIO()
+        foc.emit(answer, True, json_out)
+        self.assertEqual(json.loads(json_out.getvalue())["output"], dirty)
 
 
 class SourceTests(unittest.TestCase):

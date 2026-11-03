@@ -13,6 +13,10 @@ import SwiftUI
 struct FleetServicesPanel: View {
     @EnvironmentObject private var admin: FleetAdmin
     @ObservedObject private var controller = OpsController.shared
+    /// The allowlist as this Mac's checkout carries it, read when the panel opens.
+    @State private var allowlist: OpsAllowlist?
+    /// The service whose sheet action this panel started, until that action settles.
+    @State private var pendingServiceID: String?
 
     var body: some View {
         ScrollView {
@@ -27,9 +31,24 @@ struct FleetServicesPanel: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        .task { await admin.refresh() }
+        .task {
+            allowlist = OpsAllowlist.read(
+                at: OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot))
+            await admin.refresh()
+        }
+        .onChange(of: controller.phase) { _, _ in
+            settlePendingAction()
+        }
         .onChange(of: controller.completedRuns) { _, _ in
-            Task { await admin.refresh() }
+            settlePendingAction()
+            Task {
+                await admin.refresh()
+                // A service that just started may not answer its health probe on
+                // the first read after the helper exits, so read once more after
+                // a moment rather than leaving that first reading on screen.
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await admin.refresh()
+            }
         }
     }
 
@@ -160,7 +179,8 @@ struct FleetServicesPanel: View {
     /// BotFleet Server's own row stays with the fleet admin:  its start clears the
     /// deliberate-stop marker through the installed wrapper and its stop asks the
     /// server itself,  neither of which an allowlist argv can say,  so it keeps its
-    /// stop confirmation here.
+    /// stop confirmation here.  A LaunchAgent row the allowlist does not name yet
+    /// keeps that same fleet admin path, because the helper could only refuse it.
     private func actuate(_ action: ManagedServiceAction, for entry: FleetServiceEntry) {
         let verb: OpsVerb?
         switch action {
@@ -172,18 +192,59 @@ struct FleetServicesPanel: View {
         guard let verb else { return }
         switch entry.kind {
         case .pm2(let appName):
-            controller.plan(.pm2App(verb: verb, name: appName))
+            planThroughController(.pm2App(verb: verb, name: appName),
+                                  action: action, entry: entry)
         case .launchAgent(let label):
             if entry.id == FleetServiceRegistry.server.id {
-                if action == .stop,
-                   !confirmFleetStop(title: entry.title,
-                                     message: admin.stopConfirmation(for: entry.id)) {
-                    return
-                }
-                Task { await admin.perform(action, serviceID: entry.id) }
+                performThroughAdmin(action, entry: entry)
+            } else if let allowlist, allowlist.verbs(forMacAgent: label).isEmpty {
+                // The helper fails closed on a label its allowlist does not name,
+                // so a row with no entry keeps the fleet admin path the menubar
+                // still uses until the owner adds that label to the allowlist.
+                performThroughAdmin(action, entry: entry)
             } else {
-                controller.plan(.macAgent(verb: verb, label: label))
+                planThroughController(.macAgent(verb: verb, label: label),
+                                      action: action, entry: entry)
             }
+        }
+    }
+
+    /// Plans one action on the controller path and records the owner's intent
+    /// behind it, so a stop made here is a stop the fleet admin knows about.
+    private func planThroughController(_ opsAction: OpsAction,
+                                       action: ManagedServiceAction,
+                                       entry: FleetServiceEntry) {
+        guard controller.plan(opsAction) else { return }
+        admin.beginControllerAction(action, serviceID: entry.id)
+        pendingServiceID = entry.id
+    }
+
+    /// Runs one action through the fleet admin, with the stop confirmation that
+    /// path has always asked for.
+    private func performThroughAdmin(_ action: ManagedServiceAction, entry: FleetServiceEntry) {
+        if action == .stop,
+           !confirmFleetStop(title: entry.title,
+                             message: admin.stopConfirmation(for: entry.id)) {
+            return
+        }
+        Task { await admin.perform(action, serviceID: entry.id) }
+    }
+
+    /// Settles the intent recorded for this panel's sheet action once that action
+    /// reaches an end:  a run that did what it was asked keeps the record, and
+    /// anything else, the sheet closed without a run included, restores it.
+    private func settlePendingAction() {
+        guard let serviceID = pendingServiceID else { return }
+        switch controller.phase {
+        case .finished(_, let outcome):
+            admin.endControllerAction(serviceID: serviceID,
+                                      succeeded: outcome.isSuccess(for: .yes))
+            pendingServiceID = nil
+        case .failed, .idle:
+            admin.endControllerAction(serviceID: serviceID, succeeded: false)
+            pendingServiceID = nil
+        case .planning, .review, .running:
+            break
         }
     }
 

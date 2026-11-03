@@ -246,6 +246,67 @@ struct OpsCommandBuilder {
         (65...90).contains(scalar.value)
     }
 
+    private static func isLowerCaseLetter(_ scalar: Unicode.Scalar) -> Bool {
+        (97...122).contains(scalar.value)
+    }
+
+    private static func isLetter(_ scalar: Unicode.Scalar) -> Bool {
+        isUpperCaseLetter(scalar) || isLowerCaseLetter(scalar)
+    }
+
+    /// A launchd label in the helper's own shape, so a label the helper would refuse
+    /// is refused here and not after Touch ID.
+    static func isAgentLabel(_ value: String) -> Bool {
+        guard (1...127).contains(value.count),
+              let first = value.unicodeScalars.first,
+              isLetter(first) || isDigit(first) else { return false }
+        return value.unicodeScalars.allSatisfy {
+            isLetter($0) || isDigit($0) || $0 == "." || $0 == "_" || $0 == "-"
+        }
+    }
+
+    /// A systemd unit in the helper's own shape:  a plain `.service` or `.timer`,
+    /// with no template `@` in it.
+    static func isUnitName(_ value: String) -> Bool {
+        for suffix in [".service", ".timer"] where value.hasSuffix(suffix) {
+            let stem = value.dropLast(suffix.count)
+            guard (1...121).contains(stem.count),
+                  let first = stem.unicodeScalars.first,
+                  isLetter(first) || isDigit(first) else { return false }
+            return stem.unicodeScalars.allSatisfy {
+                isLetter($0) || isDigit($0) || $0 == "_" || $0 == "." || $0 == "-"
+            }
+        }
+        return false
+    }
+
+    /// A server update name in the helper's own shape.
+    static func isUpdateName(_ value: String) -> Bool {
+        guard (1...64).contains(value.count),
+              let first = value.unicodeScalars.first,
+              isLowerCaseLetter(first) || isDigit(first) else { return false }
+        return value.unicodeScalars.allSatisfy {
+            isLowerCaseLetter($0) || isDigit($0) || $0 == "-"
+        }
+    }
+
+    /// A pm2 application name in the helper's own shape:  the registry's lowercase
+    /// names, never a flag or a path.
+    static func isPM2Name(_ value: String) -> Bool {
+        guard (1...64).contains(value.count),
+              let first = value.unicodeScalars.first,
+              isLowerCaseLetter(first) || isDigit(first) else { return false }
+        return value.unicodeScalars.allSatisfy {
+            isLowerCaseLetter($0) || isDigit($0) || $0 == "." || $0 == "_" || $0 == "-"
+        }
+    }
+
+    /// A Coolify resource id in the helper's own shape:  short letters and digits.
+    static func isResourceID(_ value: String) -> Bool {
+        guard (6...64).contains(value.count) else { return false }
+        return value.unicodeScalars.allSatisfy { isLetter($0) || isDigit($0) }
+    }
+
     private static func isDigit(_ scalar: Unicode.Scalar) -> Bool {
         (48...57).contains(scalar.value)
     }
@@ -273,13 +334,13 @@ struct OpsCommandBuilder {
     static func validate(_ action: OpsAction) throws {
         switch action {
         case .macAgent(_, let label):
-            guard isSafeToken(label) else { throw OpsControlError.invalidArgument("agent label") }
+            guard isAgentLabel(label) else { throw OpsControlError.invalidArgument("agent label") }
         case .serverUnit(_, let unit):
-            guard isSafeToken(unit) else { throw OpsControlError.invalidArgument("unit name") }
+            guard isUnitName(unit) else { throw OpsControlError.invalidArgument("unit name") }
         case .serverUpdate(let name):
-            guard isSafeToken(name) else { throw OpsControlError.invalidArgument("update name") }
+            guard isUpdateName(name) else { throw OpsControlError.invalidArgument("update name") }
         case .coolifyRedeploy(let uuid, _):
-            guard isSafeToken(uuid), !uuid.contains("@") else {
+            guard isResourceID(uuid) else {
                 throw OpsControlError.invalidArgument("resource id")
             }
         case .knobSet(let key, let value):
@@ -288,11 +349,11 @@ struct OpsCommandBuilder {
         case .knobUnset(let key):
             guard isKnobKey(key) else { throw OpsControlError.invalidArgument("knob name") }
         case .pm2App(_, let name):
-            guard isSafeToken(name), !name.contains("@") else {
+            guard isPM2Name(name) else {
                 throw OpsControlError.invalidArgument("pm2 name")
             }
         case .logs(let unit):
-            guard isSafeToken(unit) else { throw OpsControlError.invalidArgument("unit name") }
+            guard isUnitName(unit) else { throw OpsControlError.invalidArgument("unit name") }
         }
     }
 
@@ -735,7 +796,7 @@ enum OpsResultParser {
         var logText: String?
         var logLines: Int?
         if case .logs = action, mode == .yes, kind == .done {
-            logText = answer.output
+            logText = answer.output.map(sanitizedForDisplay)
             logLines = answer.lines
         }
         return OpsOutcome(
@@ -748,6 +809,44 @@ enum OpsResultParser {
             logText: logText,
             logLines: logLines
         )
+    }
+
+    /// Journal text with escape and control sequences removed, for the screen and
+    /// for copy and paste.  Newlines and tabs stay.
+    static func sanitizedForDisplay(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        var kept = String.UnicodeScalarView()
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if scalar.value == 0x1B {
+                index += 1
+                guard index < scalars.count else { break }
+                if scalars[index] == "[" {
+                    index += 1
+                    while index < scalars.count, !(0x40...0x7E).contains(scalars[index].value) {
+                        index += 1
+                    }
+                    index += 1
+                } else if scalars[index] == "]" {
+                    index += 1
+                    while index < scalars.count,
+                          scalars[index].value != 0x07, scalars[index].value != 0x1B {
+                        index += 1
+                    }
+                    if index < scalars.count, scalars[index].value == 0x07 { index += 1 }
+                } else {
+                    index += 1
+                }
+                continue
+            }
+            if scalar.value == 0x0A || scalar.value == 0x09
+                || !(scalar.value < 0x20 || (0x7F...0x9F).contains(scalar.value)) {
+                kept.append(scalar)
+            }
+            index += 1
+        }
+        return String(kept)
     }
 
     private static func defaultDetail(kind: OpsResultKind, exitCode: Int32) -> String {
