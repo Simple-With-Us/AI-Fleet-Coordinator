@@ -27,10 +27,26 @@ final class ResourcePolicyTests: XCTestCase {
     }
 
     func test_collector_source_age_is_separate_from_fresh_direct_read_age() throws {
-        let reading = decode(try json(generatedAt: "2026-11-03T11:40:00Z"))
+        let reading = decode(try json(generatedAt: "2026-11-03T12:10:00Z"))
         XCTAssertEqual(reading.state, .current)
         XCTAssertTrue(reading.canReviewChanges(at: now))
-        XCTAssertEqual(reading.collectorAge, 3_000)
+        XCTAssertEqual(reading.collectorAge, 1_200)
+    }
+
+    func test_stale_source_report_cannot_be_reviewed_after_45_minutes() throws {
+        let reading = decode(try json(generatedAt: "2026-11-03T11:44:00Z"))
+        XCTAssertEqual(reading.state, .stale)
+        XCTAssertFalse(reading.canReviewChanges(at: now))
+        XCTAssertTrue(reading.reason?.contains("source is older than 45 minutes") == true)
+    }
+
+    func test_stale_collector_observation_cannot_be_reviewed_after_45_minutes() throws {
+        let source = String(decoding: try json(), as: UTF8.self)
+            .replacingOccurrences(of: "2026-11-03T12:25:00Z", with: "2026-11-03T11:44:00Z")
+        let reading = decode(Data(source.utf8))
+        XCTAssertEqual(reading.state, .stale)
+        XCTAssertFalse(reading.canReviewChanges(at: now))
+        XCTAssertTrue(reading.reason?.contains("collector observation is older than 45 minutes") == true)
     }
 
     func test_future_receipt_is_unknown() throws {
@@ -54,6 +70,13 @@ final class ResourcePolicyTests: XCTestCase {
 
     func test_out_of_bounds_desired_values_are_unknown() throws {
         let reading = decode(try json(cpuCores: 15))
+        XCTAssertEqual(reading.state, .invalid)
+    }
+
+    func test_zero_observed_ram_target_is_unknown() throws {
+        let source = String(decoding: try json(), as: UTF8.self)
+            .replacingOccurrences(of: "\"ramTargetBytes\":8589934592", with: "\"ramTargetBytes\":0")
+        let reading = decode(Data(source.utf8))
         XCTAssertEqual(reading.state, .invalid)
     }
 

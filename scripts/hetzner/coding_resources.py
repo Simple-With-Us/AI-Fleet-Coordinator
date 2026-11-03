@@ -217,7 +217,7 @@ class CPUManager:
             actual_inode, actual = self._read(target)
             if actual_inode != inode or actual["cpus"] != expected["cpus"]:
                 raise RuntimeError("CPU ownership changed before write")
-            self._run(["docker", "update", "--cpuset-cpus", values["cpus"], target["name"]])
+            self._run(["docker", "update", "--cpuset-cpus=" + values["cpus"], "--", target["name"]])
             return
         if target["kind"] != "unit":
             raise ValueError("invalid CPU control target")
@@ -534,5 +534,17 @@ def publish_snapshot(snapshot, path=PUBLIC_STATUS):
             os.fsync(f.fileno())
             os.fchmod(f.fileno(), 0o644)
         os.replace(temporary, path)
+        # The ephemeral receipt is already visible atomically; directory fsync
+        # only makes the rename durable, and unsupported filesystems may refuse it.
+        try:
+            directory = os.open(
+                path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            pass
     finally:
         temporary.unlink(missing_ok=True)

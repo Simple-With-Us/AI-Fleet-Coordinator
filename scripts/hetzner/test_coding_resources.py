@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -87,8 +88,12 @@ class CPUFixture(unittest.TestCase):
         self.assertNotEqual(args[:2], ["systemctl", "set-property"])
         if args[:2] == ["docker", "update"]:
             path = self.paths["docker.scope"]
-            (path / "cpuset.cpus").write_text(args[3])
-            (path / "cpuset.cpus.effective").write_text(args[3])
+            self.assertEqual(args[3], "--")
+            self.assertEqual(args[4], "botfleet-vps-shared")
+            self.assertTrue(args[2].startswith("--cpuset-cpus="))
+            cpus = args[2].split("=", 1)[1]
+            (path / "cpuset.cpus").write_text(cpus)
+            (path / "cpuset.cpus.effective").write_text(cpus)
         return subprocess.CompletedProcess(args, 0, "", "")
 
     def discover(self):
@@ -125,7 +130,7 @@ class CPUFixture(unittest.TestCase):
         )
         self.assertEqual(
             [args for args in self.calls if args[:2] == ["docker", "update"]],
-            [["docker", "update", "--cpuset-cpus", "0,1,2,3,8", "botfleet-vps-shared"]],
+            [["docker", "update", "--cpuset-cpus=0,1,2,3,8", "--", "botfleet-vps-shared"]],
         )
         self.assertFalse(any(args[:2] == ["systemctl", "set-property"] for args in self.calls))
         self.assertEqual(
@@ -603,6 +608,42 @@ class CPUFixture(unittest.TestCase):
             r.public_snapshot(self.policy, self.state, self.controller)["status"],
             "unavailable",
         )
+
+    def test_snapshot_directory_fsync_is_attempted_and_postrename_failure_is_best_effort(self):
+        snapshot = {"schemaVersion": 1, "status": "unavailable", "observed": {}}
+        original = os.fsync
+        for refuse_directory in (False, True):
+            with self.subTest(refuse_directory=refuse_directory):
+                dest = self.base / str(refuse_directory) / "status.json"
+                events = []
+
+                def fsync(fd):
+                    if stat.S_ISDIR(os.fstat(fd).st_mode):
+                        events.append("directory")
+                        self.assertEqual(json.loads(dest.read_text()), snapshot)
+                        if refuse_directory:
+                            raise OSError("directory fsync is unsupported")
+                    else:
+                        events.append("file")
+                    return original(fd)
+
+                with mock.patch.object(r.os, "fsync", side_effect=fsync):
+                    r.publish_snapshot(snapshot, dest)
+                self.assertEqual(events, ["file", "directory"])
+                self.assertEqual(json.loads(dest.read_text()), snapshot)
+                self.assertEqual(dest.stat().st_mode & 0o777, 0o644)
+
+    def test_snapshot_file_fsync_failure_still_preserves_the_prior_receipt(self):
+        dest = self.base / "public-prior" / "status.json"
+        dest.parent.mkdir(mode=0o755)
+        original = {"schemaVersion": 1, "status": "unavailable", "observed": {}}
+        dest.write_text(json.dumps(original))
+        with mock.patch.object(r.os, "fsync", side_effect=OSError("file fsync failed")) as sync:
+            with self.assertRaises(OSError):
+                r.publish_snapshot({**original, "generatedAt": "new"}, dest)
+        self.assertEqual(sync.call_count, 1)
+        self.assertEqual(json.loads(dest.read_text()), original)
+        self.assertFalse(list(dest.parent.glob(".status-*")))
 
     def test_missing_cpu_policy_or_suspension_is_never_applied(self):
         self.discover()

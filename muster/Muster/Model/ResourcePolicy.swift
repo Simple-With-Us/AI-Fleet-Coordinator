@@ -274,13 +274,16 @@ struct ResourcePolicyReading: Equatable {
             guard sourceAge >= 0 else {
                 return .init(snapshot: nil, state: .invalid, reason: "The policy source timestamp is in the future.", receiptAge: nil, collectorAge: sourceAge, directReceiptAt: nil)
             }
+            var observationAge: TimeInterval?
             if let updatedAt = snapshot.observed.updatedAt {
                 guard let parsed = parseDate(updatedAt) else {
                     return .init(snapshot: nil, state: .invalid, reason: "The collector timestamp could not be read.", receiptAge: nil, collectorAge: nil, directReceiptAt: nil)
                 }
-                if now.timeIntervalSince(parsed) < 0 {
+                let age = now.timeIntervalSince(parsed)
+                if age < 0 {
                     return .init(snapshot: nil, state: .invalid, reason: "The collector timestamp is in the future.", receiptAge: nil, collectorAge: now.timeIntervalSince(parsed), directReceiptAt: nil)
                 }
+                observationAge = age
             }
             let collectorAge = sourceAge
             guard let directReceiptAt else {
@@ -295,6 +298,12 @@ struct ResourcePolicyReading: Equatable {
             }
             if snapshot.observed.policyStale {
                 return .init(snapshot: snapshot, state: .stale, reason: "The server marks the policy source stale.\u{00A0} Refresh after the policy is current.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
+            }
+            if sourceAge > maxCollectorAge {
+                return .init(snapshot: snapshot, state: .stale, reason: "The resource policy source is older than 45 minutes.\u{00A0} Refresh the server report before reviewing changes.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
+            }
+            if let observationAge, observationAge > maxCollectorAge {
+                return .init(snapshot: snapshot, state: .stale, reason: "The collector observation is older than 45 minutes.\u{00A0} Refresh the server report before reviewing changes.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
             }
             if receiptAge > maxReceiptAge {
                 return .init(snapshot: snapshot, state: .stale, reason: "The direct receipt is older than 60 seconds.\u{00A0} Refresh before reviewing a change.", receiptAge: receiptAge, collectorAge: collectorAge, directReceiptAt: directReceiptAt)
@@ -327,6 +336,7 @@ struct ResourcePolicyReading: Equatable {
         let critical = s.desired.ramCriticalGiB
         guard critical >= 1, critical.rounded() == critical, critical <= s.desired.ramPressureGiB else { return false }
         if let total = observed.ramTotalBytes, observed.ramCurrentBytes > total { return false }
+        if observed.ramTargetBytes <= 0 { return false }
         if let total = observed.ramTotalBytes, observed.ramTargetBytes > total { return false }
         return true
     }
