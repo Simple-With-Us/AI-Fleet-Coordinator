@@ -66,8 +66,12 @@ python3 -m agent_sync.muse_bridge_mac status
 ```
 
 These commands are **not** part of deployment and were not run for this change.  If the binary,
-contract, or schema changes, the bridge holds all new events until a fresh canary is pinned.  The
-ordinary CLAUDE pin remains independent.  Inbox rows and uncertain decisions stay durable for
+contract, or schema changes, the recorded pin no longer matches (`bridge_pin_stale`):  since the
+owner's 2026-11-03 ruling the bridge pin is advisory like the daemon's wake pins, so the bridge
+keeps consulting on the installed build and logs the drift once per change, until a person
+re-pins.  What still holds the bridge is having nothing verified to consult with:  no pin at all
+(`bridge_pin_missing`), no muse binary, or a contract that cannot be read
+(`bridge_pin_unreadable`).  The ordinary CLAUDE pin remains independent.  Inbox rows and uncertain decisions stay durable for
 operator review; do not manually advance a gap cursor without reconciling the missing messages.
 
 The canary needs working headless Muse auth: the pinned `muse-bin-*` build must run
