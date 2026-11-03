@@ -139,6 +139,7 @@ UPDATE_POLL_INTERVAL = 0.5
 UPDATE_VERIFY_SECONDS = 12
 UPDATE_STATUS_RE = re.compile(r"fleet-cli\.([0-9a-f]{32})\.(0|[1-9][0-9]{0,19})")
 UINT64_MAX = (1 << 64) - 1
+AUDIT_CONTEXT_MAX_BYTES = 1024 * 1024
 UPDATE_PROPERTIES = (
     "LoadState",
     "ActiveState",
@@ -890,9 +891,80 @@ def update_status(ctx, config, target, mode):
         raise Refused(
             "the fleet-cli status route is unavailable", error_code="update_route_unavailable"
         )
+    if captured_update_baseline(ctx, match.group(1)) != baseline:
+        raise Refused(
+            "the update receipt does not match its recorded baseline",
+            error_code="receipt_context_mismatch",
+        )
     # Never submit or query sudo on this path, and never substitute a newer ID.
     state = update_unit_state(ctx, entry)
     return update_observation(state, match.group(1), baseline)
+
+
+def captured_update_baseline(ctx, invocation):
+    """Read the bounded existing private audit; never trust client freshness alone.
+
+    This is capture provenance for the restricted route, not protection against code
+    already running as the server account that owns the audit.
+    """
+    descriptors = []
+    try:
+        path = Path(ctx.audit_path).absolute()
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = os.open("/", directory_flags)
+        descriptors.append(parent)
+        for component in path.parts[1:-1]:
+            parent = os.open(component, directory_flags, dir_fd=parent)
+            descriptors.append(parent)
+            info = os.fstat(parent)
+            sticky_root = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if (
+                info.st_uid not in (0, ctx.uid)
+                or (info.st_mode & 0o022 and not sticky_root)
+            ):
+                raise OSError("unsafe audit directory")
+        fd = os.open(
+            path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=parent,
+        )
+        descriptors.append(fd)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode) or info.st_uid != ctx.uid
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise OSError("unsafe audit file")
+        offset = max(0, info.st_size - AUDIT_CONTEXT_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        data = os.read(fd, min(info.st_size, AUDIT_CONTEXT_MAX_BYTES))
+        if offset:
+            data = data.partition(b"\n")[2]
+        lines = data.decode("utf-8").splitlines()
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("invocationID") != invocation:
+                continue
+            baseline = row.get("baselineStartMonotonic")
+            if (
+                row.get("host") == "server" and row.get("verb") == "server update"
+                and row.get("target") == "fleet-cli"
+                and row.get("route") in ("sudo-system-update", "root-system-update")
+                and row.get("result") in ("submitted", "done", "failed")
+                and type(baseline) is int and 0 <= baseline <= UINT64_MAX
+            ):
+                return baseline
+            break
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        pass
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+    raise Refused(
+        "the captured update receipt context is unavailable",
+        error_code="receipt_context_unavailable",
+    )
 
 
 def _server_only(ctx):
@@ -1181,7 +1253,16 @@ def execute_logs(ctx, commands):
 
 
 def audit(
-    ctx, scope, action, target, result, lines=None, route=None, invocation_id=None, verified=None
+    ctx,
+    scope,
+    action,
+    target,
+    result,
+    lines=None,
+    route=None,
+    invocation_id=None,
+    verified=None,
+    baseline=None,
 ):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
     A finished logs run adds its line count and nothing of the text."""
@@ -1200,6 +1281,8 @@ def audit(
         row["invocationID"] = invocation_id
     if isinstance(verified, bool):
         row["verified"] = verified
+    if type(baseline) is int and 0 <= baseline <= UINT64_MAX:
+        row["baselineStartMonotonic"] = baseline
     path = ctx.audit_path
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1311,6 +1394,7 @@ def handle(ctx, scope, action, target, mode):
             route=route,
             invocation_id=answer.get("invocationID"),
             verified=answer.get("verified"),
+            baseline=answer.get("baselineStartMonotonic"),
         )
     return answer, code
 

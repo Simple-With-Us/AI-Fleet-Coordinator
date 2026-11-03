@@ -124,6 +124,8 @@ class Base(unittest.TestCase):
         self.config_path.write_text(json.dumps(CONFIG))
         self.state = self.home / ".local" / "state" / "fleet-tools"
         self.state.mkdir(parents=True, mode=0o700)
+        for directory in (self.home / ".local", self.home / ".local/state"):
+            directory.chmod(0o700)
         self.http_calls = []
 
     def tearDown(self):
@@ -369,6 +371,7 @@ class UpdateReceiptTests(Base):
         audit = self.audit_rows()[0]
         self.assertEqual(audit["route"], "sudo-system-update")
         self.assertFalse(audit["verified"])
+        self.assertEqual(audit["baselineStartMonotonic"], 100)
 
     def test_new_success_is_verified(self):
         old = update_state()
@@ -649,27 +652,44 @@ class UpdateReceiptTests(Base):
 
 
 class UpdateStatusTests(Base):
-    def status(self, state=None, target=None, mode="--plan", config=None):
+    def status(self, state=None, target=None, mode="--plan", config=None, capture=True):
         if config is not None:
             self.config_path.write_text(json.dumps(config))
         self.status_calls = []
+        if capture:
+            self.write_capture()
 
         def runner(argv, **kwargs):
             self.status_calls.append(argv)
             self.assertNotIn(foc.SUDO, argv)
             self.assertIn("show", argv)
-            return 0, state or update_state(InvocationID="b" * 32)
+            return 0, state or update_state(
+                InvocationID="b" * 32, ExecMainStartTimestampMonotonic="200",
+                ExecMainExitTimestampMonotonic="210",
+            )
 
         return self.run_main(
-            ["server", "update-status", target or ("fleet-cli." + "b" * 32 + ".0"), mode, "--json"],
+            ["server", "update-status", target or ("fleet-cli." + "b" * 32 + ".100"), mode, "--json"],
             self.ctx(runner=runner),
         )
+
+    def write_capture(self, **changes):
+        row = {
+            "host": "server", "verb": "server update", "target": "fleet-cli",
+            "route": "sudo-system-update", "result": "submitted",
+            "invocationID": "b" * 32, "baselineStartMonotonic": 100, "verified": False,
+        }
+        row.update(changes)
+        self.capture_text = json.dumps(row) + "\n"
+        path = self.state / "ops-audit.jsonl"
+        path.write_text(self.capture_text)
+        path.chmod(0o600)
 
     def test_exact_captured_success_is_read_only(self):
         code, answer = self.status()
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "done", True))
         self.assertEqual(answer["invocationID"], "b" * 32)
-        self.assertEqual(self.audit_rows(), [])
+        self.assertEqual((self.state / "ops-audit.jsonl").read_text(), self.capture_text)
         self.assertEqual(len(self.status_calls), 1)
 
     def test_running_invocation_remains_submitted(self):
@@ -710,7 +730,7 @@ class UpdateStatusTests(Base):
         code, answer = self.status(mode="--yes")
         self.assertEqual((code, answer["errorCode"]), (2, "read_only_required"))
         self.assertEqual(self.status_calls, [])
-        self.assertEqual(self.audit_rows(), [])
+        self.assertEqual((self.state / "ops-audit.jsonl").read_text(), self.capture_text)
 
     def test_config_cannot_retarget_the_status_unit(self):
         config = json.loads(json.dumps(CONFIG))
@@ -731,10 +751,80 @@ class UpdateStatusTests(Base):
 
     def test_recheck_preserves_the_captured_freshness_baseline(self):
         current = update_state(InvocationID="b" * 32)
-        for baseline, expected in (("100", "submitted"), ("110", "submitted"), ("99", "done")):
+        for baseline, expected in (("100", "submitted"), ("110", "refused"), ("99", "refused"), ("0", "refused")):
             code, answer = self.status(current, target="fleet-cli." + "b" * 32 + "." + baseline)
-            self.assertEqual((code, answer["result"]), (0, expected))
-            self.assertEqual(answer["baselineStartMonotonic"], int(baseline))
+            self.assertEqual(answer["result"], expected)
+            if expected == "refused":
+                self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_mismatch"))
+                self.assertEqual(self.status_calls, [])
+            else:
+                self.assertEqual((code, answer["baselineStartMonotonic"]), (0, 100))
+
+    def test_missing_or_rotated_context_cannot_verify_current_success(self):
+        code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
+        self.assertEqual(self.status_calls, [])
+        self.write_capture(invocationID="a" * 32)
+        code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
+
+    def test_capture_rows_require_exact_action_target_route_and_integer(self):
+        for changes in (
+            {"host": "mac"}, {"verb": "server restart"}, {"target": "other"},
+            {"route": "other"}, {"baselineStartMonotonic": True},
+            {"baselineStartMonotonic": "100"}, {"baselineStartMonotonic": -1},
+        ):
+            self.write_capture(**changes)
+            code, answer = self.status(capture=False)
+            self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
+            self.assertEqual(self.status_calls, [])
+
+    def test_symlink_and_nonprivate_audit_are_refused(self):
+        self.write_capture()
+        path = self.state / "ops-audit.jsonl"
+        path.chmod(0o644)
+        code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
+        path.chmod(0o600)
+        other = self.state / "capture.jsonl"
+        path.rename(other)
+        path.symlink_to(other)
+        code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
+        self.assertEqual(self.status_calls, [])
+
+    def test_symlink_audit_parent_is_refused(self):
+        self.write_capture()
+        renamed = self.state.with_name("saved-fleet-tools")
+        self.state.rename(renamed)
+        self.state.symlink_to(renamed, target_is_directory=True)
+        code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
+
+    def test_foreign_owner_and_writable_directory_are_refused(self):
+        self.write_capture()
+        ctx = self.ctx()
+        ctx.uid = os.getuid() + 123
+        with self.assertRaises(foc.Refused):
+            foc.captured_update_baseline(ctx, "b" * 32)
+        self.state.chmod(0o777)
+        code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
+
+    def test_old_context_outside_bounded_tail_is_unavailable(self):
+        self.write_capture()
+        with (self.state / "ops-audit.jsonl").open("a") as stream:
+            stream.write("x" * (foc.AUDIT_CONTEXT_MAX_BYTES + 1) + "\n")
+        code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["errorCode"]), (2, "receipt_context_unavailable"))
+
+    def test_recent_context_is_read_from_large_audit_tail(self):
+        self.write_capture()
+        (self.state / "ops-audit.jsonl").write_text(
+            "x" * (foc.AUDIT_CONTEXT_MAX_BYTES + 1) + "\n" + self.capture_text,
+        )
+        code, answer = self.status(capture=False)
+        self.assertEqual((code, answer["result"]), (0, "done"))
 
 
 class MacVerbTests(Base):
