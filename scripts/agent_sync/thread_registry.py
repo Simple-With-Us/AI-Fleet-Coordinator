@@ -71,7 +71,7 @@ __all__ = [
 #: thread_registry_export.mjs, which performs the live Google writes.
 SPREADSHEET_ID = "1JEY34a5Gd2GYazbpGZZqq2ZZ80Fp0nenCpeH8AT4wPE"
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/%s/edit" % SPREADSHEET_ID
-SHEET_TAB = "Threads"
+SHEET_TAB = "Zulip Threads"
 
 #: Column order is the sheet's header row, exactly.  validateHeaders in the exporter and
 #: sync_to_sheet both refuse to write when the live header differs.

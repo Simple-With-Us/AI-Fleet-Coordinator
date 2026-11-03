@@ -29,7 +29,7 @@ import { join } from "node:path";
 import crypto from "node:crypto";
 
 export const SPREADSHEET_ID = "1JEY34a5Gd2GYazbpGZZqq2ZZ80Fp0nenCpeH8AT4wPE";
-export const SHEET_TAB = "Threads";
+export const SHEET_TAB = "Zulip Threads";
 export const THREAD_HEADERS = [
   "Thread Key", "Stream", "Stream ID", "Topic", "Status", "Participants",
   "Participant Count", "Message Count", "First Seen (UTC)", "Last Activity (UTC)",
