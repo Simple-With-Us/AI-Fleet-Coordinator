@@ -137,9 +137,9 @@ final class MacServicesReportTests: XCTestCase {
 final class OperationsRefreshRequestTests: XCTestCase {
     func test_agent_refresh_during_cheap_metadata_read_is_retained() {
         var requests = OperationsRefreshRequests()
-        XCTAssertTrue(requests.request(collectAgents: false, metadataBusy: false))
+        requests.request(collectAgents: false)
         requests.beginMetadataRead()
-        XCTAssertFalse(requests.request(collectAgents: true, metadataBusy: true))
+        requests.request(collectAgents: true)
         XCTAssertTrue(requests.metadataRequested)
         XCTAssertTrue(requests.agentsRequested)
         requests.beginMetadataRead()
@@ -151,30 +151,61 @@ final class OperationsRefreshRequestTests: XCTestCase {
 
     func test_server_refresh_keeps_pending_agent_request_without_inventing_a_rescan() {
         var requests = OperationsRefreshRequests()
-        XCTAssertTrue(requests.request(collectAgents: true, metadataBusy: false))
+        requests.request(collectAgents: true)
         requests.beginMetadataRead()
-        XCTAssertFalse(requests.request(collectAgents: false, metadataBusy: true))
+        requests.request(collectAgents: false)
         XCTAssertTrue(requests.agentsRequested)
         requests.beginAgentRead()
-        XCTAssertTrue(requests.request(collectAgents: false, metadataBusy: false))
+        requests.request(collectAgents: false)
         XCTAssertFalse(requests.agentsRequested)
     }
 
     func test_continuous_metadata_requests_cannot_starve_a_pending_agent_snapshot() {
         var requests = OperationsRefreshRequests()
-        XCTAssertTrue(requests.request(collectAgents: false, metadataBusy: false))
+        requests.request(collectAgents: false)
         var passes = 0
         repeat {
             requests.beginMetadataRead()
             passes += 1
             for _ in 0..<20 {
-                XCTAssertFalse(requests.request(collectAgents: true, metadataBusy: true))
+                requests.request(collectAgents: true)
             }
         } while requests.shouldRepeatMetadataRead(completedPasses: passes)
         XCTAssertEqual(passes, 2)
         XCTAssertTrue(requests.agentsRequested)
         requests.beginAgentRead()
         XCTAssertFalse(requests.agentsRequested)
+    }
+
+    func test_request_during_final_metadata_pass_gets_one_followup_without_a_new_request() {
+        var requests = OperationsRefreshRequests()
+        requests.request(collectAgents: false)
+        requests.beginMetadataRead()
+        requests.request(collectAgents: false)
+        XCTAssertTrue(requests.shouldRepeatMetadataRead(completedPasses: 1))
+        requests.beginMetadataRead()
+        requests.request(collectAgents: true)
+        XCTAssertFalse(requests.shouldRepeatMetadataRead(completedPasses: 2))
+        requests.beginAgentRead()
+        XCTAssertTrue(requests.metadataRequested)
+        XCTAssertTrue(requests.scheduleMetadataDrainIfNeeded())
+        XCTAssertFalse(requests.scheduleMetadataDrainIfNeeded())
+        requests.beginScheduledMetadataDrain()
+        XCTAssertFalse(requests.agentsRequested)
+        requests.beginMetadataRead()
+        XCTAssertFalse(requests.metadataRequested)
+        XCTAssertFalse(requests.scheduleMetadataDrainIfNeeded())
+    }
+
+    func test_obsolete_scheduled_drain_does_not_manufacture_metadata_or_agent_demand() {
+        var requests = OperationsRefreshRequests()
+        requests.request(collectAgents: false)
+        XCTAssertTrue(requests.scheduleMetadataDrainIfNeeded())
+        requests.beginMetadataRead()
+        requests.beginScheduledMetadataDrain()
+        XCTAssertFalse(requests.metadataRequested)
+        XCTAssertFalse(requests.agentsRequested)
+        XCTAssertFalse(requests.scheduleMetadataDrainIfNeeded())
     }
 }
 

@@ -271,11 +271,11 @@ enum MacServicesReportReader {
 struct OperationsRefreshRequests {
     private(set) var metadataRequested = false
     private(set) var agentsRequested = false
+    private(set) var metadataDrainScheduled = false
 
-    mutating func request(collectAgents: Bool, metadataBusy: Bool) -> Bool {
+    mutating func request(collectAgents: Bool) {
         metadataRequested = true
         agentsRequested = agentsRequested || collectAgents
-        return !metadataBusy
     }
 
     mutating func beginMetadataRead() { metadataRequested = false }
@@ -284,6 +284,14 @@ struct OperationsRefreshRequests {
     func shouldRepeatMetadataRead(completedPasses: Int) -> Bool {
         metadataRequested && completedPasses < 2
     }
+
+    mutating func scheduleMetadataDrainIfNeeded() -> Bool {
+        guard metadataRequested, !metadataDrainScheduled else { return false }
+        metadataDrainScheduled = true
+        return true
+    }
+
+    mutating func beginScheduledMetadataDrain() { metadataDrainScheduled = false }
 }
 
 /// --dry-run reads launchd and prints JSON without writing a report, installing an

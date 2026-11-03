@@ -323,8 +323,13 @@ struct OperationsView: View {
 
     /// Read local operations data and, when requested, obtain a fresh agent snapshot.
     private func load(collectAgents: Bool = true) async {
-        guard refreshRequests.request(collectAgents: collectAgents, metadataBusy: loading) else { return }
-        do {
+        refreshRequests.request(collectAgents: collectAgents)
+        await drainPendingRefreshes()
+    }
+
+    private func drainPendingRefreshes() async {
+        guard !loading else { return }
+        if refreshRequests.metadataRequested {
             loading = true
             defer { loading = false }
             var metadataPasses = 0
@@ -347,13 +352,24 @@ struct OperationsView: View {
                 audit = readAudit
             } while refreshRequests.shouldRepeatMetadataRead(completedPasses: metadataPasses)
         }
-        guard refreshRequests.agentsRequested, !collectingAgents else { return }
-        collectingAgents = true
-        defer { collectingAgents = false }
-        repeat {
-            refreshRequests.beginAgentRead()
-            services = await MacServicesCollector(repoRoot: FleetConfigLocation.resolve().repoRoot).collect()
-        } while refreshRequests.agentsRequested
+        if refreshRequests.agentsRequested && !collectingAgents {
+            collectingAgents = true
+            defer { collectingAgents = false }
+            repeat {
+                refreshRequests.beginAgentRead()
+                schedulePendingMetadataRead()
+                services = await MacServicesCollector(repoRoot: FleetConfigLocation.resolve().repoRoot).collect()
+            } while refreshRequests.agentsRequested
+        }
+        schedulePendingMetadataRead()
+    }
+
+    private func schedulePendingMetadataRead() {
+        guard refreshRequests.scheduleMetadataDrainIfNeeded() else { return }
+        Task {
+            refreshRequests.beginScheduledMetadataDrain()
+            await drainPendingRefreshes()
+        }
     }
 }
 
