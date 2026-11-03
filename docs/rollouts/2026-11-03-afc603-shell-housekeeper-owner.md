@@ -10,6 +10,6 @@ An invocation inheriting `HOUSEKEEPER_LOCK_OWNER=1` neither publishes nor remove
 
 Verification uses the extracted lock block under temporary homes, never the full cleanup script.  Cases cover exact shape, shell identity, local start token, mode and timestamp bounds, matching release, inherited ownership, foreign or malformed release metadata, failed publication, foreign publication during acquisition, and termination while a foreground child is running.
 
-The existing shell and watcher lock suites retain their takeover and reader-agreement coverage.  This change does not switch writers to UTC or alter scheduler cadence.
+The process start token is read before creating the lock directory, so a slow process query cannot consume the shared two-second acquisition timestamp allowance.  The existing shell and watcher lock suites retain their takeover and reader-agreement coverage.  This change does not switch writers to UTC or alter scheduler cadence.
 
 Deployment and process-inventory updates are tracked by the parent AFC-603 lane; this source change does not itself modify a live script, lock, LaunchAgent, or runtime setting.

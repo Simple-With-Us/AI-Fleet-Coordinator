@@ -84,6 +84,7 @@ HOUSEKEEPER_LOCK_INODE=""
 # The long-lived shell owns the lock, never the short-lived guarded helper.
 HOUSEKEEPER_OWNER_PID=$$
 HOUSEKEEPER_OWNER_RECORD=""
+HOUSEKEEPER_OWNER_START=""
 HOUSEKEEPER_PREVIOUS_OWNER=""
 # 1 means the moved-aside copy holds a PEER's lock, so it must never be deleted.
 HOUSEKEEPER_STALE_IS_PEER=0
@@ -302,6 +303,27 @@ except OSError:
 PYIDENTITY
 }
 
+# Obtain the start token before mkdir: ps may take up to ten seconds, while
+# the published acquisition and filesystem timestamps must agree within two.
+housekeeper_process_start_token() {
+    python3 - "$HOUSEKEEPER_OWNER_PID" <<'PYSTART'
+import os, subprocess, sys
+try:
+    result = subprocess.run(
+        ["/bin/ps", "-o", "lstart=", "-p", sys.argv[1]],
+        capture_output=True, text=True, timeout=10, check=False,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
+    )
+    start = result.stdout.strip()
+    if result.returncode != 0 or not start or len(start) > 128:
+        raise OSError("process start token unavailable")
+    print(start)
+except (OSError, subprocess.SubprocessError) as exc:
+    print("failed to read housekeeper process start: %s" % exc, file=sys.stderr)
+    sys.exit(1)
+PYSTART
+}
+
 housekeeper_publish_owner() {
     local current_owner
     current_owner="$(housekeeper_owner_identity)" || return 1
@@ -309,21 +331,16 @@ housekeeper_publish_owner() {
         echo "failed to publish housekeeper owner: owner changed during acquisition" >&2
         return 1
     fi
-    python3 - "$HOUSEKEEPER_LOCK" "$HOUSEKEEPER_OWNER_PID" <<'PYOWNER'
-import json, os, socket, subprocess, sys, tempfile, time
+    python3 - "$HOUSEKEEPER_LOCK" "$HOUSEKEEPER_OWNER_PID" "$HOUSEKEEPER_OWNER_START" <<'PYOWNER'
+import json, os, socket, sys, tempfile, time
 
 lock_path, pid = sys.argv[1], int(sys.argv[2])
+start = sys.argv[3]
 owner_path = lock_path + ".owner"
 tmp_path = None
 try:
     lock_stat = os.stat(lock_path)
-    result = subprocess.run(
-        ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
-        capture_output=True, text=True, timeout=10, check=False,
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
-    )
-    start = result.stdout.strip()
-    if result.returncode != 0 or not start or len(start) > 128:
+    if not start or len(start) > 128:
         raise OSError("process start token unavailable")
     acquired_at = time.time()
     if abs(acquired_at - lock_stat.st_mtime) > 2.0:
@@ -351,7 +368,7 @@ try:
     finally:
         os.close(dir_fd)
     print(payload)
-except (OSError, subprocess.SubprocessError) as exc:
+except OSError as exc:
     print("failed to publish housekeeper owner: %s" % exc, file=sys.stderr)
     sys.exit(1)
 finally:
@@ -761,11 +778,15 @@ trap 'exit 130' INT
 # they read have to travel with them.
 export -f housekeeper_with_guard housekeeper_try_mkdir housekeeper_rename_exclusive \
     housekeeper_restore_lock housekeeper_record_state housekeeper_acquire_section \
-    housekeeper_release_section housekeeper_owner_is_gone housekeeper_publish_owner housekeeper_owner_identity
+    housekeeper_release_section housekeeper_owner_is_gone housekeeper_publish_owner housekeeper_owner_identity \
+    housekeeper_process_start_token
 export HOUSEKEEPER_LOCK HOUSEKEEPER_GUARD HOUSEKEEPER_STALE HOUSEKEEPER_LOCK_INODE \
-    HOUSEKEEPER_STALE_IS_PEER HOUSEKEEPER_STATE_FILE HOUSEKEEPER_OWNER_PID HOUSEKEEPER_OWNER_RECORD HOUSEKEEPER_PREVIOUS_OWNER
+    HOUSEKEEPER_STALE_IS_PEER HOUSEKEEPER_STATE_FILE HOUSEKEEPER_OWNER_PID HOUSEKEEPER_OWNER_RECORD \
+    HOUSEKEEPER_PREVIOUS_OWNER HOUSEKEEPER_OWNER_START
 
 if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
+    HOUSEKEEPER_OWNER_START="$(housekeeper_process_start_token)" || exit 1
+    export HOUSEKEEPER_OWNER_START
     # The state file carries the outcome of the guarded section back to this
     # shell:  the inode of the lock this process created, the moved-aside
     # copy, and whether that copy holds a live peer's lock.

@@ -421,16 +421,38 @@ assert result.returncode == 0 and (home / "observed").exists(), result.stderr
 lock = home / ".claude-disk-janitor/.housekeeper.lock"
 assert not lock.exists() and not pathlib.Path(str(lock) + ".owner").exists()
 
-# Inherited ownership must preserve even unknown parent metadata byte for byte.
+# Re-exec with all parent's exported ownership values preserves parent state.
 home = root / "owner-inherited"
 lock = home / ".claude-disk-janitor/.housekeeper.lock"
 lock.mkdir(parents=True)
 owner = pathlib.Path(str(lock) + ".owner")
-owner.write_text('{"parent": "preserve byte for byte"}')
+owner.write_text(json.dumps({"pid": os.getpid(), "host": socket.gethostname(),
+    "acquired_at": time.time(), "lock": str(lock), "start": "parent identity"}))
 before = (lock.stat().st_ino, owner.read_bytes(), owner.stat().st_mtime_ns)
-_, result = run("owner-inherited", 'echo nested > "$HOME/ran"', inherited=True)
+_, result = run("owner-inherited", 'echo nested > "$HOME/ran"', inherited=True,
+    extra_env={"HOUSEKEEPER_LOCK_INODE": str(before[0]), "HOUSEKEEPER_OWNER_RECORD": owner.read_text()})
 assert result.returncode == 0 and (home / "ran").exists(), result.stderr
 assert before == (lock.stat().st_ino, owner.read_bytes(), owner.stat().st_mtime_ns)
+
+# A slow ps completes before mkdir, keeping all record timestamps inside the
+# shared two-second bounds without widening what the four readers accept.
+home = root / "owner-slow-start"
+hook = home / "hooks"
+hook.mkdir(parents=True)
+(hook / "sitecustomize.py").write_text('''import os, pathlib, subprocess, time
+real_run = subprocess.run
+def slow_start(args, *a, **kw):
+    if args[:3] == ["/bin/ps", "-o", "lstart="] and "TZ" not in kw.get("env", {}):
+        assert not (pathlib.Path(os.environ["HOME"]) / ".claude-disk-janitor/.housekeeper.lock").exists()
+        time.sleep(3)
+        (pathlib.Path(os.environ["HOME"]) / "slow-read").touch()
+    return real_run(args, *a, **kw)
+subprocess.run = slow_start
+''')
+_, result = run("owner-slow-start", 'echo cleanup > "$HOME/ran"', extra_env={"PYTHONPATH": str(hook)})
+assert result.returncode == 0 and (home / "slow-read").exists() and (home / "ran").exists(), result.stderr
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert not lock.exists() and not pathlib.Path(str(lock) + ".owner").exists()
 
 # A changed start token, even with the same PID, cannot authorize release.
 home, result = run("owner-foreign-release", r'''
