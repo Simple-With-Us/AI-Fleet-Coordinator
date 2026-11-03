@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from fleet_secrets import core
 
 TOKEN_ENV = "INFISICAL_TELEMETRY_CONFIG_READ_TOKEN"
-PROJECT_ENV = "INFISICAL_PROJECT_ID"
+PROJECT_ENV = "INFISICAL_TELEMETRY_CONFIG_PROJECT_ID"
 
 
 def fetch_export(env: Mapping[str, str]) -> dict[str, str]:

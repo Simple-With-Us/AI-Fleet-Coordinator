@@ -62,7 +62,7 @@ class ConfigureAgentsTests(unittest.TestCase):
             **os.environ,
             "PATH": os.environ.get("PATH", ""),
             "HOME": str(self.home),
-            "INFISICAL_PROJECT_ID": self.project,
+            "INFISICAL_TELEMETRY_CONFIG_PROJECT_ID": self.project,
             "INFISICAL_TELEMETRY_CONFIG_READ_TOKEN": self.service_token,
             "FLEET_SECRETS_API": "http://127.0.0.1:%d/api" % self.server.server_address[1],
             "OUT_DIR": str(self.out),
@@ -295,18 +295,39 @@ class ConfigureAgentsTests(unittest.TestCase):
         for project in ("", "invalid-project"):
             with (
                 self.subTest(project=project),
-                self.assertRaisesRegex(core.SecretsError, "set INFISICAL_PROJECT_ID"),
+                self.assertRaisesRegex(
+                    core.SecretsError, "set INFISICAL_TELEMETRY_CONFIG_PROJECT_ID"
+                ),
             ):
-                fetch_export({**self.env, "INFISICAL_PROJECT_ID": project})
+                fetch_export({**self.env, "INFISICAL_TELEMETRY_CONFIG_PROJECT_ID": project})
         self.assertEqual(self.requests, [])
 
     def test_helper_configured_project_is_authority_and_token_must_match(self) -> None:
         with mock.patch.object(core, "_api_json", return_value=(200, self.metadata)) as api:
             with self.assertRaisesRegex(core.SecretsError, "token-scope-mismatch"):
                 fetch_export(
-                    {**self.env, "INFISICAL_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
+                    {
+                        **self.env,
+                        "INFISICAL_TELEMETRY_CONFIG_PROJECT_ID": "00000000-0000-4000-8000-000000000099",
+                    }
                 )
         self.assertEqual(api.call_count, 1)
+
+    def test_generic_project_selector_cannot_supply_telemetry_bootstrap(self) -> None:
+        env = {**self.env, "INFISICAL_PROJECT_ID": self.project}
+        env.pop("INFISICAL_TELEMETRY_CONFIG_PROJECT_ID")
+        with (
+            mock.patch.object(core, "_api_json") as api,
+            self.assertRaisesRegex(core.SecretsError, "set INFISICAL_TELEMETRY_CONFIG_PROJECT_ID"),
+        ):
+            fetch_export(env)
+        api.assert_not_called()
+
+    def test_dedicated_project_selector_ignores_an_unrelated_generic_selector(self) -> None:
+        env = {**self.env, "INFISICAL_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
+        with mock.patch.object(core, "fetch_project", return_value=self.tokens) as fetch:
+            self.assertEqual(fetch_export(env), self.tokens)
+        self.assertEqual(fetch.call_args.args[0], self.project)
 
 
 if __name__ == "__main__":

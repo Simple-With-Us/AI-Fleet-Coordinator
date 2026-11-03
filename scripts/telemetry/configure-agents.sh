@@ -11,6 +11,7 @@
 # only) and are never printed:  stdout carries key names and set/empty flags
 # only, snippet files are 0600.  Reads require the dedicated
 # INFISICAL_TELEMETRY_CONFIG_READ_TOKEN scoped to the project root and python3.
+# The expected project is supplied independently as INFISICAL_TELEMETRY_CONFIG_PROJECT_ID.
 #
 # Usage:
 #   OUT_DIR=./agent-configs \
