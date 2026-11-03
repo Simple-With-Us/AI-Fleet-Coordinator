@@ -6,7 +6,7 @@
   python3 scripts/fleet-ops-control.py server start|stop|restart UNIT     (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server logs UNIT                   (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server update NAME                 (--plan | --yes) [--json]
-  python3 scripts/fleet-ops-control.py server update-status fleet-cli.ID   --plan [--json]
+  python3 scripts/fleet-ops-control.py server update-status fleet-cli.ID.BASELINE --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -137,7 +137,8 @@ UPDATE_PROBE_TIMEOUT = 3
 UPDATE_POLL_ATTEMPTS = 25
 UPDATE_POLL_INTERVAL = 0.5
 UPDATE_VERIFY_SECONDS = 12
-UPDATE_STATUS_RE = re.compile(r"fleet-cli\.([0-9a-f]{32})")
+UPDATE_STATUS_RE = re.compile(r"fleet-cli\.([0-9a-f]{32})\.(0|[1-9][0-9]{0,19})")
+UINT64_MAX = (1 << 64) - 1
 UPDATE_PROPERTIES = (
     "LoadState",
     "ActiveState",
@@ -723,6 +724,8 @@ def update_unit_state(ctx, entry, timeout=UPDATE_PROBE_TIMEOUT):
         if not re.fullmatch(r"[0-9]{1,20}", state[key]):
             raise Refused("the update process status is invalid", error_code="unit_status_invalid")
         state[key] = int(state[key])
+        if state[key] > UINT64_MAX:
+            raise Refused("the update process status is invalid", error_code="unit_status_invalid")
     return state
 
 
@@ -786,6 +789,7 @@ def execute_update(ctx, config, target, commands):
         executionState="submitted",
         verified=False,
         detail="the update was submitted; completion has not been observed",
+        baselineStartMonotonic=before["ExecMainStartTimestampMonotonic"],
     )
     invocation = None
     deadline = ctx.monotonic() + UPDATE_VERIFY_SECONDS
@@ -820,10 +824,14 @@ def execute_update(ctx, config, target, commands):
     return answer, 0
 
 
-def update_observation(state, invocation, previous_start=0):
+def update_observation(state, invocation, previous_start):
     answer = dict(
-        ok=True, result="submitted", executionState="submitted", verified=False,
+        ok=True,
+        result="submitted",
+        executionState="submitted",
+        verified=False,
         invocationID=invocation,
+        baselineStartMonotonic=previous_start,
         detail="the update invocation has not completed with a verified result",
     )
     if state["InvocationID"] != invocation:
@@ -838,19 +846,27 @@ def update_observation(state, invocation, previous_start=0):
         return answer, 0
     if state["Result"] and state["Result"] != "success":
         answer.update(
-            ok=False, result="failed", executionState="failed", verified=True,
-            errorCode="update_invocation_failed", detail="the captured update service invocation failed",
+            ok=False,
+            result="failed",
+            executionState="failed",
+            verified=True,
+            errorCode="update_invocation_failed",
+            detail="the captured update service invocation failed",
         )
         return answer, 1
     started = state["ExecMainStartTimestampMonotonic"]
     if (
-        state["Result"] == "success" and state["ActiveState"] == "inactive"
+        state["Result"] == "success"
+        and state["ActiveState"] == "inactive"
         and state["ExecMainCode"] == 1
-        and state["ExecMainStatus"] == 0 and started > previous_start
+        and state["ExecMainStatus"] == 0
+        and started > previous_start
         and state["ExecMainExitTimestampMonotonic"] >= started
     ):
         answer.update(
-            result="done", executionState="completed", verified=True,
+            result="done",
+            executionState="completed",
+            verified=True,
             detail="the captured update service invocation completed successfully",
         )
     return answer, 0
@@ -862,13 +878,21 @@ def update_status(ctx, config, target, mode):
         raise Refused("update status is read only; pass --plan", error_code="read_only_required")
     match = UPDATE_STATUS_RE.fullmatch(target or "")
     if not match:
-        raise Refused("update status requires a captured fleet-cli invocation ID", error_code="invocation_id_invalid")
+        raise Refused(
+            "update status requires a captured fleet-cli invocation ID",
+            error_code="invocation_id_invalid",
+        )
+    baseline = int(match.group(2))
+    if baseline > UINT64_MAX:
+        raise Refused("the captured update baseline is invalid", error_code="invocation_id_invalid")
     entry = config["updates"].get("fleet-cli")
     if entry != {"unit": FLEET_CLI_UPDATE_UNIT, "scope": "system"}:
-        raise Refused("the fleet-cli status route is unavailable", error_code="update_route_unavailable")
+        raise Refused(
+            "the fleet-cli status route is unavailable", error_code="update_route_unavailable"
+        )
     # Never submit or query sudo on this path, and never substitute a newer ID.
     state = update_unit_state(ctx, entry)
-    return update_observation(state, match.group(1))
+    return update_observation(state, match.group(1), baseline)
 
 
 def _server_only(ctx):

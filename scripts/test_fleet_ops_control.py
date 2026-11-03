@@ -390,6 +390,19 @@ class UpdateReceiptTests(Base):
             [update_state(), update_state(), update_state(InvocationID="b" * 32)]
         )
         self.assertEqual((code, answer["result"]), (0, "submitted"))
+        self.assertEqual(answer["baselineStartMonotonic"], 100)
+        original_id = answer["invocationID"]
+
+        def status_runner(argv, **kwargs):
+            self.assertIn("show", argv)
+            return 0, update_state(InvocationID=original_id)
+
+        later, later_code = foc.update_status(
+            self.ctx(runner=status_runner), foc.validate_config(CONFIG),
+            "fleet-cli." + original_id + "." + str(answer["baselineStartMonotonic"]), "plan",
+        )
+        self.assertEqual((later_code, later["result"], later["verified"]), (0, "submitted", False))
+        self.assertEqual(later["baselineStartMonotonic"], answer["baselineStartMonotonic"])
 
     def test_busy_update_is_refused_without_submission(self):
         for changes in ({"ActiveState": "activating"}, {"Job": "7"}):
@@ -512,7 +525,9 @@ class UpdateReceiptTests(Base):
             ctx = self.ctx()
             with mock.patch.object(foc.os.path, "isfile", side_effect=lambda path: path != missing):
                 with self.assertRaises(foc.Refused) as raised:
-                    foc.update_command(ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT})
+                    foc.update_command(
+                        ctx, "fleet-cli", {"scope": "system", "unit": foc.FLEET_CLI_UPDATE_UNIT}
+                    )
             self.assertEqual(raised.exception.error_code, expected)
             self.assertEqual(self.runner.calls, [])
 
@@ -617,7 +632,8 @@ class UpdateReceiptTests(Base):
             return 0, update_state(
                 InvocationID="b" * 32,
                 ActiveState="inactive" if clock[0] >= 5 else "activating",
-                ExecMainStartTimestampMonotonic="200", ExecMainExitTimestampMonotonic="210",
+                ExecMainStartTimestampMonotonic="200",
+                ExecMainExitTimestampMonotonic="210",
             )
 
         ctx = self.ctx(runner=runner)
@@ -641,7 +657,7 @@ class UpdateStatusTests(Base):
             return 0, state or update_state(InvocationID="b" * 32)
 
         return self.run_main(
-            ["server", "update-status", target or ("fleet-cli." + "b" * 32), mode, "--json"],
+            ["server", "update-status", target or ("fleet-cli." + "b" * 32 + ".0"), mode, "--json"],
             self.ctx(runner=runner),
         )
 
@@ -657,7 +673,9 @@ class UpdateStatusTests(Base):
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
 
     def test_failed_invocation_reports_verified_failure(self):
-        code, answer = self.status(update_state(InvocationID="b" * 32, ActiveState="failed", Result="exit-code"))
+        code, answer = self.status(
+            update_state(InvocationID="b" * 32, ActiveState="failed", Result="exit-code")
+        )
         self.assertEqual((code, answer["result"], answer["verified"]), (1, "failed", True))
 
     def test_old_or_replaced_success_never_verifies_requested_id(self):
@@ -669,7 +687,12 @@ class UpdateStatusTests(Base):
             self.assertEqual(answer["executionState"], "expired")
 
     def test_no_captured_or_malformed_id_refused_before_probe(self):
-        for target in ("fleet-cli", "fleet-cli.", "fleet-cli." + "B" * 32, "other." + "b" * 32, "fleet-cli." + "b" * 32 + ".extra"):
+        for target in (
+            "fleet-cli", "fleet-cli.", "fleet-cli." + "B" * 32 + ".0",
+            "other." + "b" * 32 + ".0", "fleet-cli." + "b" * 32 + ".extra",
+            "fleet-cli." + "b" * 32, "fleet-cli." + "b" * 32 + ".00",
+            "fleet-cli." + "b" * 32 + ".-1", "fleet-cli." + "b" * 32 + ".18446744073709551616",
+        ):
             code, answer = self.status(target=target)
             self.assertEqual((code, answer["errorCode"]), (2, "invocation_id_invalid"))
             self.assertEqual(self.status_calls, [])
@@ -688,12 +711,21 @@ class UpdateStatusTests(Base):
         self.assertEqual(self.status_calls, [])
 
     def test_ssh_gate_accepts_typed_read_only_receipt(self):
-        words = foc.parse_ssh_command("server update-status fleet-cli." + "b" * 32 + " --plan --json")
+        words = foc.parse_ssh_command(
+            "server update-status fleet-cli." + "b" * 32 + ".0 --plan --json"
+        )
         self.assertEqual(words[1], "update-status")
 
     def test_invalid_process_status_cannot_verify(self):
         code, answer = self.status(update_state(InvocationID="b" * 32, ExecMainCode="0"))
         self.assertEqual((code, answer["result"], answer["verified"]), (0, "submitted", False))
+
+    def test_recheck_preserves_the_captured_freshness_baseline(self):
+        current = update_state(InvocationID="b" * 32)
+        for baseline, expected in (("100", "submitted"), ("110", "submitted"), ("99", "done")):
+            code, answer = self.status(current, target="fleet-cli." + "b" * 32 + "." + baseline)
+            self.assertEqual((code, answer["result"]), (0, expected))
+            self.assertEqual(answer["baselineStartMonotonic"], int(baseline))
 
 
 class MacVerbTests(Base):
