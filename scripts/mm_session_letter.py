@@ -416,6 +416,10 @@ def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dic
         body = json.dumps(params).encode("utf-8")
     url = base_url.rstrip("/") + path + (("?" + query) if query else "")
     request = urllib.request.Request(url, data=body if method == "POST" else None, method=method)
+    # An explicit User-Agent:  the API's host is Cloudflare-fronted and Cloudflare
+    # answers 1010 to Python's default urllib agent (the deploy-mapped-worker
+    # note), so the default would never reach the listener.
+    request.add_header("User-Agent", "mm-session-letter/1.0")
     for name, value in RG.headers(key, method, path, query, principal, body, time.time()).items():
         request.add_header(name, value)
     try:
@@ -429,8 +433,18 @@ def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dic
             answer = None
         if isinstance(answer, dict):
             answer.setdefault("code", "http_%s" % exc.code)
+            if method == "POST" and exc.code >= 500:
+                # A server-side failure can surface after the write was applied
+                # (the listener failing mid-answer, a proxy answering for it), so
+                # a write's outcome is unknown, as on the timeout path below.  A
+                # 4xx answer is the API's own refusal, spoken for itself:  the
+                # write was not applied and the outcome is known.
+                answer.setdefault("outcome", "outcome_unknown")
             return answer
-        return {"error": "the registry answered HTTP %s" % exc.code, "code": "http_error"}
+        refusal = {"error": "the registry answered HTTP %s" % exc.code, "code": "http_error"}
+        if method == "POST" and exc.code >= 500:
+            refusal["outcome"] = "outcome_unknown"
+        return refusal
     except (urllib.error.URLError, TimeoutError, OSError):
         # A write may have been applied before the answer was lost, as on the local path.
         answer = {"error": "the registry did not answer in time", "code": "timeout"}
