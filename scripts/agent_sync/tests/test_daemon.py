@@ -1437,9 +1437,12 @@ class EveryoneWakesTests(DaemonHarness):
         self.assertTrue(A.pinned(self.seat_paths(), str(self.claude)), "the old path is still pinned")
         self.assertEqual(A.pin_state(self.seat_paths(), None)["why"], "no_claude")
 
-    def test_a_stale_pin_drops_with_a_row_and_says_so_in_the_owner_queue(self) -> None:
-        """AFC-256.  Nine wakes were dropped as `not_pinned` before the listener could tell anyone the
-        binary had moved.  It never re-pins on its own:  the pin records a person checking that build."""
+    def test_a_stale_pin_runs_the_installed_binary_and_logs_the_drift(self) -> None:
+        """AFC-256; owner ruling, 2026-11-03.  Nine wakes were once dropped as `not_pinned` before
+        the listener could tell anyone the binary had moved, and the fix then was to drop them as
+        `pin_stale` with a notice.  Pins are advisory now:  the wake runs on the binary that is
+        installed, the drift is logged once, and the pin file is left exactly as recorded --
+        advisory is not self-healing, and the pin still records a person checking that build."""
         self.pin()
         # An auto-update replaces the binary:  `claude` on the wake PATH is a different realpath now,
         # which is exactly how the pin goes stale (a move, not an edit of the pinned file).
@@ -1452,10 +1455,18 @@ class EveryoneWakesTests(DaemonHarness):
         self.fake.add_message("Codex", "agent-sync", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
-        self.assertEqual(self.ledger()[-1]["reason"], "pin_stale")
-        self.assertEqual(self.dumps(), [], "a stale pin runs nothing")
-        self.assertTrue(any("claude binary changed" in b[8] for b in self.banners), self.banners)
-        # Status says it too, with the fix, rather than leaving the owner to read a reason string.
+        self.assertEqual(self.terminal_wakes()[-1]["state"], "done")
+        self.assertEqual(
+            self.dumps()[0]["argv"][0],
+            os.path.realpath(str(moved)),
+            "the wake ran on the installed binary, not the pinned one",
+        )
+        self.assertFalse(any("binary changed" in b[8] for b in self.banners), self.banners)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("wake-pin-drift", log)
+        self.assertIn("pin_stale", log)
+        self.assertIn("claude-9.9.9", log, "the drift names the binary now installed")
+        # Status still says the pin is stale, with the fix, rather than hiding the drift.
         seat = daemon.status()["seats"]["CLAUDE"]
         self.assertEqual(seat["pin"]["why"], "pin_stale")
         self.assertFalse(seat["pinned"])
@@ -1559,10 +1570,15 @@ class MuseSeatTests(DaemonHarness):
         kw.setdefault("partition_file", self.partition)
         return super().daemon(**kw)
 
-    def test_a_muse_seat_whose_build_moved_is_told_about_muse_not_claude(self) -> None:
-        """Kody, PR #880.  The `pin_stale` notice used to resolve the claude binary and read the
-        claude pin file for every seat, so a muse seat whose build moved was told that "the claude
-        binary changed" and was sent to the claude pin, which never moves for a muse seat."""
+    def test_a_muse_seat_whose_build_moved_runs_the_installed_build_and_logs_the_drift(self) -> None:
+        """Kody, PR #880; owner ruling, 2026-11-03.  The `pin_stale` notice used to resolve the
+        claude binary and read the claude pin file for every seat, so a muse seat whose build
+        moved was told that "the claude binary changed"; the notice was later fixed to name muse,
+        and the wake still dropped.  Pins are advisory now:  no notice fires for either runtime,
+        the wake is attempted on the build that is installed, and the drift is logged with the
+        pinned and current builds named.  The fake build is an empty shell script, so the run
+        itself fails -- which is the point of the ruling:  a wake-command failure surfaces as a
+        failed wake in the log, not as a silent drop."""
         self.muse_seat(str(self.build))
         self.stale_muse_pin()
         daemon = self.daemon()
@@ -1572,14 +1588,18 @@ class MuseSeatTests(DaemonHarness):
         self.clock.advance(25)
         daemon.tick()
         daemon.run_jobs("MM")
-        self.assertEqual(self.ledger("MM")[-1]["reason"], "pin_stale")
-        self.assertTrue(
-            any("the muse binary changed" in b[8] for b in self.banners),
-            "the notice must name the runtime that went stale: %s" % self.banners,
+        rows = self.ledger("MM")
+        self.assertFalse(any(row["state"] == "dropped" for row in rows), rows)
+        self.assertEqual(rows[-1]["state"], "failed", rows[-1])
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("wake-pin-drift", log)
+        self.assertIn("muse-bin-1.4.11-R6667.1", log, "the drift names the pinned build")
+        self.assertIn(
+            os.path.basename(str(self.build)), log, "the drift names the build now installed"
         )
         self.assertFalse(
-            any("the claude binary changed" in b[8] for b in self.banners),
-            "a muse seat is not told about the claude binary: %s" % self.banners,
+            any("binary changed" in b[8] for b in self.banners),
+            "no pin_stale notice fires for a wake that ran: %s" % self.banners,
         )
 
     def test_a_muse_seat_running_a_build_its_config_does_not_name_is_red_with_the_repoint(self) -> None:
@@ -1600,10 +1620,11 @@ class MuseSeatTests(DaemonHarness):
             "the red entry must name the build the seat is actually running: %s" % seat["red"],
         )
 
-    def test_the_muse_pin_stale_notice_says_to_repoint_the_config_when_the_build_is_gone(self) -> None:
-        """Kody, PR #880.  Re-pinning alone records a build the launcher deletes at the next
-        release, so the notice has to name the setting to repoint and the build to point it at,
-        not only that the binary moved."""
+    def test_a_muse_seat_whose_config_names_a_gone_build_runs_and_status_says_repoint(self) -> None:
+        """Kody, PR #880; owner ruling, 2026-11-03.  Re-pinning alone records a build the launcher
+        deletes at the next release, so the repoint advice has to survive the pin_stale notice
+        going away.  It lives in the status red entries:  the wake proceeds on the build the
+        launcher left, and status names the setting to repoint and the build to point it at."""
         gone = os.path.join(str(self.tmp), "muse-bin-1.4.11-R6667.1")
         self.muse_seat(gone)
         self.stale_muse_pin()
@@ -1614,19 +1635,17 @@ class MuseSeatTests(DaemonHarness):
         self.clock.advance(25)
         daemon.tick()
         daemon.run_jobs("MM")
-        self.assertEqual(self.ledger("MM")[-1]["reason"], "pin_stale")
-        notes = [
-            str(row.get("note") or "") for row in L.read_jsonl(self.seat_paths("MM").owner_queue)
-        ]
+        rows = self.ledger("MM")
+        self.assertFalse(any(row["state"] == "dropped" for row in rows), rows)
+        seat = daemon.status()["seats"]["MM"]
         self.assertTrue(
-            any("repoint it to" in note for note in notes),
-            "the notice must say which setting to repoint: %s" % notes,
+            any("repoint seat.MM.muse" in red for red in seat["red"]),
+            "status must say which setting to repoint: %s" % seat["red"],
         )
         self.assertTrue(
-            any(os.path.basename(str(self.build)) in note for note in notes),
-            "the notice must name the build the seat is running: %s" % notes,
+            any(os.path.basename(str(self.build)) in red for red in seat["red"]),
+            "status must name the build the seat is actually running: %s" % seat["red"],
         )
-
 
 class PeerScreenTests(DaemonHarness):
     """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  low risk is
