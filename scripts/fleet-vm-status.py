@@ -406,7 +406,7 @@ def collect_harness_sessions(home):
     found = {}
     for harness, relative in HARNESS_DIRS.items():
         folder = Path(home) / relative
-        if not folder.is_dir():
+        if folder.is_symlink() or not folder.is_dir():
             continue
         count = 0
         newest = None

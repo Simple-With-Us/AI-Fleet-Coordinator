@@ -219,6 +219,17 @@ class HarnessSessionTests(unittest.TestCase):
             self.assertEqual(result["muse"]["newestMtime"], "2023-11-14T22:13:20Z")
             self.assertNotIn("SECRET", json.dumps(result))
 
+    def test_symlinked_harness_root_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            real = Path(tmp) / "elsewhere"
+            real.mkdir(parents=True)
+            (real / "session.jsonl").write_text("SECRET-CONTENT-THAT-MUST-NEVER-APPEAR\n")
+            home.mkdir()
+            (home / ".claude").symlink_to(real, target_is_directory=True)
+            result = collector.collect_harness_sessions(home)
+            self.assertIsNone(result)
+
     def test_absent_dirs_are_omitted_and_empty_dir_counts_zero(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
