@@ -208,8 +208,20 @@ def infisical_project() -> str:
 
 
 def infisical_env() -> str:
-    """Infisical environment slug.  FLEET_RAG_INFISICAL_ENV overrides it."""
-    return os.environ.get("FLEET_RAG_INFISICAL_ENV") or SHARED_ENV
+    """Infisical environment slug.  FLEET_RAG_INFISICAL_ENV may name it, but prod is
+    the only environment (owner decision 2026-10-10, mirroring
+    infisical_settings._require_prod): any other slug is refused loudly instead of
+    silently fetching from a stale dev/staging copy.  Empty means prod."""
+    slug = (os.environ.get("FLEET_RAG_INFISICAL_ENV") or "").strip().lower()
+    if not slug:
+        return SHARED_ENV
+    if slug != SHARED_ENV:
+        raise FleetRagError(
+            f"refusing Infisical environment {slug!r}: prod is the only environment "
+            "(dev and staging are retired); unset FLEET_RAG_INFISICAL_ENV or set it "
+            "to prod; see INFISICAL.md"
+        )
+    return slug
 
 
 def handoff_file() -> pathlib.Path | None:

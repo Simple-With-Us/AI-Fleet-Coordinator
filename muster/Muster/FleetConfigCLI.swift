@@ -128,6 +128,45 @@ enum FleetConfigCLIError: Error, Equatable, LocalizedError {
     }
 }
 
+// MARK: - App settings
+
+/// The app-wide settings the Settings scene writes.\u{00A0} Each value persists under the
+/// exact key its reader uses; where a reader was environment-only, the environment
+/// still wins and the saved value is the fallback it reads next.
+enum MusterSettings {
+    static let repoRootDefaultsKey = FleetConfigLocation.defaultsKey
+    static let scriptsDirectoryDefaultsKey = "musterScriptsDir"
+    static let scriptsDirectoryEnvironmentKey = "MUSTER_SCRIPTS_DIR"
+    static let zulipSeatDefaultsKey = "musterZulipSeat"
+    static let zulipSeatEnvironmentKey = "MUSTER_ZULIP_SEAT"
+    static let themeDefaultsKey = "musterTheme"
+    static let defaultZulipSeat = "CLAUDE"
+
+    static func scriptsDirectory(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        if let env = environment[scriptsDirectoryEnvironmentKey], !env.isEmpty {
+            return URL(fileURLWithPath: (env as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        if let saved = defaults.string(forKey: scriptsDirectoryDefaultsKey), !saved.isEmpty {
+            return URL(fileURLWithPath: (saved as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return home.appendingPathComponent("Code/AI-Fleet-Coordinator/scripts", isDirectory: true)
+    }
+
+    static func zulipSeat(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        let env = (environment[zulipSeatEnvironmentKey] ?? "").trimmingCharacters(in: .whitespaces)
+        if !env.isEmpty { return env }
+        let saved = (defaults.string(forKey: zulipSeatDefaultsKey) ?? "").trimmingCharacters(in: .whitespaces)
+        return saved.isEmpty ? defaultZulipSeat : saved
+    }
+}
+
 // MARK: - Location
 
 /// Where the engine lives.  The repository root is a setting:  the `fleetConfigRepoRoot` user

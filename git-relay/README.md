@@ -167,6 +167,36 @@ refused with a 400 before anything leaves for GitHub - a seat cannot paste or sm
 into content authored under the owner's token.  The audit log applies the same scan:  any detail
 value matching a credential shape is stored hashed, whatever key it arrived under.
 
+### Reviewed security-test fixtures
+
+File writes still scan the full decoded content before any GitHub write. The
+server-owned `git_relay/reviewed_fixtures.py` records five exact-content
+attestations for synthetic credential-rejection fixtures in AFC. Each entry binds
+repository, destination path and SHA-256 of the entire file. It is not a caller
+option, path-wide exemption, environment setting or trust in existing Git history.
+Changing one byte or destination invalidates the attestation; any credential shape
+then fails closed. The ordinary scanner and the rejection tests are unchanged.
+PR text, messages, binary assets and all unattested files have no exemption.
+
+The attested source is `c8c2a471fac215957cc81ec3b2e5e765e5908443`:
+
+| Destination | Source Git blob | Whole-file SHA-256 |
+| --- | --- | --- |
+| `scripts/simple_tools/mcp/fixtures.jsonl` | `7a556de1bff0185b2f943fb822b5e43ac166a40a` | `06389862d783117572042eaef6cfd645c196a74648ad926c1f38a2ff14afe50a` |
+| `scripts/simple_tools/tests/test_operator_github.py` | `db5248bc7e9f61daaffd180b9b7b026643a07a14` | `ef10944dc053c2f4bf664f1ee796257d0deb4d64f1bb786be9ad58ec3ea4b442` |
+| `scripts/simple_tools/tests/test_operator_send.py` | `f6b1a1a622810b4bb3e898f7ca67e0c56cc02a5d` | `d2f235ea96b7cd5bbc2dff026e3db178e051d23775532e7855bc1de019c594a7` |
+| `scripts/test-lark-mm-bridge.py` | `287b0c42cb7234deb9fd03d359ed6e52fe40959e` | `f94d6ecb794baab74b2d43c97b7cf5efd8aab0e76bc42e2a6224eb2f4ddb5535` |
+| `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
+
+Every attestation addition/change requires normal source review of the complete
+fixture contents and its provenance, evidence that values are synthetic and
+rejection behavior is preserved, negative controls for added/changed credentials,
+and deployment of the reviewed service code by its operator. A filename, a test
+claim or a digest supplied by a seat cannot create an attestation. Do not add real
+credentials even if already present in history. Fail closed if review cannot
+establish that a fixture is synthetic. No automatic registry generation/update
+runs in the service. This change does not deploy itself or resume a paused write.
+
 `mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
 (a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the
 relay's HTTP API directly, where the response goes only to that caller.
@@ -225,6 +255,7 @@ credential (never cached in the store) and a re-mint is safe under the minter's 
 | GIT_RELAY_RATE_PER_HOUR | 3600 | Per-seat hourly call cap |
 | GIT_RELAY_WRITE_RATE_PER_HOUR | 500 | Per-seat hourly cap on state-changing dispatches (logical writes, a second bound under the call cap; not a GitHub request count) |
 | GIT_RELAY_APP_MINT | 1 | Set to 0 to disable App actions and all App minting |
+| GIT_RELAY_ENABLE_WORKFLOW_VERBS | off (unset) | Set to 1 to wire the wf_ workflow verbs into HTTP dispatch; any other value keeps them refused as registered-not-wired |
 | GIT_RELAY_SECRETS_PATH | /github-apps | Fleet-OPS prod folder the GH_APP_<SLUG>_* pairs are read from;  a set-but-empty value is a startup config error |
 | GIT_RELAY_URL | http://127.0.0.1:8471 | GR-MCP (`git-relay mcp`) only:  the relay base URL each tool call is posted to, as `<url>/v1/<tool>` |
 | GIT_RELAY_SEAT_TOKEN | (required by `git-relay mcp`) | GR-MCP only:  the seat's own bearer token, sent to the relay as `Authorization: Bearer`;  unset or empty stops the wrapper at startup |

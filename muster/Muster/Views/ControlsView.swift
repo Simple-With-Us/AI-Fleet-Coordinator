@@ -87,6 +87,8 @@ struct ControlsView: View {
                         .foregroundStyle(.secondary)
                 } else if let registry, !registry.knobs.isEmpty {
                     table(registry)
+                    SecretNamesPanel()
+                    RecallSettingsPanel()
                     if let reason {
                         Text(reason)
                             .font(.callout)
@@ -115,6 +117,10 @@ struct ControlsView: View {
                 row: row,
                 onSave: { value in
                     pendingAction = .knobSet(key: row.name, value: value)
+                    editing = nil
+                },
+                onReset: {
+                    pendingAction = .knobUnset(key: row.name)
                     editing = nil
                 },
                 onCancel: { editing = nil }
@@ -302,6 +308,7 @@ private struct KnobRowView: View {
 private struct KnobEditSheet: View {
     let row: KnobRegistry.Row
     let onSave: (String) -> Void
+    var onReset: () -> Void = {}
     let onCancel: () -> Void
 
     @State private var text: String
@@ -313,9 +320,11 @@ private struct KnobEditSheet: View {
     /// and `value` reads it back,  so the plan always sees what is on screen.
     @State private var numberText: String
 
-    init(row: KnobRegistry.Row, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(row: KnobRegistry.Row, onSave: @escaping (String) -> Void,
+         onReset: @escaping () -> Void = {}, onCancel: @escaping () -> Void) {
         self.row = row
         self.onSave = onSave
+        self.onReset = onReset
         self.onCancel = onCancel
         _text = State(initialValue: row.editValue)
         _flag = State(initialValue: row.editValue.lowercased() == "true")
@@ -373,6 +382,7 @@ private struct KnobEditSheet: View {
             }
             Spacer(minLength: 0)
             HStack {
+                Button("Reset To Default", role: .destructive, action: onReset)
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
@@ -443,5 +453,93 @@ private struct KnobEditSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+
+/// Secret names only, grouped by path, plus the doctor booleans.  No value can
+/// appear here:  the only verbs run are `names` and `doctor`.
+private struct SecretNamesPanel: View {
+    @State private var groups: [SecretNameGroup] = []
+    @State private var doctor: [String: String] = [:]
+    @State private var problem: String?
+    @State private var loading = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Secret Names").font(.headline)
+                Spacer()
+                Button("Refresh") { Task { await load() } }.disabled(loading)
+            }
+            Text("Names and set or empty only.\u{00A0} Values are never read here.")
+                .font(.caption).foregroundStyle(.secondary)
+            if loading { Text("Reading names\u{2026}").font(.callout).foregroundStyle(.secondary) }
+            ForEach(groups, id: \.path) { group in
+                Text(group.path).font(.system(size: 11, weight: .semibold, design: .monospaced))
+                ForEach(group.names, id: \.self) { name in
+                    Text(name).font(.system(size: 11, design: .monospaced))
+                }
+            }
+            if !doctor.isEmpty {
+                Text("Doctor").font(.system(size: 11, weight: .semibold, design: .monospaced))
+                ForEach(doctor.keys.sorted(), id: \.self) { key in
+                    Text("\(key): \(doctor[key] ?? "")").font(.system(size: 11, design: .monospaced))
+                }
+            }
+            if let problem { Text(problem).font(.caption).foregroundStyle(.orange) }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        loading = true; defer { loading = false }
+        do {
+            let secrets = FleetSecrets()
+            groups = try await awaitOffThePool { try secrets.secretNamesGrouped(paths: ["/"]) }
+            doctor = (try? await awaitOffThePool { try secrets.doctorReport() }) ?? [:]
+            problem = nil
+        } catch { problem = error.localizedDescription }
+    }
+}
+
+/// Recall admin settings, masked.  The base URL and the token KEY NAME are the
+/// only stored settings;  the token itself is read by name per request.
+private struct RecallSettingsPanel: View {
+    @State private var config = RecallSettingsConfig.load()
+    @State private var rows: [RecallSettingRow] = []
+    @State private var problem: String?
+    @State private var loading = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recall Settings").font(.headline)
+            Text("Values show only as set or empty.\u{00A0} The admin token is read by key name and never shown.")
+                .font(.caption).foregroundStyle(.secondary)
+            TextField("Base URL (https)", text: $config.baseURLString)
+                .textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
+            TextField("Token Key Name", text: $config.tokenKeyName)
+                .textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
+            HStack {
+                Button("Save Settings") { config.save() }
+                Button("Load Settings") { Task { await load() } }.disabled(loading)
+            }
+            ForEach(rows) { row in
+                HStack {
+                    Text(row.name).font(.system(size: 11, design: .monospaced))
+                    Spacer()
+                    Text(row.display).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                }
+            }
+            if let problem { Text(problem).font(.caption).foregroundStyle(.orange) }
+        }
+    }
+
+    private func load() async {
+        loading = true; defer { loading = false }
+        do {
+            rows = try await RecallSettingsClient.fetch(config: config, secrets: FleetSecrets())
+            problem = nil
+        } catch { problem = error.localizedDescription }
     }
 }

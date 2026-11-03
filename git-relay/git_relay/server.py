@@ -33,7 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .app_tokens import AppTokenError
-from .audit import AuditLog
+from .audit import AuditLog, UnauthorizedAuditor
 from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import DEFAULT_RATE_PER_HOUR, DEFAULT_WRITE_RATE_PER_HOUR, PolicyError, SeatPolicy
@@ -267,6 +267,7 @@ class Relay:
         self.policy = policy
         self.client = client
         self.audit = audit
+        self._unauth_auditor = UnauthorizedAuditor()
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
         self.typed_gateway = None
@@ -287,6 +288,9 @@ class Relay:
                 return self.typed_gateway.handle(token, action, args, proof=proof)
         seat = self.policy.authenticate(token, proof)
         if seat is None:
+            # One bounded, rate-limited row (seat unknown, no token material)
+            # so a credential spray is visible without filling the log.
+            self._unauth_auditor.record(self.audit, action)
             return 401, {"error": "unauthenticated"}
         # The action string comes from the URL path:  a credential-shaped one
         # must never be persisted in the audit row or echoed in an error.

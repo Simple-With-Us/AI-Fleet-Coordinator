@@ -19,7 +19,7 @@ Checks performed each pass:
      most once per hour per fingerprint while the condition persists.
   2. Claude desktop process presence + total RSS -> breadcrumb/context only.
      Not-running is NOT an error condition.
-  3. Disk free space on / -> warning < 20GB, error < 8GB.
+  3. Disk free space on / -> warning < 80GB, error < 30GB (the disk-janitor band).
      Known SQLite WAL files > 512MB -> warning (per-file, deduped hourly).
   4. `gh api rate_limit` -> warning if core or graphql remaining < 300,
      includes reset time in the message.
@@ -86,8 +86,11 @@ PROD_HEALTH_TIMEOUT_SECONDS = 20
 RESTART_DELTA_ERROR_THRESHOLD = 5
 DEDUP_WINDOW_SECONDS = 60 * 60  # re-emit a persisting fingerprint at most hourly
 
-DISK_WARN_FREE_GB = 20
-DISK_ERROR_FREE_GB = 8
+# Aligned to scripts/disk-janitor.sh: it starts reclaiming caches below
+# LOW_FREE=80GB and turns destructive below CRIT_FREE=30GB, so warn when
+# reclaim starts and error at the janitor's critical band, not at ~full.
+DISK_WARN_FREE_GB = 80
+DISK_ERROR_FREE_GB = 30
 WAL_WARN_BYTES = 512 * 1024 * 1024  # 512MB
 
 GH_RATE_LIMIT_WARN_REMAINING = 300
@@ -964,6 +967,33 @@ def check_usage_monitor_garage_backup(state: dict, now: float, dsn: str | None) 
     )
 
 
+def run_checks(checks, state: dict, now: float) -> list[str]:
+    """Run each (name, callable) check in its own try block.
+
+    A raising check records a per-check error fingerprint and the pass
+    continues, so one bad check can never silently skip later ones
+    (previously all eight shared one try, so the first exception skipped
+    disk and everything after it).  Returns the failed check names.
+    """
+    failed: list[str] = []
+    for name, check in checks:
+        try:
+            check()
+        except Exception as exc:  # noqa: BLE001 - isolate each check
+            failed.append(name)
+            fingerprint = f"monitor-check-failed:{name}"
+            if should_emit(state, fingerprint, now):
+                capture_message(
+                    f"fleet-sentry-monitor check {name} raised: {type(exc).__name__}: {exc}"[:500],
+                    "error",
+                    [fingerprint],
+                    {"check": name},
+                )
+            else:
+                print(f"[fleet-sentry-monitor] check {name} raised: {exc}")
+    return failed
+
+
 def main() -> int:
     dsn = load_dsn()
     init_sentry(dsn)
@@ -971,21 +1001,17 @@ def main() -> int:
     now = time.time()
     state = load_state()
 
-    status = "ok"
-    try:
-        check_pm2(state, now)
-        check_prod_health(state, now)
-        check_claude_desktop()
-        check_codex_desktop_and_sessions(state, now)
-        check_disk(state, now)
-        check_gh_rate_limit(state, now)
-        check_self_hosted_runner()
-        check_usage_monitor_garage_backup(state, now, dsn)
-    except Exception as exc:  # noqa: BLE001 - never let one bad check crash the pass
-        status = "error"
-        capture_message(
-            f"fleet-sentry-monitor pass raised: {exc}", "error", ["monitor-internal-error"], {}
-        )
+    checks = [
+        ("pm2", lambda: check_pm2(state, now)),
+        ("prod-health", lambda: check_prod_health(state, now)),
+        ("claude-desktop", check_claude_desktop),
+        ("codex-desktop-and-sessions", lambda: check_codex_desktop_and_sessions(state, now)),
+        ("disk", lambda: check_disk(state, now)),
+        ("gh-rate-limit", lambda: check_gh_rate_limit(state, now)),
+        ("self-hosted-runner", check_self_hosted_runner),
+        ("usage-monitor-garage-backup", lambda: check_usage_monitor_garage_backup(state, now, dsn)),
+    ]
+    status = "error" if run_checks(checks, state, now) else "ok"
 
     prune_fingerprints(state, now)
     save_state(state)

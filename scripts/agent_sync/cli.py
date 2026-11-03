@@ -2917,8 +2917,8 @@ REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 REMOTE_TIMEOUT_S = 40
-REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox")
-REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm")
+REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox", "search", "dm-read")
+REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm", "edit")
 REMOTE_VERBS = REMOTE_READ_VERBS + REMOTE_WRITE_VERBS
 
 
@@ -3303,6 +3303,11 @@ def _remote_write_args(
         if args.to:
             targs["to"] = list(args.to)
         return "zulip_reply", targs
+    if cmd == "edit":
+        targs = {"message_id": args.id, "text": text}
+        if getattr(args, "to", None):
+            targs["to"] = list(args.to)
+        return "zulip_edit_message", targs
     ids = [t for t in args.to if re.fullmatch(r"[0-9]+", t)]
     emails = [t for t in args.to if "@" in t]
     if not args.to or len(ids) + len(emails) != len(args.to):
@@ -3397,6 +3402,52 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
                 targs["since_id"] = args.since
             if getattr(args, "include_self", False):
                 targs["include_self"] = True
+        elif cmd == "search":
+            targs = {"limit": args.limit}
+            words = list(getattr(args, "words", None) or [])
+            if words:
+                targs["query"] = " ".join(words)
+            if getattr(args, "channel", None):
+                targs["channel"] = args.channel
+            if getattr(args, "topic", None):
+                targs["topic"] = args.topic
+            if getattr(args, "sender", None):
+                if "@" not in args.sender:
+                    raise RemoteError("remote search needs --sender as an email")
+                targs["sender"] = args.sender
+            if getattr(args, "has", None):
+                targs["has"] = list(args.has)
+            if getattr(args, "is_", None):
+                targs["is"] = args.is_
+            if getattr(args, "dm_with", None):
+                if not all(re.fullmatch(r"[0-9]+", x) for x in args.dm_with):
+                    raise RemoteError("remote search needs --dm-with as numeric user ids")
+                targs["dm_with"] = [int(x) for x in args.dm_with]
+            if getattr(args, "since", None) is not None:
+                targs["since_id"] = args.since
+            if getattr(args, "near", None) is not None:
+                targs["near"] = args.near
+            tool = "zulip_search"
+        elif cmd == "dm-read":
+            if getattr(args, "new", False):
+                raise RemoteError(
+                    "--new uses a local cursor and has no hosted equivalent in remote mode"
+                )
+            raw = list(getattr(args, "with_", None) or [])
+            ids = [x for x in raw if re.fullmatch(r"[0-9]+", x)]
+            emails = [x for x in raw if "@" in x]
+            if not raw or len(ids) + len(emails) != len(raw):
+                raise RemoteError("remote dm-read needs --with with numeric user ids or emails")
+            targs = {"limit": args.limit}
+            if ids:
+                targs["user_ids"] = [int(x) for x in ids]
+            if emails:
+                targs["emails"] = emails
+            if getattr(args, "since", None) is not None:
+                targs["since_id"] = args.since
+            if getattr(args, "exclude_self", False):
+                targs["include_self"] = False
+            tool = "zulip_dm_read"
         elif cmd in REMOTE_WRITE_VERBS:
             tool, targs = _remote_write_args(rt, cmd, args)
         else:
@@ -3498,7 +3549,8 @@ def main(
 
     args = _resolve_channel_args(args, rt.env)
     if prog == "simple-chat" and str(rt.env.get("SIMPLE_CHAT_REMOTE", "")).strip() == "1":
-        return _remote_main(rt, args)
+        if args.command != "guide":  # guide is local static text; never remote
+            return _remote_main(rt, args)
 
     previous = None
     if threading.current_thread() is threading.main_thread():

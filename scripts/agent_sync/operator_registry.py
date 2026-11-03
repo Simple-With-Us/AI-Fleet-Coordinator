@@ -4,9 +4,11 @@ Identity is (platform, verified_host, profile_scope, native_session_id) - never 
 the label, never the title.  A resume on the same tuple returns the same immutable record_id and
 its live label;  a fork or a new native session id is a new registration.
 
-Labels are per-platform letters A-Z with one namespace across all hosts.  RECYCLE is on (owner
-2026-10-20, option B):  allocation takes the lowest letter with no active assignment, wrapping
-after Z back to A, and a reused letter gets the next generation.  A platform may ask for pairs
+Labels are per-platform letters with one namespace across all hosts:  one letter (A-Z) or a pair
+(AA-ZZ), the pair being what a chat takes on every platform that letters a thread (Claude, and
+MiniMax since the owner's ruling of Nov 1 2026).  RECYCLE is on (owner 2026-10-20, option B):
+allocation takes the lowest letter with no active assignment, wrapping after Z back to A, and a
+reused letter gets the next generation.  A platform may ask for pairs
 (AA to ZZ, `letter_space`) and for how a free one is picked (`letter_pick`):  the lowest (the default), the one
 unused the longest, or "primary", the order a main chat takes (the doubled pairs AA, BB ... ZZ first).  A session
 another session started names its parent (`parent_session_id`) and takes the first free pair after the parent's in
@@ -29,6 +31,7 @@ import pathlib
 import re
 import secrets
 import sqlite3
+import sys
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -65,7 +68,14 @@ LETTER_PICKS = ("lowest", "oldest", "primary")
 # takes a pair in the main-chat order whoever registers it, the hook or the Operator's own ask-and-answer path, so a
 # chat the hook never lettered does not get a single letter that no sweep frees;  every other platform keeps a single
 # letter, the lowest free.
-PLATFORM_LETTER_DEFAULTS = {"claude": ("double", "primary")}
+#
+# A MiniMax chat is a pair too (owner ruling, Nov 1 2026):  a MiniMax thread reads like a Claude one ("AA: Topic"),
+# not like a single-letter one.  It is a platform default and not only a hook choice, so a MiniMax session registered
+# by any path takes the doubled pairs in the main-chat order.
+PLATFORM_LETTER_DEFAULTS = {
+    "claude": ("double", "primary"),
+    "minimax": ("double", "primary"),
+}
 
 
 def _clean_parent(value: object) -> str:
@@ -77,6 +87,15 @@ def _clean_parent(value: object) -> str:
         return SI.check(value, "the parent session id")
     except ValueError:
         return ""
+
+
+def letter_space_of(letter: str) -> str:
+    """The letter space a letter belongs to:  "double" for a pair, "single" for one letter.
+
+    It is the same rule the registry allocates by, so a caller can tell whether a session already holds
+    a letter in the space it is asking for.
+    """
+    return "double" if len(letter) == 2 else "single"
 
 
 def pairs_after(pair: str) -> tuple[str, ...]:
@@ -146,6 +165,23 @@ EVENTS_HEADERS = (
     "Source",
     "Details",
 )
+
+
+class SessionClosed(ValueError):
+    """A session that is closed cannot be given another letter.
+
+    It is a ValueError, so a caller that catches ValueError still catches it, and it is
+    its own type, so a caller that cares can tell this refusal from another one.
+    """
+
+
+class SessionUnknown(ValueError):
+    """A session this registry has never seen cannot be given a letter.
+
+    It is a ValueError, so a caller that catches ValueError still catches it, and it is
+    its own type, so a caller that cares can tell it from another refusal:  a session
+    that is unknown is registered, and a session that is closed is not.
+    """
 
 
 class LabelExhausted(RuntimeError):
@@ -384,6 +420,17 @@ class SessionRegistry:
             (platform, verified_host, profile_scope, native_session_id),
         ).fetchone()
 
+    def session_by_identity(
+        self,
+        *,
+        platform: str,
+        verified_host: str,
+        profile_scope: str,
+        native_session_id: str,
+    ) -> sqlite3.Row | None:
+        """The session row for one identity, or None when this registry has never seen it."""
+        return self._get_by_identity(platform, verified_host, profile_scope, native_session_id)
+
     def _active_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
         row = conn.execute(
             "SELECT letter, generation FROM alias_assignments"
@@ -392,6 +439,25 @@ class SessionRegistry:
             (record_id,),
         ).fetchone()
         return (row["letter"], row["generation"]) if row else ("", 0)
+
+    def letters_held(self, record_id: str) -> tuple[str, ...]:
+        """Every letter this record has held, newest first.
+
+        Read-only, and the history is what tells a letter prefix from an acronym:  a
+        title that starts with a letter this session held is a title the seat wrote, and
+        one that starts with any other two capitals is a topic that happens to begin
+        with an acronym.
+        """
+        rows = self._conn.execute(
+            "SELECT letter FROM alias_assignments WHERE record_id = ? ORDER BY assigned_at DESC",
+            (record_id,),
+        ).fetchall()
+        held: list[str] = []
+        for row in rows:
+            letter = str(row["letter"] or "")
+            if letter and letter not in held:
+                held.append(letter)
+        return tuple(held)
 
     def _last_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
         """The letter this record holds now, or, once it is retired, the last one it held.
@@ -871,6 +937,82 @@ class SessionRegistry:
             self._enqueue_session_upsert(conn, record_id, now)
             return letter, generation, previous
 
+    def relabel(
+        self,
+        record_id: str,
+        *,
+        space: str = "double",
+        pick: str = "primary",
+        parent_session_id: str = "",
+        parent_letter: str = "",
+        actor: str = "registry",
+        source: str = "registry",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Move one session's letter into another letter space, in place.
+
+        A letter is the address of a thread, so when the rule for a platform changes (a MiniMax chat
+        became a pair, owner ruling Nov 1 2026) the sessions that are already live have to move with it.
+        A registration cannot do that:  the identity is the record, and a session id always answers with
+        the letter its record already holds.  So this retires the old letter (retired, never deleted, so
+        its history and its generation count stay) and gives the session a letter from the new space by
+        the rule a new session would get:  the main-chat order, or the first free pair after its parent's
+        in the same row when the session names a parent.
+
+        A session that already holds a letter in the asked-for space keeps it, so the call is idempotent
+        and a rerun changes nothing.  Force says the letter is placed again even then, which is what a
+        migration needs:  a child that already holds a pair may still have to move into its parent's row.
+        """
+        if space not in LETTER_SPACES:
+            raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
+        if pick not in LETTER_PICKS:
+            raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
+        with self._write_txn() as conn:
+            now = _utcnow()
+            row = self._get(record_id)
+            if row["closed_at"]:
+                raise SessionClosed(
+                    "session %s is closed; open a new registration instead" % record_id
+                )
+            current, generation = self._active_alias(conn, record_id)
+            if current and letter_space_of(current) == space and not force:
+                return {
+                    "record_id": record_id,
+                    "label": current,
+                    "generation": generation,
+                    "previous": current,
+                    "outcome": "unchanged",
+                    "placed_after": "",
+                }
+            parent_pair = self._parent_pair(
+                conn, row["platform"], parent_session_id, row["native_session_id"], parent_letter
+            )
+            if current:
+                # The old letter ends first, so the new one is picked from a pool that does not
+                # count this session's own letter as live.
+                conn.execute(
+                    "UPDATE alias_assignments SET retired_at = ?"
+                    " WHERE record_id = ? AND retired_at IS NULL",
+                    (now, record_id),
+                )
+            letter, new_generation = self._allocate(
+                conn, row["platform"], record_id, now, space, pick, parent_pair
+            )
+            placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
+            details = "previous letter %s" % current if current else ""
+            self._insert_event(
+                conn, record_id, letter, "relabel", actor, "relabelled", source, details, now
+            )
+            self._enqueue_session_upsert(conn, record_id, now)
+            return {
+                "record_id": record_id,
+                "label": letter,
+                "generation": new_generation,
+                "previous": current,
+                "outcome": "relabelled",
+                "placed_after": placed_after,
+            }
+
     def record_event(
         self, record_id: str, event: str, actor: str, outcome: str, source: str, details: str = ""
     ) -> str:
@@ -1005,6 +1147,69 @@ def register_session(
     finally:
         registry.close_db()
     out["title_display"] = display_title(str(out.get("label") or ""), title)
+    return out
+
+
+def relabel_session(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+    seat: str,
+    source: str,
+    letter_space: str = "double",
+    letter_pick: str = "primary",
+    parent_session_id: str = "",
+    parent_letter: str = "",
+    issuer: str = "",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Move one session's letter into another letter space, in place, and hand back the new letter.
+
+    A platform whose rule changed needs its live sessions moved with it:  a session id always answers
+    with the letter its record already holds, so a new registration cannot move it.  This is the
+    Operator's own path (only the Operator issues a letter) and it names the session by its identity, the
+    seat that owns it and the space the session should hold.
+
+    The seat is checked against the stored one, so a seat cannot re-letter another seat's session.
+    """
+    if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
+        raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
+    if letter_space not in LETTER_SPACES:
+        raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
+    if letter_pick not in LETTER_PICKS:
+        raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
+    native = SI.check(native_session_id, "the native session id")
+    platform = normalize_platform(platform)
+    registry = SessionRegistry(db_path)
+    try:
+        row = registry.session_by_identity(
+            platform=platform,
+            verified_host=verified_host,
+            profile_scope=profile_scope,
+            native_session_id=native,
+        )
+        if row is None:
+            raise SessionUnknown(
+                f"session {native} is not registered on {platform} at {verified_host}/{profile_scope}"
+            )
+        if str(row["seat"]) != str(seat):
+            raise ValueError(f"session {native} belongs to seat {row['seat']}, not {seat}")
+        out = registry.relabel(
+            str(row["record_id"]),
+            space=letter_space,
+            pick=letter_pick,
+            parent_session_id=_clean_parent(parent_session_id),
+            parent_letter=parent_letter if isinstance(parent_letter, str) else "",
+            actor=str(seat),
+            source=source,
+            force=bool(force),
+        )
+    finally:
+        registry.close_db()
+    out["title_display"] = display_title(str(out.get("label") or ""), str(row["title"] or ""))
     return out
 
 
@@ -1851,15 +2056,21 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
         conn.close()
 
 
-def _default_db() -> str:
-    """The shared registry location, from the same environment the listener reads."""
-    root = os.environ.get("AGENT_SYNC_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".agent-sync"
-    )
-    return registry_db_path(root, os.environ)
+def default_db(env: Mapping[str, str] | None = None) -> str:
+    """The shared registry location, from the same environment the Operator's eavesdropper reads.
+
+    The env is the caller's:  a caller that hands in its own mapping is answered about
+    the file its own CLI would open, so a guard and the CLI it guards can never name
+    two different registries.
+    """
+    env = os.environ if env is None else env
+    home = env.get("HOME") or os.path.expanduser("~")
+    root = env.get("AGENT_SYNC_STATE_DIR") or os.path.join(home, ".agent-sync")
+    return registry_db_path(root, env)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
+    env = os.environ if env is None else env
     parser = argparse.ArgumentParser(prog="operator-registry")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pending-outbox")
@@ -1911,6 +2122,44 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="the pair the session that started this one holds (for a platform that knows only the letter);"
         " --parent-session-id wins when both are given",
+    )
+    rl = sub.add_parser(
+        "relabel",
+        help="move one session's letter into another letter space, in place",
+    )
+    rl.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rl.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    rl.add_argument("--location", required=True, help="the fleet location (mac, server, cloud)")
+    rl.add_argument("--scope", required=True, help="the profile scope")
+    rl.add_argument("--session-id", required=True, help="the native session id")
+    rl.add_argument("--seat", required=True)
+    rl.add_argument("--source", required=True, help="what asked for the move")
+    rl.add_argument(
+        "--letter-space",
+        default="double",
+        choices=sorted(LETTER_SPACES),
+        help="the space the session should hold its letter in",
+    )
+    rl.add_argument(
+        "--letter-pick",
+        default="primary",
+        choices=LETTER_PICKS,
+        help="how a free letter is chosen (default: the next main-chat pair)",
+    )
+    rl.add_argument(
+        "--parent-session-id",
+        default="",
+        help="the session that started this one: take the first free pair after its pair",
+    )
+    rl.add_argument(
+        "--parent-letter",
+        default="",
+        help="the pair the session that started this one holds",
+    )
+    rl.add_argument(
+        "--force",
+        action="store_true",
+        help="place the letter again even when the session already holds one in that space",
     )
     rs = sub.add_parser("resolve", help="name the session a letter points at")
     rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
@@ -1971,14 +2220,41 @@ def main(argv: list[str] | None = None) -> int:
     )
     t.add_argument("--scope", required=True, help="the profile scope")
     t.add_argument("--session-id", required=True, help="the native session id")
+    rp = sub.add_parser(
+        "reopen",
+        help="give a closed session its letter again",
+    )
+    rp.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rp.add_argument("--record-id", required=True, help="the registry record of the closed session")
+    rp.add_argument("--actor", default="registry")
+    rp.add_argument("--source", default="registry")
+    rp.add_argument(
+        "--letter-pick",
+        default="primary",
+        choices=sorted(LETTER_PICKS),
+        help="how a free letter is chosen (default: the next main-chat pair)",
+    )
+    rp.add_argument(
+        "--parent-session-id",
+        default="",
+        help="the session that started this one: take the first free pair after its pair",
+    )
     args = parser.parse_args(argv)
+    db = getattr(args, "db", "") or default_db(env)
+    if not os.path.isfile(db):
+        # Never bring a registry into being:  a second registry would hand out letters
+        # that collide with the ones the Operator keeps.  Every op that takes a
+        # database refuses the same way, so the transport that runs this CLI directly
+        # is guarded as well as the passthrough that runs it through simple-chat.
+        print(json.dumps({"error": "no Operator registry on this host"}))
+        return 3
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
         return 0
     if args.command == "resolve":
         try:
             found = resolve_label(
-                args.db or _default_db(),
+                db,
                 args.platform,
                 args.letter,
                 args.generation,
@@ -1991,7 +2267,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "register":
         try:
             out = register_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2018,10 +2294,41 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(out))
         return 0
+    if args.command == "relabel":
+        try:
+            out = relabel_session(
+                db,
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
+                seat=args.seat,
+                source=args.source,
+                letter_space=args.letter_space,
+                letter_pick=args.letter_pick,
+                parent_session_id=args.parent_session_id,
+                parent_letter=args.parent_letter,
+                issuer=ISSUER_OPERATOR,
+                force=args.force,
+            )
+        except LabelExhausted as exc:
+            print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
+            return 2
+        except SessionClosed as exc:
+            print(json.dumps({"error": str(exc), "code": "closed_session"}))
+            return 2
+        except SessionUnknown as exc:
+            print(json.dumps({"error": str(exc), "code": "not_registered"}))
+            return 2
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
     if args.command == "update":
         try:
             out = update_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2040,7 +2347,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "close":
         try:
             out = close_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2057,7 +2364,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "touch":
         try:
             out = touch_session(
-                args.db or _default_db(),
+                db,
                 platform=args.platform,
                 verified_host=args.location,
                 profile_scope=args.scope,
@@ -2070,16 +2377,73 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "sweep":
         ended = sweep_stale(
-            args.db or _default_db(),
+            db,
             platform=args.platform,
             seat=args.seat,
             stale_after_minutes=args.stale_after_minutes,
         )
         print(json.dumps({"ended": ended, "count": len(ended)}))
         return 0
+    if args.command == "reopen":
+        # The reopen shares the platform's own rule, the one every hook uses, so the
+        # pair space is kept the same way here as it is in the hook.  It lives behind
+        # this verb because a host that keeps no registry asks the host that holds one.
+        from . import platform_letter
+
+        reg = None
+        try:
+            reg = SessionRegistry(db)
+            letter, generation, previous = platform_letter.operator_reopen(
+                sys.modules[__name__],
+                db,
+                reg,
+                args.record_id,
+                actor=args.actor,
+                source=args.source,
+                pick=args.letter_pick,
+                parent=args.parent_session_id,
+            )
+        except platform_letter.SpaceLost as exc:
+            # A chat that held a pair would come back with a single letter.  That is
+            # refused before anything is written.
+            print(
+                json.dumps({"error": str(exc), "code": "space_lost", "outcome": "reopen_refused"})
+            )
+            return 2
+        except LabelExhausted as exc:
+            print(
+                json.dumps(
+                    {"error": str(exc), "code": "labels_exhausted", "outcome": "reopen_refused"}
+                )
+            )
+            return 2
+        except (UnknownRecord, KeyError, ValueError, OSError, sqlite3.Error) as exc:
+            # A database that faults is a refusal, not a traceback:  the far host has
+            # to answer with something the caller can read.
+            print(
+                json.dumps(
+                    {"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}
+                )
+            )
+            return 2
+        finally:
+            if reg is not None:
+                reg.close_db()
+        print(
+            json.dumps(
+                {
+                    "record_id": args.record_id,
+                    "label": letter,
+                    "generation": generation,
+                    "previous": previous,
+                    "outcome": "reopened",
+                }
+            )
+        )
+        return 0
     if args.command == "history":
         try:
-            rows = letter_history(args.db or _default_db(), args.platform, args.limit)
+            rows = letter_history(db, args.platform, args.limit)
         except (ValueError, RegistryUnavailable) as exc:
             print(json.dumps({"error": str(exc)}))
             return 2

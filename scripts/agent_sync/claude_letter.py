@@ -67,7 +67,7 @@ and the title moves to the new letter.
 
 The hook never blocks a chat:  every failure is a line of context, or nothing, and exit 0.  Only interactive chats
 take part (the `attach` rule:  CLAUDE_CODE_ENTRYPOINT cli or claude-desktop, and no launcher), and CLAUDE_LETTER=0
-turns it off.  A platform that runs Claude as its engine (BotFleet, the listener's wake) is a launcher:  it sets
+turns it off.  A platform that runs Claude as its engine (BotFleet, the Operator's eavesdropper's wake) is a launcher:  it sets
 AGENT_LAUNCHER, AGENT_LAUNCH_SEAT and AGENT_SYNC_ATTACH=0, takes no Claude letter, and asks the Operator for its own,
 under its own platform and session id.  AGENT_SYNC_ATTACH=0 turns this hook off for any session, as it does the attach
 hooks.  The location is the fleet location, never a guess:  darwin is the Mac, and any other host must say
@@ -203,7 +203,7 @@ def in_scope(env: Mapping[str, str]) -> bool:
     """Only interactive Claude Code chats take a letter:  the same surfaces `attach` serves.  A `claude -p`, SDK or
     launcher run never does, and CLAUDE_LETTER=0 turns the hook off for any session.
 
-    A platform that runs Claude as its engine (BotFleet, the listener's wake, Muster, OpenCode) is a launcher:  it sets
+    A platform that runs Claude as its engine (BotFleet, the Operator's eavesdropper's wake, Muster, OpenCode) is a launcher:  it sets
     AGENT_LAUNCHER and AGENT_LAUNCH_SEAT and AGENT_SYNC_ATTACH=0, so it is out of scope here and asks the Operator for
     its own letter, under its own platform and its own session id (owner, Oct 29, 2026).  AGENT_SYNC_ATTACH=0 turns
     the hook off for any session, as it does for the attach hooks."""
@@ -1388,6 +1388,24 @@ USAGE = (
 )
 
 
+def _registry_module_db(argv: list[str], env: Mapping[str, str]) -> str:
+    """The registry file the registry's own CLI will open for these arguments.
+
+    The CLI honours an explicit ``--db`` and takes the shared path otherwise, so the
+    guard that refuses to create a registry has to look at the same file the CLI will
+    open:  a guard that checks another one passes, and the CLI opens or creates a
+    second registry that hands out letters colliding with the Operator's.
+    """
+    from . import operator_registry as OR
+
+    for index, arg in enumerate(argv):
+        if arg == "--db" and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--db="):
+            return arg.split("=", 1)[1]
+    return OR.default_db(env)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -1410,6 +1428,39 @@ def main(
             return 0
     if argv[0] == "registry":
         return registry_main(argv[1:], env=env, stdout=stdout)
+    if argv[0] == "registry-module":
+        # The registry's own CLI, for a platform that does not run Claude.  The
+        # `registry` above is the Claude hook's shape;  the module's CLI is the
+        # canonical interface, with the per-op arguments every platform's helper
+        # speaks, and it is the one a remote host runs for another platform.
+        from contextlib import redirect_stdout
+
+        from . import operator_registry as OR
+
+        db = _registry_module_db(argv[1:], env)
+        if not os.path.isfile(db):
+            # Never create one:  a second registry would hand out letters that collide
+            # with the ones the Operator keeps.
+            stdout.write(json.dumps({"error": "no Operator registry on this host"}) + "\n")
+            return 3
+        try:
+            # The module's CLI writes its answer to stdout itself, so it is redirected
+            # into the stream the caller gave:  an answer goes where the caller reads
+            # it, not where the process happens to write.  The env goes with it, so the
+            # CLI opens the file this guard just checked.
+            with redirect_stdout(stdout):
+                return OR.main(argv[1:], env=env)
+        except SystemExit as exc:
+            # argparse exits on a usage error.  A far host that asked wrongly gets a
+            # readable answer, never an empty line and a traceback:  the caller reads
+            # the answer the same way it reads every other one.
+            code = exc.code if isinstance(exc.code, int) else 2
+            if code == 0:
+                return 0
+            stdout.write(
+                json.dumps({"error": "the registry refused the request", "code": "usage"}) + "\n"
+            )
+            return code
     if argv[0] == "show":
         return show(argv[1:], env, stdout)
     if argv[0] == "install":

@@ -654,9 +654,15 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(
             [self._register("thread-000%d" % i)["label"] for i in (1, 2)], ["AA", "BB"]
         )
-        # every other platform is unchanged:  a single letter, the lowest free
+        # a MiniMax chat is a pair too (owner ruling, Nov 1 2026):  a MiniMax thread reads
+        # like a Claude one, so the Operator letters it the same way whoever registers it.
         self.assertEqual(
             [self._register("mm-000%d" % i, platform="minimax")["label"] for i in (1, 2)],
+            ["AA", "BB"],
+        )
+        # every other platform is unchanged:  a single letter, the lowest free
+        self.assertEqual(
+            [self._register("cu-000%d" % i, platform="cursor")["label"] for i in (1, 2)],
             ["A", "B"],
         )
         # and a caller that does name a space is obeyed
@@ -665,6 +671,107 @@ class RegistryTest(unittest.TestCase):
             self._register("thread-0004", letter_space="double", letter_pick="lowest")["label"],
             "AB",
         )
+
+    # ---- relabel:  a live session moves into another letter space (AFC-586) ----
+
+    def _relabel(self, native, seat="CLAUDE", platform="minimax", **kw):
+        return R.relabel_session(
+            self.db,
+            platform=platform,
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=native,
+            seat=seat,
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+            **kw,
+        )
+
+    def test_relabel_moves_a_live_session_into_the_pair_space(self):
+        first = self._register(
+            "mm-1", platform="minimax", letter_space="single", letter_pick="lowest"
+        )
+        self.assertEqual(first["label"], "A")
+        out = self._relabel("mm-1", letter_space="double", letter_pick="primary")
+        self.assertEqual(out["label"], "AA")
+        self.assertEqual(out["previous"], "A")
+        self.assertEqual(out["outcome"], "relabelled")
+        # the old letter is retired, not deleted:  its history and its generation count stay.
+        retired = self.reg._conn.execute(
+            "SELECT retired_at FROM alias_assignments"
+            " WHERE platform = 'minimax' AND letter = 'A' AND generation = 1"
+        ).fetchone()
+        self.assertIsNotNone(retired["retired_at"])
+        live = self.reg._conn.execute(
+            "SELECT letter FROM alias_assignments WHERE platform = 'minimax' AND retired_at IS NULL"
+        ).fetchall()
+        self.assertEqual([row["letter"] for row in live], ["AA"])
+
+    def test_relabel_is_idempotent_when_the_session_already_holds_that_space(self):
+        first = self._register("mm-1", platform="minimax")
+        self.assertEqual(first["label"], "AA")
+        out = self._relabel("mm-1", letter_space="double", letter_pick="primary")
+        self.assertEqual(out["outcome"], "unchanged")
+        self.assertEqual(out["label"], "AA")
+
+    def test_relabel_moves_a_child_into_its_parents_row(self):
+        parent = self._register("mm-parent", platform="minimax")  # AA
+        child = self._register("mm-child", platform="minimax")  # BB:  no parent was named
+        self.assertEqual((parent["label"], child["label"]), ("AA", "BB"))
+        out = self._relabel(
+            "mm-child", parent_session_id="mm-parent", letter_space="double", force=True
+        )
+        self.assertEqual(out["label"], "AB")  # the first free pair after its parent's AA
+        self.assertEqual(out["placed_after"], "AA")
+
+    def test_relabel_refuses_another_seats_session(self):
+        self._register("mm-1", platform="minimax")
+        with self.assertRaises(ValueError):
+            self._relabel("mm-1", seat="GROK", letter_space="double")
+
+    def test_relabel_refuses_a_session_the_registry_never_saw(self):
+        with self.assertRaises(ValueError):
+            self._relabel("mm-unknown", letter_space="double")
+
+    def test_relabel_only_the_operator_may_issue_a_letter(self):
+        self._register("mm-1", platform="minimax")
+        with self.assertRaises(ValueError):
+            R.relabel_session(
+                self.db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mm-1",
+                seat="CLAUDE",
+                source="test",
+                issuer="MM",
+            )
+
+    def test_the_relabel_command_answers_json(self):
+        self._register("mm-1", platform="minimax", letter_space="single", letter_pick="lowest")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(
+                [
+                    "relabel",
+                    "--db",
+                    self.db,
+                    "--platform",
+                    "minimax",
+                    "--location",
+                    "mac",
+                    "--scope",
+                    "default",
+                    "--session-id",
+                    "mm-1",
+                    "--seat",
+                    "CLAUDE",
+                    "--source",
+                    "test",
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["label"], "AA")
 
     def test_the_register_command_defaults_by_platform(self):
         base = [
@@ -1305,5 +1412,170 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
         self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-7"), [])
 
 
+class RegistryGuardTest(unittest.TestCase):
+    """The CLI never brings a registry into being (AFC-593).
+
+    The transport runs this CLI directly, so the guard belongs here and not only in
+    the passthrough that runs it through simple-chat:  a host that keeps no registry
+    refuses every op the same way, and a second registry never grows to hand out
+    letters that collide with the ones the Operator keeps.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.missing = os.path.join(self.tmp.name, "no-registry-here", "registry.sqlite3")
+
+    def _run(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(argv)
+        return code, json.loads(out.getvalue().splitlines()[-1])
+
+    def test_every_op_that_takes_a_database_refuses_on_a_host_without_one(self):
+        ops = [
+            ["pending-outbox"],
+            ["mark-exported", "1"],
+            [
+                "register",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+                "--seat=MM",
+                "--source=a test",
+            ],
+            [
+                "relabel",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+                "--seat=MM",
+                "--source=a test",
+            ],
+            ["resolve", "--platform=minimax", "--letter=AA"],
+            [
+                "update",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            [
+                "close",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            ["sweep", "--platform=minimax", "--seat=MM"],
+            ["history", "--platform=minimax"],
+            [
+                "touch",
+                "--platform=minimax",
+                "--location=server",
+                "--scope=default",
+                "--session-id=s-1",
+            ],
+            ["reopen", "--record-id=r1"],
+        ]
+        for argv in ops:
+            with self.subTest(op=argv[0]):
+                code, answer = self._run(argv + ["--db", self.missing])
+                self.assertEqual(code, 3)
+                self.assertEqual(answer, {"error": "no Operator registry on this host"})
+        self.assertFalse(os.path.exists(self.missing))
+
+    def test_a_host_that_keeps_a_registry_is_not_refused(self):
+        db = os.path.join(self.tmp.name, "registry.sqlite3")
+        reg = R.SessionRegistry(db)
+        reg.close_db()
+        code, answer = self._run(["history", "--platform=minimax", "--db", db])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer, [])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReopenCommandTest(unittest.TestCase):
+    """The reopen verb of the registry's own CLI.
+
+    A host that keeps no registry asks the host that holds one, so the reopen has to
+    be a verb the CLI answers, not a call into the registry from inside a hook.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        self.reg = R.SessionRegistry(self.db)
+
+    def tearDown(self):
+        self.reg.close_db()
+        self.tmp.cleanup()
+
+    def test_the_reopen_command_gives_a_closed_chat_its_letter_back(self):
+        made = self.reg.resolve_or_register(ident(platform="minimax", native="n-9"))
+        self.reg.close(made["record_id"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(
+                [
+                    "reopen",
+                    "--db",
+                    self.db,
+                    "--record-id",
+                    made["record_id"],
+                    "--actor",
+                    "MM",
+                    "--source",
+                    "test",
+                    "--letter-pick",
+                    "oldest",
+                ]
+            )
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["outcome"], "reopened")
+        self.assertEqual(answer["label"], made["label"])
+        self.assertIsNone(self.reg._get(made["record_id"])["closed_at"])
+
+    def test_the_reopen_command_answers_a_refusal_as_json(self):
+        # A record that is not there is a readable answer, never a traceback.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", self.db, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["code"], "reopen_failed")
+        self.assertEqual(answer["outcome"], "reopen_refused")
+
+    def test_the_reopen_command_never_brings_a_registry_into_being(self):
+        # A host that keeps no registry must not grow one:  a second registry hands
+        # out letters that collide with the ones the Operator keeps, so the CLI
+        # refuses and the file is never created.
+        missing = os.path.join(self.tmp.name, "no-registry-here", "registry.sqlite3")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", missing, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 3)
+        self.assertEqual(answer, {"error": "no Operator registry on this host"})
+        self.assertFalse(os.path.exists(missing))
+
+    def test_the_reopen_command_answers_a_database_fault_as_json(self):
+        # A database that faults is a refusal the caller can read, never a traceback:
+        # the far host would answer with something unparseable and the hop would
+        # report an unknown outcome instead of the refusal it owes.
+        broken = os.path.join(self.tmp.name, "broken.sqlite3")
+        with open(broken, "wb") as handle:
+            handle.write(b"this is not a database")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = R.main(["reopen", "--db", broken, "--record-id", "no-such-record"])
+        answer = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["code"], "reopen_failed")
+        self.assertEqual(answer["outcome"], "reopen_refused")

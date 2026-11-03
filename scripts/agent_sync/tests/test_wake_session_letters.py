@@ -59,14 +59,15 @@ class RegisterPathTests(unittest.TestCase):
                 title="Work",
             issuer=OR.ISSUER_OPERATOR,
             )
-            self.assertEqual(out["label"], "A")
+            # A MiniMax chat is a pair (owner ruling, Nov 1 2026), so the letter is "AA".
+            self.assertEqual(out["label"], "AA")
             self.assertEqual(out["generation"], 1)
-            # The title form the platforms expect:  H: Title.
-            self.assertEqual(out["title_display"], "A: Work")
+            # The title form the platforms expect:  AA: Title.
+            self.assertEqual(out["title_display"], "AA: Work")
             # The wake finds the same session by the same identity.
             found = OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc")
-            self.assertEqual(found["label"], "A")
-            self.assertEqual(found["ref"], "MM A")
+            self.assertEqual(found["label"], "AA")
+            self.assertEqual(found["ref"], "MM AA")
 
     def test_the_next_session_takes_the_next_letter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -93,8 +94,8 @@ class RegisterPathTests(unittest.TestCase):
                 title="Next",
             issuer=OR.ISSUER_OPERATOR,
             )
-            self.assertEqual(first["label"], "A")
-            self.assertEqual(second["label"], "B")
+            self.assertEqual(first["label"], "AA")
+            self.assertEqual(second["label"], "BB")
 
     def test_a_resumed_session_keeps_its_letter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,6 +151,9 @@ class RegisterPathTests(unittest.TestCase):
     def test_the_register_cli_prints_the_letter_and_the_title_form(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = OR.registry_db_path(tmp)
+            # The CLI never brings a registry into being, so the file is there first:
+            # the Operator's own service is what creates one, in process.
+            OR.SessionRegistry(db).close_db()
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 code = OR.main(
@@ -174,9 +178,9 @@ class RegisterPathTests(unittest.TestCase):
                     ]
                 )
             self.assertEqual(code, 0)
-            self.assertEqual(json.loads(buffer.getvalue())["label"], "A")
+            self.assertEqual(json.loads(buffer.getvalue())["label"], "AA")
             found = OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc")
-            self.assertEqual(found["label"], "A")
+            self.assertEqual(found["label"], "AA")
 
 
     def test_a_letter_names_its_session(self) -> None:
@@ -194,12 +198,12 @@ class RegisterPathTests(unittest.TestCase):
             issuer=OR.ISSUER_OPERATOR,
             )
             # The other direction of the join:  a letter names one session.
-            found = OR.resolve_label(db, "minimax", "A")
+            found = OR.resolve_label(db, "minimax", "AA")
             self.assertEqual(found["native_session_id"], "mvs_abc")
             self.assertEqual(found["seat"], "MM")
             self.assertEqual(found["title"], "Work")
-            self.assertEqual(found["title_display"], "A: Work")
-            self.assertEqual(found["ref"], "MM A")
+            self.assertEqual(found["title_display"], "AA: Work")
+            self.assertEqual(found["ref"], "MM AA")
 
     def test_a_letter_is_unique_on_its_platform(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -273,7 +277,7 @@ class RegisterPathTests(unittest.TestCase):
             db = OR.registry_db_path(tmp)
             # The registry is not there, which is not the same as the letter being free.
             with self.assertRaises(OR.RegistryUnavailable):
-                OR.resolve_label(db, "minimax", "A")
+                OR.resolve_label(db, "minimax", "AA")
 
     def test_the_platform_namespace_is_folded_on_both_sides(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -290,10 +294,10 @@ class RegisterPathTests(unittest.TestCase):
             )
             # The display form and the namespace name the same registry namespace.
             self.assertEqual(
-                OR.resolve_label(db, "minimax", "A")["native_session_id"], "mvs_abc"
+                OR.resolve_label(db, "minimax", "AA")["native_session_id"], "mvs_abc"
             )
             self.assertEqual(
-                OR.resolve_label(db, "MINIMAX", "A")["native_session_id"], "mvs_abc"
+                OR.resolve_label(db, "MINIMAX", "AA")["native_session_id"], "mvs_abc"
             )
 
     def test_a_reference_form_names_its_session(self) -> None:
@@ -310,7 +314,7 @@ class RegisterPathTests(unittest.TestCase):
                 title="Work",
             issuer=OR.ISSUER_OPERATOR,
             )
-            found = OR.resolve_ref(db, "minimax", "MM A")
+            found = OR.resolve_ref(db, "minimax", "MM AA")
             self.assertEqual(found["native_session_id"], "mvs_abc")
             # A malformed reference is refused rather than read as a miss.
             with self.assertRaises(ValueError):
@@ -352,20 +356,20 @@ class RegisterPathTests(unittest.TestCase):
             # after the letter is recycled;  a reply to an old message reaches the
             # session it was written to, not the one that holds A now.
             self.assertEqual(
-                OR.resolve_ref(db, "minimax", "MM A")["native_session_id"], "mvs_abc"
+                OR.resolve_ref(db, "minimax", "MM AA")["native_session_id"], "mvs_abc"
             )
             # The generation form names the other one, and the suffix on the older
             # one names the older one too.
             self.assertEqual(
-                OR.resolve_ref(db, "minimax", "MM A (gen 2)")["native_session_id"], "mvs_def"
+                OR.resolve_ref(db, "minimax", "MM AA (gen 2)")["native_session_id"], "mvs_def"
             )
             self.assertEqual(
-                OR.resolve_ref(db, "minimax", "MM A (gen 1)")["native_session_id"], "mvs_abc"
+                OR.resolve_ref(db, "minimax", "MM AA (gen 1)")["native_session_id"], "mvs_abc"
             )
             # The letter itself still answers "who holds A now", which is the other
             # question.
             self.assertEqual(
-                OR.resolve_label(db, "minimax", "A")["native_session_id"], "mvs_def"
+                OR.resolve_label(db, "minimax", "AA")["native_session_id"], "mvs_def"
             )
 
     def test_a_recycled_letter_names_the_right_generation(self) -> None:
@@ -397,15 +401,15 @@ class RegisterPathTests(unittest.TestCase):
             issuer=OR.ISSUER_OPERATOR,
             )
             # The live letter names the session that holds it now.
-            live = OR.resolve_label(db, "minimax", "A")
+            live = OR.resolve_label(db, "minimax", "AA")
             self.assertEqual(live["native_session_id"], "mvs_def")
             self.assertEqual(live["generation"], 2)
             # And the generation names the older one.  The suffix is the differentiator:
-            # only a recycled letter carries it, so the first holder reads "MM A".
-            older = OR.resolve_label(db, "minimax", "A", 1)
+            # only a recycled letter carries it, so the first holder reads "MM AA".
+            older = OR.resolve_label(db, "minimax", "AA", 1)
             self.assertEqual(older["native_session_id"], "mvs_abc")
-            self.assertEqual(older["ref"], "MM A")
-            self.assertEqual(live["ref"], "MM A (gen 2)")
+            self.assertEqual(older["ref"], "MM AA")
+            self.assertEqual(live["ref"], "MM AA (gen 2)")
 
     def test_the_resolve_command_names_the_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -424,12 +428,12 @@ class RegisterPathTests(unittest.TestCase):
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
                 code = OR.main(
-                    ["resolve", "--db", db, "--platform", "minimax", "--letter", "A"]
+                    ["resolve", "--db", db, "--platform", "minimax", "--letter", "AA"]
                 )
             self.assertEqual(code, 0)
             out = json.loads(buffer.getvalue())
             self.assertEqual(out["native_session_id"], "mvs_abc")
-            self.assertEqual(out["ref"], "MM A")
+            self.assertEqual(out["ref"], "MM AA")
 
 
 class RegistryLookupTests(unittest.TestCase):
@@ -610,7 +614,7 @@ class RegistryLookupTests(unittest.TestCase):
             # open a different file.
             twin = "//" + os.path.abspath(db).lstrip("/")
             found = OR.lookup_entry(twin, "minimax", "mac", "default", "mvs_abc")
-            self.assertEqual(found["label"], "A")
+            self.assertEqual(found["label"], "AA")
 
     def test_the_alias_lookup_is_indexed_by_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1136,10 +1140,10 @@ class TaggedLetterTests(DaemonHarness):
             title="Work",
             issuer=OR.ISSUER_OPERATOR,
         )
-        found = d.operator_candidates("minimax", "A")
+        found = d.operator_candidates("minimax", "AA")
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["native_session_id"], "mvs_abc")
-        self.assertEqual(found[0]["ref"], "MM A")
+        self.assertEqual(found[0]["ref"], "MM AA")
         # A letter nobody holds has no candidates, and the query never mints one.
         self.assertEqual(d.operator_candidates("minimax", "Z"), [])
 
@@ -1185,7 +1189,7 @@ class OperatorIssuesLettersTests(unittest.TestCase):
                 title="Work",
                 issuer=OR.ISSUER_OPERATOR,
             )
-            self.assertEqual(out["label"], "A")
+            self.assertEqual(out["label"], "AA")
 
 
 class PlatformNamespaceTests(unittest.TestCase):
@@ -1270,27 +1274,30 @@ class ReferenceFormTests(unittest.TestCase):
 
     def test_a_bare_ref_names_generation_one_after_a_recycle(self) -> None:
         self.recycle_a()
-        # "MM A" was handed out for the first holder, so it names that session and
-        # not the one that holds A now.
-        found = OR.resolve_ref(self.db, "minimax", "MM A")
+        # "MM AA" was handed out for the first holder, so it names that session and
+        # not the one that holds AA now.
+        found = OR.resolve_ref(self.db, "minimax", "MM AA")
         self.assertEqual(found["native_session_id"], "mvs_abc")
         self.assertEqual(found["generation"], 1)
         # The generation form names the other one.
-        live = OR.resolve_ref(self.db, "minimax", "MM A (gen 2)")
+        live = OR.resolve_ref(self.db, "minimax", "MM AA (gen 2)")
         self.assertEqual(live["native_session_id"], "mvs_def")
 
     def test_a_ref_names_the_seat_that_holds_the_letter(self) -> None:
         self.register("mvs_abc", seat="MM")
-        # "CODEX A" claims Codex holds A.  It does not, so the ref names no session.
-        self.assertIsNone(OR.resolve_ref(self.db, "minimax", "CODEX A"))
-        self.assertIsNotNone(OR.resolve_ref(self.db, "minimax", "MM A"))
+        # "CODEX AA" claims Codex holds AA.  It does not, so the ref names no session.
+        self.assertIsNone(OR.resolve_ref(self.db, "minimax", "CODEX AA"))
+        self.assertIsNotNone(OR.resolve_ref(self.db, "minimax", "MM AA"))
 
 class AskOperatorTests(DaemonHarness):
     """The Operator ask:  when it sends, to whom, and when it refuses to.
 
     A letter is the same letter on two platforms only if both sessions were allocated it, so
-    the ambiguous seeds register one session per platform.  A seat never picks its own letter
-    (register_session allocates the lowest free one), so a same-platform pair would be A and B.
+    the ambiguous seeds register one session per platform.  The seeds name the single-letter
+    space, because a MiniMax session takes a pair by default (AFC-586) and the two platforms
+    have to hold the same letter for the ambiguity to exist at all.  A seat never picks its own
+    letter (register_session allocates the lowest free one), so a same-platform pair would be
+    A and B.
     """
 
     AMBIGUOUS = (("MM", "minimax"), ("CODEX", "claude-code"))
@@ -1308,6 +1315,8 @@ class AskOperatorTests(DaemonHarness):
                 source="test",
                 title="Work %s" % seat,
                 issuer=OR.ISSUER_OPERATOR,
+                letter_space="single",
+                letter_pick="lowest",
             )
         return db
 

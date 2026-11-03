@@ -85,7 +85,7 @@ export class FakeLinear {
       updatedAt: new Date(this.stamp).toISOString(),
       state: this.stateNode(String(team), state),
       team: this.teamNode(team),
-      labels: labels.map((name) => ({ id: this.labelNode(name).id, name: String(name), parent: null })),
+      labels: labels.map((name) => { const node = this.labelNode(name); return { id: node.id, name: String(name), parent: node.parent ?? null }; }),
       comments: [],
       delegate: delegate ? { id: delegate.id, name: delegate.name ?? delegate.id, app: delegate.app ?? true } : null,
     };
@@ -273,14 +273,17 @@ export class FakeLinear {
 
   /** The rows a list filter matches, so a filter in a test really narrows. */
   listNodes(filter) {
-    return this.issues.filter((row) => {
-      if (filter.team?.key?.eq && row.team.key !== filter.team.key.eq) return false;
-      if (filter.state?.name?.in && !filter.state.name.in.includes(row.state.name)) return false;
-      if (filter.priority?.eq !== undefined && row.priority !== filter.priority.eq) return false;
-      const want = filter.labels?.some?.name?.eq;
-      if (want && !row.labels.some((l) => l.name === want)) return false;
+    const matches = (row, f) => {
+      if (f.team?.key?.eq && row.team.key !== f.team.key.eq) return false;
+      if (f.state?.name?.in && !f.state.name.in.includes(row.state.name)) return false;
+      if (f.priority?.eq !== undefined && row.priority !== f.priority.eq) return false;
+      if (Array.isArray(f.and) && !f.and.every((c) => matches(row, c))) return false;
+      const want = f.labels?.some?.name?.eq;
+      const parent = f.labels?.some?.parent?.name?.eq;
+      if (want && !row.labels.some((l) => l.name === want && (!parent || l.parent?.name === parent))) return false;
       return true;
-    });
+    };
+    return this.issues.filter((row) => matches(row, filter));
   }
 
   /** The workflow state a stateId names, whichever team owns it.  */
@@ -294,7 +297,7 @@ export class FakeLinear {
     const number = 300 + this.issues.length;
     const row = this.addIssue({ identifier: `${team.key}-${number}`, title: input.title, team, description: input.description ?? "", priority: input.priority ?? 0 });
     if (input.stateId) row.state = this.stateById(input.stateId);
-    if (input.labelIds?.length) row.labels = input.labelIds.map((id) => ({ id, name: this.labelNode(this.labels.find((l) => l.id === id).name).name, parent: null }));
+    if (input.labelIds?.length) row.labels = input.labelIds.map((id) => { const node = this.labels.find((l) => l.id === id); return { id, name: node?.name ?? String(id), parent: node?.parent ?? null }; });
     return { success: true, issue: this.issueNode(row) };
   }
 
@@ -303,8 +306,8 @@ export class FakeLinear {
     const row = this.findIssue(id);
     if (!row) return { success: false, issue: null };
     if (input.stateId) row.state = this.stateById(input.stateId);
-    const nameOf = (labelId) => this.labels.find((l) => l.id === labelId)?.name ?? labelId;
-    for (const labelId of input.addedLabelIds ?? []) if (!row.labels.some((l) => l.id === labelId)) row.labels.push({ id: labelId, name: nameOf(labelId), parent: null });
+    const nodeOf = (labelId) => this.labels.find((l) => l.id === labelId);
+    for (const labelId of input.addedLabelIds ?? []) if (!row.labels.some((l) => l.id === labelId)) { const node = nodeOf(labelId); row.labels.push({ id: labelId, name: node?.name ?? labelId, parent: node?.parent ?? null }); }
     for (const labelId of input.removedLabelIds ?? []) row.labels = row.labels.filter((l) => l.id !== labelId);
     if (Object.hasOwn(input, "delegateId")) {
       row.delegate = input.delegateId === null ? null : { id: input.delegateId, name: input.delegateId === this.viewer.id ? this.viewer.name : input.delegateId, app: true };

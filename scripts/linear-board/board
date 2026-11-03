@@ -6054,6 +6054,12 @@ _REMOTE_CODES = frozenset(
         "budget_exhausted",
     )
 )
+_REMOTE_HINTS = {
+    "identity_required": "hint: a write must name its seat identity\u00a0 retry with the identity the hosted identities answer names",
+    "session_required": "hint: pass a session id with --session\u00a0 the hosted server needs it for the seat tag line",
+    "writes_disabled": "hint: writes are off on the hosted server\u00a0 retry after its write switch is enabled",
+    "not_configured": "hint: this seat or tool family is not configured on the hosted server\u00a0 check the hosted configuration before retrying",
+}
 _REMOTE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _REMOTE_UNKNOWN = "; the write may or may not have been applied, check before sending it again"
 
@@ -6265,7 +6271,10 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
             else ""
         )
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
-        return None, f"{tool} failed on the hosted server: {code}{after}{note}"
+        hint = _REMOTE_HINTS.get(code)
+        return None, f"{tool} failed on the hosted server: {code}{after}{note}" + (
+            f"; {hint}" if hint else ""
+        )
     return result, ""
 
 
@@ -6413,8 +6422,50 @@ def _remote_scanner():
         )
 
 
+_REMOTE_IDENTITY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
+
+
+def _remote_write_identity() -> str:
+    """The identity a hosted write names, from the hosted `identities` answer.\u00a0 Any failure or an
+    answer that does not match this bearer's own seat and allowed set refuses the write before it is sent."""
+    out = remote_call("identities", {})
+    info = out.get("structured") if isinstance(out, dict) else {}
+    info = info if isinstance(info, dict) else {}
+    who, seat, listed = (
+        info.get("default_identity"),
+        info.get("authenticated_seat"),
+        info.get("identities"),
+    )
+    names = (
+        [r.get("identity") for r in listed if isinstance(r, dict)]
+        if isinstance(listed, list)
+        else []
+    )
+    ok = (
+        isinstance(who, str)
+        and _REMOTE_IDENTITY_RE.fullmatch(who)
+        and who == seat
+        and isinstance(listed, list)
+        and len(names) == len(listed)
+        and all(isinstance(n, str) for n in names)
+        and names.count(who) == 1
+    )
+    if not ok:
+        die(
+            "the hosted server's identity answer did not match this bearer's own seat and allowed "
+            "set, so the write was not sent",
+            EXIT_USAGE,
+        )
+    return who
+
+
 def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
-    """One tools/call to the fixed endpoint.  Returns the tool's structuredContent."""
+    """One tools/call to the fixed endpoint.  Returns the tool's structuredContent.
+
+    This stays a pure transport on purpose (the cross-transport hardening
+    tests call it directly):  remote_write owns identity injection, so the
+    argument scan below and the outcome wording see exactly one send.
+    """
     bearer = "" if native_echo_selected() else remote_bearer()
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
@@ -6497,17 +6548,16 @@ def remote_write(a) -> dict:
     sessions = getattr(a, "session_ids", None) or []
     if len(sessions) > 1:
         die("remote mode accepts at most one --session", EXIT_USAGE)
+    # The per-command arguments are built and validated before any network call,
+    # so a usage error is reported locally and does not spend a hosted RPC.
     claimed = getattr(a, "addressed_by", None) or getattr(a, "author", None)
-    if claimed:
-        who = remote_call("linear_whoami", {})["structured"]
-        got = str(who.get("authenticated_seat") or who.get("seat") or "")
-        if not got or got.lower() != str(claimed).lower():
-            shown = _remote_visible(got)[:40] if got else "none reported"
+    if a.cmd == "file":
+        if a.severity and "," in a.severity:
             die(
-                f"--by {claimed} does not match the seat the hosted server reports for this bearer ({shown}); "
-                "remote mode never acts as another seat",
+                "--severity takes a single value in remote mode, not a comma-separated list",
                 EXIT_USAGE,
             )
+        a.labels = flat_labels(a.labels or [])
     if a.cmd == "claim":
         args = {"id": a.id}
         if a.comment:
@@ -6533,6 +6583,20 @@ def remote_write(a) -> dict:
                 args[key] = val
     if sessions:
         args["session"] = sessions[0]
+    # Scan before ANY network call, the identities lookup included:  a
+    # credential-shaped argument is refused having sent nothing at all.
+    scan_bearer = "" if native_echo_selected() else remote_bearer()
+    hit = _remote_scan_arguments(_remote_scanner(), args, scan_bearer)
+    if hit:
+        die(f"refused before sending: {hit}", EXIT_USAGE)
+    identity = _remote_write_identity()
+    if claimed and str(claimed).lower() != identity.lower():
+        die(
+            f"--by {claimed} does not match the seat the hosted server reports for this "
+            f"bearer ({identity}); remote mode never acts as another seat",
+            EXIT_USAGE,
+        )
+    args["identity"] = identity
     return remote_call(tool, args, write=True)
 
 
@@ -6559,9 +6623,26 @@ def remote_main(a) -> int:
         out = remote_call("linear_show", args)
     else:
         args = {}
+        list_labels = getattr(a, "labels", None) or []
+        if list_labels:
+            if len(list_labels) > 1 or any("," in str(x) for x in list_labels):
+                die(
+                    "--label takes a single label in remote mode, not multiple or comma-combined labels",
+                    EXIT_USAGE,
+                )
+            args["label"] = flat_label(list_labels[0])
+        for dest in ("status", "severity"):
+            val = getattr(a, dest, None)
+            if val and "," in str(val):
+                die(
+                    f"--{dest} takes a single value in remote mode, not a comma-separated list",
+                    EXIT_USAGE,
+                )
         for dest, name in REMOTE_LIST_FLAGS.items():
             val = getattr(a, dest, None)
             if val in (None, [], ""):
+                continue
+            if dest == "labels":
                 continue
             if name is None:
                 die(

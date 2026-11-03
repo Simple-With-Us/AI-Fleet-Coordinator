@@ -190,16 +190,22 @@ class OverrideTests(unittest.TestCase):
         env = {
             "FLEET_RAG_INFISICAL_API": "https://infisical.example.invalid/api/",
             "FLEET_RAG_INFISICAL_PROJECT": "proj-1234",
-            "FLEET_RAG_INFISICAL_ENV": "staging",
+            "FLEET_RAG_INFISICAL_ENV": "prod",
             "FLEET_RAG_HANDOFF_FILE": "~/elsewhere/creds",
         }
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(core.infisical_api(), "https://infisical.example.invalid/api")
             self.assertEqual(core.infisical_project(), "proj-1234")
-            self.assertEqual(core.infisical_env(), "staging")
+            self.assertEqual(core.infisical_env(), "prod")
             self.assertEqual(
                 core.handoff_file(), pathlib.Path(os.path.expanduser("~/elsewhere/creds"))
             )
+
+    def test_non_prod_env_is_refused(self) -> None:
+        for slug in ("dev", "staging", "DEV", "production"):
+            with mock.patch.dict(os.environ, {"FLEET_RAG_INFISICAL_ENV": slug}, clear=True):
+                with self.assertRaises(core.FleetRagError, msg=slug):
+                    core.infisical_env()
 
     def test_empty_override_falls_back_to_default(self) -> None:
         env = {
@@ -243,7 +249,7 @@ class OverrideTests(unittest.TestCase):
                 "FLEET_RAG_HANDOFF_FILE": str(path),
                 "FLEET_RAG_INFISICAL_API": "https://infisical.example.invalid/api",
                 "FLEET_RAG_INFISICAL_PROJECT": "proj-1234",
-                "FLEET_RAG_INFISICAL_ENV": "staging",
+                "FLEET_RAG_INFISICAL_ENV": "prod",
             }
             with (
                 mock.patch.dict(os.environ, env, clear=True),
@@ -256,7 +262,7 @@ class OverrideTests(unittest.TestCase):
         )
         self.assertIn("https://infisical.example.invalid/api/v3/secrets/raw", seen[1])
         self.assertIn("workspaceId=proj-1234", seen[1])
-        self.assertIn("environment=staging", seen[1])
+        self.assertIn("environment=prod", seen[1])
         # The owner's project id is never used once an override is set.
         self.assertNotIn(core.SHARED_PROJECT, seen[1])
 

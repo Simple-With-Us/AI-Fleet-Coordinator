@@ -344,6 +344,20 @@ test("a comment that looks like it holds a Linear key is refused before any requ
   assert.equal(fake.requests.length, 0);
 });
 
+test("linear_list ANDs severity, kind, env and label together", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ identifier: "AFC-500", title: "match", priority: 2, labels: [] });
+  const result = await tools.call("linear_list", { severity: "P1", kind: "agent-report", env: "mac", label: "needs-owner" });
+  ok(result, "linear_list");
+  const list = fake.calls().find((c) => c.body.query.includes("BoardList"));
+  const filter = list.body.variables.filter;
+  const text = JSON.stringify(filter);
+  assert.match(text, /agent-report/);
+  assert.match(text, /Mac/);
+  assert.match(text, /needs-owner/);
+  assert.equal(filter.priority.eq, 2);
+});
+
 test("a label outside the flat whitelist is refused, so no seat can forge a claim or attribution", async () => {
   const { tools, fake } = harness();
   // board:226:  flat workspace labels are the only ones this door takes, so

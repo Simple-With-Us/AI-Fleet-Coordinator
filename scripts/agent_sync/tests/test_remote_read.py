@@ -107,6 +107,28 @@ class RemoteRead(unittest.TestCase):
                 self.assertEqual(calls, [])
                 self.assertNotEqual(code, 0)
 
+    def test_remote_maps_search_dm_read_and_edit(self):
+        cases = [
+            (["search", "hello", "--channel", "sandbox", "--limit", "3"], "zulip_search", False),
+            (["dm-read", "--with", "7", "--limit", "3"], "zulip_dm_read", False),
+        ]
+        for argv, tool, _w in cases:
+            with self.subTest(argv=argv):
+                code, out, err, calls = self.run_cli(argv, reply({"ok": True}))
+                self.assertEqual(code, 0, err)
+                self.assertEqual(calls[0][2]["params"]["name"], tool)
+        code, out, err, calls = self.run_cli(
+            ["edit", "--id", "5", "new text"], self.by_tool({"ok": True}),
+            env={"SIMPLE_CHAT_REMOTE_WRITES": "1"})
+        self.assertEqual(code, 0, err)
+        names = [c[2]["params"]["name"] for c in calls]
+        self.assertIn("zulip_edit_message", names)
+
+    def test_guide_is_local_in_remote_mode(self):
+        code, out, err, calls = self.run_cli(["guide"], reply({}))
+        self.assertEqual(calls, [])
+        self.assertNotIn("not available in remote mode", err)
+
     W = {"SIMPLE_CHAT_REMOTE_WRITES": "1"}
 
     def test_writes_need_their_own_switch_and_never_run_directly(self):

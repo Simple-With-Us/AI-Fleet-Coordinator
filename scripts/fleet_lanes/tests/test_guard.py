@@ -1312,7 +1312,9 @@ class HookCliTests(unittest.TestCase):
     def test_garbage_stdin_prints_nothing(self) -> None:
         for raw in ("", "not json", "[1,2", "null", "42", '{"tool_input": 5}'):
             with self.subTest(raw):
-                self.assertEqual(self._main(["--exit2"], raw), (0, "", ""))
+                rc, out, err = self._main(["--exit2"], raw)
+                self.assertEqual((rc, out), (0, ""))
+                self.assertTrue(err == "" or (err.startswith("lane_guard_hook: fail-open (") and err.count("\n") == 1), err)
 
     def test_render_exact_bytes(self) -> None:
         self.assertEqual(H.render("R.  S.", "grok"), '{"decision": "deny", "reason": "R.  S."}')

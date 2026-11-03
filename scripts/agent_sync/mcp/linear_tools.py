@@ -373,9 +373,13 @@ class BoardResult(NamedTuple):
     stderr: str
 
 
-_LOCK = (
-    threading.Lock()
-)  # one board child at a time per process:  the router serialises writes anyway
+_LOCK = threading.Lock()  # guards _WRITE_LOCKS creation
+_WRITE_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _write_lock(identity: str) -> threading.Lock:
+    with _LOCK:
+        return _WRITE_LOCKS.setdefault(identity, threading.Lock())
 
 
 def run_board(
@@ -410,7 +414,10 @@ def run_board(
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(plan.vars_json)
             argv = ["@" + vars_path if part == VARS_PLACEHOLDER else part for part in argv]
-        with _LOCK:
+        import contextlib
+
+        lock = _write_lock(identity) if spec.kind == "write" else contextlib.nullcontext()
+        with lock:
             proc = (runner or subprocess.run)(
                 argv,
                 input=plan.stdin,

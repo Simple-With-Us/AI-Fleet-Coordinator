@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Archive fleet repositories
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -33,25 +35,52 @@ jobs:
 
           mkdir -p backups
           DATE_STR="$(date +%Y-%m-%d)"
+          failures=0
+          # Authenticated full-history clone with the built-in GITHUB_TOKEN
+          # (contents: read):  an unauthenticated shallow clone cannot see
+          # private fleet repos and used to fail green,  so a missing repo
+          # was a silent gap in the offsite.  Full history keeps the backup
+          # a restore,  not a tip snapshot.
           while IFS= read -r repo; do
             [ -z "$repo" ] && continue
             echo "=========================================="
             echo "Cloning Simple-With-Us/${repo}"
-            if git clone --depth=1 "https://github.com/Simple-With-Us/${repo}.git" "backups/${repo}"; then
+            if gh repo clone "Simple-With-Us/${repo}" "backups/${repo}"; then
               (
                 cd "backups/${repo}"
                 zip -rq "../${repo}-backup-${DATE_STR}.zip" . \
-                  -x "*/node_modules/*" -x "*/.git/*" -x "*/dist/*" -x "*/build/*"
+                  -x "*/node_modules/*" -x "*/.git/*" -x "*/dist/*" -x "*/build/*" \
+                  -x ".env*" -x "*/.env*" \
+                  -x "*.key" -x "*/*.key" -x "*.pem" -x "*/*.pem" \
+                  -x "*.p12" -x "*/*.p12" -x "*.pfx" -x "*/*.pfx" \
+                  -x "id_*" -x "*/id_*" \
+                  -x "*credential*" -x "*/*credential*" \
+                  -x "*service-account*" -x "*/*service-account*"
               )
               rm -rf "backups/${repo}"
               echo "Archive created: ${repo}-backup-${DATE_STR}.zip"
             else
-              echo "Could not clone ${repo} (private or missing) — skipping"
+              echo "::error::could not clone Simple-With-Us/${repo}"
+              failures=$((failures + 1))
             fi
           done < backup-repo-list.txt
+          if [ "$failures" -gt 0 ]; then
+            echo "::error::${failures} repositories failed to clone"
+            exit 1
+          fi
+          # The archive count must equal the fleet-apps.json count:  a silent
+          # drop would otherwise read as a complete offsite.
+          expected=$(grep -c . backup-repo-list.txt)
+          shopt -s nullglob
+          zips=(backups/*.zip)
+          actual=${#zips[@]}
+          if [ "$actual" -ne "$expected" ]; then
+            echo "::error::expected ${expected} archives, found ${actual}"
+            exit 1
+          fi
 
           echo "Created archives:"
-          ls -lh backups/ || true
+          ls -lh backups/
 
       - name: Upload backup archives as artifacts
         uses: actions/upload-artifact@v7

@@ -233,7 +233,7 @@ export class IdentityRouter {
   instructions() {
     return `  Each call names the bot it acts as in its identity argument:  writes must name it;  reads without it act as ${this.seat}.  ` +
       `This connection may act as ${this.allowed.join(", ")};  identities lists them with their status.  Tools are named by family:  ` +
-      "zulip_*, linear_*, recall_*, notes_*, fleetlink_* and listener_*;  whoami, identities and guide stand alone.  " +
+      "zulip_*, linear_*, recall_*, notes_*, fleetlink_* and eavesdropper_*;  whoami, identities and guide stand alone.  " +
       `Call guide for the full tools guide (or one section), also at ${GUIDE_URL}.`;
   }
 

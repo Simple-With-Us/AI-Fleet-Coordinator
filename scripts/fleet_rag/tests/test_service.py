@@ -758,6 +758,21 @@ class _QuietFiles(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+class SettingsRefreshListenerTests(unittest.TestCase):
+    def test_refresh_listener_resets_recall_config_cache(self):
+        values = iter(({"QDRANT_API_KEY": "old-fake"}, {"QDRANT_API_KEY": "new-fake"}))
+
+        def fake_load(need_write=False, extra=()):
+            return next(values)
+
+        with mock.patch.object(recall_api, "load_config", fake_load):
+            recall_api.reset_config_cache()
+            self.assertEqual(recall_api.get_config()["QDRANT_API_KEY"], "old-fake")
+            server._on_settings_refresh()
+            self.assertEqual(recall_api.get_config()["QDRANT_API_KEY"], "new-fake")
+        recall_api.reset_config_cache()
+
+
 class BootstrapTests(unittest.TestCase):
     """bootstrap.sh under RECALL_BOOTSTRAP_ONLY=1: source tarball + gitleaks release from a local
     http.server; the binary is a tiny shell script that prints the pinned version."""
@@ -839,8 +854,14 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("bootstrap: reusing", proc2.stdout)
         self.assertIn("already runs 8.30.1; nothing to do", proc2.stdout)
 
-    def test_download_failure_is_logged_and_the_bootstrap_continues(self):
+    def test_download_failure_aborts_by_default(self):
         proc, work = self.run_bootstrap(self.base + "/missing.tgz")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("aborting", proc.stdout)
+        self.assert_no_binary(work)
+
+    def test_download_failure_continues_only_with_explicit_opt_out(self):
+        proc, work = self.run_bootstrap(self.base + "/missing.tgz", RECALL_GITLEAKS_REQUIRED="0")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("bootstrap: gitleaks: download failed (HTTPError", proc.stdout)
         self.assertIn("continuing WITHOUT gitleaks; recall_contribute will report gitleaks-unavailable", proc.stdout)
@@ -850,30 +871,33 @@ class BootstrapTests(unittest.TestCase):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             dead = s.getsockname()[1]
-        proc, work = self.run_bootstrap(f"http://127.0.0.1:{dead}/gitleaks.tgz")
+        proc, work = self.run_bootstrap(f"http://127.0.0.1:{dead}/gitleaks.tgz", RECALL_GITLEAKS_REQUIRED="0")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("download failed (URLError", proc.stdout)
         self.assert_no_binary(work)
 
-    def test_bad_tarballs_are_rejected_and_the_bootstrap_continues(self):
-        proc, work = self.run_bootstrap(self.base + "/gitleaks-wrong-version.tgz")
+    def test_bad_tarballs_are_rejected(self):
+        # Explicit opt-out keeps the old continue behavior for each rejection reason.
+        proc, work = self.run_bootstrap(self.base + "/gitleaks-wrong-version.tgz", RECALL_GITLEAKS_REQUIRED="0")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("does not run or does not report 8.30.1", proc.stdout)
         self.assert_no_binary(work)
-        proc, work = self.run_bootstrap(self.base + "/gitleaks-no-binary.tgz")
+        proc, work = self.run_bootstrap(self.base + "/gitleaks-no-binary.tgz", RECALL_GITLEAKS_REQUIRED="0")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("tarball contains no gitleaks binary", proc.stdout)
         self.assert_no_binary(work)
-        proc, work = self.run_bootstrap(self.base + "/not-a-tarball.tgz")
+        proc, work = self.run_bootstrap(self.base + "/not-a-tarball.tgz", RECALL_GITLEAKS_REQUIRED="0")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("install failed (ReadError", proc.stdout)
         self.assert_no_binary(work)
         proc, work = self.run_bootstrap(self.base + "/gitleaks_8.30.1_linux_arm64.tar.gz",
+                                        RECALL_GITLEAKS_REQUIRED="0",
                                         RECALL_GITLEAKS_MIN_BYTES="1000000")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("implausible tarball size", proc.stdout)
         self.assert_no_binary(work)
         proc, work = self.run_bootstrap(self.base + "/gitleaks_8.30.1_linux_arm64.tar.gz",
+                                        RECALL_GITLEAKS_REQUIRED="0",
                                         RECALL_GITLEAKS_SHA256="0" * 64)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("sha256 mismatch", proc.stdout)
@@ -882,7 +906,7 @@ class BootstrapTests(unittest.TestCase):
     def test_required_mode_aborts_on_failure(self):
         proc, work = self.run_bootstrap(self.base + "/missing.tgz", RECALL_GITLEAKS_REQUIRED="1")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("RECALL_GITLEAKS_REQUIRED=1, aborting", proc.stdout)
+        self.assertIn("aborting", proc.stdout)
         self.assert_no_binary(work)
 
     def test_gitleaks_only_mode_skips_the_source_fetch(self):
@@ -904,7 +928,7 @@ class BootstrapTests(unittest.TestCase):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             dead = s.getsockname()[1]
-        proc, work = self.run_bootstrap(None, GITLEAKS_VERSION="v8.30.1",
+        proc, work = self.run_bootstrap(None, GITLEAKS_VERSION="v8.30.1", RECALL_GITLEAKS_REQUIRED="0",
                                         RECALL_TARBALL_URL=self.base + "/src.tgz",
                                         https_proxy=f"http://127.0.0.1:{dead}", HTTPS_PROXY=f"http://127.0.0.1:{dead}")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)

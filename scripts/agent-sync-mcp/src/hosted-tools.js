@@ -1712,11 +1712,15 @@ export class HostedTools {
     // P3/P4 split is made here from the labels on the row (board severity_of).
     const sevs = args.severity ? Object.values(SEV_PRIORITY).filter((p) => p === SEV_PRIORITY[args.severity]) : [];
     if (args.severity) filter.priority = { eq: SEV_PRIORITY[args.severity] };
-    else if (args.kind) filter.labels = { some: { name: { eq: args.kind }, parent: { name: { eq: "Kind" } } } };
-    else if (args.label) {
+    const labelClauses = [];
+    if (args.kind) labelClauses.push({ labels: { some: { name: { eq: args.kind }, parent: { name: { eq: "Kind" } } } } });
+    if (args.env) labelClauses.push({ labels: { some: { name: { eq: ENVS[args.env] }, parent: { name: { eq: "Env" } } } } });
+    if (args.label) {
       this.checkLabels([args.label]);
-      filter.labels = { some: { name: { eq: args.label } } };
+      labelClauses.push({ labels: { some: { name: { eq: args.label } } } });
     }
+    if (labelClauses.length === 1) filter.labels = labelClauses[0].labels;
+    else if (labelClauses.length > 1) filter.and = labelClauses;
     const data = await this.linearCall(() => this.requireLinear().call(Q_LIST, { filter, first: args.limit }));
     const nodes = data?.issues?.nodes ?? [];
     // board severity_of:  priority is the source of truth, and P4 only when the

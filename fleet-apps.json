@@ -40,7 +40,7 @@
       "liveBoard": "API-USAGE-MONITOR-EFFORT-LOG.md",
       "worktreePrefix": "usage",
       "badgeClass": "repo-um",
-      "digestColor": "#ea580c",
+      "digestColor": "#c2410c",
       "hasAppIcon": true,
       "iconFile": "agent-logos/app-um.png",
       "kind": "product"
@@ -53,7 +53,7 @@
       "liveBoard": "CONGRESS-SHARED-EFFORT-LOG.md",
       "worktreePrefix": "cts",
       "badgeClass": "repo-shared",
-      "digestColor": "#0d9488",
+      "digestColor": "#0f766e",
       "hasAppIcon": false,
       "kind": "library"
     },
@@ -103,7 +103,7 @@
       "liveBoard": "AUTOROTATE-EFFORT-LOG.md",
       "worktreePrefix": "autorotate",
       "badgeClass": "repo-ar",
-      "digestColor": "#059669",
+      "digestColor": "#047857",
       "hasAppIcon": true,
       "iconFile": "agent-logos/app-ar.png",
       "kind": "product"
@@ -116,7 +116,7 @@
       "liveBoard": "CONTACTLOGO-EFFORT-LOG.md",
       "worktreePrefix": "contactlogo",
       "badgeClass": "repo-cl",
-      "digestColor": "#6366f1",
+      "digestColor": "#4f46e5",
       "hasAppIcon": false,
       "kind": "product"
     },
@@ -128,7 +128,7 @@
       "liveBoard": "BOTFLEET-EFFORT-LOG.md",
       "worktreePrefix": "botfleet",
       "badgeClass": "repo-bf",
-      "digestColor": "#0284c7",
+      "digestColor": "#0369a1",
       "hasAppIcon": true,
       "iconFile": "agent-logos/app-bf.png",
       "kind": "product"
@@ -166,7 +166,7 @@
       "liveBoard": "CLUTCH-EFFORT-LOG.md",
       "worktreePrefix": "clutch",
       "badgeClass": "repo-clutch",
-      "digestColor": "#0ea5e9",
+      "digestColor": "#0e7490",
       "hasAppIcon": true,
       "iconFile": "agent-logos/app-clutch.png",
       "kind": "infra",
