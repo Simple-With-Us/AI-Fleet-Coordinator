@@ -7,7 +7,9 @@ Credential order (first hit wins, nothing is merged):
      directory;  there is no default directory any more)
   4. env ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE  (cloud seats)
   5. Infisical Fleet-OPS /zulip  (prod), the resolved seat's own three keys <BOT>_ZULIP_EMAIL, _KEY and
-     _SITE, read through `fleet-secrets` (off with AGENT_SYNC_INFISICAL=0;  OPS-818, AFC-359)
+     _SITE, read through `fleet-secrets` (off with AGENT_SYNC_INFISICAL=0;  OPS-818, AFC-359) — or, on
+     the server instance whose image ships no `fleet-secrets`, through the reader's direct Infisical
+     API route (see `_fetch_from_fleet_secrets`)
 No credential folder is read (AFC-359:  the old folder is retired).  A .env file, ./zuliprc and
 ~/.zuliprc are never read either.  Values fetched from Infisical stay in this process's memory only
 (never on disk), are fetched once per process and reused for INFISICAL_CACHE_TTL seconds, and a
@@ -44,7 +46,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from .identity import canonical_seat
+from .identity import ENV_INSTANCE, canonical_seat
 from .operator_status_text import TAG as _OPERATOR_STATUS_TAG
 from .operator_status_text import is_status_text
 from .textfmt import fix_outbound
@@ -120,6 +122,22 @@ INFISICAL_CACHE_TTL = 600.0
 # After a failed fetch with nothing held, the same request fails at once for this long instead of paying the
 # timeout again (an Infisical outage must not cost every seat or every identity candidate its own timeout).
 INFISICAL_FAILURE_BACKOFF = 120.0
+# The one instance with no fleet-secrets to run:  the server container's image ships neither the
+# fleet-secrets reader nor the `infisical` CLI that reader shells out to for its login and export
+# (fleet_secrets.core.fetch_all), so the CLI route can never answer there — the Operator's own
+# credential read was refused for exactly that reason.  On that instance only (AGENT_SYNC_INSTANCE is
+# pinned to "server" by the image), a value fetch with no binary installed uses a direct Infisical API
+# read instead:  a universal-auth login with the fleet automation identity in the daemon's environment
+# (the identity fleet-secrets itself uses on Linux, its automation-env mode), then one folder read.
+# The request discipline mirrors the container's own loader (server/infisical_env.py):  no redirects,
+# stage-and-status reason tokens, never a body or a value.  Anywhere else a missing binary keeps the
+# installed-reader error it has always raised, and a host with the binary never touches this route.
+ENV_AUTOMATION_CLIENT_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
+ENV_AUTOMATION_CLIENT_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
+INFISICAL_API_DEFAULT = "https://app.infisical.com/api"
+INFISICAL_API_TIMEOUT = 8.0
+INFISICAL_API_ATTEMPTS = 2  # per request, as in server/infisical_env.py
+_API_ROUTE = "infisical-api"  # the value cache and the outage memory key this route under this name
 # Key-name prefixes in /zulip that are never a seat:  the owner's own account and the integration bots.
 NOT_SEAT_PREFIXES = frozenset(
     {
@@ -687,64 +705,211 @@ def _run_fleet_secrets(argv: list[str], env: Mapping[str, str]) -> bytes:
     return proc.stdout
 
 
+def _fleet_secrets_values(
+    wanted: tuple[str, ...], binary: str, env: Mapping[str, str], path: str
+) -> dict[str, str]:
+    """The CLI route's one call:  `fleet-secrets run --only`, parsed.  Raises CredentialError with a
+    reason token, never output."""
+    argv = [
+        binary,
+        "run",
+        "--path",
+        path,
+        "--only",
+        ",".join(wanted),
+        "--",
+        sys.executable,
+        "-I",
+        "-c",
+        _PRINT_NAMED_ENV,
+        *wanted,
+    ]
+    out = _run_fleet_secrets(argv, env)
+    try:
+        payload = json.loads(out.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise CredentialError("fleet-secrets bad-output") from None
+    finally:
+        out = b""
+    if not isinstance(payload, dict):
+        raise CredentialError("fleet-secrets bad-output")
+    return {n: payload[n] for n in wanted if isinstance(payload.get(n), str)}
+
+
+def _automation_identity(env: Mapping[str, str]) -> tuple[str, str] | None:
+    """The fleet automation identity in this process's environment, or None when neither half is set.
+    A half-set pair is a misconfiguration:  refused loudly here rather than half-used or ignored."""
+    client_id = (env.get(ENV_AUTOMATION_CLIENT_ID) or "").strip()
+    client_secret = (env.get(ENV_AUTOMATION_CLIENT_SECRET) or "").strip()
+    if client_id and client_secret:
+        return client_id, client_secret
+    if client_id or client_secret:
+        raise CredentialError(
+            "infisical-api automation-identity-incomplete (set both %s and %s, or neither)"
+            % (ENV_AUTOMATION_CLIENT_ID, ENV_AUTOMATION_CLIENT_SECRET)
+        )
+    return None
+
+
+def _infisical_api_base(env: Mapping[str, str]) -> str:
+    """INFISICAL_API_URL (a self-hosted Infisical) must be https;  plain http only for a loopback test
+    server.  The same rule as the container loader's (server/infisical_env.py)."""
+    base = (env.get("INFISICAL_API_URL") or INFISICAL_API_DEFAULT).strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme == "https" and parsed.hostname:
+        return base
+    if parsed.scheme == "http" and parsed.hostname:
+        try:
+            if parsed.hostname == "localhost" or ipaddress.ip_address(parsed.hostname).is_loopback:
+                return base
+        except ValueError:
+            pass
+    raise CredentialError("infisical-api bad-api-url (INFISICAL_API_URL must be an https URL)")
+
+
+class _ApiNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # never re-send the identity or the token to another URL
+
+
+_API_OPENER = urllib.request.build_opener(_ApiNoRedirect)
+
+
+def _infisical_api_request(
+    stage: str,
+    url: str,
+    *,
+    body: dict | None = None,
+    token: str | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict:
+    """One Infisical API call for the server-instance route.  A failure names only the stage and the
+    HTTP status or the error type:  the body is never read, let alone raised (server/infisical_env.py
+    keeps the same discipline for the same reason)."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    last = "no attempt"
+    for attempt in range(INFISICAL_API_ATTEMPTS):
+        req = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
+        req.add_header("Accept", "application/json")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        if token:
+            req.add_header("Authorization", "Bearer " + token)
+        try:
+            with _API_OPENER.open(req, timeout=INFISICAL_API_TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise CredentialError("infisical-api %s: the response is not a JSON object" % stage)
+            return payload
+        except urllib.error.HTTPError as exc:
+            last = "HTTP %d" % exc.code
+            exc.close()  # the body is never read, let alone logged
+            if exc.code < 500:
+                break
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = type(exc).__name__
+        except (ValueError, UnicodeDecodeError):
+            raise CredentialError("infisical-api %s: the response is not JSON" % stage) from None
+        if attempt + 1 < INFISICAL_API_ATTEMPTS:
+            sleep(2.0)
+    raise CredentialError("infisical-api %s: %s" % (stage, last))
+
+
+def _infisical_api_values(
+    wanted: tuple[str, ...], env: Mapping[str, str], home: Path, path: str
+) -> dict[str, str]:
+    """Just these names, read from Infisical directly (the server-instance route).  The project is the
+    same one the CLI route would read (the caller's pin, resolved by `_project_scope`), the environment
+    is prod (fleet-secrets refuses any other slug, and so does this route), and a name the folder does
+    not hold is the CLI route's key-absent failure under this route's name.  Raises CredentialError."""
+    for var in ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV"):
+        slug = (env.get(var) or "").strip().lower()
+        if slug and slug != "prod":
+            raise CredentialError("infisical-api non-prod-environment (%s)" % var)
+    identity = _automation_identity(env)
+    if identity is None:  # the dispatcher only routes here with the pair present
+        raise CredentialError("infisical-api automation-identity-missing")
+    base = _infisical_api_base(env)
+    login = _infisical_api_request(
+        "login",
+        base + "/v1/auth/universal-auth/login",
+        body={"clientId": identity[0], "clientSecret": identity[1]},
+    )
+    token = login.get("accessToken")
+    if not isinstance(token, str) or not token:
+        raise CredentialError("infisical-api login: no access token in the response")
+    query = urllib.parse.urlencode(
+        {
+            "workspaceId": _project_scope(env, home),
+            "environment": "prod",
+            "secretPath": path,
+            "expandSecretReferences": "true",
+        }
+    )
+    payload = _infisical_api_request("read", base + "/v3/secrets/raw?" + query, token=token)
+    secrets = payload.get("secrets")
+    if not isinstance(secrets, list):
+        raise CredentialError("infisical-api read: no secrets list in the response")
+    values: dict[str, str] = {}
+    for item in secrets:
+        if (
+            isinstance(item, dict)
+            and isinstance(item.get("secretKey"), str)
+            and isinstance(item.get("secretValue"), str)
+        ):
+            values[item["secretKey"]] = item["secretValue"]
+    missing = [n for n in wanted if n not in values]
+    if missing:
+        raise CredentialError("infisical-api key-absent (%s)" % ", ".join(missing))
+    return {n: values[n] for n in wanted}
+
+
 def _fetch_from_fleet_secrets(
     names: tuple[str, ...], env: Mapping[str, str], home: Path, path: str = INFISICAL_PATH
 ) -> Mapping[str, str]:
-    """Just these names, through `fleet-secrets run --only` (one Infisical call for all of them).
+    """Just these names, through the fleet's Infisical reader (one Infisical call for all of them):
+    `fleet-secrets run --only` where the reader is installed, and on the server instance — the one
+    host with no reader to run — the direct API route (`_infisical_api_values`).  Both routes raise
+    the same way and share this cache and outage memory.
     Cached in memory for INFISICAL_CACHE_TTL;  a failed refresh returns the values this process already
     holds.  Raises CredentialError with a reason token, never output.
 
     `path` is the Infisical folder that holds the names.  It is a parameter because the
     Operator service keeps its own folder, /zulip_operator, and the seat keys are in
     /zulip: the two stores are separate, and the cache and the outage memory are keyed
-    by folder so one store's outage never refuses the other store's fetch.
+    by route, project and folder so one store's outage never refuses the other store's fetch.
     """
     wanted = tuple(sorted(set(names)))
     binary = fleet_secrets_bin(env, home)
-    if not binary:
+    if binary:
+        route: str = binary
+    elif (env.get(ENV_INSTANCE) or "").strip() == "server" and _automation_identity(env):
+        route = _API_ROUTE
+    else:
         raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
     now = time.monotonic()
     with _cache_lock:
         project = _project_scope(env, home)
-        held = {n: _value_cache.get((binary, project, path, n)) for n in wanted}
+        held = {n: _value_cache.get((route, project, path, n)) for n in wanted}
         if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
             return {n: v[1] for n, v in held.items() if v is not None}
-        failure_key = (binary, project, path, "values", *wanted)
+        failure_key = (route, project, path, "values", *wanted)
         # A timeout or an auth or fetch failure is about Infisical, not about these names:  it is remembered
-        # per binary, project and folder, so the seats after a failed prefetch fail at once instead of each
+        # per route, project and folder, so the seats after a failed prefetch fail at once instead of each
         # waiting out the cap, without one store's outage refusing another store's fetch.
         # A missing key stays a failure of this request only.
-        outage_key = (binary, project, path, "outage")
+        outage_key = (route, project, path, "outage")
         recent = _recent_failure(failure_key, now) or _recent_failure(outage_key, now)
         if recent is not None and not all(v is not None for v in held.values()):
             raise CredentialError(
                 "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
             )
-        argv = [
-            binary,
-            "run",
-            "--path",
-            path,
-            "--only",
-            ",".join(wanted),
-            "--",
-            sys.executable,
-            "-I",
-            "-c",
-            _PRINT_NAMED_ENV,
-            *wanted,
-        ]
         try:
-            out = _run_fleet_secrets(argv, env)
-            try:
-                payload = json.loads(out.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                raise CredentialError("fleet-secrets bad-output") from None
-            finally:
-                out = b""
-            if not isinstance(payload, dict):
-                raise CredentialError("fleet-secrets bad-output")
-            got = {n: payload[n] for n in wanted if isinstance(payload.get(n), str)}
+            got = (
+                _fleet_secrets_values(wanted, binary, env, path)
+                if binary
+                else _infisical_api_values(wanted, env, home, path)
+            )
         except CredentialError as exc:
             _failures[failure_key] = (now, str(exc))
             if "key-absent" not in str(exc):
@@ -757,7 +922,7 @@ def _fetch_from_fleet_secrets(
         _failures.pop(failure_key, None)
         _failures.pop(outage_key, None)
         for n, v in got.items():
-            _value_cache[(binary, project, path, n)] = (now, v)
+            _value_cache[(route, project, path, n)] = (now, v)
         return got
 
 
