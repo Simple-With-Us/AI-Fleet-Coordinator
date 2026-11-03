@@ -425,7 +425,8 @@ class Client:
                     or who.get("seat") != self.seat
                 ):
                     raise FleetError(
-                        "not_authorized", "gateway identity did not match this bot; nothing was sent"
+                        "not_authorized",
+                        "gateway identity did not match this bot; nothing was sent",
                     )
                 self._remember_verification(token)
             self.verified = True
