@@ -209,6 +209,27 @@ class DispatchPreReadUnavailable(Exception):
     """Dispatch source read failed before any write was attempted."""
 
 
+def _reject_surrogates(node):
+    """A JSON body can legally escape lone surrogates (\\ud800);  Python decodes
+    them to str, but any later .encode("utf-8") on such a string raises
+    UnicodeEncodeError - a ValueError - which Relay.handle would read as a
+    local refusal even after a write landed.  Reject at the decode boundary
+    so no surrogate ever reaches verb or projection code.  The walk is
+    iterative:  a recursive walk would impose its own ceiling under json's
+    parse depth and raise RecursionError on deeply nested input."""
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if any("\ud800" <= c <= "\udfff" for c in item):
+                raise RelayGitHubError(0, "github response carried invalid unicode")
+        elif isinstance(item, list):
+            stack.extend(item)
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+
+
 class GitHubClient:
     def __init__(self, token: str, base_url: str = "https://api.github.com", opener=None):
         if not token:
@@ -225,6 +246,7 @@ class GitHubClient:
         bearer=None,
         expected_status=None,
         allow_empty_object=False,
+        allow_body=False,
     ) -> dict:
         if bearer is not None and not bearer:
             # Fail closed:  an empty task credential must never fall back to the
@@ -251,11 +273,14 @@ class GitHubClient:
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
                 raw = resp.read(MAX_BODY + 1)
-                completion_body_ok = not raw
+                # Exact-status-with-body endpoints (a documented 200 that returns
+                # JSON) set allow_body;  the default still requires an empty
+                # completion body for expected_status callers.
+                completion_body_ok = not raw or (allow_body and expected_status is not None)
                 if allow_empty_object and expected_status in (201, 202):
                     try:
                         completion_body_ok = not raw or json.loads(raw) == {}
-                    except (ValueError, UnicodeError):
+                    except (ValueError, RecursionError):
                         completion_body_ok = False
                 if expected_status is not None and (
                     resp.status != expected_status or not completion_body_ok
@@ -301,9 +326,19 @@ class GitHubClient:
         if not raw:
             return {}
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
+            data = json.loads(raw)
+        except (ValueError, RecursionError) as exc:
+            # Every failure of the decode itself must be RelayGitHubError, not
+            # a raw ValueError:  Relay.handle reads ValueError as a local
+            # refusal and releases the outcome key, allowing a duplicate write
+            # after the upstream call landed.  That covers JSONDecodeError,
+            # UnicodeDecodeError, the int-conversion digit limit (a valid
+            # long numeric token), and deep-nesting RecursionError - without
+            # loosening Python's safety limits.  A 200 with a body the relay
+            # cannot read means the write may have landed:  outcome UNKNOWN.
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
+        _reject_surrogates(data)
+        return data
 
     def upload_release_asset(self, repo, release_id, name, content, bearer, max_bytes=32768):
         """Fixed GitHub upload host, own bearer, no redirects or arbitrary URL."""
