@@ -868,6 +868,170 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
         reg.close_db()
 
 
+#: The registry's own sentence for a session it does not hold, raised by its mutation functions
+#: ("session ... is not registered on ...; register it first") and rendered by the API as the
+#: call's error.  The local path never surfaces it (its lookup answers first), so the API path
+#: folds it back to NO_REGISTRATION, the answer the hook reads as "no registration for this chat".
+_NOT_REGISTERED_MARK = "is not registered on"
+
+
+def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The answer itself when it carries an error, folded when the error is the registry saying
+    the session is not registered;  None when it carries none."""
+    if "error" not in answer:
+        return None
+    if _NOT_REGISTERED_MARK in str(answer.get("error") or ""):
+        return {"error": NO_REGISTRATION}
+    return dict(answer)
+
+
+def _api_identity(args: Any, sid: str) -> dict[str, Any]:
+    return {
+        "platform": args.platform,
+        "location": args.location,
+        "scope": SCOPE,
+        "session_id": sid,
+    }
+
+
+def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+    """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
+
+    The local path's orchestration, over the API's ops:  the registry's register answers for a
+    fresh chat and for a resume (its resume already stamps the session seen, as the local
+    register does), a resumed-closed chat is reopened, and a resumed chat that arrived with a
+    title has the title carried over, because register keeps an existing record's old title.
+    What the local path also does, this path does not:  it sweeps nothing and evicts nothing.
+    Reclaiming letters is the registry's own sweep's work once the store is the API's (the
+    letter sweep), exactly as it already is on the MiniMax path, and an exhausted space answers
+    with the registry's refusal instead of this hook closing another chat to make room."""
+    from . import registry_api
+
+    title = clean_title(args.title)
+    pick = resolve_pick(OR, args.letter_pick)
+    parent = ""
+    if args.parent_session_id:
+        try:
+            parent = SI.check(args.parent_session_id, "the parent session id")
+        except ValueError:
+            parent = ""  # not a session id, so no parent: the chat is picked like a main chat
+    params: dict[str, Any] = {
+        **_api_identity(args, sid),
+        "seat": args.seat,
+        "source": args.source,
+        "title": title,
+        "letter_space": args.letter_space,
+        "letter_pick": pick,
+    }
+    if parent:
+        params["parent_session_id"] = parent
+    out = registry_api.call(env, "register", params)
+    if out.get("code") == "labels_exhausted":
+        return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+    error = _api_error(out)
+    if error is not None:
+        return error
+    if out.get("outcome") == "resumed_closed":
+        reopen_params: dict[str, Any] = {
+            "record_id": out["record_id"],
+            "actor": args.seat,
+            "source": args.source,
+            "letter_pick": pick,
+        }
+        if parent:
+            reopen_params["parent_session_id"] = parent
+        reopened = registry_api.call(env, "reopen", reopen_params)
+        if reopened.get("code") == "labels_exhausted":
+            return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+        if reopened.get("code") == "space_lost":
+            return {
+                "error": "this registry cannot give a closed chat a pair letter again yet",
+                "swept": 0,
+            }
+        error = _api_error(reopened)
+        if error is not None:
+            return error
+        out = {
+            **out,
+            "label": reopened["label"],
+            "generation": reopened["generation"],
+            "previous": reopened["previous"],
+            "outcome": "reopened",
+            "title_display": OR.display_title(reopened["label"], title),
+        }
+    elif out.get("outcome") == "resumed" and title:
+        updated = registry_api.call(
+            env, "update", {**_api_identity(args, sid), "title": title}
+        )
+        error = _api_error(updated)
+        if error is not None:
+            return error
+        # The register answer above still names the title the record already carried;  the
+        # update's answer names the one the resume just set, as the local path's does.
+        out = {**out, "title": updated.get("title"), "title_display": updated.get("title_display")}
+    out["swept"] = 0
+    out["evicted"] = 0
+    return out
+
+
+def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
+    """title, touch, close and show for one chat through the registry API.
+
+    The local path looks the record up first and answers from it:  no record is NO_REGISTRATION,
+    and a closed one is retired, before any op writes.  The API's ops are addressed by identity
+    and answer in the registry's own words, so this path probes with the touch op where the
+    local path reads:  a touch stamps a live session seen, answers outcome "closed" for a
+    closed one without writing anything, and refuses a session the registry does not hold.
+    The registry's touch answer carries the stamp, not the letter, so a touch here answers
+    with the record id alone where the local path also names the letter and generation."""
+    from . import registry_api
+
+    identity = _api_identity(args, sid)
+    if args.op == "show":
+        # The API has no show op:  `held` answers the letter side of the record (its id and
+        # the letters it has held), which is what a show is asked for.  The full row stays
+        # a local read on a host with no API configured.
+        held = registry_api.call(env, "held", identity)
+        if "error" in held:
+            if held.get("code") == "not_registered":
+                return {"error": NO_REGISTRATION}
+            return dict(held)
+        return {
+            "record_id": held.get("record_id", ""),
+            "label": held.get("label", ""),
+            "letters": held.get("letters", []),
+            "found": True,
+        }
+    if args.op == "close":
+        out = registry_api.call(
+            env, "close", {**identity, "reason": "session ended", "source": args.source}
+        )
+        error = _api_error(out)
+        if error is not None:
+            return error
+        if out.get("outcome") == "already_closed":
+            return {"retired": True, "record_id": out.get("record_id", "")}
+        return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
+    probe = registry_api.call(env, "touch", identity)
+    error = _api_error(probe)
+    if error is not None:
+        return error
+    if probe.get("outcome") == "closed":
+        return {"retired": True, "record_id": probe.get("record_id", "")}
+    title = clean_title(args.title) if args.op == "title" else ""
+    if args.op == "touch" or not title:
+        return {"ok": True, "record_id": probe.get("record_id", "")}
+    updated = registry_api.call(env, "update", {**identity, "title": title})
+    error = _api_error(updated)
+    if error is not None:
+        return error
+    return {
+        "ok": True,
+        "label": updated.get("label", ""),
+        "generation": updated.get("generation"),
+    }
+
+
 def _make_parser() -> Any:
     import argparse
 
@@ -906,10 +1070,13 @@ def registry_main(
     [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK] [--db FILE]`, one JSON line out.
 
     The exit status is 0 for an answer, 2 for bad arguments, 3 when this host has no registry, 4 for a refused
-    request and 5 for an answer that carries an error."""
+    request and 5 for an answer that carries an error.  When the registry API URL is configured
+    (registry_api), the server's store answers instead and the local file is never opened, so
+    status 3 does not arise:  a registry that cannot be reached answers with an error, status 5."""
     import sqlite3
 
     from . import operator_registry as OR
+    from . import registry_api
 
     parser = _make_parser()
     try:
@@ -925,6 +1092,20 @@ def registry_main(
     args.seat = args.seat or "OPERATOR"
     args.source = args.source.strip() or "platform-letter:" + args.platform
     db = args.db or OR.registry_db_path(L.state_root(env), env)
+    if registry_api.base_url(env):
+        # The registry API is the store now:  with its URL configured (the daemon's own
+        # configuration), the server's store answers and the local file is never opened.
+        # A failed call is an error answer, never a quiet local write:  two stores taking
+        # writes is the split the cutover exists to end.
+        try:
+            sid = SI.check(args.session_id, "the session id")
+            if args.op == "register":
+                out = _register_api(OR, env, args, sid)
+            else:
+                out = _on_record_api(OR, env, args, sid)
+        except ValueError as exc:
+            return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
+        return _emit(stdout, out, 0 if "error" not in out else 5)
     if not os.path.isfile(db):
         # Never create one: a second registry would hand out letters that collide with the one the Operator keeps.
         return _emit(stdout, {"error": "no Operator registry on this host"}, 3)
