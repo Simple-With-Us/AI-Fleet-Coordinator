@@ -157,7 +157,9 @@ def checkout_state(repo: Path) -> tuple[str, str, str] | None:
 
 def _exception(repo: Path, env: Mapping[str, str], home: Path, code_root: Path):
     """The in-date exception row for this clone, or None."""
-    from fleet_lanes import placement as P  # A missing package fails this clone rather than moving a pinned one.
+    from fleet_lanes import (
+        placement as P,  # A missing package fails this clone rather than moving a pinned one.
+    )
 
     class _Roots:
         pass
