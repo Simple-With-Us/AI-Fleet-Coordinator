@@ -366,6 +366,9 @@ def default_exec(
 ) -> D.CmdResult:
     """Start the process.  Only `Runner` calls this, and only after `check_allowed`."""
     try:
+        # By absolute path:  `lane` puts checkouts in the right place by construction, so the git shim has nothing to judge.
+        if argv and argv[0] == "git":
+            argv = [L.real_git(env), *argv[1:]]
         proc = subprocess.Popen(
             list(argv),
             cwd=cwd,

@@ -1,0 +1,18 @@
+# Template.  The roots come from the host's environment file, which sets FLEET_CODE_ROOT, FLEET_APPS_ROOT and
+# FLEET_LANES_ROOT.  See scripts/fleet_lanes/README.md, "Placement watcher".  The volume path is private inventory, so it
+# stays in that file and never in this repository.
+[Unit]
+Description=Report misplaced fleet checkouts.  Never moves or deletes.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=jay
+Group=jay
+EnvironmentFile=/etc/fleet/lanes.conf
+Environment=HOME=/home/jay
+Environment=AGENT_SEAT=CLAUDE
+Environment=LINEAR_BOARD_WRITES=1
+Environment=PATH=/home/jay/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -I ${FLEET_APPS_ROOT}/lane-tools/fleet_lanes/placement_watch.py --apply --verify-hooks --seat CLAUDE
+Nice=10

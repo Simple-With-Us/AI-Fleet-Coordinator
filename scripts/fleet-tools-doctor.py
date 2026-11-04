@@ -2057,6 +2057,33 @@ def check_lane_tools(report: Report, rt: dict, runner: Callable = subprocess.run
         )
 
 
+PLACEMENT_WATCH_STATUS = HOME / ".local/state/fleet/placement-watch-status.json"
+PLACEMENT_WATCH_MAX_AGE_S = 3 * 3600
+
+
+def check_placement_watch(report: Report, *, status_path: Path | None = None, now: float | None = None) -> None:
+    """A watcher that has gone quiet or cannot file.  No row until it is installed:  its first run writes the file."""
+    path = PLACEMENT_WATCH_STATUS if status_path is None else status_path
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        age = (time.time() if now is None else now) - path.stat().st_mtime
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as exc:
+        why = f"status file unreadable ({type(exc).__name__})"
+        report.add("placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why)
+        return
+    if age > PLACEMENT_WATCH_MAX_AGE_S:
+        why = f"last ran {int(age / 3600)} hours ago"
+        report.add("placement-watch", "FAIL", why, state="stale", category="fleet-tool", reason=why)
+    elif not data.get("ok"):
+        why = "; ".join(str(e) for e in data.get("errors", ()))[:200] or "its inputs were stale"
+        report.add("placement-watch", "FAIL", why, state="failing", category="fleet-tool", reason=why)
+    else:
+        detail = f"{data.get('findings', 0)} findings, {data.get('new', 0)} new"
+        report.add("placement-watch", "OK", detail, state="current", category="fleet-tool", reason=detail)
+
+
 def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run) -> None:
     """Mac:  where each fleet tool runs from, and whether that is the tip of main."""
     for command, script in MAC_SIMPLE_TOOLS:
@@ -3418,10 +3445,12 @@ def run(
     check_fleet_mode_doc(report, rt)
     if on_mac_runtime:
         check_mac_tools(report, rt, runner)
+        check_placement_watch(report)
     elif host == "server" and (RUNTIME / "repo/.git").exists():
         check_server_timers(report, runner)
         check_server_status_timer(report)
         check_server_tools(report, rt, checkouts, runner)
+        check_placement_watch(report)
     if not args.no_registry:
         check_registry(report, host, network, runner, fetch)
     seats = [s.strip().upper() for s in args.seats.split(",") if s.strip()]

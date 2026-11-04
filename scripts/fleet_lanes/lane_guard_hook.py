@@ -115,6 +115,23 @@ def _read_stdin(stdin: IO) -> str:
     return stdin.read()
 
 
+def record_detection(decision) -> None:
+    """Log a placement rule that would have denied under block.  Never raises and never changes the answer."""
+    detail = getattr(decision, "detected_detail", None)
+    if not detail:
+        return
+    try:
+        from fleet_lanes import placement
+
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        placement.log_event(
+            home,
+            {"via": "hook", "action": "detect", "seat": os.environ.get("AGENT_SEAT", ""), **detail},
+        )
+    except Exception:
+        pass
+
+
 def main(
     argv: Sequence[str] | None = None,
     stdin: IO | None = None,
@@ -140,6 +157,7 @@ def main(
             pass
         return 0
     if decision.action != guard.DENY or not decision.reason:
+        record_detection(decision)
         return 0
     return emit_deny(decision.reason, fmt, decision.destination, exit2, stdout, stderr)
 

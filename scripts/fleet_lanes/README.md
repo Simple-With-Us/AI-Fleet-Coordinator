@@ -457,6 +457,81 @@ python3 -m fleet_lanes.install_mcp remove TARGET ...   [--with-simple-chat]
 
 Minimal by default: `fleet-recall` only.  `--with-simple-chat` adds `simple-chat mcp --default-seat <SEAT>` for the targets with a fixed seat (opencode OPENCODE, muse MC, minimax MM, fx FX, clutch CLUTCH) and never for a tool with no default seat (Kimi, Copilot CLI).  OpenCode is a target in code but is left out of the live batch:  a session OpenCode runs inside Conductor has no default seat and shares the same global file, so `simple-chat` is registered there only after the owner answers that question (#440).  No token is written and no `AGENT_SEAT` is pinned.  A tool whose home folder is missing is skipped, an entry with the same command is left as it is (`present`), a different command is `skipped-foreign`, a file that is not a JSON object is left alone, and an env block that pins `AGENT_SEAT` is reported.  One `*.bak-fleet-mcp-<stamp>` backup per file (always mode 0600, whatever the original's mode, so a config with a plaintext token never gets a second readable copy; `plan` and `apply` warn, without printing the value, when the file holds a literal Authorization, Bearer, token, key, password or secret string), an atomic replace, and a second apply writes nothing.  `verify --probe` starts each registered command and sends MCP `initialize` and `tools/list`, nothing else, in an environment without the seat, launcher and Zulip credential variables.  A `simple-chat` entry is probed only from a session that IS its seat (the registration's `--default-seat` reads that seat's credential file and acts as its bot), and is a SKIP from any other session.  `scripts/install-fleet-rag.sh` calls it for the six non-Clutch targets.  Clutch's patch is checked before it is written: `apply clutch --with-simple-chat` refuses unless `@deepseek-ai/dsh-mcp-client` resolves under the real `~/.clutch/dsh/profiles/node_modules` (restart `clutch-web` first if a link dangles), then runs the pinned `dsh --profile P --dump-config` for every profile on a scratch copy of the profiles (`--dsh PATH`, `--no-dsh-check`).  `--dump-config` is a merge-and-parse check, not a plugin load, so `install_tools verify clutch` on the final file comes next.  A profile with `patchReload: live` (clutch-web's `web`) watches the patch, so the write reaches the running engine at once; `apply` prints each profile's mode.  Tests: `fleet_lanes.tests.test_install_mcp`.
 
+## Placement (AFC-618)
+
+`placement.py` holds the exceptions file reader, the mode file and the event log.  `docs/protocols/lane-map.md`, "Placement Enforcement", says what each layer is for.  Nothing here runs until it is installed, and merging changes nothing live.
+
+### Exceptions
+
+`placement-exceptions.json`, shipped beside the package.  `{home}`, `{code}`, `{apps}` and `{lanes}` are filled from the host's roots, `*` is one path component, and `**` is any number of them.  A row needs `id`, `pattern`, `class` (`service`, `tool-cache`, `third-party-build`, `backup`, `personal`, `trash`), `creator`, `reason`, `decided_by`, `decided_on`, `expires` and `hosts` (`mac`, `server`).  `tests/test_placement.py` is the schema check, and it refuses a private path.
+
+### Doctor
+
+`lane ls --strict-placement` exits 2 when `placement_anomalies` is not empty.  `--strict` is unchanged, so it still passes a worktree under `~/Code/<Repo>/.muse`.  Each checkout gains `sanctioned`, `cleanup_eligible`, `placement_exception` and `placement_violation`, and the report gains `main_clones` and `placement_anomalies`.  The location class and `cleaner_candidates` are unchanged:  a repo-local worktree stays MANAGED and retirable, and `cleanup_eligible` is why.  `--main-clone-behind N` sets the threshold, 20 by default.
+
+### Git shim
+
+`shims/git` is POSIX `sh` and `git_shim.py` is its decision module.  `install_tools apply tools` writes it to `~/apps/lane-tools/shims/git` and links nothing.  Only `clone`, `worktree add` or `move`, an alias that names one of them, or an inline `-c alias.` starts Python.  Only exit 77 from Python blocks, and a missing Python, a crash, or three seconds elapsed runs the real git.  Events go to `~/.local/state/fleet/lane-guard-events.jsonl`.  `lane` calls real git by absolute path.
+
+### Placement watcher
+
+`python3 -m fleet_lanes.placement_watch` prints what it would file.  `--apply` files issues, posts, and remembers, under `~/.local/state/fleet/`:  `placement-watch.json` (what it has reported), `placement-watch-status.json` (read by `fleet-tools-doctor`) and `placement-report.json`.  It exits 3 on stale inputs and 4 when filing failed.  It files as CLAUDE until the owner chooses otherwise.  `simple-board` needs the seat bearer, so the job's environment must carry `SIMPLE_BOARD_BEARER_LOCATOR`.
+
+### code_main_sync
+
+The tracked source of the server's `code-main-sync`.  A clean clone with a stale `index.lock` failed its fast-forward on every run, and the job threw away the stderr that said so.  It now clears a lock over an hour old that no process holds, logs git's first error line, and passes over a folder that is no repo and a clone with an exception row.  The Mac keeps `code-main-keeper`.
+
+### Install, Mac
+
+Run these after merge.  Each step stands alone and rolls back by itself.
+
+```bash
+AFC=~/apps/lanes/_managed/fleet/simple-tools-runtime/scripts     # or any up-to-date checkout's scripts folder
+cd "$AFC"
+# 1. Refresh the stable copy.  Remove the stray patch_*.py files from ~/apps/lane-tools first, or `tools` stays FAIL.
+python3 -m fleet_lanes.install_tools plan tools && python3 -m fleet_lanes.install_tools apply tools
+python3 -m fleet_lanes.install_tools apply claude          # widens the Claude matcher;  start new sessions to pick it up
+python3 -m fleet_lanes.install_tools verify all
+# 2. Watcher.  Issues start here, with no denies.
+sed "s#@HOME@#$HOME#g" fleet_lanes/templates/com.jay.lane-placement-watch.plist > ~/Library/LaunchAgents/com.jay.lane-placement-watch.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.lane-placement-watch.plist
+# 3. Shim, in detect.  Add the Master List rows and refresh the note in the same change.
+mkdir -p ~/.config/fleet && printf 'detect\nisolation off\n' > ~/.config/fleet/lane-guard-mode
+ln -s ~/apps/lane-tools/shims/git ~/bin/git
+# Rollback:  rm ~/bin/git, or put `off` in the mode file;  launchctl bootout gui/$(id -u)/com.jay.lane-placement-watch
+```
+
+### Install, Server
+
+The volume path stays out of this repository.  Read it from `fleet-ops:ATTACK-MAP.md`.
+
+```bash
+sudo install -d /etc/fleet
+# /etc/fleet/lanes.conf:  FLEET_CODE_ROOT=, FLEET_APPS_ROOT=, FLEET_LANES_ROOT=, each the volume's real path
+AFC=~/.local/share/fleet-cli/repo/scripts
+cd "$AFC"
+# 1. Refresh the package and bring the dead guards back.
+python3 -m fleet_lanes.install_tools apply tools
+python3 -m fleet_lanes.install_tools apply minimax cursor grok claude
+python3 -m fleet_lanes.install_tools verify all
+muse plugins list      # disable integration-lane-guard if its command is gone:  the watcher reports it as DEAD-HOOK
+# 2. Fix code-main-sync.  In a drop-in for the unit, with `sudo systemctl edit code-main-sync.service`:
+#      [Service]
+#      EnvironmentFile=/etc/fleet/lanes.conf
+#      ExecStart=
+#      ExecStart=/usr/bin/python3 -I <stable>/fleet_lanes/code_main_sync.py
+#    The two stale locks clear themselves on the next run, since no process holds them.
+sudo systemctl start code-main-sync.service && journalctl -u code-main-sync.service -n 25 --no-pager
+# 3. Watcher, then shim in detect.
+sudo install -m 0644 systemd/lane-placement-watch.service systemd/lane-placement-watch.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now lane-placement-watch.timer
+printf 'detect\nisolation off\n' > ~/.config/fleet/lane-guard-mode
+# Add <stable>/shims to the managed bashrc block for root and jay, and to a unit's Environment=PATH only after review.
+# BotFleet's unit sets its own HOME, so its engines need the shim on that unit's PATH and their own mode file.
+```
+
+Move to `block` one class at a time, by editing the mode file, after at least seven days of detect logs:  `temp`, then `code`, then `home` and `apps`, then `clone-in-lanes`.
+
 ## Rollout order for live installs
 
 Each step is owner-approved, read the `plan` first, and nothing here is installed until that happens (nothing under `~/apps/lane-tools`, no `~/apps/lane`, no hook entry and no rules block exists yet).
@@ -483,6 +558,8 @@ python3 -m unittest fleet_lanes.tests.test_install_tools -v
 python3 -m unittest fleet_lanes.tests.test_install_mcp -v
 python3 -m unittest fleet_lanes.tests.test_fleet_guard_hook -v
 python3 -m unittest fleet_lanes.tests.test_dsh_check -v
+python3 -m unittest fleet_lanes.tests.test_placement fleet_lanes.tests.test_guard_placement fleet_lanes.tests.test_git_shim -v
+python3 -m unittest fleet_lanes.tests.test_doctor_placement fleet_lanes.tests.test_placement_watch fleet_lanes.tests.test_code_main_sync -v
 ```
 
 The tests build real throwaway git repos with a hermetic git config, fake `gh` and `lsof`, and never scan the real `/tmp`.  They take minutes rather than seconds because every report or lane creation runs real git, and `/usr/bin/git` on macOS costs 60 to 100 milliseconds per call, more on a loaded machine (`test_lane` took 100 to 230 seconds at a load average near 900).  The installers are tested against temp fake homes only; never run `apply` against the real home from a test or a demo.  `test_guard` has a timing assertion on the allowed-command path that can fail once on a very loaded machine; rerun before treating it as a regression.

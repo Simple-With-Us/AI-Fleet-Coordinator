@@ -516,11 +516,14 @@ class RootsTests(HomeCase):
     def test_harness_locations(self) -> None:
         r = self.roots()
         by_name = {h.name: h for h in r.harness_locations}
-        for name in ("claude-repo", "muse-repo", "codex", "cursor", "grok", "antigravity", "antigravity-ag",
-                     "botfleet", "codecaps-pages"):
+        for name in ("codex", "cursor", "grok", "antigravity", "antigravity-ag", "botfleet", "codecaps-pages"):
             self.assertTrue(by_name[name].sanctioned, name)
         for name in ("antigravity-scratch", "botfleet-workspaces", "documents"):
             self.assertFalse(by_name[name].sanctioned, name)
+            self.assertFalse(by_name[name].cleanup_eligible, name)
+        for name in ("claude-repo", "muse-repo"):  # not sanctioned, still the cleaners' to retire (AFC-618)
+            self.assertFalse(by_name[name].sanctioned, name)
+            self.assertTrue(by_name[name].cleanup_eligible, name)
         self.assertTrue(by_name["codex"].glob_or_prefix.endswith("/.codex/worktrees"))
         self.assertIn("/Code/*/.claude/worktrees", by_name["claude-repo"].glob_or_prefix)
         self.assertIn("/Code/*/.muse/worktrees", by_name["muse-repo"].glob_or_prefix)

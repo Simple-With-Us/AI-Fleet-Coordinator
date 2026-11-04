@@ -57,7 +57,22 @@ Owner-only note (never shown to agents): setting FLEET_LANE_GUARD=off in the hoo
 turns the guard off entirely; 0, false, no and disabled work too.  The deny reason never
 mentions it.
 
-Tests: fleet_lanes/tests/test_guard.py with the fixture table in fleet_lanes/tests/fixtures_guard.py.
+Widened placement rules (AFC-618).  Beyond temp and ~/Code, a fleet clone or worktree must land in the lanes root
+(a full clone only under a `_`-prefixed tool root), the exact integration tree, a sanctioned harness folder, the
+scratchpad or a row of placement-exceptions.json.  Anything else falls in a rule class: `home`, `apps`,
+`clone-in-lanes` or `elsewhere`.  These classes obey the mode file (placement.py): detect allows and records, block
+denies, class by class.  The temp and ~/Code rules above keep denying whatever the mode file says, and a destination
+in an in-date exception row passes every rule.
+
+Isolation (AFC-618).  A Claude `isolation: "worktree"` spawn, `EnterWorktree`, or a Muse `worktree_isolation` spawn
+from inside the integration tree creates a worktree there, in no shell command at all.  `isolation` in the mode file
+decides: off by default, then detect, then block.
+
+This is the friendly message, not the wall.  It reads shell text, so a script file, a Python subprocess or a git
+alias stays out of its sight; the git shim (git_shim.py) and the doctor sweep cover those.
+
+Tests: fleet_lanes/tests/test_guard.py with the fixture table in fleet_lanes/tests/fixtures_guard.py, and
+fleet_lanes/tests/test_guard_placement.py for the widened rules.
 """
 
 from __future__ import annotations
@@ -73,6 +88,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import layout as L
+from . import placement as P
 
 __all__ = [
     "ALLOW",
@@ -85,6 +101,11 @@ __all__ = [
     "RULE_CLONE",
     "RULE_CLONE_CODE",
     "RULE_EXPORT",
+    "RULE_ISOLATION",
+    "RULE_PLACEMENT_APPS",
+    "RULE_PLACEMENT_CLONE_IN_LANES",
+    "RULE_PLACEMENT_ELSEWHERE",
+    "RULE_PLACEMENT_HOME",
     "RULE_GH_CLONE",
     "RULE_GH_CLONE_CODE",
     "RULE_INIT_FETCH",
@@ -96,6 +117,8 @@ __all__ = [
     "Decision",
     "GuardContext",
     "evaluate",
+    "evaluate_git_argv",
+    "evaluate_shell_text",
     "lane_name_reads_back",
     "make_context",
     "redact_url",
@@ -117,6 +140,17 @@ RULE_ARCHIVE = "archive-into-temp"  # git archive written or extracted into temp
 RULE_TARBALL = "tarball-into-temp"  # GitHub source tarball downloaded or extracted into temp
 RULE_INIT_FETCH = "init-fetch-into-temp"  # git init + remote add + fetch/pull in temp
 RULE_EXPORT = "checkout-index-into-temp"  # git checkout-index --prefix=TEMP/
+RULE_PLACEMENT_HOME = "placement-home"  # a fleet checkout directly under or below the home folder
+RULE_PLACEMENT_APPS = "placement-apps"  # a fleet checkout under ~/apps but outside the lanes root
+RULE_PLACEMENT_CLONE_IN_LANES = "placement-clone-in-lanes"  # a full clone inside a lane folder
+RULE_PLACEMENT_ELSEWHERE = "placement-elsewhere"  # a fleet checkout anywhere else on the disk
+RULE_ISOLATION = "isolation-from-integration-tree"  # a harness worktree spawned from the integration tree
+PLACEMENT_RULES = {
+    P.CLASS_HOME: RULE_PLACEMENT_HOME,
+    P.CLASS_APPS: RULE_PLACEMENT_APPS,
+    P.CLASS_CLONE_IN_LANES: RULE_PLACEMENT_CLONE_IN_LANES,
+    P.CLASS_ELSEWHERE: RULE_PLACEMENT_ELSEWHERE,
+}
 DENY_RULES = (
     RULE_CLONE,
     RULE_GH_CLONE,
@@ -130,9 +164,15 @@ DENY_RULES = (
     RULE_TARBALL,
     RULE_INIT_FETCH,
     RULE_EXPORT,
+    RULE_PLACEMENT_HOME,
+    RULE_PLACEMENT_APPS,
+    RULE_PLACEMENT_CLONE_IN_LANES,
+    RULE_PLACEMENT_ELSEWHERE,
+    RULE_ISOLATION,
 )
 
 # Allow outcomes, so a caller (and the tests) can tell why a command passed.
+_PLACEABLE_RULES = frozenset({RULE_CLONE, RULE_GH_CLONE, RULE_WORKTREE_ADD, RULE_WORKTREE_MOVE})
 _OK_NO_MATCH = "no-match"
 _OK_NOT_SHELL = "not-applicable"
 _OK_DISABLED = "disabled"
@@ -191,7 +231,8 @@ _GH_API_TARBALL_RE = re.compile(
     r"^/?repos/([^/\s]+)/([^/\s]+)/(?:tarball|zipball)(?:[/?#]|$)", re.IGNORECASE
 )
 
-_SHELL_TOOL_HINTS = ("bash", "shell", "terminal", "run_command", "exec_command", "execute_command")
+_SHELL_TOOL_HINTS = ("bash", "shell", "terminal", "run_command", "exec_command", "execute_command", "start_process")
+_ISOLATION_TOOLS = frozenset({"enterworktree"})
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 _RESERVED = frozenset(
     {
@@ -390,13 +431,16 @@ _GH_API_VALUE = frozenset(
 class Decision:
     """The guard's answer.  `action` is "allow" or "deny"; `rule_id` names the rule that fired
     (one of DENY_RULES) or, for an allow, why it passed.  `destination` and `source` are display
-    strings for a deny (credentials stripped); both are "" for an allow."""
+    strings for a deny (credentials stripped); both are "" for an allow.  `detected`, on an allow, names the
+    placement rule class that would have denied under block, and `detected_detail` holds what to log for it."""
 
     action: str
     reason: str = ""
     rule_id: str = ""
     destination: str = ""
     source: str = ""
+    detected: str = ""
+    detected_detail: Mapping[str, str] | None = None
 
     @property
     def denied(self) -> bool:
@@ -435,12 +479,18 @@ class GuardContext:
         registry: L.Registry,
         roots: L.Roots,
         tmpdir: str,
+        exceptions: tuple[P.ExceptionRow, ...] = (),
+        mode: P.Mode | None = None,
+        host: str = P.HOST_MAC,
     ) -> None:
         self.home = home
         self.env = env
         self.registry = registry
         self.roots = roots
         self.tmpdir = tmpdir
+        self.exceptions = exceptions
+        self.mode = mode if mode is not None else P.Mode()
+        self.host = host
         self.case_insensitive = roots.case_insensitive
         self.fold = str.casefold if self.case_insensitive else (lambda s: s)
         fold = self.fold
@@ -484,6 +534,35 @@ class GuardContext:
             for loc in roots.harness_locations
             if loc.name != "documents"
         )
+        # Harness folders a tool picks itself and the map accepts.  The repo-local ones sit in ~/Code, which has its own
+        # rule, and an unsanctioned one (scratch, workspaces) is exactly what the widened rules are for.
+        self.harness_ok_f = tuple(
+            tuple(fold(loc.glob_or_prefix).split("/"))
+            for loc in roots.harness_locations
+            if loc.sanctioned and loc.name not in ("claude-repo", "muse-repo")
+        )
+        self.apps_root_f = fold(str(roots.apps_root))
+        # The same roots as a person types them.  On a host whose ~/apps or ~/Code is a symlink, the guard's real roots
+        # do not textually hold ~/apps/lanes/x, and a dangling lanes symlink must still read as the lanes root.
+        spelled = {
+            os.path.join(home, "apps", "lanes"): str(roots.lanes_root),
+            os.path.join(home, "apps"): str(roots.apps_root),
+            os.path.join(home, "Code"): str(roots.code_root),
+        }
+        for key, real in (
+            (L.ENV_LANES_ROOT, str(roots.lanes_root)),
+            (L.ENV_APPS_ROOT, str(roots.apps_root)),
+            (L.ENV_CODE_ROOT, str(roots.code_root)),
+        ):
+            raw = (env.get(key) or "").strip()
+            if raw.startswith("/"):
+                spelled[_norm(raw)] = real
+        self.spelled_f = tuple(
+            sorted(
+                ((fold(a), real) for a, real in spelled.items() if fold(a) != fold(real)),
+                key=lambda t: -len(t[0]),
+            )
+        )
         names: list[tuple[str, L.App]] = []
         for app in registry.apps:
             for text in (app.prefix.lower(), *app.prefix_aliases()):
@@ -519,6 +598,23 @@ class GuardContext:
         ):
             return None
         return rem
+
+    def respelled(self, path: str) -> str:
+        """`path` with a typed spelling of a root replaced by the real root."""
+        fk = self.fold(path)
+        for alias, real in self.spelled_f:
+            if fk == alias:
+                return real
+            if fk.startswith(alias + "/"):
+                return real + path[len(alias):]
+        return path
+
+    def in_date_exception(self, path: str) -> P.ExceptionRow | None:
+        """The exception row that excuses `path`, if one is in date for this host."""
+        if not self.exceptions:
+            return None
+        hit = P.find_exception((path, self.respelled(path)), self.roots, self.exceptions, host=self.host)
+        return hit.row if hit is not None and not hit.expired else None
 
 
 # --------------------------------------------------------------------------- lane naming, shared with `lane`
@@ -603,7 +699,14 @@ def make_context(
     raw_tmp = (env.get("TMPDIR") or "").strip()
     tmpdir = _norm(raw_tmp) if raw_tmp.startswith("/") else "/tmp"
     return GuardContext(
-        home=str(roots.home), env=env, registry=registry, roots=roots, tmpdir=tmpdir
+        home=str(roots.home),
+        env=env,
+        registry=registry,
+        roots=roots,
+        tmpdir=tmpdir,
+        exceptions=P.load_exceptions(env=env),
+        mode=P.read_mode(str(roots.home), env),
+        host=P.host_kind(env),
     )
 
 
@@ -680,6 +783,8 @@ def _evaluate(payload: Any, ctx: GuardContext | None) -> Decision:
     env = ctx.env if ctx is not None else os.environ
     if (env.get(ENV_GUARD) or "").strip().lower() in _OFF_VALUES:
         return Decision(ALLOW, "", _OK_DISABLED)
+    if _isolation_request(payload):
+        return _evaluate_isolation(payload, ctx)
     got = _extract(payload)
     if got is None:
         return Decision(ALLOW, "", _OK_NOT_SHELL)
@@ -693,10 +798,94 @@ def _evaluate(payload: Any, ctx: GuardContext | None) -> Decision:
     ev = _Evaluator(ctx, scratch)
     st = _State(_norm(cwd) if cwd.startswith("/") else _UNK)
     ev.run(command, st)
-    if not ev.hits:
-        return Decision(ALLOW, "", _OK_NO_MATCH)
-    hit = ev.hits[0]
-    return Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
+    if ev.hits:
+        hit = ev.hits[0]
+        return Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
+    if ev.placement:
+        cls, hit = ev.placement[0]
+        if ctx.mode.blocks(cls):
+            return Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
+        if ctx.mode.mode != P.MODE_OFF:
+            return Decision(ALLOW, "", _OK_NO_MATCH, detected=cls, detected_detail=_detail(ev, hit, cls))
+    return Decision(ALLOW, "", _OK_NO_MATCH)
+
+
+def _detail(ev: "_Evaluator", hit: "_Hit", cls: str) -> dict[str, str]:
+    return {"class": cls, "rule": hit.rule, "dest": ev.display(hit.target), "source": hit.src.label}
+
+
+def _rule_class(rule: str) -> str:
+    """The mode file's word for a rule."""
+    for cls, name in PLACEMENT_RULES.items():
+        if name == rule:
+            return cls
+    if rule in (RULE_CLONE_CODE, RULE_GH_CLONE_CODE, RULE_WORKTREE_ADD_CODE, RULE_WORKTREE_MOVE_CODE):
+        return P.CLASS_CODE
+    return P.CLASS_TEMP
+
+
+def evaluate_git_argv(args: list[str], cwd: str, ctx: GuardContext) -> tuple[str, Decision] | None:
+    """The shim's question: judge one real `git` argv, already past alias expansion.
+
+    Returns (rule class, a DENY Decision whose reason is ready to print) when this checkout would be misplaced, and
+    None when it is fine.  The caller applies the mode, because for the shim even temp and ~/Code obey it.
+    """
+    ev = _Evaluator(ctx, None)
+    ev._git(list(args), [], _State(_norm(cwd) if cwd.startswith("/") else _UNK))
+    return _shim_verdict(ev)
+
+
+def evaluate_shell_text(command: str, cwd: str, ctx: GuardContext) -> tuple[str, Decision] | None:
+    """The same question for a shell command, the body of a `!` git alias."""
+    ev = _Evaluator(ctx, None)
+    ev.run(command, _State(_norm(cwd) if cwd.startswith("/") else _UNK))
+    return _shim_verdict(ev)
+
+
+def _shim_verdict(ev: "_Evaluator") -> tuple[str, Decision] | None:
+    if ev.hits:
+        hit = ev.hits[0]
+        cls = _rule_class(hit.rule)
+    elif ev.placement:
+        cls, hit = ev.placement[0]
+    else:
+        return None
+    return cls, Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
+
+
+def _isolation_request(payload: Any) -> bool:
+    """Whether this tool call asks a harness to make its own worktree."""
+    if not isinstance(payload, Mapping):
+        return False
+    tool = payload.get("tool_name", payload.get("toolName"))
+    if isinstance(tool, str) and tool.strip().lower() in _ISOLATION_TOOLS:
+        return True
+    ti = payload.get("tool_input", payload.get("toolInput"))
+    if not isinstance(ti, Mapping):
+        return False
+    return ti.get("isolation") == "worktree" or ti.get("worktree_isolation") not in (None, False, "", "none", "off")
+
+
+def _evaluate_isolation(payload: Mapping, ctx: GuardContext | None) -> Decision:
+    if ctx is None:
+        ctx = make_context()
+    mode = ctx.mode.isolation
+    cwd = payload.get("cwd")
+    if mode == P.MODE_OFF or not isinstance(cwd, str) or not cwd.startswith("/"):
+        return Decision(ALLOW, "", _OK_NOT_SHELL)
+    fk = ctx.fold(ctx.respelled(_norm(cwd)))
+    if not fk.startswith(ctx.code_root_f + "/"):
+        return Decision(ALLOW, "", _OK_NOT_SHELL)
+    repo = ctx.respelled(_norm(cwd))[len(ctx.code_root_f) + 1 :].split("/", 1)[0]
+    if mode != P.MODE_BLOCK:
+        return Decision(ALLOW, "", _OK_NOT_SHELL, detected="isolation",
+                        detected_detail={"class": "isolation", "rule": RULE_ISOLATION, "dest": cwd, "source": repo})
+    shim = os.path.join(str(ctx.roots.apps_root), "lane")
+    reason = (
+        f"Blocked: this would create a harness worktree inside the integration tree {cwd}, which is for the human.  "
+        f"Run `{shim} new {repo} <slug>`, then work in the lane it prints, where this kind of worktree is allowed."
+    )
+    return Decision(DENY, reason, RULE_ISOLATION, cwd, repo)
 
 
 # --------------------------------------------------------------------------- path strings
@@ -1334,6 +1523,7 @@ class _Evaluator:
         self.ctx = ctx
         self.depth = 0
         self.hits: list[_Hit] = []
+        self.placement: list[tuple[str, _Hit]] = []  # widened rule class and hit; the mode decides what they do
         fold = ctx.fold
         dirs: list[str] = []
         if scratch:
@@ -1715,11 +1905,18 @@ class _Evaluator:
         return None
 
     def _check(self, rule: str, target: str, src: _Src, what: str) -> None:
+        if (
+            target.startswith("/")
+            and _UNK not in target
+            and self.ctx.in_date_exception(target) is not None
+        ):
+            return
         where = self._where(target)
         if where == "temp":
             self.hits.append(_Hit(rule, target, src, what))
             return
         if not self._in_code(target):
+            self._check_placement(rule, target, src, what, where)
             return
         code_rule = {
             RULE_CLONE: RULE_CLONE_CODE,
@@ -1910,6 +2107,45 @@ class _Evaluator:
                 self._recurse(self._expand(r[2], st), st.scoped_copy())
 
     # ---- git
+
+    def _check_placement(self, rule: str, target: str, src: _Src, what: str, where: str) -> None:
+        """The widened rule: a destination outside temp and ~/Code must be in the map.  It only ever records."""
+        if where != "other" or rule not in _PLACEABLE_RULES:
+            return
+        cls = self._placement_class(rule, self.ctx.respelled(target), src)
+        if cls is not None:
+            self.placement.append((cls, _Hit(PLACEMENT_RULES[cls], target, src, what)))
+
+    def _placement_class(self, rule: str, target: str, src: _Src) -> str | None:
+        ctx = self.ctx
+        fk = ctx.fold(target)
+        for root in ctx.lanes_roots_f:
+            if fk == root or fk.startswith(root + "/"):
+                rel = fk[len(root) + 1 :]
+                clone = rule in (RULE_CLONE, RULE_GH_CLONE)
+                return P.CLASS_CLONE_IN_LANES if clone and not rel.startswith("_") else None
+        if fk == ctx.code_root_f or fk.startswith(ctx.code_root_f + "/"):
+            # Reached only through a typed spelling of the root (a symlinked ~/Code).  Same answer as the code rule.
+            app = src.app
+            clone = rule in (RULE_CLONE, RULE_GH_CLONE)
+            exact = (
+                clone
+                and app is not None
+                and app.registered
+                and bool(app.integration_dir_name)
+                and fk == ctx.fold(_join(str(ctx.roots.code_root), app.integration_dir_name))
+            )
+            return None if exact else P.CLASS_ELSEWHERE
+        comps = fk.split("/")
+        for pat in ctx.harness_ok_f:
+            k = len(pat)
+            if len(comps) >= k and all(fnmatch.fnmatchcase(c, p) for c, p in zip(comps, pat)):
+                return None
+        if fk == ctx.apps_root_f or fk.startswith(ctx.apps_root_f + "/"):
+            return P.CLASS_APPS
+        if fk == ctx.home_f or fk.startswith(ctx.home_f + "/"):
+            return P.CLASS_HOME
+        return P.CLASS_ELSEWHERE
 
     def _git(self, args: list[str], redirs: list, st: _State) -> Any:
         eff = st.cwd
@@ -2556,6 +2792,10 @@ class _Evaluator:
             RULE_WORKTREE_MOVE_CODE,
         )
         location = "inside the ~/Code integration tree" if is_code_rule else "in temp directories"
+        if hit.rule == RULE_PLACEMENT_CLONE_IN_LANES:
+            location = "as full clones in a lane folder, because a lane is a linked worktree of the integration tree"
+        elif hit.rule in PLACEMENT_RULES.values():
+            location = "outside the lanes folder"
         blocked = (
             f"Blocked: fleet-repo checkouts are not allowed {location}, and this command "
             f"would put {hit.what} of {src.label} at {self.display(hit.target)}."

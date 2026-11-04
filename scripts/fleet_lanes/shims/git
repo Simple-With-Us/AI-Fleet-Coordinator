@@ -1,0 +1,166 @@
+#!/bin/sh
+# Fleet git shim: stops a misplaced fleet checkout before git creates it (AFC-618).  Installed by
+# fleet_lanes.install_tools;  linked from a PATH folder as `git`.  Every process that finds git on PATH passes through
+# here, so the rules are:  no Python unless the command can make a checkout, and any failure runs the real git.
+#
+# Mode file ~/.config/fleet/lane-guard-mode:  off, detect (the default), or block with rule classes.
+# Kill switch:  FLEET_LANE_GUARD=off.  Decisions live in fleet_lanes/git_shim.py.  This file is POSIX sh.
+
+_fleet_cap_fallback() {
+  for _fleet_c in /usr/bin/git /bin/git /opt/homebrew/bin/git /usr/local/bin/git; do
+    if [ -x "$_fleet_c" ] && [ ! "$_fleet_c" -ef "$0" ]; then
+      exec "$_fleet_c" "$@"
+    fi
+  done
+  echo "git: the fleet shim found no real git" >&2
+  exit 127
+}
+
+# Recursion guard.  A shim copy finding another copy, or an alias calling git, passes here again.  At the cap, skip all
+# checks and run a fixed git, so no chain of copies can loop.
+_fleet_depth=${FLEET_GIT_SHIM_DEPTH:-}
+case $_fleet_depth in
+  xxxxxxxxxxxxxxxx*) _fleet_cap_fallback "$@" ;;
+esac
+FLEET_GIT_SHIM_DEPTH=x$_fleet_depth
+export FLEET_GIT_SHIM_DEPTH
+
+# The real git, resolved once and handed to child processes.
+_fleet_real=
+if [ -n "${FLEET_GIT_SHIM_REAL:-}" ] && [ -x "$FLEET_GIT_SHIM_REAL" ] && [ ! "$FLEET_GIT_SHIM_REAL" -ef "$0" ]; then
+  _fleet_real=$FLEET_GIT_SHIM_REAL
+else
+  _fleet_ifs=$IFS
+  IFS=:
+  set -f
+  for _fleet_d in $PATH; do
+    _fleet_c=${_fleet_d:-.}/git
+    if [ -x "$_fleet_c" ] && [ ! -d "$_fleet_c" ] && [ ! "$_fleet_c" -ef "$0" ]; then
+      case $_fleet_d in
+        */lane-tools/shims|*/fleet_lanes/shims) continue ;;
+      esac
+      _fleet_real=$_fleet_c
+      break
+    fi
+  done
+  set +f
+  IFS=$_fleet_ifs
+  [ -n "$_fleet_real" ] || _fleet_cap_fallback "$@"
+  FLEET_GIT_SHIM_REAL=$_fleet_real
+  export FLEET_GIT_SHIM_REAL
+fi
+
+case ${FLEET_LANE_GUARD:-} in
+  off|OFF|Off|0|false|FALSE|False|no|NO|No|disabled|DISABLED|Disabled) exec "$_fleet_real" "$@" ;;
+esac
+
+# The fast path.  Walk the global options to the subcommand, with no change to "$@".
+_fleet_skip=
+_fleet_opts=
+_fleet_slow=
+_fleet_word=
+_fleet_sub=
+for _fleet_a in "$@"; do
+  if [ -n "$_fleet_skip" ]; then
+    if [ "$_fleet_skip" = c ]; then
+      case $_fleet_a in
+        [Aa][Ll][Ii][Aa][Ss].*) _fleet_slow=1 ;;
+      esac
+    fi
+    _fleet_skip=
+    continue
+  fi
+  case $_fleet_a in
+    -c) _fleet_skip=c ;;
+    --config-env|--config-env=*) _fleet_slow=1; [ "$_fleet_a" = --config-env ] && _fleet_skip=o ;;
+    -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|--attr-source) _fleet_skip=o; _fleet_opts=1 ;;
+    -*) case $_fleet_a in --git-dir=*|--work-tree=*) _fleet_opts=1 ;; esac ;;
+    *)
+      if [ "$_fleet_word" = worktree ]; then
+        _fleet_sub=$_fleet_a
+        break
+      fi
+      _fleet_word=$_fleet_a
+      [ "$_fleet_a" = worktree ] || break
+      ;;
+  esac
+done
+
+if [ -z "$_fleet_slow" ]; then
+  case $_fleet_word in
+    clone) _fleet_slow=1 ;;
+    worktree)
+      # Only add and move choose a destination, and `worktree list` is common enough to stay out of Python.
+      case $_fleet_sub in
+        list|prune|remove|lock|unlock|repair) exec "$_fleet_real" "$@" ;;
+        *) _fleet_slow=1 ;;
+      esac
+      ;;
+    '') exec "$_fleet_real" "$@" ;;
+    # A builtin cannot be aliased, so these never make a checkout.
+    status|diff|log|add|commit|fetch|push|pull|rev-parse|config|ls-files|show|branch|checkout|switch|merge|rebase|\
+    reset|restore|stash|tag|remote|init|rm|mv|cat-file|for-each-ref|show-ref|symbolic-ref|rev-list|merge-base|blame|\
+    grep|gc|apply|cherry-pick|revert|am|describe|shortlog|ls-remote|ls-tree|diff-tree|diff-index|diff-files|\
+    update-index|update-ref|hash-object|read-tree|write-tree|commit-tree|check-ignore|check-attr|check-ref-format|\
+    name-rev|clean|sparse-checkout|submodule|lfs|version|help|count-objects|verify-pack|pack-objects|index-pack|\
+    unpack-objects|upload-pack|receive-pack|fsck|prune|repack|bisect|archive|format-patch|var|mktree|mergetool|\
+    difftool|notes|reflog|cherry|credential|credential-*|maintenance|range-diff|rerere|whatchanged|send-email|\
+    filter-branch|fast-import|fast-export|bundle|pack-refs|interpret-trailers|checkout-index|merge-file|merge-tree|\
+    annotate|ls|gui|gitk|web--browse|multi-pack-index|commit-graph|get-tar-commit-id|stripspace|column|mailinfo|\
+    send-pack|fetch-pack|http-backend|shell|verify-commit|verify-tag|show-branch|replace|request-pull)
+      exec "$_fleet_real" "$@" ;;
+    *)
+      # Perhaps an alias.  With -C or --git-dir the answer depends on another repo, so Python asks.  Otherwise follow the
+      # chain here, and start Python only for one that names a checkout command.
+      if [ -n "$_fleet_opts" ]; then
+        _fleet_slow=1
+      else
+        _fleet_w=$_fleet_word
+        for _fleet_n in 1 2 3 4 5; do
+          _fleet_v=$("$_fleet_real" config --get "alias.$_fleet_w" 2>/dev/null) || break
+          case $_fleet_v in
+            *clone*|*worktree*) _fleet_slow=1; break ;;
+            '!'*) break ;;
+          esac
+          _fleet_w=${_fleet_v%% *}
+        done
+        [ -n "$_fleet_slow" ] || exec "$_fleet_real" "$@"
+      fi
+      ;;
+  esac
+fi
+
+# The slow path.  Only exit 77 blocks; a missing Python, a crash or anything else runs the real git.
+_fleet_self=$0
+while [ -h "$_fleet_self" ]; do
+  _fleet_l=$(readlink "$_fleet_self") || break
+  case $_fleet_l in
+    /*) _fleet_self=$_fleet_l ;;
+    *) _fleet_self=${_fleet_self%/*}/$_fleet_l ;;
+  esac
+done
+_fleet_dir=${_fleet_self%/*}
+_fleet_mod=
+for _fleet_c in "$_fleet_dir/../fleet_lanes/git_shim.py" "$_fleet_dir/../git_shim.py"; do
+  if [ -f "$_fleet_c" ]; then
+    _fleet_mod=$_fleet_c
+    break
+  fi
+done
+_fleet_py=
+for _fleet_c in "${FLEET_GIT_SHIM_PYTHON:-}" /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do
+  if [ -n "$_fleet_c" ] && [ -x "$_fleet_c" ]; then
+    _fleet_py=$_fleet_c
+    break
+  fi
+done
+if [ -z "$_fleet_mod" ] || [ -z "$_fleet_py" ]; then
+  _fleet_log=${FLEET_LANE_GUARD_STATE_DIR:-${HOME:-/tmp}/.local/state/fleet}/lane-guard-events.jsonl
+  { printf '{"via":"shim","action":"fail-open","detail":"no python or module"}\n' >>"$_fleet_log"; } 2>/dev/null
+  exec "$_fleet_real" "$@"
+fi
+"$_fleet_py" -I "$_fleet_mod" "$@"
+if [ $? -eq 77 ]; then
+  exit 128
+fi
+exec "$_fleet_real" "$@"
