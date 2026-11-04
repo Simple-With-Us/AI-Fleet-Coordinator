@@ -38,7 +38,7 @@ def environment():
         "AUDIT_EXPECTED_SOURCE_SHA": "a" * 40,
         "GITHUB_SHA": "a" * 40,
         "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REPOSITORY": "Simple-With-Us/AI-Fleet-Coordinator",
+        "GITHUB_REPOSITORY": AUDIT.REPOSITORY,
         "GITHUB_REF": "refs/heads/main",
     }
 
@@ -168,12 +168,19 @@ class ContractTests(unittest.TestCase):
                     )
                     self.assertEqual(opener.calls, [])
 
+    def test_a_synthetic_repository_is_refused_before_any_request(self):
+        env = environment()
+        env["GITHUB_REPOSITORY"] = "synthetic-org/synthetic-repo"
+        result, opener = self.assert_refusal("source_unverified", env=env)
+        self.assertEqual(opener.calls, [])
+        self.assertFalse(result["grant_verified"])
+
     def test_source_guard_prevents_network_for_missing_or_wrong_context(self):
         for key, value in {
             "AUDIT_EXPECTED_SOURCE_SHA": "",
             "GITHUB_SHA": "b" * 40,
             "GITHUB_EVENT_NAME": "push",
-            "GITHUB_REPOSITORY": "other/repo",
+            "GITHUB_REPOSITORY": "synthetic-org/synthetic-repo",
             "GITHUB_REF": "refs/heads/feature",
         }.items():
             with self.subTest(key=key):

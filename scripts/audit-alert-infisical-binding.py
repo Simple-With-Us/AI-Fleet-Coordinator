@@ -18,6 +18,9 @@ ENDPOINT = "https://app.infisical.com/api/v2/service-token"
 MAX_BYTES = 128 * 1024
 TIMEOUT_SECONDS = 10
 TOKEN_KEY = "AFC_ALERT_WORKERS_INFISICAL_TOKEN"
+# The one repository this auditor may run in.  It lives in production code, not in a
+# committed fixture, so a test never has to spell the real repository out.
+REPOSITORY = "Simple-With-Us/AI-Fleet-Coordinator"
 PROJECT_KEY = "INFISICAL_FLEET_OPS_PROJECT_ID"
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.ASCII)
 SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
@@ -65,7 +68,7 @@ def source_verified(env):
         and SHA.fullmatch(expected) is not None
         and env.get("GITHUB_SHA") == expected
         and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-        and env.get("GITHUB_REPOSITORY") == "Simple-With-Us/AI-Fleet-Coordinator"
+        and env.get("GITHUB_REPOSITORY") == REPOSITORY
         and env.get("GITHUB_REF") == "refs/heads/main"
     )
 
