@@ -3,8 +3,12 @@
 import copy
 import json
 import tempfile
+import subprocess
+import sys
+import os
 import unittest
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 from git_relay.outcomes import OutcomeStore
 from git_relay.pr_lifecycle import Lifecycle
@@ -53,7 +57,7 @@ class Client:
             self.row["updated_at"] = "2026-11-04T06:00:01Z"
             return {} if self.bad_receipt else copy.deepcopy(self.row)
         if "/git/ref/" in path:
-            ref = "main" if path.endswith("/main") else "feature"
+            ref = unquote(path.split("/git/ref/heads/", 1)[1])
             return {"ref": "refs/heads/" + ref, "object": {"type": "commit", "sha": SHA}}
         if path == f"/repos/{REPO}":
             return {"id": 1, "full_name": REPO}
@@ -97,6 +101,93 @@ class Tests(unittest.TestCase):
 
     def run_state(self, r, **kw):
         return Lifecycle(r, "swu-echo", "edit_pr", self.args(**kw)).execute()
+
+    def test_branch_ref_path_segments_for_close_and_create(self):
+        for ref, suffix in (("feature/x", "feature/x"), ("feature/#ticket?%", "feature/%23ticket%3F%25")):
+            expected = f"/repos/{REPO}/git/ref/heads/{suffix}"
+            row = pull()
+            row["head"]["ref"] = ref
+            for action in ("edit_pr", "open_pr"):
+                with self.subTest(ref=ref, action=action):
+                    r = self.relay(Client(copy.deepcopy(row)))
+                    args = self.args() if action == "edit_pr" else {
+                        "repo": REPO, "head": ref, "base": "main",
+                        "title": "x", "body": "y", "draft": True,
+                    }
+                    status, result = Lifecycle(r, "swu-echo", action, args).execute()
+                    self.assertEqual(status, 200, result)
+                    paths = [path for method, path, _, _ in r.client.calls
+                             if method == "GET" and "/git/ref/heads/" in path]
+                    self.assertIn(expected, paths)
+                    self.assertTrue(all("feature%2F" not in path for path in paths))
+                    if action == "open_pr":
+                        self.assertEqual(paths.count(expected), 2)
+
+    def test_batch_finish_failure_before_and_after_rename_stays_safe(self):
+        for after_save in (False, True):
+            with self.subTest(after_save=after_save), tempfile.TemporaryDirectory() as d:
+                path = d + "/outcomes.json"
+                r = self.relay(path=path)
+                original = r.outcomes._save
+                calls = []
+                def fail():
+                    calls.append(1)
+                    if len(calls) == 3:
+                        if after_save:
+                            original()
+                        raise OSError("injected batch save failure")
+                    original()
+                r.outcomes._save = fail
+                status, result = self.run_state(r)
+                self.assertEqual(status, 503)
+                self.assertEqual(result["outcome"], "unknown")
+                self.assertEqual({v["state"] for v in r.outcomes._rows.values()}, {"unknown"})
+                with open(path) as f:
+                    disk = json.load(f)
+                self.assertEqual({v["state"] for v in disk.values()},
+                                 {"ok"} if after_save else {"pending"})
+                probe = subprocess.run([sys.executable, "-c",
+                    "import sys,json;from git_relay.outcomes import OutcomeStore;"
+                    "s=OutcomeStore(sys.argv[1]);print(json.dumps(sorted({r['state'] for r in s._rows.values()})))", path],
+                    env={**os.environ, "PYTHONPATH": str(__import__('pathlib').Path(__file__).resolve().parents[2])},
+                    capture_output=True, text=True, check=True)
+                self.assertEqual(json.loads(probe.stdout), ["ok"] if after_save else ["unknown"])
+                r.outcomes = OutcomeStore(path)
+                self.run_state(r)
+                self.assertEqual(sum(x[0] == "PATCH" for x in r.client.calls), 1)
+
+    def test_creation_receipt_retained_across_ttl_trim_and_restart(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = d + "/outcomes.json"
+            r = self.relay(path=path)
+            clock = [100000.0]
+            r.outcomes._clock = lambda: clock[0]
+            args = dict(repo=REPO, head="feature", base="main", title="x", body="y", draft=True)
+            self.assertEqual(Lifecycle(r, "swu-echo", "open_pr", args).execute()[0], 200)
+            receipt = next(iter(r.outcomes._rows.values()))
+            self.assertTrue(receipt["retained"])
+            self.assertIn("creation_identity", receipt["result"])
+            r.client.row["state"] = "closed"
+            clock[0] += 86401
+            r.outcomes.finish("f" * 64, "refused")
+            r.outcomes = OutcomeStore(path, clock=lambda: clock[0])
+            status, out = Lifecycle(r, "swu-echo", "open_pr", args).execute()
+            self.assertEqual(status, 409)
+            self.assertEqual(out["code"], "creation_reconciliation_required")
+            self.assertEqual(sum(x[0] == "POST" for x in r.client.calls), 1)
+            self.assertTrue(any(x.get("retained") for x in r.outcomes._rows.values()))
+
+    def test_changed_or_merged_creation_receipt_is_actionable_no_write(self):
+        for change in ({"body": "changed"}, {"title": "changed"}, {"state": "closed", "merged": True}):
+            with self.subTest(change=change):
+                r = self.relay()
+                args = dict(repo=REPO, head="feature", base="main", title="x", body="y", draft=True)
+                self.assertEqual(Lifecycle(r, "swu-echo", "open_pr", args).execute()[0], 200)
+                r.client.row.update(change)
+                status, result = Lifecycle(r, "swu-echo", "open_pr", args).execute()
+                self.assertEqual(status, 409)
+                self.assertEqual(result["code"], "creation_reconciliation_required")
+                self.assertEqual(sum(x[0] == "POST" for x in r.client.calls), 1)
 
     def test_close_and_own_app_tuple(self):
         r = self.relay()

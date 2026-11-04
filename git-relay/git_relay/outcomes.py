@@ -88,6 +88,7 @@ def _validate_row(path: str, key: object, row: object) -> dict:
         or isinstance(ts, bool)
         or not isinstance(ts, (int, float))
         or (result is not None and not isinstance(result, dict))
+        or ("retained" in row and type(row["retained"]) is not bool)
     ):
         raise OutcomeStoreError(f"outcome store {path!r} has an invalid row for {key!r}")
     return row
@@ -192,6 +193,30 @@ class OutcomeStore:
             self._trim()
             self._save()
 
+    def finish_many(self, keys, state: str, result: dict | None = None, *, retain=False) -> None:
+        """Persist related reservations together; uncertain saves remain held."""
+        with self._lock:
+            keys = tuple(keys)
+            if not keys:
+                return
+            row = {"state": state, "ts": self._clock()}
+            if result is not None:
+                row["result"] = result
+            if retain and state == "ok":
+                row["retained"] = True
+            for key in keys:
+                self._rows[key] = dict(row)
+            try:
+                self._trim()
+                self._save()
+            except Exception:
+                # A save can fail before or after rename. Do not claim success
+                # or release any member in memory. Restart sees either the old
+                # pending batch or the complete verified receipt, never a split.
+                for key in keys:
+                    self._rows[key] = {"state": "unknown", "ts": self._clock()}
+                raise
+
     def _trim(self, limit: int | None = None) -> None:
         # ok rows outlive their usefulness once a real retry window has
         # passed;  evicting them keeps the registry bounded without re-arming
@@ -200,7 +225,7 @@ class OutcomeStore:
         stale = [
             key
             for key, row in self._rows.items()
-            if row.get("state") == "ok" and row.get("ts", 0) < cutoff
+            if row.get("state") == "ok" and not row.get("retained", False) and row.get("ts", 0) < cutoff
         ]
         for key in stale:
             del self._rows[key]

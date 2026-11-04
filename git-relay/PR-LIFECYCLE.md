@@ -37,3 +37,24 @@ route are still required. Runtime1291 holds are not cleared by this patch.
 Verify actual installed simple-git whoami/list/show with the caller's own
 identity. Do not use arbitrary PR toggles as tests; verify an authorized real
 operation through fresh reads when an actual work need exists.
+
+## Creation receipt custody and recreation
+
+A successful creation receipt binds the immutable PR identity and both branch
+repository identities, refs and OIDs. Its branch-pair reservation is retained,
+not a 24-hour cache. Terminal or modified prior PRs return 409 and do not
+silently permit a replacement POST. Retained receipts count toward capacity;
+capacity exhaustion refuses new writes rather than dropping custody.
+
+There is no self-service recreation or release action in this candidate.
+Recreation requires offline custodian reconciliation under the journal
+transaction lock, all writers stopped/drained, a durable backup of the original
+receipt/history, fresh terminal prior-PR identity and fresh branch identities.
+Only the exact verified successful reservation can be released; pending or
+UNKNOWN records must never be cleared for this purpose. No release is performed
+by this patch. This operational limitation requires explicit review before merge.
+
+Related lifecycle reservations finish in one durable journal replacement. If
+persistence is uncertain, the request reports unknown and remains held in memory.
+A fresh process reads either all pending reservations or the complete verified
+receipt, never a partially completed reservation batch.

@@ -27,6 +27,10 @@ class Held(Refused):
     pass
 
 
+class ReconciliationRequired(Refused):
+    pass
+
+
 def positive(value):
     return type(value) is int and 0 < value <= 9007199254740991
 
@@ -99,8 +103,7 @@ class Lifecycle:
         self.received = False
 
     def finish(self, state, result=None):
-        for key in self.keys:
-            self.store.finish(key, state, result)
+        self.store.finish_many(self.keys, state, result, retain=self.action == "open_pr")
 
     def reserve(self, key, reapply=False):
         prior = self.store.begin(key, reapply_ok=reapply)
@@ -117,7 +120,7 @@ class Lifecycle:
     def branches(self, row, bearer):
         for side in ("head", "base"):
             branch = row[side]
-            name = quote(branch["ref"], safe="")
+            name = quote(branch["ref"], safe="/")
             data = self.call(
                 "GET", f"/repos/{branch['repo']['full_name']}/git/ref/heads/{name}", bearer=bearer
             )
@@ -138,19 +141,22 @@ class Lifecycle:
         prior = self.reserve(key_for("pr-resource", "pr_create", resource))
         if prior is not None:
             if prior.get("request_digest") != digest:
-                raise Refused("creation resource bound to a different request; reconcile first")
+                raise ReconciliationRequired("creation resource bound to a different request")
             replay_raw = self.call("GET", f"/repos/{repo}/pulls/{prior['number']}")
             if (
                 not isinstance(replay_raw, dict)
                 or replay_raw.get("title") != a["title"]
                 or replay_raw.get("body") != a["body"]
             ):
-                raise Refused("creation text replay mismatch")
-            row = snapshot(replay_raw, repo, prior["number"])
-            if row["state"] != "open" or {
-                k: v for k, v in prior.items() if k != "request_digest"
-            } != self.result(row):
-                raise Refused("creation receipt no longer matches current PR")
+                raise ReconciliationRequired("creation text replay mismatch")
+            try:
+                row = snapshot(replay_raw, repo, prior["number"])
+            except Refused as exc:
+                raise ReconciliationRequired("recorded PR identity requires verification") from exc
+            if row["state"] != "open" or prior.get("creation_identity") != identity(row):
+                raise ReconciliationRequired("recorded creation requires reconciliation before a new PR")
+            if {k: v for k, v in prior.items() if k not in ("request_digest", "creation_identity")} != self.result(row):
+                raise ReconciliationRequired("creation receipt changed; reconciliation required")
             return prior
         # Keep the established owner-authored creation lane, not a new grant.
         # Restrict refs to same-repository branch names; no implicit fork reads.
@@ -164,7 +170,7 @@ class Lifecycle:
             ref = a[side]
             if not isinstance(ref, str) or not ref or len(ref) > 255:
                 raise Refused("creation branch invalid")
-            branch = self.call("GET", f"/repos/{repo}/git/ref/heads/{quote(ref, safe='')}")
+            branch = self.call("GET", f"/repos/{repo}/git/ref/heads/{quote(ref, safe='/')}")
             obj = branch.get("object") if isinstance(branch, dict) else None
             if (
                 not isinstance(obj, dict)
@@ -203,7 +209,7 @@ class Lifecycle:
         if fresh != row:
             raise Refused("creation readback mismatch")
         self.branches(fresh, None)
-        return {**self.result(fresh), "request_digest": digest}
+        return {**self.result(fresh), "request_digest": digest, "creation_identity": identity(fresh)}
 
     def state(self):
         a, repo = self.args, self.repo
@@ -315,7 +321,7 @@ class Lifecycle:
                     "outcome": "unknown",
                     "retryable": False,
                 }
-            return 200, result
+            return 200, {k: v for k, v in result.items() if k != "creation_identity"}
         except (
             Refused,
             PolicyDenied,
@@ -365,6 +371,12 @@ class Lifecycle:
                         payload["github_code"] = exc.code
                 return 502, payload
             self.finish("refused")
+            if isinstance(exc, ReconciliationRequired):
+                return 409, {
+                    "error": "A PR was already created for these branches. Reuse the prior PR or request a verified release before creating another.",
+                    "code": "creation_reconciliation_required",
+                    "retryable": False,
+                }
             if isinstance(exc, Held):
                 return 409, {
                     "error": "PR lifecycle outcome held; reconcile before retry",
