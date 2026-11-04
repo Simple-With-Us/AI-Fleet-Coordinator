@@ -34,7 +34,18 @@ BUNDLE_VARIANT = "light"
 RUNTIME_IMAGESETS = {"light": "MusterIconLight", "dark": "MusterIconDark"}
 
 # (points, scale) for every slot of a Mac app icon.
-ICON_SLOTS = [(16, 1), (16, 2), (32, 1), (32, 2), (128, 1), (128, 2), (256, 1), (256, 2), (512, 1), (512, 2)]
+ICON_SLOTS = [
+    (16, 1),
+    (16, 2),
+    (32, 1),
+    (32, 2),
+    (128, 1),
+    (128, 2),
+    (256, 1),
+    (256, 2),
+    (512, 1),
+    (512, 2),
+]
 CATALOG_INFO = {"author": "xcode", "version": 1}
 
 
@@ -81,13 +92,17 @@ def write_app_icon(master):
         pixels = points * scale
         suffix = "@2x" if scale == 2 else ""
         filename = f"icon_{points}x{points}{suffix}.png"
-        master.resize((pixels, pixels), Image.Resampling.LANCZOS).save(folder / filename, optimize=True)
-        images.append({
-            "filename": filename,
-            "idiom": "mac",
-            "scale": f"{scale}x",
-            "size": f"{points}x{points}",
-        })
+        master.resize((pixels, pixels), Image.Resampling.LANCZOS).save(
+            folder / filename, optimize=True
+        )
+        images.append(
+            {
+                "filename": filename,
+                "idiom": "mac",
+                "scale": f"{scale}x",
+                "size": f"{points}x{points}",
+            }
+        )
     write_json(folder / "Contents.json", {"images": images, "info": CATALOG_INFO})
 
 
@@ -96,10 +111,13 @@ def write_runtime_imageset(name, master):
     folder.mkdir(parents=True, exist_ok=True)
     filename = f"{name}.png"
     master.save(folder / filename, optimize=True)
-    write_json(folder / "Contents.json", {
-        "images": [{"filename": filename, "idiom": "universal", "scale": "1x"}],
-        "info": CATALOG_INFO,
-    })
+    write_json(
+        folder / "Contents.json",
+        {
+            "images": [{"filename": filename, "idiom": "universal", "scale": "1x"}],
+            "info": CATALOG_INFO,
+        },
+    )
 
 
 def main():

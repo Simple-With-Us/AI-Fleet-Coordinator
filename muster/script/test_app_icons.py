@@ -36,8 +36,8 @@ def read_png(path):
     header = None
     compressed = b""
     while offset < len(data):
-        length, kind = struct.unpack(">I4s", data[offset:offset + 8])
-        body = data[offset + 8:offset + 8 + length]
+        length, kind = struct.unpack(">I4s", data[offset : offset + 8])
+        body = data[offset + 8 : offset + 8 + length]
         if kind == b"IHDR":
             header = struct.unpack(">IIBB", body[:10])
         elif kind == b"IDAT":
@@ -45,7 +45,7 @@ def read_png(path):
         offset += length + 12
     width, height, _depth, color_type = header
     row_bytes = width * 4 if color_type == RGBA else width
-    return width, height, color_type, zlib.decompress(compressed)[1:row_bytes + 1]
+    return width, height, color_type, zlib.decompress(compressed)[1 : row_bytes + 1]
 
 
 class AppIconAssetTests(unittest.TestCase):
