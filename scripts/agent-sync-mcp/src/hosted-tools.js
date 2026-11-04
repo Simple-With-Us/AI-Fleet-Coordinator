@@ -62,7 +62,7 @@ import {
   RECALL_MARKER_BEGIN,
   RECALL_MARKER_END,
 } from "./recall.js";
-import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES } from "./gr-tools.js";
+import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
@@ -1428,11 +1428,13 @@ export class HostedTools {
     // body.error "upstream_*" instead.
     if (status === 502 && body && typeof body === "object" && body.outcome === "unknown") {
       const unreadable = typeof body.error === "string" && body.error.startsWith("upstream_");
+      const extra = !unreadable && GRAPHQL_ERROR_CODES.includes(body.github_code) ? { github_code: body.github_code } : null;
       throw new ToolError(
         "outcome_unknown",
         unreadable
           ? "git-relay's server-error answer could not be read, so the call's outcome is unknown:  it may have reached GitHub and been accepted.  Do not retry blindly - check the pull request or workflow state first."
           : "git-relay reports the call's outcome is unknown:  GitHub may have accepted it, and the relay refuses replay until the outcome resolves.  Do not retry blindly - check the pull request or workflow state first.",
+        { extra },
       );
     }
     if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
