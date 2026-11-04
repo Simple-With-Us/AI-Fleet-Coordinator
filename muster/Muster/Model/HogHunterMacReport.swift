@@ -310,7 +310,7 @@ enum HogHunterMacReportReader {
 
         // Open without following a link,  then judge the open file,  so the file that was
         // checked is the file that is read.
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else {
             if errno == ENOENT {
                 reading.problem = HogHunterMacReading.notReportingText
