@@ -121,7 +121,7 @@ final class FleetViewCollectorTests: XCTestCase {
             ("GET https://api.example.com/v1?access_token=abc123secret&page=1 failed", "abc123secret"),
             ("Authorization: Bearer abc123secret", "abc123secret"),
             ("authorization: abc123secret", "abc123secret"),
-            ("curl -H 'x-api-key: abc123secret' failed", "abc123secret"),
+            ("sent 'x-api-key: abc123secret' and failed", "abc123secret"),
             ("password: hunter2hunter2", "hunter2hunter2"),
             ("run --token abc123secret now", "abc123secret"),
             ("run --token=abc123secret now", "abc123secret"),
