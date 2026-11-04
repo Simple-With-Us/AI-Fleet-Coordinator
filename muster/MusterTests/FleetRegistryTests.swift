@@ -216,7 +216,7 @@ final class FleetRegistryTests: XCTestCase {
         // when that fix lands, and claims joins the list above.
         let options = XCTExpectedFailure.Options()
         options.isStrict = false
-        XCTExpectFailure("FLEETVIEW-3:  unknown claims still read as passed", options: options) {
+        try XCTExpectFailure("FLEETVIEW-3:  unknown claims still read as passed", options: options) {
             XCTAssertEqual(try firstAppState(unknownSection: "claims"), .unproven)
         }
     }

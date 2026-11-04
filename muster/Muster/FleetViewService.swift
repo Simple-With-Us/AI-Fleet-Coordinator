@@ -277,11 +277,12 @@ struct FleetViewFailure: Equatable {
         reason = service?.errorDescription
             ?? "The refresh failed for a reason Muster does not recognize.\u{00A0} Copy the details and send them to an agent."
         let raw = service == nil ? error.localizedDescription : (service?.commandOutput ?? "")
+        // The suffix comes first:  stderr can be 4 MB, and only these lines are kept.
         let lines = raw
             .split(whereSeparator: \.isNewline)
+            .suffix(Self.copiedLineCount)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-            .suffix(Self.copiedLineCount)
             .map { Self.bounded(Self.scrub($0)) }
         detail = lines.last
         fullDetail = lines.isEmpty ? nil : lines.joined(separator: "\n")
@@ -391,12 +392,23 @@ struct FleetViewFailure: Equatable {
                 rest = String(rest[...query]) + mark
             }
         }
+        // A token can also sit in the path, a query value or the fragment, as a webhook's does.
+        let pieces = rest.split(whereSeparator: { "/?#&=:\"'`,;()[]{}<>".contains($0) }).map(String.init)
+        for piece in pieces where isSecretShaped(piece) {
+            rest = rest.replacingOccurrences(of: piece, with: mark)
+        }
         return start + rest
     }
 
     private static func isSecretShaped(_ piece: String) -> Bool {
         guard piece.count >= 12, !piece.contains("/") else { return false }
         if secretPrefixes.contains(where: { piece.hasPrefix($0) }) { return true }
+        // A short opaque run:  letters and digits together, and nothing else.  A timestamp or
+        // a dashed name has other characters in it, and a plain word has no digit.
+        let isAlphanumeric = piece.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+        if isAlphanumeric, piece.contains(where: \.isLetter), piece.contains(where: \.isNumber) {
+            return true
+        }
         // A long opaque run.  A dotted Python name such as subprocess.CalledProcessError is
         // long too, but a token has digits in it unless it is very long.
         guard ConfigFileReader.looksLikeSecretValue(piece) else { return false }

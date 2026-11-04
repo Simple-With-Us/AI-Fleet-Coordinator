@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import pathlib
 import stat
 import subprocess
@@ -41,9 +40,14 @@ GH_PR_ROW = (
 )
 # The shape Linear's updatedAt has in `simple-board list --json`.
 BOARD_ROW = (
-    '[{"identifier": "AFC-616", "title": "Muster", "labels": ["claimed:CLAUDE"],'
+    '[{"identifier": "FIX-1", "title": "Fixture claim", "labels": ["claimed:CLAUDE"],'
     ' "updated_at": "2026-10-20T12:00:00.123Z"}]'
 )
+REGISTRY = {
+    "owner": "example",
+    "apps": [{"repo": "Fixture-Repo"}],
+    "seats": [{"tag": "CLAUDE", "worktreeSuffix": "claude", "branchPrefixes": ["claude/"]}],
+}
 
 
 def _sources():
@@ -108,9 +112,12 @@ class EndToEndTests(unittest.TestCase):
         path.write_text("#!/bin/sh\n%s\n" % body, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-    def _run(self, home, stub_dir):
-        lanes = pathlib.Path(home) / "lanes"
-        (lanes / "AI-Fleet-Coordinator" / "claude-x").mkdir(parents=True)
+    def _run(self, home, search_path):
+        home = pathlib.Path(home)
+        lanes = home / "lanes"
+        (lanes / "Fixture-Repo" / "claude-x").mkdir(parents=True)
+        registry = home / "registry.json"
+        registry.write_text(json.dumps(REGISTRY), encoding="utf-8")
         return subprocess.run(
             [
                 sys.executable,
@@ -118,11 +125,13 @@ class EndToEndTests(unittest.TestCase):
                 "fleet_view",
                 "--lanes-root",
                 str(lanes),
+                "--registry",
+                str(registry),
                 "status",
                 "--json",
             ],
             cwd=str(SCRIPTS),
-            env={"HOME": str(home), "PATH": "%s:/usr/bin:/bin" % stub_dir},
+            env={"HOME": str(home), "PATH": search_path},
             capture_output=True,
             text=True,
             timeout=120,
@@ -133,14 +142,9 @@ class EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             stubs = pathlib.Path(temp) / "bin"
             stubs.mkdir()
-            self._stub(
-                stubs,
-                "gh",
-                "case \"$*\" in *AI-Fleet-Coordinator*) cat <<'JSON'\n%s\nJSON\n;; "
-                "*) echo '[]';; esac" % GH_PR_ROW,
-            )
+            self._stub(stubs, "gh", "cat <<'JSON'\n%s\nJSON" % GH_PR_ROW)
             self._stub(stubs, "simple-board", "cat <<'JSON'\n%s\nJSON" % BOARD_ROW)
-            done = self._run(temp, stubs)
+            done = self._run(temp, "%s:/usr/bin:/bin" % stubs)
         self.assertEqual(done.returncode, 0, done.stderr)
         envelope = json.loads(done.stdout)
         self.assertEqual(envelope["schemaVersion"], 1)
@@ -149,23 +153,36 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(envelope["sections"]["lanes"]["items"][0]["seat"], "CLAUDE")
         self.assertEqual(envelope["sections"]["pullRequests"]["items"][0]["number"], 7)
         claim = envelope["sections"]["claims"]["items"][0]
-        self.assertEqual(claim["identifier"], "AFC-616")
+        self.assertEqual(claim["identifier"], "FIX-1")
         self.assertGreater(claim["ageSeconds"], 0, "a Linear stamp must parse, not read as -1")
 
-    def test_a_missing_gh_and_simple_board_read_unknown_and_exit_three(self):
-        with tempfile.TemporaryDirectory() as temp:
-            stubs = pathlib.Path(temp) / "bin"
-            stubs.mkdir()
-            # A real gh or simple-board in /usr/bin would defeat this, so say so plainly.
-            for tool in ("gh", "simple-board"):
-                if os.path.exists("/usr/bin/%s" % tool) or os.path.exists("/bin/%s" % tool):
-                    self.skipTest("%s is installed in a system folder" % tool)
-            done = self._run(temp, stubs)
+    def _assert_unknown(self, done, pr_reason, claims_reason):
         self.assertEqual(done.returncode, 3, done.stderr)
         envelope = json.loads(done.stdout)
         self.assertEqual(envelope["summary"]["overallVerdict"], "UNKNOWN")
-        self.assertEqual(envelope["sections"]["pullRequests"]["state"], "UNKNOWN")
-        self.assertEqual(envelope["sections"]["claims"]["state"], "UNKNOWN")
+        pull_requests = envelope["sections"]["pullRequests"]
+        claims = envelope["sections"]["claims"]
+        self.assertEqual(pull_requests["state"], "UNKNOWN")
+        self.assertEqual(claims["state"], "UNKNOWN")
+        self.assertIn(pr_reason, pull_requests["reason"])
+        self.assertIn(claims_reason, claims["reason"])
+
+    def test_failing_tools_read_unknown_and_exit_three(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stubs = pathlib.Path(temp) / "bin"
+            stubs.mkdir()
+            self._stub(stubs, "gh", "exit 1")
+            self._stub(stubs, "simple-board", "exit 1")
+            done = self._run(temp, "%s:/usr/bin:/bin" % stubs)
+        self._assert_unknown(done, "gh exited 1", "simple-board exited 1")
+
+    def test_missing_tools_read_unknown_and_exit_three(self):
+        # A search path holding only an empty folder, because a runner's own /usr/bin has gh.
+        with tempfile.TemporaryDirectory() as temp:
+            empty = pathlib.Path(temp) / "empty"
+            empty.mkdir()
+            done = self._run(temp, str(empty))
+        self._assert_unknown(done, "gh failed", "simple-board failed")
 
 
 if __name__ == "__main__":

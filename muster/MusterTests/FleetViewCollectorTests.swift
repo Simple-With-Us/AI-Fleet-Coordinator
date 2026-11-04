@@ -132,6 +132,14 @@ final class FleetViewCollectorTests: XCTestCase {
             ("value='\(fakeGitHubPat)'", fakeGitHubPat),
             ("service st.abc123.def456.ghi789 refused", "st.abc123.def456.ghi789"),
             ("opaque a1b2c3d4e5f6a7b8c9d0e1f2a3b4 here", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4"),
+            // A short opaque run, below ConfigFileReader's 24-character floor.
+            ("opaque k9Pq2mXv7Rt4Zw8Bn1 here", "k9Pq2mXv7Rt4Zw8Bn1"),
+            ("opaque k9Pq2mXv7Rt4 here", "k9Pq2mXv7Rt4"),
+            // In a URL's path, query value and fragment, not only its userinfo and named keys.
+            ("POST https://hooks.example.com/services/\(fakeGitHubToken) failed", fakeGitHubToken),
+            ("GET https://example.com/a?id=\(fakeGitHubPat) failed", fakeGitHubPat),
+            ("GET https://example.com/a#\(fakeGitHubToken) failed", fakeGitHubToken),
+            ("POST https://hooks.example.com/k9Pq2mXv7Rt4Zw8Bn1/send failed", "k9Pq2mXv7Rt4Zw8Bn1"),
         ]
         for (input, leaked) in cases {
             let scrubbed = FleetViewFailure.scrub(input)
@@ -154,9 +162,11 @@ final class FleetViewCollectorTests: XCTestCase {
             "ImportError: cannot import name 'UTC' from 'datetime' (/usr/lib/python3.9/datetime.py)",
             "subprocess.CalledProcessError: Command returned non-zero exit status 1.",
             "fleet-view: registry unreadable: [Errno 2] No such file or directory: '/Users/jay/Code/fleet-apps.json'",
-            "fatal: unable to access 'https://github.com/Simple-With-Us/AI-Fleet-Coordinator.git/'",
+            "fatal: unable to access 'https://github.com/example/Fixture-Repo.git/'",
             "exit 1",
             "a token was rejected",
+            "at 2026-10-20T12:00:00Z the run stopped",
+            "claude-opus-5-5 and python3.9 and x86_64 stay readable",
         ] {
             XCTAssertEqual(FleetViewFailure.scrub(line), line)
         }
@@ -240,7 +250,7 @@ final class FleetViewCollectorTests: XCTestCase {
             FileManager.default.isExecutableFile(atPath: FleetViewService.interpreterPath),
             "\(FleetViewService.interpreterPath) is not on this machine"
         )
-        let lanes = home.appendingPathComponent("lanes/AI-Fleet-Coordinator/claude-smoke", isDirectory: true)
+        let lanes = home.appendingPathComponent("lanes/Fixture-Repo/claude-smoke", isDirectory: true)
         try FileManager.default.createDirectory(at: lanes, withIntermediateDirectories: true)
         return try FleetViewService.fetch(
             executable: URL(fileURLWithPath: FleetViewService.interpreterPath),
@@ -261,7 +271,7 @@ final class FleetViewCollectorTests: XCTestCase {
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         try writeStub("gh", in: bin, printing: "[]")
         try writeStub("simple-board", in: bin, printing: #"""
-        [{"identifier": "AFC-616", "title": "Muster", "labels": ["claimed:CLAUDE"], "updated_at": "2026-10-20T12:00:00.123Z"}]
+        [{"identifier": "FIX-1", "title": "Fixture claim", "labels": ["claimed:CLAUDE"], "updated_at": "2026-10-20T12:00:00.123Z"}]
         """#)
 
         let envelope = try runRealCollector(home: home, bin: bin)
@@ -273,19 +283,27 @@ final class FleetViewCollectorTests: XCTestCase {
         XCTAssertTrue(envelope.sections.pullRequests.isKnown)
         XCTAssertTrue(envelope.sections.claims.isKnown)
         XCTAssertEqual(envelope.sections.lanes.items.first?.seat, "CLAUDE")
-        XCTAssertEqual(envelope.sections.claims.items.first?.identifier, "AFC-616")
+        XCTAssertEqual(envelope.sections.claims.items.first?.identifier, "FIX-1")
         XCTAssertGreaterThan(envelope.sections.claims.items.first?.ageSeconds ?? -1, 0)
     }
 
-    func test_the_real_collector_reads_unknown_when_its_tools_are_missing() throws {
+    func test_the_real_collector_reads_unknown_when_its_tools_fail() throws {
         let home = try makeTemporaryDirectory()
         let bin = home.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        // Stubs and not an empty PATH, because the runner decides which tools its system folders hold.
+        for tool in ["gh", "simple-board"] {
+            let stub = bin.appendingPathComponent(tool)
+            try "#!/bin/sh\nexit 1\n".write(to: stub, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        }
 
         let envelope = try runRealCollector(home: home, bin: bin)
 
         XCTAssertEqual(envelope.summary.overallVerdict, "UNKNOWN")
         XCTAssertFalse(envelope.sections.pullRequests.isKnown)
         XCTAssertFalse(envelope.sections.claims.isKnown)
+        XCTAssertTrue(envelope.sections.pullRequests.reason.contains("gh exited 1"), envelope.sections.pullRequests.reason)
+        XCTAssertTrue(envelope.sections.claims.reason.contains("simple-board exited 1"), envelope.sections.claims.reason)
     }
 }
