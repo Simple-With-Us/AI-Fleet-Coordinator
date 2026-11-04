@@ -115,7 +115,11 @@ class PrControls(unittest.TestCase):
                         "app_slug": "swu-codex",
                         "repos": [REPO],
                         "actions": ["wf_pr_draft"],
-                        "mint_permissions": {"pull_requests": "write", "metadata": "read"},
+                        "mint_permissions": {
+                            "pull_requests": "write",
+                            "contents": "write",
+                            "metadata": "read",
+                        },
                     }
                 }
             )
