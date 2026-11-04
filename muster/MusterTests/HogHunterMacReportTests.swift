@@ -24,7 +24,7 @@ final class HogHunterMacReportTests: XCTestCase {
         XCTAssertEqual(reading.appVersion, "1.0.9")
         XCTAssertEqual(reading.hostMetrics?.cpuText, "41%")
         XCTAssertEqual(reading.hostMetrics?.disks.count, 2)
-        XCTAssertEqual(reading.processes.map(\.displayName), ["Xcode", "kernel_task"])
+        XCTAssertEqual(reading.processes?.map(\.displayName), ["Xcode", "kernel_task"])
         XCTAssertEqual(reading.lock, .held)
         XCTAssertEqual(reading.maintain?.state, .passed)
         XCTAssertEqual(reading.serverSnapshotAgeSeconds, 120)
@@ -88,7 +88,8 @@ final class HogHunterMacReportTests: XCTestCase {
         XCTAssertEqual(reading.hostMetrics?.cpuCount, 8)
         XCTAssertEqual(reading.hostMetrics?.loadAverage, [])
         XCTAssertNil(reading.hostMetrics?.memory?.totalBytes)
-        XCTAssertTrue(reading.processes.isEmpty)
+        XCTAssertNil(reading.processes)
+        XCTAssertTrue(reading.processesMalformed)
         XCTAssertNil(reading.maintain?.health)
         XCTAssertEqual(reading.maintain?.lastRunOutcome, "partial")
         XCTAssertEqual(reading.lock, .unknown)
@@ -108,6 +109,55 @@ final class HogHunterMacReportTests: XCTestCase {
         XCTAssertEqual(stale.lock, .stale)
         XCTAssertTrue(stale.lockText.hasPrefix("Stale"))
         XCTAssertEqual(try read(current.replacingOccurrences(of: "\"held\"", with: "\"banana\"")).lock, .unknown)
+    }
+
+    // MARK: - Partial data never reads as a pass
+
+    private func minimal(_ body: String) -> String {
+        "{\"schemaVersion\":1,\"tool\":\"hoghunter-mac-status\",\"generatedAt\":\"2026-11-04T21:00:00Z\"\(body)}"
+    }
+
+    private let passingMetrics = ",\"hostMetrics\":{\"loadAverage\":[0.5,0.5,0.5],\"cpuCount\":10,\"uptimeSeconds\":60}"
+
+    func test_an_absent_process_list_is_not_reported_and_an_empty_one_is_not_the_same() throws {
+        let absent = try read(minimal(passingMetrics))
+        XCTAssertNil(absent.processes)
+        XCTAssertFalse(absent.processesMalformed)
+        XCTAssertEqual(absent.state, .passed)
+        let empty = try read(minimal(passingMetrics + ",\"processes\":[]"))
+        XCTAssertEqual(empty.processes?.count, 0)
+        XCTAssertFalse(empty.processesMalformed)
+        let null = try read(minimal(passingMetrics + ",\"processes\":null"))
+        XCTAssertNil(null.processes)
+        XCTAssertFalse(null.processesMalformed)
+    }
+
+    func test_a_malformed_process_list_is_not_proven_and_blocks_a_pass() throws {
+        let reading = try read(minimal(passingMetrics + ",\"processes\":\"oops\""))
+        XCTAssertNil(reading.processes)
+        XCTAssertTrue(reading.processesMalformed)
+        XCTAssertEqual(reading.state, .unproven)
+    }
+
+    func test_an_unproven_part_keeps_the_report_from_reading_as_a_pass() throws {
+        let weirdHealth = try read(minimal(passingMetrics + ",\"maintain\":{\"health\":\"strange\"}"))
+        XCTAssertEqual(weirdHealth.state, .unproven)
+        let weirdMetrics = try read(minimal(",\"hostMetrics\":{\"cpuCount\":4},\"maintain\":{\"health\":\"healthy\"}"))
+        XCTAssertEqual(weirdMetrics.state, .unproven)
+    }
+
+    func test_a_lock_alone_never_proves_a_pass() throws {
+        XCTAssertEqual(try read(minimal(",\"housekeeperLock\":\"free\"")).state, .unknown)
+        XCTAssertEqual(try read(minimal(",\"housekeeperLock\":\"held\"")).state, .unknown)
+        XCTAssertEqual(try read(minimal(",\"housekeeperLock\":\"stale\"")).state, .drift)
+        XCTAssertEqual(try read(minimal(passingMetrics + ",\"housekeeperLock\":\"free\"")).state, .passed)
+    }
+
+    func test_uptime_reads_not_reported_when_absent() throws {
+        let without = try read(minimal(",\"hostMetrics\":{\"cpuCount\":4,\"loadAverage\":[0.1]}"))
+        XCTAssertEqual(without.rows.first { $0.label == "Uptime" }?.value, "Not reported")
+        let with = try read(minimal(passingMetrics))
+        XCTAssertEqual(with.rows.first { $0.label == "Uptime" }?.value, "1m")
     }
 
     // MARK: - The file is the authentication

@@ -25,6 +25,12 @@ struct HogHunterMacPanel: View {
                 }
             }
             if let reading {
+                Text(reading.path)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 if let problem = reading.problem {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "info.circle")
@@ -90,12 +96,20 @@ struct HogHunterMacPanel: View {
             Text("Busiest Processes")
                 .font(.subheadline.weight(.semibold))
                 .padding(.top, 4)
-            if hogs.isEmpty {
+            if reading.processesMalformed {
+                Text("Not proven.\u{00A0} The report's process list could not be read.")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            } else if reading.processes == nil {
                 Text("Not reported")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            } else if hogs.isEmpty {
+                Text("No processes listed")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            ForEach(hogs) { process in
+            ForEach(Array(hogs.enumerated()), id: \.offset) { _, process in
                 HStack(spacing: 10) {
                     Text(process.displayName)
                         .font(.system(size: 12, design: .monospaced))

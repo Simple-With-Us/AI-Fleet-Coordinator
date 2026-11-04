@@ -115,7 +115,10 @@ struct HogHunterMacReport: Decodable {
     let host: String?
     let appVersion: String?
     let hostMetrics: HostMetrics?
-    let processes: [ServerProcess]
+    /// Nil when the report carries no process list (not reported).
+    let processes: [ServerProcess]?
+    /// True when the report carries a process list this app cannot read (not proven).
+    let processesMalformed: Bool
     let maintain: HogHunterMaintain?
     let housekeeperLock: String?
     let regimen: HogHunterRegimen?
@@ -135,7 +138,19 @@ struct HogHunterMacReport: Decodable {
         host = try? container.decodeIfPresent(String.self, forKey: .host)
         appVersion = try? container.decodeIfPresent(String.self, forKey: .appVersion)
         hostMetrics = try? container.decodeIfPresent(HostMetrics.self, forKey: .hostMetrics)
-        processes = (try? container.decodeIfPresent([ServerProcess].self, forKey: .processes)) ?? []
+        // Absent is not reported;  present but unreadable is not proven.  Neither is an empty list.
+        if container.contains(.processes), (try? container.decodeNil(forKey: .processes)) != true {
+            if let list = try? container.decode([ServerProcess].self, forKey: .processes) {
+                processes = list
+                processesMalformed = false
+            } else {
+                processes = nil
+                processesMalformed = true
+            }
+        } else {
+            processes = nil
+            processesMalformed = false
+        }
         maintain = try? container.decodeIfPresent(HogHunterMaintain.self, forKey: .maintain)
         housekeeperLock = try? container.decodeIfPresent(String.self, forKey: .housekeeperLock)
         regimen = try? container.decodeIfPresent(HogHunterRegimen.self, forKey: .regimen)
@@ -164,7 +179,8 @@ struct HogHunterMacReading {
     var host: String = ""
     var appVersion: String?
     var hostMetrics: HostMetrics?
-    var processes: [ServerProcess] = []
+    var processes: [ServerProcess]?
+    var processesMalformed = false
     var maintain: HogHunterMaintain?
     var lock: HogHunterLockState = .unknown
     var regimen: HogHunterRegimen?
@@ -208,9 +224,7 @@ struct HogHunterMacReading {
         }
         out.append(.init(label: "Swap", value: swap, state: nil))
 
-        if let uptime = metrics?.uptimeText {
-            out.append(.init(label: "Uptime", value: uptime, state: nil))
-        }
+        out.append(.init(label: "Uptime", value: metrics?.uptimeText ?? notReported, state: nil))
 
         let disks = metrics?.disks ?? []
         if disks.isEmpty {
@@ -238,7 +252,7 @@ struct HogHunterMacReading {
     }
 
     /// The busiest processes,  busiest first,  as the report listed them.
-    var hogs: [ServerProcess] { isCurrent ? processes : [] }
+    var hogs: [ServerProcess] { isCurrent ? (processes ?? []) : [] }
 
     var maintainText: String? {
         guard let maintain else { return nil }
@@ -385,6 +399,7 @@ enum HogHunterMacReportReader {
         reading.appVersion = report.appVersion
         reading.hostMetrics = report.hostMetrics
         reading.processes = report.processes
+        reading.processesMalformed = report.processesMalformed
         reading.maintain = report.maintain
         reading.lock = HogHunterLockState(reportValue: report.housekeeperLock)
         reading.regimen = report.regimen
@@ -397,14 +412,29 @@ enum HogHunterMacReportReader {
         read(at: reportURL(), now: now)
     }
 
-    /// The worst of the host's numbers,  the last cleanup and the lock.  A report that proved
-    /// nothing reads unknown.
+    /// The worst of the host's numbers,  the last cleanup,  the process list and the lock.
+    ///
+    /// A part that is present but unproven stays in the count,  so partial data cannot read as
+    /// a pass.  A report with nothing measured reads unknown:  a free or held lock never
+    /// proves a pass on its own,  and a stale lock is an observation and does.
     private static func overall(of reading: HogHunterMacReading) -> CellState {
         var states: [CellState] = []
-        if let metrics = reading.hostMetrics, metrics.state != .unproven { states.append(metrics.state) }
-        if let maintain = reading.maintain, maintain.state != .unproven { states.append(maintain.state) }
-        if reading.lock == .stale { states.append(.drift) } else if reading.lock != .unknown { states.append(.passed) }
-        guard !states.isEmpty else { return .unknown }
+        var proven = false
+        if let metrics = reading.hostMetrics {
+            states.append(metrics.state)
+            if metrics.state != .unproven { proven = true }
+        }
+        if let maintain = reading.maintain {
+            states.append(maintain.state)
+            if maintain.state != .unproven { proven = true }
+        }
+        if reading.processesMalformed { states.append(.unproven) }
+        switch reading.lock {
+        case .stale: states.append(.drift); proven = true
+        case .free, .held: states.append(.passed)
+        case .unknown: break
+        }
+        guard proven else { return .unknown }
         var worst = CellState.passed
         for state in states where GridBuilder.severityIndex(of: state) < GridBuilder.severityIndex(of: worst) {
             worst = state
