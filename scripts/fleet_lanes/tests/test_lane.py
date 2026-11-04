@@ -580,7 +580,7 @@ class ResolveTests(unittest.TestCase):
             self.assertEqual(partition.get(name), "server", f"{name} has no branch prefix but is not a server seat")
         self.assertIn("GROK-BOT", laneless)
         retired = {s.name for s in registry.seats if s.retired}
-        for tag in ("MONET", "RENOIR", "HARNESS", "DSH", "KIMI"):
+        for tag in ("MONET", "RENOIR", "HARNESS", "DSH"):
             self.assertIn(tag, retired)
             with self.assertRaises(K.Refusal):
                 K.resolve_seat({"AGENT_SEAT": tag}, registry)

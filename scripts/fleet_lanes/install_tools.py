@@ -302,7 +302,11 @@ MINIMAX_HOOKS_FILE = "hooks/hooks.json"  # the default hooks path of that flavou
 MINIMAX_HOOK_TIMEOUT_S = (
     10  # seconds, 1 to 10 (MiniMax's range).  A timeout fails OPEN, so the top of the range
 )
-PLATFORM_ALIASES = {"mm": "minimax"}  # the seat tag works as a target
+PLATFORM_ALIASES = {
+    "mm": "minimax",
+    "z-code": "zcode",
+    "zc": "zcode",
+}
 COPILOT_HOOKS_REL = ".copilot/hooks/fleet-lane-guard.json"  # a fleet-owned file; ~/.copilot/settings.json is not ours
 OPENCODE_CONFIG_REL = ".config/opencode/opencode.json"
 OPENCODE_PLUGIN_FILE = "opencode-plugin/index.ts"  # relative to the stable dir; the config entry is its directory
@@ -2684,6 +2688,7 @@ PLATFORMS: dict[str, Platform] = {
             KIMI_CONFIG_REL,
             supported=False,
             kind="block",
+            in_all=True,
             notes=(
                 "ONE marked [[hooks]] block appended to ~/.kimi-code/config.toml.  Kimi Code documents that exit code 2 "
                 "blocks a PreToolUse call and that stderr is the reason, so the command is the fleet hook with `--format "
@@ -2839,6 +2844,29 @@ PLATFORMS: dict[str, Platform] = {
                 "That the compensating control, once Jay applies it, is ever exercised: fx stays RED until then.",
             ),
         ),
+        Platform(
+            "zcode",
+            "Z Code (Z.ai desktop IDE)",
+            "claude",
+            "claude",
+            "zcode",
+            "PreToolUse",
+            "Bash",
+            ".zcode",
+            ".zcode/cli/config.json",
+            supported=True,
+            kind="config",
+            in_all=True,
+            new_mode=0o644,
+            hook_extra=(("timeout", HOOK_TIMEOUT_S),),
+            notes=(
+                "New last group under hooks.events.PreToolUse, matcher Bash.  Existing groups, order and formatting stay.",
+                "Deny output is Claude-style JSON payload.",
+            ),
+            unverified=(
+                "That Z Code fires the PreToolUse hook on shell executions without a full restart.",
+            ),
+        ),
     )
 }
 # What the owner still has to do after a platform was written.  Printed by `apply`.
@@ -2858,6 +2886,7 @@ NEXT_STEPS: dict[str, str] = {
     "cannot load the plugin itself",
     "fx": "no installer step exists: fx stays RED (UNSUPPORTED) until Jay merges the prepared compensating control "
     "from `plan fx` into ~/.fx/settings.json by hand, or approves an exception",
+    "zcode": "start a new Z Code session, ask it to run `ps`, and expect a refusal",
 }
 PLATFORM_ORDER: tuple[str, ...] = tuple(PLATFORMS)
 SUPPORTED_KEYS: tuple[str, ...] = tuple(k for k in PLATFORM_ORDER if PLATFORMS[k].supported)
@@ -2985,10 +3014,55 @@ def _locate_antigravity(doc: dict, plat: Platform) -> list[Entry]:
     return out
 
 
+def _locate_zcode(doc: dict, plat: Platform) -> list[Entry]:
+    hooks = doc.get("hooks")
+    if hooks is None:
+        return []
+    if not isinstance(hooks, dict):
+        raise ShapeError("'hooks' is not an object")
+    events = hooks.get("events")
+    if events is None:
+        return []
+    if not isinstance(events, dict):
+        raise ShapeError("'hooks.events' is not an object")
+    groups = events.get(plat.event)
+    if groups is None:
+        return []
+    if not isinstance(groups, list):
+        raise ShapeError(f"'hooks.events.{plat.event}' is not a list")
+    out: list[Entry] = []
+    for gi, group in enumerate(groups):
+        inner = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(inner, list):
+            continue
+        for hi, hook in enumerate(inner):
+            if isinstance(hook, dict) and is_ours(hook.get("command")):
+                problems: list[str] = []
+                if not _matcher_gates(group.get("matcher"), plat.matcher):
+                    problems.append(
+                        f"matcher {group.get('matcher')!r} never matches {plat.matcher}"
+                    )
+                if hook.get("type", "command") != "command":
+                    problems.append(f"hook type is {hook.get('type')!r}, not 'command'")
+                out.append(
+                    Entry(
+                        hook["command"],
+                        f"hooks.events.{plat.event}[{gi}].hooks[{hi}]",
+                        problems,
+                        hook,
+                        group,
+                        gi,
+                        hi,
+                    )
+                )
+    return out
+
+
 _LOCATE: dict[str, Callable[[dict, Platform], list[Entry]]] = {
     "claude": _locate_claude,
     "cursor": _locate_cursor,
     "antigravity": _locate_antigravity,
+    "zcode": _locate_zcode,
 }
 
 
@@ -3001,7 +3075,7 @@ def _hook_object(plat: Platform, command: str) -> dict:
     hook: dict = {}
     if plat.style == "antigravity":
         hook["matcher"] = plat.matcher
-    if plat.style == "claude":
+    if plat.style in ("claude", "zcode"):
         hook["type"] = "command"
     hook["command"] = command
     for k, v in plat.hook_extra:
@@ -3013,6 +3087,8 @@ def new_document(plat: Platform, command: str) -> dict:
     hook = _hook_object(plat, command)
     if plat.style == "claude":
         return {"hooks": {plat.event: [{"matcher": plat.matcher, "hooks": [hook]}]}}
+    if plat.style == "zcode":
+        return {"hooks": {"events": {plat.event: [{"matcher": plat.matcher, "hooks": [hook]}]}}}
     if plat.style == "cursor":
         return {"version": 1, "hooks": {plat.event: [hook]}}
     return {AG_GROUP: {plat.event: [hook], "enabled": True}}
@@ -3032,7 +3108,7 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
             notes.append("hook command updated to the current path and format")
             changed = True
         if (
-            plat.style == "claude"
+            plat.style in ("claude", "zcode")
             and first.group is not None
             and not _matcher_gates(first.group.get("matcher"), plat.matcher)
         ):
@@ -3060,6 +3136,17 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
         groups = hooks.get(plat.event)
         if groups is None:
             groups = hooks[plat.event] = []
+        groups.append({"matcher": plat.matcher, "hooks": [hook]})
+    elif plat.style == "zcode":
+        hooks = new.setdefault("hooks", {})
+        if not isinstance(hooks, dict):
+            raise ShapeError("'hooks' is not an object")
+        events = hooks.setdefault("events", {})
+        if not isinstance(events, dict):
+            raise ShapeError("'hooks.events' is not an object")
+        groups = events.get(plat.event)
+        if groups is None:
+            groups = events[plat.event] = []
         groups.append({"matcher": plat.matcher, "hooks": [hook]})
     elif plat.style == "cursor":
         if not new:
@@ -3107,6 +3194,10 @@ def subtree(doc: dict, plat: Platform) -> tuple[str, object]:
             k: v for k, v in doc.items() if k == AG_GROUP or (isinstance(v, dict) and count_ours(v))
         }
         return AG_GROUP, picked
+    if plat.style == "zcode":
+        hooks = doc.get("hooks")
+        events = hooks.get("events") if isinstance(hooks, dict) else None
+        return f"hooks.events.{plat.event}", (events.get(plat.event) if isinstance(events, dict) else None)
     hooks = doc.get("hooks")
     return f"hooks.{plat.event}", (hooks.get(plat.event) if isinstance(hooks, dict) else None)
 
@@ -3209,7 +3300,7 @@ def plan_view(doc: dict, plat: Platform) -> tuple[str, object, int]:
     hidden = 0
     if node is None:
         return label, None, 0
-    if plat.style == "claude":
+    if plat.style in ("claude", "zcode"):
         view: list = []
         for g in node if isinstance(node, list) else []:
             inner = g.get("hooks") if isinstance(g, dict) else None
@@ -7680,6 +7771,10 @@ def _seed_fake_home(home: str) -> None:
     put(
         ".grok/hooks/imported-from-claude.json",
         {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}},
+    )
+    put(
+        ".zcode/cli/config.json",
+        {"hooks": {"events": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}}},
     )
     os.makedirs(
         os.path.join(home, ".minimax", "plugins"), exist_ok=True

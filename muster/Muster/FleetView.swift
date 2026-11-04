@@ -93,11 +93,17 @@ struct FleetView: View {
 
     private func emptyState(_ title: String, description: String) -> some View {
         ContentUnavailableView {
-            Label(title, systemImage: "line.3.horizontal.decrease.circle")
+            if failed {
+                Label("Fleet Data Unknown", systemImage: "exclamationmark.triangle")
+            } else {
+                Label(title, systemImage: "line.3.horizontal.decrease.circle")
+            }
         } description: {
-            Text(description)
+            Text(failed
+                ? "The last refresh failed, so this section cannot say what is here.\u{00A0} Nothing here is treated as current."
+                : description)
         } actions: {
-            if isFiltering {
+            if isFiltering && !failed {
                 Button("Clear Filters") { clearFilters() }
             }
         }
@@ -380,15 +386,16 @@ struct FleetView: View {
                 }.value
             }
         } catch {
-            // Fail closed:  clear the lists, never show the last green.
+            // Fail closed:  clear the lists, never show the last green.  The registry
+            // rows go with them:  read back without the run's answer they carry lane,
+            // pull request and claim counts of zero, which reads as a fleet measured
+            // and found idle rather than one this refresh could not see.  The banner
+            // above the list says the counts are unknown;  nothing under it may spell
+            // a number of its own.
             envelope = nil
             failed = true
             refreshedAt = Date()
-            if let root {
-                registrySummary = await Task.detached(priority: .userInitiated) {
-                    FleetRegistryReader.read(repoRoot: root, viewOutput: nil, toolsReading: tools)
-                }.value
-            }
+            registrySummary = FleetRegistrySummary()
         }
     }
 }

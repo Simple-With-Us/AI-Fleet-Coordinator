@@ -57,6 +57,54 @@ final class FleetAdminTests: XCTestCase {
                              "The port was never asked whether the server was still there.")
     }
 
+    // MARK: - Panel actions on the controller path
+
+    /// A stop run through the plan sheet is still a stop the owner asked for, so the
+    /// record has to carry it once the run succeeded.
+    func testAControllerStopThatRanIsRecordedAsAnOwnerStop() async {
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        admin.beginControllerAction(.stop, serviceID: "shellular")
+        admin.endControllerAction(serviceID: "shellular", succeeded: true)
+        await admin.refresh()
+
+        let entry = admin.entries.first { $0.id == "shellular" }
+        XCTAssertEqual(entry?.stoppedByOwner, true,
+                       "A controller stop that ran was not recorded as an owner stop.")
+    }
+
+    /// A controller action that never ran, or one the helper refused, changes no
+    /// intent: the record goes back to what it was.
+    func testAControllerActionThatDidNotRunLeavesTheRecordAlone() async {
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        admin.beginControllerAction(.stop, serviceID: "shellular")
+        admin.endControllerAction(serviceID: "shellular", succeeded: false)
+        await admin.refresh()
+
+        let entry = admin.entries.first { $0.id == "shellular" }
+        XCTAssertEqual(entry?.stoppedByOwner, false,
+                       "A controller stop that never ran was recorded as an owner stop.")
+    }
+
+    /// Starting a service again from the panel clears a stop recorded any other way.
+    func testAControllerStartClearsAnEarlierOwnerStop() async {
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        admin.beginControllerAction(.stop, serviceID: "shellular")
+        admin.endControllerAction(serviceID: "shellular", succeeded: true)
+        admin.beginControllerAction(.start, serviceID: "shellular")
+        admin.endControllerAction(serviceID: "shellular", succeeded: true)
+        await admin.refresh()
+
+        let entry = admin.entries.first { $0.id == "shellular" }
+        XCTAssertEqual(entry?.stoppedByOwner, false,
+                       "A controller start left an owner stop behind.")
+    }
+
     // MARK: - The test rig
 
     /// Waits for the admin to have read the fleet.

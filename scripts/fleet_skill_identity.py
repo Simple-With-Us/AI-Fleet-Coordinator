@@ -391,17 +391,31 @@ CLUTCH_EXTRA = (
 )
 
 KIMI_IDENTITY = (
-    "This pack is for **KIMI**.\u00a0 Tag `[KIMI]`.\u00a0 Notes name `Kimi`.\u00a0 "
-    "**KIMI is retired / unavailable long-term (owner 2026-08-21).**\u00a0 Do not "
-    "start a Kimi session.\u00a0 Do not take new work, do not leave Kimi In Progress, "
-    "and do not reserve future lanes for Kimi.\u00a0 If you are reading this after a "
-    "mistaken spawn, say so in your own chat with the owner and stop.\u00a0 Never sign as Monet."
+    "This pack is for **KIMI** (Moonshot AI Kimi Code CLI).\u00a0 "
+    "Session tag `[KIMI·session8]`.\u00a0 Notes name `Kimi`.\u00a0 Branches `kimi/<slug>` only.\u00a0 "
+    "Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.\u00a0 "
+    "Pin `AGENT_SEAT=KIMI`."
 )
 
-KIMI_RETIRED_BANNER = (
-    "> **Retired seat.**\u00a0 Owner directive 2026-08-21: do not assign or "
-    "accept new Kimi work.\u00a0 Do not start a Kimi session.\u00a0 Do not take work.\u00a0 "
-    "This catalog copy is inactive — do not install to `~/.kimi`.\n\n"
+KIMI_EXTRA = (
+    "> **Runtime (Kimi Code).**\u00a0 Kimi Code CLI runs from `~/.local/bin/kimi` with config in "
+    "`~/.kimi-code`.\u00a0 Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.\u00a0 "
+    "Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).\u00a0 A seat a launcher assigned "
+    "beats the KIMI default.\n\n"
+)
+
+ZCODE_IDENTITY = (
+    "This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).\u00a0 "
+    "Session tag `[ZC·session8]`.\u00a0 Notes name `ZCode`.\u00a0 Branches `zcode/<slug>` only.\u00a0 "
+    "Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.\u00a0 "
+    "Pin `AGENT_SEAT=ZC`."
+)
+
+ZCODE_EXTRA = (
+    "> **Runtime (Z Code).**\u00a0 Z Code desktop IDE (`/Applications/ZCode.app`) with config in "
+    "`~/.zcode`.\u00a0 Skills installed here (`~/.zcode/skills`) are loaded by Z Code.\u00a0 "
+    "Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).\u00a0 A seat a launcher assigned "
+    "beats the ZC default.\n\n"
 )
 
 MINIMAX_EXTRA = (
@@ -666,15 +680,30 @@ SEATS: dict[str, Seat] = {
         "Kimi",
         "kimi",
         "kimi",
-        "~/.kimi/skills",
+        "~/.kimi-code/skills",
         "exclusive",
         KIMI_IDENTITY,
-        extra_banner=KIMI_RETIRED_BANNER,
-        write_home=False,
-        retired=True,
+        extra_banner=KIMI_EXTRA,
+        write_home=True,
+        retired=False,
         seat_key="kimi",
-        zulip_bot="",
-        zulip_rc="",
+        zulip_bot="kimi-bot",
+        zulip_rc="Kimi",
+    ),
+    "zcode": Seat(
+        "ZC",
+        "ZCode",
+        "zcode",
+        "zcode",
+        "~/.zcode/skills",
+        "exclusive",
+        ZCODE_IDENTITY,
+        extra_banner=ZCODE_EXTRA,
+        write_home=True,
+        retired=False,
+        seat_key="zcode",
+        zulip_bot="zc-bot",
+        zulip_rc="ZC",
     ),
     "muse-code": Seat(
         "MC",
@@ -819,6 +848,7 @@ SKILL_SEAT_ALLOWLIST: dict[str, frozenset[str]] = {
             "minimax",
             "muse-code",
             "claude_shared",
+            "zcode",
         }
     ),
 }
@@ -1546,7 +1576,7 @@ def set_yaml_description(text: str, value: str) -> str:
 # was already cut on main.  MONET, RENOIR and DSH keep the full body for now,
 # because the peer-screen lane is still editing lines inside it; cutting them
 # is a follow-up once that lands.
-STOP_ONLY_RETIRED = frozenset({"kimi"})
+STOP_ONLY_RETIRED = frozenset()
 
 
 def _apply_retired(text: str, seat: Seat, skill_name: str) -> str:

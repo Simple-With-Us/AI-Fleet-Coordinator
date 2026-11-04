@@ -457,6 +457,8 @@ def hook_entries(document: dict[str, Any], event: str) -> list[tuple[str, int | 
     entries: list[tuple[str, int | None]] = []
     hooks = document.get("hooks")
     if isinstance(hooks, dict):
+        if isinstance(hooks.get("events"), dict):
+            hooks = hooks["events"]
         for key, value in hooks.items():
             if not isinstance(key, str) or event_key(key) != wanted:
                 continue
