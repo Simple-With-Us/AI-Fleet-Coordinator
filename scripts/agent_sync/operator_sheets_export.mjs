@@ -7,12 +7,9 @@
 // the adapter stays Codex's slice. RAW writes, no automatic mutation retries: after any failure
 // the row stays pending and the next drain reconciles by id before writing.
 //
-// Adapter asks folded in (owner-approved plan 2026-10-20):
-//   (a) readRows must return sheet row numbers, or findSessionRowByRecordId must exist - the
-//       Sessions upsert cannot target updateSessionRow without one of them;
-//   (b) Events recovery reconcile is a bounded readRows scan (event ids are ULIDs, so rows are
-//       roughly time-ordered; the scan stops at end of data);
-//   (c) appendSession/appendEvent returning the written row number helps logging - optional here.
+// Reconciliation uses inspect() physical grid bounds and numbered readRows pages.
+// Short or empty pages do not end the scan, and duplicate target IDs refuse writes.
+// appendSession/appendEvent may return the written row number for logging.
 
 export const SESSIONS_HEADERS = [
   "Record ID", "Label", "Seat", "Platform", "Host", "Native Session ID", "Title", "Project",
