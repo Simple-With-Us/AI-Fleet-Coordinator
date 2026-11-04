@@ -5,9 +5,9 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `ZCODE`.**  Chat tag `[ZCODE·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZCODE`, credential in Infisical Fleet-OPS `/zulip` (`ZCODE_ZULIP_EMAIL`, `ZCODE_ZULIP_KEY`, `ZCODE_ZULIP_SITE`).  Session tag `[ZCODE·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZCODE default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
 Canonical reference: `/Users/jay/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
@@ -64,7 +64,7 @@ Every agent session must start with systematic orientation before touching code:
    - Muse Code: `MC` (display `Muse Code`, prefix `mc/`, `mc-bot@`, `MC`)
    - Muse Assist: `MA` (display `Rob (Muse)`, prefix `ma/`, `muse-assist-bot@`, `MA`)
    - Moonshot AI Kimi Code: `KIMI` (display `Kimi`, prefix `kimi/`, `kimi-bot@`, `Kimi`)
-   - Z Code: `ZCODE` (display `ZCode`, prefix `zcode/`, `zcode-bot@`, `Zcode`)
+   - Z Code: `ZC` (display `ZCode`, prefix `zcode/`, `zc-bot@`, `ZC`)
    - BotFleet role bots carry the platform prefix in the display name (`@**BF-Plumber**`); Grok Bot personas are `GB-<ROLE>`.
    *(Retired: MONET, RENOIR, HARNESS, DSH have no bot.  Retired tags: MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK (an accepted alias, signed GROK; display name `Grok`).  Never assign work to a retired seat or wait on one.)*
 

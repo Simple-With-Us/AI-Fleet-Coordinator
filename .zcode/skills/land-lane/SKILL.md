@@ -3,16 +3,16 @@ name: land-lane
 description: Land a ZCode feature branch to main across the fleet — seat worktree, docs, verification gate, PR, auto-merge, then closeout.  Use when finishing a unit, opening a PR, merging, or when the owner says land/ship/commit/push.  Never wait for the owner to ask.  Covers apps with and without scripts/land.sh.
 ---
 
-# Land a feature branch (ZCODE)
+# Land a feature branch (ZC)
 
-> **This install is for `ZCODE`.**  Chat tag `[ZCODE·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZCODE`, credential in Infisical Fleet-OPS `/zulip` (`ZCODE_ZULIP_EMAIL`, `ZCODE_ZULIP_KEY`, `ZCODE_ZULIP_SITE`).  Session tag `[ZCODE·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZCODE default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
 
-Seat: **ZCODE**.  Branch: `zcode/<slug>`.  Never `claude/`.  Never land from `~/Code/<repo>` or from branch `main`.
+Seat: **ZC**.  Branch: `zcode/<slug>`.  Never `claude/`.  Never land from `~/Code/<repo>` or from branch `main`.
 
 ## Preconditions
 
