@@ -29,6 +29,7 @@ targets:
         PRODUCT_NAME: Muster
         PRODUCT_BUNDLE_IDENTIFIER: services.jays.Muster
         GENERATE_INFOPLIST_FILE: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDisplayName: Muster
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
@@ -87,6 +88,7 @@ targets:
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift
+      - path: Muster/Model/ThemeChoice.swift
       - path: Muster/Model/ListenerConfigFile.swift
       - path: Muster/Model/ListenerStatus.swift
       - path: Muster/Model/OperatorOptions.swift
