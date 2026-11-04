@@ -2015,6 +2015,48 @@ class SecurityTests(DaemonHarness):
         self.assertIn("CLAUDE", human.out)
         self.assertIn("(pinned)", human.out)
 
+    def test_status_publishes_the_registered_letter_for_a_lease(self) -> None:
+        # AFC-597:  a lease whose session the Operator registry has lettered carries
+        # that letter (with its title and verified host) in status, and a lease with
+        # no registration carries none of them rather than an invented value.
+        self.write_lease("L1", session_id="sess-aaaaaaaa")
+        self.write_lease("L2", session_id="sess-bbbbbbbb")
+        daemon = self.daemon()
+        D.OR.register_session(
+            daemon._registration_db(),
+            platform="claude",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="sess-aaaaaaaa",
+            seat="CLAUDE",
+            source="test",
+            title="Letters Work",
+            issuer=D.OR.ISSUER_OPERATOR,
+        )
+        leases = {
+            row["lease_id"]: row for row in daemon.status()["seats"]["CLAUDE"]["leases"]
+        }
+        self.assertEqual(leases["L1"]["session_id"], "sess-aaaaaaaa")
+        self.assertEqual(leases["L1"]["letter"], "AA")
+        self.assertEqual(leases["L1"]["title"], "Letters Work")
+        self.assertEqual(leases["L1"]["verified_host"], "mac")
+        self.assertEqual(leases["L2"]["session_id"], "sess-bbbbbbbb")
+        self.assertNotIn("letter", leases["L2"])
+        self.assertNotIn("title", leases["L2"])
+        self.assertNotIn("verified_host", leases["L2"])
+
+    def test_status_without_a_registry_file_degrades_to_todays_rows(self) -> None:
+        # A host with no registry yet:  status still answers, the lease row simply
+        # has no letter, and the read never brings the registry file into being.
+        self.write_lease("L1", session_id="sess-aaaaaaaa")
+        daemon = self.daemon()
+        db = daemon._registration_db()
+        self.assertFalse(os.path.exists(db))
+        leases = daemon.status()["seats"]["CLAUDE"]["leases"]
+        self.assertEqual(leases[0]["session_id"], "sess-aaaaaaaa")
+        self.assertNotIn("letter", leases[0])
+        self.assertFalse(os.path.exists(db))
+
 
 class ThreadedRunTests(DaemonHarness):
     """The production loop:  poller, router and wake worker threads, then a clean stop."""
