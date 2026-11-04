@@ -62,7 +62,7 @@ test("Seats and Bots covers every partition seat and every fleet-apps.json seat"
 });
 
 test("one Grok Build row, no generic Grok Bot row, active Kimi and ZCode", () => {
-  assert.equal(seatsRows.find(r => r[0] === "GROK")[1], "Grok Build");
+  assert.equal(seatsRows.find(r => r[0] === "GROK")[1], "Grok");
   assert.ok(!seatsRows.some(r => ["GROK-BUILD", "GROK-BOT"].includes(r[0])));
   const status = seatsRows[0].indexOf("Status");
   for (const t of ["KIMI", "ZC"]) assert.equal(seatsRows.find(r => r[0] === t)[status], "active");
@@ -123,4 +123,9 @@ test("the Markdown mirror escapes HTML in cell text", () => {
 
 test('Grok Web has its own source branch prefix and no cloud-only PR restriction',()=>{
   const row=seatsRows.find(r=>r[0]==='GROK-WEB');assert.equal(row[seatsRows[0].indexOf('Branch Prefix')],'grok-web/');assert.doesNotMatch(row.at(-1),/no Mac lanes|no checkouts|refuses|makes no lanes/);
+});
+
+test('source notes and reserved/legacy lane tokens remain visible',()=>{
+  for(const tag of ['ECHO','WISE']) assert.equal(seatsRows.find(r=>r[0]===tag).at(-1),fleetApps.seats.find(s=>s.tag===tag).notes);
+  const text=seatsRows.map(r=>r.join(' ')).join(' ');assert.match(text,/grok-build\//);assert.match(text,/slugs must not start with web-/);assert.doesNotMatch(text,/makes no Mac lanes|not through a Mac lane/);assert.doesNotMatch(seatsRows.at(-1)[0],/server\/listener.toml/);
 });
