@@ -783,8 +783,9 @@ def _evaluate(payload: Any, ctx: GuardContext | None) -> Decision:
     env = ctx.env if ctx is not None else os.environ
     if (env.get(ENV_GUARD) or "").strip().lower() in _OFF_VALUES:
         return Decision(ALLOW, "", _OK_DISABLED)
-    if _isolation_request(payload):
-        return _evaluate_isolation(payload, ctx)
+    isolation = _evaluate_isolation(payload, ctx) if _isolation_request(payload) else None
+    if isolation is not None and (isolation.denied or isolation.detected):
+        return isolation
     got = _extract(payload)
     if got is None:
         return Decision(ALLOW, "", _OK_NOT_SHELL)
@@ -802,9 +803,11 @@ def _evaluate(payload: Any, ctx: GuardContext | None) -> Decision:
         hit = ev.hits[0]
         return Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
     if ev.placement:
+        # A compound command can name several destinations, and any class the mode blocks denies the whole command.
+        for cls, hit in ev.placement:
+            if ctx.mode.blocks(cls):
+                return Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
         cls, hit = ev.placement[0]
-        if ctx.mode.blocks(cls):
-            return Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
         if ctx.mode.mode != P.MODE_OFF:
             return Decision(ALLOW, "", _OK_NO_MATCH, detected=cls, detected_detail=_detail(ev, hit, cls))
     return Decision(ALLOW, "", _OK_NO_MATCH)
@@ -847,7 +850,8 @@ def _shim_verdict(ev: _Evaluator) -> tuple[str, Decision] | None:
         hit = ev.hits[0]
         cls = _rule_class(hit.rule)
     elif ev.placement:
-        cls, hit = ev.placement[0]
+        blocked = [row for row in ev.placement if ev.ctx.mode.blocks(row[0])]
+        cls, hit = blocked[0] if blocked else ev.placement[0]
     else:
         return None
     return cls, Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)

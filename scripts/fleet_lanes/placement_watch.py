@@ -88,7 +88,8 @@ def public_path(path: str, roots: L.Roots) -> str:
         text = os.fspath(root)
         if path == text or path.startswith(text + "/"):
             return token + path[len(text):]
-    return path
+    # Anywhere else may be private inventory, and the name alone is enough to find it from the state file.
+    return "{outside}/" + os.path.basename(path.rstrip("/"))
 
 
 def creator_of(path: str, co: Mapping[str, Any], registry: L.Registry) -> str:
@@ -335,7 +336,7 @@ def _title(creator: str, repo: str, host: str) -> str:
 
 
 def _lines(items: Sequence[Finding], limit: int = 40) -> str:
-    rows = [f"- `{f.public}`: {f.kind.lower()}, {f.detail}" for f in items[:limit]]
+    rows = [f"- `{D.redact_text(f.public)}`: {f.kind.lower()}, {D.redact_text(f.detail)}" for f in items[:limit]]
     if len(items) > limit:
         rows.append(f"- and {len(items) - limit} more")
     return "\n".join(rows)

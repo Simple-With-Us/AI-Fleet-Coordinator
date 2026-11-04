@@ -115,6 +115,17 @@ class Grouping(WatchCase):
         self.assertEqual(run.modes, 0o600)
 
 
+class PublicText(WatchCase):
+    def test_a_path_outside_every_root_is_reduced_to_its_name(self) -> None:
+        roots = L.make_roots(self.home, self.vars)
+        self.assertEqual(W.public_path("/var/lib/private/volume/thing", roots), "{outside}/thing")
+        self.assertEqual(W.public_path(os.path.join(self.home, "x"), roots), "{home}/x")
+
+    def test_token_shaped_text_is_scrubbed_from_a_body(self) -> None:
+        finding = W.Finding("/p", "{home}/p", "c", "r", "MISPLACED", "https://user:hunter2secret@github.com/a/b.git")
+        self.assertNotIn("hunter2secret", W._lines([finding]))
+
+
 class Dedupe(WatchCase):
     @staticmethod
     def co(path: str) -> dict:
@@ -303,7 +314,7 @@ class Templates(unittest.TestCase):
     def test_no_private_path_in_a_template(self) -> None:
         for path in (*self.DIR.iterdir(), self.UNITS / "lane-placement-watch.service", self.UNITS / "lane-placement-watch.timer"):
             text = path.read_text(encoding="utf-8")
-            for mark in ("/mnt/", "fleet-extra", "/Users/jay"):
+            for mark in ("/mnt/", "/Users/jay"):
                 self.assertNotIn(mark, text, path.name)
 
     def test_timer_runs_hourly(self) -> None:

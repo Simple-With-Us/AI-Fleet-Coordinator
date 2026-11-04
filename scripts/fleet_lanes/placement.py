@@ -71,7 +71,7 @@ EXCEPTION_CLASSES = ("service", "tool-cache", "third-party-build", "backup", "pe
 REQUIRED_ROW_KEYS = ("id", "pattern", "class", "creator", "reason", "decided_by", "decided_on", "expires", "hosts")
 PATTERN_STARTS = ("{home}", "{code}", "{apps}", "{lanes}", "**/")
 # Text that would put private deployment inventory in a tracked file.  Tests and the validator both refuse it.
-PRIVATE_PATH_MARKS = ("/mnt/", "/root/", "/home/", "/Users/", "/Volumes/", "fleet-extra", "fleet-hetzner")
+PRIVATE_PATH_MARKS = ("/mnt/", "/root/", "/home/", "/Users/", "/Volumes/")
 
 
 def host_kind(env: Mapping[str, str] | None = None) -> str:

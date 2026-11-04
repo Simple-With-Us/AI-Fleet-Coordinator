@@ -156,11 +156,8 @@ def checkout_state(repo: Path) -> tuple[str, str, str] | None:
 
 
 def _exception(repo: Path, env: Mapping[str, str], home: Path, code_root: Path):
-    """The in-date exception row for this clone, or None.  Without the package next to this file there are no rows."""
-    try:
-        from fleet_lanes import placement as P
-    except ImportError:
-        return None
+    """The in-date exception row for this clone, or None."""
+    from fleet_lanes import placement as P  # A missing package fails this clone rather than moving a pinned one.
 
     class _Roots:
         pass
@@ -299,7 +296,11 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     for repo in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
         if repo.name.startswith(".") or not repo.is_dir():
             continue
-        process_repo(repo, args.dry_run, counters, env=env, home=home, code_root=root)
+        try:
+            process_repo(repo, args.dry_run, counters, env=env, home=home, code_root=root)
+        except Exception as exc:  # noqa: BLE001 - one clone must not stop the others
+            counters["failed"] += 1
+            log(f"fail {repo.name}: {type(exc).__name__}")
     log("summary: " + " ".join(f"{key}={value}" for key, value in counters.items()))
     return 1 if counters["failed"] else 0
 

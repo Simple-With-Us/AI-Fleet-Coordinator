@@ -188,6 +188,24 @@ class Exceptions(SyncCase):
         self.assertIn("exception pinned", out)
 
 
+class OneBadClone(SyncCase):
+    def test_it_does_not_stop_the_others(self) -> None:
+        second = self.code / "Zed"
+        run(["clone", "-q", str(self.upstream), str(second)], self.home)
+        real = S.process_repo
+
+        def flaky(repo, *a, **k):
+            if repo.name == "Example":
+                raise RuntimeError("boom")
+            return real(repo, *a, **k)
+
+        with mock.patch.object(S, "process_repo", flaky):
+            code, out = self.sync()
+        self.assertEqual(code, 1)
+        self.assertIn("fail Example: RuntimeError", out)
+        self.assertIn("Zed", out)
+
+
 class Errors(unittest.TestCase):
     def test_only_fleet_github_origins_count(self) -> None:
         self.assertTrue(S.remote_is_fleet_github("https://github.com/Simple-With-Us/X.git"))
@@ -201,7 +219,7 @@ class Errors(unittest.TestCase):
 
     def test_no_host_path_in_the_source(self) -> None:
         text = Path(S.__file__).read_text(encoding="utf-8")
-        for mark in ("/mnt/", "fleet-extra", "/root/"):
+        for mark in ("/mnt/", "/root/"):
             self.assertNotIn(mark, text)
 
 

@@ -127,6 +127,18 @@ class ExistingRulesStand(unittest.TestCase):
                 self.assertEqual(G.evaluate(payload(command), c).action, G.DENY)
 
 
+class Compound(unittest.TestCase):
+    def test_a_later_destination_in_a_blocked_class_denies(self) -> None:
+        command = f"git clone {FLEET} ~/apps/first && git clone {FLEET} ~/second"
+        d = G.evaluate(payload(command), ctx("block home"))
+        self.assertEqual((d.action, d.rule_id), (G.DENY, G.RULE_PLACEMENT_HOME))
+
+    def test_an_isolation_request_still_has_its_command_judged(self) -> None:
+        body = {"tool_name": "Bash", "cwd": f"{LANES}/BotFleet/claude-x",
+                "tool_input": {"command": f"git clone {FLEET} ~/tmp-x", "isolation": "worktree"}}
+        self.assertEqual(G.evaluate(body, ctx("block home\nisolation block")).action, G.DENY)
+
+
 class Advice(unittest.TestCase):
     def test_the_deny_never_suggests_what_the_mode_blocks(self) -> None:
         command = "gh repo clone Simple-With-Us/not-registered ~/tmp-z"

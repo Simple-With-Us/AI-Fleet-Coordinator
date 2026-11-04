@@ -197,6 +197,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_lanes/guard.py",
         "scripts/fleet_lanes/lane.py",
         "scripts/fleet_lanes/layout.py",
+        "scripts/fleet_lanes/placement.py",
         "scripts/fleet_knobs/__init__.py",
         "scripts/fleet_knobs/knobs.py",
         "scripts/fleet_knobs/lkg.py",
@@ -500,6 +501,7 @@ TOOL_FILES = (
     "scripts/fleet_lanes/bin/lane",
     "scripts/fleet_lanes/lane.py",
     "scripts/fleet_lanes/layout.py",
+    "scripts/fleet_lanes/placement.py",
     "scripts/fleet-mode",
     "docs/FLEET-MODE.md",
 )

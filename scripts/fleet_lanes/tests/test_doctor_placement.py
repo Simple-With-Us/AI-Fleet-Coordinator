@@ -219,6 +219,14 @@ class MainClones(Case):
         self.fake_origin()
         self.assertEqual([r["repo"] for r in self.report()["main_clones"]], ["BotFleet"])
 
+    def test_a_local_repo_with_no_remote_is_not_listed(self) -> None:
+        self.fake_origin()
+        local = self.code / "Scratch"
+        local.mkdir()
+        git(["init", "-q", "-b", "main"], local)
+        git(["commit", "-q", "--allow-empty", "-m", "x"], local)
+        self.assertEqual([r["repo"] for r in self.report()["main_clones"]], ["BotFleet"])
+
     def test_a_lane_is_not_a_main_clone(self) -> None:
         self.fake_origin()
         (self.lanes / "BotFleet").mkdir()

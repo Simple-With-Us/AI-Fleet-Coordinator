@@ -2044,7 +2044,8 @@ def _main_clones(ctx: _Ctx, ordered: Sequence[Checkout], behind_limit: int) -> l
     out: list[dict] = []
     for co in ordered:
         parts = L._parts(co.realpath, ctx.roots)  # noqa: SLF001
-        if parts[:-1] == code_root and co.kind == "FULL-CLONE":
+        # A local repo with no remote has no default branch to be on.
+        if parts[:-1] == code_root and co.kind == "FULL-CLONE" and co.remote_url:
             out.append(main_clone_status(ctx, co, behind_limit))
     return out
 
