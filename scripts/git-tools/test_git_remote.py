@@ -1881,3 +1881,56 @@ class TestRealSharedScanner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestPrLifecycleDiscovery(unittest.TestCase):
+    def page(self):
+        return [{"name": "gr_edit_pr", "description": "Close or reopen", "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["repo", "number", "identity"],
+            "properties": {"repo": {"type": "string"}, "number": {"type": "integer"},
+                           "identity": {"type": "string"}, "state": {"type": "string", "enum": ["open", "closed"]},
+                           "expected_head_sha": {"type": "string"}, "expected_updated_at": {"type": "string"}}}}]
+
+    def test_list_show_and_call_use_advertised_state_schema_own_identity(self):
+        t = FakeTransport(pages=[self.page()])
+        env = {"SIMPLE_TOOLS_BEARER": BEARER}
+        for argv in (["list", "--writes", "--json"], ["show", "gr_edit_pr", "--json"]):
+            code, out, err = run_cli(argv, env=env, transport=t)
+            self.assertEqual(code, 0, err)
+            self.assertIn("gr_edit_pr", out)
+        args = {"repo": "example/repo", "number": 3, "state": "closed", "expected_head_sha": "a" * 40,
+                "expected_updated_at": "2026-11-04T06:00:00Z"}
+        code, out, err = run_cli(["call", "gr_edit_pr", "--args-json", json.dumps(args)], env=env, transport=t)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(t.calls[-1], ("gr_edit_pr", {**args, "identity": "CODEX"}))
+
+    def test_state_boolean_refused_before_target(self):
+        t = FakeTransport(pages=[self.page()])
+        code, _, _ = run_cli(["call", "gr_edit_pr", "--args-json", '{"repo":"example/repo","number":3,"state":true}'],
+                            env={"SIMPLE_TOOLS_BEARER": BEARER}, transport=t)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(any(n == "gr_edit_pr" for n, a in t.calls))
+
+class TestActualHostedLifecycleComposition(unittest.TestCase):
+    def test_actual_hosted_catalog_to_simple_git_identity_and_call(self):
+        import subprocess
+        source = Path(__file__).resolve().parents[1] / "agent-sync-mcp"
+        script = "import {toolListFor} from './src/delegated-identities.js'; console.log(JSON.stringify(toolListFor('CODEX').list.filter(t=>['gr_edit_pr','gr_open_pr'].includes(t.name))))"
+        result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=source, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actual = json.loads(result.stdout)
+        edit = next(x for x in actual if x["name"] == "gr_edit_pr")
+        self.assertIn("identity", edit["inputSchema"]["required"])
+        self.assertEqual(edit["inputSchema"]["properties"]["identity"]["enum"], ["CODEX"])
+        self.assertIn("oneOf", edit["outputSchema"])
+        t = FakeTransport(pages=[actual]); env = {"SIMPLE_TOOLS_BEARER": BEARER}
+        for argv in (["list", "--writes", "--json"], ["show", "gr_edit_pr", "--json"]):
+            code, out, err = run_cli(argv, env=env, transport=t)
+            self.assertEqual(code, 0, err); self.assertIn("gr_edit_pr", out)
+        args = {"repo":"example/repo","number":3,"state":"closed","expected_head_sha":"a"*40,"expected_updated_at":"2026-11-04T06:00:00Z"}
+        code, _, err = run_cli(["call","gr_edit_pr","--args-json",json.dumps(args)],env=env,transport=t)
+        self.assertEqual(code,0,err); self.assertEqual(t.calls[-1],("gr_edit_pr",{**args,"identity":"CODEX"}))
+        bad = {**args,"identity":"WISE"}
+        before = sum(n == "gr_edit_pr" for n,a in t.calls)
+        code, _, _ = run_cli(["call","gr_edit_pr","--args-json",json.dumps(bad)],env=env,transport=t)
+        self.assertNotEqual(code,0); self.assertEqual(sum(n == "gr_edit_pr" for n,a in t.calls),before)

@@ -141,6 +141,16 @@ class OutcomeStore:
         self._save()
         return rows
 
+    def has_held_except(self, keys=()):
+        """Legacy rows have no resource attribution: hold conservatively.
+
+        Never reverse-guess an opaque legacy hash. Unknown legacy writes must
+        be reconciled before adding a lifecycle route that could bypass them.
+        """
+        with self._lock:
+            return any(k not in keys and r["state"] in ("pending", "unknown")
+                       for k, r in self._rows.items())
+
     def begin(self, key: str, *, reapply_ok: bool = False) -> dict | None:
         """Mark a key in flight;  return the existing row when the key is already taken.
 

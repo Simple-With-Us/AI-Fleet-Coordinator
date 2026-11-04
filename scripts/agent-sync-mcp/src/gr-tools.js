@@ -34,6 +34,15 @@ export const RelayResponseSchema = z.looseObject({
   retryable: z.boolean().optional(),
 });
 
+export const PrLifecycleResultSchema = z.strictObject({
+  number: z.number().int().positive(), url: z.string().url(),
+  state: z.enum(["open", "closed"]), draft: z.boolean(),
+  head_sha: z.string().regex(/^[0-9a-f]{40}$/),
+  updated_at: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
+  noop: z.boolean(), verified: z.literal(true),
+  request_digest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+});
+
 export const GR_TIMEOUT_MS = 15_000;
 export const GR_RESPONSE_LIMIT = 262_144; // bytes:  a relay answer is small JSON
 export const GR_SECRETS = Object.freeze({
@@ -250,6 +259,16 @@ export class GrRelayClient {
     if (!result.success) {
       return { status: 502, body: realServerError ? { error: "upstream_bad_shape", outcome: "unknown" } : { error: "upstream_bad_shape" } };
     }
+    if (response.status === 200 && (action === "open_pr" || (action === "edit_pr" && args?.state !== undefined))) {
+      const lifecycle = PrLifecycleResultSchema.safeParse(result.data);
+      const expectedUrl = `https://github.com/${args.repo}/pull/${result.data.number}`;
+      if (!lifecycle.success || result.data.url !== expectedUrl
+          || (action === "edit_pr" && (result.data.number !== args.number || result.data.state !== args.state || result.data.head_sha !== args.expected_head_sha))
+          || (action === "open_pr" && (result.data.state !== "open" || result.data.draft !== (args.draft ?? false)))) {
+        return {status: 502, body: {error: "pr_lifecycle_unverifiable", outcome: "unknown", retryable: false}};
+      }
+      return {status: 200, body: lifecycle.data};
+    }
     return { status: response.status, body: result.data };
   }
 }
@@ -269,6 +288,14 @@ const REPO = { type: "string", description: "owner/name" };
 const NUMBER = { type: "integer", description: "pull request number" };
 const obj = (required, properties) => ({ type: "object", additionalProperties: false, required, properties });
 
+const lifecycleOutput = {
+  type: "object", additionalProperties: false,
+  required: ["number", "url", "state", "draft", "head_sha", "updated_at", "noop", "verified"],
+  properties: {number:{type:"integer",minimum:1},url:{type:"string"},state:{type:"string",enum:["open","closed"]},
+    draft:{type:"boolean"},head_sha:{type:"string",pattern:"^[0-9a-f]{40}$"},updated_at:{type:"string"},
+    noop:{type:"boolean"},verified:{type:"boolean",const:true},request_digest:{type:"string",pattern:"^[0-9a-f]{64}$"}},
+};
+
 /** The hosted GR tool specs (names gr_<action>).  Descriptions name the
  * identity the action runs as;  the relay's per-seat allowlist is the real
  * policy boundary, this server only fronts it. */
@@ -276,18 +303,20 @@ export const GR_TOOLS = Object.freeze([
   {
     name: "gr_open_pr",
     title: "Open Pull Request",
+    outputSchema: lifecycleOutput,
     description: "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
-    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" } }),
+    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" } }),
   },
   {
     name: "gr_edit_pr",
     title: "Edit Pull Request",
-    description: "Edit a pull request's title and/or body through git-relay, as your own GitHub App.  At least one of title or body is required.",
+    outputSchema: {type:"object", oneOf:[lifecycleOutput, {type:"object",additionalProperties:false,required:["number","url"],properties:{number:{type:"integer"},url:{type:"string"}}}]},
+    description: "Edit title/body or close/reopen an unmerged pull request as your own GitHub App. State changes require expected head and prior updated_at, preserve branches, and verify a fresh readback. State cannot be combined with text edits.",
     inputSchema: {
-      ...obj(["repo", "number"], { repo: REPO, number: NUMBER, title: { type: "string" }, body: { type: "string" } }),
+      ...obj(["repo", "number"], { repo: REPO, number: NUMBER, title: { type: "string" }, body: { type: "string" }, state: { type: "string", enum: ["open", "closed"] }, expected_head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" }, expected_updated_at: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" } }),
       // An edit with neither field can only fail;  refuse it at the schema
       // boundary (the relay's _validate_args refuses it too, as a 400).
-      anyOf: [{ required: ["title"] }, { required: ["body"] }],
+      anyOf: [{ required: ["title"] }, { required: ["body"] }, { required: ["state", "expected_head_sha", "expected_updated_at"] }],
     },
   },
   {
