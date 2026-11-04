@@ -49,7 +49,7 @@ The default channel is `work-in-progress`, the realm's live coordination channel
 | `resolve --topic T [--channel C]` | Rename the topic to a check mark and a space followed by its name, for the whole topic.  Refused if it already starts with the check mark. |
 | `react --id MSGID EMOJI` | Add an emoji reaction by name. |
 | `mcp` | Serve the tools over MCP on stdin and stdout.  An MCP client's config entry runs it, not a person ([MCP](#mcp)). |
-| `daemon run\|install\|uninstall\|status\|pause\|resume\|reload\|init\|test-wake` | The always-on [listener](#listener). |
+| `daemon run\|install\|uninstall\|status\|pause\|resume\|reload\|check-config\|init\|test-wake` | The always-on [listener](#listener). |
 | `status [--json] [--probe] [--seat S]` | Listener status (same as `daemon status`). |
 | `attach ...`, `detach ...` | Lease topics for a session; the Claude Code hooks, `--rewake`, `--drain [--replay N]` and `--wait`. |
 | `wakes [--seat S] [--since HOURS]` | The listener's wake ledger. |

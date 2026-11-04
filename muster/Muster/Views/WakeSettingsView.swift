@@ -30,7 +30,7 @@ struct WakeSettingsView: View {
         case .all:
             base = store.model.seats
         case .problems:
-            base = store.model.seats.filter { !$0.problems.isEmpty || !$0.redWarnings.isEmpty || $0.quotaExhausted }
+            base = store.model.seats.filter(\.needsAttention)
         case .deferred:
             base = store.model.seats.filter {
                 $0.usage.deferredTotalThisDay > 0 || $0.heldBackQueueCount > 0 || $0.heldBackTotalCount > 0 || $0.chatNudgesPending > 0 || $0.chatNudgesBlocked > 0
@@ -50,11 +50,21 @@ struct WakeSettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 listenerLine
+                if !store.model.listenerErrors.isEmpty {
+                    failureBox(
+                        title: "The Mac's Listener Reports Problems",
+                        text: store.model.listenerErrors.joined(separator: "\n")
+                    )
+                }
                 if !store.model.problems.isEmpty {
                     problemBox(store.model.problems.joined(separator: "\n"))
                 }
                 if let message = store.message {
-                    messageBox(message)
+                    if store.messageIsFailure {
+                        failureBox(title: "That Did Not Work", text: message)
+                    } else {
+                        messageBox(message)
+                    }
                 }
                 daemonSection
                 operatorSection
@@ -90,6 +100,7 @@ struct WakeSettingsView: View {
         case .apply: await store.apply(seat: action.seat)
         case .testWake: await store.testWake(seat: action.seat, runtime: action.runtime)
         case .pin: await store.pin(seat: action.seat, runtime: action.runtime)
+        case .removeSection: await store.removeRefusedSection(seat: action.seat)
         }
     }
 
@@ -181,6 +192,29 @@ struct WakeSettingsView: View {
         .background(Color.orange.opacity(0.10))
     }
 
+    /// A failure:  a named heading and an icon as well as the colour.
+    private func failureBox(title: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "xmark.octagon.fill")
+                .foregroundStyle(.red)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+                Text(text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.red.opacity(0.10))
+        .accessibilityElement(children: .combine)
+    }
+
     private func messageBox(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "info.circle.fill")
@@ -267,7 +301,7 @@ struct WakeSettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Muster reads no credentials,  so it cannot say whether the Operator's key exists.  The letters it issues come from \(OperatorOptions.letterPool.count) of \(OperatorOptions.letterPool.count) letters,  and the smallest free one is reused.")
+            Text("Muster reads no credentials,  so it cannot say whether the Operator's key exists.\u{00A0} The letters it issues come from \(OperatorOptions.letterPool.count) of \(OperatorOptions.letterPool.count) letters,  and the smallest free one is reused.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -276,11 +310,91 @@ struct WakeSettingsView: View {
 
     // MARK: One seat
 
+    /// One seat.  A seat another listener holds gets no fields and no buttons:  a section for it
+    /// would stop the Mac's listener, and its pause, test wake and pin could not reach it.
+    @ViewBuilder
     private func seatSection(_ seat: WakeSeat) -> some View {
+        if seat.host.isElsewhere {
+            elsewhereSeatSection(seat)
+        } else {
+            localSeatSection(seat)
+        }
+    }
+
+    /// Where a seat runs, in words and a symbol.
+    private func hostBadge(_ host: ListenerSeatHost) -> some View {
+        Label(host.badge, systemImage: host.systemImage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    /// A seat the Mac's listener does not hold.
+    private func elsewhereSeatSection(_ seat: WakeSeat) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(seat.seat)
                     .font(.headline)
+                if let bot = seat.bot {
+                    Text(bot)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                hostBadge(seat.host)
+                Spacer()
+            }
+            if let reason = seat.host.readOnlyReason {
+                Text(reason)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if seat.hasRefusedSection {
+                if let problem = seat.refusedSectionProblem {
+                    failureBox(title: "This Section Stops The Mac's Listener", text: problem)
+                }
+                Button {
+                    pendingWakeAction = PendingWakeAction(kind: .removeSection, seat: seat.seat, runtime: nil)
+                } label: {
+                    Label("Remove This Section…", systemImage: "trash")
+                }
+                .disabled(store.isBusy)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    /// What the listener says about a seat it holds, or could hold.
+    @ViewBuilder
+    private func seatNotices(_ seat: WakeSeat) -> some View {
+        if let reason = seat.host.readOnlyReason {
+            problemBox(reason)
+        }
+        if !seat.skippedReasons.isEmpty {
+            failureBox(
+                title: "The Listener Will Not Run This Seat",
+                text: seat.skippedReasons.joined(separator: "\n")
+            )
+        }
+        if seat.disabledInFile {
+            Text("The file turns this seat off, so the Mac's listener holds no queue for it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if !seat.hasSection {
+            Text("The file has no section for this seat, so the Mac's listener holds no queue for it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// A seat on the Mac, or one whose holder is not known.  The second shows what it can and
+    /// offers only the kill switch.
+    private func localSeatSection(_ seat: WakeSeat) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Text(seat.seat)
+                        .font(.headline)
+                    hostBadge(seat.host)
+                }
                 if let bot = seat.bot {
                     Text(bot)
                         .font(.system(size: 11, design: .monospaced))
@@ -313,21 +427,24 @@ struct WakeSettingsView: View {
                 Button {
                     Task { await store.pause(seat: seat.seat) }
                 } label: {
-                    Label("Pause wakes", systemImage: "pause.circle")
+                    Label("Pause Wakes", systemImage: "pause.circle")
                 }
                 .disabled(store.isBusy)
+                .help("Pauses this seat's wakes on the Mac's listener.")
                 Button {
                     Task { await store.resume(seat: seat.seat) }
                 } label: {
                     Label("Resume", systemImage: "play.circle")
                 }
                 .disabled(store.isBusy)
+                .help("Lifts the pause on the Mac's listener.")
             }
+            seatNotices(seat)
             GridRowHeader(labels: ["Setting", "The file", "The Operator", "State"])
             ForEach(seat.settings) { setting in
                 WakeSettingRow(
                     setting: setting,
-                    editable: setting.key.refusalReason == nil,
+                    editable: seat.host.isTheMac && setting.key.refusalReason == nil,
                     draft: draftBinding(seat: seat.seat, key: setting.key)
                 )
             }
@@ -340,27 +457,34 @@ struct WakeSettingsView: View {
             deferredAndQuotaLine(seat)
             pinsLine(seat)
             recentWakes(seat)
-            HStack(spacing: 8) {
-                Button {
-                    pendingWakeAction = PendingWakeAction(kind: .apply, seat: seat.seat, runtime: nil)
-                } label: {
-                    Label("Apply", systemImage: "square.and.arrow.down")
+            if seat.host.isTheMac {
+                HStack(spacing: 8) {
+                    Button {
+                        pendingWakeAction = PendingWakeAction(
+                            kind: .apply,
+                            seat: seat.seat,
+                            runtime: nil,
+                            detail: store.applySummary(seat: seat.seat)
+                        )
+                    } label: {
+                        Label("Apply", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(store.isBusy)
+                    Button {
+                        pendingWakeAction = PendingWakeAction(kind: .testWake, seat: seat.seat, runtime: runtimeArgument(for: seat))
+                    } label: {
+                        Label("Test Wake", systemImage: "play.and.pause")
+                    }
+                    .disabled(store.isBusy)
+                    .help("Runs the seat's wake for real.\u{00A0} A failed run never pins.")
+                    Button {
+                        pendingWakeAction = PendingWakeAction(kind: .pin, seat: seat.seat, runtime: runtimeArgument(for: seat))
+                    } label: {
+                        Label("Pin", systemImage: "pin")
+                    }
+                    .disabled(store.isBusy)
+                    .help("Pins the binary whose test wake passed.")
                 }
-                .disabled(store.isBusy)
-                Button {
-                    pendingWakeAction = PendingWakeAction(kind: .testWake, seat: seat.seat, runtime: runtimeArgument(for: seat))
-                } label: {
-                    Label("Test wake", systemImage: "play.and.pause")
-                }
-                .disabled(store.isBusy)
-                .help("Runs the seat's wake for real.  A failed run never pins.")
-                Button {
-                    pendingWakeAction = PendingWakeAction(kind: .pin, seat: seat.seat, runtime: runtimeArgument(for: seat))
-                } label: {
-                    Label("Pin", systemImage: "pin")
-                }
-                .disabled(store.isBusy)
-                .help("Pins the binary whose test wake passed.")
             }
         }
         .padding(.vertical, 6)
@@ -369,13 +493,13 @@ struct WakeSettingsView: View {
     /// The runtime to name on the command line,  or nil when the seat's wake is not one the
     /// CLI names.
     ///
-    /// `daemon test-wake --runtime` accepts only `claude`, `muse`, `mcode` and `fallback`.
-    /// `WakeType` also has `inbox` and `http`,  and passing either made argparse exit 2 with
-    /// "invalid choice",  so both buttons always reported a failed test wake and never
+    /// `daemon test-wake --runtime` accepts only `claude`, `muse`, `mcode`, `openrouter` and
+    /// `fallback`.  `WakeType` also has `inbox` and `http`,  and passing either made argparse exit
+    /// 2 with "invalid choice",  so both buttons always reported a failed test wake and never
     /// pinned anything.  Nil leaves the flag off and the CLI's own default (`auto`) decides.
     private func runtimeArgument(for seat: WakeSeat) -> String? {
         guard let wake = seat.liveWake,
-              ["claude", "muse", "mcode"].contains(wake.rawValue) else { return nil }
+              ["claude", "muse", "mcode", "openrouter"].contains(wake.rawValue) else { return nil }
         return wake.rawValue
     }
 
@@ -505,7 +629,16 @@ private struct WakeSettingRow: View {
             HStack(spacing: 12) {
                 GridCellText(value: setting.title)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if editable {
+                if editable, let options = setting.key.pickerOptions(current: draft) {
+                    // A short fixed list is a picker, so a typo cannot drop the seat to inbox.
+                    Picker(setting.title, selection: $draft) {
+                        ForEach(options, id: \.self) { option in
+                            Text(option).tag(option)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else if editable {
                     TextField("", text: $draft)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11, design: .monospaced))
@@ -572,7 +705,7 @@ private extension WakeSettingState {
         case .drift: return .orange
         case .unproven: return .indigo
         case .notOwned, .unpublished: return .gray
-        case .unset, .off: return .secondary
+        case .unset, .off, .heldElsewhere: return .secondary
         case .unknown: return .red
         }
     }
@@ -587,7 +720,8 @@ private extension WakeSettingState {
         case .unpublished: return "The engine reads this one,  but does not publish it."
         case .unset: return "The file holds nothing,  so the listener's default is in effect."
         case .off: return "Off,  by the owner's ruling."
-        case .unknown: return "This could not be read."
+        case .unknown: return "The listener did not report this seat, so what it is using is not known."
+        case .heldElsewhere: return "The Mac's listener does not hold this seat."
         }
     }
 }
@@ -599,16 +733,19 @@ private extension WakeSettingState {
 
 /// A wake action waiting for the owner's confirmation, with its concrete effect.
 private struct PendingWakeAction: Identifiable {
-    enum Kind { case apply, testWake, pin }
+    enum Kind { case apply, testWake, pin, removeSection }
     let kind: Kind
     let seat: String
     let runtime: String?
+    /// The changes this would make, in words.
+    var detail: String = ""
     var id: String { "\(kind)-\(seat)-\(runtime ?? "")" }
     var title: String {
         switch kind {
         case .apply: return "Apply Settings For \(seat)?"
         case .testWake: return "Run A Test Wake For \(seat)?"
         case .pin: return "Pin The Wake Binary For \(seat)?"
+        case .removeSection: return "Remove The \(seat) Section From The Mac's File?"
         }
     }
     var confirmTitle: String {
@@ -616,16 +753,20 @@ private struct PendingWakeAction: Identifiable {
         case .apply: return "Apply"
         case .testWake: return "Run Test Wake"
         case .pin: return "Pin"
+        case .removeSection: return "Remove Section"
         }
     }
     var message: String {
         switch kind {
         case .apply:
-            return "This writes \(seat)'s edited settings to the listener configuration file and asks the listener to re-read it.\u{00A0} The change takes effect in the running listener."
+            let opening = "This checks \(seat)'s edited settings with the listener's own rules, writes them to the Mac's listener configuration file, and asks the listener to re-read it.\u{00A0} Muster then says whether the listener took the change."
+            return detail.isEmpty ? opening : opening + "\n\n" + detail
         case .testWake:
             return "This runs \(seat)'s wake for real, exactly as a live wake would run.\u{00A0} It can spend wake budget and start a worker session."
         case .pin:
             return "This pins the binary whose test wake passed for \(seat) as the proved binary.\u{00A0} A failed run never pins."
+        case .removeSection:
+            return "This takes the [seat.\(seat)] section out of the Mac's listener configuration file and keeps a backup of the old file.\u{00A0} The Mac's listener does not hold \(seat), so the section can only stop it."
         }
     }
 }

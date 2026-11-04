@@ -58,6 +58,8 @@ struct WakeSettingsReader {
     var runner: AgentSyncRunning
     /// The seats to show.
     var roster: [String]
+    /// Where the seat partition is,  or nil when the checkout could not be found.
+    var partitionURL: URL?
     /// The clock.
     var now: () -> Date
 
@@ -65,11 +67,13 @@ struct WakeSettingsReader {
         location: ListenerStateLocation = ListenerStateLocation(),
         runner: AgentSyncRunning = AgentSyncCLI(),
         roster: [String] = [],
+        partitionURL: URL? = ListenerPartition.defaultURL(),
         now: @escaping () -> Date = { Date() }
     ) {
         self.location = location
         self.runner = runner
         self.roster = roster
+        self.partitionURL = partitionURL
         self.now = now
     }
 
@@ -81,6 +85,10 @@ struct WakeSettingsReader {
         var sources = WakeSettingsSources()
         var problems: [String] = []
 
+        // Who holds each seat.  The listener refuses a section it is not given,  so this comes
+        // first:  every seat's row depends on it.
+        sources.partition = ListenerPartition.load(from: partitionURL)
+
         // The configuration file.
         let configText = readText(location.configURL)
         guard let configText else {
@@ -91,6 +99,7 @@ struct WakeSettingsReader {
             return sources
         }
         sources.config = ListenerConfigDocument(text: configText)
+        sources.configReadable = true
         sources.configPath = location.configURL.path
 
         // The listener's own account of itself.
@@ -112,9 +121,8 @@ struct WakeSettingsReader {
 
         // The seats to show:  the roster,  then every seat the file or the listener knows.
         var tags = roster
-        for section in sources.config.sections where section.name.hasPrefix("seat.") {
-            let tag = String(section.name.dropFirst("seat.".count))
-            if !tag.isEmpty, !tags.contains(tag) { tags.append(tag) }
+        for tag in sources.config.seatTags where !tags.contains(tag) {
+            tags.append(tag)
         }
         for tag in status?.seatTags ?? [] where !tags.contains(tag) {
             tags.append(tag)
@@ -125,7 +133,7 @@ struct WakeSettingsReader {
         var pins: [String: [String: PinEvidence]] = [:]
         var usage: [String: WakeUsage] = [:]
         var recent: [String: [WakeLedger.Outcome]] = [:]
-        for tag in tags {
+        for tag in tags where !sources.partition.host(of: tag).isElsewhere {
             var seatPins: [String: PinEvidence] = [:]
             for runtime in ["claude", "muse", "mcode"] {
                 if let evidence = readPin(seat: tag, runtime: runtime) {
