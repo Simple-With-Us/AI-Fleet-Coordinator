@@ -108,7 +108,7 @@ The text this replaces was a generic per-task preamble.  It was correct about t
 Written down rather than guessed, per the "do not assume" rule.
 
 - **The rules file this app reads.**  The Custom Instructions box is an app setting, not a file, so there is no `install_rules.py` platform row for it and no Lane Map block can be installed into it.  A row would need the file this app reads at startup, which is not documented and was not observed from this host.
-- **Whether the surface keeps the gap.**  The rule below says to report a surface that strips the gap rather than dropping it.  The gap in a Bitrig chat has not been measured, so the mechanism for a chat reply inside this app is the house default (a real U+00A0 plus a space) until a reply is checked on screen.
+- **Whether the surface keeps the gap.**  The instructions above say to report a surface that strips the gap rather than dropping it.  The gap in a Bitrig chat has not been measured, so the mechanism for a chat reply inside this app is the house default (a real U+00A0 plus a space) until a reply is checked on screen.
 - **Whether this app keeps the fleet guard hook and the lane guard.**  The lane guard is installed per platform by `install_tools`, and this app is not one of the platforms it knows.  A seat running here may therefore not be stopped from editing an integration tree by the hook, which is why the rule above is stated in the instructions as well.
 
 ## Where the material lives
