@@ -33,3 +33,18 @@ test('actual per-connection advertised catalog preserves titles and identity dec
     const tool=list.find(t=>t.name===name);assert.ok(tool,name);assert.match(tool.title,/^(Linear|GitHub): /);assert.deepEqual(tool.inputSchema.properties.identity.enum,['ECHO']);
   }
 });
+
+test('generated labels never read Object.prototype words', () => {
+  for (const name of ['gr_wf_constructor_probe','gr_wf_toString_probe','gr_wf___proto___probe']) {
+    const result=withServiceTitle({name});
+    assert.doesNotMatch(result.title,/function|native code|object Object/);
+  }
+});
+
+test('existing alias titles follow their public name without changing operations', async () => {
+  const { LINEAR_NAMED_COMMANDS } = await import('../src/linear-named-specs.js');
+  for (const [name, title] of [['linear_retire_issue_label','Linear: Retire Issue Label'],['linear_restore_issue_label','Linear: Restore Issue Label'],['linear_list_issue_statuses','Linear: List Issue Statuses'],['linear_get_notifications','Linear: Get Notifications'],['linear_save_milestone','Linear: Save Milestone']]) {
+    const command = LINEAR_NAMED_COMMANDS.find(command=>command.name===name);
+    assert.ok(command,name);assert.equal(withServiceTitle(command).title,title);
+  }
+});
