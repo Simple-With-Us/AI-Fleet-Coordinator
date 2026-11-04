@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import socket
 import unittest
 import urllib.error
 from email.message import Message
@@ -27,7 +28,7 @@ NONEXPIRING_FIXTURE = json.loads(
 )
 SYNTHETIC_TOKEN = "st." + "synthetic_" * 4
 MARKER = "PRIVATE_RESPONSE_MUST_NEVER_ESCAPE"
-NOW = dt.datetime(2026, 11, 3, tzinfo=dt.UTC)
+NOW = dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc)
 
 
 def environment():
@@ -393,7 +394,7 @@ class ContractTests(unittest.TestCase):
     def test_timeouts_and_transport_errors_are_sanitized_without_retry(self):
         for error, expected in (
             (TimeoutError(MARKER), "request_timeout"),
-            (urllib.error.URLError(TimeoutError(MARKER)), "request_timeout"),
+            (urllib.error.URLError(socket.timeout(MARKER)), "request_timeout"),
             (urllib.error.URLError(MARKER), "metadata_unavailable"),
             (ValueError(MARKER), "audit_failed"),
             (AUDIT.Refusal(MARKER), "audit_failed"),

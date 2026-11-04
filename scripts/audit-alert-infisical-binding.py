@@ -140,7 +140,7 @@ def self_metadata(token, opener):
             else "metadata_unavailable"
         )
         raise Refusal(code) from None
-    except TimeoutError:
+    except (TimeoutError, socket.timeout):
         raise Refusal("request_timeout") from None
     try:
         return json.loads(
@@ -213,7 +213,7 @@ def audit(env, *, opener=None, now=None):
             metadata,
             project,
             token,
-            now or dt.datetime.now(dt.UTC),
+            now or dt.datetime.now(dt.timezone.utc),
         )
         result.update(
             status="verified",
