@@ -61,6 +61,10 @@ class MuseArgvTest(unittest.TestCase):
         self.assertNotIn("--disable-sandbox", argv)
         self.assertNotIn("--yolo", argv)
         self.assertEqual(argv[argv.index("--output-schema") + 1], A.MUSE_SCHEMA_SLOT)
+        # Contributor mode is named, not inherited from the ambient settings flag (owner
+        # directive, 2026-11-03):  the flag is a per-run override that is never persisted, so
+        # the run stays on contributor terms even if the ambient setting ever flips.
+        self.assertEqual(argv[argv.index("--contributor-mode") + 1], "on")
 
     def test_the_contributor_tier_is_the_default_and_the_dear_one_is_never_chosen(self) -> None:
         self.assertEqual(C.MUSE_DEFAULT_MODEL, "muse-spark-1.3-contributor")
@@ -429,6 +433,25 @@ class MuseEnvTest(unittest.TestCase):
         self.assertNotIn("AGENT_SEAT", env)
         self.assertNotIn("AGENT_LAUNCHER", env)
 
+    def test_the_meta_api_key_is_carried_through_when_the_daemon_carries_one(self) -> None:
+        # The daemon's own environment is the injection point (owner, 2026-11-03):  a headless
+        # run cannot read the login Keychain item, so the key the operator staged in the
+        # daemon's environment reaches the run, with and without a seat named.
+        for seat in (None, "MM"):
+            env = A.muse_env(
+                {"USER": "fixture-user", "META_API_KEY": "fixture-meta-key"},
+                "/home/fixture-user",
+                "/wake/path",
+                seat=seat,
+            )
+            self.assertEqual(env["META_API_KEY"], "fixture-meta-key")
+
+    def test_no_meta_api_key_is_invented_when_the_daemon_has_none(self) -> None:
+        # Absent and empty both invent nothing:  the run then uses the subscription login.
+        for source in ({"USER": "fixture-user"}, {"USER": "fixture-user", "META_API_KEY": ""}):
+            env = A.muse_env(source, "/home/fixture-user", "/wake/path", seat="MM")
+            self.assertNotIn("META_API_KEY", env)
+
 
 class MuseEnvelopeTest(unittest.TestCase):
     """The MSP records, not claude's stream-json."""
@@ -780,6 +803,15 @@ class McodeFallbackTest(unittest.TestCase):
         argv = A.mcode_argv("/usr/local/bin/mcode")
         self.assertIn("--model", argv)
         self.assertEqual(argv[argv.index("--model") + 1], C.MCODE_DEFAULT_MODEL)
+
+    def test_the_backup_names_its_reasoning_effort_on_the_command_line(self) -> None:
+        # Without `--effort`, mcode runs at MiniMax's own default effort, which is MAX — the
+        # highest, most expensive thinking tier — for a bounded four-message fallback prompt.
+        # The owner directed that the effort be named, never defaulted (2026-11-03), and his
+        # determination is that M3.1 at minimal is cheaper and faster than M3 at none.
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertEqual(argv[argv.index("--effort") + 1], A.MCODE_REASONING_EFFORT)
+        self.assertEqual(A.MCODE_REASONING_EFFORT, "minimal")
 
     def test_the_backup_model_is_one_the_catalog_serves(self) -> None:
         # The catalog holds `MiniMax-M3` and `MiniMax-M3.1-Flash`;  the -Preview id is stale.

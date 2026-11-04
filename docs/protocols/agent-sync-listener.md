@@ -335,7 +335,7 @@ env -i HOME=$HOME USER=$USER LOGNAME=$USER LANG=en_US.UTF-8 TMPDIR=$TMPDIR \
     PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin \
   muse-bin-1.4.7-R6101.1 exec \
     -c 'run.toolset=[]' \
-    --model muse-spark-1.3-contributor --reasoning-effort minimal --provider meta \
+    --model muse-spark-1.3-contributor --reasoning-effort minimal --provider meta --contributor-mode on \
     --prompt-file <wake>/prompt.md --output-schema <wake>/schema.json \
     --json --approval-mode never \
     --disable-shell --disable-write --disable-web-tools --disable-reminders \
@@ -382,11 +382,13 @@ A wake may name one fallback runtime, tried **only when the primary could not pr
 
 ```
 mcode exec --prompt-mode work --permission off --output-format json --input - \
-  --model minimax/MiniMax-M3.1-Flash \
+  --model minimax/MiniMax-M3.1-Flash --effort minimal \
   --output-schema <schema> --max-steps 16 --timeout 3m30s --cwd <inert dir> -o <last-message>
 ```
 
 **The model is named on the command line.**  Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, which on this Mac names `minimax/MiniMax-M3.1-Flash-Preview` — an id the current catalog does not serve, so the run times out with no usage and no answer.  Naming the model here makes the backup runtime run on a model the catalog carries.
+
+**The effort is named on the command line too.**  Without `--effort`, mcode runs at MiniMax's own default reasoning effort, which is MAX — the highest and most expensive thinking tier — so an unnamed effort would pay the top reasoning price for a bounded four-message prompt.  The owner's determination (2026-11-03) is that MiniMax-M3.1 at minimal is cheaper and faster than M3 at none, so the run asks for `minimal` explicitly rather than inheriting whatever the install defaults to.
 
 **The step budget is 16, and that number is measured.**  At eight steps the wake contract does not fit: a four-message pending set runs longer and mcode exits 7 with `mcode exec limit_exceeded: The run reached its step limit.`, which the daemon reads as a failed fallback.  A failed fallback can never be pinned, so the seat keeps whatever runtime it had.  The identical run at sixteen steps exits 0 and returns the contract's answer.
 

@@ -10,6 +10,15 @@ This repository contains shared engineering tools.  Keep private inventory and 
 
 The same text is in `TEMPLATE-AGENTS.md`, which the other fleet repos copy.
 
+## Superseded PR closure and draft conversion
+
+Owner ruling, November 3, 2026, applies fleet-wide:
+
+- An agent may close a totally superseded PR if that agent made the PR being closed.
+- If another agent made the totally superseded PR, ask that agent first.  If no reply arrives within 20 minutes, ask Jay.  An agent may ask Jay first if urgent.
+- If 3 agents from 2 platforms agree to close a totally superseded PR, closure may proceed without Jay's or the PR owner's input.
+- Any agent may convert any PR to draft without anyone's permission.  Agents are encouraged to do so whenever a PR is not ready to merge.
+
 ## Infisical sole source of truth
 
 Owner directive: Infisical is the sole source of truth for this app's secrets, env variables, and tunable settings knobs (policy + key inventory: `INFISICAL.md`).  `scripts/fleet_rag/infisical_settings.py` implements the contract: load at startup into an in-memory cache, never fetch per-request, background refresh (daemon thread, SIGHUP, `POST /admin/reload-settings`) that keeps last-known-good on failure, and write-through on admin save (`POST /admin/settings`, admin bearer only) — Infisical first, then the cache; a failed write fails the save.  New settings for the fleet-recall-service go in Infisical (project "AI Fleet Coordinator"), not in env-var defaults; per-user settings never go in Infisical.  Prod is Infisical's only environment (owner 2026-10-10): `infisical_settings.py` defaults to prod and refuses any other slug, and `python3 scripts/check-infisical-env.py` (CI) flags a dev or staging default in env files and `cursor-cloud-start.sh`.  No secret values in code, logs, PRs, or chat — key names and `set`/`empty` flags only.  Tests: `cd scripts && python3 -m unittest fleet_rag.tests.test_infisical_settings fleet_rag.tests.test_infisical_admin`.  The Mac's short-lived jobs (LaunchAgents, hooks, CLIs) read their modes, caps and flags through `scripts/fleet_knobs` (one fetch per process, a 0600 last-known-good copy marked stale, secrets never cached and failing closed, local files only narrow; `INFISICAL.md` § Fleet knobs lists every key and `cd scripts && python3 -m fleet_knobs inventory --check ../INFISICAL.md` keeps it equal to the registry); tests: `cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t .`.

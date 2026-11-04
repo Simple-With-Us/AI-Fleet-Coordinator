@@ -52,8 +52,10 @@ The script requires exactly one matching valid Developer ID Application identity
 From the repository root:
 
 ```sh
-./muster/script/build_and_run.sh --verify
+MUSTER_BUILD_NUMBER="$MERGED_BUILD_NUMBER" ./muster/script/build_and_run.sh --verify
 ```
+
+`MERGED_BUILD_NUMBER` is the 12-digit `YYYYMMDDHHMM` value derived from the commit's merge-to-main time in America/Chicago, verified against the current installed build before deployment.  The installer requires `MUSTER_BUILD_NUMBER` and passes it to Xcode as `CURRENT_PROJECT_VERSION`; a missing or malformed value refuses before any build or installation.  Marketing version and signing settings remain those in the project.
 
 The default Release configuration builds `services.jays.Muster` with Developer ID signing and hardened runtime enabled.  App Sandbox is disabled to leave room for the separately owned CLI integration; the app currently has no capabilities or custom entitlements.
 
@@ -62,7 +64,7 @@ The script installs the sole normal app copy at `~/Applications/Muster.app`, lau
 If Muster is already running, the script stops before building.  Quit it manually, or explicitly authorize this invocation to terminate only the installed copy:
 
 ```sh
-./muster/script/build_and_run.sh --verify --relaunch
+MUSTER_BUILD_NUMBER="$MERGED_BUILD_NUMBER" ./muster/script/build_and_run.sh --verify --relaunch
 ```
 
 The script never force-kills a process.  A second concurrent invocation fails against a local lock; after an interrupted process, inspect whether a build is still active before removing `muster/.build/run.lock`.
