@@ -960,9 +960,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             "title_display": OR.display_title(reopened["label"], title),
         }
     elif out.get("outcome") == "resumed" and title:
-        updated = registry_api.call(
-            env, "update", {**_api_identity(args, sid), "title": title}
-        )
+        updated = registry_api.call(env, "update", {**_api_identity(args, sid), "title": title})
         error = _api_error(updated)
         if error is not None:
             return error

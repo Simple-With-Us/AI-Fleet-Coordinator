@@ -66,7 +66,9 @@ def base_url(env: Mapping[str, str] | None = None) -> str:
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:  # a signed request never follows a redirect
+    def redirect_request(
+        self, *args: Any, **kwargs: Any
+    ) -> None:  # a signed request never follows a redirect
         return None
 
 
@@ -111,9 +113,7 @@ def call(
     loopback = parts.hostname in ("127.0.0.1", "localhost", "::1")
     if parts.scheme != "https" and not (parts.scheme == "http" and loopback):
         return {"error": "the registry URL must be https", "code": "not_configured"}
-    principal = (
-        str(env.get(PRINCIPAL_ENV) or "").strip().upper() or DEFAULT_PRINCIPAL
-    )
+    principal = str(env.get(PRINCIPAL_ENV) or "").strip().upper() or DEFAULT_PRINCIPAL
     key_env = str(env.get(KEY_REF_ENV) or "").strip() or KEY_ENV
     key = str(env.get(key_env) or "").strip()
     if not key:
@@ -145,9 +145,7 @@ def call(
     # answers 1010 to Python's default urllib agent (the deploy-mapped-worker note),
     # so the default would never reach the listener.
     request.add_header("User-Agent", "agent-sync-registry/1.0")
-    for name, value in RG.headers(
-        key, method, path, query, principal, body, time.time()
-    ).items():
+    for name, value in RG.headers(key, method, path, query, principal, body, time.time()).items():
         request.add_header(name, value)
     try:
         with _OPENER.open(request, timeout=timeout) as response:
