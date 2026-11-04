@@ -264,6 +264,7 @@ USER_AGENT = "agent-sync/1 (fleet)"
 SEAT_FILE_OVERRIDES: dict[str, str] = {
     "GROK": "Grok-Build",  # GROK posts as grok-build-bot@ (owner 2026-10-08)
     "OPENCODE": "OpenCode",  # the credential file is OpenCode-zuliprc (Sat, Oct 10);  the rule would say Opencode
+    "ZC": "Zcode",  # the created /zulip records are ZCODE_ZULIP_* (2026-11-03);  the rule would say ZC
 }
 SHORT_PART_MAX = 2
 
