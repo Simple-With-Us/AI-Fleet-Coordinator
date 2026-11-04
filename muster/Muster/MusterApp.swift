@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct MusterApp: App {
+    @NSApplicationDelegateAdaptor(AppIconFollower.self) private var appIconFollower
     @StateObject private var store: FleetStore
     @StateObject private var monitor: DriftMonitor
     @StateObject private var admin: FleetAdmin

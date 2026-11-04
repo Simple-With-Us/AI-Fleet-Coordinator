@@ -567,6 +567,17 @@ jobs:
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+      # The Swift names the image sets by string, so only the built bundle proves that
+      # both modes' artwork and the bundle's own icon came out of the asset compiler.
+      - name: Check the built app carries its icons
+        working-directory: muster
+        run: |
+          app=.build/CI/Build/Products/Debug/Muster.app
+          /usr/libexec/PlistBuddy -c 'Print CFBundleIconName' "$app/Contents/Info.plist" | grep -qx AppIcon
+          test -s "$app/Contents/Resources/AppIcon.icns"
+          xcrun --sdk macosx assetutil --info "$app/Contents/Resources/Assets.car" > .build/assets.json
+          grep -q '"MusterIconLight"' .build/assets.json
+          grep -q '"MusterIconDark"' .build/assets.json
       - name: Run the Muster unit tests
         working-directory: muster
         run: |

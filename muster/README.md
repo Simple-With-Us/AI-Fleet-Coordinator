@@ -37,6 +37,14 @@ A change is gathered for a second and a half,  so a write that lands in two piec
 
 The first run that could be trusted is a reading and not a change:  there is no earlier answer to compare it with.  A run that could not be trusted says nothing,  and the count is unknown rather than zero.
 
+## App Icon
+
+The Dock icon follows the mode: dark artwork in Dark, light artwork in Light.  The Theme in Settings decides, and when it is System the icon follows macOS, changing as macOS changes.  `AppIconFollower` does this while the app runs.
+
+macOS shows the icon in the app bundle whenever Muster is not running, in Finder and in a Dock tile, and that one is always the light artwork.
+
+The owner's artwork is in `icon-source/`.  After changing it, regenerate `Muster/Assets.xcassets` with `python3 muster/script/generate_app_icons.py`, which needs Pillow.  `script/test_app_icons.py` checks the result, and the macOS CI job checks the built bundle.
+
 ## Prerequisites
 
 - macOS 14 or later.
