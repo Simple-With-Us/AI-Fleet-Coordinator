@@ -2157,10 +2157,10 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     parser = argparse.ArgumentParser(prog="operator-registry")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pending-outbox")
-    p.add_argument("--db", required=True)
+    p.add_argument("--db", default="", help="the registry file (default: the shared path)")
     p.add_argument("--limit", type=int, default=50)
     m = sub.add_parser("mark-exported")
-    m.add_argument("--db", required=True)
+    m.add_argument("--db", default="", help="the registry file (default: the shared path)")
     m.add_argument("outbox_ids", nargs="+")
     r = sub.add_parser(
         "register",

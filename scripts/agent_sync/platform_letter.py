@@ -894,7 +894,12 @@ def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
     the session is not registered;  None when it carries none."""
     if "error" not in answer:
         return None
-    if _NOT_REGISTERED_MARK in str(answer.get("error") or ""):
+    # The API names this refusal with the code not_registered as well as with the registry's
+    # sentence, and its other sentences ("no session with this identity") carry no mark to
+    # match, so the fold checks the code first.
+    if answer.get("code") == "not_registered" or _NOT_REGISTERED_MARK in str(
+        answer.get("error") or ""
+    ):
         return {"error": NO_REGISTRATION}
     return dict(answer)
 
@@ -1114,6 +1119,10 @@ def registry_main(
                 out = _on_record_api(OR, env, args, sid)
         except ValueError as exc:
             return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
+        except (KeyError, TypeError):
+            # A registry answer too short to fold (a key the orchestration reads is not
+            # there) is a failed call, answered the same way:  an error, never a traceback.
+            return _emit(stdout, {"error": "the registry answer was incomplete"}, 5)
         return _emit(stdout, out, 0 if "error" not in out else 5)
     if not os.path.isfile(db):
         # Never create one: a second registry would hand out letters that collide with the one the Operator keeps.

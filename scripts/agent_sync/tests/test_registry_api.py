@@ -291,6 +291,41 @@ class OperatorCliTests(ApiBase):
         self.assertIn("error", answer)
         self.assertFalse(os.path.exists(self.local_db))
 
+    def test_the_outbox_ops_run_over_the_api_without_a_db_flag(self) -> None:
+        # pending-outbox and mark-exported once demanded --db, which argparse enforced
+        # before the API branch could run:  without the flag they never reached the API.
+        code, _made = self.run_cli(
+            [
+                "register",
+                "--platform",
+                "minimax",
+                "--location",
+                "server",
+                "--scope",
+                "default",
+                "--session-id",
+                "mm-outbox-1",
+                "--seat",
+                "MA",
+                "--source",
+                "test",
+            ],
+            self.api_env(),
+        )
+        self.assertEqual(code, 0)
+        code, pending = self.run_cli(["pending-outbox"], self.api_env())
+        self.assertEqual(code, 0)
+        ids = [str(item["outbox_id"]) for item in pending.get("items", [])]
+        self.assertTrue(ids)
+        code, _marked = self.run_cli(
+            ["mark-exported", *ids], self.api_env()
+        )
+        self.assertEqual(code, 0)
+        code, drained = self.run_cli(["pending-outbox"], self.api_env())
+        self.assertEqual(code, 0)
+        self.assertEqual(drained.get("items"), [])
+        self.assertFalse(os.path.exists(self.local_db))
+
 
 class PlatformLetterTests(ApiBase):
     def registry(
@@ -393,6 +428,37 @@ class PlatformLetterTests(ApiBase):
 
         # Through all of it, no local registry ever came into being.
         self.assertFalse(os.path.exists(self.local_db))
+
+    def test_the_not_registered_code_folds_to_no_registration(self) -> None:
+        # The API names the refusal with the code as well as the registry's sentence,
+        # and its record-id sentences carry no mark:  both forms fold.
+        self.assertEqual(
+            PL._api_error(
+                {"error": "no session with this identity", "code": "not_registered"}
+            ),
+            {"error": PL.NO_REGISTRATION},
+        )
+        self.assertEqual(
+            PL._api_error({"error": "something else", "code": "http_500"}),
+            {"error": "something else", "code": "http_500"},
+        )
+        self.assertIsNone(PL._api_error({"ok": True}))
+
+    def test_a_short_api_answer_is_an_error_answer_not_a_traceback(self) -> None:
+        # A register answer naming the resumed-closed outcome but no record_id:  the
+        # reopen merge reads the id, and the read must fold to an error answer.
+        original = registry_api.call
+        registry_api.call = lambda env, op, params=None, **kw: {  # type: ignore[assignment]
+            "outcome": "resumed_closed"
+        }
+        try:
+            code, answer = self.registry(
+                self.reg_argv("register", "s-0001", letter_pick="lowest")
+            )
+        finally:
+            registry_api.call = original  # type: ignore[assignment]
+        self.assertEqual(code, 5)
+        self.assertIn("error", answer)
 
     def test_hook_calls_carry_a_timeout_inside_the_hook_budgets(self) -> None:
         # The hooks run this side inside 15-20 second budgets (HOOK_TIMEOUTS) and a
