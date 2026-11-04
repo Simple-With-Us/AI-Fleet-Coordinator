@@ -57,7 +57,7 @@ Only ordinary value rows intended for the durable fleet archive belong here.  Th
 
 ## Delivery Status
 
-This is a source module and integration contract.  It does not activate a worker or modify deployed configuration.  Node syntax and whitespace checks are performed for this contribution; live writes and integration tests are outside this contribution's verification.  The existing service-account sheet setup is separate from exporter activation.
+This is a source module and integration contract.  It does not activate a worker or modify deployed configuration.  Offline tests with an injected fetch cover it (run `node --test scripts/test_operator_sheets_google.mjs`);  live writes against a real workbook are not verified.  The existing service-account sheet setup is separate from exporter activation.
 
 ## API References
 
