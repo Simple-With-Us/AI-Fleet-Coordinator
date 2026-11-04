@@ -138,6 +138,8 @@ SHIPPED = (
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
     "scripts/fleet_knobs/",
+    "scripts/fleet_secrets/__init__.py",
+    "scripts/fleet_secrets/core.py",
     "scripts/fleet-mode",
     "docs/FLEET-MODE.md",
     "docs/protocols/simple-tools-guide.md",
@@ -173,6 +175,10 @@ SHIPPED_EXACT = frozenset(
         "scripts/agent_sync/operator_sheets_export.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/agent_sync/opencode_letter_plugin/index.js",
+        # The scoped verifier library the new knobs and recall bundles depend on.  The generic
+        # secrets CLI does not ship, so only these two modules are listed.
+        "scripts/fleet_secrets/__init__.py",
+        "scripts/fleet_secrets/core.py",
         "docs/protocols/simple-tools-guide.md",
         "scripts/agent_sync/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
