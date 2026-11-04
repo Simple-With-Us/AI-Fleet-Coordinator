@@ -2088,3 +2088,27 @@ test("Datadog's full event_msg may run past 4 KiB, and no other field may", () =
   assert.throws(() => validatePayload({ ...datadogEvent, alert_title: runbook }));
   assert.throws(() => validatePayload({ ...datadogEvent, event_msg: "x".repeat(32769) }));
 });
+
+test("F9 two concurrent refreshes of one topic make one standing message", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const stub = stubZulip();
+  try {
+    // Both calls start before either finishes.  The topic lock makes the
+    // second read what the first wrote, so it edits instead of creating.
+    await Promise.allSettled([
+      refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+    ]);
+    assert.equal(stub.posts().length, 1);
+  } finally {
+    stub.restore();
+  }
+});
