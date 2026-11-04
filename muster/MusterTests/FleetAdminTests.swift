@@ -57,6 +57,62 @@ final class FleetAdminTests: XCTestCase {
                              "The port was never asked whether the server was still there.")
     }
 
+    /// The menu says when it last read the Mac,  so a read has to say when it landed.
+    func testAReadPublishesItsTimeAndTheServersThreeStates() async {
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer())
+        XCTAssertEqual(admin.localServiceState, .unknown, "An unread server is not a stopped one.")
+
+        await waitForTheFleet(admin)
+
+        XCTAssertNotNil(admin.lastReadAt)
+        XCTAssertEqual(admin.localServiceState, .running)
+        XCTAssertEqual(admin.pm2Answered, true)
+    }
+
+    /// A menu that was true at launch is not true days later.
+    func testTheFleetIsReadAgainOnATimer() async {
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: FleetAdminServer(), refreshInterval: 0.05)
+        await waitForTheFleet(admin)
+        let first = admin.lastReadAt
+
+        let deadline = Date().addingTimeInterval(5)
+        while admin.lastReadAt == first, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertNotEqual(admin.lastReadAt, first, "The fleet was not read again.")
+    }
+
+    /// A stop that did not land is not a stop the owner made,  and the owner is told.
+    func testAStopThatDidNotLandSaysSoAndKeepsNoRecord() async {
+        let commands = FleetAdminCommands()
+        commands.companionStaysUp = true
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        await admin.perform(.stop, serviceID: "app.botfleet.companion")
+
+        XCTAssertEqual(admin.lastResult?.succeeded, false)
+        XCTAssertEqual(admin.lastResult?.reason, "it still reads running")
+        XCTAssertEqual(admin.problem, "BotFleet Companion did not stop on the Mac:  it still reads running")
+        XCTAssertEqual(admin.entries.first { $0.id == "app.botfleet.companion" }?.stoppedByOwner, false)
+    }
+
+    /// The stop alert reads the work in flight now,  and an answer that did not come is not
+    /// the same as nothing in flight.
+    func testTheStopConfirmationReadsWhatIsInFlightNow() async {
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: server)
+        await waitForTheFleet(admin)
+
+        let body = await admin.stopConfirmation(for: FleetServiceRegistry.server.id)
+        XCTAssertTrue(body.contains("Checked just now:  nothing is in flight."), body)
+        XCTAssertTrue(body.contains("on the Mac"), body)
+
+        let other = await admin.stopConfirmation(for: "shellular")
+        XCTAssertFalse(other.contains("in flight"), other)
+    }
+
     // MARK: - Panel actions on the controller path
 
     /// A stop run through the plan sheet is still a stop the owner asked for, so the
@@ -121,7 +177,8 @@ final class FleetAdminTests: XCTestCase {
 
     /// An admin that talks to fakes rather than to this Mac.
     private func makeAdmin(commands: FleetAdminCommands,
-                            server: FleetAdminServer) -> FleetAdmin {
+                            server: FleetAdminServer,
+                            refreshInterval: TimeInterval? = nil) -> FleetAdmin {
         // The startup policy looks for the installed wrapper and the launch agents
         // under the home it is given,  so a home of its own keeps the test away
         // from the real Mac.
@@ -145,7 +202,8 @@ final class FleetAdminTests: XCTestCase {
         return FleetAdmin(control: control,
                           startup: startup,
                           presence: ServerPresenceProbe(port: server.port, connect: { _ in server.presence() }),
-                          api: api)
+                          api: api,
+                          refreshInterval: refreshInterval)
     }
 }
 
@@ -170,6 +228,8 @@ private final class FleetAdminCommands: CommandRunning {
     private var recorded: [FleetAdminCall] = []
     /// A boot-session identifier made up for this run.
     private let boot = UUID().uuidString
+    /// True when launchd keeps reporting the companion running,  whatever it is asked.
+    var companionStaysUp = false
 
     var calls: [FleetAdminCall] {
         lock.lock()
@@ -191,7 +251,9 @@ private final class FleetAdminCommands: CommandRunning {
         if executable == "/bin/launchctl", arguments == ["list"] {
             // Neither the server's agent nor the companion's has a process
             // behind it,  so launchd reports both as stopped.
-            return "PID\tStatus\tLabel\n-\t0\tother.service"
+            return companionStaysUp
+                ? "PID\tStatus\tLabel\n4242\t0\tapp.botfleet.companion"
+                : "PID\tStatus\tLabel\n-\t0\tother.service"
         }
         if executable == "/usr/sbin/sysctl" { return boot }
         if arguments.contains("jlist") { return "[]" }

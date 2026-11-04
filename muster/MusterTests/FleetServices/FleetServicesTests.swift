@@ -195,7 +195,7 @@ final class FleetServicesTests: XCTestCase {
         let services = FleetServices(serverState: .running, states: [:])
         XCTAssertEqual(services.menuItems.count, 12)
         XCTAssertEqual(services.menuItems.first?.id, "botfleet-mcp")
-        XCTAssertEqual(services.menuTitle, "Fleet Services (12)")
+        XCTAssertEqual(services.menuTitle, "Services On The Mac (12)")
     }
 
     func testEachMenuRowShowsTheStateAndTheActions() {
@@ -820,6 +820,23 @@ final class FleetServicesTests: XCTestCase {
         let row = services.menuItems.first { $0.id == "app.botfleet.server" }
         let body = FleetServices.stopBody(for: row!, startupPolicySupported: true)
         XCTAssertTrue(body.contains("Restart clears the marker"))
+    }
+
+    func testTheStopCopyNamesTheMacInEveryBranch() {
+        for supported in [true, false] {
+            for id in [FleetServiceRegistry.server.id, "app.botfleet.companion", "shellular"] {
+                let body = FleetServices.stopBody(forServiceID: id, startupPolicySupported: supported)
+                XCTAssertTrue(body.contains("on the Mac"), body)
+                XCTAssertFalse(body.contains("this Mac"), body)
+            }
+        }
+    }
+
+    func testPM2AnsweredIsDecidedByItsOwnApplications() {
+        XCTAssertFalse(FleetServices(serverState: .running, states: ["shellular": .unknown]).pm2Answered)
+        XCTAssertTrue(FleetServices(serverState: .running, states: ["shellular": .stopped]).pm2Answered)
+        // The MCP server is read through its own health endpoint,  so it says nothing about pm2.
+        XCTAssertFalse(FleetServices(serverState: .running, states: ["botfleet-mcp": .running]).pm2Answered)
     }
 
     func testAServerRestartWaitsNoLongerThanTheCallerAskedFor() async throws {
