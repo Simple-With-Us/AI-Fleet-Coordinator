@@ -2061,7 +2061,9 @@ PLACEMENT_WATCH_STATUS = HOME / ".local/state/fleet/placement-watch-status.json"
 PLACEMENT_WATCH_MAX_AGE_S = 3 * 3600
 
 
-def check_placement_watch(report: Report, *, status_path: Path | None = None, now: float | None = None) -> None:
+def check_placement_watch(
+    report: Report, *, status_path: Path | None = None, now: float | None = None
+) -> None:
     """A watcher that has gone quiet or cannot file.  No row until it is installed:  its first run writes the file."""
     path = PLACEMENT_WATCH_STATUS if status_path is None else status_path
     try:
@@ -2071,17 +2073,23 @@ def check_placement_watch(report: Report, *, status_path: Path | None = None, no
         return
     except (OSError, ValueError) as exc:
         why = f"status file unreadable ({type(exc).__name__})"
-        report.add("placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why)
+        report.add(
+            "placement-watch", "WARN", why, state="unknown", category="fleet-tool", reason=why
+        )
         return
     if age > PLACEMENT_WATCH_MAX_AGE_S:
         why = f"last ran {int(age / 3600)} hours ago"
         report.add("placement-watch", "FAIL", why, state="stale", category="fleet-tool", reason=why)
     elif not data.get("ok"):
         why = "; ".join(str(e) for e in data.get("errors", ()))[:200] or "its inputs were stale"
-        report.add("placement-watch", "FAIL", why, state="failing", category="fleet-tool", reason=why)
+        report.add(
+            "placement-watch", "FAIL", why, state="failing", category="fleet-tool", reason=why
+        )
     else:
         detail = f"{data.get('findings', 0)} findings, {data.get('new', 0)} new"
-        report.add("placement-watch", "OK", detail, state="current", category="fleet-tool", reason=detail)
+        report.add(
+            "placement-watch", "OK", detail, state="current", category="fleet-tool", reason=detail
+        )
 
 
 def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run) -> None:

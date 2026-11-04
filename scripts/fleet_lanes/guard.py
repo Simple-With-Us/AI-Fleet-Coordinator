@@ -101,14 +101,14 @@ __all__ = [
     "RULE_CLONE",
     "RULE_CLONE_CODE",
     "RULE_EXPORT",
+    "RULE_GH_CLONE",
+    "RULE_GH_CLONE_CODE",
+    "RULE_INIT_FETCH",
     "RULE_ISOLATION",
     "RULE_PLACEMENT_APPS",
     "RULE_PLACEMENT_CLONE_IN_LANES",
     "RULE_PLACEMENT_ELSEWHERE",
     "RULE_PLACEMENT_HOME",
-    "RULE_GH_CLONE",
-    "RULE_GH_CLONE_CODE",
-    "RULE_INIT_FETCH",
     "RULE_TARBALL",
     "RULE_WORKTREE_ADD",
     "RULE_WORKTREE_ADD_CODE",
@@ -810,7 +810,7 @@ def _evaluate(payload: Any, ctx: GuardContext | None) -> Decision:
     return Decision(ALLOW, "", _OK_NO_MATCH)
 
 
-def _detail(ev: "_Evaluator", hit: "_Hit", cls: str) -> dict[str, str]:
+def _detail(ev: _Evaluator, hit: _Hit, cls: str) -> dict[str, str]:
     return {"class": cls, "rule": hit.rule, "dest": ev.display(hit.target), "source": hit.src.label}
 
 
@@ -842,7 +842,7 @@ def evaluate_shell_text(command: str, cwd: str, ctx: GuardContext) -> tuple[str,
     return _shim_verdict(ev)
 
 
-def _shim_verdict(ev: "_Evaluator") -> tuple[str, Decision] | None:
+def _shim_verdict(ev: _Evaluator) -> tuple[str, Decision] | None:
     if ev.hits:
         hit = ev.hits[0]
         cls = _rule_class(hit.rule)
