@@ -91,6 +91,18 @@ public enum ControlAPIError: LocalizedError, Equatable {
 }
 
 public final class ControlAPI {
+    /// The URL errors that mean a change was sent and the answer was lost.
+    ///
+    /// A timeout and a dropped connection can both happen after the server
+    /// has applied the change, so neither proves that it did not.  A refused
+    /// connection and a host that could not be found happen before anything
+    /// was sent, so those keep the plain unavailable answer.
+    static let lostAfterSending: Set<URLError.Code> = [
+        .timedOut,
+        .networkConnectionLost,
+        .cannotParseResponse,
+    ]
+
     private let session: URLSession
     public let host: ServerHost
     private let baseURL: URL
@@ -217,7 +229,13 @@ public final class ControlAPI {
             // have reached the server before the connection dropped or timed
             // out, and URLSession cannot say whether it did, so its outcome
             // is unknown rather than unavailable.
-            throw method == "GET" ? ControlAPIError.unavailable : ControlAPIError.outcomeUnknown
+            // A refused connection or an unknown host fails before anything is
+            // sent, so it stays unavailable and a retry is safe.
+            if method != "GET", let urlError = error as? URLError,
+               ControlAPI.lostAfterSending.contains(urlError.code) {
+                throw ControlAPIError.outcomeUnknown
+            }
+            throw ControlAPIError.unavailable
         }
         guard let http = response as? HTTPURLResponse else { throw ControlAPIError.invalidResponse }
         if host.isLocal {

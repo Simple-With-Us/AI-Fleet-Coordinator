@@ -203,6 +203,22 @@ final class MultiHostControlTests: XCTestCase {
         }
     }
 
+    func testAChangeThatIsRefusedBeforeSendingIsUnavailableNotUnknown() async {
+        // The health check answers, and the connection for the stop is refused:
+        // nothing was sent, so a retry is safe and the server is unavailable.
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control/stop" ? URLError(.cannotConnectToHost) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            try await ControlAPI(session: mockSession()).stopServer()
+            XCTFail("Expected unavailable")
+        } catch {
+            XCTAssertEqual(error as? ControlAPIError, .unavailable)
+        }
+    }
+
     func testServerHostStorePreservesCorruptFileAndRefusesOverwrite() throws {
         let storeFile = tempDir.appendingPathComponent("hosts.json")
         try "{ not valid json ...".write(to: storeFile, atomically: true, encoding: .utf8)
