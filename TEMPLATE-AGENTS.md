@@ -698,7 +698,7 @@ address:
   branch and leave it without one. (Long-lived integration/release branches like
   `main` and the `agent/*` lanes, throwaway experiments, and stacked-PR bases are
   the only exceptions — none of which is normal change delivery.)
-- **Open merge-ready PRs as READY for review by default.** Do not mark a PR ready while it is work-in-progress or subject to a do-not-merge hold.
+- **Open merge-ready PRs as READY for review by default.**  Do not mark a PR ready while it is work-in-progress or subject to a do-not-merge hold.
 - **Keep every do-not-merge PR as a draft**, whether it is unfinished, awaiting a dependency or hold clearance, or superseded.  Put the readiness criteria at the very beginning of its description as bullets, following the rule below.  Mark it ready only when the applicable criteria are verified and existing holds are properly cleared.
 - **A required `verify` CI check gates every merge to `main`.**  A GitHub Actions
   workflow named `verify` runs `tsc --noEmit` → `npm test` → `npm run build` on each
