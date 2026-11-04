@@ -15,10 +15,13 @@ import json
 import os
 import stat
 import tempfile
+import time
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
-HERE = Path(__file__).resolve().parent
+HERE =Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location(
     "fleet_server_status", HERE / "fleet-server-status.py"
 )
@@ -60,6 +63,13 @@ def inspect_line(
             service_name or "<no value>",
             compose_service or "<no value>",
         ]
+    )
+
+
+def extended_line(restart_count="0", exit_code="0", oom_killed="false", restart_policy="no", **fields):
+    """One line of `docker inspect --format` with the fields added for container signals."""
+    return SEP.join(
+        [inspect_line(**fields), restart_count, exit_code, oom_killed, restart_policy]
     )
 
 
@@ -391,7 +401,9 @@ class CoolifyTests(unittest.TestCase):
         )
         rows = collector.collect_coolify(run_command=docker)
         self.assertEqual(rows[0]["uuid"], "uuid1")
-        self.assertEqual(rows[0]["name"], "Example (example-abc)")
+        # The container name holds a per-deploy stamp, so it is never part of the name.
+        self.assertEqual(rows[0]["name"], "Example")
+        self.assertEqual(rows[0]["container"], "example-abc")
         self.assertEqual(rows[0]["type"], "application")
 
     def test_a_container_without_a_coolify_label_is_standalone(self):
@@ -591,8 +603,35 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(document["tool"], "fleet-server-status")
         self.assertEqual(
             sorted(document.keys()),
-            ["coolify", "files", "generatedAt", "host", "processes", "schemaVersion", "tool"],
+            [
+                "coolify",
+                "files",
+                "generatedAt",
+                "host",
+                "hostRole",
+                "processes",
+                "schemaVersion",
+                "tool",
+            ],
         )
+
+    def test_the_host_role_is_computed_and_never_a_literal(self):
+        self.assertEqual(collector.host_role("darwin"), "mac")
+        self.assertEqual(collector.host_role("linux"), "server")
+        self.assertEqual(collector.host_role("freebsd14"), "server")
+        document = collector.build_report([], [], [], {}, platform="darwin")
+        self.assertEqual(document["hostRole"], "mac")
+        document = collector.build_report([], [], [], {}, platform="linux")
+        self.assertEqual(document["hostRole"], "server")
+        # The role comes from the platform this collector runs on.
+        with mock.patch.object(collector.sys, "platform", "darwin"):
+            self.assertEqual(collector.build_report([], [], [], {})["hostRole"], "mac")
+        with mock.patch.object(collector.sys, "platform", "linux"):
+            self.assertEqual(collector.build_report([], [], [], {})["hostRole"], "server")
+
+    def test_the_schema_version_did_not_move(self):
+        # Muster checks exact equality, so every addition stays optional and the version stays.
+        self.assertEqual(collector.SCHEMA_VERSION, 1)
 
     def test_the_generated_time_is_utc_and_readable(self):
         document = collector.build_report([], [], [], {})
@@ -896,6 +935,7 @@ class ServiceTests(unittest.TestCase):
                 "since": collector.iso_from_timestamp(1761660000),
                 "enabled": "enabled",
                 "controllable": False,
+                "actions": [],
             },
         )
         # An empty action list controls nothing,  and an empty field is left out.
@@ -1024,6 +1064,7 @@ class ServiceTests(unittest.TestCase):
                 "scope": "system",
                 "activeState": "unknown",
                 "controllable": False,
+                "actions": [],
             },
         )
         self.assertEqual(by_unit["fleet-server-status.timer"]["activeState"], "active")
@@ -1130,7 +1171,10 @@ class SummaryAndInfoDriftTests(unittest.TestCase):
                 self.assertEqual(collector.main(argv, run_command=fake), 0)
             document = json.loads(target.read_text())
             self.assertEqual(document["schemaVersion"], 1)
-            self.assertEqual(document["filesSummary"], {"found": 3, "limit": 2, "truncated": True})
+            self.assertEqual(
+                document["filesSummary"],
+                {"found": 3, "limit": 2, "truncated": True, "cutCheckouts": ["Example"]},
+            )
             self.assertEqual(len(document["files"]), 2)
             self.assertEqual(document["services"][0]["unit"], "cron.service")
             self.assertTrue(document["services"][0]["controllable"])
@@ -1238,6 +1282,1395 @@ class ResourceReceiptTests(unittest.TestCase):
                 collector.collect_resource_policy(path, owner_uid=os.getuid())["status"],
                 "unavailable",
             )
+
+
+NOW = 1793800000.0
+DAY = 24 * 60 * 60
+
+
+def stamp(seconds):
+    return collector.iso_from_timestamp(seconds)
+
+
+def previous_map(rows):
+    """What `previous_resources` gives for a report holding these rows."""
+    return {(row["uuid"], row.get("name")): row for row in rows}
+
+
+class LeftoverResourceTests(unittest.TestCase):
+    """Nothing stays in the report forever because it once existed."""
+
+    def deploy(self, stamp_text):
+        """One deploy of a one-container application, the way Coolify labels it for real."""
+        container = "uuid1-%s" % stamp_text
+        return FakeDocker(
+            containers=[
+                inspect_line(
+                    container=container,
+                    label_type="application",
+                    application_uuid="uuid1",
+                    resource_name="listener",
+                    compose_service=container,
+                )
+            ]
+        )
+
+    def test_a_redeploy_leaves_nothing_behind(self):
+        first = collector.collect_coolify(run_command=self.deploy("20261103T000000"))
+        report = collector.build_report(first, [], [], {}, now=NOW)
+        second = collector.collect_coolify(run_command=self.deploy("20261104T000000"))
+        report = collector.build_report(second, [], [], previous_map(report["coolify"]), now=NOW)
+        self.assertEqual([row["name"] for row in report["coolify"]], ["listener"])
+        self.assertEqual(report["coolify"][0]["status"], "running")
+        self.assertEqual(report["coolify"][0]["container"], "uuid1-20261104T000000")
+        self.assertNotIn("service", report["coolify"][0])
+
+    def test_a_compose_label_coolify_generated_is_not_a_service(self):
+        self.assertEqual(collector.real_service("uuid1", "uuid1", "uuid1"), "")
+        self.assertEqual(collector.real_service("uuid1-2026", "uuid1", "uuid1-2026"), "")
+        self.assertEqual(collector.real_service("x-022619", "name", "x-022619"), "")
+        self.assertEqual(collector.real_service("uuid1-2026", "uuid1", "other"), "")
+        self.assertEqual(collector.real_service("", "uuid1", "other"), "")
+        self.assertEqual(collector.real_service("web", "uuid1", "web-uuid1-2026"), "web")
+
+    def gone_row(self, **extra):
+        row = {
+            "uuid": "uuid1",
+            "uuidSource": "label",
+            "name": "Example",
+            "type": "application",
+            "status": "absent",
+            "container": "example-1",
+        }
+        row.update(extra)
+        return row
+
+    def test_a_row_says_since_when_it_is_absent_and_keeps_that_time(self):
+        running = dict(self.gone_row(), status="running")
+        report = collector.build_report([], [], [], previous_map([running]), now=NOW)
+        row = report["coolify"][0]
+        self.assertEqual(row["status"], "absent")
+        self.assertEqual(row["absentSince"], stamp(NOW))
+        # The next run keeps the first time, so the row can age out.
+        later = collector.build_report([], [], [], previous_map([row]), now=NOW + DAY)
+        self.assertEqual(later["coolify"][0]["absentSince"], stamp(NOW))
+
+    def test_an_absent_row_is_dropped_after_seven_days(self):
+        row = self.gone_row(absentSince=stamp(NOW))
+        almost = NOW + 7 * DAY - 1
+        kept = collector.build_report([], [], [], previous_map([row]), now=almost)
+        self.assertEqual(len(kept["coolify"]), 1)
+        gone = collector.build_report([], [], [], previous_map([row]), now=NOW + 7 * DAY)
+        self.assertEqual(gone["coolify"], [])
+
+    def test_a_row_with_a_bad_or_future_time_starts_its_seven_days_now(self):
+        for bad in ("soon", 12, stamp(NOW + DAY)):
+            row = self.gone_row(absentSince=bad)
+            report = collector.build_report([], [], [], previous_map([row]), now=NOW)
+            self.assertEqual(report["coolify"][0]["absentSince"], stamp(NOW), bad)
+
+    def test_the_leftovers_of_an_old_report_are_cleaned_up_once(self):
+        # An old report's absent row has no age, so it cannot be aged: it goes.
+        old_absent = {"uuid": "uuid2", "name": "Gone", "type": "application", "status": "absent"}
+        # A row with a stamped container name matches nothing by name, but its uuid is live.
+        old_named = {
+            "uuid": "uuid1",
+            "name": "listener (uuid1-20261103T000000)",
+            "type": "application",
+            "status": "running",
+        }
+        # A running row in an old report whose uuid is really gone is a real disappearance.
+        old_running = {"uuid": "uuid3", "name": "Other", "type": "application", "status": "running"}
+        live = collector.collect_coolify(run_command=self.deploy("20261104T000000"))
+        report = collector.build_report(
+            live, [], [], previous_map([old_absent, old_named, old_running]), now=NOW
+        )
+        rows = {row["name"]: row for row in report["coolify"]}
+        self.assertEqual(sorted(rows), ["Other", "listener"])
+        self.assertEqual(rows["Other"]["status"], "absent")
+        self.assertEqual(rows["Other"]["absentSince"], stamp(NOW))
+
+    def test_the_real_report_shape_shrinks_to_what_is_running(self):
+        # The shape on the server the day this was written: stamped rows of one application,
+        # helper containers that nothing labelled, and the one live row.
+        old = [
+            {"uuid": "uuid1", "name": "listener (uuid1-2026110%dT000000)" % day,
+             "type": "application", "uuidSource": "label", "status": "absent"}
+            for day in range(1, 4)
+        ]
+        old += [
+            {"uuid": "07j6rsdtrhcfd6zx5tgdroyg", "name": "07j6rsdtrhcfd6zx5tgdroyg",
+             "type": "standalone", "uuidSource": "name", "status": "absent"},
+            {"uuid": "confident_morse", "name": "confident_morse",
+             "type": "standalone", "uuidSource": "name", "status": "absent"},
+        ]
+        live = collector.collect_coolify(run_command=self.deploy("20261104T000000"))
+        report = collector.build_report(live, [], [], previous_map(old), now=NOW)
+        self.assertEqual([row["name"] for row in report["coolify"]], ["listener"])
+
+    def test_a_throwaway_container_leaves_no_row(self):
+        for name in ("confident_morse", "07j6rsdtrhcfd6zx5tgdroyg"):
+            row = {"uuid": name, "name": name, "type": "standalone", "uuidSource": "name",
+                   "status": "running", "container": name}
+            report = collector.build_report([], [], [], previous_map([row]), now=NOW)
+            self.assertEqual(report["coolify"], [], name)
+
+    def test_a_named_container_that_vanished_is_still_reported(self):
+        row = {"uuid": "botfleet-vps-shared", "name": "botfleet-vps-shared", "type": "standalone",
+               "uuidSource": "name", "status": "running", "container": "botfleet-vps-shared"}
+        report = collector.build_report([], [], [], previous_map([row]), now=NOW)
+        self.assertEqual(report["coolify"][0]["status"], "absent")
+        # A labelled application is never a throwaway, whatever its uuid looks like.
+        labelled = {"uuid": "07j6rsdtrhcfd6zx5tgdroyg", "name": "App", "type": "standalone",
+                    "uuidSource": "label", "status": "running", "container": "app-1"}
+        report = collector.build_report([], [], [], previous_map([labelled]), now=NOW)
+        self.assertEqual(report["coolify"][0]["status"], "absent")
+
+    def test_a_docker_failure_starts_no_clock_and_keeps_a_running_clock(self):
+        failed = collector.collect_coolify(run_command=lambda *a, **k: None)
+        running = {"uuid": "u1", "name": "One", "type": "application", "status": "running",
+                   "container": "one"}
+        absent = {"uuid": "u2", "name": "Two", "type": "application", "status": "absent",
+                  "container": "two", "absentSince": stamp(NOW - DAY)}
+        report = collector.build_report(failed, [], [], previous_map([running, absent]), now=NOW)
+        rows = {row["uuid"]: row for row in report["coolify"]}
+        self.assertEqual(rows["u1"]["status"], "unknown")
+        self.assertNotIn("absentSince", rows["u1"])
+        self.assertEqual(rows["u2"]["status"], "unknown")
+        self.assertEqual(rows["u2"]["absentSince"], stamp(NOW - DAY))
+        # Docker answers again, and an empty answer is now evidence.
+        after = collector.build_report([], [], [], previous_map(report["coolify"]), now=NOW + 60)
+        rows = {row["uuid"]: row for row in after["coolify"]}
+        self.assertEqual(rows["u1"]["absentSince"], stamp(NOW + 60))
+        self.assertEqual(rows["u2"]["absentSince"], stamp(NOW - DAY))
+
+    def test_live_rows_come_before_leftovers(self):
+        # The helper takes the first row with a uuid, so a leftover must never be first.
+        gone = {"uuid": "uuid1", "name": "Aardvark (web)", "service": "web", "type": "application",
+                "status": "running", "container": "web-1", "uuidSource": "label"}
+        live = collector.collect_coolify(
+            run_command=FakeDocker(
+                containers=[
+                    inspect_line(
+                        container="worker-1",
+                        label_type="application",
+                        application_uuid="uuid1",
+                        resource_name="Zebra",
+                        compose_service="worker",
+                    )
+                ]
+            )
+        )
+        report = collector.build_report(live, [], [], previous_map([gone]), now=NOW)
+        self.assertEqual([row["status"] for row in report["coolify"]], ["running", "absent"])
+
+
+class RealActionsTests(unittest.TestCase):
+    """Each row carries only what the helper would really do for it."""
+
+    def rows(self):
+        return collector.collect_coolify(
+            run_command=FakeDocker(
+                containers=[
+                    inspect_line(
+                        container="web-1",
+                        label_type="application",
+                        application_uuid="uuid1",
+                        resource_name="Example",
+                        compose_service="web",
+                    ),
+                    inspect_line(
+                        identifier="b",
+                        container="worker-1",
+                        label_type="application",
+                        application_uuid="uuid1",
+                        resource_name="Example",
+                        compose_service="worker",
+                    ),
+                    inspect_line(
+                        identifier="c",
+                        container="relay-1",
+                        label_type="application",
+                        resource_name="relay",
+                    ),
+                    inspect_line(
+                        identifier="d",
+                        container="db-1",
+                        label_type="service",
+                        resource_name="database",
+                    ),
+                ]
+            )
+        )
+
+    def test_only_a_live_labelled_application_can_be_redeployed(self):
+        gone = {"uuid": "uuid9", "name": "Gone", "type": "application", "uuidSource": "label",
+                "status": "absent", "absentSince": stamp(NOW)}
+        report = collector.build_report(
+            self.rows(), [], [], previous_map([gone]), now=NOW, can_redeploy=True
+        )
+        rows = {row["name"]: row for row in report["coolify"]}
+        self.assertEqual(rows["Example (web)"]["actions"], ["redeploy"])
+        self.assertEqual(rows["Example (worker)"]["actions"], ["redeploy"])
+        self.assertNotIn("redeployBlockedReason", rows["Example (web)"])
+        self.assertEqual(rows["relay"]["actions"], [])
+        self.assertEqual(rows["relay"]["redeployBlockedReason"], "no_uuid_label")
+        self.assertEqual(rows["database"]["actions"], [])
+        self.assertNotIn("redeployBlockedReason", rows["database"])
+        self.assertEqual(rows["Gone"]["actions"], [])
+        self.assertEqual(rows["Gone"]["redeployBlockedReason"], "not_seen")
+
+    def test_when_the_helper_would_not_redeploy_no_row_offers_it(self):
+        report = collector.build_report(self.rows(), [], [], {}, now=NOW, can_redeploy=False)
+        rows = {row["name"]: row for row in report["coolify"]}
+        self.assertEqual(rows["Example (web)"]["actions"], [])
+        self.assertEqual(rows["Example (web)"]["redeployBlockedReason"], "not_allowed")
+
+    def test_one_application_says_how_many_containers_a_redeploy_restarts(self):
+        report = collector.build_report(self.rows(), [], [], {}, now=NOW, can_redeploy=True)
+        self.assertEqual(
+            report["applications"],
+            [{"uuid": "uuid1", "name": "Example", "containers": 2, "services": ["web", "worker"]}],
+        )
+
+    def test_a_report_built_without_the_helpers_answer_says_nothing_about_actions(self):
+        report = collector.build_report(self.rows(), [], [], {}, now=NOW)
+        self.assertNotIn("actions", report["coolify"][0])
+        self.assertNotIn("applications", report)
+
+    def test_the_repo_allowlist_grants_redeploy_and_is_accepted_by_the_helper(self):
+        control = HERE / "fleet-ops-control.json"
+        self.assertTrue(collector.redeploy_allowed(control))
+        self.assertIsNone(collector.services_problem(control))
+
+
+class ContainerSignalTests(unittest.TestCase):
+    """A crash loop, a clean finish and a missing health check each read as what they are."""
+
+    def row(self, **fields):
+        return collector.collect_coolify(
+            run_command=FakeDocker(containers=[extended_line(**fields)])
+        )[0]
+
+    def test_a_crash_loop_is_restarting(self):
+        row = self.row(state="restarting", health="", restart_count="12", exit_code="1",
+                       restart_policy="always")
+        self.assertEqual(row["status"], "restarting")
+        self.assertEqual(row["restartCount"], 12)
+
+    def test_a_clean_exit_that_nothing_restarts_is_finished(self):
+        for policy in ("no", "on-failure"):
+            row = self.row(state="exited", health="", exit_code="0", restart_policy=policy)
+            self.assertEqual(row["status"], "finished", policy)
+            self.assertEqual(row["exitCode"], 0)
+
+    def test_every_other_exit_is_exited(self):
+        for code, policy in (("1", "no"), ("0", "always"), ("137", "no"), ("0", "")):
+            row = self.row(state="exited", health="", exit_code=code, restart_policy=policy)
+            self.assertEqual(row["status"], "exited", (code, policy))
+            self.assertEqual(row["exitCode"], int(code))
+
+    def test_an_out_of_memory_kill_is_said(self):
+        row = self.row(state="exited", health="", exit_code="137", oom_killed="true")
+        self.assertTrue(row["oomKilled"])
+        self.assertEqual(row["exitCode"], 137)
+
+    def test_a_running_row_says_whether_it_has_a_health_check(self):
+        self.assertEqual(self.row(health="healthy")["health"], "healthy")
+        self.assertEqual(self.row(health="starting")["health"], "starting")
+        self.assertEqual(self.row(health="")["health"], "none")
+        self.assertNotIn("exitCode", self.row(health="healthy"))
+
+    def test_a_docker_answer_without_the_new_fields_reads_as_not_measured(self):
+        row = collector.collect_coolify(
+            run_command=FakeDocker(containers=[inspect_line(state="exited", health="")])
+        )[0]
+        self.assertEqual(row["status"], "exited")
+        self.assertNotIn("restartCount", row)
+        self.assertNotIn("exitCode", row)
+        self.assertNotIn("oomKilled", row)
+
+    def test_the_inspect_format_asks_for_the_new_fields(self):
+        for field in ("RestartCount", "ExitCode", "OOMKilled", "RestartPolicy.Name"):
+            self.assertIn(field, collector.INSPECT_FORMAT)
+
+    def test_every_time_in_a_row_is_whole_seconds(self):
+        row = self.row(started="2026-11-04T19:26:46.54450348Z")
+        self.assertEqual(row["updatedAt"], "2026-11-04T19:26:46Z")
+
+    def test_a_time_is_respelled_or_left_out(self):
+        self.assertEqual(
+            collector.whole_second_utc("2026-11-04T19:26:46.510195485Z"), "2026-11-04T19:26:46Z"
+        )
+        self.assertEqual(
+            collector.whole_second_utc("2026-11-04T19:26:46Z"), "2026-11-04T19:26:46Z"
+        )
+        self.assertEqual(
+            collector.whole_second_utc("2026-11-04T14:26:46.123456-05:00"), "2026-11-04T19:26:46Z"
+        )
+        for bad in ("", None, "soon", "2026-13-40T00:00:00Z"):
+            self.assertIsNone(collector.whole_second_utc(bad), bad)
+
+    def test_the_resource_receipt_is_respelled_too(self):
+        spelled = collector.respell_policy_times(
+            {
+                "generatedAt": "2026-11-04T19:26:46.123456Z",
+                "observed": {"updatedAt": "2026-11-04T19:26:47.123456Z", "mode": "normal"},
+                "status": "applied",
+            }
+        )
+        self.assertEqual(spelled["generatedAt"], "2026-11-04T19:26:46Z")
+        self.assertEqual(spelled["observed"]["updatedAt"], "2026-11-04T19:26:47Z")
+        self.assertEqual(spelled["observed"]["mode"], "normal")
+        self.assertEqual(collector.respell_policy_times(None), None)
+
+    def test_the_dead_field_is_gone(self):
+        self.assertNotIn("service_name", (HERE / "fleet-server-status.py").read_text())
+
+
+class RemovedCheckoutTests(unittest.TestCase):
+    """Files of a removed checkout never hold the report red."""
+
+    def layout(self, tmp):
+        root = Path(tmp) / "Code"
+        kept = root / "Kept"
+        (kept / "config").mkdir(parents=True)
+        (kept / "AGENTS.md").write_text("x\n")
+        return root, kept
+
+    def previous_for(self, *paths):
+        return {str(path): {"path": str(path), "sha256": "aaaa"} for path in paths}
+
+    def test_a_removed_checkout_is_one_line_and_no_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, kept = self.layout(tmp)
+            before = self.previous_for(
+                kept / "AGENTS.md",
+                root / "Gone" / "AGENTS.md",
+                root / "Gone" / ".github" / "workflows" / "ci.yml",
+                root / "Other" / "CLAUDE.md",
+            )
+            rows, _total = collector.collect_files(root, before, now=NOW)
+            self.assertEqual([row["path"] for row in rows], [str(kept / "AGENTS.md")])
+            self.assertEqual(rows.removed, {"Gone": 2, "Other": 1})
+            notes = collector.merge_removed_checkouts(rows.removed, [], root, now=NOW)
+            self.assertEqual(
+                notes,
+                [
+                    {"repo": "Gone", "files": 2, "noticedAt": stamp(NOW)},
+                    {"repo": "Other", "files": 1, "noticedAt": stamp(NOW)},
+                ],
+            )
+
+    def test_the_old_rows_of_a_removed_checkout_are_cleared_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, kept = self.layout(tmp)
+            gone = str(root / "Gone" / "AGENTS.md")
+            rows, _total = collector.collect_files(
+                root, {gone: {"path": gone, "drift": "missing"}}, now=NOW
+            )
+            self.assertNotIn(gone, [row["path"] for row in rows])
+            self.assertEqual(rows.removed, {"Gone": 1})
+
+    def test_the_line_ages_out_and_keeps_its_first_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _kept = self.layout(tmp)
+            first = collector.merge_removed_checkouts({"Gone": 2}, [], root, now=NOW)
+            kept = collector.merge_removed_checkouts({}, first, root, now=NOW + 6 * DAY)
+            self.assertEqual(kept, first)
+            self.assertEqual(
+                collector.merge_removed_checkouts({}, first, root, now=NOW + 7 * DAY), []
+            )
+
+    def test_a_checkout_that_comes_back_loses_its_line_and_its_files_are_new(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _kept = self.layout(tmp)
+            first = collector.merge_removed_checkouts({"Gone": 1}, [], root, now=NOW)
+            (root / "Gone").mkdir()
+            (root / "Gone" / "AGENTS.md").write_text("x\n")
+            self.assertEqual(collector.merge_removed_checkouts({}, first, root, now=NOW + 60), [])
+            rows, _total = collector.collect_files(root, {}, now=NOW + 60)
+            drift = {Path(row["path"]).parent.name: row["drift"] for row in rows}
+            self.assertEqual(drift["Gone"], "new")
+
+    def test_malformed_lines_are_not_carried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _kept = self.layout(tmp)
+            for previous in (
+                None,
+                "Gone",
+                [7],
+                [{"repo": "../up", "files": 1, "noticedAt": stamp(NOW)}],
+                [{"repo": "Gone", "files": "two", "noticedAt": stamp(NOW)}],
+                [{"repo": "", "files": 1, "noticedAt": stamp(NOW)}],
+            ):
+                self.assertEqual(
+                    collector.merge_removed_checkouts({}, previous, root, now=NOW), [], previous
+                )
+
+    def test_an_empty_or_gone_code_folder_is_a_failure_and_not_a_removal(self):
+        # An unmounted volume leaves an empty folder, which says nothing about any checkout.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            root.mkdir()
+            path = root / "Gone" / "AGENTS.md"
+            before = self.previous_for(path)
+            rows, _total = collector.collect_files(root, before, now=NOW)
+            self.assertFalse(rows.root_readable)
+            self.assertEqual(rows.removed, {})
+            self.assertEqual(rows[0]["drift"], "missing")
+            self.assertEqual(rows[0]["missingSince"], stamp(NOW))
+            root.rmdir()
+            rows, _total = collector.collect_files(root, before, now=NOW)
+            self.assertFalse(rows.root_readable)
+            self.assertEqual(rows[0]["drift"], "missing")
+
+    def test_a_file_missing_from_a_live_checkout_says_since_when_and_ages_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, kept = self.layout(tmp)
+            path = str(kept / "CLAUDE.md")
+            rows, _total = collector.collect_files(
+                root, {path: {"path": path, "sha256": "aaaa"}}, now=NOW
+            )
+            row = next(row for row in rows if row["path"] == path)
+            self.assertEqual(row["drift"], "missing")
+            self.assertEqual(row["missingSince"], stamp(NOW))
+            # The next run keeps the first time.
+            rows, _total = collector.collect_files(root, {path: row}, now=NOW + DAY)
+            again = next(row for row in rows if row["path"] == path)
+            self.assertEqual(again["missingSince"], stamp(NOW))
+            rows, _total = collector.collect_files(root, {path: row}, now=NOW + 7 * DAY)
+            self.assertNotIn(path, [row["path"] for row in rows])
+
+    def test_an_old_missing_row_starts_its_seven_days_now(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, kept = self.layout(tmp)
+            path = str(kept / "CLAUDE.md")
+            rows, _total = collector.collect_files(
+                root, {path: {"path": path, "drift": "missing"}}, now=NOW
+            )
+            row = next(row for row in rows if row["path"] == path)
+            self.assertEqual(row["missingSince"], stamp(NOW))
+
+
+class FileListTests(unittest.TestCase):
+    """The list is read from where config can be, and config goes first."""
+
+    def test_the_walk_is_gone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = root / "Example"
+            (repo / ".github" / "workflows").mkdir(parents=True)
+            (repo / "config").mkdir()
+            (repo / "AGENTS.md").write_text("x\n")
+            (repo / ".github" / "workflows" / "ci.yml").write_text("x\n")
+            (repo / "config" / "one.json").write_text("{}\n")
+            with mock.patch.object(collector.os, "walk", side_effect=AssertionError("walked")):
+                paths, total = collector.watched_paths(root)
+            self.assertEqual(total, 3)
+            self.assertEqual(
+                [str(path.relative_to(repo)) for path in paths],
+                ["AGENTS.md", ".github/workflows/ci.yml", "config/one.json"],
+            )
+
+    def test_a_linked_folder_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = root / "Example"
+            repo.mkdir(parents=True)
+            outside = Path(tmp) / "outside"
+            (outside / "workflows").mkdir(parents=True)
+            (outside / "workflows" / "ci.yml").write_text("x\n")
+            (outside / "one.json").write_text("{}\n")
+            (repo / "AGENTS.md").write_text("x\n")
+            (repo / "config").symlink_to(outside)
+            (repo / ".github").symlink_to(outside)
+            paths, total = collector.watched_paths(root)
+            self.assertEqual([path.name for path in paths], ["AGENTS.md"])
+            self.assertEqual(total, 1)
+
+    def test_the_bound_spends_itself_on_config_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            repo = root / "Example"
+            repo.mkdir(parents=True)
+            for name in ("README.md", "package.json", "project.yml"):
+                (repo / name).write_text("x\n")
+            paths, total = collector.watched_paths(root, limit=1)
+            self.assertEqual([path.name for path in paths], ["project.yml"])
+            self.assertEqual(total, 3)
+
+    def test_the_summary_names_the_checkouts_the_bound_cut(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            for name, count in (("Busy", 3), ("Quiet", 1)):
+                (root / name / "config").mkdir(parents=True)
+                for index in range(count):
+                    (root / name / "config" / ("c%d.json" % index)).write_text("{}\n")
+            rows, total = collector.collect_files(root, {}, limit=3)
+            self.assertEqual(total, 4)
+            self.assertEqual(rows.cut, ["Busy"])
+            self.assertEqual(
+                collector.summarize_files(total, 3, rows.cut),
+                {"found": 4, "limit": 3, "truncated": True, "cutCheckouts": ["Busy"]},
+            )
+
+    def test_the_default_bound_covers_the_real_list(self):
+        # The server had 291 watched files, against a default of 200 that cut 91 of them.
+        self.assertGreaterEqual(collector.parse_args([]).file_limit, 291)
+
+
+class ScriptedSystemctl:
+    """A systemctl that answers each `show` for the units it is asked about, in order."""
+
+    def __init__(self, units=None, failed=None, refuse=()):
+        self.units = units or {}
+        self.failed = failed or {}
+        self.refuse = refuse
+        self.calls = []
+
+    def __call__(self, command, timeout=30):
+        self.calls.append(command)
+        if command[0] != "systemctl":
+            return None
+        scope = "user" if "--user" in command else "system"
+        if scope in self.refuse:
+            return None
+        if "list-units" in command:
+            return "".join(
+                "%s loaded failed failed The %s unit\n" % (unit, unit)
+                for unit in self.failed.get(scope, [])
+            )
+        names = [part for part in command[1:] if not part.startswith("-") and part != "show"]
+        return "\n\n".join(self.units[(scope, name)] for name in names) + "\n"
+
+
+def properties(**values):
+    return "\n".join("%s=%s" % pair for pair in values.items())
+
+
+FROZEN = types.SimpleNamespace(time=lambda: NOW, monotonic=lambda: 1000.0)
+
+
+class TimerTests(unittest.TestCase):
+    """A timer says whether its job ran, and whether it worked."""
+
+    def control(self, tmp, units=None, watch=None):
+        path = Path(tmp) / "fleet-ops-control.json"
+        document = {"schemaVersion": 1, "server": {"units": units or []}}
+        if watch is not None:
+            document["server"]["watch"] = watch
+        path.write_text(json.dumps(document))
+        return path
+
+    def timer(self, **extra):
+        values = dict(
+            Id="code-main-sync.timer",
+            LoadState="loaded",
+            ActiveState="active",
+            SubState="waiting",
+            StateChangeTimestamp="@1793826224",
+            ActiveEnterTimestamp="@1793820403",
+            Triggers="code-main-sync.service",
+            LastTriggerUSec="@1793826219",
+            NextElapseUSecRealtime="",
+            NextElapseUSecMonotonic="1h 47min 34.737538s",
+        )
+        values.update(extra)
+        return properties(**values)
+
+    def job(self, **extra):
+        values = dict(
+            Id="code-main-sync.service",
+            ActiveState="failed",
+            SubState="failed",
+            Result="exit-code",
+            ExecMainStatus="1",
+            ExecMainStartTimestamp="@1793826219",
+            ExecMainExitTimestamp="@1793826224",
+        )
+        values.update(extra)
+        return properties(**values)
+
+    def collect(self, timer=None, job=None, unit="code-main-sync.timer", scope="system"):
+        with tempfile.TemporaryDirectory() as tmp:
+            control = self.control(
+                tmp, [{"unit": unit, "scope": scope, "actions": ["restart"]}]
+            )
+            systemctl = ScriptedSystemctl(
+                {
+                    (scope, unit): timer or self.timer(Id=unit),
+                    (scope, "code-main-sync.service"): job or self.job(),
+                }
+            )
+            rows = collector.collect_services(control, run_command=systemctl, clock=FROZEN)
+        return rows[0], systemctl
+
+    def test_a_failing_job_shows_on_its_active_timer(self):
+        row, _ = self.collect()
+        self.assertEqual(row["activeState"], "active")
+        self.assertEqual(row["subState"], "waiting")
+        self.assertEqual(row["job"], "code-main-sync.service")
+        self.assertEqual(row["lastRunAt"], stamp(1793826219))
+        self.assertEqual(row["lastResult"], "exit-code")
+        self.assertEqual(row["lastExitCode"], 1)
+        self.assertEqual(row["lastFinishedAt"], stamp(1793826224))
+
+    def test_a_job_that_worked_says_so(self):
+        row, _ = self.collect(job=self.job(ActiveState="inactive", SubState="dead",
+                                           Result="success", ExecMainStatus="0"))
+        self.assertEqual(row["lastResult"], "success")
+        self.assertNotIn("lastExitCode", row)
+
+    def test_a_job_that_has_not_run_since_boot_has_no_result(self):
+        # systemd still says `success` here, which is a default and not an outcome.
+        row, _ = self.collect(
+            job=self.job(ActiveState="inactive", SubState="dead", Result="success",
+                         ExecMainStatus="0", ExecMainStartTimestamp="", ExecMainExitTimestamp="")
+        )
+        self.assertNotIn("lastResult", row)
+        self.assertEqual(row["lastRunAt"], stamp(1793826219))
+
+    def test_a_job_running_now_has_no_result(self):
+        for state, sub in (("activating", "start"), ("active", "running"), ("deactivating", "stop")):
+            row, _ = self.collect(job=self.job(ActiveState=state, SubState=sub, Result="success"))
+            self.assertNotIn("lastResult", row, state)
+            self.assertTrue(row["jobRunning"], state)
+
+    def test_a_oneshot_that_stays_active_has_finished(self):
+        row, _ = self.collect(job=self.job(ActiveState="active", SubState="exited",
+                                           Result="success", ExecMainStatus="0"))
+        self.assertEqual(row["lastResult"], "success")
+        self.assertNotIn("jobRunning", row)
+
+    def test_the_next_run_comes_from_the_monotonic_clock(self):
+        row, _ = self.collect()
+        expected = int(NOW + (3600 + 47 * 60 + 34.737538) - 1000.0)
+        self.assertEqual(row["nextRunAt"], stamp(expected))
+
+    def test_the_next_run_comes_from_the_calendar(self):
+        row, _ = self.collect(
+            timer=self.timer(NextElapseUSecRealtime="@1793826900", NextElapseUSecMonotonic="0")
+        )
+        self.assertEqual(row["nextRunAt"], stamp(1793826900))
+
+    def test_a_timer_with_both_runs_at_whichever_comes_first(self):
+        row, _ = self.collect(
+            timer=self.timer(
+                NextElapseUSecRealtime="@%d" % (NOW + 60),
+                NextElapseUSecMonotonic="1h",
+            )
+        )
+        self.assertEqual(row["nextRunAt"], stamp(NOW + 60))
+
+    def test_nothing_scheduled_has_no_next_run(self):
+        row, _ = self.collect(
+            timer=self.timer(NextElapseUSecRealtime="", NextElapseUSecMonotonic="infinity")
+        )
+        self.assertNotIn("nextRunAt", row)
+
+    def test_a_time_span_is_read_or_refused(self):
+        self.assertAlmostEqual(collector.parse_timespan("1h 47min 34.5s"), 6454.5)
+        self.assertAlmostEqual(collector.parse_timespan("2w 1d"), 15 * 86400)
+        self.assertAlmostEqual(collector.parse_timespan("500ms"), 0.5)
+        self.assertAlmostEqual(collector.parse_timespan("1month"), 2629800)
+        for value in ("", None, "0", "infinity", "soon", "5 parsecs", "1h soon"):
+            self.assertIsNone(collector.parse_timespan(value), value)
+
+    def test_an_active_timer_is_active_since_it_was_activated(self):
+        # Its own state change is only the moment it last fired.
+        row, _ = self.collect()
+        self.assertEqual(row["since"], stamp(1793820403))
+
+    def test_a_stopped_timer_reads_since_it_stopped(self):
+        row, _ = self.collect(timer=self.timer(ActiveState="inactive", SubState="dead"))
+        self.assertEqual(row["since"], stamp(1793826224))
+
+    def test_the_job_is_read_with_its_own_property_list(self):
+        _row, systemctl = self.collect()
+        self.assertEqual(len(systemctl.calls), 2)
+        job_call = systemctl.calls[1]
+        self.assertEqual(job_call[-1], "code-main-sync.service")
+        self.assertIn("--property=" + ",".join(collector.JOB_PROPERTIES), job_call)
+
+    def test_a_job_that_cannot_be_read_leaves_no_result(self):
+        class Refuses(ScriptedSystemctl):
+            def __call__(self, command, timeout=30):
+                if command[-1].endswith(".service"):
+                    return None
+                return super().__call__(command, timeout)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            control = self.control(
+                tmp, [{"unit": "code-main-sync.timer", "scope": "system", "actions": ["start"]}]
+            )
+            rows = collector.collect_services(
+                control,
+                run_command=Refuses({("system", "code-main-sync.timer"): self.timer()}),
+                clock=FROZEN,
+            )
+        self.assertNotIn("lastResult", rows[0])
+        self.assertEqual(rows[0]["job"], "code-main-sync.service")
+
+    def test_the_collectors_own_timer_does_not_report_this_run(self):
+        running = self.timer(Id=collector.SELF_TIMER, SubState="running",
+                             Triggers="code-main-sync.service")
+        row, _ = self.collect(
+            timer=running,
+            job=self.job(ActiveState="activating", SubState="start", Result="success"),
+            unit=collector.SELF_TIMER,
+            scope="user",
+        )
+        self.assertEqual(row["subState"], "waiting")
+        self.assertTrue(row["selfObserved"])
+        self.assertNotIn("jobRunning", row)
+        self.assertNotIn("lastResult", row)
+        self.assertEqual(row["since"], stamp(1793820403))
+        self.assertEqual(row["lastRunAt"], stamp(1793826219))
+
+    def test_another_timer_running_now_still_reads_running(self):
+        row, _ = self.collect(timer=self.timer(SubState="running"))
+        self.assertEqual(row["subState"], "running")
+        self.assertNotIn("selfObserved", row)
+
+    def test_a_service_row_gets_no_timer_fields(self):
+        block = properties(Id="cron.service", LoadState="loaded", ActiveState="active",
+                           SubState="running", Triggers="")
+        row, _ = self.collect(timer=block, unit="cron.service")
+        for field in ("lastRunAt", "nextRunAt", "job", "lastResult"):
+            self.assertNotIn(field, row)
+
+
+class WatchTests(unittest.TestCase):
+    """A watched unit is read and granted nothing."""
+
+    def control(self, tmp, units, watch):
+        path = Path(tmp) / "fleet-ops-control.json"
+        path.write_text(json.dumps({"schemaVersion": 1, "server": {"units": units, "watch": watch}}))
+        return path
+
+    def test_a_watched_row_has_no_actions(self):
+        units = [{"unit": "fleet-server-status.timer", "scope": "user",
+                  "actions": ["start", "restart"]}]
+        watch = [{"unit": "docker.service", "scope": "system"}]
+        systemctl = ScriptedSystemctl(
+            {
+                ("user", "fleet-server-status.timer"): show_block("fleet-server-status.timer"),
+                ("system", "docker.service"): show_block("docker.service"),
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(
+                self.control(tmp, units, watch), run_command=systemctl
+            )
+        by_unit = {row["unit"]: row for row in rows}
+        self.assertEqual(by_unit["docker.service"]["actions"], [])
+        self.assertFalse(by_unit["docker.service"]["controllable"])
+        self.assertTrue(by_unit["docker.service"]["watched"])
+        self.assertEqual(by_unit["fleet-server-status.timer"]["actions"],
+                         ["start", "restart", "logs"])
+        self.assertTrue(by_unit["fleet-server-status.timer"]["controllable"])
+        self.assertNotIn("watched", by_unit["fleet-server-status.timer"])
+
+    def test_a_watch_entry_can_never_widen_what_the_helper_accepts(self):
+        watch = [{"unit": "docker.service", "scope": "system", "actions": ["stop"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            control = self.control(tmp, [], watch)
+            self.assertEqual(collector.accepted_units(control), {})
+            self.assertEqual(collector.unit_actions(control), {})
+
+    def test_a_unit_in_both_lists_is_one_row_and_keeps_its_actions(self):
+        units = [{"unit": "cron.service", "scope": "system", "actions": ["restart"]}]
+        watch = [{"unit": "cron.service", "scope": "system"}]
+        systemctl = ScriptedSystemctl({("system", "cron.service"): show_block("cron.service")})
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(self.control(tmp, units, watch), run_command=systemctl)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["actions"], ["restart", "logs"])
+        self.assertNotIn("watched", rows[0])
+
+    def test_a_watched_unit_this_host_does_not_have_is_left_out(self):
+        watch = [{"unit": "nothing-here.service", "scope": "system"}]
+        block = properties(Id="nothing-here.service", LoadState="not-found",
+                           ActiveState="inactive", SubState="dead")
+        systemctl = ScriptedSystemctl({("system", "nothing-here.service"): block})
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(self.control(tmp, [], watch), run_command=systemctl)
+        self.assertEqual(rows, [])
+
+    def test_a_watched_unit_in_a_scope_that_cannot_answer_reads_unknown(self):
+        watch = [{"unit": "docker.service", "scope": "system"}]
+        systemctl = ScriptedSystemctl(refuse=("system",))
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(self.control(tmp, [], watch), run_command=systemctl)
+        self.assertEqual(rows[0]["activeState"], "unknown")
+        self.assertEqual(rows[0]["actions"], [])
+
+    def test_a_bad_watch_entry_is_skipped(self):
+        watch = [
+            {"unit": "--now", "scope": "system"},
+            {"unit": "docker.service", "scope": "root"},
+            {"unit": 7, "scope": "system"},
+            "docker.service",
+            {"unit": "docker.service", "scope": "system"},
+            {"unit": "docker.service", "scope": "system"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                collector.watched_units(self.control(tmp, [], watch)),
+                [("docker.service", "system")],
+            )
+            path = Path(tmp) / "bad.json"
+            path.write_text(json.dumps({"schemaVersion": 1, "server": {"watch": "docker.service"}}))
+            self.assertEqual(collector.watched_units(path), [])
+
+    def test_a_row_carries_the_role_and_what_stopping_it_costs(self):
+        units = [
+            {"unit": "a.timer", "scope": "user", "actions": ["stop"], "role": "reporting",
+             "stopConsequence": "Stopping this stops the report."},
+            {"unit": "b.timer", "scope": "user", "actions": ["stop"], "role": "boss",
+             "stopConsequence": "x" * 500},
+        ]
+        systemctl = ScriptedSystemctl(
+            {("user", "a.timer"): show_block("a.timer"), ("user", "b.timer"): show_block("b.timer")}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(self.control(tmp, units, []), run_command=systemctl)
+        by_unit = {row["unit"]: row for row in rows}
+        self.assertEqual(by_unit["a.timer"]["role"], "reporting")
+        self.assertEqual(by_unit["a.timer"]["stopConsequence"], "Stopping this stops the report.")
+        # A value of the wrong shape is left out rather than carried into the report.
+        self.assertNotIn("role", by_unit["b.timer"])
+        self.assertNotIn("stopConsequence", by_unit["b.timer"])
+
+    def test_the_repo_allowlist_keeps_the_report_timer_controllable_and_watches_the_sync(self):
+        control = HERE / "fleet-ops-control.json"
+        accepted = collector.accepted_units(control)
+        self.assertEqual(accepted["fleet-server-status.timer"], "user")
+        watched = [unit for unit, _scope in collector.watched_units(control)]
+        self.assertIn("code-main-sync.timer", watched)
+        for unit in watched:
+            self.assertNotIn(unit, accepted, unit)
+        notes = collector.unit_notes(control)
+        self.assertEqual(notes[("fleet-server-status.timer", "user")]["role"], "reporting")
+        # One sentence, in plain owner copy, naming the place and never a provider.
+        for note in notes.values():
+            text = note["stopConsequence"]
+            self.assertLessEqual(len(text), collector.STOP_CONSEQUENCE_LIMIT)
+            self.assertEqual(text.count("."), 1, text)
+            self.assertNotIn("Hetzner", text)
+
+
+class FailedUnitTests(unittest.TestCase):
+    """A failed unit shows, whether or not anything names it."""
+
+    def block(self, unit, result="exit-code", status="1"):
+        return properties(Id=unit, Description="The %s unit" % unit, Result=result,
+                          ExecMainStatus=status, StateChangeTimestamp="@1793826224")
+
+    def test_a_failed_unit_in_either_scope_appears(self):
+        systemctl = ScriptedSystemctl(
+            {
+                ("system", "code-main-sync.service"): self.block("code-main-sync.service"),
+                ("user", "other.service"): self.block("other.service", "timeout", "0"),
+            },
+            failed={"system": ["code-main-sync.service"], "user": ["other.service"]},
+        )
+        rows, answered = collector.collect_failed_units(systemctl)
+        self.assertEqual(answered, ["system", "user"])
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "unit": "code-main-sync.service",
+                    "scope": "system",
+                    "description": "The code-main-sync.service unit",
+                    "since": stamp(1793826224),
+                    "result": "exit-code",
+                    "exitCode": 1,
+                },
+                {
+                    "unit": "other.service",
+                    "scope": "user",
+                    "description": "The other.service unit",
+                    "since": stamp(1793826224),
+                    "result": "timeout",
+                },
+            ],
+        )
+
+    def test_nothing_failed_is_an_empty_list(self):
+        self.assertEqual(collector.collect_failed_units(ScriptedSystemctl()),
+                         ([], ["system", "user"]))
+
+    def test_no_scope_answering_is_not_the_same_as_nothing_failed(self):
+        rows, answered = collector.collect_failed_units(
+            ScriptedSystemctl(refuse=("system", "user"))
+        )
+        self.assertIsNone(rows)
+        self.assertEqual(answered, [])
+        self.assertNotIn(
+            "failedUnits", collector.build_report([], [], [], {}, failed_units=rows)
+        )
+
+    def test_one_scope_answering_is_reported_as_partial(self):
+        rows, answered = collector.collect_failed_units(ScriptedSystemctl(refuse=("user",)))
+        self.assertEqual((rows, answered), ([], ["system"]))
+        entry = collector.collection_report([], [], None, answered, [{"pid": 1}], [])["failedUnits"]
+        self.assertEqual(
+            entry, {"ok": True, "partial": True, "errorCode": "systemctl_scope_unreadable"}
+        )
+
+    def test_a_failed_unit_whose_details_cannot_be_read_still_appears(self):
+        class Refuses(ScriptedSystemctl):
+            def __call__(self, command, timeout=30):
+                if "show" in command:
+                    return None
+                return super().__call__(command, timeout)
+
+        rows, _ = collector.collect_failed_units(Refuses(failed={"system": ["nmbd.service"]}))
+        self.assertEqual(rows, [{"unit": "nmbd.service", "scope": "system"}])
+
+    def test_a_line_that_is_not_a_unit_is_ignored(self):
+        def answer(command, timeout=30):
+            if "list-units" in command:
+                return "0 loaded units listed.\n--now failed\n"
+            return ""
+
+        self.assertEqual(collector.collect_failed_units(answer)[0], [])
+
+    def test_an_instance_name_with_systemds_escape_is_read(self):
+        name = "systemd-fsck@dev-disk-by\\x2dlabel.service"
+        self.assertTrue(collector.FAILED_UNIT_RE.fullmatch(name))
+        self.assertTrue(collector.FAILED_UNIT_RE.fullmatch("session-3.scope"))
+        self.assertFalse(collector.FAILED_UNIT_RE.fullmatch("-H.service"))
+
+    def test_the_report_carries_the_list(self):
+        rows = [{"unit": "nmbd.service", "scope": "system"}]
+        document = collector.build_report([], [], [], {}, failed_units=rows)
+        self.assertEqual(document["failedUnits"], rows)
+
+
+class CollectionTests(unittest.TestCase):
+    """A half that could not be read says so, in a fixed code."""
+
+    def report(self, coolify=None, services=None, problem=None, scopes=("system", "user"),
+               processes=({"pid": 1},), files=None):
+        return collector.collection_report(
+            [] if coolify is None else coolify,
+            services or [],
+            problem,
+            list(scopes),
+            list(processes),
+            [] if files is None else files,
+        )
+
+    def test_everything_read_says_so(self):
+        for half, entry in self.report().items():
+            self.assertEqual(entry, {"ok": True, "partial": False}, half)
+
+    def test_docker_down_is_not_a_quiet_host(self):
+        rows = collector.collect_coolify(run_command=lambda *a, **k: None)
+        self.assertEqual(
+            self.report(coolify=rows)["coolify"],
+            {"ok": False, "partial": False, "errorCode": "docker_unreadable"},
+        )
+        quiet = collector.collect_coolify(run_command=FakeDocker())
+        self.assertEqual(self.report(coolify=quiet)["coolify"], {"ok": True, "partial": False})
+
+    def test_stats_that_cannot_be_read_are_partial(self):
+        class NoStats(FakeDocker):
+            def __call__(self, command, timeout=30):
+                if command[:2] == ["docker", "stats"]:
+                    return None
+                return super().__call__(command, timeout)
+
+        rows = collector.collect_coolify(run_command=NoStats(containers=[inspect_line()]))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            self.report(coolify=rows)["coolify"],
+            {"ok": True, "partial": True, "errorCode": "docker_stats_unreadable"},
+        )
+
+    def test_the_allowlist_says_why_it_gave_no_units(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent.json"
+            self.assertEqual(collector.services_problem(missing), "allowlist_unreadable")
+            refused = Path(tmp) / "refused.json"
+            refused.write_text(json.dumps({"schemaVersion": 1, "server": {"units": [{"unit": "a"}]}}))
+            self.assertEqual(collector.services_problem(refused), "allowlist_refused")
+        self.assertEqual(
+            self.report(problem="allowlist_refused")["services"],
+            {"ok": False, "partial": False, "errorCode": "allowlist_refused"},
+        )
+
+    def test_a_unit_left_unknown_is_partial(self):
+        entry = self.report(services=[{"unit": "a.timer", "activeState": "unknown"}])["services"]
+        self.assertEqual(
+            entry, {"ok": True, "partial": True, "errorCode": "systemctl_scope_unreadable"}
+        )
+
+    def test_no_scope_answering_is_said(self):
+        self.assertEqual(
+            self.report(scopes=())["failedUnits"],
+            {"ok": False, "partial": False, "errorCode": "systemctl_unreadable"},
+        )
+
+    def test_no_processes_is_said(self):
+        self.assertEqual(
+            self.report(processes=())["processes"],
+            {"ok": False, "partial": False, "errorCode": "proc_unreadable"},
+        )
+
+    def test_the_files_half_says_what_went_wrong(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            rows, _total = collector.collect_files(root, {})
+            self.assertEqual(
+                self.report(files=rows)["files"],
+                {"ok": False, "partial": False, "errorCode": "code_root_unreadable"},
+            )
+            for name in ("AGENTS.md", "CLAUDE.md"):
+                (root / "Repo").mkdir(parents=True, exist_ok=True)
+                (root / "Repo" / name).write_text("x\n")
+            rows, _total = collector.collect_files(root, {}, limit=1)
+            self.assertEqual(
+                self.report(files=rows)["files"],
+                {"ok": True, "partial": True, "errorCode": "files_truncated"},
+            )
+
+
+class ProcessHomeTests(unittest.TestCase):
+    """A process says which container or unit it belongs to, from its cgroup alone."""
+
+    def home(self, text, containers=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = Path(tmp)
+            (proc / "42").mkdir()
+            if text is not None:
+                (proc / "42" / "cgroup").write_text(text)
+            return collector.process_home(42, proc, containers)
+
+    def test_a_container_is_named_by_its_row(self):
+        identifier = "a" * 64
+        text = "0::/system.slice/docker-%s.scope\n" % identifier
+        self.assertEqual(self.home(text, {identifier: "congress-trade (web)"}),
+                         "congress-trade (web)")
+        # A container this run did not name is still a container, and not a name it made up.
+        self.assertEqual(self.home(text), "a container")
+
+    def test_a_systemd_unit_is_named(self):
+        self.assertEqual(self.home("0::/system.slice/docker.service\n"), "docker.service")
+        self.assertEqual(
+            self.home("0::/user.slice/user-1.slice/user@1.service/app.slice/mm.service\n"),
+            "mm.service",
+        )
+
+    def test_a_process_in_nothing_named_has_no_home(self):
+        self.assertIsNone(self.home("0::/user.slice/user-1.slice/session-3.scope\n"))
+        self.assertIsNone(self.home(""))
+        self.assertIsNone(self.home(None))
+
+    def test_the_busiest_rows_carry_it_and_the_row_says_nothing_else_new(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = Path(tmp)
+            ProcessTests().make_proc(proc, 4242, "worker", 100, 50, 16)
+            (proc / "4242" / "cgroup").write_text("0::/system.slice/worker.service\n")
+            rows = collector.collect_processes(limit=5, interval=0.0, proc=proc)
+        self.assertEqual(rows[0]["belongsTo"], "worker.service")
+
+    def test_the_sample_length_is_in_the_report_and_finer_than_before(self):
+        self.assertEqual(collector.parse_args([]).cpu_interval, 2.0)
+        document = collector.build_report([], [], [], {}, process_sample_seconds=2.0)
+        self.assertEqual(document["processSampleSeconds"], 2.0)
+
+
+class HostSignalTests(unittest.TestCase):
+    """Inodes, the boot time and a pending reboot."""
+
+    def test_a_disk_says_its_inodes_when_it_counts_them(self):
+        class WithInodes:
+            f_frsize = 4096
+            f_bsize = 4096
+            f_blocks = 100
+            f_bfree = 50
+            f_bavail = 40
+            f_files = 1000
+            f_favail = 900
+
+        usage = collector.disk_usage("/", lambda _mount: WithInodes)
+        self.assertEqual(usage["inodesTotal"], 1000)
+        self.assertEqual(usage["inodesFree"], 900)
+        # A file system that counts no inodes has no reading, never a zero.
+        WithInodes.f_files = 0
+        usage = collector.disk_usage("/", lambda _mount: WithInodes)
+        self.assertNotIn("inodesTotal", usage)
+        self.assertNotIn("inodesFree", usage)
+
+    def test_the_boot_time_comes_from_the_kernel_and_is_stable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = make_proc_files(Path(tmp) / "proc")
+            (proc / "stat").write_text("cpu 1 2 3\nbtime 1793820391\nprocesses 7\n")
+            self.assertEqual(
+                collector.collect_host_metrics(
+                    proc=proc, statvfs=FakeStatvfs({}), cpu_count=lambda: None
+                )["bootedAt"],
+                stamp(1793820391),
+            )
+            (proc / "stat").write_text("cpu 1 2 3\n")
+            self.assertIsNone(collector.booted_at(proc))
+            (proc / "stat").write_text("btime 0\n")
+            self.assertIsNone(collector.booted_at(proc))
+
+    def test_a_pending_reboot_is_said_and_its_absence_claims_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = make_proc_files(Path(tmp) / "proc")
+            flag = Path(tmp) / "reboot-required"
+            metrics = collector.collect_host_metrics(
+                proc=proc, statvfs=FakeStatvfs({}), cpu_count=lambda: None, reboot_flag=flag
+            )
+            self.assertNotIn("rebootRequired", metrics)
+            flag.write_text("*** System restart required ***\n")
+            metrics = collector.collect_host_metrics(
+                proc=proc, statvfs=FakeStatvfs({}), cpu_count=lambda: None, reboot_flag=flag
+            )
+            self.assertTrue(metrics["rebootRequired"])
+
+
+class StrongerWriteTests(unittest.TestCase):
+    """The report the whole panel rests on gets the strongest write in the fleet."""
+
+    def test_a_linked_folder_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            link = Path(tmp) / "link"
+            link.symlink_to(real)
+            with self.assertRaises(OSError):
+                collector.write_report(link / "report.json", {})
+            self.assertEqual(list(real.iterdir()), [])
+
+
+class WholeRunTests(unittest.TestCase):
+    """Whole runs of `main`, each reading the report the one before it wrote."""
+
+    def run_once(self, target, code, control, docker):
+        argv = [
+            "--output", str(target),
+            "--code-root", str(code),
+            "--control", str(control),
+            "--process-limit", "1",
+            "--cpu-interval", "0",
+        ]
+
+        def answer(command, timeout=30):
+            if command[0] == "docker":
+                return docker(command, timeout)
+            if "list-units" in command:
+                return "code-main-sync.service loaded failed failed sync\n"
+            if "show" in command:
+                names = [
+                    part for part in command[1:]
+                    if not part.startswith("-") and part != "show"
+                ]
+                return "\n\n".join(show_block(name) for name in names) + "\n"
+            return None
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(collector.main(argv, run_command=answer), 0)
+        return json.loads(target.read_text())
+
+    def test_the_old_report_shape_becomes_the_truth_in_one_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code = root / "Code"
+            (code / "Kept").mkdir(parents=True)
+            (code / "Kept" / "AGENTS.md").write_text("x\n")
+            control = root / "control.json"
+            control.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "server": {
+                            "units": [
+                                {"unit": "a.timer", "scope": "user", "actions": ["restart"]}
+                            ],
+                            "watch": [{"unit": "docker.service", "scope": "system"}],
+                            "coolify": {"redeploy": True},
+                        },
+                    }
+                )
+            )
+            target = root / "state" / "server-status.json"
+            target.parent.mkdir()
+            # What the collector wrote before this change.
+            gone = str(code / "Removed" / "AGENTS.md")
+            target.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "tool": "fleet-server-status",
+                        "coolify": [
+                            {"uuid": "uuid1", "name": "App (uuid1-1)", "type": "application",
+                             "uuidSource": "label", "status": "running"},
+                            {"uuid": "uuid1", "name": "App (uuid1-0)", "type": "application",
+                             "uuidSource": "label", "status": "absent"},
+                        ],
+                        "files": [{"path": gone, "drift": "missing"}],
+                    }
+                )
+            )
+            docker = FakeDocker(
+                containers=[
+                    inspect_line(
+                        container="uuid1-2",
+                        label_type="application",
+                        application_uuid="uuid1",
+                        resource_name="App",
+                        compose_service="uuid1-2",
+                    )
+                ]
+            )
+            document = self.run_once(target, code, control, docker)
+            self.assertEqual(document["schemaVersion"], 1)
+            self.assertIn(document["hostRole"], ("mac", "server"))
+            self.assertEqual([row["name"] for row in document["coolify"]], ["App"])
+            self.assertEqual(document["coolify"][0]["actions"], ["redeploy"])
+            self.assertEqual(
+                [(note["repo"], note["files"]) for note in document["removedCheckouts"]],
+                [("Removed", 1)],
+            )
+            self.assertEqual([row["drift"] for row in document["files"]], ["new"])
+            self.assertEqual(document["failedUnits"][0]["unit"], "code-main-sync.service")
+            self.assertEqual(
+                [row["unit"] for row in document["services"]], ["docker.service", "a.timer"]
+            )
+            self.assertEqual(document["applications"][0]["containers"], 1)
+            self.assertEqual(document["collection"]["services"], {"ok": True, "partial": False})
+            first_noticed = document["removedCheckouts"][0]["noticedAt"]
+
+            # The next run reads that report, and nothing moves or grows.
+            again = self.run_once(target, code, control, docker)
+            self.assertEqual([row["name"] for row in again["coolify"]], ["App"])
+            self.assertEqual(again["removedCheckouts"][0]["noticedAt"], first_noticed)
+            self.assertEqual(again["removedCheckouts"][0]["files"], 1)
+            self.assertEqual([row["drift"] for row in again["files"]], ["unchanged"])
+
+            # The container goes away for real, and the row says since when.
+            quiet = FakeDocker()
+            third = self.run_once(target, code, control, quiet)
+            self.assertEqual(third["coolify"][0]["status"], "absent")
+            since = third["coolify"][0]["absentSince"]
+            self.assertLessEqual(
+                abs(collector.seconds_from_report_time(since) - time.time()), 60
+            )
+            self.assertEqual(third["coolify"][0]["redeployBlockedReason"], "not_seen")
+            fourth = self.run_once(target, code, control, quiet)
+            self.assertEqual(fourth["coolify"][0]["absentSince"], since)
+
+
+class FixtureScriptTests(unittest.TestCase):
+    """The committed live-shape fixture keeps the shape and none of the names."""
+
+    def module(self):
+        spec = importlib.util.spec_from_file_location(
+            "make_server_status_fixture", HERE / "make-server-status-fixture.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def report(self):
+        return {
+            "schemaVersion": 1,
+            "tool": "fleet-server-status",
+            "generatedAt": "2026-11-04T21:00:28Z",
+            "host": "secret-host-name",
+            "hostRole": "server",
+            "coolify": [
+                {"uuid": "secretuuid", "uuidSource": "label", "name": "secret-app (secret-web)",
+                 "service": "secret-web", "container": "secret-web-secretuuid-2026",
+                 "image": "secret-image:latest", "type": "application", "status": "running",
+                 "updatedAt": "2026-11-04T19:26:46Z", "actions": ["redeploy"]},
+                {"uuid": "secretuuid", "uuidSource": "label", "name": "secret-app (secret-db)",
+                 "service": "secret-db", "container": "secret-db-secretuuid-2026",
+                 "type": "application", "status": "running", "actions": ["redeploy"]},
+                {"uuid": "secret-box", "uuidSource": "name", "name": "secret-box",
+                 "container": "secret-box", "type": "standalone", "status": "running",
+                 "actions": []},
+            ],
+            "applications": [
+                {"uuid": "secretuuid", "name": "secret-app", "containers": 2,
+                 "services": ["secret-db", "secret-web"]}
+            ],
+            "processes": [
+                {"pid": 4242, "owner": "secret-owner", "name": "secret-process",
+                 "belongsTo": "secret-app (secret-web)", "cpuPercent": 2.5}
+            ],
+            "files": [
+                {"path": "/secret/Code/SecretRepo/AGENTS.md", "bytes": 1, "sha256": "secretdigest",
+                 "drift": "unchanged", "modifiedAt": "2026-11-04T19:26:46Z"},
+                {"path": "/secret/Code/SecretRepo/.github/workflows/secret-flow.yml", "bytes": 1,
+                 "sha256": "secretdigest", "drift": "unchanged"},
+                {"path": "/secret/Code/SecretRepo/config/secret-config.json", "bytes": 1,
+                 "sha256": "secretdigest", "drift": "unchanged"},
+            ],
+            "filesSummary": {"found": 3, "limit": 2, "truncated": True,
+                             "cutCheckouts": ["SecretRepo"]},
+            "removedCheckouts": [
+                {"repo": "SecretGone", "files": 2, "noticedAt": "2026-11-04T21:00:00Z"}
+            ],
+            "services": [
+                {"unit": "secret-timer.timer", "scope": "user", "description": "secret words",
+                 "activeState": "active", "job": "secret-timer.service",
+                 "lastResult": "success", "controllable": True, "actions": ["restart", "logs"]}
+            ],
+            "failedUnits": [
+                {"unit": "secret-sync.service", "scope": "system", "description": "secret words",
+                 "result": "exit-code", "exitCode": 1}
+            ],
+            "hostMetrics": {"disks": [{"mount": "/", "totalBytes": 1},
+                                      {"mount": "/mnt/secret-volume", "totalBytes": 1}]},
+            "resourcePolicy": {"policyRevision": "secretrevision", "status": "applied"},
+            "collection": {"coolify": {"ok": True, "partial": False}},
+        }
+
+    def test_no_real_name_survives(self):
+        text = json.dumps(self.module().sanitize_report(self.report()))
+        self.assertNotIn("secret", text.lower())
+
+    def test_the_shape_survives(self):
+        result = self.module().sanitize_report(self.report())
+        rows = result["coolify"]
+        self.assertEqual(len(rows), 3)
+        # Two rows of one application still share a uuid and a base name.
+        self.assertEqual(rows[0]["uuid"], rows[1]["uuid"])
+        self.assertEqual(rows[0]["name"].split(" ")[0], rows[1]["name"].split(" ")[0])
+        self.assertNotEqual(rows[0]["service"], rows[1]["service"])
+        self.assertTrue(rows[0]["name"].endswith("(%s)" % rows[0]["service"]))
+        # A stand-in uuid is still the row's own name, which the redeploy rule reads.
+        self.assertEqual(rows[2]["uuid"], rows[2]["name"])
+        self.assertEqual(rows[0]["actions"], ["redeploy"])
+        self.assertEqual(rows[0]["updatedAt"], "2026-11-04T19:26:46Z")
+        self.assertEqual(result["applications"][0]["uuid"], rows[0]["uuid"])
+        paths = [row["path"] for row in result["files"]]
+        self.assertTrue(paths[0].endswith("/AGENTS.md"))
+        self.assertIn("/.github/workflows/", paths[1])
+        self.assertTrue(paths[1].endswith(".yml"))
+        self.assertIn("/config/", paths[2])
+        self.assertTrue(paths[2].endswith(".json"))
+        self.assertEqual(result["services"][0]["unit"].rpartition(".")[2], "timer")
+        self.assertEqual(result["services"][0]["job"].rpartition(".")[2], "service")
+        self.assertEqual(result["hostMetrics"]["disks"][0]["mount"], "/")
+
+    def test_the_committed_fixture_is_sanitized(self):
+        path = HERE.parent / "muster" / "MusterTests" / "Fixtures" / "server_status_live_shape.json"
+        document = json.loads(path.read_text())
+        self.assertEqual(document["host"], "example-server")
+        self.assertEqual(document["schemaVersion"], 1)
+        text = path.read_text()
+        for word in ("/mnt/fleet", "congress", "coolify-", "code-main-sync", "botfleet", "jay"):
+            self.assertNotIn(word, text, word)
 
 
 if __name__ == "__main__":

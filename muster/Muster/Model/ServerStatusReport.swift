@@ -70,6 +70,10 @@ enum CoolifyResourceStatus: String {
     case running
     case exited
     case unhealthy
+    /// Docker keeps restarting it:  a crash loop.
+    case restarting
+    /// It exited cleanly and nothing would restart it:  a one-shot job that did its work.
+    case finished
     case absent
     case unknown
 
@@ -131,9 +135,26 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
     /// The server believes a row that says where its uuid came from only when it says
     /// `label`,  so a value of the wrong type must still count as saying something.
     let declaresUUIDSource: Bool
+    /// The container's own name,  which can hold a per-deploy stamp,  so it is not in `name`.
+    let container: String?
+    /// The compose service,  when this is one part of an application.
+    let service: String?
+    /// When the collector first saw this row gone.  It drops the row after seven days.
+    let absentSince: String?
+    /// `healthy`,  `unhealthy`,  `starting`,  or `none` when the container has no health check.
+    let health: String?
+    let restartCount: Int?
+    let exitCode: Int?
+    let oomKilled: Bool?
+    /// What the helper would really do for this row,  when the collector asked it.
+    let actions: [String]?
+    /// Why an application row cannot be redeployed,  as a fixed code.
+    let redeployBlockedReason: String?
 
     enum CodingKeys: String, CodingKey {
         case uuid, name, type, status, cpuPercent, memoryBytes, image, updatedAt, uuidSource
+        case container, service, absentSince, health, restartCount, exitCode, oomKilled
+        case actions, redeployBlockedReason
     }
 
     /// A resource decodes field by field,  so one field of a type this app did not
@@ -151,13 +172,23 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
         uuidSource = try? container.decodeIfPresent(String.self, forKey: .uuidSource)
         declaresUUIDSource = container.contains(.uuidSource)
             && (try? container.decodeNil(forKey: .uuidSource)) == false
+        self.container = try? container.decodeIfPresent(String.self, forKey: .container)
+        service = try? container.decodeIfPresent(String.self, forKey: .service)
+        absentSince = try? container.decodeIfPresent(String.self, forKey: .absentSince)
+        health = try? container.decodeIfPresent(String.self, forKey: .health)
+        restartCount = try? container.decodeIfPresent(Int.self, forKey: .restartCount)
+        exitCode = try? container.decodeIfPresent(Int.self, forKey: .exitCode)
+        oomKilled = try? container.decodeIfPresent(Bool.self, forKey: .oomKilled)
+        actions = try? container.decodeIfPresent([String].self, forKey: .actions)
+        redeployBlockedReason = try? container.decodeIfPresent(String.self, forKey: .redeployBlockedReason)
     }
 
     /// The row's identity.
     ///
     /// The image is in it because two services of one Coolify application share the
-    /// application's uuid and the resource name,  and a row must still be one row.
-    var id: String { "\(uuid)/\(name)/\(image ?? "")" }
+    /// application's uuid and the resource name,  and a row must still be one row.  The
+    /// container is in it because two deploys of one application can overlap for a moment.
+    var id: String { "\(uuid)/\(name)/\(image ?? "")/\(container ?? "")" }
 
     /// The kind of resource,  in this app's vocabulary.
     var resourceType: CoolifyResourceType { CoolifyResourceType(reportValue: type) }
@@ -167,13 +198,13 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
 
     /// The state the resource reads as,  in the grid's own vocabulary.
     ///
-    /// A resource that is running reads as a pass,  one that exited or is unhealthy
-    /// reads as a failure,  one that is gone reads as drift,  and one nobody could
-    /// tell reads as unproven rather than as a pass.
+    /// A resource that is running or that finished its work reads as a pass,  one that exited,
+    /// is unhealthy or is in a crash loop reads as a failure,  one that is gone reads as drift,
+    /// and one nobody could tell reads as unproven rather than as a pass.
     var state: CellState {
         switch resourceStatus {
-        case .running: return .passed
-        case .exited, .unhealthy: return .missing
+        case .running, .finished: return .passed
+        case .exited, .unhealthy, .restarting: return .missing
         case .absent: return .drift
         case .unknown: return .unproven
         }
@@ -219,9 +250,11 @@ struct ServerProcess: Decodable, Identifiable, Equatable {
     let name: String?
     let cpuPercent: Double?
     let memoryBytes: Int?
+    /// The container or the systemd unit it runs in,  when its cgroup names one.
+    let belongsTo: String?
 
     enum CodingKeys: String, CodingKey {
-        case pid, owner, name, cpuPercent, memoryBytes
+        case pid, owner, name, cpuPercent, memoryBytes, belongsTo
     }
 
     /// A process decodes field by field,  for the same reason a resource does.
@@ -232,6 +265,7 @@ struct ServerProcess: Decodable, Identifiable, Equatable {
         name = try? container.decodeIfPresent(String.self, forKey: .name)
         cpuPercent = try? container.decodeIfPresent(Double.self, forKey: .cpuPercent)
         memoryBytes = try? container.decodeIfPresent(Int.self, forKey: .memoryBytes)
+        belongsTo = try? container.decodeIfPresent(String.self, forKey: .belongsTo)
     }
 
     var id: Int { pid }
@@ -259,9 +293,11 @@ struct WatchedFile: Decodable, Identifiable, Equatable {
     let modifiedAt: String?
     let sha256: String?
     let drift: String?
+    /// When the collector first saw this file gone.  It drops the row after seven days.
+    let missingSince: String?
 
     enum CodingKeys: String, CodingKey {
-        case path, bytes, modifiedAt, sha256, drift
+        case path, bytes, modifiedAt, sha256, drift, missingSince
     }
 
     /// A file decodes field by field,  for the same reason a resource does.
@@ -272,6 +308,7 @@ struct WatchedFile: Decodable, Identifiable, Equatable {
         modifiedAt = try? container.decodeIfPresent(String.self, forKey: .modifiedAt)
         sha256 = try? container.decodeIfPresent(String.self, forKey: .sha256)
         drift = try? container.decodeIfPresent(String.self, forKey: .drift)
+        missingSince = try? container.decodeIfPresent(String.self, forKey: .missingSince)
     }
 
     var id: String { path }
@@ -370,9 +407,11 @@ struct HostDisk: Decodable, Identifiable, Equatable {
     let totalBytes: Int?
     let usedBytes: Int?
     let freeBytes: Int?
+    let inodesTotal: Int?
+    let inodesFree: Int?
 
     enum CodingKeys: String, CodingKey {
-        case mount, totalBytes, usedBytes, freeBytes
+        case mount, totalBytes, usedBytes, freeBytes, inodesTotal, inodesFree
     }
 
     init(from decoder: Decoder) throws {
@@ -381,6 +420,8 @@ struct HostDisk: Decodable, Identifiable, Equatable {
         totalBytes = try? container.decodeIfPresent(Int.self, forKey: .totalBytes)
         usedBytes = try? container.decodeIfPresent(Int.self, forKey: .usedBytes)
         freeBytes = try? container.decodeIfPresent(Int.self, forKey: .freeBytes)
+        inodesTotal = try? container.decodeIfPresent(Int.self, forKey: .inodesTotal)
+        inodesFree = try? container.decodeIfPresent(Int.self, forKey: .inodesFree)
     }
 
     var id: String { mount }
@@ -419,9 +460,13 @@ struct HostMetrics: Decodable, Equatable {
     let swap: HostSwap?
     let uptimeSeconds: Int?
     let disks: [HostDisk]
+    /// When the host booted,  from the kernel.
+    let bootedAt: String?
+    /// True only when the host's flag file says a reboot is needed.  Nil claims nothing.
+    let rebootRequired: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case loadAverage, cpuCount, memory, swap, uptimeSeconds, disks
+        case loadAverage, cpuCount, memory, swap, uptimeSeconds, disks, bootedAt, rebootRequired
     }
 
     init(from decoder: Decoder) throws {
@@ -432,6 +477,8 @@ struct HostMetrics: Decodable, Equatable {
         swap = try? container.decodeIfPresent(HostSwap.self, forKey: .swap)
         uptimeSeconds = try? container.decodeIfPresent(Int.self, forKey: .uptimeSeconds)
         disks = (try? container.decodeIfPresent([HostDisk].self, forKey: .disks)) ?? []
+        bootedAt = try? container.decodeIfPresent(String.self, forKey: .bootedAt)
+        rebootRequired = try? container.decodeIfPresent(Bool.self, forKey: .rebootRequired)
     }
 
     /// The one-minute load over the cpu count, from 0 up.
@@ -477,9 +524,11 @@ struct HostMetrics: Decodable, Equatable {
 
 /// One systemd unit the fleet runs on the server,  as `systemctl show` described it.
 ///
-/// The collector reads only the units the allowlist names (`server.units` in
+/// The collector reads the units the allowlist names (`server.units` in
 /// `scripts/fleet-ops-control.json`),  and `controllable` says whether the allowlist lets
-/// Muster start,  stop or restart it.
+/// Muster start,  stop or restart it.  It also reads the units `server.watch` names,  and
+/// those are `watched` and have no actions.  A timer says when its job last ran,  how that
+/// ended and when it runs next.
 struct ServerService: Decodable, Identifiable, Equatable {
     let unit: String
     let scope: String?
@@ -490,9 +539,33 @@ struct ServerService: Decodable, Identifiable, Equatable {
     /// The unit file state (`enabled`,  `disabled`,  `static` and so on).
     let enabled: String?
     let controllable: Bool
+    /// What the helper would really do for this unit,  when the collector asked it.
+    let actions: [String]?
+    /// True for a unit that is read and granted nothing.
+    let watched: Bool
+    /// True on the collector's own timer while the collector was running.
+    let selfObserved: Bool
+    /// The service this timer starts.
+    let job: String?
+    /// True when the timer's job is running at the moment the report was written.
+    let jobRunning: Bool
+    let lastRunAt: String?
+    /// How the job last ended,  in systemd's word.  Nil says the result is not known,  because
+    /// it has not run since boot or is running now.
+    let lastResult: String?
+    let lastExitCode: Int?
+    let lastFinishedAt: String?
+    let nextRunAt: String?
+    /// `reporting` or `updater`,  when the allowlist says what depends on this unit.
+    let role: String?
+    /// What stopping this unit costs,  in owner copy.
+    let stopConsequence: String?
 
     enum CodingKeys: String, CodingKey {
         case unit, scope, description, activeState, subState, since, enabled, controllable
+        case actions, watched, selfObserved, job, jobRunning
+        case lastRunAt, lastResult, lastExitCode, lastFinishedAt, nextRunAt
+        case role, stopConsequence
     }
 
     init(from decoder: Decoder) throws {
@@ -513,18 +586,40 @@ struct ServerService: Decodable, Identifiable, Equatable {
         // A unit is controllable only when the report says so in as many words:  a field
         // that is missing or unreadable is not a permission.
         controllable = (try? container.decodeIfPresent(Bool.self, forKey: .controllable)) == true
+        actions = try? container.decodeIfPresent([String].self, forKey: .actions)
+        watched = (try? container.decodeIfPresent(Bool.self, forKey: .watched)) == true
+        selfObserved = (try? container.decodeIfPresent(Bool.self, forKey: .selfObserved)) == true
+        job = try? container.decodeIfPresent(String.self, forKey: .job)
+        jobRunning = (try? container.decodeIfPresent(Bool.self, forKey: .jobRunning)) == true
+        lastRunAt = try? container.decodeIfPresent(String.self, forKey: .lastRunAt)
+        lastResult = try? container.decodeIfPresent(String.self, forKey: .lastResult)
+        lastExitCode = try? container.decodeIfPresent(Int.self, forKey: .lastExitCode)
+        lastFinishedAt = try? container.decodeIfPresent(String.self, forKey: .lastFinishedAt)
+        nextRunAt = try? container.decodeIfPresent(String.self, forKey: .nextRunAt)
+        role = try? container.decodeIfPresent(String.self, forKey: .role)
+        stopConsequence = try? container.decodeIfPresent(String.self, forKey: .stopConsequence)
     }
 
     /// Two scopes can hold units of one name,  so the scope is part of the identity.
     var id: String { "\(scope ?? "system")/\(unit)" }
 
+    /// True when the timer's job last ended badly.
+    ///
+    /// A job its own condition skipped did not fail,  and a result nobody could read is not
+    /// a failure either.
+    var lastRunFailed: Bool {
+        guard let result = lastResult else { return false }
+        return !["success", "exec-condition", "skipped"].contains(result)
+    }
+
     /// The state the unit reads as.
     ///
-    /// An active unit is a pass,  a failed one is a failure,  one that is stopped is
+    /// An active unit is a pass unless the job it starts last failed,  because a timer stays
+    /// active while its job fails.  A failed one is a failure,  one that is stopped is
     /// drift,  and one that is between states or that nobody could read is unproven.
     var state: CellState {
         switch activeState ?? "" {
-        case "active": return .passed
+        case "active": return lastRunFailed ? .missing : .passed
         case "failed": return .missing
         case "inactive": return .drift
         default: return .unproven
@@ -546,14 +641,127 @@ struct ServerService: Decodable, Identifiable, Equatable {
     }
 }
 
+/// One unit `systemctl --failed` named,  whether or not anything else names it.
+struct ServerFailedUnit: Decodable, Identifiable, Equatable {
+    let unit: String
+    let scope: String?
+    let description: String?
+    let since: String?
+    let result: String?
+    let exitCode: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case unit, scope, description, since, result, exitCode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        unit = (try? container.decodeIfPresent(String.self, forKey: .unit)) ?? ""
+        scope = try? container.decodeIfPresent(String.self, forKey: .scope)
+        description = try? container.decodeIfPresent(String.self, forKey: .description)
+        since = try? container.decodeIfPresent(String.self, forKey: .since)
+        result = try? container.decodeIfPresent(String.self, forKey: .result)
+        exitCode = try? container.decodeIfPresent(Int.self, forKey: .exitCode)
+    }
+
+    var id: String { "\(scope ?? "system")/\(unit)" }
+}
+
+/// One checkout removed from the server in the last seven days.  This is information:  it
+/// is not a failure of the files it took with it,  and it does not count in any state.
+struct ServerRemovedCheckout: Decodable, Identifiable, Equatable {
+    let repo: String
+    let files: Int?
+    let noticedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case repo, files, noticedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        repo = (try? container.decodeIfPresent(String.self, forKey: .repo)) ?? ""
+        files = try? container.decodeIfPresent(Int.self, forKey: .files)
+        noticedAt = try? container.decodeIfPresent(String.self, forKey: .noticedAt)
+    }
+
+    var id: String { repo }
+}
+
+/// One live Coolify application and what a redeploy of it restarts.
+struct ServerApplication: Decodable, Identifiable, Equatable {
+    let uuid: String
+    let name: String
+    let containers: Int?
+    let services: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case uuid, name, containers, services
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        uuid = (try? container.decodeIfPresent(String.self, forKey: .uuid)) ?? ""
+        name = (try? container.decodeIfPresent(String.self, forKey: .name)) ?? ""
+        containers = try? container.decodeIfPresent(Int.self, forKey: .containers)
+        services = (try? container.decodeIfPresent([String].self, forKey: .services)) ?? []
+    }
+
+    var id: String { uuid }
+}
+
+/// How one half of the report went,  in the collector's fixed codes.
+struct ServerCollectionEntry: Decodable, Equatable {
+    /// False when the half could not be read at all.  Nil when the collector did not say.
+    let ok: Bool?
+    /// True when the half was read and something in it is missing.
+    let partial: Bool
+    let errorCode: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, partial, errorCode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try? container.decodeIfPresent(Bool.self, forKey: .ok)
+        partial = (try? container.decodeIfPresent(Bool.self, forKey: .partial)) == true
+        errorCode = try? container.decodeIfPresent(String.self, forKey: .errorCode)
+    }
+}
+
+/// What the collector could and could not read this run.
+struct ServerCollection: Decodable, Equatable {
+    let coolify: ServerCollectionEntry?
+    let services: ServerCollectionEntry?
+    let failedUnits: ServerCollectionEntry?
+    let processes: ServerCollectionEntry?
+    let files: ServerCollectionEntry?
+
+    enum CodingKeys: String, CodingKey {
+        case coolify, services, failedUnits, processes, files
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        coolify = try? container.decodeIfPresent(ServerCollectionEntry.self, forKey: .coolify)
+        services = try? container.decodeIfPresent(ServerCollectionEntry.self, forKey: .services)
+        failedUnits = try? container.decodeIfPresent(ServerCollectionEntry.self, forKey: .failedUnits)
+        processes = try? container.decodeIfPresent(ServerCollectionEntry.self, forKey: .processes)
+        files = try? container.decodeIfPresent(ServerCollectionEntry.self, forKey: .files)
+    }
+}
+
 /// How many watched files the collector found,  and whether it stopped at its limit.
 struct ServerFilesSummary: Decodable, Equatable {
     let found: Int?
     let limit: Int?
     let truncated: Bool
+    /// The checkouts the limit cut short.
+    let cutCheckouts: [String]
 
     enum CodingKeys: String, CodingKey {
-        case found, limit, truncated
+        case found, limit, truncated, cutCheckouts
     }
 
     init(from decoder: Decoder) throws {
@@ -561,6 +769,7 @@ struct ServerFilesSummary: Decodable, Equatable {
         found = try? container.decodeIfPresent(Int.self, forKey: .found)
         limit = try? container.decodeIfPresent(Int.self, forKey: .limit)
         truncated = (try? container.decodeIfPresent(Bool.self, forKey: .truncated)) == true
+        cutCheckouts = (try? container.decodeIfPresent([String].self, forKey: .cutCheckouts)) ?? []
     }
 }
 
@@ -583,10 +792,22 @@ struct ServerStatusReport: Decodable {
     let filesSummary: ServerFilesSummary?
     /// The redacted resource receipt is optional; its absence never proves limits applied.
     let resourcePolicy: ResourcePolicySnapshot?
+    /// What `systemctl --failed` said.  Nil says no scope answered,  which is not the same as
+    /// nothing failed.
+    let failedUnits: [ServerFailedUnit]?
+    /// The checkouts removed in the last seven days.
+    let removedCheckouts: [ServerRemovedCheckout]
+    /// The live applications and what a redeploy of each restarts.
+    let applications: [ServerApplication]
+    /// What the collector could and could not read,  when it said.
+    let collection: ServerCollection?
+    /// How long the cpu of the processes was sampled over,  in seconds.
+    let processSampleSeconds: Double?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, tool, generatedAt, host, coolify, processes, files
         case hostMetrics, services, filesSummary, resourcePolicy
+        case failedUnits, removedCheckouts, applications, collection, processSampleSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -606,6 +827,11 @@ struct ServerStatusReport: Decodable {
         services = (try? container.decodeIfPresent([ServerService].self, forKey: .services)) ?? []
         filesSummary = try? container.decodeIfPresent(ServerFilesSummary.self, forKey: .filesSummary)
         resourcePolicy = try? container.decodeIfPresent(ResourcePolicySnapshot.self, forKey: .resourcePolicy)
+        failedUnits = try? container.decodeIfPresent([ServerFailedUnit].self, forKey: .failedUnits)
+        removedCheckouts = (try? container.decodeIfPresent([ServerRemovedCheckout].self, forKey: .removedCheckouts)) ?? []
+        applications = (try? container.decodeIfPresent([ServerApplication].self, forKey: .applications)) ?? []
+        collection = try? container.decodeIfPresent(ServerCollection.self, forKey: .collection)
+        processSampleSeconds = try? container.decodeIfPresent(Double.self, forKey: .processSampleSeconds)
     }
 }
 
@@ -638,15 +864,28 @@ struct ServerStatusReading {
     /// How many files the collector found,  when the report says.
     var filesSummary: ServerFilesSummary?
     var resourcePolicy: ResourcePolicySnapshot?
+    /// What `systemctl --failed` said.  Nil says no scope answered.
+    var failedUnits: [ServerFailedUnit]?
+    /// The checkouts removed in the last seven days,  which count in no state.
+    var removedCheckouts: [ServerRemovedCheckout] = []
+    /// The live applications and what a redeploy of each restarts.
+    var applications: [ServerApplication] = []
+    /// What the collector could and could not read,  when the report says.
+    var collection: ServerCollection?
+    /// How long the cpu of the processes was sampled over,  when the report says.
+    var processSampleSeconds: Double?
     /// The verdict for the whole report.
     var state: CellState = .unknown
 
     /// True when the panel should offer Redeploy for `resource`.
     ///
     /// The server redeploys the first row of its report whose uuid matches,  so the row
-    /// must be redeployable itself and so must the first row that shares its uuid.
+    /// must be redeployable itself and so must the first row that shares its uuid.  A row that
+    /// is gone is never offered,  and a row that lists its actions is offered only what it
+    /// lists,  because the collector asked the helper.
     func offersRedeploy(_ resource: CoolifyResource) -> Bool {
-        guard resource.isRedeployable else { return false }
+        guard resource.isRedeployable, resource.resourceStatus != .absent else { return false }
+        if let actions = resource.actions, !actions.contains("redeploy") { return false }
         return coolify.first(where: { $0.uuid == resource.uuid })?.isRedeployable == true
     }
 
@@ -664,9 +903,13 @@ struct ServerStatusReading {
     var filesTruncated: Bool { filesSummary?.truncated == true }
 
     /// The services half's own state.
+    ///
+    /// A failed unit counts whether or not anything else in the report names it.
     var servicesState: CellState {
         guard isCurrent else { return .unproven }
-        return worst(of: services.map(\.state), empty: .unproven)
+        var states = services.map(\.state)
+        if failedUnits?.isEmpty == false { states.append(.missing) }
+        return worst(of: states, empty: .unproven)
     }
 
     /// The host half's own state.
@@ -788,6 +1031,11 @@ enum ServerStatusReportReader {
         reading.services = report.services
         reading.filesSummary = report.filesSummary
         reading.resourcePolicy = report.resourcePolicy
+        reading.failedUnits = report.failedUnits
+        reading.removedCheckouts = report.removedCheckouts
+        reading.applications = report.applications
+        reading.collection = report.collection
+        reading.processSampleSeconds = report.processSampleSeconds
         // A report out of its window is not a reading:  the whole report reads unknown,
         // even where every row in it looks fine.
         reading.state = overall(of: reading)
@@ -811,7 +1059,7 @@ enum ServerStatusReportReader {
         var halves = [reading.coolifyState, reading.processState, reading.configState]
         // The services half counts only when the report carries one:  a collector that
         // predates it is not a server whose services are unproven.
-        if !reading.services.isEmpty {
+        if !reading.services.isEmpty || reading.failedUnits?.isEmpty == false {
             halves.append(reading.servicesState)
         }
         var worst = CellState.passed
