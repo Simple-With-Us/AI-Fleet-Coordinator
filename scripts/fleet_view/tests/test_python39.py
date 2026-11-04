@@ -136,7 +136,7 @@ class EndToEndTests(unittest.TestCase):
             self._stub(
                 stubs,
                 "gh",
-                'case "$*" in *AI-Fleet-Coordinator*) cat <<\'JSON\'\n%s\nJSON\n;; '
+                "case \"$*\" in *AI-Fleet-Coordinator*) cat <<'JSON'\n%s\nJSON\n;; "
                 "*) echo '[]';; esac" % GH_PR_ROW,
             )
             self._stub(stubs, "simple-board", "cat <<'JSON'\n%s\nJSON" % BOARD_ROW)
