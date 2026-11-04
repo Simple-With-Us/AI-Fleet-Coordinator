@@ -9,7 +9,7 @@ Bitrig is a third-party Mac app (bitrig.com) that drives Claude Code or Codex as
 | Decision | Default here | Change it by |
 |----------|--------------|--------------|
 | Which seat runs in Bitrig | Whichever seat Jay starts in Bitrig.  Claude Code in Bitrig is the CLAUDE seat, Codex in Bitrig is the CODEX seat, and a launcher that sets `AGENT_LAUNCH_SEAT` wins over both. | Jay names a seat in the conversation, or a launcher sets `AGENT_LAUNCH_SEAT` before the first turn. |
-| Seat tag in posts | The running seat's own tag, `[CLAUDE]` or P[CODEX]`.  Never `[BITRIG]`, which is not a seat. | Nothing to change: the tag follows the seat, not the container. |
+| Seat tag in posts | The running seat's own tag, `[CLAUDE]` or `[CODEX]`.  Never `[BITRIG]`, which is not a seat. | Nothing to change: the tag follows the seat, not the container. |
 | Where the seat works | A lane under `~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`.  The integration tree `~/Code/<Repo>` is never edited. | The Lane Map in `docs/protocols/lane-map.md` in AI-Fleet-Coordinator is binding. |
 | Threads inside Bitrig | A Codex thread that Bitrig drives takes **no** session letter, because Bitrig is an originator that drives Codex as its engine (`scripts/agent_sync/platform_letter_codex.py`).  A Claude Code chat inside Bitrig takes a letter only when no launcher is set. | Not a live setting.  If a session does hold a letter, it names its thread `<LETTER>: <topic>`. |
 | Recall and fleet CLIs | The Mac paths under `/Users/jay`, because Bitrig is a Mac app.  On a server host the tools live under that host's own roots. | Nothing to change. |
@@ -86,3 +86,34 @@ SCOPE AND SAFETY
 - Local Mac self-hosted CI runners are permanently banned.  Never start, spawn or re-enable one.
 - Never end a turn with an iOS simulator booted, except for the single shared simulator this app
   is allowed to keep while it runs.
+```
+
+## Why the earlier text changed
+
+The text this replaces was a generic per-task preamble.  It was correct about the seat's own identity and about not publishing, and it was wrong or missing on everything the fleet has since changed.
+
+| Was | Now | Why |
+|---|---|---|
+| "Use two spaces between sentences in human-readable copy." | A real U+00A0 plus a normal space on every surface, with the `&nbsp;` entity only in the Claude Code Code tab and the MiniMax Code chat pane. | The owner settled the mechanism on Oct 23, 2026 and reaffirmed it on Oct 29. Two plain ASCII spaces collapse on a rendered surface, so they are not a gap.  `FLEET-PROTOCOL.md` § Writing for the Owner, and the `sentence-gap` skill. |
+| "Work only in the selected task checkout.  Never edit /Users/jay/Code integration trees or another seat's lane." | The same rule, plus the lane command, the lane path, the temp-directory ban and the "preserve what you did not change" rule. | Layout v2 (owner, Oct 9, 2026) put every checkout in a named home and banned the temp directories.  `docs/protocols/lane-map.md`. |
+| "Follow the selected engine's assigned identity; never impersonate another fleet seat." | The same rule, with the identity ladder spelled out, the launcher variables named, and the `whoami` check required before the first fleet action. | The identity order is in `FLEET-PROTOCOL.md` § How a Session Names Its Seat, and one bearer per seat and platform on Oct 28, 2026. |
+| Nothing about the seat. | The seat keeps its own tag, branch prefix, lane token and credential; the container is never a seat. | Jay, Nov 3, 2026: Bitrig runs one seat at a time and that seat uses its own identity. |
+| Nothing about coordination, review findings or landing work. | Linear first, then Zulip, then code; read every review finding yourself; do not assume; commit, push, PR, land. | The three owner working rules of Oct 21, 2026 in every repo's `AGENTS.md`, and the superseded-PR ruling of Nov 3, 2026. |
+| Nothing about secrets or Infisical. | Infisical is the sole source of truth, values come from `fleet-secrets get NAME`, and no credential is ever printed or placed in chat. | The Infisical directive in `AGENTS.md`, and the one-bearer-per-seat rule of Oct 28, 2026. |
+| Nothing about dates, Title Case or the language. | The owner's date and time format, Title Case UI text, and English only. | The owner style rules, and the language rule. |
+| Nothing about CI runners or simulators. | The local-runner ban, and never leaving a simulator booted except the one this app may keep. | The runner ban in `AGENTS.md`, and the owner rule that a turn never ends with a simulator booted.  `scripts/sim-idle-reaper.py` exempts exactly one booted simulator while this app runs. |
+
+## What is still unverified
+
+Written down rather than guessed, per the "do not assume" rule.
+
+- **The rules file this app reads.**  The Custom Instructions box is an app setting, not a file, so there is no `install_rules.py` platform row for it and no Lane Map block can be installed into it.  A row would need the file this app reads at startup, which is not documented and was not observed from this host.
+- **Whether the surface keeps the gap.**  The rule below says to report a surface that strips the gap rather than dropping it.  The gap in a Bitrig chat has not been measured, so the mechanism for a chat reply inside this app is the house default (a real U+00A0 plus a space) until a reply is checked on screen.
+- **Whether this app keeps the fleet guard hook and the lane guard.**  The lane guard is installed per platform by `install_tools`, and this app is not one of the platforms it knows.  A seat running here may therefore not be stopped from editing an integration tree by the hook, which is why the rule above is stated in the instructions as well.
+
+## Where the material lives
+
+- `FLEET-PROTOCOL.md` in AI-Fleet-Coordinator — the canonical protocol, binding on every seat.
+- `AGENTS.md` in whichever repo the seat works in — binding in that repo.
+- `docs/protocols/lane-map.md` in AI-Fleet-Coordinator — where a checkout may live.
+- `docs/ONBOARDING-NEW-AGENT.md` in AI-Fleet-Coordinator — the hard rules every seat learns on day one.
