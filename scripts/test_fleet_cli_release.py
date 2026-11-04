@@ -955,6 +955,79 @@ class ReleaseTests(unittest.TestCase):
                     release.smoke(self.home, self.home)
                 self.assertEqual(str(raised.exception), code)
 
+    def _fake_releases(self, count):
+        releases = self.base / "releases"
+        names = []
+        for index in range(count):
+            name = f"{index:064x}"
+            (releases / name).mkdir()
+            os.utime(releases / name, (1000 + index, 1000 + index))
+            names.append(name)
+        return names
+
+    def test_prune_keeps_newest_and_never_current_or_previous(self):
+        self.receive()
+        self.receive(make_bundle("two"), install=False)
+        current = release.release_at(self.base, "current").name
+        previous = release.release_at(self.base, "previous").name
+        old = self._fake_releases(6)
+        proc = self.home / "proc"
+        proc.mkdir()
+        # keep=1 would delete everything but the newest, yet current and previous must survive.
+        removed = release.prune(self.base, 1, proc)
+        survivors = {path.name for path in (self.base / "releases").iterdir()}
+        self.assertTrue({current, previous} <= survivors)
+        self.assertEqual(set(removed) | survivors, set(old) | {current, previous})
+        self.assertNotIn(current, removed)
+        self.assertNotIn(previous, removed)
+
+    def test_prune_never_removes_a_release_a_live_process_runs_from(self):
+        self.receive()
+        old = self._fake_releases(5)
+        proc = self.home / "proc"
+        (proc / "123").mkdir(parents=True)
+        (proc / "123" / "cwd").symlink_to(self.base.resolve() / "releases" / old[0])
+        removed = release.prune(self.base, 1, proc)
+        self.assertNotIn(old[0], removed)
+        self.assertTrue((self.base / "releases" / old[0]).is_dir())
+        self.assertIn(old[1], removed)
+
+    def test_prune_leaves_foreign_entries_alone(self):
+        self.receive()
+        releases = self.base / "releases"
+        (releases / "not-a-release").mkdir()
+        (releases / "notes.txt").write_text("keep")
+        (releases / ("f" * 64)).symlink_to(releases / "not-a-release")
+        self._fake_releases(3)
+        proc = self.home / "proc"
+        proc.mkdir()
+        release.prune(self.base, 1, proc)
+        self.assertTrue((releases / "not-a-release").is_dir())
+        self.assertTrue((releases / "notes.txt").exists())
+        self.assertTrue((releases / ("f" * 64)).is_symlink())
+
+    def test_receive_prunes_to_keep_releases_instead_of_refusing(self):
+        self.receive()
+        self._fake_releases(release.RELEASE_LIMIT)
+        result = self.receive(make_bundle("two"), install=False)
+        self.assertEqual(result["status"], "activated")
+        count = len(list((self.base / "releases").iterdir()))
+        self.assertLessEqual(count, release.KEEP_RELEASES)
+
+    def test_receive_still_refuses_when_everything_is_protected(self):
+        self.receive()
+        names = self._fake_releases(release.RELEASE_LIMIT)
+        with mock.patch.object(release, "releases_in_use", return_value=set(names)):
+            with self.assertRaisesRegex(release.Refused, "release_retention_limit"):
+                self.receive(make_bundle("two"), install=False)
+
+    def test_prune_control_command_reports_removed_count(self):
+        self.receive()
+        self._fake_releases(release.KEEP_RELEASES + 2)
+        with mock.patch.object(release, "releases_in_use", return_value=set()):
+            result = release.control(self.home, "prune")
+        self.assertEqual(result["removed"], 3)
+
     def test_rollback_pauses_future_sync_and_resume_allows_it(self):
         first = self.receive()
         self.receive(make_bundle("two"), install=False)

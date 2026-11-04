@@ -300,6 +300,20 @@ class TransportTests(Fixture):
                 self.assertNotIn("last_success_bundle_sha256", state)
                 self.assertEqual(state["last_error_code"], code)
 
+    def test_a_named_receiver_refusal_is_carried_and_anything_else_is_ssh_failed(self):
+        bundle = {}
+        for stderr, code in (
+            (b"fleet-cli: release_retention_limit\n", "receiver_release_retention_limit"),
+            (b"fleet-cli: Bad Code\n", "ssh_failed"),
+            (b"permission denied\n", "ssh_failed"),
+            (b"", "ssh_failed"),
+        ):
+            with self.subTest(stderr=stderr):
+                result = subprocess.CompletedProcess([], 255, b"", stderr)
+                with self.assertRaises(S.SyncError) as error:
+                    S.receipt(result, bundle)
+                self.assertEqual(error.exception.code, code)
+
     def test_ssh_command_has_strict_fixed_options_and_quoted_receiver(self):
         text = "print('shell $(touch should-not-exist) `anything`')\n"
         argv = S.ssh_argv(text)
