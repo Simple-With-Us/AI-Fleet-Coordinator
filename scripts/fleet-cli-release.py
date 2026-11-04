@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 148 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 149 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -36,7 +36,8 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # serves over the listener HTTPS API (Path B, operator.simplewithus.com).
 # The 148th is agent_sync/registry_api.py, the signed client the package's own registry callers
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
-MAX_FILES = 148
+# The 149th is fleet_lanes/placement.py, which guard.py imports for the placement mode and exceptions (AFC-618).
+MAX_FILES = 149
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -62,7 +63,7 @@ RECALL_MODULES = (
 # tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
-LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")
+LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement")
 AFC331_FILES = (
     "scripts/agent_sync/mcp/notes-tools.json",
     "scripts/agent_sync/mcp/recall-tools.json",
