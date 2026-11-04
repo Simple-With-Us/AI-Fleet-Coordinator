@@ -2069,98 +2069,15 @@ def default_db(env: Mapping[str, str] | None = None) -> str:
     return registry_db_path(root, env)
 
 
-def _api_call_for(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
-    """The API call one parsed CLI invocation names:  the op and its fields, under the
-    names the registry API folds (registry_api drops the unset ones)."""
-    identity = {
-        "platform": getattr(args, "platform", None),
-        "location": getattr(args, "location", None),
-        "scope": getattr(args, "scope", None),
-        "session_id": getattr(args, "session_id", None),
-    }
-    command = args.command
-    if command == "pending-outbox":
-        return "pending-outbox", {"limit": args.limit}
-    if command == "mark-exported":
-        return "mark-exported", {"outbox_ids": list(args.outbox_ids)}
-    if command == "resolve":
-        return "resolve", {
-            "platform": args.platform,
-            "letter": args.letter,
-            "generation": args.generation,
-        }
-    if command == "register":
-        return "register", {
-            **identity,
-            "seat": args.seat,
-            "source": args.source,
-            "title": args.title,
-            "project": args.project,
-            "thread_link": args.thread_link,
-            "apple_note_link": args.apple_note_link,
-            "wake_capability": args.wake_capability,
-            "letter_space": args.letter_space,
-            "letter_pick": args.letter_pick,
-            "parent_session_id": args.parent_session_id,
-            "parent_letter": args.parent_letter,
-        }
-    if command == "relabel":
-        return "relabel", {
-            **identity,
-            "seat": args.seat,
-            "source": args.source,
-            "letter_space": args.letter_space,
-            "letter_pick": args.letter_pick,
-            "parent_session_id": args.parent_session_id,
-            "parent_letter": args.parent_letter,
-            "force": args.force,
-        }
-    if command == "update":
-        return "update", {
-            **identity,
-            "title": args.title,
-            "project": args.project,
-            "thread_link": args.thread_link,
-            "apple_note_link": args.apple_note_link,
-            "wake_capability": args.wake_capability,
-        }
-    if command == "close":
-        return "close", {
-            **identity,
-            "reason": args.reason,
-            "actor": args.actor,
-            "source": args.source,
-        }
-    if command == "touch":
-        return "touch", dict(identity)
-    if command == "sweep":
-        return "sweep", {
-            "platform": args.platform,
-            "seat": args.seat,
-            "stale_after_minutes": args.stale_after_minutes,
-        }
-    if command == "reopen":
-        return "reopen", {
-            "record_id": args.record_id,
-            "actor": args.actor,
-            "source": args.source,
-            "letter_pick": args.letter_pick,
-            "parent_session_id": args.parent_session_id,
-        }
-    if command == "history":
-        return "history", {"platform": args.platform, "limit": args.limit}
-    return command, {}
-
-
 def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(prog="operator-registry")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pending-outbox")
-    p.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    p.add_argument("--db", required=True)
     p.add_argument("--limit", type=int, default=50)
     m = sub.add_parser("mark-exported")
-    m.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    m.add_argument("--db", required=True)
     m.add_argument("outbox_ids", nargs="+")
     r = sub.add_parser(
         "register",
@@ -2323,18 +2240,6 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         help="the session that started this one: take the first free pair after its pair",
     )
     args = parser.parse_args(argv)
-    from . import registry_api
-
-    if registry_api.base_url(env):
-        # The HTTPS transport is this CLI's cutover, the same rule the MiniMax helper's
-        # registry_call follows:  with the registry API URL configured, the server's
-        # store answers every op and the local file is never opened, so a caller on a
-        # host that keeps a stale local copy (the letter sweep, run every quarter hour
-        # against this CLI) cannot keep writing that copy after the cutover.  A failed
-        # call prints its error and exits 2;  nothing falls back to the file.
-        answer = registry_api.call(env, *_api_call_for(args))
-        print(json.dumps(answer))
-        return 0 if "error" not in answer else 2
     db = getattr(args, "db", "") or default_db(env)
     if not os.path.isfile(db):
         # Never bring a registry into being:  a second registry would hand out letters

@@ -320,26 +320,6 @@ class RemoteRead(unittest.TestCase):
             code, _, err, calls = self.run_cli(["attach"], reply({}))
         hook.assert_not_called()
         self.assertEqual((code, calls), (2, []))
-        self.assertIn("remote mode", err)
-
-    def test_hook_calls_noop_in_remote_mode_so_they_cannot_block_the_prompt(self):
-        # The afc plugin's hooks call `attach --hook EVENT` and `attach --rewake` on every prompt
-        # and Stop; a nonzero hook exit blocks the prompt, so these exit 0 silently.
-        for argv in (
-            ["attach", "--hook", "session-start"],
-            ["attach", "--hook", "prompt"],
-            ["attach", "--hook", "stop"],
-            ["attach", "--hook", "session-end"],
-            ["attach", "--hook=prompt"],
-            ["attach", "--rewake"],
-            ["detach", "--hook", "session-end"],
-        ):
-            with self.subTest(argv=argv):
-                with mock.patch("agent_sync.attach.main") as hook:
-                    code, out, err, calls = self.run_cli(argv, reply({}))
-                hook.assert_not_called()
-                self.assertEqual((code, calls), (0, []))
-                self.assertEqual((out, err), ("", ""))
 
     def test_bearer_problems_and_refusals_never_fall_back(self):
         for env in ({"SIMPLE_TOOLS_BEARER": ""}, {"SIMPLE_TOOLS_BEARER": "short"}):
@@ -386,7 +366,7 @@ class EntrypointTrap(unittest.TestCase):
 
     SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
 
-    def run_entry(self, verb, remote, module="agent_sync.attach", extra=()):
+    def run_entry(self, verb, remote, module="agent_sync.attach"):
         import os
         import subprocess
         import sys
@@ -405,9 +385,7 @@ class EntrypointTrap(unittest.TestCase):
                 f"            pathlib.Path({str(sentinel)!r}).write_text('x')\n"
                 "            raise ImportError('trap')\n"
                 "sys.meta_path.insert(0, T())\n"
-                f"sys.argv = [{str(self.SCRIPT)!r}, {verb!r}"
-                + "".join(", " + repr(a) for a in extra)
-                + "]\n"
+                f"sys.argv = [{str(self.SCRIPT)!r}, {verb!r}]\n"
                 f"runpy.run_path({str(self.SCRIPT)!r}, run_name='__main__')\n"
             )
             proc = subprocess.run(
@@ -427,14 +405,6 @@ class EntrypointTrap(unittest.TestCase):
     def test_without_remote_mode_the_fast_path_is_untouched(self):
         _, _, imported = self.run_entry("attach", remote=False)
         self.assertTrue(imported)
-
-    def test_remote_mode_hook_calls_exit_zero_at_the_entrypoint_without_importing_the_hook(self):
-        # Hook-flagged attach/detach must not hit the refusal:  it blocked every prompt and Stop.
-        for extra in (("--hook", "prompt"), ("--rewake",), ("--hook", "stop")):
-            code, err, imported = self.run_entry("attach", remote=True, extra=extra)
-            self.assertEqual(code, 0, err)
-            self.assertFalse(imported)
-            self.assertNotIn("remote mode", err)
 
     def test_the_letter_hook_runs_in_remote_mode_too(self):
         # A seat host's managed wrapper turns remote mode on for every seat.  The letter hook needs no hosted server,

@@ -153,7 +153,7 @@ class SeatAppTests(RealRegistryCase):
         want = {"CLAUDE": "claude-code", "CODEX": "codex", "CURSOR": "cursor", "GROK": "grok-terminal",
                 "GROK-WEB": "grok-web", "AG": "antigravity", "MM": "minimax-code", "MC": "muse-code",
                 "MA": "muse-assist", "CLUTCH": "clutch", "FX": "fx", "OPENCODE": "opencode", "GROK-BOT": "grok-bot",
-                "ECHO": "instinct", "WISE": "instinct", "KIMI": "kimi-code", "ZCODE": "zcode"}
+                "ECHO": "instinct", "WISE": "instinct", "KIMI": "kimi-code", "ZC": "zcode"}
         self.assertEqual(dict(self.reg.by_seat), want)
         self.assertEqual(dict(self.reg.extra), {"AMP": "amp", "JET": "chatgpt", "JET-CHAT": "chatgpt", "OPERATOR": "operator"})
 

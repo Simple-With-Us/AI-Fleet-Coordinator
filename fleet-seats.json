@@ -2661,7 +2661,7 @@
       "platforms": [],
       "rules": []
     },
-    "ZCODE": {
+    "ZC": {
       "notApplicable": [
         {
           "kind": "subagents",
@@ -2687,11 +2687,11 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.zcode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "196f3553868c170edf7a1790d2764b978cabf0385eed9981a9caad7fa7451adc"
+            "sha256": "4c0f1c988069778ce258e0448fb66cb66848aefaeefc34227601e018b012cf04"
           },
-          "id": "zcode-instructions-lane-map",
+          "id": "zc-instructions-lane-map",
           "kind": "instructions",
-          "ownerSeat": "ZCODE",
+          "ownerSeat": "ZC",
           "platforms": [
             "zcode"
           ],
@@ -2716,9 +2716,9 @@
             "present": true,
             "timeoutSeconds": 5
           },
-          "id": "zcode-hooks-lane-guard",
+          "id": "zc-hooks-lane-guard",
           "kind": "hooks",
-          "ownerSeat": "ZCODE",
+          "ownerSeat": "ZC",
           "platforms": [
             "zcode"
           ],
@@ -2743,9 +2743,9 @@
             ],
             "present": true
           },
-          "id": "zcode-mcp-fleet-servers",
+          "id": "zc-mcp-fleet-servers",
           "kind": "mcp",
-          "ownerSeat": "ZCODE",
+          "ownerSeat": "ZC",
           "platforms": [
             "zcode"
           ],
@@ -2792,9 +2792,9 @@
             ],
             "present": true
           },
-          "id": "zcode-skills-fleet",
+          "id": "zc-skills-fleet",
           "kind": "skills",
-          "ownerSeat": "ZCODE",
+          "ownerSeat": "ZC",
           "platforms": [
             "zcode"
           ],
@@ -2805,7 +2805,7 @@
         {
           "autofixAllowed": false,
           "check": {
-            "detail": "the ZCODE Zulip credential",
+            "detail": "the ZC Zulip credential",
             "target": "/zulip",
             "type": "credential_key_present"
           },
@@ -2814,15 +2814,15 @@
           "expected": {
             "description": "The Zulip credential is reachable in the secret store at /zulip",
             "names": [
-              "ZCODE_ZULIP_EMAIL",
-              "ZCODE_ZULIP_KEY",
-              "ZCODE_ZULIP_SITE"
+              "ZC_ZULIP_EMAIL",
+              "ZC_ZULIP_KEY",
+              "ZC_ZULIP_SITE"
             ],
             "present": true
           },
-          "id": "zcode-permissions-zulip-key",
+          "id": "zc-permissions-zulip-key",
           "kind": "permissions",
-          "ownerSeat": "ZCODE",
+          "ownerSeat": "ZC",
           "platforms": [
             "zcode"
           ],
@@ -2833,8 +2833,8 @@
         {
           "autofixAllowed": false,
           "check": {
-            "detail": "ZULIP_ZCODE",
-            "target": "~/.secrets/Zulip/Zcode-zuliprc",
+            "detail": "ZULIP_ZC",
+            "target": "~/.secrets/Zulip/ZC-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
@@ -2843,9 +2843,9 @@
             "description": "The retired flat Zulip credential file is gone, stat only",
             "present": false
           },
-          "id": "zcode-permissions-zulip-retired-file",
+          "id": "zc-permissions-zulip-retired-file",
           "kind": "permissions",
-          "ownerSeat": "ZCODE",
+          "ownerSeat": "ZC",
           "platforms": [
             "zcode"
           ],

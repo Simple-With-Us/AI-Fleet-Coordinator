@@ -3523,14 +3523,6 @@ def main(
         and argv
         and argv[0] in HOOK_VERBS
     ):
-        # The plugin's Claude Code hooks run `attach --hook EVENT` and `attach --rewake` on every
-        # prompt, Stop and session boundary, and a nonzero exit from a command hook blocks the
-        # user's prompt (the `letter` hook follows the same contract for this reason).  In remote
-        # mode these hook calls no-op:  exit 0 with no output, nothing run locally, the
-        # agent_sync.attach module never imported.  A bare `attach`/`detach` typed by a person
-        # stays a clear refusal with exit 2.
-        if any(a == "--rewake" or a == "--hook" or a.startswith("--hook=") for a in argv[1:]):
-            return 0
         print(
             f"{prog}: `{argv[0]}` is a local listener verb and is not available in remote mode "
             "(SIMPLE_CHAT_REMOTE=1); it is not run locally either",

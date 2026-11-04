@@ -97,7 +97,7 @@ SEAT_PLATFORMS: dict[str, tuple[str, ...]] = {
     "MC": ("muse-code",),
     "OPENCODE": ("opencode",),
     "KIMI": ("kimi",),
-    "ZCODE": ("zcode",),
+    "ZC": ("zcode",),
     "GROK-WEB": (),
     "GROK-BOT": (),
     "ECHO": (),
@@ -1053,7 +1053,7 @@ def _build_seats() -> dict[str, dict[str, object]]:
 
     # Kimi Code and Z Code
     seats["KIMI"] = _harness_seat("KIMI", "kimi", subagents=None)
-    seats["ZCODE"] = _harness_seat("ZCODE", "zcode", subagents=None)
+    seats["ZC"] = _harness_seat("ZC", "zcode", subagents=None)
 
     # The seats with no Mac config surface.
     seats["GROK-WEB"] = _hosted_seat(
