@@ -69,6 +69,28 @@ test('Draft workflow diagnostics cross transport and hosted mapping without repl
     assert.equal(calls,1);
   }
 });
+test('held and unknown answers carry only a validated allowlisted github_code',async()=>{
+  for(const [status,outcome,code,want] of [
+    [409,'pending','graphql_forbidden','graphql_forbidden'],
+    [409,'unknown','graphql_rate_limited','graphql_rate_limited'],
+    [409,'pending','private-provider-text',undefined],
+    [409,'pending',{code:'graphql_forbidden'},undefined],
+    [409,'pending',['graphql_forbidden'],undefined],
+    [409,'pending',null,undefined],
+    [502,'unknown','graphql_not_found','graphql_not_found'],
+    [502,'unknown','private-provider-text',undefined],
+  ]) {
+    let calls=0;
+    const tools=harness(async()=>{calls++;return new Response(JSON.stringify({error:'private-provider-text',outcome,retryable:false,github_code:code}),{status});});
+    const result=await tools.call('gr_wf_pr_draft',{repo,number:1});
+    assert.equal(result.isError,true);
+    const error=JSON.parse(result.content[0].text);
+    assert.equal(error.code,'outcome_unknown');
+    assert.equal(error.github_code,want);
+    assert.doesNotMatch(JSON.stringify(result),/private-provider-text/);
+    assert.equal(calls,1);
+  }
+});
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv({GR_WORKFLOW_TOOLS:""})).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));

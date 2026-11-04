@@ -189,15 +189,20 @@ export class GrRelayClient {
       if (response.status < 400 || response.status > 599 || !body || typeof body!=="object" || Array.isArray(body)) return unavailable();
       const errorShape = z.object({error:z.string().max(1000),retryable:z.boolean().optional(),outcome:z.enum(['pending','unknown','refused']).optional()}).safeParse(body);
       if(!errorShape.success) return unavailable();
+      const parsed=errorShape.data;
+      // The relay's github_code is external data:  validate it with zod before
+      // any use.  A code outside the allowlist (or of the wrong type) is
+      // dropped, never reflected.
+      const githubCodeShape=z.enum(GRAPHQL_ERROR_CODES).optional().safeParse(body.github_code);
+      const githubCode=githubCodeShape.success?githubCodeShape.data:undefined;
+      const outcomeUnknown=()=>({status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,...(githubCode?{github_code:githubCode}:{})}});
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
-      if(response.status===409 && ['pending','unknown'].includes(body.outcome))
-        return {status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false}};
-      if(response.status>=500 && body.retryable!==true) {
-        if (response.status === 502 && body.outcome === "unknown" && GRAPHQL_ERROR_CODES.includes(body.github_code))
-          return {status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,github_code:body.github_code}};
+      if(response.status===409 && ['pending','unknown'].includes(parsed.outcome)) return outcomeUnknown();
+      if(response.status>=500 && parsed.retryable!==true) {
+        if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
         return unavailable();
       }
-      return {status:response.status,body:{error:"workflow_request_refused", ...(body.retryable===true ? {retryable:true} : {})}};
+      return {status:response.status,body:{error:"workflow_request_refused", ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
