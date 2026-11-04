@@ -1156,7 +1156,9 @@ def timer_fields(props, job, clock=time):
     if not job:
         return fields
     state, sub = job.get("ActiveState"), job.get("SubState")
-    if state in ("activating", "deactivating", "reloading") or (state == "active" and sub != "exited"):
+    if state in ("activating", "deactivating", "reloading") or (
+        state == "active" and sub != "exited"
+    ):
         fields["jobRunning"] = True
         return fields
     result = job.get("Result")
@@ -1384,9 +1386,7 @@ def repo_config_files(repo):
     workflows = repo / ".github" / "workflows"
     candidates = files_in(repo) + ([] if (repo / ".github").is_symlink() else files_in(workflows))
     candidates += files_in(repo / "config")
-    found = [
-        path for path in candidates if is_watched(repo, path) and not is_secret_path(path)
-    ]
+    found = [path for path in candidates if is_watched(repo, path) and not is_secret_path(path)]
     return sorted(found, key=lambda path: path.name in INFO_FILES)
 
 
@@ -1874,7 +1874,9 @@ def collection_report(coolify, services, code_problem, answered_scopes, processe
         failed = collection_entry()
     if getattr(files, "root_readable", True):
         truncated = bool(getattr(files, "cut", ()))
-        file_entry = collection_entry("files_truncated", partial=True) if truncated else collection_entry()
+        file_entry = (
+            collection_entry("files_truncated", partial=True) if truncated else collection_entry()
+        )
     else:
         file_entry = collection_entry("code_root_unreadable")
     unknown_units = [row for row in services if row.get("activeState") == "unknown"]

@@ -153,7 +153,8 @@ def sanitize_report(report):
     result["host"] = HOST
     result["coolify"] = [sanitize_resource(tokens, row) for row in report.get("coolify") or []]
     result["processes"] = [
-        sanitize_process(tokens, index, row) for index, row in enumerate(report.get("processes") or [])
+        sanitize_process(tokens, index, row)
+        for index, row in enumerate(report.get("processes") or [])
     ]
     result["files"] = [
         sanitize_file(tokens, index, row) for index, row in enumerate(report.get("files") or [])

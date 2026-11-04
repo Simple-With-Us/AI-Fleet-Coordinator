@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-HERE =Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location(
     "fleet_server_status", HERE / "fleet-server-status.py"
 )
@@ -66,11 +66,11 @@ def inspect_line(
     )
 
 
-def extended_line(restart_count="0", exit_code="0", oom_killed="false", restart_policy="no", **fields):
+def extended_line(
+    restart_count="0", exit_code="0", oom_killed="false", restart_policy="no", **fields
+):
     """One line of `docker inspect --format` with the fields added for container signals."""
-    return SEP.join(
-        [inspect_line(**fields), restart_count, exit_code, oom_killed, restart_policy]
-    )
+    return SEP.join([inspect_line(**fields), restart_count, exit_code, oom_killed, restart_policy])
 
 
 class FakeDocker:
@@ -1394,15 +1394,30 @@ class LeftoverResourceTests(unittest.TestCase):
         # The shape on the server the day this was written: stamped rows of one application,
         # helper containers that nothing labelled, and the one live row.
         old = [
-            {"uuid": "uuid1", "name": "listener (uuid1-2026110%dT000000)" % day,
-             "type": "application", "uuidSource": "label", "status": "absent"}
+            {
+                "uuid": "uuid1",
+                "name": "listener (uuid1-2026110%dT000000)" % day,
+                "type": "application",
+                "uuidSource": "label",
+                "status": "absent",
+            }
             for day in range(1, 4)
         ]
         old += [
-            {"uuid": "07j6rsdtrhcfd6zx5tgdroyg", "name": "07j6rsdtrhcfd6zx5tgdroyg",
-             "type": "standalone", "uuidSource": "name", "status": "absent"},
-            {"uuid": "confident_morse", "name": "confident_morse",
-             "type": "standalone", "uuidSource": "name", "status": "absent"},
+            {
+                "uuid": "07j6rsdtrhcfd6zx5tgdroyg",
+                "name": "07j6rsdtrhcfd6zx5tgdroyg",
+                "type": "standalone",
+                "uuidSource": "name",
+                "status": "absent",
+            },
+            {
+                "uuid": "confident_morse",
+                "name": "confident_morse",
+                "type": "standalone",
+                "uuidSource": "name",
+                "status": "absent",
+            },
         ]
         live = collector.collect_coolify(run_command=self.deploy("20261104T000000"))
         report = collector.build_report(live, [], [], previous_map(old), now=NOW)
@@ -1410,28 +1425,57 @@ class LeftoverResourceTests(unittest.TestCase):
 
     def test_a_throwaway_container_leaves_no_row(self):
         for name in ("confident_morse", "07j6rsdtrhcfd6zx5tgdroyg"):
-            row = {"uuid": name, "name": name, "type": "standalone", "uuidSource": "name",
-                   "status": "running", "container": name}
+            row = {
+                "uuid": name,
+                "name": name,
+                "type": "standalone",
+                "uuidSource": "name",
+                "status": "running",
+                "container": name,
+            }
             report = collector.build_report([], [], [], previous_map([row]), now=NOW)
             self.assertEqual(report["coolify"], [], name)
 
     def test_a_named_container_that_vanished_is_still_reported(self):
-        row = {"uuid": "botfleet-vps-shared", "name": "botfleet-vps-shared", "type": "standalone",
-               "uuidSource": "name", "status": "running", "container": "botfleet-vps-shared"}
+        row = {
+            "uuid": "botfleet-vps-shared",
+            "name": "botfleet-vps-shared",
+            "type": "standalone",
+            "uuidSource": "name",
+            "status": "running",
+            "container": "botfleet-vps-shared",
+        }
         report = collector.build_report([], [], [], previous_map([row]), now=NOW)
         self.assertEqual(report["coolify"][0]["status"], "absent")
         # A labelled application is never a throwaway, whatever its uuid looks like.
-        labelled = {"uuid": "07j6rsdtrhcfd6zx5tgdroyg", "name": "App", "type": "standalone",
-                    "uuidSource": "label", "status": "running", "container": "app-1"}
+        labelled = {
+            "uuid": "07j6rsdtrhcfd6zx5tgdroyg",
+            "name": "App",
+            "type": "standalone",
+            "uuidSource": "label",
+            "status": "running",
+            "container": "app-1",
+        }
         report = collector.build_report([], [], [], previous_map([labelled]), now=NOW)
         self.assertEqual(report["coolify"][0]["status"], "absent")
 
     def test_a_docker_failure_starts_no_clock_and_keeps_a_running_clock(self):
         failed = collector.collect_coolify(run_command=lambda *a, **k: None)
-        running = {"uuid": "u1", "name": "One", "type": "application", "status": "running",
-                   "container": "one"}
-        absent = {"uuid": "u2", "name": "Two", "type": "application", "status": "absent",
-                  "container": "two", "absentSince": stamp(NOW - DAY)}
+        running = {
+            "uuid": "u1",
+            "name": "One",
+            "type": "application",
+            "status": "running",
+            "container": "one",
+        }
+        absent = {
+            "uuid": "u2",
+            "name": "Two",
+            "type": "application",
+            "status": "absent",
+            "container": "two",
+            "absentSince": stamp(NOW - DAY),
+        }
         report = collector.build_report(failed, [], [], previous_map([running, absent]), now=NOW)
         rows = {row["uuid"]: row for row in report["coolify"]}
         self.assertEqual(rows["u1"]["status"], "unknown")
@@ -1446,8 +1490,15 @@ class LeftoverResourceTests(unittest.TestCase):
 
     def test_live_rows_come_before_leftovers(self):
         # The helper takes the first row with a uuid, so a leftover must never be first.
-        gone = {"uuid": "uuid1", "name": "Aardvark (web)", "service": "web", "type": "application",
-                "status": "running", "container": "web-1", "uuidSource": "label"}
+        gone = {
+            "uuid": "uuid1",
+            "name": "Aardvark (web)",
+            "service": "web",
+            "type": "application",
+            "status": "running",
+            "container": "web-1",
+            "uuidSource": "label",
+        }
         live = collector.collect_coolify(
             run_command=FakeDocker(
                 containers=[
@@ -1504,8 +1555,14 @@ class RealActionsTests(unittest.TestCase):
         )
 
     def test_only_a_live_labelled_application_can_be_redeployed(self):
-        gone = {"uuid": "uuid9", "name": "Gone", "type": "application", "uuidSource": "label",
-                "status": "absent", "absentSince": stamp(NOW)}
+        gone = {
+            "uuid": "uuid9",
+            "name": "Gone",
+            "type": "application",
+            "uuidSource": "label",
+            "status": "absent",
+            "absentSince": stamp(NOW),
+        }
         report = collector.build_report(
             self.rows(), [], [], previous_map([gone]), now=NOW, can_redeploy=True
         )
@@ -1553,8 +1610,13 @@ class ContainerSignalTests(unittest.TestCase):
         )[0]
 
     def test_a_crash_loop_is_restarting(self):
-        row = self.row(state="restarting", health="", restart_count="12", exit_code="1",
-                       restart_policy="always")
+        row = self.row(
+            state="restarting",
+            health="",
+            restart_count="12",
+            exit_code="1",
+            restart_policy="always",
+        )
         self.assertEqual(row["status"], "restarting")
         self.assertEqual(row["restartCount"], 12)
 
@@ -1602,9 +1664,7 @@ class ContainerSignalTests(unittest.TestCase):
         self.assertEqual(
             collector.whole_second_utc("2026-11-04T19:26:46.510195485Z"), "2026-11-04T19:26:46Z"
         )
-        self.assertEqual(
-            collector.whole_second_utc("2026-11-04T19:26:46Z"), "2026-11-04T19:26:46Z"
-        )
+        self.assertEqual(collector.whole_second_utc("2026-11-04T19:26:46Z"), "2026-11-04T19:26:46Z")
         self.assertEqual(
             collector.whole_second_utc("2026-11-04T14:26:46.123456-05:00"), "2026-11-04T19:26:46Z"
         )
@@ -1894,9 +1954,7 @@ class TimerTests(unittest.TestCase):
 
     def collect(self, timer=None, job=None, unit="code-main-sync.timer", scope="system"):
         with tempfile.TemporaryDirectory() as tmp:
-            control = self.control(
-                tmp, [{"unit": unit, "scope": scope, "actions": ["restart"]}]
-            )
+            control = self.control(tmp, [{"unit": unit, "scope": scope, "actions": ["restart"]}])
             systemctl = ScriptedSystemctl(
                 {
                     (scope, unit): timer or self.timer(Id=unit),
@@ -1917,29 +1975,45 @@ class TimerTests(unittest.TestCase):
         self.assertEqual(row["lastFinishedAt"], stamp(1793826224))
 
     def test_a_job_that_worked_says_so(self):
-        row, _ = self.collect(job=self.job(ActiveState="inactive", SubState="dead",
-                                           Result="success", ExecMainStatus="0"))
+        row, _ = self.collect(
+            job=self.job(
+                ActiveState="inactive", SubState="dead", Result="success", ExecMainStatus="0"
+            )
+        )
         self.assertEqual(row["lastResult"], "success")
         self.assertNotIn("lastExitCode", row)
 
     def test_a_job_that_has_not_run_since_boot_has_no_result(self):
         # systemd still says `success` here, which is a default and not an outcome.
         row, _ = self.collect(
-            job=self.job(ActiveState="inactive", SubState="dead", Result="success",
-                         ExecMainStatus="0", ExecMainStartTimestamp="", ExecMainExitTimestamp="")
+            job=self.job(
+                ActiveState="inactive",
+                SubState="dead",
+                Result="success",
+                ExecMainStatus="0",
+                ExecMainStartTimestamp="",
+                ExecMainExitTimestamp="",
+            )
         )
         self.assertNotIn("lastResult", row)
         self.assertEqual(row["lastRunAt"], stamp(1793826219))
 
     def test_a_job_running_now_has_no_result(self):
-        for state, sub in (("activating", "start"), ("active", "running"), ("deactivating", "stop")):
+        for state, sub in (
+            ("activating", "start"),
+            ("active", "running"),
+            ("deactivating", "stop"),
+        ):
             row, _ = self.collect(job=self.job(ActiveState=state, SubState=sub, Result="success"))
             self.assertNotIn("lastResult", row, state)
             self.assertTrue(row["jobRunning"], state)
 
     def test_a_oneshot_that_stays_active_has_finished(self):
-        row, _ = self.collect(job=self.job(ActiveState="active", SubState="exited",
-                                           Result="success", ExecMainStatus="0"))
+        row, _ = self.collect(
+            job=self.job(
+                ActiveState="active", SubState="exited", Result="success", ExecMainStatus="0"
+            )
+        )
         self.assertEqual(row["lastResult"], "success")
         self.assertNotIn("jobRunning", row)
 
@@ -2013,8 +2087,9 @@ class TimerTests(unittest.TestCase):
         self.assertEqual(rows[0]["job"], "code-main-sync.service")
 
     def test_the_collectors_own_timer_does_not_report_this_run(self):
-        running = self.timer(Id=collector.SELF_TIMER, SubState="running",
-                             Triggers="code-main-sync.service")
+        running = self.timer(
+            Id=collector.SELF_TIMER, SubState="running", Triggers="code-main-sync.service"
+        )
         row, _ = self.collect(
             timer=running,
             job=self.job(ActiveState="activating", SubState="start", Result="success"),
@@ -2034,8 +2109,13 @@ class TimerTests(unittest.TestCase):
         self.assertNotIn("selfObserved", row)
 
     def test_a_service_row_gets_no_timer_fields(self):
-        block = properties(Id="cron.service", LoadState="loaded", ActiveState="active",
-                           SubState="running", Triggers="")
+        block = properties(
+            Id="cron.service",
+            LoadState="loaded",
+            ActiveState="active",
+            SubState="running",
+            Triggers="",
+        )
         row, _ = self.collect(timer=block, unit="cron.service")
         for field in ("lastRunAt", "nextRunAt", "job", "lastResult"):
             self.assertNotIn(field, row)
@@ -2046,12 +2126,15 @@ class WatchTests(unittest.TestCase):
 
     def control(self, tmp, units, watch):
         path = Path(tmp) / "fleet-ops-control.json"
-        path.write_text(json.dumps({"schemaVersion": 1, "server": {"units": units, "watch": watch}}))
+        path.write_text(
+            json.dumps({"schemaVersion": 1, "server": {"units": units, "watch": watch}})
+        )
         return path
 
     def test_a_watched_row_has_no_actions(self):
-        units = [{"unit": "fleet-server-status.timer", "scope": "user",
-                  "actions": ["start", "restart"]}]
+        units = [
+            {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "restart"]}
+        ]
         watch = [{"unit": "docker.service", "scope": "system"}]
         systemctl = ScriptedSystemctl(
             {
@@ -2067,8 +2150,9 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(by_unit["docker.service"]["actions"], [])
         self.assertFalse(by_unit["docker.service"]["controllable"])
         self.assertTrue(by_unit["docker.service"]["watched"])
-        self.assertEqual(by_unit["fleet-server-status.timer"]["actions"],
-                         ["start", "restart", "logs"])
+        self.assertEqual(
+            by_unit["fleet-server-status.timer"]["actions"], ["start", "restart", "logs"]
+        )
         self.assertTrue(by_unit["fleet-server-status.timer"]["controllable"])
         self.assertNotIn("watched", by_unit["fleet-server-status.timer"])
 
@@ -2084,15 +2168,21 @@ class WatchTests(unittest.TestCase):
         watch = [{"unit": "cron.service", "scope": "system"}]
         systemctl = ScriptedSystemctl({("system", "cron.service"): show_block("cron.service")})
         with tempfile.TemporaryDirectory() as tmp:
-            rows = collector.collect_services(self.control(tmp, units, watch), run_command=systemctl)
+            rows = collector.collect_services(
+                self.control(tmp, units, watch), run_command=systemctl
+            )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["actions"], ["restart", "logs"])
         self.assertNotIn("watched", rows[0])
 
     def test_a_watched_unit_this_host_does_not_have_is_left_out(self):
         watch = [{"unit": "nothing-here.service", "scope": "system"}]
-        block = properties(Id="nothing-here.service", LoadState="not-found",
-                           ActiveState="inactive", SubState="dead")
+        block = properties(
+            Id="nothing-here.service",
+            LoadState="not-found",
+            ActiveState="inactive",
+            SubState="dead",
+        )
         systemctl = ScriptedSystemctl({("system", "nothing-here.service"): block})
         with tempfile.TemporaryDirectory() as tmp:
             rows = collector.collect_services(self.control(tmp, [], watch), run_command=systemctl)
@@ -2126,10 +2216,20 @@ class WatchTests(unittest.TestCase):
 
     def test_a_row_carries_the_role_and_what_stopping_it_costs(self):
         units = [
-            {"unit": "a.timer", "scope": "user", "actions": ["stop"], "role": "reporting",
-             "stopConsequence": "Stopping this stops the report."},
-            {"unit": "b.timer", "scope": "user", "actions": ["stop"], "role": "boss",
-             "stopConsequence": "x" * 500},
+            {
+                "unit": "a.timer",
+                "scope": "user",
+                "actions": ["stop"],
+                "role": "reporting",
+                "stopConsequence": "Stopping this stops the report.",
+            },
+            {
+                "unit": "b.timer",
+                "scope": "user",
+                "actions": ["stop"],
+                "role": "boss",
+                "stopConsequence": "x" * 500,
+            },
         ]
         systemctl = ScriptedSystemctl(
             {("user", "a.timer"): show_block("a.timer"), ("user", "b.timer"): show_block("b.timer")}
@@ -2165,8 +2265,13 @@ class FailedUnitTests(unittest.TestCase):
     """A failed unit shows, whether or not anything names it."""
 
     def block(self, unit, result="exit-code", status="1"):
-        return properties(Id=unit, Description="The %s unit" % unit, Result=result,
-                          ExecMainStatus=status, StateChangeTimestamp="@1793826224")
+        return properties(
+            Id=unit,
+            Description="The %s unit" % unit,
+            Result=result,
+            ExecMainStatus=status,
+            StateChangeTimestamp="@1793826224",
+        )
 
     def test_a_failed_unit_in_either_scope_appears(self):
         systemctl = ScriptedSystemctl(
@@ -2200,8 +2305,9 @@ class FailedUnitTests(unittest.TestCase):
         )
 
     def test_nothing_failed_is_an_empty_list(self):
-        self.assertEqual(collector.collect_failed_units(ScriptedSystemctl()),
-                         ([], ["system", "user"]))
+        self.assertEqual(
+            collector.collect_failed_units(ScriptedSystemctl()), ([], ["system", "user"])
+        )
 
     def test_no_scope_answering_is_not_the_same_as_nothing_failed(self):
         rows, answered = collector.collect_failed_units(
@@ -2209,9 +2315,7 @@ class FailedUnitTests(unittest.TestCase):
         )
         self.assertIsNone(rows)
         self.assertEqual(answered, [])
-        self.assertNotIn(
-            "failedUnits", collector.build_report([], [], [], {}, failed_units=rows)
-        )
+        self.assertNotIn("failedUnits", collector.build_report([], [], [], {}, failed_units=rows))
 
     def test_one_scope_answering_is_reported_as_partial(self):
         rows, answered = collector.collect_failed_units(ScriptedSystemctl(refuse=("user",)))
@@ -2254,8 +2358,15 @@ class FailedUnitTests(unittest.TestCase):
 class CollectionTests(unittest.TestCase):
     """A half that could not be read says so, in a fixed code."""
 
-    def report(self, coolify=None, services=None, problem=None, scopes=("system", "user"),
-               processes=({"pid": 1},), files=None):
+    def report(
+        self,
+        coolify=None,
+        services=None,
+        problem=None,
+        scopes=("system", "user"),
+        processes=({"pid": 1},),
+        files=None,
+    ):
         return collector.collection_report(
             [] if coolify is None else coolify,
             services or [],
@@ -2297,7 +2408,9 @@ class CollectionTests(unittest.TestCase):
             missing = Path(tmp) / "absent.json"
             self.assertEqual(collector.services_problem(missing), "allowlist_unreadable")
             refused = Path(tmp) / "refused.json"
-            refused.write_text(json.dumps({"schemaVersion": 1, "server": {"units": [{"unit": "a"}]}}))
+            refused.write_text(
+                json.dumps({"schemaVersion": 1, "server": {"units": [{"unit": "a"}]}})
+            )
             self.assertEqual(collector.services_problem(refused), "allowlist_refused")
         self.assertEqual(
             self.report(problem="allowlist_refused")["services"],
@@ -2354,8 +2467,9 @@ class ProcessHomeTests(unittest.TestCase):
     def test_a_container_is_named_by_its_row(self):
         identifier = "a" * 64
         text = "0::/system.slice/docker-%s.scope\n" % identifier
-        self.assertEqual(self.home(text, {identifier: "congress-trade (web)"}),
-                         "congress-trade (web)")
+        self.assertEqual(
+            self.home(text, {identifier: "congress-trade (web)"}), "congress-trade (web)"
+        )
         # A container this run did not name is still a container, and not a name it made up.
         self.assertEqual(self.home(text), "a container")
 
@@ -2456,11 +2570,16 @@ class WholeRunTests(unittest.TestCase):
 
     def run_once(self, target, code, control, docker):
         argv = [
-            "--output", str(target),
-            "--code-root", str(code),
-            "--control", str(control),
-            "--process-limit", "1",
-            "--cpu-interval", "0",
+            "--output",
+            str(target),
+            "--code-root",
+            str(code),
+            "--control",
+            str(control),
+            "--process-limit",
+            "1",
+            "--cpu-interval",
+            "0",
         ]
 
         def answer(command, timeout=30):
@@ -2470,8 +2589,7 @@ class WholeRunTests(unittest.TestCase):
                 return "code-main-sync.service loaded failed failed sync\n"
             if "show" in command:
                 names = [
-                    part for part in command[1:]
-                    if not part.startswith("-") and part != "show"
+                    part for part in command[1:] if not part.startswith("-") and part != "show"
                 ]
                 return "\n\n".join(show_block(name) for name in names) + "\n"
             return None
@@ -2492,9 +2610,7 @@ class WholeRunTests(unittest.TestCase):
                     {
                         "schemaVersion": 1,
                         "server": {
-                            "units": [
-                                {"unit": "a.timer", "scope": "user", "actions": ["restart"]}
-                            ],
+                            "units": [{"unit": "a.timer", "scope": "user", "actions": ["restart"]}],
                             "watch": [{"unit": "docker.service", "scope": "system"}],
                             "coolify": {"redeploy": True},
                         },
@@ -2511,10 +2627,20 @@ class WholeRunTests(unittest.TestCase):
                         "schemaVersion": 1,
                         "tool": "fleet-server-status",
                         "coolify": [
-                            {"uuid": "uuid1", "name": "App (uuid1-1)", "type": "application",
-                             "uuidSource": "label", "status": "running"},
-                            {"uuid": "uuid1", "name": "App (uuid1-0)", "type": "application",
-                             "uuidSource": "label", "status": "absent"},
+                            {
+                                "uuid": "uuid1",
+                                "name": "App (uuid1-1)",
+                                "type": "application",
+                                "uuidSource": "label",
+                                "status": "running",
+                            },
+                            {
+                                "uuid": "uuid1",
+                                "name": "App (uuid1-0)",
+                                "type": "application",
+                                "uuidSource": "label",
+                                "status": "absent",
+                            },
                         ],
                         "files": [{"path": gone, "drift": "missing"}],
                     }
@@ -2561,9 +2687,7 @@ class WholeRunTests(unittest.TestCase):
             third = self.run_once(target, code, control, quiet)
             self.assertEqual(third["coolify"][0]["status"], "absent")
             since = third["coolify"][0]["absentSince"]
-            self.assertLessEqual(
-                abs(collector.seconds_from_report_time(since) - time.time()), 60
-            )
+            self.assertLessEqual(abs(collector.seconds_from_report_time(since) - time.time()), 60)
             self.assertEqual(third["coolify"][0]["redeployBlockedReason"], "not_seen")
             fourth = self.run_once(target, code, control, quiet)
             self.assertEqual(fourth["coolify"][0]["absentSince"], since)
@@ -2588,49 +2712,112 @@ class FixtureScriptTests(unittest.TestCase):
             "host": "secret-host-name",
             "hostRole": "server",
             "coolify": [
-                {"uuid": "secretuuid", "uuidSource": "label", "name": "secret-app (secret-web)",
-                 "service": "secret-web", "container": "secret-web-secretuuid-2026",
-                 "image": "secret-image:latest", "type": "application", "status": "running",
-                 "updatedAt": "2026-11-04T19:26:46Z", "actions": ["redeploy"]},
-                {"uuid": "secretuuid", "uuidSource": "label", "name": "secret-app (secret-db)",
-                 "service": "secret-db", "container": "secret-db-secretuuid-2026",
-                 "type": "application", "status": "running", "actions": ["redeploy"]},
-                {"uuid": "secret-box", "uuidSource": "name", "name": "secret-box",
-                 "container": "secret-box", "type": "standalone", "status": "running",
-                 "actions": []},
+                {
+                    "uuid": "secretuuid",
+                    "uuidSource": "label",
+                    "name": "secret-app (secret-web)",
+                    "service": "secret-web",
+                    "container": "secret-web-secretuuid-2026",
+                    "image": "secret-image:latest",
+                    "type": "application",
+                    "status": "running",
+                    "updatedAt": "2026-11-04T19:26:46Z",
+                    "actions": ["redeploy"],
+                },
+                {
+                    "uuid": "secretuuid",
+                    "uuidSource": "label",
+                    "name": "secret-app (secret-db)",
+                    "service": "secret-db",
+                    "container": "secret-db-secretuuid-2026",
+                    "type": "application",
+                    "status": "running",
+                    "actions": ["redeploy"],
+                },
+                {
+                    "uuid": "secret-box",
+                    "uuidSource": "name",
+                    "name": "secret-box",
+                    "container": "secret-box",
+                    "type": "standalone",
+                    "status": "running",
+                    "actions": [],
+                },
             ],
             "applications": [
-                {"uuid": "secretuuid", "name": "secret-app", "containers": 2,
-                 "services": ["secret-db", "secret-web"]}
+                {
+                    "uuid": "secretuuid",
+                    "name": "secret-app",
+                    "containers": 2,
+                    "services": ["secret-db", "secret-web"],
+                }
             ],
             "processes": [
-                {"pid": 4242, "owner": "secret-owner", "name": "secret-process",
-                 "belongsTo": "secret-app (secret-web)", "cpuPercent": 2.5}
+                {
+                    "pid": 4242,
+                    "owner": "secret-owner",
+                    "name": "secret-process",
+                    "belongsTo": "secret-app (secret-web)",
+                    "cpuPercent": 2.5,
+                }
             ],
             "files": [
-                {"path": "/secret/Code/SecretRepo/AGENTS.md", "bytes": 1, "sha256": "secretdigest",
-                 "drift": "unchanged", "modifiedAt": "2026-11-04T19:26:46Z"},
-                {"path": "/secret/Code/SecretRepo/.github/workflows/secret-flow.yml", "bytes": 1,
-                 "sha256": "secretdigest", "drift": "unchanged"},
-                {"path": "/secret/Code/SecretRepo/config/secret-config.json", "bytes": 1,
-                 "sha256": "secretdigest", "drift": "unchanged"},
+                {
+                    "path": "/secret/Code/SecretRepo/AGENTS.md",
+                    "bytes": 1,
+                    "sha256": "secretdigest",
+                    "drift": "unchanged",
+                    "modifiedAt": "2026-11-04T19:26:46Z",
+                },
+                {
+                    "path": "/secret/Code/SecretRepo/.github/workflows/secret-flow.yml",
+                    "bytes": 1,
+                    "sha256": "secretdigest",
+                    "drift": "unchanged",
+                },
+                {
+                    "path": "/secret/Code/SecretRepo/config/secret-config.json",
+                    "bytes": 1,
+                    "sha256": "secretdigest",
+                    "drift": "unchanged",
+                },
             ],
-            "filesSummary": {"found": 3, "limit": 2, "truncated": True,
-                             "cutCheckouts": ["SecretRepo"]},
+            "filesSummary": {
+                "found": 3,
+                "limit": 2,
+                "truncated": True,
+                "cutCheckouts": ["SecretRepo"],
+            },
             "removedCheckouts": [
                 {"repo": "SecretGone", "files": 2, "noticedAt": "2026-11-04T21:00:00Z"}
             ],
             "services": [
-                {"unit": "secret-timer.timer", "scope": "user", "description": "secret words",
-                 "activeState": "active", "job": "secret-timer.service",
-                 "lastResult": "success", "controllable": True, "actions": ["restart", "logs"]}
+                {
+                    "unit": "secret-timer.timer",
+                    "scope": "user",
+                    "description": "secret words",
+                    "activeState": "active",
+                    "job": "secret-timer.service",
+                    "lastResult": "success",
+                    "controllable": True,
+                    "actions": ["restart", "logs"],
+                }
             ],
             "failedUnits": [
-                {"unit": "secret-sync.service", "scope": "system", "description": "secret words",
-                 "result": "exit-code", "exitCode": 1}
+                {
+                    "unit": "secret-sync.service",
+                    "scope": "system",
+                    "description": "secret words",
+                    "result": "exit-code",
+                    "exitCode": 1,
+                }
             ],
-            "hostMetrics": {"disks": [{"mount": "/", "totalBytes": 1},
-                                      {"mount": "/mnt/secret-volume", "totalBytes": 1}]},
+            "hostMetrics": {
+                "disks": [
+                    {"mount": "/", "totalBytes": 1},
+                    {"mount": "/mnt/secret-volume", "totalBytes": 1},
+                ]
+            },
             "resourcePolicy": {"policyRevision": "secretrevision", "status": "applied"},
             "collection": {"coolify": {"ok": True, "partial": False}},
         }
