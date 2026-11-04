@@ -134,6 +134,18 @@ jobs:
     - name: git-relay tests
       run: |
         python3 -m unittest discover -s git-relay/git_relay/tests -t git-relay -v
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: '26'
+        cache: npm
+        cache-dependency-path: |
+          visual-tests/package-lock.json
+          scripts/agent-sync-mcp/package-lock.json
+    # The CLI composition test imports the actual hosted catalog, so its pinned
+    # Node dependencies must be present before the Python CLI suite runs.
+    - name: Install simple-tools MCP test dependencies
+      run: npm ci --ignore-scripts --prefix scripts/agent-sync-mcp
     - name: Code-only Coolify fleet CLI sync tests
       run: |
         python3 scripts/test_fleet_cli_release.py
@@ -446,14 +458,6 @@ jobs:
     - name: fleet-telemetry-relay tests
       run: |
         cd telemetry-relay && PYTHONPATH=tests python3 -m unittest discover -s tests -t tests -v
-    - name: Set up Node
-      uses: actions/setup-node@v7
-      with:
-        node-version: '26'
-        cache: npm
-        cache-dependency-path: |
-          visual-tests/package-lock.json
-          scripts/agent-sync-mcp/package-lock.json
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
     # The alert-ingress secret provisioner (AFC-351):  the batched read against a
@@ -472,10 +476,9 @@ jobs:
     - name: Alert ingress unit tests
       run: node --test workers/alert-ingress/src/*.test.js
     # Hosted ST-MCP Worker unit tests (including GraphQL document
-    # parsing).  Install its pinned dependencies before running the suites.
+    # parsing).  Pinned dependencies are installed before the CLI composition test.
     - name: ST-MCP Worker unit tests
       run: |
-        npm ci --ignore-scripts --prefix scripts/agent-sync-mcp
         node --test scripts/agent-sync-mcp/test/*.test.mjs
     # The scoped-folder copy script (AFC-478) against a mocked Infisical and a fake
     # fleet-secrets:  names-only output, collisions, exit codes and reruns.

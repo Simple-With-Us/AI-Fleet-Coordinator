@@ -126,6 +126,7 @@ def _validate_args(action: str, args: dict) -> dict:
     if action == "open_pr":
         specs.update(
             {
+                "draft": ("boolean", False),
                 "base": ("text", True),
                 "head": ("text", True),
                 "title": ("clean", True),
@@ -136,10 +137,17 @@ def _validate_args(action: str, args: dict) -> dict:
         # An edit must change something:  with neither title nor body GitHub
         # answers 422 after the call already left the fleet, which audits as a
         # terminal refusal instead of the local 400 it should be.
-        if args.get("title") is None and args.get("body") is None:
+        if args.get("title") is None and args.get("body") is None and args.get("state") is None:
             raise ValueError("edit_pr: title or body is required")
         specs.update(
-            {"number": ("number", True), "title": ("clean", False), "body": ("clean", False)}
+            {
+                "number": ("number", True),
+                "title": ("clean", False),
+                "body": ("clean", False),
+                "state": ("pr_state", False),
+                "expected_head_sha": ("text", False),
+                "expected_updated_at": ("text", False),
+            }
         )
     elif action == "reply_thread":
         specs.update(
@@ -179,6 +187,12 @@ def _validate_args(action: str, args: dict) -> dict:
                 raise ValueError("thread_id must be a pull request review thread id")
         elif kind == "number":
             value = _number(value, field)
+        elif kind == "boolean":
+            if value is not None and type(value) is not bool:
+                raise ValueError("draft must be a boolean")
+        elif kind == "pr_state":
+            if value is not None and value not in ("open", "closed"):
+                raise ValueError("state must be open or closed")
         elif kind == "method":
             if value is None:
                 value = "squash"
@@ -204,6 +218,23 @@ def _validate_args(action: str, args: dict) -> dict:
                         raise ValueError("inputs values are capped at 1024 characters")
         if value is not None:
             canonical[field] = value
+    if action == "open_pr" and "draft" in args and type(args["draft"]) is not bool:
+        raise ValueError("draft must be a boolean")
+    if action == "edit_pr":
+        from .pr_lifecycle import SHA, STAMP
+
+        if canonical.get("state") is not None:
+            if canonical.get("title") is not None or canonical.get("body") is not None:
+                raise ValueError("state cannot be combined with title or body")
+            if not SHA.fullmatch(canonical.get("expected_head_sha") or "") or not STAMP.fullmatch(
+                canonical.get("expected_updated_at") or ""
+            ):
+                raise ValueError("state requires expected_head_sha and expected_updated_at")
+        elif (
+            canonical.get("expected_head_sha") is not None
+            or canonical.get("expected_updated_at") is not None
+        ):
+            raise ValueError("expected source fields require state")
     if action == "workflow_dispatch":
         intent = canonical.get("intent_id")
         expected = canonical.get("expected_head_sha")
@@ -270,6 +301,7 @@ class Relay:
         self._unauth_auditor = UnauthorizedAuditor()
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
+        self._journal_transaction_lock = threading.RLock()
         self.typed_gateway = None
         if typed_disarm_enabled:
             from .typed_gateway import TypedGateway
@@ -347,6 +379,39 @@ class Relay:
                 outcome = "bad_request"
                 detail = {"reason": str(exc)}
                 return 400, {"error": str(exc)}
+            if (
+                action in ("wf_pr_draft", "wf_pr_ready", "edit_pr")
+                and self.outcomes.has_held_except()
+            ):
+                outcome = "duplicate_refused"
+                return 409, {
+                    "error": "unreconciled relay write; reconcile before PR lifecycle change",
+                    "outcome": "unknown",
+                    "retryable": False,
+                }
+            if action == "open_pr" or (action == "edit_pr" and canonical.get("state") is not None):
+                from .pr_lifecycle import Lifecycle
+
+                status, payload = Lifecycle(self, seat, action, canonical).execute()
+                outcome = "ok" if status == 200 else payload.get("outcome", "refused")
+                if payload.get("github_status") is not None:
+                    outcome = (
+                        "github_unknown"
+                        if payload.get("outcome") == "unknown"
+                        else "github_auth"
+                        if payload.get("github_code") == "invalid_grant"
+                        else "github_retryable"
+                        if status == 429
+                        else "github_terminal"
+                    )
+                detail = {
+                    "number": canonical.get("number"),
+                    "state": canonical.get("state"),
+                    "status": status,
+                }
+                if "github_diagnostics" in payload:
+                    detail["github_diagnostics"] = payload["github_diagnostics"]
+                return status, payload
             if action != "mint_token" and not self._is_workflow_read(action):
                 # Idempotency gate for non-idempotent writes:  mint_token is exempt
                 # because it returns a credential (a replay could only be served
@@ -574,6 +639,36 @@ class Relay:
             )
         # Every non-open_pr write is an APP_ACTION and never reaches here.
         raise ValueError(f"unknown owner-token action {action!r}")
+
+
+_unlocked_handle = Relay.handle
+
+
+def _serialized_handle(self, token, action, args, proof=None):
+    """A journal transaction includes preflight, reservation, write and finish.
+
+    Lock all routes sharing the journal, not only the new lifecycle handler.
+    This also prevents a legacy writer from overwriting a freshly held row.
+    """
+    lock = getattr(self, "_journal_transaction_lock", None)
+    if lock is None:
+        # Created in __init__; fallback only for legacy fixture construction.
+        raise RuntimeError("journal transaction lock unavailable")
+    with lock:
+        path = getattr(self.outcomes, "_path", None)
+        if not path:
+            return _unlocked_handle(self, token, action, args, proof)
+        fd = os.open(path + ".transaction.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            refreshed = OutcomeStore(path)
+            self.outcomes._rows = refreshed._rows
+            return _unlocked_handle(self, token, action, args, proof)
+        finally:
+            os.close(fd)
+
+
+Relay.handle = _serialized_handle
 
 
 # Idempotent state setters must reach GitHub again after a verified success: A->B->A

@@ -53,6 +53,7 @@ TOOLS = [
                 "repo": {"type": "string", "description": "owner/name"},
                 "base": {"type": "string"},
                 "head": {"type": "string"},
+                "draft": {"type": "boolean"},
                 "title": {"type": "string"},
                 "body": {"type": "string"},
             },
@@ -67,6 +68,9 @@ TOOLS = [
             "properties": {
                 "repo": {"type": "string"},
                 "number": {"type": "integer"},
+                "state": {"type": "string", "enum": ["open", "closed"]},
+                "expected_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                "expected_updated_at": {"type": "string"},
                 "title": {"type": "string"},
                 "body": {"type": "string"},
             },

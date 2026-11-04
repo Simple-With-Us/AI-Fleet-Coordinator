@@ -14,6 +14,7 @@ import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { testEnv } from "./helpers.mjs";
 
+const prReceipt = (number) => ({number,url:`https://github.com/a/b/pull/${number}`,state:"open",draft:false,head_sha:"a".repeat(40),updated_at:"2026-11-04T06:00:00Z",noop:false,verified:true});
 const config = loadConfig(testEnv());
 
 test("grUpstreamUrl pins a bare https origin and refuses everything else", () => {
@@ -41,7 +42,7 @@ test("GrRelayClient posts the action with Access headers and the caller's bearer
     accessId: "id", accessSecret: "secret", bearer: "sbt_jet-chat_abc",
     fetch: async (url, init) => {
       seen.push({ url, init });
-      return new Response(JSON.stringify({ number: 7, url: "https://x/pr/7" }), { status: 200 });
+      return new Response(JSON.stringify(prReceipt(7)), { status: 200 });
     },
   });
   const { status, body } = await client.call("open_pr", { repo: "a/b", base: "main", head: "f", title: "t", body: "b" });
@@ -86,7 +87,7 @@ test("a minter-minted assertion that echoes back in any response is refused", as
     baseUrl: "https://git-relay.example.test",
     accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef",
     minter: async ({ action, body }) => `gra2_${action}_${"y".repeat(80)}`,
-    fetch: async (url, init) => { seen.push(init.headers["Authorization"]); return new Response(JSON.stringify({ ok: true }), { status: 200 }); },
+    fetch: async (url, init) => { seen.push(init.headers["Authorization"]); return new Response(JSON.stringify(prReceipt(7)), { status: 200 }); },
   });
   const ok = await clean.call("open_pr", { repo: "a/b" });
   assert.equal(ok.status, 200);
@@ -203,7 +204,7 @@ test("gr_open_pr runs through the front and returns the relay's answer", async (
   const gr = new GrRelayClient({
     baseUrl: "https://git-relay.example.test",
     accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef", bearer: "sbt_jet-chat_" + "a".repeat(43),
-    fetch: async (url, init) => { seen.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ number: 9, url: "u" }), { status: 200 }); },
+    fetch: async (url, init) => { seen.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify(prReceipt(9)), { status: 200 }); },
   });
   const tools = grHarness(gr);
   const result = await tools.call("gr_open_pr", { repo: "a/b", base: "main", head: "f", title: "t", body: "b" });
@@ -244,7 +245,7 @@ test("gr_edit_pr schema refuses a neither-field call at the boundary", () => {
   // downstream;  the schema itself must not admit it.
   const edit = GR_TOOLS.find((t) => t.name === "gr_edit_pr");
   assert.equal(edit.inputSchema.additionalProperties, false);
-  assert.deepEqual(edit.inputSchema.anyOf, [{ required: ["title"] }, { required: ["body"] }]);
+  assert.deepEqual(edit.inputSchema.anyOf, [{ required: ["title"] }, { required: ["body"] }, { required: ["state", "expected_head_sha", "expected_updated_at"] }]);
   assert.deepEqual(edit.inputSchema.required, ["repo", "number"]);
 });
 
@@ -332,11 +333,11 @@ test("grCall maps relay outcomes precisely and answers in the MCP result shape",
       }),
     );
   // 200: text content plus structuredContent, like every other hosted tool (kody 4372746898)
-  const okTools = mk(new Response(JSON.stringify({ number: 9, url: "u" }), { status: 200 }));
+  const okTools = mk(new Response(JSON.stringify(prReceipt(9)), { status: 200 }));
   const okRes = await okTools.call("gr_open_pr", { repo: "a/b", base: "main", head: "f", title: "t", body: "b" });
   assert.ok(!okRes.isError, `expected success, got ${okRes.content?.[0]?.text}`);
   assert.equal(okRes.content[0].type, "text");
-  assert.deepEqual(okRes.structuredContent, { number: 9, url: "u" });
+  assert.deepEqual(okRes.structuredContent, prReceipt(9));
   // 502 with outcome "unknown": the write may have landed - never a refusal, never a blind retry (kody 4372747157)
   const unknownTools = mk(new Response(JSON.stringify({ error: "github call outcome unknown", outcome: "unknown", retryable: false }), { status: 502 }));
   const unknownRes = await unknownTools.call("gr_merge_pr", { repo: "a/b", number: 1 });
@@ -408,4 +409,24 @@ test("dispatch intent source pair is meaningful and schema bounded", async () =>
   assert.equal(upstream,0);
   const result=await tools.call("gr_workflow_dispatch",{...base,intent_id:"qualification-one",expected_head_sha:"a".repeat(40)});
   assert.ok(!result.isError);assert.equal(upstream,1);
+});
+
+test('actual identity router advertises and executes lifecycle as its own seat', async()=>{
+  const {IdentityRouter} = await import('../src/delegated-identities.js');
+  const seen=[];
+  const gr=new GrRelayClient({baseUrl:'https://relay.test',accessId:'access-id-fixture',accessSecret:'access-secret-fixture',bearer:'sbt-fixture-own-bearer',fetch:async(url,init)=>{
+    seen.push({url,args:JSON.parse(init.body),bearer:init.headers.Authorization});
+    return Response.json({...prReceipt(3),state:'closed'});
+  }});
+  const router=new IdentityRouter({callerTools:grHarness(gr)});
+  const tool=router.toolList.find(t=>t.name==='gr_edit_pr');
+  assert.ok(tool.inputSchema.required.includes('identity'));
+  assert.deepEqual(tool.inputSchema.properties.identity.enum,['JET-CHAT']);
+  const args={repo:'a/b',number:3,state:'closed',expected_head_sha:'a'.repeat(40),expected_updated_at:'2026-11-04T06:00:00Z'};
+  const missing=await router.call('gr_edit_pr',args);assert.equal(missing.isError,true);assert.equal(seen.length,0);
+  const other=await router.call('gr_edit_pr',{...args,identity:'WISE'});assert.equal(other.isError,true);assert.equal(seen.length,0);
+  const out=await router.call('gr_edit_pr',{...args,identity:'JET-CHAT'});
+  assert.ok(!out.isError,JSON.stringify(out));assert.equal(out.structuredContent.verified,true);
+  assert.equal(seen.length,1);assert.equal(seen[0].bearer,'Bearer sbt-fixture-own-bearer');
+  assert.deepEqual(seen[0].args,args);
 });
