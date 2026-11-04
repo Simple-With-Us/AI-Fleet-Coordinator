@@ -97,6 +97,12 @@ struct FleetOverviewView: View {
         .onChange(of: destination) { _, chosen in
             storedDestination = chosen.rawValue
         }
+        // The menu chooses a place by writing the saved one,  so an open window follows it.
+        .onChange(of: storedDestination) { _, saved in
+            let chosen = MusterDestination.restored(from: saved)
+            if chosen != destination { destination = chosen }
+        }
+        .background(MusterWindowTracker())
     }
 
     /// One place in the sidebar.  The two compliance places carry the drift count,
@@ -219,7 +225,7 @@ struct FleetOverviewView: View {
 
     private var generatedText: String {
         guard let generatedAt = store.generatedAt else { return "—" }
-        return "read at " + generatedAt.formatted(date: .omitted, time: .standard)
+        return "read at " + FleetTime.clock(generatedAt)
     }
 }
 

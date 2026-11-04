@@ -42,11 +42,13 @@ struct OpsActionSheet: View {
                 .font(.title3.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
             if let action = controller.phase.action {
-                Text(action.runsOnServer
-                    ? "Runs on the server through the \(OpsControlRoute.serverAlias) key."
-                    : "Runs on this Mac.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    PlaceBadge(place: action.changes)
+                    Text(action.placeSentence)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .help(action.runsOnServer ? "Through the \(OpsControlRoute.serverAlias) key." : "")
             }
             content
             if let notice = controller.notice {
@@ -75,8 +77,24 @@ struct OpsActionSheet: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-        case .review(_, let outcome):
-            planBlock(outcome, heading: "The plan")
+        case .review(let action, let outcome):
+            VStack(alignment: .leading, spacing: 8) {
+                // A stop takes a service down at once,  so its warning is on the plan,  the
+                // same words the alert uses on the direct route.
+                if let warning = action.stopWarning {
+                    Text(warning)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                planBlock(outcome, heading: "The plan")
+                // A helper that says where it ran is checked:  a mismatch never reaches
+                // this phase.  A helper that does not say shows nothing.
+                if outcome.answeredFrom == action.runsOn {
+                    Text(action.answeredSentence)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         case .running(_, let outcome):
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
@@ -235,14 +253,14 @@ struct OpsActionSheet: View {
         HStack {
             Spacer()
             switch controller.phase {
-            case .review:
+            case .review(let action, _):
                 Button("Cancel", role: .cancel) { controller.dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(asking)
                 Button {
                     Task { await approveAndRun() }
                 } label: {
-                    Label("Run With Touch ID", systemImage: "touchid")
+                    Label(action.runButtonTitle, systemImage: "touchid")
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(asking)

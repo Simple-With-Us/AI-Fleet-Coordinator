@@ -37,6 +37,23 @@ enum ServerStatusContract {
     static let maxAgeSeconds = 45 * 60
 }
 
+/// Why a report that is there was not read,  so a surface can say what to do about it.
+enum ReportRefusal: Equatable {
+    /// The report is newer than this app reads,  or from a tool it does not know.
+    case appOutOfDate
+    /// This app is newer than the report.
+    case reporterOutOfDate
+    /// The report says it was not written on the server.
+    case notFromServer
+    /// The file is there and could not be understood.
+    case unreadable
+
+    /// The refusal for a report's version.
+    init(reportVersion: Int, supported: Int) {
+        self = reportVersion > supported ? .appOutOfDate : .reporterOutOfDate
+    }
+}
+
 // MARK: - The vocabularies
 
 /// The kind of a Coolify resource.
@@ -572,6 +589,9 @@ struct ServerStatusReport: Decodable {
     let tool: String
     let generatedAt: String?
     let host: String?
+    /// The role the collector says it ran in (`mac` or `server`),  when it says.  A
+    /// collector that predates the field leaves it out,  which is not a refusal.
+    let hostRole: String?
     let coolify: [CoolifyResource]
     let processes: [ServerProcess]
     let files: [WatchedFile]
@@ -585,7 +605,7 @@ struct ServerStatusReport: Decodable {
     let resourcePolicy: ResourcePolicySnapshot?
 
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, tool, generatedAt, host, coolify, processes, files
+        case schemaVersion, tool, generatedAt, host, hostRole, coolify, processes, files
         case hostMetrics, services, filesSummary, resourcePolicy
     }
 
@@ -597,6 +617,7 @@ struct ServerStatusReport: Decodable {
         tool = try container.decode(String.self, forKey: .tool)
         generatedAt = try? container.decodeIfPresent(String.self, forKey: .generatedAt)
         host = try? container.decodeIfPresent(String.self, forKey: .host)
+        hostRole = try? container.decodeIfPresent(String.self, forKey: .hostRole)
         coolify = (try? container.decodeIfPresent([CoolifyResource].self, forKey: .coolify)) ?? []
         processes = (try? container.decodeIfPresent([ServerProcess].self, forKey: .processes)) ?? []
         files = (try? container.decodeIfPresent([WatchedFile].self, forKey: .files)) ?? []
@@ -623,6 +644,14 @@ struct ServerStatusReading {
     var isCurrent: Bool = false
     /// Why the report could not be read at all,  when it could not be.
     var problem: String?
+    /// When the Mac copied the report,  from the file's own modification date.
+    var copiedAt: Date?
+    /// True when the file is not there at all.
+    var fileMissing: Bool = false
+    /// True when the report is dated ahead of the Mac's clock.
+    var futureDated: Bool = false
+    /// What kind of refusal `problem` is,  when the file was there and was refused.
+    var refusal: ReportRefusal?
     /// The host the collector ran on.
     var host: String = ""
     /// The Coolify resources,  in the report's own order.
@@ -733,16 +762,19 @@ enum ServerStatusReportReader {
 
         let data: Data
         if FileManager.default.fileExists(atPath: url.path) {
+            reading.copiedAt = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
             do {
                 data = try Data(contentsOf: url)
             } catch {
                 reading.problem =
                     "The report could not be read:\(ServerStatusCopy.sentenceGap)\(error.localizedDescription)"
+                reading.refusal = .unreadable
                 return reading
             }
         } else {
             reading.problem =
                 "The report could not be read:\(ServerStatusCopy.sentenceGap)the file is not there"
+            reading.fileMissing = true
             return reading
         }
 
@@ -752,22 +784,34 @@ enum ServerStatusReportReader {
         } catch {
             reading.problem =
                 "The report could not be read:\(ServerStatusCopy.sentenceGap)\(error.localizedDescription)"
+            reading.refusal = .unreadable
             return reading
         }
 
         guard report.schemaVersion == ServerStatusContract.supportedSchemaVersion else {
             reading.problem =
                 "The report is version \(report.schemaVersion);\(ServerStatusCopy.sentenceGap)this app reads version \(ServerStatusContract.supportedSchemaVersion)."
+            reading.refusal = ReportRefusal(reportVersion: report.schemaVersion,
+                                            supported: ServerStatusContract.supportedSchemaVersion)
             return reading
         }
         guard report.tool == ServerStatusContract.expectedTool else {
             reading.problem =
                 "The report came from \"\(report.tool)\";\(ServerStatusCopy.sentenceGap)this app reads \"\(ServerStatusContract.expectedTool)\"."
+            reading.refusal = .appOutOfDate
+            return reading
+        }
+        // A collector that names its role and does not name the server wrote this report
+        // somewhere else,  so nothing in it describes the server.
+        if let role = report.hostRole, role != "server" {
+            reading.problem = "This report did not come from the server."
+            reading.refusal = .notFromServer
             return reading
         }
         guard let generated = report.generatedAt.flatMap(FleetTime.parse) else {
             reading.problem =
                 "The report carries no time this app can read,\(ServerStatusCopy.sentenceGap)so nothing in it is current."
+            reading.refusal = .unreadable
             return reading
         }
 
@@ -777,6 +821,7 @@ enum ServerStatusReportReader {
         if seconds < -60 {
             reading.problem =
                 "The report is dated in the future,\(ServerStatusCopy.sentenceGap)so nothing in it is current."
+            reading.futureDated = true
             return reading
         }
         reading.isCurrent = seconds <= ServerStatusContract.maxAgeSeconds
