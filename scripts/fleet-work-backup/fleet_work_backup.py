@@ -380,7 +380,7 @@ class Config:
     repository: str = ""  # a restic repository to use instead of B2 (tests, a local mirror)
     launchctl_bin: str = "launchctl"
     check_wait_s: int = 90
-    agent_sync_bin: str = ""  # '' is <home>/.local/bin/agent-sync (launchd's PATH does not have it)
+    agent_sync_bin: str = ""  # '' is <home>/.local/bin/simple-chat (launchd's PATH does not have it)
     fleet_secrets_bin: str = (
         ""  # '' is <home>/.local/bin/fleet-secrets (launchd's PATH does not have it)
     )
@@ -3525,7 +3525,7 @@ def bump_not_ok(state: dict) -> int:
 
 
 def agent_sync_path(cfg: Config) -> str:
-    return cfg.agent_sync_bin or str(cfg.home / ".local" / "bin" / "agent-sync")
+    return cfg.agent_sync_bin or str(cfg.home / ".local" / "bin" / "simple-chat")
 
 
 def _agent_sync_send(cmd: list, text: str) -> bool:
@@ -3622,7 +3622,7 @@ def alert_after_line(cfg: Config, state: dict, line: str) -> None:
         detail_log(
             cfg,
             [
-                f"alert-not-posted after {n} runs (agent-sync at {agent_sync_path(cfg)} missing or failed;  "
+                f"alert-not-posted after {n} runs (simple-chat at {agent_sync_path(cfg)} missing or failed;  "
                 f"not delivered:  {', '.join(failed)})"
             ],
         )

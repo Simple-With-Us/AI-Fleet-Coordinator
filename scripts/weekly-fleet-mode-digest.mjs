@@ -68,7 +68,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const DIGEST_TOPIC = "fleet-mode digest";
 // cron and launchd run with a minimal PATH, so call the CLI by absolute path.
 const AGENT_SYNC_BIN =
-  process.env.AGENT_SYNC_BIN || `${process.env.HOME}/.local/bin/agent-sync`;
+  process.env.AGENT_SYNC_BIN || `${process.env.HOME}/.local/bin/simple-chat`;
 
 // Claude-family tier vocabulary, mirroring
 // ~/.claude/hooks/subagent-economy-pretooluse.py's resolve_tier: bare tier
@@ -416,11 +416,11 @@ function postToZulip(text) {
     },
   );
   if (result.error) {
-    throw new Error(`agent-sync failed to launch: ${result.error.message}`);
+    throw new Error(`simple-chat failed to launch: ${result.error.message}`);
   }
   if (result.status !== 0) {
     throw new Error(
-      `agent-sync exited ${result.status}: ${(result.stderr || "").trim()}`,
+      `simple-chat exited ${result.status}: ${(result.stderr || "").trim()}`,
     );
   }
   return result.stdout;
@@ -462,7 +462,7 @@ async function main() {
     process.exit(0);
   }
 
-  log("posting via agent-sync, to the channel the CLI resolves");
+  log("posting via simple-chat, to the channel the CLI resolves");
   postToZulip(message);
   log("posted.");
 }

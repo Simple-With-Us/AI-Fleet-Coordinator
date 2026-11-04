@@ -2324,7 +2324,7 @@ class RunBehaviourCase(RunBase):
         self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 0)
 
     def stub_agent_sync(self, rc: int = 0, dm_rc: int | None = None) -> Path:
-        """A stand-in for agent-sync.  ``rc`` is the exit code of ``post``, ``dm_rc`` (default ``rc``) that of ``dm``.
+        """A stand-in for the chat CLI.  ``rc`` is the exit code of ``post``, ``dm_rc`` (default ``rc``) that of ``dm``.
         argv goes to as-argv.log, stdin to as-text.log (all calls) and to as-<subcommand>-text.log."""
         stub = self.tmp / "agent-sync"
         stub.write_text(
@@ -2344,7 +2344,7 @@ class RunBehaviourCase(RunBase):
         return [t.strip() for t in p.read_text().split("---") if t.strip()] if p.exists() else []
 
     def agent_sync_calls(self) -> list[str]:
-        """One line per agent-sync call, its arguments joined with spaces, in call order."""
+        """One line per chat CLI call, its arguments joined with spaces, in call order."""
         p = self.stubdir / "as-argv.log"
         return p.read_text().splitlines() if p.exists() else []
 
@@ -2408,7 +2408,7 @@ class RunBehaviourCase(RunBase):
 
     def test_the_alert_uses_the_job_homes_agent_sync_only(self):
         self.assertEqual(
-            fwb.agent_sync_path(self.cfg), str(self.home / ".local" / "bin" / "agent-sync")
+            fwb.agent_sync_path(self.cfg), str(self.home / ".local" / "bin" / "simple-chat")
         )
         self.assertFalse(
             fwb.post_alert(self.cfg, "x")
