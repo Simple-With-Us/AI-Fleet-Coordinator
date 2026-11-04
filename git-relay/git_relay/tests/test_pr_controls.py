@@ -152,6 +152,57 @@ class PrControls(unittest.TestCase):
             self.assertIn("graphql_forbidden", rows)
             self.assertNotIn("private provider text", json.dumps(result) + rows)
 
+    def test_draft_transition_seat_without_contents_write_is_denied(self):
+        # A draft transition mints contents:write on top of pull_requests:write,
+        # so a seat that only carries the pull-request ceiling is refused before
+        # any provider call.  The fixture never proves GitHub needs it; the
+        # relay's own ceiling gate does.
+        from git_relay.audit import AuditLog
+        from git_relay.policy import SeatPolicy
+        from git_relay.server import Relay
+
+        class Minter:
+            def token_for(self, *args):
+                return "synthetic-own-app-bearer", 0
+
+        token = "s" * 32
+        policy = SeatPolicy(
+            json.dumps(
+                {
+                    "swu-codex": {
+                        "token": token,
+                        "app_slug": "swu-codex",
+                        "repos": [REPO],
+                        "actions": ["wf_pr_draft"],
+                        "mint_permissions": {
+                            "pull_requests": "write",
+                            "metadata": "read",
+                        },
+                    }
+                }
+            )
+        )
+        client = Client(
+            {"node_id": "PR_abc"},
+            {
+                "data": None,
+                "errors": [{"type": "FORBIDDEN", "message": "private provider text"}],
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.jsonl"
+            relay = Relay(
+                policy,
+                client,
+                AuditLog(str(path)),
+                app_minter=Minter(),
+                workflow_verbs_enabled=True,
+            )
+            status, result = relay.handle(token, "wf_pr_draft", {"repo": REPO, "number": 1})
+            self.assertEqual(status, 403, result)
+            self.assertEqual(result["error"], "seat permission ceiling insufficient")
+            self.assertEqual(len(client.calls), 0)
+
     def test_threads_query_fixed_and_read_only(self):
         c = Client(
             {
