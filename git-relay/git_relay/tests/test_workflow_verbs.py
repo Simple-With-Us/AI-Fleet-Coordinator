@@ -102,9 +102,14 @@ class Tests(unittest.TestCase):
             with self.subTest(action=action):
                 minter = Minter()
                 WorkflowVerbs.for_action(Client(), Policy(), minter, "swu-wise", action, REPO)
-                self.assertEqual(minter.calls[0][2], {
-                    "pull_requests": "write", "contents": "write", "metadata": "read",
-                })
+                self.assertEqual(
+                    minter.calls[0][2],
+                    {
+                        "pull_requests": "write",
+                        "contents": "write",
+                        "metadata": "read",
+                    },
+                )
                 for ceiling in (
                     {"pull_requests": "write", "contents": "read", "metadata": "read"},
                     {"pull_requests": "read", "contents": "write", "metadata": "read"},
@@ -112,7 +117,12 @@ class Tests(unittest.TestCase):
                     denied_minter = Minter()
                     with self.assertRaises(Refused):
                         WorkflowVerbs.for_action(
-                            Client(), Policy(ceiling), denied_minter, "swu-wise", action, REPO,
+                            Client(),
+                            Policy(ceiling),
+                            denied_minter,
+                            "swu-wise",
+                            action,
+                            REPO,
                         )
                     self.assertEqual(denied_minter.calls, [])
 
