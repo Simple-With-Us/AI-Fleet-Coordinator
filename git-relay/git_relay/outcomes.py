@@ -148,8 +148,10 @@ class OutcomeStore:
         be reconciled before adding a lifecycle route that could bypass them.
         """
         with self._lock:
-            return any(k not in keys and r["state"] in ("pending", "unknown")
-                       for k, r in self._rows.items())
+            return any(
+                k not in keys and r["state"] in ("pending", "unknown")
+                for k, r in self._rows.items()
+            )
 
     def begin(self, key: str, *, reapply_ok: bool = False) -> dict | None:
         """Mark a key in flight;  return the existing row when the key is already taken.

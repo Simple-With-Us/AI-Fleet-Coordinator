@@ -140,7 +140,14 @@ def _validate_args(action: str, args: dict) -> dict:
         if args.get("title") is None and args.get("body") is None and args.get("state") is None:
             raise ValueError("edit_pr: title or body is required")
         specs.update(
-            {"number": ("number", True), "title": ("clean", False), "body": ("clean", False), "state": ("pr_state", False), "expected_head_sha": ("text", False), "expected_updated_at": ("text", False)}
+            {
+                "number": ("number", True),
+                "title": ("clean", False),
+                "body": ("clean", False),
+                "state": ("pr_state", False),
+                "expected_head_sha": ("text", False),
+                "expected_updated_at": ("text", False),
+            }
         )
     elif action == "reply_thread":
         specs.update(
@@ -215,12 +222,18 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError("draft must be a boolean")
     if action == "edit_pr":
         from .pr_lifecycle import SHA, STAMP
+
         if canonical.get("state") is not None:
             if canonical.get("title") is not None or canonical.get("body") is not None:
                 raise ValueError("state cannot be combined with title or body")
-            if not SHA.fullmatch(canonical.get("expected_head_sha") or "") or not STAMP.fullmatch(canonical.get("expected_updated_at") or ""):
+            if not SHA.fullmatch(canonical.get("expected_head_sha") or "") or not STAMP.fullmatch(
+                canonical.get("expected_updated_at") or ""
+            ):
                 raise ValueError("state requires expected_head_sha and expected_updated_at")
-        elif canonical.get("expected_head_sha") is not None or canonical.get("expected_updated_at") is not None:
+        elif (
+            canonical.get("expected_head_sha") is not None
+            or canonical.get("expected_updated_at") is not None
+        ):
             raise ValueError("expected source fields require state")
     if action == "workflow_dispatch":
         intent = canonical.get("intent_id")
@@ -366,16 +379,36 @@ class Relay:
                 outcome = "bad_request"
                 detail = {"reason": str(exc)}
                 return 400, {"error": str(exc)}
-            if action in ("wf_pr_draft", "wf_pr_ready", "edit_pr") and self.outcomes.has_held_except():
+            if (
+                action in ("wf_pr_draft", "wf_pr_ready", "edit_pr")
+                and self.outcomes.has_held_except()
+            ):
                 outcome = "duplicate_refused"
-                return 409, {"error": "unreconciled relay write; reconcile before PR lifecycle change", "outcome": "unknown", "retryable": False}
+                return 409, {
+                    "error": "unreconciled relay write; reconcile before PR lifecycle change",
+                    "outcome": "unknown",
+                    "retryable": False,
+                }
             if action == "open_pr" or (action == "edit_pr" and canonical.get("state") is not None):
                 from .pr_lifecycle import Lifecycle
+
                 status, payload = Lifecycle(self, seat, action, canonical).execute()
                 outcome = "ok" if status == 200 else payload.get("outcome", "refused")
                 if payload.get("github_status") is not None:
-                    outcome = "github_unknown" if payload.get("outcome") == "unknown" else "github_auth" if payload.get("github_code") == "invalid_grant" else "github_retryable" if status == 429 else "github_terminal"
-                detail = {"number": canonical.get("number"), "state": canonical.get("state"), "status": status}
+                    outcome = (
+                        "github_unknown"
+                        if payload.get("outcome") == "unknown"
+                        else "github_auth"
+                        if payload.get("github_code") == "invalid_grant"
+                        else "github_retryable"
+                        if status == 429
+                        else "github_terminal"
+                    )
+                detail = {
+                    "number": canonical.get("number"),
+                    "state": canonical.get("state"),
+                    "status": status,
+                }
                 if "github_diagnostics" in payload:
                     detail["github_diagnostics"] = payload["github_diagnostics"]
                 return status, payload
@@ -610,6 +643,7 @@ class Relay:
 
 _unlocked_handle = Relay.handle
 
+
 def _serialized_handle(self, token, action, args, proof=None):
     """A journal transaction includes preflight, reservation, write and finish.
 
@@ -632,6 +666,7 @@ def _serialized_handle(self, token, action, args, proof=None):
             return _unlocked_handle(self, token, action, args, proof)
         finally:
             os.close(fd)
+
 
 Relay.handle = _serialized_handle
 

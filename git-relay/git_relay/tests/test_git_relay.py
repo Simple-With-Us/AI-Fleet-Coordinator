@@ -317,7 +317,9 @@ class StubClient:
     def _call(self, method, path, payload=None, bearer=None):
         # Full provider-shaped fixture for lifecycle preflight and readback.
         import copy
+
         from git_relay.tests.test_pr_lifecycle import pull
+
         repo = "example/fixture-repo"
         if path == f"/repos/{repo}":
             return {"id": 1, "full_name": repo}
@@ -325,9 +327,17 @@ class StubClient:
             ref = path.split("/git/ref/heads/", 1)[1]
             return {"ref": "refs/heads/" + ref, "object": {"type": "commit", "sha": "a" * 40}}
         if method == "POST":
-            result = self.open_pr(repo, payload["base"], payload["head"], payload["title"], payload["body"])
+            result = self.open_pr(
+                repo, payload["base"], payload["head"], payload["title"], payload["body"]
+            )
             row = pull()
-            row.update(number=result["number"], html_url=f"https://github.com/{repo}/pull/{result['number']}", draft=payload.get("draft", False), title=payload["title"], body=payload["body"])
+            row.update(
+                number=result["number"],
+                html_url=f"https://github.com/{repo}/pull/{result['number']}",
+                draft=payload.get("draft", False),
+                title=payload["title"],
+                body=payload["body"],
+            )
             row["head"].update(ref=payload["head"])
             for side in ("head", "base"):
                 row[side]["repo"] = {"id": 1, "full_name": repo}
