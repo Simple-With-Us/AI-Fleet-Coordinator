@@ -1445,8 +1445,8 @@ def quota_red(provider: str, now: float | None = None, path: str | None = None) 
 # --------------------------------------------------------------------------------------------
 #
 #   mcode exec --prompt-mode work --permission off --output-format json
-#             --model minimax/MiniMax-M3.1-Flash --effort minimal
-#             --output-schema <schema> --max-steps N --timeout 4m --cwd <inert dir>
+#             --model minimax/MiniMax-M3.1-Flash --effort low
+#             --output-schema <schema> --max-steps N --timeout 210s --cwd <inert dir>
 #             -o <last-message file> --prompt
 #
 # The same contract shape as muse:  `--output-schema` shapes the final answer, `--permission off`
@@ -1484,17 +1484,27 @@ MCODE_MAX_STEPS = 16
 # timeout here means no answer at all rather than a slower answer.  The margin over the measured
 # run is therefore worth more than the 30s it adds to a path that already spent the primary's
 # 240s.  It is still 30s under the outer deadline, so the daemon's kill stays a backstop.
-MCODE_TIMEOUT = "3m30s"
+#
+# The single-unit form is load-bearing, not style:  mcode 0.6.12 rejects the compound duration
+# "3m30s" at argv validation (verified live, 2026-11-03), so the same 210 seconds is spelled
+# "210s", the form mcode accepts.
+MCODE_TIMEOUT = "210s"
 MCODE_PROMPT_MODE = "work"
 MCODE_PERMISSION = "off"
 # The reasoning effort, named on every fallback run (owner directive, 2026-11-03:  "don't do
 # default").  An unset effort is not a neutral middle:  MiniMax's own default is MAX, the
 # highest and most expensive thinking tier, so a fallback wake left unset would pay the top
 # reasoning price for a bounded four-message prompt.  The owner's determination is that
-# MiniMax-M3.1 at minimal is cheaper and faster than M3 at none, so minimal is the floor this
-# run asks for, and it is asked for explicitly rather than inherited from whatever the
-# install's default happens to be.
-MCODE_REASONING_EFFORT = "minimal"
+# MiniMax-M3.1 at its lowest effort is cheaper and faster than M3 at none, so the floor is
+# asked for explicitly rather than inherited from whatever the install's default happens
+# to be.
+#
+# The floor's NAME differs from muse's, because the two runtimes' vocabularies differ:
+# muse's lowest tier is `minimal`, but mcode 0.6.12 has no `minimal` level at all and
+# rejects it at argv validation ("Available levels: default, low, medium, high, xhigh,
+# max";  verified live, 2026-11-03).  mcode's lowest named tier is `low`.  Do not unify
+# the two constants:  each names the floor its own runtime actually accepts.
+MCODE_REASONING_EFFORT = "low"
 # The fallback's PROMPT BOUND, and the reason the step budget is provable at all.  mcode has no
 # sandbox and no tool-deny switch, so `--max-steps` is the ONLY bound on how much the fallback may
 # act, and the step cost grows with the prompt:  the daemon can build a wake prompt with up to
