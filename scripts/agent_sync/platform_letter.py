@@ -875,6 +875,20 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
 _NOT_REGISTERED_MARK = "is not registered on"
 
 
+#: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
+#: 20 seconds (HOOK_TIMEOUTS) and a register chains at most two calls, so one call gets 6:
+#: the chain's worst case stays inside the tightest budget, and a healthy call to the
+#: listener answers in well under a second.  The batch callers of registry_api (the
+#: operator-registry CLI) keep its longer default.
+_API_TIMEOUT = 6
+
+
+def _call_api(env: Mapping[str, str], op: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    from . import registry_api
+
+    return registry_api.call(env, op, params, timeout=_API_TIMEOUT)
+
+
 def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
     """The answer itself when it carries an error, folded when the error is the registry saying
     the session is not registered;  None when it carries none."""
@@ -899,14 +913,12 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
 
     The local path's orchestration, over the API's ops:  the registry's register answers for a
     fresh chat and for a resume (its resume already stamps the session seen, as the local
-    register does), a resumed-closed chat is reopened, and a resumed chat that arrived with a
+    register does), a resumed-closed chat is reopened, and a resumed or reopened chat that arrived with a
     title has the title carried over, because register keeps an existing record's old title.
     What the local path also does, this path does not:  it sweeps nothing and evicts nothing.
     Reclaiming letters is the registry's own sweep's work once the store is the API's (the
     letter sweep), exactly as it already is on the MiniMax path, and an exhausted space answers
     with the registry's refusal instead of this hook closing another chat to make room."""
-    from . import registry_api
-
     title = clean_title(args.title)
     pick = resolve_pick(OR, args.letter_pick)
     parent = ""
@@ -925,7 +937,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
     }
     if parent:
         params["parent_session_id"] = parent
-    out = registry_api.call(env, "register", params)
+    out = _call_api(env, "register", params)
     if out.get("code") == "labels_exhausted":
         return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
     error = _api_error(out)
@@ -940,7 +952,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         }
         if parent:
             reopen_params["parent_session_id"] = parent
-        reopened = registry_api.call(env, "reopen", reopen_params)
+        reopened = _call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
             return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
         if reopened.get("code") == "space_lost":
@@ -959,13 +971,14 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             "outcome": "reopened",
             "title_display": OR.display_title(reopened["label"], title),
         }
-    elif out.get("outcome") == "resumed" and title:
-        updated = registry_api.call(env, "update", {**_api_identity(args, sid), "title": title})
+    if title and out.get("outcome") in ("resumed", "reopened"):
+        updated = _call_api(env, "update", {**_api_identity(args, sid), "title": title})
         error = _api_error(updated)
         if error is not None:
             return error
-        # The register answer above still names the title the record already carried;  the
-        # update's answer names the one the resume just set, as the local path's does.
+        # The register answer above still names the title the record already carried, on a
+        # reopen as on a resume;  the update's answer names the one just set, as the local
+        # path's does.
         out = {**out, "title": updated.get("title"), "title_display": updated.get("title_display")}
     out["swept"] = 0
     out["evicted"] = 0
@@ -982,14 +995,12 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     closed one without writing anything, and refuses a session the registry does not hold.
     The registry's touch answer carries the stamp, not the letter, so a touch here answers
     with the record id alone where the local path also names the letter and generation."""
-    from . import registry_api
-
     identity = _api_identity(args, sid)
     if args.op == "show":
         # The API has no show op:  `held` answers the letter side of the record (its id and
         # the letters it has held), which is what a show is asked for.  The full row stays
         # a local read on a host with no API configured.
-        held = registry_api.call(env, "held", identity)
+        held = _call_api(env, "held", identity)
         if "error" in held:
             if held.get("code") == "not_registered":
                 return {"error": NO_REGISTRATION}
@@ -1001,7 +1012,7 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
             "found": True,
         }
     if args.op == "close":
-        out = registry_api.call(
+        out = _call_api(
             env, "close", {**identity, "reason": "session ended", "source": args.source}
         )
         error = _api_error(out)
@@ -1010,7 +1021,7 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         if out.get("outcome") == "already_closed":
             return {"retired": True, "record_id": out.get("record_id", "")}
         return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
-    probe = registry_api.call(env, "touch", identity)
+    probe = _call_api(env, "touch", identity)
     error = _api_error(probe)
     if error is not None:
         return error
@@ -1019,7 +1030,7 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     title = clean_title(args.title) if args.op == "title" else ""
     if args.op == "touch" or not title:
         return {"ok": True, "record_id": probe.get("record_id", "")}
-    updated = registry_api.call(env, "update", {**identity, "title": title})
+    updated = _call_api(env, "update", {**identity, "title": title})
     error = _api_error(updated)
     if error is not None:
         return error

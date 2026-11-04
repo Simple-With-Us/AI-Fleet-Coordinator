@@ -127,6 +127,37 @@ class ClientTests(ApiBase):
         )
         self.assertEqual(found.get("native_session_id"), "mm-1")
 
+    def test_a_malformed_url_and_a_truncated_answer_are_error_answers(self) -> None:
+        env = self.api_env(**{registry_api.URL_ENV: "http://[::1"})
+        answer = registry_api.call(env, "resolve", {"platform": "minimax", "letter": "A"})
+        self.assertEqual(answer.get("code"), "not_configured")
+        # A server that closes mid-body:  the read breaks off, and the call answers with
+        # the transport error instead of raising out of http.client.
+        import socket
+        import threading
+
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+
+        def serve_once() -> None:
+            conn, _ = listener.accept()
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: 100\r\n\r\n{\"partial\":"
+            )
+            conn.close()
+            listener.close()
+
+        threading.Thread(target=serve_once, daemon=True).start()
+        env = self.api_env(**{registry_api.URL_ENV: "http://127.0.0.1:%d" % port})
+        answer = registry_api.call(env, "resolve", {"platform": "minimax", "letter": "A"})
+        self.assertIn("error", answer)
+        self.assertEqual(answer.get("code"), "timeout")
+
     def test_call_refuses_an_unknown_op_and_a_missing_key(self) -> None:
         env = self.api_env()
         self.assertEqual(registry_api.call(env, "frobnicate")["code"], "bad_op")
@@ -346,8 +377,50 @@ class PlatformLetterTests(ApiBase):
         self.assertEqual(code, 5)
         self.assertEqual(missing.get("error"), PL.NO_REGISTRATION)
 
+        # Reopening with a title carries the title over, as the local path's register
+        # does:  the record the registry holds ends up titled, not just the answer.
+        code, _closed = self.registry(self.reg_argv("close", "s-0001"))
+        self.assertEqual(code, 0)
+        code, back_titled = self.registry(
+            self.reg_argv("register", "s-0001", letter_pick="lowest", title="Back again")
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(back_titled.get("outcome"), "reopened")
+        self.assertEqual(back_titled.get("title"), "Back again")
+        self.assertEqual(
+            self.server_lookup("codex", "server", "s-0001")["title"], "Back again"
+        )
+
         # Through all of it, no local registry ever came into being.
         self.assertFalse(os.path.exists(self.local_db))
+
+    def test_hook_calls_carry_a_timeout_inside_the_hook_budgets(self) -> None:
+        # The hooks run this side inside 15-20 second budgets (HOOK_TIMEOUTS) and a
+        # register chains at most two calls, so the per-call timeout the platform path
+        # passes must keep the worst chain inside the tightest budget.
+        seen: dict[str, Any] = {}
+
+        def fake_call(env: Any, op: str, params: Any = None, *, timeout: int = 25) -> dict:
+            seen["timeout"] = timeout
+            return {
+                "record_id": "rec-1",
+                "label": "A",
+                "generation": 1,
+                "outcome": "registered",
+                "label_space": "double",
+            }
+
+        original = registry_api.call
+        registry_api.call = fake_call  # type: ignore[assignment]
+        try:
+            code, _answer = self.registry(
+                self.reg_argv("register", "s-0001", letter_pick="lowest")
+            )
+        finally:
+            registry_api.call = original  # type: ignore[assignment]
+        self.assertEqual(code, 0)
+        self.assertEqual(seen.get("timeout"), PL._API_TIMEOUT)
+        self.assertLessEqual(2 * PL._API_TIMEOUT, min(PL.HOOK_TIMEOUTS.values()))
 
     def test_a_dead_api_is_an_error_answer_and_writes_nothing(self) -> None:
         env = self.api_env(**{registry_api.URL_ENV: "http://127.0.0.1:1"})

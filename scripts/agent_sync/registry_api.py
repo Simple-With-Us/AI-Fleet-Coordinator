@@ -30,6 +30,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
@@ -99,8 +100,9 @@ def call(
     The answer is the API's own dict on success and on refusal alike.  A call that could
     not be made answers with an error dict in the same dialect the local transports use:
     `not_configured` when this host's configuration cannot sign the call, `timeout` when
-    the registry did not answer, and `outcome_unknown` riding on a failed write whose
-    answer was lost, because a write may have landed before its answer did."""
+    the registry did not answer or its answer broke off, and `outcome_unknown` riding on
+    a failed write whose answer was lost, because a write may have landed before its
+    answer did."""
     from . import listener_registry as RG
 
     env = os.environ if env is None else env
@@ -109,8 +111,11 @@ def call(
         return {"error": "no registry API URL is configured", "code": "not_configured"}
     if op not in RG.OPS:
         return {"error": "unknown registry op %r" % op, "code": "bad_op"}
-    parts = urllib.parse.urlsplit(url)
-    loopback = parts.hostname in ("127.0.0.1", "localhost", "::1")
+    try:
+        parts = urllib.parse.urlsplit(url)
+        loopback = parts.hostname in ("127.0.0.1", "localhost", "::1")
+    except ValueError:
+        return {"error": "the registry URL is not usable", "code": "not_configured"}
     if parts.scheme != "https" and not (parts.scheme == "http" and loopback):
         return {"error": "the registry URL must be https", "code": "not_configured"}
     principal = str(env.get(PRINCIPAL_ENV) or "").strip().upper() or DEFAULT_PRINCIPAL
@@ -171,8 +176,9 @@ def call(
         if method == "POST" and exc.code >= 500:
             refusal["outcome"] = "outcome_unknown"
         return refusal
-    except (urllib.error.URLError, TimeoutError, OSError):
-        # A write may have been applied before the answer was lost.
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
+        # The transport failed or the answer broke off mid-body (an HTTPException such
+        # as a truncated read).  A write may have been applied before the answer was lost.
         answer = {"error": "the registry did not answer in time", "code": "timeout"}
         if method == "POST":
             answer["outcome"] = "outcome_unknown"
