@@ -74,13 +74,15 @@ class Base(unittest.TestCase):
         """Shrink the pair space, so reuse and eviction can be reached without 676 chats."""
         return mock.patch.dict(OR.LETTER_SPACES, {"double": tuple(pairs)})
 
-    def app_record(self, host: str, cli: str, started_by: str = "") -> None:
+    def app_record(self, host: str, cli: str, started_by: str = "", title: str = "", source: str = "") -> None:
         """The desktop app's record of a chat, laid out as the app lays it out, in this test's home (the Mac's)."""
         folder = os.path.join(AL.store_root(self.home), "acct", "org")
         os.makedirs(folder, exist_ok=True)
         body: dict = {"sessionId": host, "cliSessionId": cli}
         if started_by:
             body["spawnedFrom"] = {"sessionId": started_by}
+        if title:
+            body.update(title=title, titleSource=source)
         with open(os.path.join(folder, host + ".json"), "w", encoding="utf-8") as fh:
             json.dump(body, fh)
 
@@ -741,6 +743,47 @@ class HookTests(Base):
             {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"},
             env=env, runner=runner or FakeSsh(self), **kw,
         )
+
+    def test_a_title_an_agent_set_gets_the_model_to_put_the_letter_back(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT, title="iPhone parity", source="tool")
+        self.begin("p-0001", host=self.PARENT)
+        child = self.begin("c-0001", host=self.CHILD)
+        self.assertIn('title "AB: iPhone parity"', child["additionalContext"])
+        self.assertIn("set_session_title", child["additionalContext"])
+        self.assertIn("Claude AB", child["additionalContext"])  # the letter's own reminder is still there
+
+    def test_the_rename_is_asked_for_once_and_not_once_it_took(self) -> None:
+        env = self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD)
+        self.app_record(self.CHILD, "c-0001", title="Task", source="tool")
+        start = self.hook({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}, env=env)
+        self.assertIn("set_session_title", start["additionalContext"])
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "c-0001", "prompt": "go"}
+        first = self.hook(prompt, env=env) or {}
+        self.assertNotIn("set_session_title", first.get("additionalContext", ""))
+        later = self.hook(prompt, env=env, now=time.time() + CL.RETRY_SECONDS + 1) or {}
+        self.assertIn("set_session_title", later.get("additionalContext", ""))
+        self.app_record(self.CHILD, "c-0001", title="AA: Task", source="tool")
+        done = self.hook(prompt, env=env, now=time.time() + 3 * CL.RETRY_SECONDS) or {}
+        self.assertNotIn("set_session_title", done.get("additionalContext", ""))
+
+    def test_only_an_agents_title_on_this_chats_own_record_asks_for_a_rename(self) -> None:
+        for sid, record_cli, title, source in (
+            ("a-0001", "a-0001", "Named By A Person", "user"),
+            ("b-0001", "b-0001", "Generated", "auto"),
+            ("d-0001", "someone-else", "Outer Chat", "tool"),
+        ):
+            with self.subTest(source=source):
+                self.app_record(self.CHILD, record_cli, title=title, source=source)
+                out = self.begin(sid, host=self.CHILD)
+                self.assertNotIn("set_session_title", out["additionalContext"])
+
+    def test_a_secret_shaped_word_in_an_agents_title_does_not_reach_the_model(self) -> None:
+        word = "ghp" + "_" + "a1B2" * 9
+        self.app_record(self.CHILD, "c-0001", title="Rotate %s now" % word, source="tool")
+        out = self.begin("c-0001", host=self.CHILD)
+        self.assertIn('"AA: Rotate now"', out["additionalContext"])
+        self.assertNotIn(word, out["additionalContext"])
 
     def test_a_chat_the_app_started_is_titled_with_the_pair_after_its_parents(self) -> None:
         self.app_record(self.PARENT, "p-0001")

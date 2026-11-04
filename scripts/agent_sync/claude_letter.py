@@ -141,6 +141,7 @@ RETRY_SECONDS = 600
 PLACEHOLDER = "New Chat"
 TITLE_WORDS = 7
 TITLE_CHARS = 60
+AGENT_TITLE_CHARS = 200  # the most of an agent's title handed back to the model for a rename
 # The most prompt text a title is looked for in, and the most words scanned for secrets:  a pasted wall of text
 # costs a bounded amount of work inside the hook's 15-second budget.
 PROMPT_SCAN_CHARS = 4096
@@ -874,6 +875,51 @@ def reminder(note: Mapping[str, Any]) -> str:
     )
 
 
+def _agent_title_fix(chat: Chat, note: dict[str, Any]) -> str:
+    """What the model is told when an agent's title hides this chat's letter, or "".
+
+    The desktop app ignores a hook's title once a person or an agent has named the chat, so a chat started through
+    `start_session` keeps the title its parent gave it and never shows its letter, whatever the hook sends.  The app's
+    own rename tool is the only thing it takes, and only the model can call that.  A person's rename is left alone,
+    because the tool would stop to ask them to approve it.  The note holds back a repeat for RETRY_SECONDS, so a start
+    and its first prompt ask once."""
+    label = str(note.get("label") or "")
+    if note.get("state") != "open" or not label:
+        return ""
+    try:
+        named = AL.agent_title(
+            str(chat.env.get("HOME") or os.path.expanduser("~")),
+            host_session_id=str(chat.env.get("CLAUDE_CODE_HOST_SESSION_ID") or ""),
+            cli_session_id=chat.session_id,
+        )
+    except Exception:  # noqa: BLE001 - the app's private file;  a surprise must never stop a chat's hook
+        return ""
+    line = one_line(named)
+    prefix = "%s: " % label
+    if not line or line.startswith(prefix):
+        return ""
+    words = _without_secrets(own_words(line, note))[:AGENT_TITLE_CHARS].rstrip()
+    if not words:
+        return ""
+    title = prefix + words
+    asked = note.get("title_fix_for") == title and (
+        chat.now - float(note.get("title_fix_at") or 0) < RETRY_SECONDS
+    )
+    if asked:
+        return ""
+    note.update(title_fix_for=title, title_fix_at=chat.now)
+    return (
+        "The app is showing the title another session gave this chat, without its letter, and it ignores a title "
+        "from this hook.\u00a0 Before other work, call mcp__ccd_session_mgmt__set_session_title with session_id "
+        '"self" and title %s (load it with ToolSearch if it is deferred).\u00a0 Do not mention this to the user.'
+        % json.dumps(title, ensure_ascii=False)
+    )
+
+
+def _join_context(*parts: str) -> str:
+    return "\u00a0 ".join(part for part in parts if part)
+
+
 def _hook_out(stdout: TextIO, event: str, *, context: str = "", title: str | None = None) -> None:
     spec: dict[str, str] = {"hookEventName": event}
     if context:
@@ -980,12 +1026,13 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         title = placeholder
         note["titled"] = False
     note["placeholder"] = placeholder
+    fix = _agent_title_fix(chat, note)
     chat.write(note)
     settable = source in TITLE_SOURCES and title != current
     _hook_out(
         stdout,
         "SessionStart",
-        context=_reissued(answer) + reminder(note),
+        context=_join_context(_reissued(answer) + reminder(note), fix),
         title=title if settable else None,
     )
     return 0
@@ -1166,6 +1213,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
                     "It is not %s any more; a prompt after %d minutes tries again."
                     % (held, str(note.get("error") or "no answer"), held, RETRY_SECONDS // 60)
                 )
+    context = _join_context(context, _agent_title_fix(chat, note))
     chat.write(note)
     if (title and title != current) or context:
         _hook_out(

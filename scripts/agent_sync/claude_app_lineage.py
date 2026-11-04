@@ -13,9 +13,10 @@ and a chat another chat started carries `spawnedFrom.sessionId`, the parent's ap
 record, then `spawnedFrom.sessionId`, then that record's `cliSessionId`.  The app's id is not the Claude Code UUID (it
 differs for almost every chat), so the parent's own record is always read.
 
-The record is the app's private, unversioned file, and it also holds the chat's title and MCP wiring.  Only three
-fields are read (`cliSessionId`, `spawnedFrom.sessionId`, `spawnedFrom.deletedParent`):  `_project` drops everything
-else before a record leaves its file, and only ids come back.  Every read is bounded, every id is checked before it
+The record is the app's private, unversioned file, and it also holds the chat's title and MCP wiring.  For a parent
+only three fields are read (`cliSessionId`, `spawnedFrom.sessionId`, `spawnedFrom.deletedParent`):  `_project` drops
+everything else before a record leaves its file, and only ids come back.  `agent_title` is the one other reader, and
+it returns a title only when an agent set it (`titleSource` "tool").  Every read is bounded, every id is checked before it
 builds a path, and a surprise of any kind answers "" with a reason, which means no parent is known:  no store (the
 server, a terminal `claude` chat), no record, a deleted parent, a parent that never ran, a file caught mid-write.  The
 chat is then picked like any other.  A user fork (`forkedFromSessionId`) is not a sub-thread here.
@@ -239,6 +240,33 @@ def lookup(
     if parent == (_cli_id(record) or cli_session_id):
         return "", SAME_CHAT
     return parent, ""
+
+
+def agent_title(home: str, *, host_session_id: str = "", cli_session_id: str = "") -> str:
+    """The chat's title when an agent set it (`titleSource` "tool", such as `start_session`'s title), else "".
+
+    The app refuses a hook's title once a person or an agent has named the chat, so this is how the hook learns its
+    letter never reached the screen.  Only the chat's own record counts:  an app id inherited by a `claude` started
+    inside another chat names that chat's record, whose session UUID does not match.  Any surprise answers "", which
+    means nothing is asked of the chat."""
+    path = _find(store_root(home), host_session_id) if host_session_id else ""
+    if not path or not cli_session_id:
+        return ""
+    for attempt in range(LOAD_ATTEMPTS):
+        if attempt:
+            time.sleep(RETRY_PAUSE)
+        text = _read(path)
+        if text is None:
+            return ""
+        try:
+            data = json.loads(text)
+        except (ValueError, RecursionError):  # caught mid-write:  read it again
+            continue
+        if not isinstance(data, dict) or data.get("cliSessionId") != cli_session_id:
+            return ""
+        title = data.get("title")
+        return title if data.get("titleSource") == "tool" and isinstance(title, str) else ""
+    return ""
 
 
 def parent_of(home: str, *, host_session_id: str = "", cli_session_id: str = "") -> str:
