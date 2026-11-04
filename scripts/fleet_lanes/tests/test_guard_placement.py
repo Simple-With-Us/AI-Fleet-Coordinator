@@ -127,6 +127,13 @@ class ExistingRulesStand(unittest.TestCase):
                 self.assertEqual(G.evaluate(payload(command), c).action, G.DENY)
 
 
+class Advice(unittest.TestCase):
+    def test_the_deny_never_suggests_what_the_mode_blocks(self) -> None:
+        command = "gh repo clone Simple-With-Us/not-registered ~/tmp-z"
+        self.assertIn("gh repo clone", G.evaluate(payload(command), ctx("block home")).reason)
+        self.assertNotIn("gh repo clone", G.evaluate(payload(command), ctx("block home,clone-in-lanes")).reason)
+
+
 class Exceptions(unittest.TestCase):
     ROW = {
         "id": "svc", "pattern": "{apps}/botfleet-server", "class": "service", "creator": "b", "reason": "r",

@@ -2841,7 +2841,9 @@ class _Evaluator:
             example = f"git -C {tree} worktree add -b {branch_for(seat)} {lane} origin/main"
         else:
             tree = "~/Code/<App>"
-            example = f"gh repo clone {src.owner_repo} {lane}" if src.owner_repo else ""
+            # A clone in a lane folder is what `clone-in-lanes` refuses, so never suggest one while that class blocks.
+            clone_ok = not self.ctx.mode.blocks(P.CLASS_CLONE_IN_LANES)
+            example = f"gh repo clone {src.owner_repo} {lane}" if src.owner_repo and clone_ok else ""
         where = f"Create it under the lanes root instead, at {lane}"
         if example:
             where += f" (for example `{example}`)"

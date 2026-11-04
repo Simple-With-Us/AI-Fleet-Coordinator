@@ -147,8 +147,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             from fleet_lanes import placement
 
-            placement.log_event(os.environ.get("HOME", ""), {"via": "shim", "action": "fail-open",
-                                                             "detail": type(exc).__name__})
+            home = os.environ.get("HOME") or os.path.expanduser("~")
+            placement.log_event(home, {"via": "shim", "action": "fail-open", "detail": type(exc).__name__})
         except Exception:  # noqa: BLE001
             pass
         return 0
