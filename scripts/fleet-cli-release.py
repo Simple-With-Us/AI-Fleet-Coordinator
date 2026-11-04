@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 147 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 148 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -34,7 +34,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
 # The 147th is agent_sync/listener_registry.py, the Operator session-registry service the daemon
 # serves over the listener HTTPS API (Path B, operator.simplewithus.com).
-MAX_FILES = 147
+# The 148th is agent_sync/registry_api.py, the signed client the package's own registry callers
+# (the operator-registry CLI, the platform-letter registry side) use to reach that API.
+MAX_FILES = 148
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board

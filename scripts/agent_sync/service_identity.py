@@ -60,8 +60,10 @@ def operator_bot(user, env, owner_id):
 
 
 def operator_credentials(env, home=None, fetch=None):
-    """Read only the two named Operator values, through the installed fleet-secrets reader (the
-    environment first, then `fleet-secrets run --only`); no local credential-file fallback."""
+    """Read only the two named Operator values, through the fleet's Infisical reader (the
+    environment first, then the reader:  `fleet-secrets run --only`, or on the server instance,
+    whose image ships no fleet-secrets, the reader's direct Infisical API route); no local
+    credential-file fallback."""
     from . import zulip as Z
 
     _, expected_email = operator_identity(env)
@@ -101,7 +103,7 @@ def operator_credentials(env, home=None, fetch=None):
         creds = Z.env_credentials(
             selected, email_env=names[0], key_env=names[1], site_env="ZULIP_SITE", label=OPERATOR
         )
-        # The values came from fleet-secrets, not the ambient environment:  report that provenance.
+        # The values came from the Infisical reader, not the ambient environment:  report that provenance.
         creds = replace(
             creds, source=f"infisical Fleet-OPS prod {OPERATOR_INFISICAL_PATH} {names[1]}"
         )
