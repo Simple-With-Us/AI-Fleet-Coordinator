@@ -28,6 +28,11 @@ extend-exclude = [
 # explicitly.  RUF100 is ignored because the package's `# noqa: UP0xx` markers go unused once they are off.
 # Every other rule stays on.  See AFC-425.
 [per-file-target-version]
+# The alert binding metadata auditor and its offline suite are standalone and may be run by
+# hand on a Mac under /usr/bin/python3 (3.9),  so the version-gated rewrites (UP017, UP041)
+# must not fire on them.
+"scripts/audit-alert-infisical-binding.py" = "py39"
+"scripts/test-audit-alert-infisical-binding.py" = "py39"
 "scripts/fleet_lanes/**" = "py39"
 "scripts/fleet_config/**" = "py39"
 # Muster's helpers and the collectors its LaunchAgents run:  the Mac runs every one of them
