@@ -23,12 +23,26 @@ UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.ASCII)
 SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 TOKEN = re.compile(r"st\.[A-Za-z0-9._~-]{17,2045}", re.ASCII)
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)
-EXPIRY = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})", re.ASCII)
-REFUSALS = frozenset({
-    "source_unverified", "missing_delivery", "invalid_binding", "redirect_refused",
-    "metadata_http_error", "invalid_metadata", "response_too_large", "request_timeout",
-    "metadata_unavailable", "invalid_json", "grant_mismatch", "invalid_expiry", "audit_failed",
-})
+EXPIRY = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})", re.ASCII
+)
+REFUSALS = frozenset(
+    {
+        "source_unverified",
+        "missing_delivery",
+        "invalid_binding",
+        "redirect_refused",
+        "metadata_http_error",
+        "invalid_metadata",
+        "response_too_large",
+        "request_timeout",
+        "metadata_unavailable",
+        "invalid_json",
+        "grant_mismatch",
+        "invalid_expiry",
+        "audit_failed",
+    }
+)
 
 
 class Refusal(Exception):
@@ -93,7 +107,11 @@ def reject_constant(_value):
 def self_metadata(token, opener):
     request = urllib.request.Request(
         ENDPOINT,
-        headers={"Authorization": "Bearer " + token, "Accept": "application/json", "Accept-Encoding": "identity"},
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+        },
         method="GET",
     )
     try:
@@ -116,12 +134,18 @@ def self_metadata(token, opener):
         error.close()
         raise Refusal("redirect_refused" if 300 <= code < 400 else "metadata_http_error") from None
     except urllib.error.URLError as error:
-        code = "request_timeout" if isinstance(error.reason, (TimeoutError, socket.timeout)) else "metadata_unavailable"
+        code = (
+            "request_timeout"
+            if isinstance(error.reason, (TimeoutError, socket.timeout))
+            else "metadata_unavailable"
+        )
         raise Refusal(code) from None
-    except (TimeoutError, socket.timeout):
+    except TimeoutError:
         raise Refusal("request_timeout") from None
     try:
-        return json.loads(body.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=reject_constant)
+        return json.loads(
+            body.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=reject_constant
+        )
     except (UnicodeError, ValueError, RecursionError):
         raise Refusal("invalid_json") from None
 
@@ -133,11 +157,15 @@ def validate_metadata(metadata, project, token, now):
     name = metadata.get("name")
     workspace = metadata.get("workspace")
     if (
-        not isinstance(identity, str) or UUID.fullmatch(identity) is None
+        not isinstance(identity, str)
+        or UUID.fullmatch(identity) is None
         or ("_id" in metadata and metadata["_id"] != identity)
-        or not isinstance(name, str) or NAME.fullmatch(name) is None
-        or name.startswith("st.") or token in name
-        or not isinstance(workspace, str) or UUID.fullmatch(workspace) is None
+        or not isinstance(name, str)
+        or NAME.fullmatch(name) is None
+        or name.startswith("st.")
+        or token in name
+        or not isinstance(workspace, str)
+        or UUID.fullmatch(workspace) is None
     ):
         raise Refusal("invalid_metadata")
     if workspace != project or ("projectId" in metadata and metadata["projectId"] != project):
@@ -176,15 +204,21 @@ def audit(env, *, opener=None, now=None):
             raise Refusal("invalid_binding")
         if opener is None:
             opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({}), NoRedirect(),
+                urllib.request.ProxyHandler({}),
+                NoRedirect(),
                 urllib.request.HTTPSHandler(context=ssl.create_default_context()),
             )
         metadata = self_metadata(token, opener)
         identity, name, workspace, nonexpiring = validate_metadata(
-            metadata, project, token, now or dt.datetime.now(dt.timezone.utc),
+            metadata,
+            project,
+            token,
+            now or dt.datetime.now(dt.UTC),
         )
         result.update(
-            status="verified", grant_verified=True, expiry_verified=True,
+            status="verified",
+            grant_verified=True,
+            expiry_verified=True,
             nonexpiring=nonexpiring,
             token_id_sha256=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
             token_name_sha256=hashlib.sha256(name.encode("utf-8")).hexdigest(),
