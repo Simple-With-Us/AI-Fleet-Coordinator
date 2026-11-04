@@ -26,29 +26,36 @@ export const EVENTS_HEADERS = [
 
 const PAGE_SIZE = 200;
 
-// Find a sheet row by its first-column id. Returns the 1-based sheet row number or null.
-// Requires ask (a): readRows pages that carry row numbers ({ rowNumber, cells } per row), or a
-// dedicated findSessionRowByRecordId on the adapter for the Sessions tab.
+// Find one immutable ID across the complete physical grid, rejecting ambiguous matches.
+// An optional fast lookup is deliberately not used: it cannot prove uniqueness.
 async function findRowById(adapter, table, id) {
-  if (table === "sessions" && typeof adapter.findSessionRowByRecordId === "function") {
-    return adapter.findSessionRowByRecordId(id);
+  // Physical grid bounds are required: a short Sheets values page can hide later data.
+  const bounds = await adapter.inspect();
+  const rowCount = bounds?.[table]?.rowCount;
+  if (!Number.isSafeInteger(rowCount) || rowCount < 1) {
+    throw new Error("adapter.inspect did not return valid grid bounds");
   }
-  let startRow = 2; // row 1 is the header
-  for (;;) {
-    const page = await adapter.readRows(table, { startRow, limit: PAGE_SIZE });
+  let found = null;
+  for (let startRow = 2; startRow <= rowCount; startRow += PAGE_SIZE) {
+    const limit = Math.min(PAGE_SIZE, rowCount - startRow + 1);
+    const page = await adapter.readRows(table, { startRow, limit });
     const rows = page.rows ?? page;
-    if (!rows.length) return null;
+    if (!Array.isArray(rows) || rows.length > limit) {
+      throw new Error("adapter.readRows returned an invalid page");
+    }
     for (const r of rows) {
       const rowNumber = r.rowNumber ?? r.row;
       const cells = r.cells ?? r.values ?? r;
-      if (rowNumber == null) {
-        throw new Error("adapter.readRows did not return row numbers (adapter ask (a))");
+      if (!Number.isSafeInteger(rowNumber) || rowNumber < startRow || rowNumber >= startRow + limit) {
+        throw new Error("adapter.readRows did not return valid physical row numbers");
       }
-      if (cells[0] === id) return rowNumber;
+      if (cells[0] === id) {
+        if (found !== null) throw new Error("duplicate Record ID or Event ID in destination");
+        found = rowNumber;
+      }
     }
-    if (rows.length < PAGE_SIZE) return null;
-    startRow += PAGE_SIZE;
   }
+  return found;
 }
 
 async function upsertSession(adapter, cells) {
