@@ -99,7 +99,7 @@ class PackagingTests(unittest.TestCase):
                     "-c",
                     "import sys; sys.path.insert(0, sys.argv[1]);"
                     "import fleet_view;"
-                    "from fleet_view import collectors, contract, types;"
+                    "from fleet_view import __main__, collectors, contract, types;"
                     "assert fleet_view.__file__.startswith(sys.argv[1]), fleet_view.__file__;"
                     "print(fleet_view.SCHEMA_VERSION)",
                     str(dest),

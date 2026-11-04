@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Fleet View (AFC-394 + AFC-536):  Production & Fleet Apps, Coding Apps & Harnesses,
@@ -22,9 +23,11 @@ struct FleetView: View {
     @State private var registrySummary = FleetRegistrySummary()
     @State private var appFilter: AppKindFilter = .all
     @State private var searchText: String = ""
-    @State private var failed = false
+    @State private var failure: FleetViewFailure?
     @State private var loading = false
-    @State private var refreshedAt: Date?
+    @State private var refreshClock = FleetViewRefreshClock()
+
+    private var failed: Bool { failure != nil }
 
     private var filteredApps: [FleetAppStatus] {
         let base: [FleetAppStatus]
@@ -131,8 +134,8 @@ struct FleetView: View {
                     .padding(.vertical, 2)
                     .background(.quaternary, in: Capsule())
                 Spacer()
-                if let refreshedAt {
-                    Text("Refreshed \(FleetTime.clock(refreshedAt))")
+                if let stamp = refreshClock.headerText {
+                    Text(stamp)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -164,13 +167,8 @@ struct FleetView: View {
                 Spacer()
             }
 
-            if failed {
-                Label("Fleet data unknown.  The last refresh failed, so nothing here is treated as current.", systemImage: "exclamationmark.triangle")
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.red)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            if let failure {
+                failureBanner(failure)
             }
 
             if let problem = registrySummary.problem {
@@ -346,6 +344,36 @@ struct FleetView: View {
         .task { await refresh() }
     }
 
+    /// Why the refresh failed, in words the owner can read and can pass to an agent.  An error
+    /// is never clipped here (FLEET-UI-COPY.md):  every line wraps, and Copy Details carries the
+    /// end of what the command printed, not only the last line shown.
+    private func failureBanner(_ failure: FleetViewFailure) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Fleet Data Unknown", systemImage: "exclamationmark.triangle")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.red)
+            Text("The last refresh failed, so nothing here is treated as current.\u{00A0} \(failure.reason)")
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if let detail = failure.detail {
+                Text(detail)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Copy Details") {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(failure.copyText, forType: .string)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
     private func sectionHeader<Item>(_ title: String, section: FleetViewEnvelope.Section<Item>) -> some View {
         HStack {
             Text(title).font(.headline)
@@ -378,8 +406,8 @@ struct FleetView: View {
         do {
             let loaded = try await FleetViewService.load()
             envelope = loaded
-            failed = false
-            refreshedAt = Date()
+            failure = nil
+            refreshClock.recordSuccess(generatedAt: loaded.generatedAt)
             if let root {
                 registrySummary = await Task.detached(priority: .userInitiated) {
                     FleetRegistryReader.read(repoRoot: root, viewOutput: loaded, toolsReading: tools)
@@ -393,8 +421,8 @@ struct FleetView: View {
             // above the list says the counts are unknown;  nothing under it may spell
             // a number of its own.
             envelope = nil
-            failed = true
-            refreshedAt = Date()
+            failure = FleetViewFailure(error: error)
+            refreshClock.recordFailure()
             registrySummary = FleetRegistrySummary()
         }
     }

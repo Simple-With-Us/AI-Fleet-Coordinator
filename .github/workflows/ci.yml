@@ -215,6 +215,22 @@ jobs:
     - name: fleet_view tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_view/tests -t . -v
+    # The same suite on a real Python 3.9 (AFC-616).  Muster runs this collector under the Mac's
+    # /usr/bin/python3, which is 3.9, and a 3.11-only import once broke the whole Apps & Work page
+    # there while the run above stayed green.  update-environment is off so every later step keeps
+    # the job's own Python.
+    - name: Set up Python 3.9 for fleet_view
+      id: fleet-view-py39
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.9'
+        update-environment: false
+    - name: fleet_view tests on Python 3.9
+      env:
+        PY39: ${{ steps.fleet-view-py39.outputs.python-path }}
+      run: |
+        "$PY39" -c 'import sys; assert sys.version_info[:2] == (3, 9), sys.version; print(sys.version)'
+        cd scripts && "$PY39" -m unittest discover -s fleet_view/tests -t . -v
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests
@@ -558,6 +574,14 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      # The interpreter FleetViewService runs, on the machine shape that has it.  The version is
+      # printed and not asserted, because the image decides it;  the 3.9 proof is the test job's.
+      # FleetViewCollectorTests below runs the whole command through the app's own decoder.
+      - name: Collector imports under the app's Python
+        working-directory: scripts
+        run: |
+          /usr/bin/python3 --version
+          /usr/bin/python3 -c 'import fleet_view.__main__'
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate and compile unsigned scaffold
