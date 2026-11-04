@@ -225,7 +225,9 @@ class OutcomeStore:
         stale = [
             key
             for key, row in self._rows.items()
-            if row.get("state") == "ok" and not row.get("retained", False) and row.get("ts", 0) < cutoff
+            if row.get("state") == "ok"
+            and not row.get("retained", False)
+            and row.get("ts", 0) < cutoff
         ]
         for key in stale:
             del self._rows[key]

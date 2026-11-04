@@ -154,8 +154,12 @@ class Lifecycle:
             except Refused as exc:
                 raise ReconciliationRequired("recorded PR identity requires verification") from exc
             if row["state"] != "open" or prior.get("creation_identity") != identity(row):
-                raise ReconciliationRequired("recorded creation requires reconciliation before a new PR")
-            if {k: v for k, v in prior.items() if k not in ("request_digest", "creation_identity")} != self.result(row):
+                raise ReconciliationRequired(
+                    "recorded creation requires reconciliation before a new PR"
+                )
+            if {
+                k: v for k, v in prior.items() if k not in ("request_digest", "creation_identity")
+            } != self.result(row):
                 raise ReconciliationRequired("creation receipt changed; reconciliation required")
             return prior
         # Keep the established owner-authored creation lane, not a new grant.
@@ -209,7 +213,11 @@ class Lifecycle:
         if fresh != row:
             raise Refused("creation readback mismatch")
         self.branches(fresh, None)
-        return {**self.result(fresh), "request_digest": digest, "creation_identity": identity(fresh)}
+        return {
+            **self.result(fresh),
+            "request_digest": digest,
+            "creation_identity": identity(fresh),
+        }
 
     def state(self):
         a, repo = self.args, self.repo

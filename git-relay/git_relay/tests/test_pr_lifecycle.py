@@ -2,10 +2,10 @@
 
 import copy
 import json
-import tempfile
+import os
 import subprocess
 import sys
-import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from urllib.parse import unquote
@@ -103,21 +103,35 @@ class Tests(unittest.TestCase):
         return Lifecycle(r, "swu-echo", "edit_pr", self.args(**kw)).execute()
 
     def test_branch_ref_path_segments_for_close_and_create(self):
-        for ref, suffix in (("feature/x", "feature/x"), ("feature/#ticket?%", "feature/%23ticket%3F%25")):
+        for ref, suffix in (
+            ("feature/x", "feature/x"),
+            ("feature/#ticket?%", "feature/%23ticket%3F%25"),
+        ):
             expected = f"/repos/{REPO}/git/ref/heads/{suffix}"
             row = pull()
             row["head"]["ref"] = ref
             for action in ("edit_pr", "open_pr"):
                 with self.subTest(ref=ref, action=action):
                     r = self.relay(Client(copy.deepcopy(row)))
-                    args = self.args() if action == "edit_pr" else {
-                        "repo": REPO, "head": ref, "base": "main",
-                        "title": "x", "body": "y", "draft": True,
-                    }
+                    args = (
+                        self.args()
+                        if action == "edit_pr"
+                        else {
+                            "repo": REPO,
+                            "head": ref,
+                            "base": "main",
+                            "title": "x",
+                            "body": "y",
+                            "draft": True,
+                        }
+                    )
                     status, result = Lifecycle(r, "swu-echo", action, args).execute()
                     self.assertEqual(status, 200, result)
-                    paths = [path for method, path, _, _ in r.client.calls
-                             if method == "GET" and "/git/ref/heads/" in path]
+                    paths = [
+                        path
+                        for method, path, _, _ in r.client.calls
+                        if method == "GET" and "/git/ref/heads/" in path
+                    ]
                     self.assertIn(expected, paths)
                     self.assertTrue(all("feature%2F" not in path for path in paths))
                     if action == "open_pr":
@@ -130,6 +144,7 @@ class Tests(unittest.TestCase):
                 r = self.relay(path=path)
                 original = r.outcomes._save
                 calls = []
+
                 def fail():
                     calls.append(1)
                     if len(calls) == 3:
@@ -137,6 +152,7 @@ class Tests(unittest.TestCase):
                             original()
                         raise OSError("injected batch save failure")
                     original()
+
                 r.outcomes._save = fail
                 status, result = self.run_state(r)
                 self.assertEqual(status, 503)
@@ -144,13 +160,27 @@ class Tests(unittest.TestCase):
                 self.assertEqual({v["state"] for v in r.outcomes._rows.values()}, {"unknown"})
                 with open(path) as f:
                     disk = json.load(f)
-                self.assertEqual({v["state"] for v in disk.values()},
-                                 {"ok"} if after_save else {"pending"})
-                probe = subprocess.run([sys.executable, "-c",
-                    "import sys,json;from git_relay.outcomes import OutcomeStore;"
-                    "s=OutcomeStore(sys.argv[1]);print(json.dumps(sorted({r['state'] for r in s._rows.values()})))", path],
-                    env={**os.environ, "PYTHONPATH": str(__import__('pathlib').Path(__file__).resolve().parents[2])},
-                    capture_output=True, text=True, check=True)
+                self.assertEqual(
+                    {v["state"] for v in disk.values()}, {"ok"} if after_save else {"pending"}
+                )
+                probe = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys,json;from git_relay.outcomes import OutcomeStore;"
+                        "s=OutcomeStore(sys.argv[1]);print(json.dumps(sorted({r['state'] for r in s._rows.values()})))",
+                        path,
+                    ],
+                    env={
+                        **os.environ,
+                        "PYTHONPATH": str(
+                            __import__("pathlib").Path(__file__).resolve().parents[2]
+                        ),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
                 self.assertEqual(json.loads(probe.stdout), ["ok"] if after_save else ["unknown"])
                 r.outcomes = OutcomeStore(path)
                 self.run_state(r)
@@ -178,7 +208,11 @@ class Tests(unittest.TestCase):
             self.assertTrue(any(x.get("retained") for x in r.outcomes._rows.values()))
 
     def test_changed_or_merged_creation_receipt_is_actionable_no_write(self):
-        for change in ({"body": "changed"}, {"title": "changed"}, {"state": "closed", "merged": True}):
+        for change in (
+            {"body": "changed"},
+            {"title": "changed"},
+            {"state": "closed", "merged": True},
+        ):
             with self.subTest(change=change):
                 r = self.relay()
                 args = dict(repo=REPO, head="feature", base="main", title="x", body="y", draft=True)
