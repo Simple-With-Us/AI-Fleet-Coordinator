@@ -9,7 +9,23 @@
 //
 // Reconciliation uses inspect() physical grid bounds and numbered readRows pages.
 // Short or empty pages do not end the scan, and duplicate target IDs refuse writes.
+// inspect() must return { sessions: { rowCount }, events: { rowCount } }, where each
+// rowCount is the positive safe-integer physical grid row count, including the header.
+// readRows(table, { startRow, limit }) returns an array (or { rows: array }) of
+// { rowNumber, cells } records. rowNumber is the 1-based physical row within that page;
+// row/values aliases are accepted. Sparse pages do not shorten the physical grid.
+// findSessionRowByRecordId and other optional fast lookups are unsupported because
+// they do not prove uniqueness across the complete destination grid.
 // appendSession/appendEvent may return the written row number for logging.
+// The runner must hold one exclusive cross-process writer lease through reconcile,
+// write and acknowledgement, and prevent concurrent manual row restructuring.
+// Errors leave the earliest row pending and stop the batch, preserving snapshot order.
+// After a confirmed append and failed registry acknowledgement, the next drain
+// reconciles the immutable ID before acknowledgement, without another event append.
+// A truly unknown Sheets transport outcome may commit late: even an exclusive writer
+// cannot prove a currently absent ID will stay absent. The runner must not blindly
+// resume that drain until the outstanding request is settled or safely reconciled.
+// This exporter does not persist a general ok/unknown/refused mutation ledger.
 
 export const SESSIONS_HEADERS = [
   "Record ID", "Label", "Seat", "Platform", "Host", "Native Session ID", "Title", "Project",
@@ -30,7 +46,7 @@ async function findRowById(adapter, table, id) {
   const bounds = await adapter.inspect();
   const rowCount = bounds?.[table]?.rowCount;
   if (!Number.isSafeInteger(rowCount) || rowCount < 1) {
-    throw new Error("adapter.inspect did not return valid grid bounds");
+    throw new Error("adapter.inspect must return { sessions: { rowCount }, events: { rowCount } } with positive safe-integer physical grid row counts");
   }
   let found = null;
   for (let startRow = 2; startRow <= rowCount; startRow += PAGE_SIZE) {
