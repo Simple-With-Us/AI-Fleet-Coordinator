@@ -338,7 +338,9 @@ def prune(base: Path, keep: int, proc: Path = Path("/proc")) -> list[str]:
     process runs from are never deleted (they still count toward `keep`).  Only real directories with a release
     name are touched;  anything else in releases/ is left alone.  Returns the names deleted.  Call under the lock."""
     releases = base / "releases"
-    protected = {path.name for path in (release_at(base, "current"), release_at(base, "previous")) if path}
+    protected = {
+        path.name for path in (release_at(base, "current"), release_at(base, "previous")) if path
+    }
     protected |= releases_in_use(releases, proc)
     rows = []
     for entry in releases.iterdir():
@@ -936,7 +938,9 @@ def control(home: Path, command: str) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["receive", "status", "pause", "resume", "rollback", "prune"])
+    parser.add_argument(
+        "command", choices=["receive", "status", "pause", "resume", "rollback", "prune"]
+    )
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--install", action="store_true")
     args = parser.parse_args(argv)
