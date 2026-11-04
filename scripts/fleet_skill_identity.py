@@ -405,17 +405,17 @@ KIMI_EXTRA = (
 )
 
 ZCODE_IDENTITY = (
-    "This pack is for **ZCODE** (Z Code desktop IDE by Z.ai / Zhipu AI).\u00a0 "
-    "Session tag `[ZCODE·session8]`.\u00a0 Notes name `ZCode`.\u00a0 Branches `zcode/<slug>` only.\u00a0 "
+    "This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).\u00a0 "
+    "Session tag `[ZC·session8]`.\u00a0 Notes name `ZCode`.\u00a0 Branches `zcode/<slug>` only.\u00a0 "
     "Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.\u00a0 "
-    "Pin `AGENT_SEAT=ZCODE`."
+    "Pin `AGENT_SEAT=ZC`."
 )
 
 ZCODE_EXTRA = (
     "> **Runtime (Z Code).**\u00a0 Z Code desktop IDE (`/Applications/ZCode.app`) with config in "
     "`~/.zcode`.\u00a0 Skills installed here (`~/.zcode/skills`) are loaded by Z Code.\u00a0 "
     "Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).\u00a0 A seat a launcher assigned "
-    "beats the ZCODE default.\n\n"
+    "beats the ZC default.\n\n"
 )
 
 MINIMAX_EXTRA = (
@@ -691,7 +691,7 @@ SEATS: dict[str, Seat] = {
         zulip_rc="Kimi",
     ),
     "zcode": Seat(
-        "ZCODE",
+        "ZC",
         "ZCode",
         "zcode",
         "zcode",
@@ -702,8 +702,8 @@ SEATS: dict[str, Seat] = {
         write_home=True,
         retired=False,
         seat_key="zcode",
-        zulip_bot="zcode-bot",
-        zulip_rc="Zcode",
+        zulip_bot="zc-bot",
+        zulip_rc="ZC",
     ),
     "muse-code": Seat(
         "MC",

@@ -124,7 +124,7 @@ TEMPLATE_FILES = {
     "nodefault": "fleet-basics.nodefault.md",    # Fleet Basics, no default seat, then the Lane Map
     "opencode": "seat-identity.opencode.md",     # Seat Identity with the fixed default seat OPENCODE, then the Lane Map
     "kimi": "seat-identity.kimi.md",             # Fleet Basics, fixed default seat KIMI, then the Lane Map
-    "zcode": "seat-identity.zcode.md",           # Fleet Basics, fixed default seat ZCODE, then the Lane Map
+    "zcode": "seat-identity.zcode.md",           # Fleet Basics, fixed default seat ZC, then the Lane Map
 }
 # Pieces a template pulls in by placeholder.  The Lane Map body is the `full` variant's text.
 BODY_PLACEHOLDER = "{{LANE_MAP_BODY}}"
