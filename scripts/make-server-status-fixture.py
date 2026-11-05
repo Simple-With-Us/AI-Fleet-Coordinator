@@ -28,7 +28,7 @@ GENERIC_FILE_NAMES = (
     "project.yml",
     "package.json",
 )
-HOST = "example-server"
+STAND_IN_MACHINE = "example-server"
 
 # Every section a report may carry,  and what it must be.  The sanitizer copies what it is not
 # told to replace,  so a section or a row field it has not been told about could carry a real
@@ -287,7 +287,7 @@ def sanitize_metrics(tokens, metrics):
 def sanitize_report(report):
     tokens = Tokens()
     result = dict(report)
-    result["host"] = HOST
+    result["host"] = STAND_IN_MACHINE
     result["coolify"] = [sanitize_resource(tokens, row) for row in report.get("coolify") or []]
     result["processes"] = [
         sanitize_process(tokens, index, row)
