@@ -193,6 +193,95 @@ test("a failed flush retries on the trailing timer at the flush cadence", async 
   assert.deepEqual(gate.batches.map((b) => b.map((e) => e.row.tool)), [["a", "b"]]);
 });
 
+test("a tripped flush runs under its invocation's waitUntil and does not hold up the append", async () => {
+  const gate = fakeGate();
+  let release;
+  const held = new Promise((r) => (release = r));
+  const inner = gate.auditCallBatch.bind(gate);
+  gate.auditCallBatch = async (entries) => { await held; return inner(entries); };
+  const waited = [];
+  const scope = { waitUntil: (p) => waited.push(p) };
+  const batcher = new AuditBatcher({ flushRows: 1, flushMs: 5000, now: () => 0, log: () => {} });
+  await batcher.append("ECHO", gate, { tool: "a", outcome: "ok" }, scope); // resolves with the RPC still held
+  assert.equal(waited.length, 1);
+  assert.deepEqual(gate.batches, []);
+  release();
+  await Promise.all(waited);
+  assert.equal(gate.batches.length, 1);
+});
+
+test("a hung flush of another invocation never blocks or joins this one, which uses its own stub", async () => {
+  const stuck = fakeGate();
+  stuck.auditCallBatch = () => new Promise(() => {}); // a cancelled request's promise never settles
+  const mine = fakeGate();
+  const batcher = new AuditBatcher({ flushRows: 1, flushMs: 5000, now: () => 0, log: () => {} });
+  void batcher.append("ECHO", stuck, { tool: "a", outcome: "ok" }, { waitUntil() {} });
+  await batcher.append("ECHO", mine, { tool: "boom", outcome: "error" }, { waitUntil() {} });
+  assert.deepEqual(mine.batches.map((b) => b.map((e) => e.row.tool)), [["boom"]]);
+  assert.deepEqual(batcher.pending(), { ECHO: 0 });
+});
+
+test("the trailing timer lives under waitUntil and flushes with the stub of the invocation that armed it", async () => {
+  const first = fakeGate();
+  const later = fakeGate();
+  const { timers, schedule, cancel } = fakeScheduler();
+  const waited = [];
+  const batcher = new AuditBatcher({ flushRows: 50, flushMs: 5000, now: () => 0, log: () => {}, schedule, cancel });
+  await batcher.append("ECHO", first, { tool: "a" }, { waitUntil: (p) => waited.push(p) });
+  await batcher.append("ECHO", later, { tool: "b" }, { waitUntil() {} });
+  assert.equal(timers.length, 1);
+  assert.equal(waited.length, 1, "the timer's promise holds its invocation open");
+  timers[0].fn();
+  await Promise.all(waited);
+  assert.deepEqual(first.batches.map((b) => b.map((e) => e.row.tool)), [["a", "b"]]);
+  assert.deepEqual(later.batches, []);
+});
+
+test("a timer whose invocation died is replaced", async () => {
+  let now = 0;
+  const gate = fakeGate();
+  const { timers, schedule, cancel } = fakeScheduler();
+  const batcher = new AuditBatcher({ flushRows: 50, flushMs: 5000, now: () => now, log: () => {}, schedule, cancel });
+  await batcher.append("ECHO", gate, { tool: "a" }, { waitUntil() {} });
+  assert.equal(timers.length, 1);
+  now = 9000; // past due, but the age trigger is held off below by the backoff
+  batcher.buffers.get("ECHO").retryAt = 20_000;
+  await batcher.append("ECHO", gate, { tool: "b" }, { waitUntil() {} });
+  assert.equal(timers.length, 1, "still inside its grace");
+  now = 10_001;
+  await batcher.append("ECHO", gate, { tool: "c" }, { waitUntil() {} });
+  assert.equal(timers.length, 2);
+});
+
+test("after a failed flush the backoff costs one RPC per interval, and the cap still holds", async () => {
+  let now = 0;
+  const gate = fakeGate();
+  let attempts = 0;
+  gate.auditCallBatch = async () => { attempts += 1; throw new Error("gate unavailable"); };
+  const { schedule, cancel } = fakeScheduler();
+  const logs = [];
+  const batcher = new AuditBatcher({ flushRows: 1, flushMs: 5000, hardCap: 3, retryBackoffMs: 5000, now: () => now, log: (r) => logs.push(r), schedule, cancel });
+  for (const tool of ["a", "b", "c", "d", "e"]) await batcher.append("ECHO", gate, { tool }, { waitUntil() {} });
+  assert.equal(attempts, 1);
+  assert.deepEqual(batcher.pending(), { ECHO: 3 });
+  assert.ok(logs.some((r) => r.event === "audit_batch_overflow"));
+  now = 5000;
+  await batcher.append("ECHO", gate, { tool: "f" }, { waitUntil() {} });
+  assert.equal(attempts, 2);
+});
+
+test("a flush of another invocation leaves the armed timer standing, so later rows ride it", async () => {
+  const gate = fakeGate();
+  const { timers, schedule, cancel } = fakeScheduler();
+  const batcher = new AuditBatcher({ flushRows: 50, flushMs: 5000, now: () => 0, log: () => {}, schedule, cancel });
+  await batcher.append("ECHO", gate, { tool: "a", outcome: "ok" }, { waitUntil() {} }); // arms the timer
+  await batcher.append("ECHO", gate, { tool: "boom", outcome: "error" }, { waitUntil() {} }); // another invocation flushes
+  assert.deepEqual(batcher.pending(), { ECHO: 0 });
+  assert.equal(timers[0].cleared, false);
+  await batcher.append("ECHO", gate, { tool: "b", outcome: "ok" }, { waitUntil() {} });
+  assert.equal(timers.length, 1, "no second timer");
+});
+
 test("HostedTools without a sink writes each row straight to its gate (the standing default)", async () => {
   const calls = [];
   const gate = { auditCall: async (row) => calls.push(["gate", row]) };

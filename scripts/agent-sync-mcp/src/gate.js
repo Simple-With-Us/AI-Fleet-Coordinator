@@ -3,6 +3,7 @@
 import { GATE_LOG_NAME } from "./config.js";
 import { BEARER_SEATS } from "./bearer-identities.js";
 import { GB_IDENTITIES } from "./delegated-identities.js";
+import { countedStub } from "./invocation.js";
 
 /**
  * The SeatGate of a seat, an enabled Grok Bot persona, or the refusal log.  GB_IDENTITIES is the one list of
@@ -11,7 +12,7 @@ import { GB_IDENTITIES } from "./delegated-identities.js";
  */
 export function gate(env, name) {
   if (name !== GATE_LOG_NAME && !BEARER_SEATS.includes(name) && !GB_IDENTITIES.includes(name)) throw new Error("not a seat");
-  return env.SEAT_GATE.get(env.SEAT_GATE.idFromName(name));
+  return countedStub(env.SEAT_GATE.get(env.SEAT_GATE.idFromName(name)));
 }
 
 // ---- shared provider quota objects
@@ -26,7 +27,7 @@ const QUOTA_IDENTITY = /^(?:unknown|[0-9a-f]{64})$/;
 
 export function providerQuotaGate(env, provider, identity) {
   if (!QUOTA_PROVIDERS.includes(provider) || typeof identity !== "string" || !QUOTA_IDENTITY.test(identity)) throw new Error("not a provider quota");
-  return env.SEAT_GATE.get(env.SEAT_GATE.idFromName(`${PROVIDER_QUOTA_PREFIX}${provider}:${identity}`));
+  return countedStub(env.SEAT_GATE.get(env.SEAT_GATE.idFromName(`${PROVIDER_QUOTA_PREFIX}${provider}:${identity}`)));
 }
 
 // Linear's documented limit is 5,000 requests an hour per user or app user, plus a complexity budget that

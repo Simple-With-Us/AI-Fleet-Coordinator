@@ -88,7 +88,17 @@
   // Per-IP cap on /oauth/token (spec 3.3).  The namespace id is any integer
   // unique to this account's rate limiters.
   "ratelimits": [
-    { "name": "TOKEN_RATE_LIMITER", "namespace_id": "4711", "simple": { "limit": 30, "period": 60 } }
+    { "name": "TOKEN_RATE_LIMITER", "namespace_id": "4711", "simple": { "limit": 30, "period": 60 } },
+    // Every authenticated /mcp request per credential hash (AFC-617), checked
+    // before any Durable Object, secret or SDK work.  The observed peak is about
+    // 141 requests a minute for one seat.
+    { "name": "MCP_RATE_LIMITER", "namespace_id": "4712", "simple": { "limit": 300, "period": 60 } },
+    // Failed /mcp authentication per IP.  Seats on one host share an IP, but this
+    // only blocks credentials not already verified in the isolate.  One credential
+    // counts once per minute per isolate, while this count is per location, so 120
+    // is at least twice the code's identities:  a fleet-wide rotation on one host
+    // should not 429 its valid neighbours.  test/invocation.test.mjs pins that.
+    { "name": "AUTH_FAIL_RATE_LIMITER", "namespace_id": "4713", "simple": { "limit": 120, "period": 60 } }
   ],
 
   "vars": {

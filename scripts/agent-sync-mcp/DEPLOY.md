@@ -21,10 +21,13 @@ INFISICAL_WORKSPACE_ID`, value from the Fleet-OPS project page, on stdin).
 - `off` (default):  only the legacy Worker bindings are read.  Fully
   compatible with every install below;  nothing changes until the mode is set.
 - `fallback`:  Infisical first, the legacy binding on a miss or a read
-  failure.  Every read a binding serves is logged as one JSON event,
+  failure.  Every read a binding serves is counted as a fallback (`/admin`
+  status shows the counters), and each name and code logs one JSON event per
+  isolate,
   `{"event":"infisical_fallback","path":...,"name":...,"binding":...,"served":...,"code":...,"status":...}`
-  (names and a fixed code only, never a value), and counted as a fallback
-  (`/admin` status shows the counters).  A FleetLink seat token's binding is
+  (names and a fixed code only, never a value).  A failed folder listing logs
+  one `infisical_listing_failed` per isolate per folder and code, and is retried
+  once a minute.  A FleetLink seat token's binding is
   its bundle entry, `FLEETLINK_SEAT_TOKENS[<SEAT>]`.  An optional secret that
   is undeclared and set nowhere (not in Infisical, no binding) reads as empty
   and is counted apart as absent, never as a fallback:  `required` gives the
