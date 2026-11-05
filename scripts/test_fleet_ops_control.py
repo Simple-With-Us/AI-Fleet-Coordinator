@@ -1026,6 +1026,59 @@ class RedeployTests(Base):
             self.assertEqual(self.http_calls, [])
         self.assertNotIn(UUID, (self.state / "ops-audit.jsonl").read_text())
 
+    def test_refuses_an_application_that_is_not_on_the_host_now(self):
+        for status in ("absent", "unknown"):
+            rows = [
+                {
+                    "uuid": UUID,
+                    "name": "fleet-recall",
+                    "type": "application",
+                    "uuidSource": "label",
+                    "status": status,
+                }
+            ]
+            self.write_status(rows)
+            code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx())
+            self.assertEqual((code, ans["result"]), (2, "refused"), status)
+        self.assertEqual(self.http_calls, [])
+
+    def test_a_live_row_ahead_of_a_leftover_with_its_uuid_is_redeployed(self):
+        rows = [
+            {
+                "uuid": UUID,
+                "name": "fleet-recall",
+                "type": "application",
+                "uuidSource": "label",
+                "status": "exited",
+            },
+            {
+                "uuid": UUID,
+                "name": "fleet-recall (old)",
+                "type": "application",
+                "uuidSource": "label",
+                "status": "absent",
+            },
+        ]
+        self.write_status(rows)
+        code, ans = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
+        self.assertEqual(code, 0, ans)
+
+    def test_the_audit_names_the_application_and_not_one_service(self):
+        rows = [
+            {
+                "uuid": UUID,
+                "name": "fleet-recall (worker)",
+                "service": "worker",
+                "type": "application",
+                "uuidSource": "label",
+                "status": "running",
+            }
+        ]
+        self.write_status(rows)
+        code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx())
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        self.assertEqual(self.audit_rows()[0]["target"], "fleet-recall")
+
     def test_refuses_rows_whose_uuid_is_not_a_coolify_uuid(self):
         # A service, a database, or an application without a uuid label:  the collector put
         # a name in `uuid`, and a name must never reach Coolify.
