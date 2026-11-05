@@ -1,25 +1,8 @@
-"""Fetch Fleet-OPS secrets from Infisical through the installed ``infisical`` CLI.
+"""Scoped Infisical service-token reads and allowlisted writes.
 
-Contract (same family as ``fleet_knobs/source.py`` and ``fleet_rag/infisical_settings.py``):
-
-* Prod is the only environment.  Every call passes ``--env=prod`` itself, and a stray
-  ``INFISICAL_ENVIRONMENT`` or ``INFISICAL_ENV`` other than prod is refused before anything runs.
-* One fetch per process.  Values live in this process's memory and are never written to disk,
-  a log, or stderr.  The CLI's stdout and stderr are captured, never echoed:  a failure is
-  reduced to a short reason token (``cli-missing``, ``timeout``, ``exit-1``, ``bad-output``).
-* Fail closed.  A value that is still an unresolved Infisical reference (``${...}``) stops the
-  command and names the key, never the value.
-* Auth, first match wins:  ``INFISICAL_TOKEN`` already in the environment ("token"), a
-  universal-auth machine identity whose id and secret are in the login Keychain ("keychain"),
-  the same pair in the System keychain ("system-keychain", for pm2 and other boot-time jobs
-  that run in the launchd System session, where the login Keychain is unreachable), or the
-  Infisical CLI's own login session ("session").  On Linux (the Hetzner server, which has no keychain) the
-  server's universal-auth identity in ``INFISICAL_AUTOMATION_CLIENT_ID`` and ``_CLIENT_SECRET`` comes
-  before "session" ("automation-env").  A machine-identity secret travels to the CLI
-  by environment variable and is never put in an argument list.  The access token it returns
-  goes to the export call by ``INFISICAL_TOKEN`` for the same reason.
-
-Stdlib only, so a stable copy run with ``python3 -I`` needs nothing beside this package.
+Only explicit process bindings are consumed: INFISICAL_TOKEN is read-only and
+INFISICAL_WRITE_TOKEN is a separate writer.  No Keychain, Automation identity,
+CLI login session or credential-file fallback runs.  Values stay in memory.
 """
 
 from __future__ import annotations
@@ -28,13 +11,14 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 
 ENVIRONMENT = "prod"
@@ -89,25 +73,42 @@ PROJECT_SOURCES = {
     ),
 }
 
+# Retired Keychain identifiers retained for compatibility callers; this module never reads them.
 SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
 KEYCHAIN_SERVICE = "fleet-secrets"
 KEYCHAIN_CLIENT_ID = "infisical-client-id"
 KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
 ENV_TOKEN = "INFISICAL_TOKEN"
+ENV_AI_FLEET_COORDINATOR_TOKEN = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
+ENV_WRITE_TOKEN = "INFISICAL_WRITE_TOKEN"
+ENV_READ_PATHS = "INFISICAL_READ_PATHS"
+ENV_WRITE_PATHS = "INFISICAL_WRITE_PATHS"
 ENV_CLIENT_ID = "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"
 ENV_CLIENT_SECRET = "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
-# The server's own universal-auth identity (Linux only).  The machine's profile exports the pair.
+# Retired universal-auth variable names are stripped from helper environments.
 ENV_AUTOMATION_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
 ENV_AUTOMATION_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
 
-MACHINE_MODES = ("keychain", "system-keychain", "automation-env")
+MACHINE_MODES = ()
 
 # Auth variables of this tool:  never handed on to the command `run` starts.
 AUTH_ENV_VARS = frozenset(
-    {ENV_TOKEN, ENV_CLIENT_ID, ENV_CLIENT_SECRET, ENV_AUTOMATION_ID, ENV_AUTOMATION_SECRET}
+    {
+        ENV_TOKEN,
+        ENV_AI_FLEET_COORDINATOR_TOKEN,
+        ENV_WRITE_TOKEN,
+        ENV_CLIENT_ID,
+        ENV_CLIENT_SECRET,
+        ENV_AUTOMATION_ID,
+        ENV_AUTOMATION_SECRET,
+        "INFISICAL_CLIENT_ID",
+        "INFISICAL_CLIENT_SECRET",
+        "INFISICAL_SHARED_CLIENT_ID",
+        "INFISICAL_SHARED_CLIENT_SECRET",
+    }
 )
 
-REF_RE = re.compile(r"^\$\{[^}]+\}$")
+REF_RE = re.compile(r"\$\{[^}]+\}")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
 _UUID_RE = re.compile(
@@ -216,7 +217,7 @@ def find_cli(env: Mapping[str, str]) -> str | None:
 
 def check_path(path: str) -> str:
     # fullmatch:  `$` also matches before a final newline, so re.match would pass "/x\n".
-    if not PATH_RE.fullmatch(path or "") or ".." in path.split("/"):
+    if not PATH_RE.fullmatch(path or "") or any(part in (".", "..") for part in path.split("/")):
         raise UsageError("bad --path:  use an absolute Infisical folder path such as /")
     return path
 
@@ -229,10 +230,10 @@ def check_name(name: str) -> str:
 
 def _base_env(env: Mapping[str, str]) -> dict[str, str]:
     out = dict(env)
-    # Automation credentials are resolved by machine_token from the caller's mapping,
-    # then translated to the CLI's universal-auth names only for the login subprocess.
-    out.pop(ENV_AUTOMATION_ID, None)
-    out.pop(ENV_AUTOMATION_SECRET, None)
+    # An explicit interactive admin session must not inherit an automation identity or
+    # service token that could become an implicit fallback.
+    for name in AUTH_ENV_VARS:
+        out.pop(name, None)
     out["INFISICAL_DISABLE_UPDATE_CHECK"] = "true"
     return out
 
@@ -240,249 +241,33 @@ def _base_env(env: Mapping[str, str]) -> dict[str, str]:
 # --------------------------------------------------------------------------- authentication
 
 
-def login_keychain() -> str | None:
-    """Path of the user's login keychain file, or None when there is none.
-
-    Always searched by explicit path:  the default search list also holds the System keychain, so a
-    path-less lookup would find System items and report `keychain` instead of `system-keychain`, or mix
-    one item from each.  In the launchd System session the file exists but is locked, so the lookup simply
-    fails and the System keychain is used."""
-    base = os.path.expanduser("~/Library/Keychains")
-    for name in ("login.keychain-db", "login.keychain"):
-        candidate = os.path.join(base, name)
-        if os.path.isfile(candidate):
-            return candidate
-    return None
-
-
-def keychain_item(account: str, keychain: str | None) -> str | None:
-    """The generic-password value for service fleet-secrets in ONE keychain file, or None when absent
-    (`keychain` None means there is no such keychain).  Captured, never echoed."""
-    if not keychain or not os.path.exists(SECURITY_BIN):
-        return None
-    argv = [
-        SECURITY_BIN,
-        "find-generic-password",
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-a",
-        account,
-        "-w",
-        keychain,
-    ]
-    try:
-        proc = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=KEYCHAIN_TIMEOUT,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    try:
-        value = proc.stdout.decode("utf-8").strip()
-    except UnicodeDecodeError:
-        return None
-    return value or None
+def login_keychain() -> None:
+    """Compatibility seam; implicit Keychain lookup is retired."""
+    return
 
 
 def keychain_presence(keychain: str | None) -> tuple[bool, bool]:
-    """(client id present, client secret present) in one keychain.  Booleans only."""
-    return (
-        keychain_item(KEYCHAIN_CLIENT_ID, keychain) is not None,
-        keychain_item(KEYCHAIN_CLIENT_SECRET, keychain) is not None,
-    )
+    return False, False
 
 
-def _complete_or_none(label: str, keychain: str | None) -> bool:
-    have_id, have_secret = keychain_presence(keychain)
-    if have_id and have_secret:
-        return True
-    if have_id or have_secret:
-        raise SecretsError(
-            f"keychain-incomplete:  {label} needs both accounts {KEYCHAIN_CLIENT_ID} and {KEYCHAIN_CLIENT_SECRET} under service {KEYCHAIN_SERVICE}, or neither"
-        )
-    return False
+def automation_env_presence(env: Mapping[str, str]) -> tuple[bool, bool]:
+    return False, False
 
 
 def is_linux() -> bool:
     return sys.platform.startswith("linux")
 
 
-LINUX_ROOT_PRIVATE_BOOTSTRAP_DIR_PARTS = ("root", ".config", "fleet-secrets")
-LINUX_ROOT_PRIVATE_BOOTSTRAP_BASENAME = "bootstrap.json"
-LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES = 16384
-LINUX_ROOT_PRIVATE_BOOTSTRAP_ERROR = "root-private bootstrap is invalid or unsafe"
-
-
-def _linux_root_private_bootstrap_pairs(pairs: list[tuple[str, str]]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for name, value in pairs:
-        if name in result:
-            raise ValueError("duplicate bootstrap key")
-        result[name] = value
-    return result
-
-
-def load_linux_root_private_bootstrap() -> dict[str, str]:
-    """Approved on-disk fallback for Linux UID 0 only (INFISICAL.md).
-
-    Reads the fixed existing file under /root/.config/fleet-secrets/ using descriptor-scoped
-    opens that refuse symlinks.  This is the only fleet-secrets code path that reads a credential
-    file;  every other source is process environment or Infisical.
-    """
-    if not is_linux() or os.geteuid() != 0:
-        return {}
-    fd: int | None = None
-    try:
-        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
-        for name in LINUX_ROOT_PRIVATE_BOOTSTRAP_DIR_PARTS:
-            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = child
-            info = os.fstat(fd)
-            if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
-                raise ValueError("unsafe bootstrap directory")
-            if name == "fleet-secrets" and stat.S_IMODE(info.st_mode) != 0o700:
-                raise ValueError("unsafe bootstrap parent")
-        child = os.open(
-            LINUX_ROOT_PRIVATE_BOOTSTRAP_BASENAME,
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=fd,
-        )
-        os.close(fd)
-        fd = child
-        info = os.fstat(fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != 0
-            or info.st_gid != 0
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_nlink != 1
-        ):
-            raise ValueError("unsafe bootstrap file")
-        with os.fdopen(fd, "rb") as stream:
-            fd = None
-            raw = stream.read(LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES + 1)
-        if len(raw) > LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES:
-            raise ValueError("oversized bootstrap")
-        text = raw.decode("utf-8")
-        data = json.loads(text, object_pairs_hook=_linux_root_private_bootstrap_pairs)
-        expected = {ENV_AUTOMATION_ID, ENV_AUTOMATION_SECRET}
-        if (
-            not isinstance(data, dict)
-            or set(data) != expected
-            or any(not isinstance(v, str) or not v.strip() for v in data.values())
-        ):
-            raise ValueError("invalid bootstrap schema")
-        return data
-    except FileNotFoundError:
-        return {}
-    except (OSError, ValueError, UnicodeError) as exc:
-        raise SecretsError(LINUX_ROOT_PRIVATE_BOOTSTRAP_ERROR) from exc
-    finally:
-        if fd is not None:
-            os.close(fd)
-
-
-def automation_env_presence(env: Mapping[str, str]) -> tuple[bool, bool]:
-    """(INFISICAL_AUTOMATION_CLIENT_ID set, INFISICAL_AUTOMATION_CLIENT_SECRET set).  Booleans only."""
-    return (
-        bool((env.get(ENV_AUTOMATION_ID) or "").strip()),
-        bool((env.get(ENV_AUTOMATION_SECRET) or "").strip()),
-    )
-
-
 def auth_mode(env: Mapping[str, str]) -> str:
-    """ "token", "automation-env" (Linux only), "keychain", "system-keychain" or "session", in that order:
-    an identity handed to the process in its environment always beats a keychain one.  Raises on a
-    half-filled keychain or a half-set automation pair rather than downgrade."""
-    if (env.get(ENV_TOKEN) or "").strip():
-        return "token"
-    if is_linux():
-        have_id, have_secret = automation_env_presence(env)
-        if have_id and have_secret:
-            return "automation-env"
-        if have_id or have_secret:
-            raise SecretsError(
-                f"automation-env-incomplete:  set both {ENV_AUTOMATION_ID} and {ENV_AUTOMATION_SECRET}, or neither"
-            )
-    if _complete_or_none("the login Keychain", login_keychain()):
-        return "keychain"
-    if _complete_or_none("the System keychain", SYSTEM_KEYCHAIN):
-        return "system-keychain"
-    return "session"
+    return "token" if (env.get(ENV_TOKEN) or "").strip() else "missing"
 
 
-def machine_token(cli: str, env: Mapping[str, str], mode: str = "keychain") -> str:
-    """Log in with the mode's machine identity and return the access token (in memory only)."""
-    if mode == "automation-env":
-        client_id = (env.get(ENV_AUTOMATION_ID) or "").strip()
-        client_secret = (env.get(ENV_AUTOMATION_SECRET) or "").strip()
-        if not client_id or not client_secret:
-            raise SecretsError("automation-env-incomplete")
-    else:
-        keychain = SYSTEM_KEYCHAIN if mode == "system-keychain" else login_keychain()
-        client_id = keychain_item(KEYCHAIN_CLIENT_ID, keychain)
-        client_secret = keychain_item(KEYCHAIN_CLIENT_SECRET, keychain)
-        if not client_id or not client_secret:
-            raise SecretsError("keychain-incomplete")
-    child = _base_env(env)
-    child[ENV_CLIENT_ID] = client_id
-    child[ENV_CLIENT_SECRET] = client_secret
-    child.pop(ENV_TOKEN, None)
-    for var in (ENV_AUTOMATION_ID, ENV_AUTOMATION_SECRET):
-        child.pop(var, None)
-    argv = [cli, "login", "--method=universal-auth", "--plain", "--silent"]
-    try:
-        proc = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=LOGIN_TIMEOUT,
-            cwd="/",
-            env=child,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise SecretsError("login-timeout") from None
-    except OSError:
-        raise SecretsError("cli-missing") from None
-    finally:
-        client_id = client_secret = ""
-        child = {}
-    if proc.returncode != 0:
-        raise SecretsError(f"login-failed:  exit-{proc.returncode}")
-    try:
-        token = proc.stdout.decode("utf-8").strip()
-    except UnicodeDecodeError:
-        raise SecretsError("login-failed:  bad-output") from None
-    if not token or len(token.splitlines()) != 1 or any(c.isspace() for c in token):
-        raise SecretsError("login-failed:  bad-output")
-    return token
+def machine_token(*args, **kwargs) -> str:
+    raise SecretsError("service-token-required: implicit machine authentication is retired")
 
 
 def session_valid(cli: str, env: Mapping[str, str]) -> bool:
-    """True when the CLI's own login session is signed in.  Only the exit code is used."""
-    child = _base_env(env)
-    for var in AUTH_ENV_VARS:
-        child.pop(var, None)
-    try:
-        proc = subprocess.run(
-            [cli, "login", "status", "--silent"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=LOGIN_TIMEOUT,
-            cwd="/",
-            env=child,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return proc.returncode == 0
+    return False
 
 
 def cli_version(cli: str, env: Mapping[str, str]) -> str | None:
@@ -511,28 +296,46 @@ def fetch_all(
     env: Mapping[str, str],
     project_name: str = DEFAULT_PROJECT,
     token: str | None = None,
+    allow_session: bool = False,
+    writer: bool = False,
 ) -> dict[str, str]:
-    """Every secret at `path` in Fleet-OPS prod, references expanded.  Raises SecretsError.
-
-    No value is validated here beyond its type;  callers apply `reject_unresolved` to the
-    ones they use."""
-    refusal = environment_refusal(env)
-    if refusal:
-        raise SecretsError(refusal, 2)
-    check_path(path)
+    """Read one declared folder using its read token unless writer is explicitly requested."""
     project = infisical_project_id(env, home_dir(env), project_name)
+    if (
+        token is None
+        and not (env.get(project_token_name(project_name)) or "").strip()
+        and allow_session
+    ):
+        return fetch_with_cli_session(project, path, env)
+    return fetch_project(project, path, env, token=token, writer=writer)
+
+
+def project_token_name(project_name: str) -> str:
+    if project_name == "fleet-ops":
+        return ENV_TOKEN
+    if project_name == "ai-fleet-coordinator":
+        return ENV_AI_FLEET_COORDINATOR_TOKEN
+    raise UsageError("unknown Infisical project")
+
+
+def project_name_for_id(project_id: str, env: Mapping[str, str]) -> str:
+    for name in PROJECT_SOURCES:
+        try:
+            if infisical_project_id(env, home_dir(env), name) == project_id:
+                return name
+        except SecretsError:
+            continue
+    raise SecretsError("project-token-binding-missing: project id has no configured token binding")
+
+
+def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> dict[str, str]:
+    """Explicit interactive read-only admin route; automation must pass a scoped token."""
+    if not sys.stdin.isatty():
+        raise SecretsError("service-token-required: noninteractive reads require a scoped token")
     cli = find_cli(env)
     if not cli:
-        raise SecretsError("cli-missing:  the infisical CLI is not installed")
-    mode = auth_mode(env)
+        raise SecretsError("cli-missing")
     child = _base_env(env)
-    if mode in MACHINE_MODES:
-        #  The token the caller already resolved is used as it is,  so a read that
-        #  follows a write does not log in a second time.
-        child[ENV_TOKEN] = token if token is not None else machine_token(cli, env, mode)
-    if mode != "token":
-        for var in AUTH_ENV_VARS - {ENV_TOKEN}:
-            child.pop(var, None)
     argv = [
         cli,
         "export",
@@ -545,31 +348,197 @@ def fetch_all(
     try:
         proc = subprocess.run(
             argv,
-            stdin=subprocess.DEVNULL,
+            stdin=None,
             capture_output=True,
             timeout=EXPORT_TIMEOUT,
             cwd="/",
             env=child,
             check=False,
         )
-    except subprocess.TimeoutExpired:
-        raise SecretsError("timeout") from None
-    except OSError:
-        raise SecretsError("cli-missing") from None
-    finally:
-        child = {}
-    if proc.returncode != 0:
-        raise SecretsError(f"fetch-failed:  exit-{proc.returncode}")
-    out = proc.stdout
-    if len(out) > MAX_OUTPUT_BYTES:
-        raise SecretsError("fetch-failed:  bad-output")
+    except (subprocess.TimeoutExpired, OSError):
+        raise SecretsError("interactive-session-read-failed") from None
+    if proc.returncode or len(proc.stdout) > MAX_OUTPUT_BYTES:
+        raise SecretsError("interactive-session-read-failed")
     try:
-        payload = json.loads(out.decode("utf-8"))
+        return _pairs(json.loads(proc.stdout.decode("utf-8")))
     except (ValueError, UnicodeDecodeError):
-        raise SecretsError("fetch-failed:  bad-output") from None
-    finally:
-        out = b""
-    return _pairs(payload)
+        raise SecretsError("fetch-failed: bad-output") from None
+
+
+def declared_paths(env: Mapping[str, str], path: str, *, writer: bool = False) -> tuple[str, ...]:
+    name = ENV_WRITE_PATHS if writer else ENV_READ_PATHS
+    raw = env.get(name)
+    paths = (
+        tuple(check_path(item.strip()) for item in raw.split(","))
+        if raw is not None
+        else (check_path(path),)
+    )
+    if not paths or len(paths) > 20 or len(paths) != len(set(paths)) or path not in paths:
+        raise SecretsError("token-scope-mismatch: declared folders do not cover this operation")
+    return paths
+
+
+def validate_service_metadata(
+    metadata: object, project: str, paths: Iterable[str], permissions: Iterable[str]
+) -> None:
+    """Validate the token's own grant, never a successful secret query."""
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("workspace") != project
+        or ("projectId" in metadata and metadata.get("projectId") != project)
+    ):
+        raise SecretsError("token-scope-mismatch")
+    actual_permissions = metadata.get("permissions")
+    scopes = metadata.get("scopes")
+    if (
+        not isinstance(actual_permissions, list)
+        or any(not isinstance(item, str) for item in actual_permissions)
+        or len(actual_permissions) != len(set(actual_permissions))
+        or set(actual_permissions) != set(permissions)
+        or not isinstance(scopes, list)
+    ):
+        raise SecretsError("token-scope-mismatch")
+    actual_paths = []
+    for scope in scopes:
+        if (
+            not isinstance(scope, dict)
+            or scope.get("environment") != ENVIRONMENT
+            or not isinstance(scope.get("secretPath"), str)
+        ):
+            raise SecretsError("token-scope-mismatch")
+        actual_paths.append(scope["secretPath"])
+    if len(actual_paths) != len(set(actual_paths)) or set(actual_paths) != set(paths):
+        raise SecretsError("token-scope-mismatch")
+    expiry = metadata.get("expiresAt")
+    if expiry is not None:
+        try:
+            parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError):
+            raise SecretsError("token-expired-or-invalid") from None
+
+
+def check_service_token(token: str) -> str:
+    if (
+        not isinstance(token, str)
+        or not token.startswith("st.")
+        or not 20 <= len(token) <= 8192
+        or any(c.isspace() or c == "\0" for c in token)
+    ):
+        raise SecretsError("service-token-required: bind a scoped Infisical service token")
+    return token
+
+
+def verify_service_token(
+    token: str,
+    project: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    writer: bool = False,
+    deadline: float | None = None,
+) -> tuple[str, ...]:
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2)
+    paths = declared_paths(env, path, writer=writer)
+    check_service_token(token)
+    status, metadata = _api_json(
+        "GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024, deadline=deadline
+    )
+    if status != 200:
+        raise SecretsError("token-verification-failed")
+    validate_service_metadata(metadata, project, paths, ("read", "write") if writer else ("read",))
+    return paths
+
+
+def secret_query(project: str, path: str) -> str:
+    return urllib.parse.urlencode(
+        {
+            "workspaceId": project,
+            "environment": ENVIRONMENT,
+            "secretPath": path,
+            "viewSecretValue": "true",
+            "expandSecretReferences": "false",
+            "recursive": "false",
+            "include_imports": "false",
+        }
+    )
+
+
+def validate_secret_record(
+    record: object, project: str, path: str, *, single_scope: bool = True
+) -> tuple[str, str]:
+    if (
+        not isinstance(record, dict)
+        or record.get("type") != "shared"
+        or record.get("secretValueHidden") is True
+    ):
+        raise SecretsError("unverified-source")
+    for field, expected in (
+        ("workspace", project),
+        ("environment", ENVIRONMENT),
+        ("secretPath", path),
+    ):
+        if record.get(field) != expected and not (single_scope and field not in record):
+            raise SecretsError("unverified-source")
+    key, value = record.get("secretKey"), record.get("secretValue")
+    if not isinstance(key, str) or not NAME_RE.fullmatch(key) or not isinstance(value, str):
+        raise SecretsError("fetch-failed: bad-output")
+    return key, value
+
+
+def fetch_project(
+    project: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    token: str | None = None,
+    writer: bool = False,
+    names: Iterable[str] | None = None,
+    timeout: float = EXPORT_TIMEOUT,
+) -> dict[str, str]:
+    """Explicit project route shared with standalone recall and knobs consumers."""
+    check_path(path)
+    if token is None:
+        project_name = project_name_for_id(project, env)
+        token = resolve_token(env, writer=writer, project_name=project_name)
+    deadline = time.monotonic() + timeout
+    paths = verify_service_token(token, project, path, env, writer=writer, deadline=deadline)
+    wanted = None if names is None else set(names)
+    found: dict[str, str] = {}
+    if wanted is None:
+        endpoints = [(None, "/v3/secrets/raw?" + secret_query(project, path))]
+    else:
+        endpoints = [
+            (
+                check_name(name),
+                "/v3/secrets/raw/"
+                + urllib.parse.quote(name, safe="")
+                + "?"
+                + secret_query(project, path),
+            )
+            for name in sorted(wanted)
+        ]
+    for expected_name, endpoint in endpoints:
+        status, payload = _api_json(
+            "GET", endpoint, token, None, env, max_bytes=MAX_OUTPUT_BYTES, deadline=deadline
+        )
+        if expected_name is not None and status == 404:
+            continue
+        if status != 200 or not isinstance(payload, dict):
+            raise SecretsError("fetch-failed")
+        records = payload.get("secrets") if expected_name is None else [payload.get("secret")]
+        if not isinstance(records, list):
+            raise SecretsError("fetch-failed: bad-output")
+        for record in records:
+            key, value = validate_secret_record(record, project, path, single_scope=len(paths) == 1)
+            if (expected_name is not None and key != expected_name) or key in found:
+                raise SecretsError("unverified-source")
+            found[key] = value
+    reject_unresolved(found)
+    return found
 
 
 def _pairs(payload) -> dict[str, str]:
@@ -631,26 +600,12 @@ def fetch_verified(
     check_name(name)
     check_path(path)
     project = infisical_project_id(env, home_dir(env))
-    if token is None:
-        # The CLI is only needed to mint a token,  so a caller that already
-        # has one does not need it on this host.
-        cli = find_cli(env)
-        if not cli:
-            raise SecretsError("cli-missing:  the infisical CLI is not installed", 4)
-        mode = auth_mode(env)
-        if mode == "session":
-            raise SecretsError(
-                "read-needs-machine-identity:  get-verified needs a machine identity "
-                "(keychain or INFISICAL_AUTOMATION_*) or INFISICAL_TOKEN",
-                4,
-            )
-        token = resolve_token(env, cli, mode)
-    query = urllib.parse.urlencode(
-        {"workspaceId": project, "environment": ENVIRONMENT, "secretPath": path}
-    )
+    token = token if token is not None else resolve_token(env)
+    verify_service_token(token, project, path, env)
+    query = secret_query(project, path)
     status, answer = _api_json(
         "GET",
-        "/v3/secrets/raw/{}?{}".format(urllib.request.quote(name, safe=""), query),
+        "/v3/secrets/raw/{}?{}".format(urllib.parse.quote(name, safe=""), query),
         token,
         None,
         env,
@@ -689,7 +644,7 @@ def reject_unresolved(secrets: Mapping[str, str], names: Iterable[str] | None = 
     """Fail closed when a value is still an unresolved reference.  Names the key, never the value."""
     for key in sorted(names if names is not None else secrets):
         val = secrets.get(key)
-        if val is not None and REF_RE.match(val):
+        if val is not None and REF_RE.search(val):
             raise SecretsError(
                 f"unresolved-reference:  {key} came back as an unexpanded Infisical reference", 5
             )
@@ -731,6 +686,7 @@ def _api_json(
     body: dict | None,
     env: Mapping[str, str],
     max_bytes: int | None = None,
+    deadline: float | None = None,
 ) -> tuple[int, object]:
     """One Infisical REST call.  The status and the parsed body,  never a message.
 
@@ -754,9 +710,13 @@ def _api_json(
             "User-Agent": "fleet-secrets",
         },
     )
-    limit = None if max_bytes is None else max_bytes + 1
+    max_bytes = MAX_OUTPUT_BYTES if max_bytes is None else max_bytes
+    limit = max_bytes + 1
     try:
-        with _opener().open(req, timeout=API_TIMEOUT) as resp:
+        timeout = API_TIMEOUT if deadline is None else min(API_TIMEOUT, deadline - time.monotonic())
+        if timeout <= 0:
+            return 0, None
+        with _opener().open(req, timeout=timeout) as resp:
             raw = resp.read(limit)
             status = resp.status
     except urllib.error.HTTPError as exc:
@@ -814,23 +774,17 @@ def ensure_folder(path: str, env: Mapping[str, str], token: str) -> None:
     if refusal:
         raise SecretsError(refusal, 2)
     project = infisical_project_id(env, home_dir(env))
-    parts = [part for part in path.split("/") if part]
-    parent = "/"
-    for part in parts:
-        body = {
-            "workspaceId": project,
-            "environment": ENVIRONMENT,
-            "name": part,
-            "path": parent,
-        }
-        status, answer = _api_json("POST", "/v1/folders", token, body, env)
-        if status in (200, 201):
-            parent = parent.rstrip("/") + "/" + part
-            continue
-        if status in (400, 409) and _is_existing_folder(answer):
-            parent = parent.rstrip("/") + "/" + part
-            continue
-        raise SecretsError(f"folder-failed:  http-{status} for {part}", 4)
+    verify_service_token(token, project, path, env, writer=True)
+    status, _ = _api_json(
+        "GET",
+        "/v3/secrets/raw?" + secret_query(project, path),
+        token,
+        None,
+        env,
+        max_bytes=MAX_OUTPUT_BYTES,
+    )
+    if status != 200:
+        raise SecretsError("folder-missing-or-inaccessible: provisioning folders is separate")
 
 
 def _is_existing_folder(answer: object) -> bool:
@@ -841,25 +795,22 @@ def _is_existing_folder(answer: object) -> bool:
     return "already exists" in message.lower()
 
 
-def resolve_token(env: Mapping[str, str], cli: str | None = None, mode: str | None = None) -> str:
-    """The token this host authenticates with,  resolved once.
-
-    A plain token in the environment is the token,  and the machine modes mint one
-    through the CLI's own login.  Asking for the token once and passing it on is what
-    keeps a sync from logging in three times.
-    """
-    if mode is None:
-        mode = auth_mode(env)
-    if mode == "token":
-        token = (env.get(ENV_TOKEN) or "").strip()
-        if not token:
-            raise SecretsError("token-missing:  INFISICAL_TOKEN is not set", 4)
-        return token
-    if cli is None:
-        cli = find_cli(env)
-    if not cli:
-        raise SecretsError("cli-missing:  the infisical CLI is not installed", 4)
-    return machine_token(cli, env, mode)
+def resolve_token(
+    env: Mapping[str, str],
+    cli: str | None = None,
+    mode: str | None = None,
+    *,
+    writer: bool = False,
+    project_name: str = DEFAULT_PROJECT,
+) -> str:
+    """Resolve one explicit binding, without cross-purpose or identity fallback."""
+    if writer and project_name != DEFAULT_PROJECT:
+        raise SecretsError("write-token-project-mismatch: writes are configured for Fleet-OPS only")
+    name = ENV_WRITE_TOKEN if writer else project_token_name(project_name)
+    token = (env.get(name) or "").strip()
+    if not token:
+        raise SecretsError(f"service-token-required: {name} is not set")
+    return check_service_token(token)
 
 
 def put_secret(
@@ -867,8 +818,7 @@ def put_secret(
 ) -> str:
     """Create or update one Fleet-OPS prod secret at `path`, and return "created" or "updated".
 
-    Only names on WRITE_ALLOWLIST are accepted.  Needs a machine identity (token, keychain, system-keychain or automation-env):  the CLI's own login session
-    cannot hand its token to a REST call, so mode `session` is refused.  The value never appears in an argument list, a message or a log."""
+    Only names on WRITE_ALLOWLIST are accepted.  A separate scoped writer token is required and its grant metadata is verified before the request.  The value never appears in an argument list, a message or a log."""
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2)
@@ -878,20 +828,8 @@ def put_secret(
     if "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
         raise SecretsError(f"value is empty-unsafe or larger than {MAX_VALUE_BYTES} bytes", 2)
     project = infisical_project_id(env, home_dir(env))
-    if token is None:
-        # The CLI is only needed to mint a token,  so a caller that already has one
-        # does not need it on this host.
-        cli = find_cli(env)
-        if not cli:
-            raise SecretsError("cli-missing:  the infisical CLI is not installed", 4)
-        mode = auth_mode(env)
-        if mode == "session":
-            raise SecretsError(
-                "write-needs-machine-identity:  set needs a machine identity (keychain or "
-                "INFISICAL_AUTOMATION_*) or INFISICAL_TOKEN",
-                4,
-            )
-        token = resolve_token(env, cli, mode)
+    token = token if token is not None else resolve_token(env, writer=True)
+    verify_service_token(token, project, path, env, writer=True)
     body = {
         "workspaceId": project,
         "environment": ENVIRONMENT,
@@ -921,7 +859,7 @@ def put_secret(
         status = _api("PATCH", "/v3/secrets/raw/" + quoted, token, body, env)
         if status in (200, 201):
             return "updated"
-        if status in (404, 400):
+        if status == 404:
             status = _api("POST", "/v3/secrets/raw/" + quoted, token, body, env)
             if status in (200, 201):
                 return "created"

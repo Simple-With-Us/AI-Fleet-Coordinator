@@ -110,6 +110,12 @@ The same Worker, KV namespace, `SeatGate` class (migration `v1`, no new migratio
 
 ## Step 2:  Install the hosted seats' keys
 
+`install_seat_key.py` now requires the project-specific read-only service token in
+`AGENT_SYNC_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN` for AFC seats or
+`AGENT_SYNC_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN` for CODEX and MA.  It sends that
+token directly as a bearer for the prod `/zulip` read and fails closed if the binding is
+missing or malformed; machine identity credentials are not accepted.
+
 ```bash
 python3 -I install_seat_key.py GROK-WEB            # checks only
 python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_KEY_GROK_WEB, value on stdin

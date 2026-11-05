@@ -8,7 +8,8 @@
 The key never touches a file, a command line, a log or this process's output.
 It is read from Infisical (project "AI Fleet Coordinator", or Fleet-OPS for
 CODEX and MA, whose keys already live there;  environment prod, folder /zulip,
-through the INFISICAL_AUTOMATION identity), checked against
+through the project's read-only `AGENT_SYNC_MCP_SEAT_KEY_*_INFISICAL_READ_TOKEN`
+service-token binding), checked against
 Zulip, and written to `wrangler secret put` on stdin.  Spec 3.6 says the
 Worker gets its copy from Infisical's Cloudflare sync;  until Jay sets that up
 (owner item A4), this script is that sync, run by hand.  Rerun it after a
@@ -42,12 +43,19 @@ import urllib.parse
 import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from fleet_secrets import core as scoped_secrets
+
 WRANGLER_JSONC = HERE / "wrangler.jsonc"
 INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator (INFISICAL.md)
 FLEET_OPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"  # Fleet-OPS (fleet-secrets core.py)
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
+INFISICAL_TOKEN_ENVS = {
+    INFISICAL_PROJECT: "AGENT_SYNC_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN",
+    FLEET_OPS_PROJECT: "AGENT_SYNC_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN",
+}
 REALM = "https://simplewithus.zulipchat.com"
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
 MEMBER_ROLE = 400
@@ -231,43 +239,33 @@ def infisical_pair(
     email_name: str, key_name: str, project: str = INFISICAL_PROJECT
 ) -> tuple[str, str]:
     """(email, key) for a seat from Infisical.  Neither is printed."""
-    login = http_json(
-        "POST",
-        f"{INFISICAL_API}/api/v1/auth/universal-auth/login",
-        body={
-            "clientId": handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
-            "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
-        },
+    token_name = INFISICAL_TOKEN_ENVS.get(project)
+    if token_name is None:
+        fail("unsupported Infisical project")
+    token = os.environ.get(token_name, "").strip()
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 2048
+        or any(c.isspace() for c in token)
+    ):
+        fail(f"{token_name} is missing or is not a valid service token")
+    env = {
+        key: value for key, value in os.environ.items() if key not in scoped_secrets.AUTH_ENV_VARS
+    }
+    env[scoped_secrets.ENV_API] = INFISICAL_API + "/api"
+    env[scoped_secrets.ENV_READ_PATHS] = INFISICAL_PATH
+    token_binding = (
+        scoped_secrets.ENV_AI_FLEET_COORDINATOR_TOKEN
+        if project == INFISICAL_PROJECT
+        else scoped_secrets.ENV_TOKEN
     )
-    if not isinstance(login, dict):
-        fail("Infisical login returned a malformed response (not an object)")
-    token = login.get("accessToken")
-    if not isinstance(token, str) or not token:
-        fail("Infisical login returned no access token")
-    query = urllib.parse.urlencode(
-        {
-            "workspaceId": project,
-            "environment": INFISICAL_ENV,
-            "secretPath": INFISICAL_PATH,
-        }
-    )
-    auth_header = "Bearer " + token
-    data = http_json(
-        "GET", f"{INFISICAL_API}/api/v3/secrets/raw?{query}", headers={"Authorization": auth_header}
-    )
-    if not isinstance(data, dict) or not isinstance(data.get("secrets"), list):
-        fail("Infisical secrets response is malformed (missing secrets list)")
-    found = {}
-    for item in data["secrets"]:
-        if (
-            not isinstance(item, dict)
-            or not isinstance(item.get("secretKey"), str)
-            or not (item.get("secretValue") is None or isinstance(item.get("secretValue"), str))
-        ):
-            fail(
-                "Infisical secrets response has a malformed entry - refusing to continue on partial data"
-            )
-        found[item["secretKey"]] = item.get("secretValue") or ""
+    env[token_binding] = token
+    try:
+        found = scoped_secrets.fetch_project(
+            project, INFISICAL_PATH, env, token=token, names=(email_name, key_name)
+        )
+    except scoped_secrets.SecretsError as exc:
+        fail("Infisical scoped read failed (" + exc.message + ")")
     email, key = found.get(email_name, ""), found.get(key_name, "")
     if not email or not key:
         fail(

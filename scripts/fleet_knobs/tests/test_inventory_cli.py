@@ -126,7 +126,7 @@ class CliTests(KnobTestCase):
         self.fake.set(mode="fail")
         code, out, _err = self.run_cli("status")
         self.assertEqual(code, 3)
-        self.assertIn("fetch: failed (exit-1)", out)
+        self.assertIn("fetch: failed (scoped-read-failed)", out)
         self.assertIn("stale", out)
 
     def test_get_prints_a_non_secret_and_refuses_a_secret(self):
@@ -160,17 +160,24 @@ class CliTests(KnobTestCase):
 
 
 class PackagingTests(KnobTestCase):
-    def test_a_copy_of_just_this_package_runs_under_isolated_python(self):
-        """The packaging rule:  a stable copy run with `python3 -I` carries every package it
-        imports.  Copy only fleet_knobs (no tests, no fleet_rag) and run it."""
+    def test_a_stable_package_uses_the_installed_scoped_reader_helper(self):
+        """An isolated copy resolves the fleet-secrets helper through its configured path."""
         dest = self.root / "stable"
         shutil.copytree(
             SCRIPTS / "fleet_knobs",
             dest / "fleet_knobs",
             ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"),
         )
-        self.fake.set(
-            secrets={"CLAIM_EXPIRY_MODE": "ping-only", "FLEET_FACTS_SIGNING_KEY": SIGNING}
+        helper = dest / "fleet_secrets"
+        helper.mkdir()
+        (helper / "core.py").write_text(
+            "class SecretsError(Exception): pass\n"
+            "def fetch_project(project, path, env, *, token=None, names=None, timeout=None):\n"
+            "    assert env.get('INFISICAL_AI_FLEET_COORDINATOR_TOKEN', '').startswith('st.')\n"
+            "    assert token == env['INFISICAL_AI_FLEET_COORDINATOR_TOKEN']\n"
+            "    values = {'CLAIM_EXPIRY_MODE': 'ping-only', 'FLEET_AUTOPUSH_MODE': 'off'}\n"
+            "    return values if names is None else {k: v for k, v in values.items() if k in names}\n",
+            encoding="utf-8",
         )
         code = (
             "import sys; sys.path.insert(0, sys.argv[1])\n"
@@ -181,6 +188,7 @@ class PackagingTests(KnobTestCase):
             "sys.exit(__import__('fleet_knobs.__main__', fromlist=['main']).main(['get', 'FLEET_AUTOPUSH_MODE']))\n"
         )
         env = dict(os.environ)
+        env["FLEET_SECRETS_HOME"] = str(dest)
         for var in ("PYTHONPATH", "PYTHONHOME"):
             env.pop(var, None)
         proc = subprocess.run(

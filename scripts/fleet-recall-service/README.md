@@ -55,11 +55,13 @@ install the pinned gitleaks release (`GITLEAKS_VERSION`, default `8.30.1`) for t
 the download fails the service still starts, the log says so, and every contribution's
 `scrubbed` list carries `gitleaks-unavailable` so callers can see the gate was regex-only.
 
-Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): on startup the service loads every key below from the **AI Fleet Coordinator** Infisical project into an in-memory cache, refreshed in the background; the container never reads `~/.secrets`.  The machine identity (`INFISICAL_AUTOMATION_CLIENT_ID` / `INFISICAL_AUTOMATION_CLIENT_SECRET`) reaches the container through the environment.  When no identity is configured, the keys below fall back to the process environment exactly as before.  Admin changes go through `POST /admin/settings` (write-through to Infisical) with the admin bearer, or the Infisical UI/API plus `POST /admin/reload-settings` / `SIGHUP`.
+Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): when `INFISICAL_TOKEN` is bound, the service verifies that scoped reader before loading managed settings from the **AI Fleet Coordinator** Infisical project into an in-memory cache, refreshed in the background; the container never reads `~/.secrets`.  A present malformed token or mismatched grant fails the read and startup without falling back to environment copies.  With no reader bound, the existing complete explicit-environment configuration route remains available; required `RECALL_API_TOKEN` configuration still refuses startup if absent.  Admin writes use the separate `INFISICAL_WRITE_TOKEN`; without it, write-through is refused.  Admin changes can also go through the Infisical UI/API plus `POST /admin/reload-settings` / `SIGHUP`.
 
 | Variable | Required | Notes |
 |---|---|---|
 | `RECALL_API_TOKEN` | yes | bearer for every non-health route; the process refuses to start without it |
+| `INFISICAL_TOKEN` | for Infisical reads | scoped read-only service token for the AI Fleet Coordinator project and settings path; bind from the Recall read grant when using managed settings |
+| `INFISICAL_WRITE_TOKEN` | no | separate write-capable service token for admin settings updates |
 | `RECALL_ADMIN_TOKEN` | for admin routes | bearer for `GET`/`POST` `/admin/settings` and `POST` `/admin/reload-settings`; the admin surface answers 403 until it is set |
 | `QDRANT_URL` | yes | `http://100.69.77.26:6333` from a container on the box (see *Network*) |
 | `QDRANT_API_KEY` | yes | write key, used only by `recall_contribute` |
