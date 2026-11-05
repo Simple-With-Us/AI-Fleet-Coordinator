@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,6 +82,7 @@ KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
 ENV_TOKEN = "INFISICAL_TOKEN"
 ENV_AI_FLEET_COORDINATOR_TOKEN = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
 ENV_WRITE_TOKEN = "INFISICAL_WRITE_TOKEN"
+MAX_NAMED_READS = 8
 ENV_READ_PATHS = "INFISICAL_READ_PATHS"
 ENV_WRITE_PATHS = "INFISICAL_WRITE_PATHS"
 ENV_CLIENT_ID = "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"
@@ -521,10 +523,17 @@ def fetch_project(
             )
             for name in sorted(wanted)
         ]
-    for expected_name, endpoint in endpoints:
-        status, payload = _api_json(
-            "GET", endpoint, token, None, env, max_bytes=MAX_OUTPUT_BYTES, deadline=deadline
+
+    def read_one(item: tuple) -> tuple:
+        return item[0], _api_json(
+            "GET", item[1], token, None, env, max_bytes=MAX_OUTPUT_BYTES, deadline=deadline
         )
+
+    # Named reads share one deadline, and the knobs ask for every registered name at once, so they
+    # run side by side:  one after another, 31 names took about 13 s against an 8 s budget.
+    with ThreadPoolExecutor(max_workers=MAX_NAMED_READS) as pool:
+        answers = list(pool.map(read_one, endpoints))
+    for expected_name, (status, payload) in answers:
         if expected_name is not None and status == 404:
             continue
         if status != 200 or not isinstance(payload, dict):
