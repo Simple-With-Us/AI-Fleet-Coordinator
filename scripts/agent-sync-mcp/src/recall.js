@@ -460,25 +460,23 @@ function jsonTextWithinLimits(text, maxDepth, maxNodes) {
   return !inString && depth === 0;
 }
 
-/** Byte, depth, node and cycle bounds for untrusted recall tool arguments after the 256 KiB MCP body gate. */
+/** Per-string byte, depth, node and cycle bounds for untrusted recall tool arguments after the 256 KiB MCP body gate. */
 export function boundedRecallInput(value) {
   const pending = [{ value, depth: 0 }];
   const seen = new Set();
   let nodes = 0;
+  const encoder = new TextEncoder();
   while (pending.length) {
     const item = pending.pop();
     if (++nodes > RECALL_INPUT_NODE_LIMIT || item.depth > RECALL_INPUT_DEPTH_LIMIT) return false;
+    if (typeof item.value === "string" && encoder.encode(item.value).byteLength > RECALL_INPUT_BYTES) return false;
     if (item.value && typeof item.value === "object") {
       if (seen.has(item.value)) return false;
       seen.add(item.value);
       for (const child of Object.values(item.value)) pending.push({ value: child, depth: item.depth + 1 });
     }
   }
-  try {
-    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= RECALL_INPUT_BYTES;
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 /** A RecallError as the ToolError the caller sees.  Never echoes a response body but a 400's own message. */

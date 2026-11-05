@@ -761,6 +761,21 @@ class RecallToolTests(FakePrograms):
         )
         self.assertEqual(self.calls(self.recall_out), [])
 
+    def test_failure_classifies_write_outages_as_unknown(self):
+        for err in (
+            "recall: HTTP 500 from qdrant",
+            "recall: HTTP 502 from recall.jays.services",
+            "recall: HTTP 408 from recall.jays.services",
+            "recall: HTTP 429 from recall.jays.services",
+            "recall: timeout reaching recall.jays.services",
+            "recall: timed out waiting for recall.jays.services",
+        ):
+            with self.subTest(err=err):
+                exc = RT.failure(2, err)
+                self.assertEqual(exc.code, "outcome_unknown")
+                self.assertFalse(exc.retryable)
+        self.assertEqual(RT.failure(2, "recall: HTTP 400 bad request").code, "invalid_argument")
+
     def test_an_unconfigured_owner_token_is_an_authorization_failure(self):
         session = self.session(
             self.env(
@@ -793,6 +808,24 @@ class RecallToolTests(FakePrograms):
         self.assertIn("may or may not have landed", first["message"])
         self.assertEqual(len(self.calls(self.recall_out)), 1)
 
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+    def test_an_upstream_mutation_error_is_unknown_and_not_resent(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+        }
+        session = self.session(
+            self.env(
+                RECALL_TEST_EXIT="2",
+                RECALL_TEST_ERR="recall: HTTP 500 from recall.jays.services",
+                RECALL_TEST_REPLY="{}",
+            )
+        )
+        first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
         retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
         self.assertIn("may or may not have landed", retry["message"])
         self.assertEqual(len(self.calls(self.recall_out)), 1)

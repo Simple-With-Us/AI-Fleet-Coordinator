@@ -221,6 +221,13 @@ def check_duplicate(text: str) -> dict:
     return contribute_guard.near_duplicate(cfg, recall_api.Qdrant(cfg), text)
 
 
+def deterministic_duplicate_message(existing: dict) -> str:
+    doc_id = str(existing.get("doc_id") or "").strip()
+    if doc_id:
+        return f"identical text is already stored as {doc_id}; nothing was written"
+    return "identical text is already stored; nothing was written"
+
+
 def cmd_contribute(a: argparse.Namespace) -> int:
     text = contribute_text(a.text, a.file)
     if not text.strip():
@@ -258,7 +265,7 @@ def cmd_contribute(a: argparse.Namespace) -> int:
     )
     if res.get("status") == "duplicate":
         existing = res.get("existing") if isinstance(res.get("existing"), dict) else {}
-        message = contribute_guard.duplicate_message(existing)
+        message = deterministic_duplicate_message(existing)
         if a.json:
             print(json.dumps({**res, "message": message}, indent=2))
         else:

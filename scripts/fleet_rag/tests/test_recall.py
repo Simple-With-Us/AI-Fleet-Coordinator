@@ -647,19 +647,39 @@ class MutationConcurrencyTests(RecallBase):
 
 
 class DuplicateConcurrencyTests(RecallBase):
-    def test_duplicate_check_and_upsert_share_the_mutation_lock(self):
+    def test_deterministic_duplicate_skips_embedding(self):
         text = "pm2 restart needs --update-env before process env changes take effect."
-        state = {"inside": 0, "overlap": False}
+        first = recall_api.recall_contribute(text, "lesson", seat="CLAUDE")
+        self.assertEqual(first["status"], "completed")
+        recall_api.embed = mock.Mock(wraps=recall_api.embed)
+        second = recall_api.recall_contribute(text, "lesson", seat="CLAUDE")
+        self.assertEqual(second["status"], "duplicate")
+        self.assertEqual(second["existing"]["doc_id"], first["doc_id"])
+        recall_api.embed.assert_not_called()
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+
+    def test_duplicate_recheck_and_upsert_share_the_mutation_lock(self):
+        text = "pm2 restart needs --update-env before process env changes take effect."
+        state = {"inside": 0, "overlap": False, "embedded": 0}
+        both_prechecked = threading.Barrier(2)
+        original_embed = recall_api.embed
+
+        def embed(cfg, texts):
+            both_prechecked.wait(timeout=2)
+            state["embedded"] += 1
+            return original_embed(cfg, texts)
 
         class SlowQdrant(FakeQdrant):
             def retrieve(self, *args, **kwargs):
-                state["inside"] += 1
-                state["overlap"] = state["overlap"] or state["inside"] > 1
+                if state["embedded"]:
+                    state["inside"] += 1
+                    state["overlap"] = state["overlap"] or state["inside"] > 1
                 try:
                     time.sleep(0.05)
                     return super().retrieve(*args, **kwargs)
                 finally:
-                    state["inside"] -= 1
+                    if state["embedded"]:
+                        state["inside"] -= 1
 
             def upsert(self, *args, **kwargs):
                 state["inside"] += 1
@@ -670,6 +690,7 @@ class DuplicateConcurrencyTests(RecallBase):
                 finally:
                     state["inside"] -= 1
 
+        recall_api.embed = embed
         recall_api.Qdrant = SlowQdrant
         recall_api.reset_config_cache()
         results = []
@@ -1543,7 +1564,11 @@ class CliTests(RecallBase):
             rc = self.cli.main(["contribute", "-", "--category", "lesson", "--seat", "CLAUDE", "--force", "--json"])
         self.assertEqual(rc, 1)
         self.assertEqual(json.loads(out.getvalue())["status"], "duplicate")
-        self.assertIn("similar lesson already exists", json.loads(out.getvalue())["message"])
+        body = json.loads(out.getvalue())
+        self.assertIn("identical text is already stored as contrib/CLAUDE/", body["message"])
+        self.assertIn("nothing was written", body["message"])
+        self.assertNotIn("similarity", body["message"])
+        self.assertNotIn("--force", body["message"])
         self.assertNotIn("stored contrib/", out.getvalue())
         self.assertEqual(err.getvalue(), "")
 

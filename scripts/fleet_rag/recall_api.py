@@ -617,9 +617,9 @@ def recall_contribute(
     if kinds:
         payload["scrubbed"] = kinds
     point = build_point(clean, payload)
-    point["vector"] = embed(cfg, [clean])[0]
     q = Qdrant(cfg)
-    with _MUTATION_LOCK:
+
+    def find_existing() -> dict | None:
         existing = q.retrieve(point["id"], with_payload=True, with_vector=False)
         if existing is None:
             # A correction keeps the original point id while its payload's content_hash moves to
@@ -642,20 +642,35 @@ def recall_contribute(
             )
             if matches:
                 existing = matches[0]
-        if existing is not None:
-            old = existing.get("payload") or {}
-            return {
+        return existing
+
+    def duplicate_result(existing: dict) -> dict:
+        old = existing.get("payload") or {}
+        return {
+            "id": str(existing.get("id") or point["id"]),
+            "doc_id": str(old.get("doc_id") or doc_id),
+            "scrubbed": reported,
+            "status": "duplicate",
+            "existing": {
                 "id": str(existing.get("id") or point["id"]),
                 "doc_id": str(old.get("doc_id") or doc_id),
-                "scrubbed": reported,
-                "status": "duplicate",
-                "existing": {
-                    "id": str(existing.get("id") or point["id"]),
-                    "doc_id": str(old.get("doc_id") or doc_id),
-                    "seat": str(old.get("seat") or ""),
-                    "retracted": _is_retracted(old),
-                },
-            }
+                "seat": str(old.get("seat") or ""),
+                "retracted": _is_retracted(old),
+            },
+        }
+
+    # A deterministic duplicate should not pay for a TEI embedding.  Do the cheap lookup first;
+    # after embedding, recheck under the mutation lock so a racing contribution cannot pass the
+    # same lookup and then write the same point.
+    existing = find_existing()
+    if existing is not None:
+        return duplicate_result(existing)
+    vector = embed(cfg, [clean])[0]
+    with _MUTATION_LOCK:
+        existing = find_existing()
+        if existing is not None:
+            return duplicate_result(existing)
+        point["vector"] = vector
         status = q.upsert([point])
     return {"id": point["id"], "doc_id": doc_id, "scrubbed": reported, "status": status}
 

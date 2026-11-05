@@ -140,8 +140,17 @@ def run(
     return proc.returncode, data, err
 
 
+UNKNOWN_WRITE = re.compile(r"(?:\bHTTP (?:5\d\d|408|429)\b|\b(?:timed out|timeout)\b)", re.IGNORECASE)
+
+
 def failure(code: int, err: str) -> RecallUnavailable:
     if code == 2:
+        if UNKNOWN_WRITE.search(err):
+            return RecallUnavailable(
+                "outcome_unknown",
+                "fleet recall failed before the write could be verified:  %s" % (err or "unknown"),
+                retryable=False,
+            )
         lower = err.lower()
         return RecallUnavailable(
             "not_authorized"

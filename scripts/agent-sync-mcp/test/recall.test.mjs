@@ -373,7 +373,7 @@ test("recall arguments are byte, depth and node bounded before schema validation
   let deep = { value: {} };
   for (let i = 0; i < 9; i++) deep.value = { child: deep.value };
   for (const args of [
-    { doc_id, reason: "obsolete", padding: "x".repeat(16 * 1024) },
+    { doc_id, reason: "obsolete", padding: "x".repeat(16 * 1024 + 1) },
     { doc_id, reason: "obsolete", padding: deep },
     { doc_id, reason: "obsolete", padding: Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`k${i}`, i])) },
   ]) {
@@ -381,6 +381,14 @@ test("recall arguments are byte, depth and node bounded before schema validation
     assert.equal(error.message, "Recall arguments exceed structural limits.");
   }
   assert.equal(upstream.requests.length, 0);
+
+  const emojiLesson = "😀".repeat(4000);
+  const emojiTitle = "😀".repeat(200);
+  const longUrl = "https://example.com/" + "a".repeat(480);
+  assert.ok(new TextEncoder().encode(JSON.stringify({ text: emojiLesson, category: "lesson", title: emojiTitle, url: longUrl })).byteLength > 16 * 1024);
+  const contributed = ok(await tools.call("recall_contribute", { text: emojiLesson, category: "lesson", title: emojiTitle, url: longUrl }), "recall_contribute");
+  assert.equal(contributed.status, "completed");
+  assert.equal(upstream.requests.length, 1);
 });
 
 test("mutation idempotency:  a retry returns the first result;  a reason secret never leaves", async () => {
