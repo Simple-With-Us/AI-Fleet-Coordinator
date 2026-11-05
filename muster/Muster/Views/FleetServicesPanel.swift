@@ -20,7 +20,8 @@ struct FleetServicesPanel: View {
                 header
                 serverCard
                 if let problem = lastProblem {
-                    problemBox(problem)
+                    problemBox(problem, heading: FleetActionWords.panelHeading(actionState: router.actionState,
+                                                                               adminProblem: admin.problem))
                 }
                 servicesSection
             }
@@ -156,7 +157,7 @@ struct FleetServicesPanel: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if entry.stoppedByOwner {
-                    Text("Stopped on purpose;  it stays stopped until it is started again.")
+                    Text(FleetActionWords.ownerStopLine(for: entry.state))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -196,9 +197,9 @@ struct FleetServicesPanel: View {
 
     // MARK: A refusal
 
-    private func problemBox(_ problem: String) -> some View {
+    private func problemBox(_ problem: String, heading: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("The Last Change Did Not Work")
+            Text(heading)
                 .font(.callout.weight(.semibold))
             Text(problem)
                 .font(.callout)
@@ -208,7 +209,7 @@ struct FleetServicesPanel: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.08))
+        .background((heading == FleetActionWords.notKnownHeading ? Color.orange : Color.red).opacity(0.08))
         .cornerRadius(8)
     }
 }

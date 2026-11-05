@@ -516,6 +516,60 @@ final class ServiceActionRouterTests: XCTestCase {
         if case .notKnown = rig.router.actionState {} else {
             XCTFail("\(String(describing: rig.router.actionState))")
         }
+        XCTAssertEqual(panelHeading(rig), FleetActionWords.notKnownHeading, "the plan route")
+    }
+
+    /// A helper that crashed part way through may have done its work,  so the plan route says
+    /// not known and keeps what the owner asked for.
+    func testAStopWhoseHelperGaveNoAnswerIsNotKnownAndKeepsTheRecord() async throws {
+        let rig = await makeRig(yes: "Traceback (most recent call last):", exit: 1)
+        let stop = try action(.stop, "shellular", on: rig)
+        rig.router.start(stop)
+        try await waitUntil { self.isReview(rig.controller) }
+        rig.controller.confirm()
+        try await waitUntil {
+            if case .finished = rig.controller.phase { return true }
+            return false
+        }
+        await rig.admin.refresh()
+        XCTAssertEqual(recordedStop(rig), true)
+        XCTAssertEqual(rig.router.actionState,
+                       .notKnown(stop.subject, reason: "The helper printed no answer (exit 1)."))
+    }
+
+    func testThePanelHeadingNeverCallsAChangeThatIsNotKnownOneThatDidNotWork() {
+        let shellular = ServiceActionSubject(title: "Shellular", host: .mac, action: .restart)
+        let notKnown = ServiceActionState.notKnown(shellular, reason: "no answer")
+        let failed = ServiceActionState.failed(shellular, reason: "pm2 said no")
+        let toggle = "The login item did not change:  no"
+        // The plan route writes only to the router.
+        XCTAssertEqual(FleetActionWords.panelHeading(actionState: notKnown, adminProblem: nil),
+                       FleetActionWords.notKnownHeading)
+        // The direct route writes the same sentence to both.
+        XCTAssertEqual(FleetActionWords.panelHeading(actionState: notKnown,
+                                                     adminProblem: FleetActionWords.line(for: notKnown)),
+                       FleetActionWords.notKnownHeading)
+        // Anything else under the heading is a real failure.
+        XCTAssertEqual(FleetActionWords.panelHeading(actionState: notKnown, adminProblem: toggle),
+                       FleetActionWords.didNotWorkHeading)
+        XCTAssertEqual(FleetActionWords.panelHeading(actionState: failed, adminProblem: nil),
+                       FleetActionWords.didNotWorkHeading)
+        XCTAssertEqual(FleetActionWords.panelHeading(actionState: nil, adminProblem: toggle),
+                       FleetActionWords.didNotWorkHeading)
+        XCTAssertEqual(FleetActionWords.notKnownHeading, "The Last Change Is Not Known")
+        XCTAssertEqual(FleetActionWords.didNotWorkHeading, "The Last Change Did Not Work")
+    }
+
+    /// A stop that did not read as landed stays on the record,  so the row's line cannot say
+    /// the service is stopped.
+    func testTheOwnerStopLineFollowsTheState() {
+        let asked = "You asked for this to stop, and it does not read as stopped."
+        let stopped = "Stopped on purpose;  it stays stopped until it is started again."
+        XCTAssertEqual(FleetActionWords.ownerStopLine(for: .running), asked)
+        XCTAssertEqual(FleetActionWords.ownerStopLine(for: .unknown), asked)
+        XCTAssertEqual(FleetActionWords.ownerStopLine(for: .stopped), stopped)
+        XCTAssertEqual(FleetActionWords.ownerStopLine(for: .failed), stopped)
+        XCTAssertEqual(FleetActionWords.ownerStopLine(for: .notInstalled), stopped)
     }
 
     func testARunThatIsNotKnownNeverSaysItDidNotHappen() {
@@ -530,6 +584,10 @@ final class ServiceActionRouterTests: XCTestCase {
 
     private func panelProblem(_ rig: Rig) -> String? {
         FleetActionWords.panelProblem(actionState: rig.router.actionState, adminProblem: rig.admin.problem)
+    }
+
+    private func panelHeading(_ rig: Rig) -> String {
+        FleetActionWords.panelHeading(actionState: rig.router.actionState, adminProblem: rig.admin.problem)
     }
 
     /// Fails a direct action,  which writes the same sentence to both records.
@@ -644,6 +702,7 @@ final class ServiceActionRouterTests: XCTestCase {
                        .notKnown(stop.subject, reason: "its port on the Mac could not be read"))
         XCTAssertEqual(panelProblem(rig),
                        "Whether BotFleet Server stopped on the Mac is not known:  its port on the Mac could not be read")
+        XCTAssertEqual(panelHeading(rig), FleetActionWords.notKnownHeading, "the direct route")
     }
 
     func testADeclinedAlertRunsNothing() async throws {

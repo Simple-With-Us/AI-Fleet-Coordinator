@@ -18,6 +18,9 @@ struct ServerPortWait: Equatable, Sendable {
         self.interval = max(0, interval)
     }
 
+    /// The whole wait,  in seconds.
+    var budget: TimeInterval { Double(attempts) * interval }
+
     /// The port closes soon after a stop.
     static let stop = ServerPortWait(attempts: 8, interval: 0.5)
     /// The server takes longer to come up than to go,  so a start or a restart gets the
@@ -43,6 +46,25 @@ struct FleetActionResult: Equatable {
     let notKnown: Bool
     /// When it ended.
     let at: Date
+}
+
+/// What held the BotFleet Server's port before a restart.
+private enum ServerProcessBefore {
+    /// This process did.
+    case process(Int)
+    /// Nothing did,  so any process found afterwards is a new one.
+    case nothing
+    /// Something may have,  and it did not say which process it is.
+    case notRead
+}
+
+/// What a restart did to the process on the BotFleet Server's port.
+private enum ServerProcessChange {
+    case replaced
+    /// The process that held the port before still holds it.
+    case sameProcess
+    /// Nothing on the port said which process it is,  or there is nothing to compare with.
+    case notRead
 }
 
 /// What the server's own status said on one read.
@@ -300,7 +322,14 @@ final class FleetAdmin: ObservableObject {
         ownerStops.record(action, id: serviceID)
         var reason: String?
         var notKnown = false
+        // True when the change was not what the owner wanted and the stop is lifted anyway.
+        var keepsRecord = false
         let portUnread = "its port on the Mac could not be read"
+        // Who holds the port now,  so a restart can tell a new process from the old one.
+        var processBefore = ServerProcessBefore.notRead
+        if action == .restart, serviceID == FleetServiceRegistry.server.id {
+            processBefore = await Self.processOnThePort(api: api, presence: presence)
+        }
         do {
             let observed = try await control.perform(action, serviceID: serviceID)
             if serviceID == FleetServiceRegistry.server.id {
@@ -321,8 +350,22 @@ final class FleetAdmin: ObservableObject {
                     }
                 } else if action == .start || action == .restart {
                     switch await Self.watchThePort(until: .present, presence: presence, wait: startWait) {
-                    case .present: break
-                    case .absent: reason = "nothing answers on its port on the Mac yet"
+                    case .present:
+                        // A wrapper exits at once when the port is already healthy,  which
+                        // replaces nothing,  so a listener does not prove a restart.
+                        guard action == .restart else { break }
+                        switch await Self.watchForANewProcess(after: processBefore, api: api, wait: startWait) {
+                        case .replaced: break
+                        case .sameProcess:
+                            reason = "the same process is still on its port, so it was not replaced"
+                            keepsRecord = true
+                        case .notRead:
+                            reason = "the process on its port on the Mac could not be read"
+                            notKnown = true
+                        }
+                    case .absent:
+                        reason = "nothing answers on its port on the Mac yet"
+                        keepsRecord = true
                     case .unknown:
                         reason = portUnread
                         notKnown = true
@@ -333,16 +376,35 @@ final class FleetAdmin: ObservableObject {
             } else {
                 states[serviceID] = observed
                 if let wanted = Self.expectedState(after: action), observed != wanted {
-                    reason = "it still reads \(observed.label)"
+                    if observed == .unknown {
+                        reason = "its state on the Mac could not be read"
+                        notKnown = true
+                    } else {
+                        reason = "it still reads \(observed.label)"
+                    }
                 }
+            }
+        } catch FleetServiceError.notKnown(let why) {
+            reason = why
+            notKnown = true
+        } catch ControlAPIError.outcomeUnknown {
+            // The server may have gone before it could answer,  so the port decides.
+            reason = ControlAPIError.outcomeUnknown.localizedDescription
+            notKnown = true
+            if action == .stop, serviceID == FleetServiceRegistry.server.id,
+               await Self.watchThePort(until: .absent, presence: presence, wait: stopWait) == .absent {
+                reason = nil
+                notKnown = false
             }
         } catch {
             reason = error.localizedDescription
         }
         if let reason {
             // A change that may have landed is not a refused one,  so what the owner asked
-            // for stays on the record.
-            if !notKnown { ownerStops.restore(previous) }
+            // for stays on the record.  A start or a restart whose launchctl calls landed has
+            // cleared the stop marker and the wrapper can bring the server up,  so that stop
+            // is lifted,  whatever the port says.
+            if !notKnown && !keepsRecord { ownerStops.restore(previous) }
             if notKnown {
                 let subject = ServiceActionSubject(title: service.title, host: service.host, action: action)
                 problem = FleetActionWords.line(for: .notKnown(subject, reason: reason))
@@ -411,6 +473,35 @@ final class FleetAdmin: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
         }
         return presence.presence()
+    }
+
+    /// What holds the port before a restart.
+    private nonisolated static func processOnThePort(api: ControlAPI,
+                                                     presence: ServerPresenceProbe) async -> ServerProcessBefore {
+        if let pid = await api.serverPID() { return .process(pid) }
+        return presence.presence() == .absent ? .nothing : .notRead
+    }
+
+    /// Watches for a process on the port other than the one that held it before,  until the
+    /// budget runs out,  and says what the last look found.
+    ///
+    /// A look can cost a whole request timeout,  so the budget is time and not a number of
+    /// looks.  With nothing to compare against,  a process that answers proves nothing.
+    private nonisolated static func watchForANewProcess(after before: ServerProcessBefore,
+                                                        api: ControlAPI,
+                                                        wait: ServerPortWait) async -> ServerProcessChange {
+        if case .notRead = before { return .notRead }
+        let deadline = Date().addingTimeInterval(wait.budget)
+        while true {
+            var last = ServerProcessChange.notRead
+            if let pid = await api.serverPID() {
+                guard case .process(pid) = before else { return .replaced }
+                last = .sameProcess
+            }
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { return last }
+            try? await Task.sleep(nanoseconds: UInt64(min(wait.interval, remaining) * 1_000_000_000))
+        }
     }
 
     /// Records whether the server should start at login.

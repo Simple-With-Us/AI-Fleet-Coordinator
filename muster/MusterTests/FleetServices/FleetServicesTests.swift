@@ -706,6 +706,28 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(state, .running)
     }
 
+    func testTheServersStopGivesUpWithinItsBudgetWhenALookIsSlow() async throws {
+        // A look can cost a whole request timeout, so the budget is time and
+        // not a number of looks.  A count of eight would run nine looks here.
+        let home = try makeHome(serverInstalled: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let looks = Counter()
+        let control = FleetServiceControl(
+            pm2: pm2(FleetServiceCommands()),
+            startup: StartupPolicy(home: home, commands: LaunchAgentCommands(), uid: 501, environment: [:]),
+            mcpServer: nil,
+            stopServer: { },
+            observeServer: {
+                looks.increment()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                return .running
+            },
+            agentSettleInterval: 0.05)
+        let state = try await control.perform(.stop, serviceID: FleetServiceRegistry.server.id, attempts: 8)
+        XCTAssertEqual(state, .running)
+        XCTAssertLessThan(looks.value, 9)
+    }
+
     func testStoppingTheBotFleetServerIsRefusedWhenTheServerCannotBeAsked() async throws {
         let home = try makeHome(serverInstalled: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -784,7 +806,7 @@ final class FleetServicesTests: XCTestCase {
     func testARefusedRestartDoesNotPutTheMarkerBackWhenTheStateIsUnknown() async throws {
         // launchctl could not be asked, so nothing is known about the
         // server.  The marker must not be re-created on that, and the
-        // refusal must not claim the server was not replaced.
+        // answer is not a refusal that claims the server was not replaced.
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
@@ -805,8 +827,8 @@ final class FleetServicesTests: XCTestCase {
             _ = try await control.perform(.restart, serviceID: FleetServiceRegistry.server.id, attempts: 2)
             XCTFail("a restart that could not be checked should not be reported as a success")
         } catch {
-            XCTAssertTrue("\(error)".contains("could not be checked"))
-            XCTAssertFalse("\(error)".contains("not replaced"))
+            XCTAssertEqual(error as? FleetServiceError,
+                           .notKnown("launchctl could not be asked after the restart"))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }

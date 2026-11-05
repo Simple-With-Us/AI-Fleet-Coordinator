@@ -348,7 +348,9 @@ final class OpsResultParserTests: XCTestCase {
     func test_submitted_is_not_success_when_the_helper_exits_with_failure() {
         let json = #"{"ok":true,"result":"submitted"}"#
         let outcome = OpsResultParser.parse(result(json, exit: 1), mode: .yes, action: unit, timeout: 900)
-        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertEqual(outcome.kind, .unknown)
+        XCTAssertTrue(outcome.runNotKnown)
+        XCTAssertEqual(outcome.detail, "The helper said submitted, but did not say it worked (exit 1).")
         XCTAssertFalse(outcome.isSuccess(for: .yes))
         let audit = OpsAuditEntry(time: nil, host: "server", verb: "server update", target: "fleet-cli", result: "submitted")
         XCTAssertEqual(audit.state, .unproven)
@@ -377,6 +379,106 @@ final class OpsResultParserTests: XCTestCase {
             result(try fixture("ops_result_done", "json"), exit: 1), mode: .yes, action: unit, timeout: 900
         )
         XCTAssertFalse(outcome.isSuccess(for: .yes))
+        // It said it did the work and did not stand behind that,  so it may have done it.
+        XCTAssertEqual(outcome.kind, .unknown)
+        XCTAssertTrue(outcome.runNotKnown)
+        XCTAssertEqual(outcome.detail, "The helper said done, but did not say it worked (exit 1).")
+    }
+
+    func test_a_done_answer_that_is_not_ok_is_not_known() {
+        let outcome = OpsResultParser.parse(
+            result(#"{"ok":false,"result":"done","detail":"ran"}"#), mode: .yes, action: unit, timeout: 900
+        )
+        XCTAssertEqual(outcome.kind, .unknown)
+        XCTAssertTrue(outcome.runNotKnown)
+    }
+
+    /// The helper's own word for a failure stands:  it knows how it ended.
+    func test_a_run_the_helper_says_failed_is_still_failed() {
+        let outcome = OpsResultParser.parse(
+            result(#"{"ok":false,"result":"failed","detail":"no"}"#, exit: 1), mode: .yes, action: unit, timeout: 900
+        )
+        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertFalse(outcome.runNotKnown)
+    }
+
+    /// A helper that gave no answer may have got anywhere before it stopped,  whichever
+    /// machine it ran on and however it ended.
+    func test_a_run_with_no_answer_is_not_known() {
+        let macAgent = OpsAction.macAgent(verb: .restart, label: "com.jay.x")
+        for action in [macAgent, unit] {
+            let traceback = OpsResultParser.parse(
+                result("Traceback (most recent call last):", exit: 1, stderr: "ValueError: boom"),
+                mode: .yes, action: action, timeout: 900
+            )
+            XCTAssertEqual(traceback.kind, .unknown)
+            XCTAssertTrue(traceback.runNotKnown)
+            XCTAssertTrue(traceback.detail.contains("exit 1"))
+            XCTAssertTrue(traceback.detail.contains("ValueError: boom"))
+            for code: Int32 in [0, 9, 15] {
+                let silent = OpsResultParser.parse(result("", exit: code), mode: .yes, action: action, timeout: 900)
+                XCTAssertEqual(silent.kind, .unknown, "exit \(code)")
+                XCTAssertTrue(silent.runNotKnown, "exit \(code)")
+            }
+        }
+    }
+
+    /// A shell that could not find or start the helper ran nothing.
+    func test_a_helper_that_could_not_be_started_failed() {
+        let macAgent = OpsAction.macAgent(verb: .restart, label: "com.jay.x")
+        for action in [macAgent, unit] {
+            for code: Int32 in [126, 127] {
+                let outcome = OpsResultParser.parse(result("", exit: code), mode: .yes, action: action, timeout: 900)
+                XCTAssertEqual(outcome.kind, .failed, "exit \(code)")
+                XCTAssertFalse(outcome.runNotKnown, "exit \(code)")
+            }
+        }
+    }
+
+    /// A read changes nothing,  so a read that went wrong plainly did not work.
+    func test_a_logs_run_that_went_wrong_failed() {
+        let logs = OpsAction.logs(unit: "fleet-server-status.timer")
+        let wrong: [(OpsProcessResult, String)] = [
+            (result("", exit: 15, timedOut: true), "The helper did not finish within 900 seconds."),
+            (result("", exit: 255), "The server did not answer, so nothing came back."),
+            (result("", exit: 1), "The helper printed no answer (exit 1)."),
+            (result(#"{"ok":true,"result":"done"}"#, exit: 1), "The helper said done, but did not say it worked (exit 1)."),
+        ]
+        for (answer, words) in wrong {
+            let outcome = OpsResultParser.parse(answer, mode: .yes, action: logs, timeout: 900)
+            XCTAssertEqual(outcome.kind, .failed, words)
+            XCTAssertFalse(outcome.runNotKnown, words)
+            XCTAssertEqual(outcome.detail, words)
+        }
+        let wordless = OpsResultParser.parse(result(#"{"ok":true,"result":"maybe"}"#), mode: .yes, action: logs, timeout: 900)
+        XCTAssertEqual(wordless.kind, .unknown)
+        XCTAssertFalse(wordless.runNotKnown)
+    }
+
+    /// The block of commands is called what is known about them.
+    func test_the_commands_heading_never_says_what_ran_when_that_is_not_known() {
+        let commands = [["x"]]
+        func outcome(_ kind: OpsResultKind, notKnown: Bool = false) -> OpsOutcome {
+            OpsOutcome(kind: kind, ok: false, commands: commands, detail: "", exitCode: 0, runNotKnown: notKnown)
+        }
+        XCTAssertEqual(outcome(.planned).commandsHeading, "The plan")
+        XCTAssertEqual(outcome(.refused).commandsHeading, "The plan")
+        XCTAssertEqual(outcome(.unknown, notKnown: true).commandsHeading, "What the helper named")
+        XCTAssertEqual(outcome(.done).commandsHeading, "What ran")
+        XCTAssertEqual(outcome(.failed).commandsHeading, "What ran")
+        // A wrong-machine answer,  as the parser makes it,  on a plan and on a run.
+        let json = #"{"ok":true,"result":"planned","commands":[["x"]],"host":"mac"}"#
+        XCTAssertEqual(OpsResultParser.parse(result(json), mode: .plan, action: unit, timeout: 90).commandsHeading,
+                       "The plan")
+        let done = #"{"ok":true,"result":"done","commands":[["x"]],"host":"mac"}"#
+        XCTAssertEqual(OpsResultParser.parse(result(done), mode: .yes, action: unit, timeout: 900).commandsHeading,
+                       "What the helper named")
+    }
+
+    func test_only_a_read_changes_nothing() {
+        for tag in OpsActionCase.allCases {
+            XCTAssertEqual(tag.sample.changesNothing, tag == .logs || tag == .resourceStatus, "\(tag)")
+        }
     }
 
     func test_the_answer_is_found_after_other_output() throws {
@@ -972,7 +1074,8 @@ final class OpsControllerFlowTests: XCTestCase {
         XCTAssertEqual(ops.completedRuns, 0)
     }
 
-    func test_a_run_that_failed_after_it_started_leaves_a_failed_row() async throws {
+    /// The helper ran and its answer could not be read,  so the Mac cannot say how far it got.
+    func test_a_run_whose_answer_could_not_be_read_is_not_known() async throws {
         let planned = try fixture("ops_result_planned", "json")
         let fake = ThrowingOpsRunner(planned: planned, throwFrom: 3, error: .outputTooLarge)
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -981,6 +1084,27 @@ final class OpsControllerFlowTests: XCTestCase {
         let url = directory.appendingPathComponent("ops-audit.jsonl")
         let ops = OpsController(runner: fake, makeBuilder: { exampleBuilder() }, auditURL: url, checksInstall: false)
         ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        guard case .finished(_, let outcome) = ops.phase else { return XCTFail("\(ops.phase)") }
+        XCTAssertEqual(outcome.kind, .unknown)
+        XCTAssertTrue(outcome.runNotKnown)
+        XCTAssertEqual(outcome.detail, OpsControlError.outputTooLarge.errorDescription)
+        XCTAssertEqual(OpsAuditLog.read(at: url).entries.first?.result, "unknown")
+        XCTAssertEqual(ops.completedRuns, 1)
+    }
+
+    /// A read changes nothing,  so one whose answer could not be read failed.
+    func test_a_logs_run_whose_answer_could_not_be_read_failed() async throws {
+        let planned = try fixture("ops_result_planned", "json")
+        let fake = ThrowingOpsRunner(planned: planned, throwFrom: 3, error: .outputTooLarge)
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-ops-flow-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("ops-audit.jsonl")
+        let ops = OpsController(runner: fake, makeBuilder: { exampleBuilder() }, auditURL: url, checksInstall: false)
+        ops.plan(.logs(unit: "fleet-server-status.timer"))
         try await waitFor(ops, until: isReview)
         ops.confirm()
         try await waitFor(ops) { phase in

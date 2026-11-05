@@ -205,8 +205,33 @@ enum FleetActionWords {
         }
     }
 
-    /// The whole of what the Services panel shows under The Last Change Did Not Work,  so a
-    /// reason the menu cut short can always be read there.
+    /// The heading above a problem whose outcome the Mac cannot say.
+    static let notKnownHeading = "The Last Change Is Not Known"
+    /// The heading above any other problem.
+    static let didNotWorkHeading = "The Last Change Did Not Work"
+
+    /// The heading above what `panelProblem` says.  It claims a failure only when one of the
+    /// sentences under it reports one,  so a run the Mac cannot say anything about is not
+    /// called a change that did not work.
+    static func panelHeading(actionState: ServiceActionState?, adminProblem: String?) -> String {
+        guard let actionState, case .notKnown = actionState else { return didNotWorkHeading }
+        if let adminProblem, adminProblem != line(for: actionState) { return didNotWorkHeading }
+        return notKnownHeading
+    }
+
+    /// The line on a row the owner stopped on purpose.  A stop that did not read as landed is
+    /// still on the record,  so the line says what the owner asked for and not what happened.
+    static func ownerStopLine(for state: ManagedServiceState) -> String {
+        switch state {
+        case .running, .unknown:
+            return "You asked for this to stop, and it does not read as stopped."
+        case .stopped, .failed, .notInstalled:
+            return "Stopped on purpose;  it stays stopped until it is started again."
+        }
+    }
+
+    /// The whole of what the Services panel shows under `panelHeading`,  so a reason the menu
+    /// cut short can always be read there.
     ///
     /// There are two records.  The router holds the last action,  and the admin holds its own
     /// direct action and the two login toggles.  A direct action writes the same sentence to

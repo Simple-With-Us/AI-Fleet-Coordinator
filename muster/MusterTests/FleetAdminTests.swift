@@ -159,6 +159,191 @@ final class FleetAdminTests: XCTestCase {
         XCTAssertNil(admin.problem)
     }
 
+    /// The wrapper exits at once when something already answers on the port,  so a kickstart
+    /// can land and replace nothing.  A port that answers does not make that a restart.
+    func testARestartThatLeavesTheSameProcessOnThePortDidNotRestart() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true)
+        await waitForTheFleet(admin)
+        server.keepItsProcess()
+        // The launchctl calls landed and the stop marker went,  so the stop is lifted.
+        admin.beginControllerAction(.stop, serviceID: FleetServiceRegistry.server.id)
+        admin.endControllerAction(serviceID: FleetServiceRegistry.server.id, succeeded: true)
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, false)
+        XCTAssertEqual(admin.lastResult?.notKnown, false)
+        XCTAssertEqual(admin.problem,
+                       "BotFleet Server did not restart on the Mac:  the same process is still on its port, so it was not replaced")
+        XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, false)
+    }
+
+    /// The old process can still answer for a moment after the kickstart.
+    func testARestartThatTakesAMomentToReplaceTheProcessIsRestarted() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
+                              startWait: ServerPortWait(attempts: 100, interval: 0.02))
+        await waitForTheFleet(admin)
+        server.replaceItsProcess(afterLooks: 2)
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        XCTAssertNil(admin.problem)
+    }
+
+    /// Something answers on the port and does not say which process it is.
+    func testARestartWhoseNewProcessCannotBeReadIsNotKnown() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true)
+        await waitForTheFleet(admin)
+        server.stopSayingWhoItIsAtTheKickstart()
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, false)
+        XCTAssertEqual(admin.lastResult?.notKnown, true)
+        XCTAssertEqual(admin.problem,
+                       "Whether BotFleet Server restarted on the Mac is not known:  the process on its port on the Mac could not be read")
+    }
+
+    /// With nothing to compare against,  a process that answers afterwards proves nothing:  it
+    /// may be the same one,  back from being too busy to answer.
+    func testARestartOfAServerThatDidNotSayWhoItWasIsNotKnown() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true)
+        await waitForTheFleet(admin)
+        server.stopSayingWhoItIs()
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.notKnown, true)
+        XCTAssertEqual(admin.lastResult?.reason, "the process on its port on the Mac could not be read")
+    }
+
+    /// Nothing held the port before,  so whatever answers now is new.
+    func testARestartOfAServerThatWasDownIsRestartedOnceAProcessAnswers() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
+                              stopWait: ServerPortWait(attempts: 8, interval: 0))
+        await waitForTheFleet(admin)
+        await admin.perform(.stop, serviceID: FleetServiceRegistry.server.id)
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        server.closePort(forLooks: 1)
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        XCTAssertNil(admin.problem)
+    }
+
+    /// launchctl could not be asked after the kickstart,  which is not a restart that was
+    /// refused,  and the kickstart may have landed.
+    func testARestartWhoseWrapperCannotBeListedAfterTheKickstartIsNotKnown() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true)
+        await waitForTheFleet(admin)
+        admin.beginControllerAction(.stop, serviceID: FleetServiceRegistry.server.id)
+        admin.endControllerAction(serviceID: FleetServiceRegistry.server.id, succeeded: true)
+        commands.listingFailsAfterAKickstart = true
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, false)
+        XCTAssertEqual(admin.lastResult?.notKnown, true)
+        XCTAssertEqual(admin.problem,
+                       "Whether BotFleet Server restarted on the Mac is not known:  launchctl could not be asked after the restart")
+        XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, false,
+                       "what the owner asked for stays on the record")
+    }
+
+    /// A bootout that landed and a listing that then cannot be read says nothing about the
+    /// agent,  so it is not a stop that did not land.
+    func testAStopWhoseAgentCannotBeListedAfterwardsIsNotKnownAndKeepsTheRecord() async {
+        let commands = FleetAdminCommands()
+        commands.companionRunning = true
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+        commands.listingFails = true
+
+        await admin.perform(.stop, serviceID: "app.botfleet.companion")
+
+        XCTAssertEqual(admin.lastResult?.succeeded, false)
+        XCTAssertEqual(admin.lastResult?.notKnown, true)
+        XCTAssertEqual(admin.problem,
+                       "Whether BotFleet Companion stopped on the Mac is not known:  its state on the Mac could not be read")
+        XCTAssertEqual(admin.entries.first { $0.id == "app.botfleet.companion" }?.stoppedByOwner, true)
+    }
+
+    /// The server can go before it answers the stop,  so a stop whose answer was lost and whose
+    /// port then closed is a stop.
+    func testAStopWhoseAnswerWasLostAndWhosePortClosedIsAStop() async {
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: server,
+                              stopWait: ServerPortWait(attempts: 8, interval: 0))
+        await waitForTheFleet(admin)
+        server.loseTheStopAnswer(stopLands: true)
+
+        await admin.perform(.stop, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        XCTAssertNil(admin.problem)
+        XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, true)
+    }
+
+    /// The answer was lost and the port is still held,  which is not proof either way:  the
+    /// server may be taking its time.
+    func testAStopWhoseAnswerWasLostAndWhosePortStaysHeldIsNotKnownAndKeepsTheRecord() async {
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: server,
+                              stopWait: ServerPortWait(attempts: 2, interval: 0))
+        await waitForTheFleet(admin)
+        server.loseTheStopAnswer(stopLands: false)
+
+        await admin.perform(.stop, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, false)
+        XCTAssertEqual(admin.lastResult?.notKnown, true)
+        XCTAssertEqual(admin.problem,
+                       "Whether BotFleet Server stopped on the Mac is not known:  BotFleet Server did not answer, so the change may or may not have been made.\u{00A0} Refresh before trying again.")
+        XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, true)
+    }
+
+    /// The launchctl calls landed and the stop marker went,  so the wrapper may bring the
+    /// server up:  the row does not go back to saying it stays stopped.
+    func testARestartOrStartWhosePortStaysClosedLiftsTheStop() async {
+        for action in [ManagedServiceAction.restart, .start] {
+            let commands = FleetAdminCommands()
+            commands.serverWrapperRuns = true
+            let server = FleetAdminServer()
+            let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
+                                  startWait: ServerPortWait(attempts: 2, interval: 0))
+            await waitForTheFleet(admin)
+            admin.beginControllerAction(.stop, serviceID: FleetServiceRegistry.server.id)
+            admin.endControllerAction(serviceID: FleetServiceRegistry.server.id, succeeded: true)
+            server.closePort(forLooks: .max)
+
+            await admin.perform(action, serviceID: FleetServiceRegistry.server.id)
+
+            XCTAssertEqual(admin.lastResult?.reason, "nothing answers on its port on the Mac yet")
+            XCTAssertEqual(admin.lastResult?.notKnown, false)
+            XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, false)
+        }
+    }
+
     /// A start has its own budget:  a server slower to come up than a port is to close is
     /// not a start that failed.
     func testAStartIsGivenItsOwnBudgetAndNotTheStopWait() async {
@@ -361,6 +546,7 @@ final class FleetAdminTests: XCTestCase {
                                            contents: Data("BF_CONTROL_STARTUP_POLICY_V1".utf8))
         }
 
+        commands.onKickstart = { server.kickstarted() }
         let startup = StartupPolicy(home: home, commands: commands, uid: 501, environment: [:])
         let api = ControlAPI(session: FleetAdminServer.session(),
                              baseURL: URL(string: "http://127.0.0.1:\(server.port)")!)
@@ -379,6 +565,9 @@ final class FleetAdminTests: XCTestCase {
                           refreshInterval: refreshInterval)
     }
 }
+
+/// launchctl could not be asked.
+private struct FleetAdminListingFailed: Error {}
 
 /// One command the admin ran.
 private struct FleetAdminCall {
@@ -412,6 +601,12 @@ private final class FleetAdminCommands: CommandRunning {
     var looksBeforeAChangeShows = 0
     /// How long launchctl takes to answer a listing.
     var listingDelay: TimeInterval = 0
+    /// True when launchctl cannot be asked for a listing.
+    var listingFails = false
+    /// True when launchctl stops answering listings once a kickstart has gone through.
+    var listingFailsAfterAKickstart = false
+    /// Told about every kickstart,  which is what the server sees of a restart.
+    var onKickstart: (() -> Void)?
     /// The change launchd was asked for,  and how many more listings until it shows.
     private var pendingChange: (running: Bool, looks: Int)?
 
@@ -438,9 +633,12 @@ private final class FleetAdminCommands: CommandRunning {
                 pendingChange = (running: false, looks: looksBeforeAChangeShows)
             } else if arguments.first == "kickstart" {
                 pendingChange = (running: true, looks: looksBeforeAChangeShows)
+                if listingFailsAfterAKickstart { listingFails = true }
+                onKickstart?()
             }
         }
         if executable == "/bin/launchctl", arguments == ["list"] {
+            if listingFails { throw FleetAdminListingFailed() }
             if let change = pendingChange {
                 if change.looks > 0 {
                     pendingChange = (running: change.running, looks: change.looks - 1)
@@ -484,6 +682,22 @@ final class FleetAdminServer {
     private var closedLooks: Int?
     /// True when the probe cannot tell.
     private var unreadable = false
+    /// The process behind the port,  as the server's health says it.
+    private var pid = 4242
+    /// True when a kickstart replaces nothing.
+    private var keepsProcess = false
+    /// How many looks the old process still answers after a kickstart.
+    private var slowLooks = 0
+    /// The looks left before a slow kickstart's new process answers.  Nil when none is coming.
+    private var looksBeforeReplaced: Int?
+    /// True when the health check does not answer.
+    private var saysNothing = false
+    /// True when the health check stops answering at the next kickstart.
+    private var saysNothingAfterKickstart = false
+    /// True when the stop's answer is lost on the way back.
+    private var losesStopAnswer = false
+    /// True when a stop whose answer is lost still reaches the server.
+    private var lostStopLands = false
 
     /// The `blockingWork` value the server's status carries,  as JSON,  or nil for none.
     var blockingWorkJSON: String? {
@@ -549,6 +763,88 @@ final class FleetAdminServer {
         state.unlock()
     }
 
+    /// A kickstart will replace nothing.
+    func keepItsProcess() {
+        state.lock()
+        keepsProcess = true
+        state.unlock()
+    }
+
+    /// A kickstart's new process answers only after the old one has answered this many looks.
+    func replaceItsProcess(afterLooks looks: Int) {
+        state.lock()
+        slowLooks = looks
+        state.unlock()
+    }
+
+    /// The health check does not answer from now on.
+    func stopSayingWhoItIs() {
+        state.lock()
+        saysNothing = true
+        state.unlock()
+    }
+
+    /// The health check stops answering at the next kickstart.
+    func stopSayingWhoItIsAtTheKickstart() {
+        state.lock()
+        saysNothingAfterKickstart = true
+        state.unlock()
+    }
+
+    /// The next stop's answer is lost on the way back,  whether or not the stop landed.
+    func loseTheStopAnswer(stopLands: Bool) {
+        state.lock()
+        losesStopAnswer = true
+        lostStopLands = stopLands
+        state.unlock()
+    }
+
+    /// launchd was asked to run the wrapper.
+    func kickstarted() {
+        state.lock()
+        defer { state.unlock() }
+        stoppedNow = false
+        if saysNothingAfterKickstart { saysNothing = true }
+        guard !keepsProcess else { return }
+        if slowLooks > 0 {
+            looksBeforeReplaced = slowLooks
+        } else {
+            pid += 1
+        }
+    }
+
+    /// True when a stop request should see its connection drop,  and asks the server to stop
+    /// first when the stop gets there anyway.
+    func dropsTheStop() -> Bool {
+        state.lock()
+        defer { state.unlock() }
+        guard losesStopAnswer else { return false }
+        if lostStopLands { stoppedNow = true }
+        return true
+    }
+
+    /// True when the health check does not answer.
+    var isSilent: Bool {
+        state.lock()
+        defer { state.unlock() }
+        return stoppedNow || saysNothing
+    }
+
+    /// The process the health check names on this look.
+    func nextPID() -> Int {
+        state.lock()
+        defer { state.unlock() }
+        if let looks = looksBeforeReplaced {
+            if looks == 0 {
+                pid += 1
+                looksBeforeReplaced = nil
+            } else {
+                looksBeforeReplaced = looks - 1
+            }
+        }
+        return pid
+    }
+
     /// What the port says.
     ///
     /// The server is up until it is asked to stop,  and it lets go of the port a
@@ -589,15 +885,19 @@ final class FleetAdminURLProtocol: URLProtocol {
         var body = "{}"
         switch path {
         case "/api/health":
-            if server?.stopped == true {
+            if server?.isSilent == true {
                 status = 503
             } else {
-                body = #"{"app":"botfleet","pid":4242,"ready":true}"#
+                body = #"{"app":"botfleet","pid":\#(server?.nextPID() ?? 4242),"ready":true}"#
             }
         case "/api/system/control":
             let work = server?.blockingWorkJSON.map { #","blockingWork":\#($0)"# } ?? ""
             body = #"{"activeBotCount":0,"localVms":[],"persistOnExit":true\#(work)}"#
         case "/api/system/control/stop":
+            if server?.dropsTheStop() == true {
+                client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+                return
+            }
             server?.requestStop()
             body = #"{"ok":true}"#
         default:

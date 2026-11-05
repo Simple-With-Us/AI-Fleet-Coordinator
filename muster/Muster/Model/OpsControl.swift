@@ -135,6 +135,18 @@ enum OpsAction: Equatable {
     /// True when the action runs on the server,  over ssh.
     var runsOnServer: Bool { runsOn == .server }
 
+    /// True when the action only reads.  Nothing can have happened on a run that went wrong
+    /// part way,  and the Mac knows whether the text reached it,  so it plainly did not work.
+    var changesNothing: Bool {
+        switch self {
+        case .logs, .resourceStatus:
+            return true
+        case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .pm2App,
+             .serverResource:
+            return false
+        }
+    }
+
     /// The name the owner reads for what the action touches.
     var subjectTitle: String {
         switch self {
@@ -1001,6 +1013,13 @@ struct OpsOutcome: Equatable {
     var commandLines: [String] {
         commands.map { $0.joined(separator: " ") }
     }
+
+    /// What the sheet calls those commands once the action has ended.  It says what ran only
+    /// when something is known to have run.
+    var commandsHeading: String {
+        if kind == .planned || kind == .refused { return "The plan" }
+        return runNotKnown ? "What the helper named" : "What ran"
+    }
 }
 
 /// Reads a helper's answer.
@@ -1026,31 +1045,33 @@ enum OpsResultParser {
 
     /// What a run came to.
     ///
-    /// Every way of not knowing ends short of a success.  A plan changes nothing,  so one
-    /// that timed out or is not JSON failed.  A run that timed out,  lost the server or was
-    /// answered by the wrong machine may have done its work,  so it reads as unknown,  and
-    /// `refused` and `failed` stay for what is known to have ended that way.
+    /// Every way of not knowing ends short of a success.  A plan changes nothing,  and neither
+    /// does a read,  so one that timed out or is not JSON failed.  A run that timed out,  gave
+    /// no answer,  reported work it did not stand behind or was answered by the wrong machine
+    /// may have done its work,  so it reads as unknown,  and `refused` and `failed` stay for
+    /// what is known to have ended that way.
     static func parse(
         _ result: OpsProcessResult,
         mode: OpsMode,
         action: OpsAction,
         timeout: TimeInterval
     ) -> OpsOutcome {
+        let canHaveChanged = mode == .yes && !action.changesNothing
         if result.timedOut {
             return OpsOutcome(
-                kind: mode == .yes ? .unknown : .failed, ok: false, commands: [],
+                kind: canHaveChanged ? .unknown : .failed, ok: false, commands: [],
                 detail: "The helper did not finish within \(Int(timeout)) seconds.",
                 exitCode: result.exitCode,
-                runNotKnown: mode == .yes
+                runNotKnown: canHaveChanged
             )
         }
         guard let answer = decode(result.stdout) else {
-            let lost = lostTheServer(result, action: action, mode: mode)
+            let landed = runMayHaveLanded(result, action: action, mode: mode)
             return OpsOutcome(
-                kind: lost ? .unknown : .failed, ok: false, commands: [],
+                kind: landed ? .unknown : .failed, ok: false, commands: [],
                 detail: unreadableDetail(result, action: action, mode: mode),
                 exitCode: result.exitCode,
-                runNotKnown: lost
+                runNotKnown: landed
             )
         }
         var kind = OpsResultKind(rawValue: answer.result ?? "") ?? .unknown
@@ -1077,14 +1098,16 @@ enum OpsResultParser {
                 completed = answer.executionState == nil || answer.executionState == "completed"
             }
             if !answer.ok || result.exitCode != 0 {
-                kind = .failed
+                kind = canHaveChanged ? .unknown : .failed
+                detail = unbackedDetail("done", exitCode: result.exitCode)
             } else if !completed {
                 kind = .submitted
                 detail = "The request was submitted; completion has not been verified."
             }
         }
         if kind == .submitted && (!answer.ok || result.exitCode != 0) {
-            kind = .failed
+            kind = canHaveChanged ? .unknown : .failed
+            detail = unbackedDetail("submitted", exitCode: result.exitCode)
         }
         let isKnobAction: Bool
         if case .knobSet = action { isKnobAction = true }
@@ -1137,15 +1160,26 @@ enum OpsResultParser {
             executionState: answer.executionState,
             baselineStartMonotonic: answer.baselineStartMonotonic,
             answeredFrom: answeredFrom,
-            runNotKnown: mode == .yes && kind == .unknown
+            runNotKnown: canHaveChanged && kind == .unknown
         )
     }
 
-    /// True when a run lost the server part way:  ssh failed for a reason other than the
-    /// ones that stop it before anything reaches the helper.
-    private static func lostTheServer(_ result: OpsProcessResult, action: OpsAction, mode: OpsMode) -> Bool {
-        guard mode == .yes, action.runsOnServer, result.exitCode == 255 else { return false }
-        return sshStoppedEarly(result.stderr) == nil
+    /// True when a run that gave no answer may still have done its work.
+    ///
+    /// Only what proves the helper never ran says otherwise:  ssh stopping before anything
+    /// reached it,  or a shell that could not start it.  A traceback part way through,  a
+    /// signal,  or an exit with nothing printed says nothing about how far it got.
+    private static func runMayHaveLanded(_ result: OpsProcessResult, action: OpsAction, mode: OpsMode) -> Bool {
+        guard mode == .yes, !action.changesNothing else { return false }
+        if action.runsOnServer, result.exitCode == 255 {
+            return sshStoppedEarly(result.stderr) == nil
+        }
+        return result.exitCode != 126 && result.exitCode != 127
+    }
+
+    /// The sentence for a helper that reports the work and does not stand behind the report.
+    private static func unbackedDetail(_ word: String, exitCode: Int32) -> String {
+        "The helper said \(word), but did not say it worked (exit \(exitCode))."
     }
 
     /// What stopped ssh before any command was sent.
@@ -1240,10 +1274,11 @@ enum OpsResultParser {
             case .some(.noConnection):
                 return "The server did not answer, so nothing ran."
             case .none:
-                // A plan changes nothing either way.  A run that lost the server cannot say
-                // how far it got.
-                return mode == .plan
-                    ? "The server did not answer, so nothing ran."
+                // A plan changes nothing either way,  and a read that lost the server only
+                // brought nothing back.  A run that lost the server cannot say how far it got.
+                if mode == .plan { return "The server did not answer, so nothing ran." }
+                return action.changesNothing
+                    ? "The server did not answer, so nothing came back."
                     : "The server did not answer, so the Mac cannot say whether this ran."
             }
         }
@@ -1614,10 +1649,20 @@ final class OpsController: ObservableObject {
             phase = .finished(action, outcome)
             record(action, result: outcome.kind.rawValue)
         } catch {
-            phase = .failed(action, error.localizedDescription)
             // A helper that could not be started ran nothing.
             if let control = error as? OpsControlError, case .launchFailed = control { started = false }
-            if started { record(action, result: OpsResultKind.failed.rawValue) }
+            if started, !action.changesNothing {
+                // The helper ran,  and what it answered could not be read,  so the Mac cannot
+                // say how far it got.
+                let outcome = OpsOutcome(kind: .unknown, ok: false, commands: [],
+                                         detail: error.localizedDescription, exitCode: -1,
+                                         runNotKnown: true)
+                phase = .finished(action, outcome)
+                record(action, result: outcome.kind.rawValue)
+            } else {
+                phase = .failed(action, error.localizedDescription)
+                if started { record(action, result: OpsResultKind.failed.rawValue) }
+            }
         }
         if started { completedRuns += 1 }
     }

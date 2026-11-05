@@ -130,7 +130,7 @@ struct OpsActionSheet: View {
                 if let logText = outcome.logText {
                     logBlock(logText, lines: outcome.logLines)
                 } else if !outcome.commands.isEmpty {
-                    planBlock(outcome, heading: outcome.kind == .planned ? "The plan" : "What ran")
+                    planBlock(outcome, heading: outcome.commandsHeading)
                 }
             }
         case .failed(_, let reason):
