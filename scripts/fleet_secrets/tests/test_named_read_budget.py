@@ -104,6 +104,27 @@ class NamedReadBudgetTests(unittest.TestCase):
                 core.fetch_project(PROJECT, "/", {}, token=TOKEN, names=names, timeout=8.0)
         self.assertLessEqual(len(calls), core.MAX_NAMED_READS + 1)
 
+    def test_an_interrupt_cancels_reads_that_have_not_started(self):
+        calls = []
+        real = core.as_completed
+
+        def interrupted(futures, *args, **kwargs):
+            for future in real(futures, *args, **kwargs):
+                raise KeyboardInterrupt
+                yield future
+
+        def slow(method, path, token, body, env, *, max_bytes, deadline):
+            with self.lock:
+                calls.append(path)
+            time.sleep(0.1)
+            return 200, {"secret": record(name_of(path))}
+
+        names = {f"KNOB_{i:02d}" for i in range(60)}
+        with mock.patch.object(core, "_api_json", slow), mock.patch.object(core, "as_completed", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                core.fetch_project(PROJECT, "/", {}, token=TOKEN, names=names, timeout=8.0)
+        self.assertLessEqual(len(calls), 2 * core.MAX_NAMED_READS)
+
     def test_the_refusal_names_the_earliest_failing_read(self):
         # Reads are submitted in sorted order, so A_FIRST is always the earlier endpoint.  It fails
         # later than B_SECOND, and a failure cancels only reads after it, so A_FIRST still runs.

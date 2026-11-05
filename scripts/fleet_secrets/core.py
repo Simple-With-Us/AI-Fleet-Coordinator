@@ -557,18 +557,24 @@ def fetch_project(
     failures: dict = {}
     with ThreadPoolExecutor(max_workers=MAX_NAMED_READS) as pool:
         futures = [pool.submit(read_one, item) for item in endpoints]
-        for future in as_completed(futures):
-            if future.cancelled():
-                continue
-            try:
-                name, pairs = future.result()
-            except Exception as exc:  # noqa: BLE001 - re-raised below, earliest first
-                index = futures.index(future)
-                failures[index] = exc
-                for later in futures[index + 1 :]:
-                    later.cancel()
-                continue
-            answers[name] = pairs
+        try:
+            for future in as_completed(futures):
+                if future.cancelled():
+                    continue
+                try:
+                    name, pairs = future.result()
+                except Exception as exc:  # noqa: BLE001 - re-raised below, earliest first
+                    index = futures.index(future)
+                    failures[index] = exc
+                    for later in futures[index + 1 :]:
+                        later.cancel()
+                    continue
+                answers[name] = pairs
+        except BaseException:
+            # An interrupt stops every read that has not started before it propagates.
+            for future in futures:
+                future.cancel()
+            raise
     if failures:
         raise failures[min(failures)]
     for expected_name, _endpoint in endpoints:
