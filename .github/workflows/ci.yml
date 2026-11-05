@@ -273,6 +273,10 @@ jobs:
     # it starts no MiniMax session and reads no installed plugin.
     - name: Muster install transaction tests
       run: python3 -m unittest discover -s muster/script -t muster/script -v
+    # The Muster release's credential loader (muster/docs/AUTO-UPDATE.md):  names reported,
+    # keys only as 0600 files, a wrong-scope token failing rather than reading as missing.
+    - name: Muster release credential loader tests
+      run: node --test muster/script/load_release_secrets.test.mjs
     - name: Muster guard live proof tests
       run: python3 scripts/test_muster_guard_live_proof.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
@@ -619,7 +623,22 @@ jobs:
           xcodegen generate --spec project.yml
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            "MUSTER_COMMIT=$GITHUB_SHA" MUSTER_COMMIT_TIME=2026-11-05T15:30:00Z MUSTER_BUILD_CHANNEL=development \
+            build
+      # The build stamp travels through Support/Info.plist into the generated one, which is
+      # what Settings and the menu read.  The Debug build carries no update feed, so Sparkle
+      # stays off in it.
+      - name: Check the built app carries its build stamp
+        working-directory: muster
+        run: |
+          plist=.build/CI/Build/Products/Debug/Muster.app/Contents/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MusterCommit' "$plist")" = "$GITHUB_SHA"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MusterBuildChannel' "$plist")" = development
+          test -z "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$plist")"
+          test -d .build/CI/Build/Products/Debug/Muster.app/Contents/Frameworks/Sparkle.framework
+          MUSTER_BUILT_APP="$PWD/.build/CI/Build/Products/Debug/Muster.app" \
+            python3 -m unittest discover -s script -t script -p 'test_no_external_entry_points.py' -v
       # The Swift names the image sets by string, so only the built bundle proves that
       # both modes' artwork and the bundle's own icon came out of the asset compiler.
       - name: Check the built app carries its icons

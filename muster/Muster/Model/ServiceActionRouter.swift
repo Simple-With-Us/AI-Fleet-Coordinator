@@ -376,6 +376,13 @@ final class ServiceActionRouter: ObservableObject {
         directInFlight || admin.busyServiceID != nil || controller.isPresenting
     }
 
+    /// True while an action on the direct route is between its click and its result,  or a
+    /// service is being acted on.  Unlike `isBusy`,  an open plan sheet alone is not counted:
+    /// nothing runs until the owner confirms it.  An update's relaunch waits on this.
+    var hasActionInFlight: Bool {
+        directInFlight || admin.busyServiceID != nil
+    }
+
     /// Reads the allowlist again.
     func reloadAllowlist() {
         allowlist = readAllowlist()
