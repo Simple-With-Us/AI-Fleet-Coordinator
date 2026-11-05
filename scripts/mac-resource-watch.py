@@ -4,9 +4,13 @@
 Launchd: com.jay.mac-resource-watch (every 5 min).
 On-demand: python3 ~/apps/mac-resource-watch.py --once
 Never prints webhook secrets.  Load BOTFLEET_HOUSEKEEPER_WEBHOOK_* from the environment, else
-from Infisical Fleet-OPS /botfleet-housekeeper-webhook (`fleet-secrets get`), and, if present,
-GROK_BOT_HOUSEKEEPER_WEBHOOK_* from /grok-bot-housekeeper-webhook, without echoing values.
-No credential file is read (AFC-359).  BotFleet is the primary wake.  Grok Bot is optional.
+from Infisical Fleet-OPS prod:/botfleet-housekeeper-webhook with the scoped read-only service
+token in ~/.config/infisical/mac-resource-watch-ro.token, and, if present,
+GROK_BOT_HOUSEKEEPER_WEBHOOK_* from the environment, without echoing values.
+The token is scoped to /botfleet-housekeeper-webhook alone, so the Grok Bot pair has no
+Infisical source.  There is no fleet-secrets fallback and no cached copy:  a missing,
+unreadable or wrongly permissive token file, or any Infisical error, yields no webhook.
+BotFleet is the primary wake.  Grok Bot is optional.
 """
 
 from __future__ import annotations
@@ -16,17 +20,20 @@ import calendar
 import contextlib
 import ctypes
 import fcntl
+import http.client
 import json
 import math
 import os
 import re
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from contextlib import contextmanager
@@ -36,9 +43,19 @@ HOME = Path.home()
 STATE_DIR = HOME / ".claude-disk-janitor"
 STATE_FILE = STATE_DIR / "resource-watch-state.json"
 LOG_FILE = HOME / "Library" / "Logs" / "mac-resource-watch.log"
-FLEET_SECRETS = Path(os.environ.get("FLEET_SECRETS") or HOME / ".local" / "bin" / "fleet-secrets")
 BF_SECRET_FOLDER = "/botfleet-housekeeper-webhook"
-GB_SECRET_FOLDER = "/grok-bot-housekeeper-webhook"
+# The scoped read-only service token for this watcher (AFC-621).  It lives in
+# its own owner-only file, NOT in the shared `fleet-secrets` reader and NOT in
+# the environment:  the token is what the watcher is allowed to read, and a
+# file that only this watcher reads keeps it that narrow.
+INFISICAL_TOKEN_FILE = HOME / ".config" / "infisical" / "mac-resource-watch-ro.token"
+# The token file must be owner-only.  0600 exactly:  a token any other user
+# can read is refused rather than used.
+INFISICAL_TOKEN_MODE = 0o600
+INFISICAL_API = "https://app.infisical.com/api"
+INFISICAL_PROJECT_ID = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+INFISICAL_ENVIRONMENT = "prod"
+INFISICAL_TIMEOUT = 15
 CLEANUP = HOME / "apps" / "mac-auto-cleanup.sh"
 JANITOR = HOME / ".claude-disk-janitor" / "janitor.sh"
 # The exit codes that mean the cleanup itself ran.  75 is the cleanup
@@ -230,27 +247,109 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_FILE)
 
 
-def _fleet_secret(name: str, folder: str) -> str:
-    """One Infisical value via `fleet-secrets get`, or "" when absent or unreachable.  Never logs it."""
-    if not FLEET_SECRETS.is_file():
+def _service_token() -> str:
+    """The scoped read-only Infisical token from its owner-only file, or "".
+
+    A missing, unreadable or wrongly-permissioned token file yields no token
+    and no output:  the watcher then simply has no webhook, which is the
+    fail-closed behaviour the scoped migration asks for.  The token value is
+    never printed, logged or echoed.
+    """
+    try:
+        mode = stat.S_IMODE(os.stat(INFISICAL_TOKEN_FILE).st_mode)
+    except OSError:
+        return ""
+    if mode != INFISICAL_TOKEN_MODE:
         return ""
     try:
-        proc = subprocess.run(
-            [str(FLEET_SECRETS), "get", name, "--path", folder],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
+        with open(INFISICAL_TOKEN_FILE, encoding="utf-8") as handle:
+            token = handle.read().strip()
+    except OSError:
         return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    return token
+
+
+def _infisical_get(name: str, folder: str, token: str) -> str:
+    """One Infisical value read with the scoped service token, or "".
+
+    Reads the v3 raw route, which is the one this deployment answers
+    (`/api/v3/secrets/raw/{name}`;  the v1 `/api/v1/secrets` route answers
+    404 here, so a v1 URL would fail closed every time).
+
+    Fails closed:  only a 200 with a usable body yields a value.  Any other
+    status, a transport error or an unparseable body yields "", and there is
+    NO fallback to `fleet-secrets`, to the Automation identity or to any other
+    credential source (AFC-621).  A token scoped to one folder is refused by
+    Infisical outside that scope, which lands here as a non-200 and yields
+    nothing.  The value is never printed or logged.
+    """
+    if not token:
+        return ""
+    query = urllib.parse.urlencode(
+        {
+            "projectId": INFISICAL_PROJECT_ID,
+            "environment": INFISICAL_ENVIRONMENT,
+            "secretPath": folder,
+        }
+    )
+    url = f"{INFISICAL_API}/v3/secrets/raw/{urllib.parse.quote(name)}?{query}"
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=INFISICAL_TIMEOUT) as response:
+            if response.getcode() != 200:
+                return ""
+            raw = response.read()
+    except urllib.error.HTTPError:
+        return ""
+    except (urllib.error.URLError, OSError):
+        return ""
+    except (http.client.HTTPException, ValueError):
+        #  A truncated or malformed response raises http.client's own
+        #  exceptions (IncompleteRead, BadStatusLine), and those are neither
+        #  OSError nor URLError.  They must fail closed like every other
+        #  transport error: a crashed run would skip save_state() and make
+        #  the next scheduled run repeat the cleanup it already did.
+        return ""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    # The raw route wraps the secret in a "secret" object;  a bare object is
+    # accepted too so an API shape change cannot silently empty the value.
+    inner = payload.get("secret")
+    secret = inner if isinstance(inner, dict) else payload
+    value = secret.get("secretValue")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _env_webhook(url_key: str, secret_key: str) -> tuple[str, str]:
+    """The webhook pair from the environment, which always wins."""
+    return os.environ.get(url_key, "").strip(), os.environ.get(secret_key, "").strip()
 
 
 def _read_webhook(folder: str, url_key: str, secret_key: str) -> tuple[str, str]:
-    """Environment first, then Infisical `fleet-secrets get` (folder)."""
-    url = os.environ.get(url_key, "").strip() or _fleet_secret(url_key, folder)
-    secret = os.environ.get(secret_key, "").strip() or _fleet_secret(secret_key, folder)
+    """Environment first, then the scoped Infisical service token (folder).
+
+    The environment still wins, as before:  the launchd job may inject the
+    pair directly, and an injected value is never second-guessed.  Otherwise
+    the value comes from Infisical with the scoped token -- and from nowhere
+    else.
+    """
+    url, secret = _env_webhook(url_key, secret_key)
+    if url and secret:
+        return url, secret
+    token = _service_token()
+    if not token:
+        return url, secret
+    if not url:
+        url = _infisical_get(url_key, folder, token)
+    if not secret:
+        secret = _infisical_get(secret_key, folder, token)
     return url, secret
 
 
@@ -262,10 +361,11 @@ def load_webhooks() -> list[tuple[str, str, str]]:
     )
     if bf_url and bf_secret:
         hooks.append(("BotFleet", bf_url, bf_secret))
-    # Optional second wake;  no Infisical folder exists for it yet, so this is skipped unless the
-    # environment or a future /grok-bot-housekeeper-webhook folder supplies both names.
-    gb_url, gb_secret = _read_webhook(
-        GB_SECRET_FOLDER, "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
+    # The Grok Bot pair is environment-only:  the service token is scoped to
+    # prod:/botfleet-housekeeper-webhook, so there is no Infisical path for
+    # it and no second token is read.
+    gb_url, gb_secret = _env_webhook(
+        "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if gb_url and gb_secret:
         hooks.append(("GrokBot", gb_url, gb_secret))
