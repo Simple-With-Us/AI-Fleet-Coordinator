@@ -2,15 +2,15 @@ import Foundation
 
 // Writing the wake settings.
 //
-// The listener's configuration file is the one the runtime reads,  so the panel writes that
-// file and then asks the listener to act on it.  Two rules hold:
+// The eavesdropper's configuration file is the one the runtime reads,  so the panel writes that
+// file and then asks the eavesdropper to act on it.  Two rules hold:
 //
 //   * only the value that changed is rewritten,  so a comment or a key this app does not
 //     know about survives
 //   * the file is written the way the runtime writes it:  a temporary file at mode 0600,
 //     then a rename over the original
 
-/// Writes a seat's wake settings into the listener's configuration file.
+/// Writes a seat's wake settings into the eavesdropper's configuration file.
 struct WakeSettingsWriter {
     /// One change to one setting.
     struct Edit: Equatable {
