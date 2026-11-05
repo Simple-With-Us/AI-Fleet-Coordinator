@@ -27,6 +27,18 @@ Owner preference, 2026-08-06.
 
 Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Gemini, Grok, Monet, Copilot, …).  Owner ruling, 2026-10-21.
 
+## Kody reviews are requested by hand (owner — ALL agents, ALL platforms, 2026-10-25)
+
+Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #Policy, topic "Kody reviews: manual when ready".
+
+- **Request it.**  When a PR's changes are ready, whoever owns the PR comments `@kody start-review` on it, at the start of a line in a top-level comment.  Every PR gets at least one Kody review.
+- **Review again when it is warranted.**  Bigger or riskier changes get 2 or 3 reviews, or more, after fixes land.  Use your judgment.
+- **Review the code that will merge.**  Final-code review and evidence for each finding still apply, and a request is neither a waiver nor merge clearance.
+- **One request per ready head.**  Read the PR's comments first and coordinate with its owner and reviewers, so no head gets a duplicate request.  Never bulk-retrigger every PR.  Through `gr_comment_pr`, the same seat repeating identical text within 24 hours gets the existing comment back and nothing posts, so a real repeat needs different text.  That guard does not cover another seat or an older request, so the comment read is what prevents a duplicate.
+- **Monitor it.**  A head was reviewed only when Kody's own `Kody Code Review` check on it is `success`, its title is `Code Review Complete`, its summary starts `Review finished successfully`, and it started no earlier than the newest request (`docs/AUTO-MERGE.md` has the full contract).  Treat every other result, `skipped` included, as no review.  Also use the Kodus CLI if your seat can run it, in a shell with no credentials in its environment: it reviews local code, so it cannot show the state of a PR head.
+- **Answer every finding.**  Each finding gets a comment describing its fix, or disputing it with valid reasons about the code, before it is resolved.  Timing and the owner wanting a merge are never reasons.
+- **A stale change request.**  Dismiss one only as PR-sweep rule 7 (`scripts/pr_sweep/rules.md`) allows.
+
 ## App Icon & Logo Design Policy: Full-Bleed Square Only, Never Pre-Baked Squircle (Owner ruling 2026-08-22 — ALL seats)
 
 **Never generate or deliver app icons / logos solely in a pre-baked squircle format.**

@@ -10,8 +10,8 @@ enum FleetServiceActionRouting {
 
 // Starting,  stopping,  restarting and updating the fleet's processes,  and writing a knob.
 //
-// Muster holds no credential and touches no process itself.  It runs two helpers and reads
-// what they answer:
+// Muster holds no credential.  On this path it touches no process itself.  It runs two
+// helpers and reads what they answer:
 //
 //   * `scripts/fleet-ops-control.py`,  for the Mac's LaunchAgents (run here) and the
 //     server's units,  updates and Coolify redeploys (run on the server,  over ssh to the
@@ -19,11 +19,16 @@ enum FleetServiceActionRouting {
 //   * `python3 -m fleet_knobs set`,  for a non-secret knob
 //
 // Both helpers check `scripts/fleet-ops-control.json` or the knob registry themselves,  so
-// nothing outside the allowlist can be touched however Muster is driven.
+// nothing outside the allowlist can be touched on this path.
 //
-// Every action runs `--plan` first,  which changes nothing,  and Muster shows the plan.  The
+// Every action runs `--plan` first,  which changes nothing,  and Muster shows the plan.  The
 // view asks for Touch ID,  then Muster plans again,  refuses when the plan changed,  and only
-// then runs `--yes`.  One action runs at a time,  app-wide.
+// then runs `--yes`.  One action runs at a time,  app-wide.
+//
+// `ServiceActionRouter` is the one way in for a service row,  from the menu or the panel.
+// BotFleet Server and any LaunchAgent the allowlist does not name stay on `FleetAdmin`'s
+// direct route,  with no plan,  no Touch ID and no audit row:  an allowlist argv cannot say
+// what their start and stop do.  Everything else comes here.
 
 // MARK: - The route
 
@@ -82,7 +87,7 @@ enum OpsVerb: String, CaseIterable, Identifiable {
 
 /// One action the owner can ask for.
 enum OpsAction: Equatable {
-    /// `mac start|stop|restart LABEL`,  run on this Mac.
+    /// `mac start|stop|restart LABEL`,  run on the Mac.
     case macAgent(verb: OpsVerb, label: String)
     /// `server start|stop|restart UNIT`,  run on the server.
     case serverUnit(verb: OpsVerb, unit: String)
@@ -90,11 +95,11 @@ enum OpsAction: Equatable {
     case serverUpdate(name: String)
     /// `server redeploy UUID`,  run on the server.  The name is for the screen only.
     case coolifyRedeploy(uuid: String, name: String)
-    /// `fleet_knobs set KEY VALUE`,  run on this Mac.
+    /// `fleet_knobs set KEY VALUE`,  run on the Mac,  changing a value every machine reads.
     case knobSet(key: String, value: String)
-    /// `fleet_knobs unset KEY`,  run on this Mac:  removes the override so the default applies.
+    /// `fleet_knobs unset KEY`,  run on the Mac:  removes the override so the default applies.
     case knobUnset(key: String)
-    /// `pm2 start|stop|restart NAME`,  run on this Mac.
+    /// `pm2 start|stop|restart NAME`,  run on the Mac.
     case pm2App(verb: OpsVerb, name: String)
     /// `server logs UNIT`,  run on the server:  the last journal lines,  read only.
     case logs(unit: String)
@@ -103,27 +108,138 @@ enum OpsAction: Equatable {
     /// Read the server's coding resource-policy receipt,  without changing anything.
     case resourceStatus
 
-    /// True when the action runs on the server,  over ssh.
-    var runsOnServer: Bool {
+    /// The machine the action runs on.
+    ///
+    /// It is an exhaustive switch with no default,  and `requiredFile` and `invocation`
+    /// both branch on it first,  so ssh is reachable only from `.server`,  and the words on
+    /// the screen come from the same value that picks the route.
+    var runsOn: FleetHost {
         switch self {
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return true
-        case .macAgent, .knobSet, .knobUnset, .pm2App: return false
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
+            return .server
+        case .macAgent, .knobSet, .knobUnset, .pm2App:
+            return .mac
         }
     }
 
-    /// The action,  in a few words,  for a sheet's title.
-    var title: String {
+    /// Where the action's effect lands.
+    var changes: FleetPlace {
         switch self {
-        case .macAgent(let verb, let label): return "\(verb.title) \(label) on this Mac"
-        case .serverUnit(let verb, let unit): return "\(verb.title) \(unit) on the server"
-        case .serverUpdate(let name): return "Run the \(name) update on the server"
-        case .coolifyRedeploy(_, let name): return "Redeploy \(name) on Coolify"
-        case .knobSet(let key, let value): return "Set \(key) to \"\(value)\""
-        case .knobUnset(let key): return "Reset \(key) to the default"
-        case .pm2App(let verb, let name): return "\(verb.title) \(name) (pm2) on this Mac"
-        case .logs(let unit): return "Read the last logs of \(unit) on the server"
-        case .serverResource(let field, let value, _): return "Set server \(resourceTitle(field)) to \(value)"
-        case .resourceStatus: return "Read server resource policy"
+        case .knobSet, .knobUnset: return .acrossFleet
+        case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .pm2App, .logs,
+             .serverResource, .resourceStatus:
+            return .machine(runsOn)
+        }
+    }
+
+    /// True when the action runs on the server,  over ssh.
+    var runsOnServer: Bool { runsOn == .server }
+
+    /// True when the action only reads.  Nothing can have happened on a run that went wrong
+    /// part way,  and the Mac knows whether the text reached it,  so it plainly did not work.
+    var changesNothing: Bool {
+        switch self {
+        case .logs, .resourceStatus:
+            return true
+        case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .pm2App,
+             .serverResource:
+            return false
+        }
+    }
+
+    /// The name the owner reads for what the action touches.
+    var subjectTitle: String {
+        switch self {
+        case .macAgent(_, let label): return OpsNames.agentTitle(label)
+        case .serverUnit(_, let unit): return OpsNames.unitTitle(unit)
+        case .serverUpdate(let name): return name
+        case .coolifyRedeploy(_, let name): return name
+        case .knobSet(let key, _): return key
+        case .knobUnset(let key): return key
+        case .pm2App(_, let name): return OpsNames.pm2Title(name)
+        case .logs(let unit): return OpsNames.unitTitle(unit)
+        case .serverResource(let field, _, _): return resourceTitle(field)
+        case .resourceStatus: return "The Resource Policy"
+        }
+    }
+
+    /// The action,  in a few words,  for a sheet's title and the Touch ID question.  It
+    /// always names the place,  from `changes`.
+    var title: String {
+        let place = changes.inProse
+        switch self {
+        case .macAgent(let verb, _): return "\(verb.title) \(subjectTitle) \(place)"
+        case .serverUnit(let verb, _): return "\(verb.title) \(subjectTitle) \(place)"
+        case .serverUpdate(let name): return "Run the \(name) update \(place)"
+        case .coolifyRedeploy(_, let name): return "Redeploy \(name) \(place)"
+        case .knobSet(let key, let value): return "Set \(key) to \"\(value)\" \(place)"
+        case .knobUnset(let key): return "Reset \(key) to the default \(place)"
+        case .pm2App(let verb, _): return "\(verb.title) \(subjectTitle) \(place)"
+        case .logs: return "Read the last logs of \(subjectTitle) \(place)"
+        case .serverResource(let field, let value, _): return "Set \(resourceTitle(field)) to \(value) \(place)"
+        case .resourceStatus: return "Read the resource policy \(place)"
+        }
+    }
+
+    /// The button that runs the action.
+    var runButtonTitle: String {
+        switch changes {
+        case .machine(let host): return "Run \(host.onTitle) With Touch ID"
+        case .acrossFleet: return "Change For The Whole Fleet With Touch ID"
+        }
+    }
+
+    /// The sentence under the sheet's title.
+    var placeSentence: String {
+        let runs = "Runs \(runsOn.inProse)."
+        if changes == .acrossFleet {
+            return "\(runs)\(ServerStatusCopy.sentenceGap)Changes a value every machine reads."
+        }
+        if case .macAgent(_, let label) = self, label == OpsNames.fetchAgentLabel {
+            return "\(runs)\(ServerStatusCopy.sentenceGap)Asks the server for its report."
+        }
+        return runs
+    }
+
+    /// What a stop does,  shown on the plan,  or nil when the action is not a stop.
+    var stopWarning: String? {
+        switch self {
+        case .macAgent(let verb, _):
+            return verb == .stop ? FleetServices.launchAgentStopBody : nil
+        case .pm2App(let verb, _):
+            return verb == .stop ? FleetServices.pm2StopBody : nil
+        case .serverUnit(let verb, let unit):
+            guard verb == .stop else { return nil }
+            if unit == OpsNames.reportTimerUnit {
+                return "It stops right away on the server, and the server's report stops with it, so the Mac stops knowing the server within 45 minutes."
+            }
+            return "It stops right away on the server, and stays stopped until you start it again."
+        case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs, .serverResource, .resourceStatus:
+            return nil
+        }
+    }
+
+    /// The sentence shown when a helper's answer named the machine this action runs on.
+    var answeredSentence: String {
+        switch runsOn {
+        case .mac: return "The Mac answered this plan."
+        case .server: return "The server answered this plan."
+        }
+    }
+
+    /// Which case this is,  for a test that has to cover every case.
+    var caseTag: OpsActionCase {
+        switch self {
+        case .macAgent: return .macAgent
+        case .serverUnit: return .serverUnit
+        case .serverUpdate: return .serverUpdate
+        case .coolifyRedeploy: return .coolifyRedeploy
+        case .knobSet: return .knobSet
+        case .knobUnset: return .knobUnset
+        case .pm2App: return .pm2App
+        case .logs: return .logs
+        case .serverResource: return .serverResource
+        case .resourceStatus: return .resourceStatus
         }
     }
 
@@ -189,6 +305,61 @@ enum OpsAction: Equatable {
         case "borrow-idle": return "Idle Memory Borrowing"
         default: return "Resource Policy"
         }
+    }
+}
+
+/// A shadow of `OpsAction`'s cases.  A new case cannot compile without a tag and a sample,
+/// so the tests that walk every case cover it the day it is added.
+enum OpsActionCase: CaseIterable {
+    case macAgent, serverUnit, serverUpdate, coolifyRedeploy, knobSet, knobUnset
+    case pm2App, logs, serverResource, resourceStatus
+
+    /// One valid action of this case.
+    var sample: OpsAction {
+        switch self {
+        case .macAgent: return .macAgent(verb: .restart, label: OpsNames.fetchAgentLabel)
+        case .serverUnit: return .serverUnit(verb: .restart, unit: OpsNames.reportTimerUnit)
+        case .serverUpdate: return .serverUpdate(name: "fleet-cli")
+        case .coolifyRedeploy: return .coolifyRedeploy(uuid: "abc123def456", name: "muster-web")
+        case .knobSet: return .knobSet(key: "FLEET_X", value: "1")
+        case .knobUnset: return .knobUnset(key: "FLEET_X")
+        case .pm2App: return .pm2App(verb: .restart, name: "shellular")
+        case .logs: return .logs(unit: OpsNames.reportTimerUnit)
+        case .serverResource:
+            return .serverResource(field: "cpu-cores", value: "4", revision: String(repeating: "a", count: 64))
+        case .resourceStatus: return .resourceStatus
+        }
+    }
+}
+
+/// The names the owner reads for what an action touches.
+///
+/// A small table,  which can go stale:  anything it does not name shows its raw name.
+enum OpsNames {
+    /// The timer that writes the server's report.
+    static let reportTimerUnit = "fleet-server-status.timer"
+    /// The LaunchAgent that fetches the server's report to the Mac.
+    static let fetchAgentLabel = "com.jay.fleet-tools-doctor"
+
+    static func unitTitle(_ unit: String) -> String {
+        switch unit {
+        case reportTimerUnit: return "Server Report Timer"
+        case "fleet-cli-git-update.timer": return "Fleet Tools Update Timer"
+        default: return unit
+        }
+    }
+
+    static func agentTitle(_ label: String) -> String {
+        if label == fetchAgentLabel { return "Fleet Tools Doctor" }
+        return FleetServiceRegistry.descriptor(for: label)?.title ?? label
+    }
+
+    static func pm2Title(_ name: String) -> String {
+        let named = FleetServiceRegistry.all.first { descriptor in
+            if case .pm2(let appName) = descriptor.kind { return appName == name }
+            return false
+        }
+        return named?.title ?? name
     }
 }
 
@@ -426,10 +597,15 @@ struct OpsCommandBuilder {
     ///
     /// A server action runs the server's own copy,  so nothing local is needed.
     func requiredFile(for action: OpsAction) -> URL? {
-        switch action {
-        case .macAgent, .pm2App: return helperURL
-        case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return nil
+        switch action.runsOn {
+        case .server:
+            return nil
+        case .mac:
+            switch action {
+            case .macAgent, .pm2App: return helperURL
+            case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
+            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return nil
+            }
         }
     }
 
@@ -508,28 +684,35 @@ struct OpsCommandBuilder {
         if case .knobUnset(let key) = action {
             tail = ["unset", mode.flag, "--json", "--", key]
         }
-        switch action {
-        case .macAgent, .pm2App:
-            return OpsInvocation(
-                executable: OpsControlRoute.interpreter,
-                arguments: ["-s", helperURL.path] + tail,
-                workingDirectory: "/",
-                environment: localEnvironment,
-                timeout: timeout
-            )
-        case .knobSet, .knobUnset:
-            return OpsInvocation(
-                executable: OpsControlRoute.interpreter,
-                arguments: ["-s", "-m", "fleet_knobs"] + tail,
-                workingDirectory: scriptsDirectory.path,
-                environment: localEnvironment,
-                timeout: timeout
-            )
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
-            // `--` ends ssh's own options,  so nothing after the alias is read as one.  The
+        switch action.runsOn {
+        case .server:
+            // `--` ends ssh's own options,  so nothing after the alias is read as one.  The
             // server's forced command reads the rest from SSH_ORIGINAL_COMMAND and checks it
             // against its own allowlist again.
             return serverInvocation(tail: tail, timeout: timeout)
+        case .mac:
+            switch action {
+            case .macAgent, .pm2App:
+                return OpsInvocation(
+                    executable: OpsControlRoute.interpreter,
+                    arguments: ["-s", helperURL.path] + tail,
+                    workingDirectory: "/",
+                    environment: localEnvironment,
+                    timeout: timeout
+                )
+            case .knobSet, .knobUnset:
+                return OpsInvocation(
+                    executable: OpsControlRoute.interpreter,
+                    arguments: ["-s", "-m", "fleet_knobs"] + tail,
+                    workingDirectory: scriptsDirectory.path,
+                    environment: localEnvironment,
+                    timeout: timeout
+                )
+            case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
+                // `runsOn` says these are the server's,  so this cannot be reached.  It
+                // refuses rather than running a server action on the Mac.
+                throw OpsControlError.invalidArgument("route")
+            }
         }
     }
 }
@@ -694,10 +877,15 @@ struct OpsResult: Decodable, Equatable {
     let verified: Bool
     let invocationID: String?
     let baselineStartMonotonic: UInt64?
+    /// The machine the helper says it ran on,  when it says.  Knob answers never carry it.
+    let host: String?
+    /// True when `host` is there and is not a string,  null included,  which is not the same
+    /// as a helper too old to carry the field.
+    let hostIsMalformed: Bool
 
     enum CodingKeys: String, CodingKey {
         case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
-        case executionState, verified, invocationID, baselineStartMonotonic
+        case executionState, verified, invocationID, baselineStartMonotonic, host
         case oldSource = "old_source"
     }
 
@@ -722,6 +910,8 @@ struct OpsResult: Decodable, Equatable {
         verified = (try? container.decodeIfPresent(Bool.self, forKey: .verified)) == true
         invocationID = try? container.decodeIfPresent(String.self, forKey: .invocationID)
         baselineStartMonotonic = try? container.decodeIfPresent(UInt64.self, forKey: .baselineStartMonotonic)
+        host = try? container.decodeIfPresent(String.self, forKey: .host)
+        hostIsMalformed = host == nil && container.contains(.host)
     }
 }
 
@@ -802,6 +992,14 @@ struct OpsOutcome: Equatable {
     var invocationID: String? = nil
     var executionState: String? = nil
     var baselineStartMonotonic: UInt64? = nil
+    /// The machine the helper said it ran on.  Nil when it did not say,  which is not an
+    /// error:  the installed copy of the helper may predate the field.
+    var answeredFrom: FleetHost? = nil
+    /// True when a run may have done its work and the Mac cannot say:  it lost the helper,
+    /// or the answer does not count.  A plan changes nothing,  so a plan is never this.
+    var runNotKnown: Bool = false
+    /// True when this answers a plan,  which ran nothing however it came out.
+    var isPlan: Bool = false
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -816,6 +1014,13 @@ struct OpsOutcome: Equatable {
     /// The commands,  one line each,  for the plan sheet.
     var commandLines: [String] {
         commands.map { $0.joined(separator: " ") }
+    }
+
+    /// What the sheet calls those commands once the action has ended.  It says what ran only
+    /// when something is known to have run.
+    var commandsHeading: String {
+        if isPlan || kind == .planned || kind == .refused { return "The plan" }
+        return runNotKnown ? "What the helper named" : "What ran"
     }
 }
 
@@ -842,26 +1047,35 @@ enum OpsResultParser {
 
     /// What a run came to.
     ///
-    /// Every way of not knowing ends as a failure,  never as a success:  a run that timed
-    /// out,  an answer that is not JSON,  and a plan that answers "done" all read as failed.
+    /// Every way of not knowing ends short of a success.  A plan changes nothing,  and neither
+    /// does a read,  so one that timed out or is not JSON failed.  A run that timed out,  gave
+    /// no answer,  reported work it did not stand behind or was answered by the wrong machine
+    /// may have done its work,  so it reads as unknown,  and `refused` and `failed` stay for
+    /// what is known to have ended that way.
     static func parse(
         _ result: OpsProcessResult,
         mode: OpsMode,
         action: OpsAction,
         timeout: TimeInterval
     ) -> OpsOutcome {
+        let canHaveChanged = mode == .yes && !action.changesNothing
         if result.timedOut {
             return OpsOutcome(
-                kind: .failed, ok: false, commands: [],
+                kind: canHaveChanged ? .unknown : .failed, ok: false, commands: [],
                 detail: "The helper did not finish within \(Int(timeout)) seconds.",
-                exitCode: result.exitCode
+                exitCode: result.exitCode,
+                runNotKnown: canHaveChanged,
+                isPlan: mode == .plan
             )
         }
         guard let answer = decode(result.stdout) else {
+            let landed = runMayHaveLanded(result, action: action, mode: mode)
             return OpsOutcome(
-                kind: .failed, ok: false, commands: [],
-                detail: unreadableDetail(result, action: action),
-                exitCode: result.exitCode
+                kind: landed ? .unknown : .failed, ok: false, commands: [],
+                detail: unreadableDetail(result, action: action, mode: mode),
+                exitCode: result.exitCode,
+                runNotKnown: landed,
+                isPlan: mode == .plan
             )
         }
         var kind = OpsResultKind(rawValue: answer.result ?? "") ?? .unknown
@@ -888,24 +1102,38 @@ enum OpsResultParser {
                 completed = answer.executionState == nil || answer.executionState == "completed"
             }
             if !answer.ok || result.exitCode != 0 {
-                kind = .failed
+                kind = canHaveChanged ? .unknown : .failed
+                detail = unbackedDetail("done", answer: answer, exitCode: result.exitCode, helperWords: detail)
             } else if !completed {
                 kind = .submitted
                 detail = "The request was submitted; completion has not been verified."
             }
         }
         if kind == .submitted && (!answer.ok || result.exitCode != 0) {
-            kind = .failed
+            kind = canHaveChanged ? .unknown : .failed
+            detail = unbackedDetail("submitted", answer: answer, exitCode: result.exitCode, helperWords: detail)
+        }
+        let isKnobAction: Bool
+        if case .knobSet = action { isKnobAction = true }
+        else if case .knobUnset = action { isKnobAction = true }
+        else { isKnobAction = false }
+        // The answer names the machine it came from,  when the helper is new enough to say.
+        // The button named one machine and another one replied.  A plan that does is refused,
+        // because nothing has run.  A run that does may have done its work on that machine,
+        // so it does not count as done and the Mac cannot call it refused either.
+        var answeredFrom: FleetHost?
+        if !isKnobAction, answer.host != nil || answer.hostIsMalformed {
+            answeredFrom = FleetHost(reportValue: answer.host)
+            if answeredFrom != action.runsOn {
+                kind = mode == .plan ? .refused : .unknown
+                detail = wrongMachineDetail(answeredFrom, action: action, mode: mode)
+            }
         }
         if detail.isEmpty {
             detail = defaultDetail(kind: kind, exitCode: result.exitCode)
         }
         var knobChange: OpsKnobChange?
         // Only a knob answer that got as far as naming a value carries a change.
-        let isKnobAction: Bool
-        if case .knobSet = action { isKnobAction = true }
-        else if case .knobUnset = action { isKnobAction = true }
-        else { isKnobAction = false }
         if isKnobAction, answer.new != nil || answer.oldSource != nil {
             var removes = false
             if case .knobUnset = action { removes = true }
@@ -934,8 +1162,62 @@ enum OpsResultParser {
             resourcePolicy: answer.resourcePolicy,
             invocationID: invocationID,
             executionState: answer.executionState,
-            baselineStartMonotonic: answer.baselineStartMonotonic
+            baselineStartMonotonic: answer.baselineStartMonotonic,
+            answeredFrom: answeredFrom,
+            runNotKnown: canHaveChanged && kind == .unknown,
+            isPlan: mode == .plan
         )
+    }
+
+    /// True when a run that gave no answer may still have done its work.
+    ///
+    /// Only what proves the helper never ran says otherwise:  ssh stopping before anything
+    /// reached it,  or a shell that could not start it.  A traceback part way through,  a
+    /// signal,  or an exit with nothing printed says nothing about how far it got.
+    private static func runMayHaveLanded(_ result: OpsProcessResult, action: OpsAction, mode: OpsMode) -> Bool {
+        guard mode == .yes, !action.changesNothing else { return false }
+        if action.runsOnServer, result.exitCode == 255 {
+            return sshStoppedEarly(result.stderr) == nil
+        }
+        return result.exitCode != 126 && result.exitCode != 127
+    }
+
+    /// The sentence for a helper that reports the work and does not stand behind the report,
+    /// naming what disagrees with it,  and then the helper's own words.
+    private static func unbackedDetail(_ word: String,
+                                       answer: OpsResult,
+                                       exitCode: Int32,
+                                       helperWords: String) -> String {
+        let sentence = answer.ok
+            ? "The helper said \(word), but it exited with code \(exitCode)."
+            : "The helper said \(word), but its answer was not ok (exit \(exitCode))."
+        return helperWords.isEmpty ? sentence : ApplyCopy.join(sentence, helperWords)
+    }
+
+    /// What stopped ssh before any command was sent.
+    private enum SSHStoppedEarly {
+        case lookup, keyRefused, hostKey, noConnection
+    }
+
+    /// Reads ssh's own diagnostics,  each by the shape of its whole line,  or nil when there
+    /// is none.  A remote command's stderr reaches this same text and can say anything,  so
+    /// a phrase somewhere in it is not proof that nothing was sent.
+    private static func sshStoppedEarly(_ stderr: String) -> SSHStoppedEarly? {
+        for line in stderr.lowercased().split(whereSeparator: \.isNewline) {
+            let text = line.trimmingCharacters(in: .whitespaces)
+            if text.hasPrefix("ssh: could not resolve hostname") { return .lookup }
+            if text.hasPrefix("ssh: connect to host") { return .noConnection }
+            if text.hasPrefix("host key verification failed") { return .hostKey }
+            if text.contains(": permission denied ("), text.hasSuffix(").") { return .keyRefused }
+        }
+        return nil
+    }
+
+    /// The fixed sentence for an answer that did not come from the machine the button names.
+    private static func wrongMachineDetail(_ found: FleetHost?, action: OpsAction, mode: OpsMode) -> String {
+        let source = found.map { "The answer came from \($0.name)" } ?? "The answer named a machine this app does not know"
+        let ending = mode == .plan ? "so nothing will run" : "so this cannot be counted as done"
+        return "\(source), but this button names \(action.runsOn.name), \(ending)."
     }
 
     /// Journal text with escape and control sequences removed, for the screen and
@@ -991,23 +1273,26 @@ enum OpsResultParser {
     ///
     /// ssh's own errors are put in fixed words,  because its messages can carry the
     /// server's address and that does not belong on the screen.
-    private static func unreadableDetail(_ result: OpsProcessResult, action: OpsAction) -> String {
+    private static func unreadableDetail(_ result: OpsProcessResult, action: OpsAction, mode: OpsMode) -> String {
         if action.runsOnServer && result.exitCode == 255 {
-            let errors = result.stderr.lowercased()
             let alias = OpsControlRoute.serverAlias
-            if errors.contains("could not resolve hostname") {
-                return "ssh could not find the \(alias) alias.\(ServerStatusCopy.sentenceGap)Add it to ~/.ssh/config."
-            }
-            if errors.contains("permission denied") {
+            switch sshStoppedEarly(result.stderr) {
+            case .some(.lookup):
+                return "The Mac could not look up the server.\(ServerStatusCopy.sentenceGap)Check the Mac's network, then the \(alias) alias in ~/.ssh/config."
+            case .some(.keyRefused):
                 return "The server refused the \(alias) key.\(ServerStatusCopy.sentenceGap)Install it on the server."
-            }
-            if errors.contains("host key verification failed") {
+            case .some(.hostKey):
                 return "The server's host key is not known to ssh,\(ServerStatusCopy.sentenceGap)so nothing was sent."
+            case .some(.noConnection):
+                return "The server did not answer, so nothing ran."
+            case .none:
+                // A plan changes nothing either way,  and a read that lost the server only
+                // brought nothing back.  A run that lost the server cannot say how far it got.
+                if mode == .plan { return "The server did not answer, so nothing ran." }
+                return action.changesNothing
+                    ? "The server did not answer, so nothing came back."
+                    : "The server did not answer, so the Mac cannot say whether this ran."
             }
-            if errors.contains("timed out") || errors.contains("connection refused") {
-                return "The server did not answer over ssh."
-            }
-            return "ssh could not reach the server through the \(alias) alias."
         }
         let tail = ApplyCopy.normalize(result.stderrTail)
         if tail.isEmpty {
@@ -1376,10 +1661,20 @@ final class OpsController: ObservableObject {
             phase = .finished(action, outcome)
             record(action, result: outcome.kind.rawValue)
         } catch {
-            phase = .failed(action, error.localizedDescription)
             // A helper that could not be started ran nothing.
             if let control = error as? OpsControlError, case .launchFailed = control { started = false }
-            if started { record(action, result: OpsResultKind.failed.rawValue) }
+            if started, !action.changesNothing {
+                // The helper ran,  and what it answered could not be read,  so the Mac cannot
+                // say how far it got.
+                let outcome = OpsOutcome(kind: .unknown, ok: false, commands: [],
+                                         detail: error.localizedDescription, exitCode: -1,
+                                         runNotKnown: true)
+                phase = .finished(action, outcome)
+                record(action, result: outcome.kind.rawValue)
+            } else {
+                phase = .failed(action, error.localizedDescription)
+                if started { record(action, result: OpsResultKind.failed.rawValue) }
+            }
         }
         if started { completedRuns += 1 }
     }

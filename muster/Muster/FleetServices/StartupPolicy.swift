@@ -316,7 +316,7 @@ public final class StartupPolicy {
     public func startAgent(label: String) throws {
         let plist = launchAgentPlist(label: label)
         guard files.fileExists(atPath: plist.path) else {
-            throw StartupPolicyError.refused("The \(label) LaunchAgent is not installed on this Mac.")
+            throw StartupPolicyError.refused("The \(label) LaunchAgent is not installed on the Mac.")
         }
         let domain = "gui/\(uid)"
         let full = "\(domain)/\(label)"

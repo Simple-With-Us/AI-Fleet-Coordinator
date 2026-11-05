@@ -183,6 +183,9 @@ final class DriftMonitor: ObservableObject {
     @Published private(set) var redCount: Int?
     /// The red cells,  for the menu and the panel.
     @Published private(set) var redCells: [DriftRedCell] = []
+    /// The cells that drifted,  which the grid does not paint red and the menu still has
+    /// to count:  a calm bar over drifted cells would not be true.
+    @Published private(set) var driftCells: [DriftRedCell] = []
     /// The turns,  newest first.
     @Published private(set) var transitions: [DriftTransition] = []
     /// How many paths the manifest named and the app is watching.
@@ -348,6 +351,14 @@ final class DriftMonitor: ObservableObject {
             )
         }
         redCount = reds.count
+        driftCells = cells.filter { $0.state == .drift }.map { cell in
+            DriftRedCell(
+                seat: cell.seat,
+                kind: cell.kind.rawValue,
+                ruleID: cell.rules.first?.ruleId,
+                state: cell.state
+            )
+        }
 
         guard hasBaseline else {
             // The first run that could be trusted is a reading and not a change:
@@ -375,6 +386,7 @@ final class DriftMonitor: ObservableObject {
     private func forgetTheCount() {
         redCount = nil
         redCells = []
+        driftCells = []
     }
 
     // MARK: Recording
@@ -419,7 +431,7 @@ final class DriftMonitor: ObservableObject {
     /// the system can never hold the grid hostage.  The notice says which seat and
     /// which check turned red,  and the history keeps the rest.
     private func notify(_ transition: DriftTransition) {
-        let title = "Drift Alert"
+        let title = "Drift Alert \(FleetHost.mac.onTitle)"
         let body = "\(transition.seat) / \(transition.kindTitle):  "
             + "\(transition.checkText) turned red "
             + "(\(transition.fromText) to \(transition.toState))."

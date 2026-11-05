@@ -6,6 +6,17 @@ public enum FleetServiceKind: Equatable {
     case pm2(appName: String)
     /// A launchd agent.
     case launchAgent(label: String)
+
+    /// The machine this kind of service runs on.
+    ///
+    /// It is an exhaustive switch with no default,  so a new kind of service cannot be
+    /// added without saying which machine it runs on.
+    public var host: FleetHost {
+        switch self {
+        case .pm2: return .mac
+        case .launchAgent: return .mac
+        }
+    }
 }
 
 /// How the wanted state of a fleet service is decided.
@@ -35,6 +46,10 @@ public struct FleetServiceDescriptor: Equatable {
         self.kind = kind
         self.policy = policy
     }
+
+    /// The machine the service runs on.  It is computed and never stored,  so a
+    /// descriptor cannot claim another machine.
+    public var host: FleetHost { kind.host }
 }
 
 /// The fleet services the Control app watches on this Mac.
@@ -160,6 +175,20 @@ public struct FleetServiceEntry: Equatable {
     public var title: String { descriptor.title }
     public var kind: FleetServiceKind { descriptor.kind }
     public var policy: FleetServiceWantedPolicy { descriptor.policy }
+    /// The machine the service runs on.
+    public var host: FleetHost { descriptor.host }
+    /// The service's title as a menu row shows it.
+    public var menuRowTitle: String { FleetServices.menuRowTitle(title: title, host: host) }
+
+    /// Why the service offers nothing right now,  or nil when it offers something or
+    /// when its state already says why.
+    public var whyNoActions: String? {
+        guard availableActions.isEmpty else { return nil }
+        if state == .notInstalled { return nil }
+        if !canChangeStartupPolicy { return "BotFleet on the Mac is too old to start it from here" }
+        if policy == .whileServerRuns { return "it follows BotFleet Server" }
+        return nil
+    }
 
     /// A short description of the entry for the menu.
     public var summary: String {
@@ -187,14 +216,17 @@ public struct FleetServiceEntry: Equatable {
 public struct FleetServiceMenuItem: Equatable {
     public let id: String
     public let title: String
+    /// The machine the service runs on.
+    public let host: FleetHost
     /// What the Control app saw, and what it wants.
     public let summary: String
     /// The actions the owner may pick for this service.
     public let actions: [ManagedServiceAction]
 
-    public init(id: String, title: String, summary: String, actions: [ManagedServiceAction]) {
+    public init(id: String, title: String, host: FleetHost, summary: String, actions: [ManagedServiceAction]) {
         self.id = id
         self.title = title
+        self.host = host
         self.summary = summary
         self.actions = actions
     }
@@ -276,14 +308,37 @@ public struct FleetServices: Equatable {
     /// pick for it, so the menu itself only draws what the policy decided.
     public var menuItems: [FleetServiceMenuItem] {
         entries.map { entry in
-            FleetServiceMenuItem(id: entry.id, title: entry.title, summary: entry.summary,
-                                 actions: entry.availableActions)
+            FleetServiceMenuItem(id: entry.id, title: entry.title, host: entry.host,
+                                 summary: entry.summary, actions: entry.availableActions)
         }
     }
 
-    /// The title of the Fleet Services submenu.
+    /// The title of the submenu that holds every service.
     public var menuTitle: String {
-        "Fleet Services (\(entries.count))"
+        "Services \(FleetHost.mac.onTitle) (\(entries.count))"
+    }
+
+    /// A title as a menu row shows it.
+    ///
+    /// A service on the Mac whose own name says Server would read as the server,  so its
+    /// row says which machine it is on.  The bare name stays everywhere else,  because it
+    /// is the owner's name for it.
+    public static func menuRowTitle(title: String, host: FleetHost) -> String {
+        guard host == .mac,
+              title.split(separator: " ").contains("Server") else { return title }
+        return "\(title) (\(host.onTitle))"
+    }
+
+    /// True when pm2 answered the last read.
+    ///
+    /// Any pm2 application with a state of its own means pm2 answered,  because an
+    /// application it has no record of reads as stopped.  Every one of them unknown means
+    /// it did not,  which says nothing about whether those applications run.
+    public var pm2Answered: Bool {
+        FleetServiceRegistry.all.contains { descriptor in
+            guard case .pm2 = descriptor.kind, descriptor.policy == .alwaysOn else { return false }
+            return (states[descriptor.id] ?? .unknown) != .unknown
+        }
     }
 
     /// What stopping one fleet service does, for the confirmation.
@@ -294,19 +349,38 @@ public struct FleetServices: Equatable {
     /// the owner cannot pick.
     public static func stopBody(for service: FleetServiceMenuItem,
                                 startupPolicySupported: Bool) -> String {
-        if service.id == FleetServiceRegistry.server.id {
-            let common = "The BotFleet Server stops itself, and its Local VMs go down with it.  The server refuses while work is in flight.  The installed wrapper stays down while the deliberate-stop marker exists, so a login does not bring it back"
-            guard startupPolicySupported else {
-                return common + ".  This version of BotFleet cannot restart the server from here, so remove ~/.botfleet/stopped.marker yourself to bring it back."
-            }
-            return common + "; Restart clears the marker."
-        }
-        if let descriptor = FleetServiceRegistry.descriptor(for: service.id),
-           case .launchAgent = descriptor.kind {
-            return "It stops right away.  macOS does not bring it back until the LaunchAgent is loaded again."
-        }
-        return "It stops right away, and pm2 leaves it stopped until you start it again."
+        stopBody(forServiceID: service.id, startupPolicySupported: startupPolicySupported)
     }
+
+    /// What stopping one fleet service does,  from its id alone.
+    public static func stopBody(forServiceID id: String,
+                                startupPolicySupported: Bool) -> String {
+        if id == FleetServiceRegistry.server.id {
+            let common = "BotFleet Server stops itself on the Mac, and its Local VMs go down with it.\u{00A0} It refuses while work is in flight.\u{00A0} It stays down after a login until it is started again"
+            guard startupPolicySupported else {
+                return common + ".\u{00A0} This version of BotFleet cannot restart it from here, so remove ~/.botfleet/stopped.marker on the Mac yourself to bring it back."
+            }
+            return common + "; Restart brings it back."
+        }
+        if let descriptor = FleetServiceRegistry.descriptor(for: id),
+           case .launchAgent = descriptor.kind {
+            return launchAgentStopBody
+        }
+        return pm2StopBody
+    }
+
+    /// What restarting BotFleet Server does to the work it found in flight.
+    public static func restartBody(work: String) -> String {
+        "A restart of BotFleet Server on the Mac does not wait the way a stop does, so it can end this work.\u{00A0} Checked just now:  \(work) in flight."
+    }
+
+    /// What stopping a LaunchAgent does.
+    public static let launchAgentStopBody =
+        "It stops right away on the Mac.\u{00A0} macOS does not bring it back until the LaunchAgent is loaded again."
+
+    /// What stopping a pm2 application does.
+    public static let pm2StopBody =
+        "It stops right away on the Mac, and pm2 leaves it stopped until you start it again."
 
     /// The action the Control app takes on its own to bring one service in
     /// line with its wanted state.

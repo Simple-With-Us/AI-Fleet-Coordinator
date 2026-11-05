@@ -1,6 +1,14 @@
 # Muster
 
-Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly reports unavailable fleet status because no data source is connected.
+Muster is the fleet owner's native SwiftUI macOS 14+ control app.  It shows what runs on the Mac and what runs on the server as two named places, and it acts on each through a route that names the machine.
+
+## The Menu Bar
+
+The menu bar item names both places:  `Mac OK · Server OK`, `Mac 2 · Server OK` for two things needing attention, `Mac 2+` when something else could not be read as well, and `?` for a place not read inside its window, or one with nothing wrong and some part not read.  Short Menu Bar Text in Settings shortens it to `M OK · S ?`.
+
+The menu has a The Mac section and a The Server section, and everything sits under the place it runs on.  Opening it reads memory and never contacts the server.  Ask The Server Now is the one thing that does, only on a click, and an answer never turns the bar to OK, because only a current report does that.
+
+An action that ends in … opens a sheet or an alert first.  pm2 rows, allowlisted LaunchAgents and everything on the server go through the plan and Touch ID, from the menu and the window alike.  BotFleet Server and any LaunchAgent the allowlist does not name stay on the direct route, with no plan, no Touch ID and no audit row.  Their Stop asks first, and BotFleet Server's Restart asks first only when a fresh read finds work in flight.
 
 ## Scope
 
@@ -33,7 +41,7 @@ The app watches the paths the manifest names and says when a cell turns red.  I
 
 The watch list is **derived from the manifest**,  never written down:  every rule's `check.target` becomes a path,  `~` is expanded,  and a rule that checks a credential is skipped because the app never reads a credential.  A new seat is watched because the manifest names its paths.  Each path is watched by its own path,  which FSEvents filters to that path alone;  a path that is not there yet is watched too,  and FSEvents reports it when it appears.  The nearest directory above it is watched as well,  unless that directory is the home directory:  FSEvents watches a directory recursively,  and the home directory is the largest tree on the Mac.
 
-A change is gathered for a second and a half,  so a write that lands in two pieces is one run,  and the engine runs again.  A slow safety net runs the engine every ten minutes for a change the watcher could not see.  A cell that was not red and becomes red posts one notification that names the seat and the check;  a cell that stays red says nothing again,  and a cell that recovers and turns red again says so again.  The notification fails soft:  an app without permission,  or a process without a bundle,  records the turn and posts nothing.  The menubar item carries the red count,  in the same red the grid uses.
+A change is gathered for a second and a half,  so a write that lands in two pieces is one run,  and the engine runs again.  A slow safety net runs the engine every ten minutes for a change the watcher could not see.  A cell that was not red and becomes red posts one notification that names the seat and the check;  a cell that stays red says nothing again,  and a cell that recovers and turns red again says so again.  The notification fails soft:  an app without permission,  or a process without a bundle,  records the turn and posts nothing.  The menu bar item counts red and drifted cells among the things needing attention on the Mac, in plain words, with no colour of its own.
 
 The first run that could be trusted is a reading and not a change:  there is no earlier answer to compare it with.  A run that could not be trusted says nothing,  and the count is unknown rather than zero.
 

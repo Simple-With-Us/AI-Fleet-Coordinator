@@ -1,30 +1,28 @@
 import SwiftUI
 
-/// The Fleet Services panel:  every long-lived process the fleet runs on this Mac,  and
-/// what the owner can do about each one.
+/// The Services panel:  every long-lived process the fleet runs on the Mac,  and what the
+/// owner can do about each one.
 ///
-/// The panel is the wide version of the menubar's fleet admin:  the same services,  the
-/// same states and the same actions,  with room for the BotFleet Server's own controls
-/// and for the reason a service cannot be changed.
+/// The panel is the wide version of the menu's The Mac section:  the same services,  the
+/// same states and the same actions on the same route,  with room for BotFleet Server's
+/// own controls and for the reason a service cannot be changed.
 ///
 /// The states are probed and never assumed:  a pm2 application is what pm2 reports,  a
 /// launchd agent is what launchctl reports,  and the BotFleet MCP Server is what its
 /// own health endpoint reports.
 struct FleetServicesPanel: View {
     @EnvironmentObject private var admin: FleetAdmin
-    @ObservedObject private var controller = OpsController.shared
-    /// The allowlist as this Mac's checkout carries it, read when the panel opens.
-    @State private var allowlist: OpsAllowlist?
-    /// The service whose sheet action this panel started, until that action settles.
-    @State private var pendingServiceID: String?
+    @EnvironmentObject private var router: ServiceActionRouter
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 serverCard
-                if let problem = admin.problem {
-                    problemBox(problem)
+                if let problem = lastProblem {
+                    problemBox(problem, heading: FleetActionWords.panelHeading(actionState: router.actionState,
+                                                                               adminProblem: admin.problem,
+                                                                               adminProblemIsNotKnown: admin.problemIsNotKnown))
                 }
                 servicesSection
             }
@@ -32,31 +30,22 @@ struct FleetServicesPanel: View {
             .padding(.vertical, 18)
         }
         .task {
-            allowlist = OpsAllowlist.read(
-                at: OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot))
+            router.reloadAllowlist()
             await admin.refresh()
         }
-        .onChange(of: controller.phase) { _, _ in
-            settlePendingAction()
-        }
-        .onChange(of: controller.completedRuns) { _, _ in
-            settlePendingAction()
-            Task {
-                await admin.refresh()
-                // A service that just started may not answer its health probe on
-                // the first read after the helper exits, so read once more after
-                // a moment rather than leaving that first reading on screen.
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                await admin.refresh()
-            }
-        }
+    }
+
+    /// The whole reason for the last thing that did not work.  The menu can only hold part
+    /// of it,  so its row opens this panel.
+    private var lastProblem: String? {
+        FleetActionWords.panelProblem(actionState: router.actionState, adminProblem: admin.problem)
     }
 
     // MARK: The header
 
     private var header: some View {
         HStack {
-            Text("Fleet Services")
+            Text("Services \(FleetHost.mac.onTitle)")
                 .font(.largeTitle.weight(.semibold))
             Spacer()
             Button {
@@ -70,7 +59,8 @@ struct FleetServicesPanel: View {
 
     // MARK: The server's own card
 
-    /// The BotFleet Server's own controls.
+    /// BotFleet Server's own controls.  It runs on the Mac,  and its name says Server,  so
+    /// the card says which machine at every turn.
     ///
     /// The server is stopped by asking the server itself,  because launchd does not
     /// always own the process:  the installed wrapper exits when the harness is already
@@ -78,24 +68,26 @@ struct FleetServicesPanel: View {
     /// port,  so booting the agent out can leave a server that is still serving.
     private var serverCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("BotFleet Server")
-                .font(.headline)
-            Text(admin.serverRunning ? "Running." : "Not running.")
+            HStack(spacing: 10) {
+                Text("BotFleet Server")
+                    .font(.headline)
+                PlaceBadge(place: .machine(.mac))
+            }
+            Text(serverStateText)
                 .font(.callout)
                 .foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                Button("Start Server") {
-                    Task { await admin.startServer() }
+                // The card and the row are one service on one route.  A state that is not
+                // known offers neither:  the owner refreshes instead.
+                Button("Start \(FleetHost.mac.onTitle)") {
+                    startOnServer(.start)
                 }
-                .disabled(admin.serverRunning || admin.busyServiceID != nil)
-                Button("Stop Server") {
-                    guard confirmFleetStop(title: "BotFleet Server",
-                                           message: admin.stopConfirmation(for: FleetServiceRegistry.server.id))
-                    else { return }
-                    Task { await admin.stopServer() }
+                .disabled(admin.localServiceState != .stopped || router.isBusy)
+                Button("Stop \(FleetHost.mac.onTitle)") {
+                    startOnServer(.stop)
                 }
-                .disabled(!admin.serverRunning || admin.busyServiceID != nil)
-                Toggle("Start Server At Login", isOn: Binding(
+                .disabled(admin.localServiceState != .running || router.isBusy)
+                Toggle("Start At Mac Login", isOn: Binding(
                     get: { admin.startsAtLogin },
                     set: { wanted in Task { await admin.setStartsAtLogin(wanted) } }
                 ))
@@ -103,7 +95,7 @@ struct FleetServicesPanel: View {
                 .disabled(!admin.startupPolicySupported)
             }
             if !admin.startupPolicySupported {
-                Text("This Mac's BotFleet is too old to manage the server's startup policy.")
+                Text("BotFleet on the Mac is too old to manage BotFleet Server's startup policy.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -120,16 +112,32 @@ struct FleetServicesPanel: View {
         .cornerRadius(10)
     }
 
+    /// What is known about BotFleet Server,  in three states.
+    private var serverStateText: String {
+        switch admin.localServiceState {
+        case .running: return "Running \(FleetHost.mac.inProse)."
+        case .stopped: return "Not running \(FleetHost.mac.inProse)."
+        case .unknown: return "State not known."
+        }
+    }
+
+    /// Runs one of the card's two buttons on the same route as the service's row.
+    private func startOnServer(_ action: ManagedServiceAction) {
+        guard let entry = admin.entries.first(where: { $0.id == FleetServiceRegistry.server.id }),
+              let menuAction = router.action(action, on: entry) else { return }
+        router.start(menuAction)
+    }
+
     // MARK: The services
 
     private var servicesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("The fleet's own services")
+            Text("Every Service \(FleetHost.mac.onTitle)")
                 .font(.headline)
             if admin.entries.isEmpty {
                 Text(admin.reading
-                     ? "Reading the fleet services…"
-                     : "No fleet service has been read yet.  Refresh to read them.")
+                     ? "Reading the Mac\u{2026}"
+                     : "No service on the Mac has been read yet.\u{00A0} Refresh to read them.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
@@ -150,7 +158,12 @@ struct FleetServicesPanel: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if entry.stoppedByOwner {
-                    Text("Stopped on purpose;  it stays stopped until it is started again.")
+                    Text(FleetActionWords.ownerStopLine(for: entry.state))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let why = whyActionsAreMissing(entry) {
+                    Text(why)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -158,10 +171,14 @@ struct FleetServicesPanel: View {
             Spacer()
             HStack(spacing: 8) {
                 ForEach(fleetAdminActions(for: entry)) { action in
-                    Button(action.title) {
-                        actuate(action.action, for: entry)
+                    if let menuAction = router.action(action.action, on: entry) {
+                        Button(action.title) {
+                            router.start(menuAction)
+                        }
+                        .disabled(router.isBusy)
+                        .help("\(action.title) \(entry.title) \(entry.host.inProse)")
+                        .accessibilityLabel("\(action.title) \(entry.title) \(entry.host.inProse)")
                     }
-                    .disabled(admin.busyServiceID != nil || controller.isPresenting)
                 }
             }
         }
@@ -171,96 +188,29 @@ struct FleetServicesPanel: View {
         .cornerRadius(8)
     }
 
-    /// One row's action,  on the one control path.
-    ///
-    /// A pm2 row and a LaunchAgent row go through `OpsController`:  the helper plans
-    /// the change,  the sheet shows the plan and asks Touch ID,  and only then does
-    /// anything run,  against the allowlist the helper checks again itself.  The
-    /// BotFleet Server's own row stays with the fleet admin:  its start clears the
-    /// deliberate-stop marker through the installed wrapper and its stop asks the
-    /// server itself,  neither of which an allowlist argv can say,  so it keeps its
-    /// stop confirmation here.  A LaunchAgent row the allowlist does not name yet
-    /// keeps that same fleet admin path, because the helper could only refuse it.
-    private func actuate(_ action: ManagedServiceAction, for entry: FleetServiceEntry) {
-        let verb: OpsVerb?
-        switch action {
-        case .start: verb = .start
-        case .stop: verb = .stop
-        case .restart: verb = .restart
-        case .none: verb = nil
-        }
-        guard let verb else { return }
-        switch entry.kind {
-        case .pm2(let appName):
-            planThroughController(.pm2App(verb: verb, name: appName),
-                                  action: action, entry: entry)
-        case .launchAgent(let label):
-            if FleetServiceActionRouting.usesFleetAdmin(
-                serviceID: entry.id, label: label, allowlist: allowlist
-            ) {
-                // The helper fails closed on a label its allowlist does not name,
-                // so an unlisted row keeps the fleet admin path the menubar
-                // still uses until the owner adds that label to the allowlist.
-                performThroughAdmin(action, entry: entry)
-            } else {
-                planThroughController(.macAgent(verb: verb, label: label),
-                                      action: action, entry: entry)
-            }
-        }
-    }
-
-    /// Plans one action on the controller path and records the owner's intent
-    /// behind it, so a stop made here is a stop the fleet admin knows about.
-    private func planThroughController(_ opsAction: OpsAction,
-                                       action: ManagedServiceAction,
-                                       entry: FleetServiceEntry) {
-        guard controller.plan(opsAction) else { return }
-        admin.beginControllerAction(action, serviceID: entry.id)
-        pendingServiceID = entry.id
-    }
-
-    /// Runs one action through the fleet admin, with the stop confirmation that
-    /// path has always asked for.
-    private func performThroughAdmin(_ action: ManagedServiceAction, entry: FleetServiceEntry) {
-        if action == .stop,
-           !confirmFleetStop(title: entry.title,
-                             message: admin.stopConfirmation(for: entry.id)) {
-            return
-        }
-        Task { await admin.perform(action, serviceID: entry.id) }
-    }
-
-    /// Settles the intent recorded for this panel's sheet action once that action
-    /// reaches an end:  a run that did what it was asked keeps the record, and
-    /// anything else, the sheet closed without a run included, restores it.
-    private func settlePendingAction() {
-        guard let serviceID = pendingServiceID else { return }
-        switch controller.phase {
-        case .finished(_, let outcome):
-            admin.endControllerAction(serviceID: serviceID,
-                                      succeeded: outcome.isSuccess(for: .yes))
-            pendingServiceID = nil
-        case .failed, .idle:
-            admin.endControllerAction(serviceID: serviceID, succeeded: false)
-            pendingServiceID = nil
-        case .planning, .review, .running:
-            break
-        }
+    /// Why a row shows fewer buttons than its state offers,  or nil when it shows them all.
+    private func whyActionsAreMissing(_ entry: FleetServiceEntry) -> String? {
+        let routes = fleetAdminActions(for: entry).map { router.action($0.action, on: entry) }
+        guard routes.contains(where: { $0 == nil }) else { return nil }
+        return MachineMenuCopy.noRouteSentence(allowlist: router.allowlist,
+                                               someRouted: routes.contains(where: { $0 != nil }))
     }
 
     // MARK: A refusal
 
-    private func problemBox(_ problem: String) -> some View {
+    private func problemBox(_ problem: String, heading: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("The last change was refused")
+            Text(heading)
                 .font(.callout.weight(.semibold))
             Text(problem)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.08))
+        .background((heading == FleetActionWords.notKnownHeading ? Color.orange : Color.red).opacity(0.08))
         .cornerRadius(8)
     }
 }

@@ -4,12 +4,14 @@ import Foundation
 public enum FleetServiceError: LocalizedError, Equatable {
     case managerMissing
     case refused(String)
+    /// The change was made,  and nothing could say how it ended.  It is not a refusal.
+    case notKnown(String)
 
     public var errorDescription: String? {
         switch self {
         case .managerMissing:
-            return "The process manager for this service is not installed on this Mac."
-        case .refused(let message):
+            return "The process manager for this service is not installed on the Mac."
+        case .refused(let message), .notKnown(let message):
             return message
         }
     }
@@ -49,17 +51,49 @@ public final class FleetServiceControl {
     /// serving.  The caller that knows the server's API and port observes it
     /// here;  without one, launchd's view is all there is.
     private let observeServer: (() async -> ManagedServiceState)?
+    /// How long a LaunchAgent is given between two looks after a change,  and
+    /// the BotFleet Server between two looks after it is asked to stop.
+    ///
+    /// launchctl and the agent do not settle at the same moment:  a row can
+    /// still carry a process right after a bootout,  and carry none right
+    /// after a kickstart.  The window is the one a pm2 change gets.
+    private let agentSettleInterval: TimeInterval
 
     public init(pm2: PM2Client = PM2Client(),
                 startup: StartupPolicy = StartupPolicy(),
                 mcpServer: McpServerControl? = nil,
                 stopServer: (() async throws -> Void)? = nil,
-                observeServer: (() async -> ManagedServiceState)? = nil) {
+                observeServer: (() async -> ManagedServiceState)? = nil,
+                agentSettleInterval: TimeInterval = FleetServiceControl.settleInterval) {
         self.pm2 = pm2
         self.startup = startup
         self.mcpServer = mcpServer
         self.stopServer = stopServer
         self.observeServer = observeServer
+        self.agentSettleInterval = agentSettleInterval
+    }
+
+    /// A service's state once it reached the wanted one,  or once the budget
+    /// ran out,  so a change that landed is not read as one that did not.
+    ///
+    /// A look can take a whole timeout when launchctl or the server is wedged,
+    /// so the budget is time and not a number of looks.
+    private func settledState(wanted: ManagedServiceState,
+                              attempts: Int,
+                              observe: () async -> ManagedServiceState) async -> ManagedServiceState {
+        await ManagedServices.settle(to: wanted,
+                                     within: Double(max(attempts, 0)) * agentSettleInterval,
+                                     interval: agentSettleInterval,
+                                     observe: observe)
+    }
+
+    /// A LaunchAgent's state once it settled.
+    private func settledAgentState(_ label: String,
+                                   wanted: ManagedServiceState,
+                                   attempts: Int) async -> ManagedServiceState {
+        await settledState(wanted: wanted, attempts: attempts) {
+            self.startup.state(ofAgent: label).managedState
+        }
     }
 
     /// The BotFleet Server's state as its own API and port show it, or
@@ -156,29 +190,31 @@ public final class FleetServiceControl {
                 // marker, so the server stays up afterwards.
                 if running {
                     try startup.startServer()
-                } else {
-                    guard let stopServer else {
-                        throw FleetServiceError.refused("The BotFleet Server has to stop itself, and the Control app could not ask it to.")
-                    }
-                    try await stopServer()
-                    // The server's own shutdown is asynchronous, so what is
-                    // reported is the state that was observed after it, not
-                    // a constant that happens to be the expected one.  It is
-                    // the server's own state, not launchd's view of the
-                    // wrapper, which can already say stopped while the
-                    // server is still serving.
-                    return await ManagedServices.settle(to: .stopped,
-                                                        attempts: attempts,
-                                                        interval: FleetServiceControl.settleInterval) {
-                        await self.serverObservation(label: label)
-                    }
+                    // The wrapper exits once the server is healthy, so there
+                    // is no state of its to wait for:  the caller that knows
+                    // the port waits for that instead.
+                    return startup.state(ofAgent: label).managedState
                 }
-            } else if running {
+                guard let stopServer else {
+                    throw FleetServiceError.refused("The BotFleet Server has to stop itself, and the Control app could not ask it to.")
+                }
+                try await stopServer()
+                // The server's own shutdown is asynchronous, so what is
+                // reported is the state that was observed after it, not
+                // a constant that happens to be the expected one.  It is
+                // the server's own state, not launchd's view of the
+                // wrapper, which can already say stopped while the
+                // server is still serving.
+                return await settledState(wanted: .stopped, attempts: attempts) {
+                    await self.serverObservation(label: label)
+                }
+            }
+            if running {
                 try startup.startAgent(label: label)
             } else {
                 try startup.stopAgent(label: label)
             }
-            return startup.state(ofAgent: label).managedState
+            return await settledAgentState(label, wanted: running ? .running : .stopped, attempts: attempts)
         }
     }
 
@@ -234,14 +270,17 @@ public final class FleetServiceControl {
                     // it is not asked a second time.
                     let server = observeServer == nil ? observed : await serverObservation(label: label)
                     if observed != .unknown && server == .stopped { deliberateStop.restore() }
-                    throw FleetServiceError.refused(observed == .unknown
-                        ? "The BotFleet Server could not be checked after the restart, so nothing can be said about it."
-                        : "The BotFleet Server was not replaced: its LaunchAgent owns no process, so the server that is running was not started by launchd.")
+                    // The kickstart was issued,  so a state nobody can read is not a
+                    // restart that was refused.
+                    if observed == .unknown {
+                        throw FleetServiceError.notKnown("launchctl could not be asked after the restart")
+                    }
+                    throw FleetServiceError.refused("The BotFleet Server was not replaced: its LaunchAgent owns no process, so the server that is running was not started by launchd.")
                 }
                 return observed
             }
             try startup.restartAgent(label: label)
-            return startup.state(ofAgent: label).managedState
+            return await settledAgentState(label, wanted: .running, attempts: attempts)
         }
     }
 

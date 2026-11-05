@@ -40,11 +40,11 @@
       "config": "workers/expenses-site/wrangler.jsonc",
       "status": "auto",
       "workers_dev": false,
-      "limits": { "cpu_ms": 100, "subrequests": 200 },
+      "limits": { "cpu_ms": 100, "subrequests": 60 },
       "head_sampling_rate": 1,
       "health": "The cron advancing sync state with rows actually fetched, and an Access-authenticated read of the expense list.",
       "deploy": "Usage-Monitor worker-deploy.yml is the intended path.  Its gate variable is off, so deploys are by hand.",
-      "note": "This repository's CI does not read this row's config, and the 200 covers D1 calls per sync until the sync fix lands."
+      "note": "This repository's CI does not read this row's config, and the sync now writes a few rows a run, so 60 covers it."
     },
     "usage-monitor-receipt-inbox": {
       "repo": "Simple-With-Us/Usage-Monitor",
