@@ -48,6 +48,7 @@ class Case(unittest.TestCase):
         self.vars = {"HOME": str(self.home), "FLEET_APPS_JSON": str(reg), "FLEET_HOST_KIND": "mac",
                      "FLEET_LANES_EXTERNAL_ROOT": "", "PATH": os.environ["PATH"],
                      "FLEET_PLACEMENT_EXCEPTIONS": str(self.home / "rows.json")}
+        self.rows()
 
     def rows(self, *rows: dict) -> None:
         (self.home / "rows.json").write_text(json.dumps({"exceptions": list(rows)}), encoding="utf-8")

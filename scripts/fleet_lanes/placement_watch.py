@@ -11,19 +11,24 @@ Without --apply it prints what it would file and changes no state.  One run does
   2. Findings.  Everything in placement_anomalies, each detect-mode event, and any hook whose command no longer exists.
      With --verify-hooks, also the failures of `install_tools verify` for the platforms that are safe to probe.
   3. Dedupe.  The state file remembers each path and problem it has reported, until a clean sweep no longer sees it, so a checkout
-     fixed and broken again is told again.  One Linear issue per creator and repo, never per path, with a comment for each later
-     batch of new findings, and one post in the issue's topic when it is filed.  If that issue has since been closed, the next batch
-     gets a new one.  A run with more than MAX_NEW_PER_RUN new findings looks like a renamed mount or a wrong root, not a leak, so it
-     sends nothing and says so until a person passes --accept-burst.
-  4. The owner hears only about a leak that keeps growing after seven days, or a clone in the Code root holding unpushed work (not a
-     harness worktree inside one, which is in-flight work with an issue already).  One message per path:  a send whose outcome is
-     unknown counts as sent, because only a proven refusal is safe to send again.  A filing retries every run, since the board dedupes
-     it on its uid.
+     fixed and broken again is told again.  A path on a disk that is not mounted was not seen either way, so it stays remembered.  One
+     Linear issue per creator and repo, never per path, with a comment for each later batch of new findings, and one post in the
+     issue's topic when it is filed.  If that issue has since been closed, the next batch gets a new one.  Every finding remembered has
+     reached Linear in a body or a comment.  A run with more than MAX_NEW_PER_RUN new findings looks like a renamed mount or a wrong
+     root, not a leak, so it sends nothing and says so until a person passes --accept-burst.
+  4. The owner hears only about a leak that keeps growing after seven days, at most once a day, or a clone in the Code root holding
+     unpushed work on any branch or in a stash (not a harness worktree inside one, which is in-flight work with an issue already).  One
+     message per path:  a send whose outcome is unknown counts as sent, because only a proven refusal is safe to send again.  A filing
+     retries every run, since the board dedupes it on its uid, and a filing the board deduped goes in as a comment, because the board
+     keeps the old text.
 
-A lost or corrupt state file holds all sending, since everything would otherwise look new, until --reset-state.
+A lost or corrupt state file holds all sending, since everything would otherwise look new, until --reset-state.  Who has been told
+lives in its own small file as well, so a reset does not message the owner twice.  An unusable exceptions file holds every placement
+finding, since each excused checkout would look misplaced, and files only the problem with that file.
 
 Public text uses root tokens ({home}, {code}, {apps}, {lanes}), never a real path, since a server path is private
-inventory.  Exit 0 when it ran;  3 when its inputs are stale or unreadable;  4 when filing failed (it retries next run).
+inventory.  Exit 0 when it ran;  3 when its inputs are stale or unreadable, the exceptions file among them, or `install_tools verify`
+could not run;  4 when filing failed (it retries next run).
 The status file beside the state file lets `fleet-tools-doctor` see a watcher that has gone quiet.  It lists no processes
 (no `ps`).  The seat is CLAUDE until the owner chooses another.  Python 3.9 safe.
 Tests: fleet_lanes/tests/test_placement_watch.py.
@@ -64,6 +69,7 @@ REPEAT_LEAK_DAYS = 7
 DEFAULT_SEAT = "CLAUDE"
 STATE_NAME = "placement-watch.json"
 STATUS_NAME = "placement-watch-status.json"
+TOLD_NAME = "placement-watch-told.json"
 REPORT_NAME = "placement-report.json"
 VERIFY_TARGETS = ("claude", "codex", "cursor", "grok", "minimax", "opencode", "antigravity")
 MAINTAIN_REPORT = "Library/Application Support/HogHunter/Maintain/lane-doctor-report.json"
@@ -71,7 +77,21 @@ EXIT_OK, EXIT_STALE, EXIT_FILING = 0, 3, 4
 BEARER_LOCATOR = "SIMPLE_BOARD_BEARER_LOCATOR"
 # What a send can come to.  Only a refusal the CLI made before sending anything is safe to repeat.
 OK, REFUSED, UNKNOWN = "ok", "refused", "unknown"
-REFUSED_EXITS = frozenset({2, 6})  # simple-board: bad usage, no verified seat;  simple-chat's argument errors are 2 as well
+# The two CLIs number their exits differently (linear-board/board EXIT_*, agent_sync/zulip.py exit_code).
+REFUSED_EXITS = {
+    # Bad usage, an untrusted seat helper, no credentials, a rate limit that outlasted the wait, no verified seat.
+    "simple-board": frozenset({2, 3, 4, 5, 6}),
+    # Bad usage, a credential or DM-guard refusal.  Its 6 is a network error, which is a refusal only as described below.
+    "simple-chat": frozenset({2, 3}),
+}
+# simple-chat exits 6 for any network error, and adds this to its message when the request may have reached Zulip.
+CHAT_NETWORK_EXIT, CHAT_MAYBE_SENT = 6, "not retried"
+LINES_PER_BODY = 40
+DM_ROWS = 10
+REPEAT_DM_HOURS = 24
+MAX_GENERATIONS = 16
+# Judged against the exception rows, so none of them means anything while those rows cannot be read.
+_JUDGED_BY_ROWS = frozenset({"MISPLACED", "SHIM-EVENT", "MAIN-CLONE"})
 CLOSED_STATUSES = frozenset({"completed", "deployed", "wontfix", "duplicate", "canceled"})
 _REPO_LOCAL_WORKTREES = ("/.claude/worktrees/", "/.muse/worktrees/")
 _ISSUE_ID = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b")
@@ -156,6 +176,8 @@ def findings_from_report(report: Mapping[str, Any], roots: L.Roots, registry: L.
             creator, repo = "main-clone", os.path.basename(path.rstrip("/"))
         elif kind == "EXPIRED-EXCEPTION":
             creator, repo = "exceptions", "AI-Fleet-Coordinator"
+        elif kind == "EXCEPTIONS-UNUSABLE":
+            creator, repo = "exceptions-file", "AI-Fleet-Coordinator"
         else:
             creator, repo = creator_of(path, co, registry), _repo_of(co)
         real = str(co.get("realpath") or path)
@@ -164,8 +186,19 @@ def findings_from_report(report: Mapping[str, Any], roots: L.Roots, registry: L.
         out.append(Finding(path, public_path(path, roots), creator, repo, kind, detail, unpushed))
     for item in report.get("placement_warnings", ()):
         path, detail = str(item.get("path", "")), str(item.get("detail") or "")
-        out.append(Finding(path, path, "exceptions", "AI-Fleet-Coordinator", str(item.get("type", "")), detail))
+        if item.get("type") == "CODE-WORK":
+            # One issue for all of them, because a Code clone with old branches is the usual case and not a leak per repo.
+            out.append(Finding(path, public_path(path, roots), "code-work", "AI-Fleet-Coordinator", "CODE-WORK", detail, True))
+            continue
+        creator = "mode-file" if item.get("type") == "MODE-FILE" else "exceptions"
+        out.append(Finding(path, path, creator, "AI-Fleet-Coordinator", str(item.get("type", "")), detail))
     return out
+
+
+def mode_findings(home: str, env: Mapping[str, str]) -> list[Finding]:
+    """What the mode file says that nothing can act on, read live:  a stale report must not hide that a block is not on."""
+    return [Finding(f"mode-file:{problem}", f"mode-file:{problem}", "mode-file", "AI-Fleet-Coordinator", "MODE-FILE",
+                    "that line of the lane-guard mode file does nothing") for problem in P.read_mode(home, env).problems]
 
 
 def _creator_from_seat(seat: str, registry: L.Registry | None) -> str:
@@ -191,7 +224,7 @@ def findings_from_events(events: Iterable[Mapping[str, Any]], since: str, roots:
                                "the shim let a command through without judging it"))
             continue
         dest = str(ev.get("dest") or "")
-        if ev.get("action") not in ("detect", "block") or not dest:
+        if ev.get("action") not in ("detect", "block") or not dest or ev.get("exceptions") == "unusable":
             continue
         expanded = os.path.expanduser(dest) if dest.startswith("~") else dest
         creator = _creator_from_seat(str(ev.get("seat") or ""), registry)
@@ -233,11 +266,51 @@ HOOK_CONFIGS = (
 )
 
 
-def dead_hook_commands(home: str, *, configs: Sequence[str] = HOOK_CONFIGS) -> list[tuple[str, str]]:
-    """(config file, command path) for each hook whose absolute command is gone or cannot run.
+_INTERPRETERS = frozenset({"python", "python3", "bash", "sh", "zsh", "dash", "node", "ruby", "perl", "deno", "bun"})
+_INLINE_FLAGS = frozenset({"--eval", "-"})
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
-    A hook that fails silently allows everything, so a moved path turns a guard off without a sound.  Only the first word
-    of a command is kept;  nothing else in these files is read out.
+
+def _home_expanded(word: str, home: str) -> str:
+    if word == "~" or word.startswith("~/"):
+        return home + word[1:]
+    for var in ("$HOME", "${HOME}"):
+        if word == var or word.startswith(var + "/"):
+            return home + word[len(var):]
+    return word
+
+
+def _dead_part(command: str, home: str) -> str | None:
+    """The path this hook command needs that is not there, or None.  That is the program, and the script when the program is an
+    interpreter, because `python3 /gone/guard.py` fails as silently as `/gone/guard`.  A word with any other variable is not judged."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    while words and (_ASSIGNMENT.match(words[0]) or os.path.basename(words[0]) == "env"):
+        words = words[1:]
+    if not words:
+        return None
+    first = _home_expanded(words[0], home)
+    if first.startswith("/") and "$" not in first and not os.access(first, os.X_OK):
+        return first
+    if os.path.basename(first) not in _INTERPRETERS:
+        return None
+    for word in words[1:]:
+        # Code on the command line, or a module, including in a cluster such as `bash -lc`.
+        if word in _INLINE_FLAGS or (word[:1] == "-" and word[1:2] != "-" and set(word[1:]) & {"c", "e", "m"}):
+            return None
+        if not word.startswith("-"):
+            script = _home_expanded(word, home)
+            return script if script.startswith("/") and "$" not in script and not os.path.exists(script) else None
+    return None
+
+
+def dead_hook_commands(home: str, *, configs: Sequence[str] = HOOK_CONFIGS) -> list[tuple[str, str]]:
+    """(config file, missing path) for each hook whose program or script is gone or cannot run.
+
+    A hook that fails silently allows everything, so a moved path turns a guard off without a sound.  Only that one path is kept;
+    nothing else in these files is read out.
     """
     out: list[tuple[str, str]] = []
     for rel in configs:
@@ -248,13 +321,9 @@ def dead_hook_commands(home: str, *, configs: Sequence[str] = HOOK_CONFIGS) -> l
             except (OSError, ValueError):
                 continue
             for command in _commands_in(_hook_nodes(rel, data)):
-                try:
-                    words = shlex.split(command)
-                except ValueError:
-                    words = command.split()
-                first = words[0] if words else ""
-                if first.startswith("/") and not os.access(first, os.X_OK):
-                    out.append((path, first))
+                dead = _dead_part(command, home)
+                if dead:
+                    out.append((path, dead))
     return sorted(set(out))
 
 
@@ -271,7 +340,12 @@ def verify_failures(stable: str, targets: Sequence[str], run: Callable[..., Any]
     except (OSError, subprocess.SubprocessError):
         return None
     rows = [line.split(None, 3) for line in (res.stdout or "").splitlines() if line.startswith("FAIL")]
+    if res.returncode != 0 and not rows:
+        return None  # it crashed, or could not import:  no FAIL rows here says nothing about the hooks
     return [f"{r[1]} {r[2]}" for r in rows if len(r) >= 3]
+
+
+VERIFY_UNAVAILABLE = "VERIFY-UNAVAILABLE"
 
 
 def hook_findings(home: str, roots: L.Roots, host: str, stable: str | None, *, run=subprocess.run) -> list[Finding]:
@@ -281,7 +355,11 @@ def hook_findings(home: str, roots: L.Roots, host: str, stable: str | None, *, r
         for path, cmd in dead_hook_commands(home)
     ]
     if stable:
-        for row in verify_failures(stable, VERIFY_TARGETS, run=run) or ():
+        failures = verify_failures(stable, VERIFY_TARGETS, run=run)
+        if failures is None:
+            out.append(Finding("verify:unavailable", "install_tools verify", "hook-coverage", host, VERIFY_UNAVAILABLE,
+                               "it could not run, so the hooks are unverified"))
+        for row in failures or ():
             out.append(Finding(f"verify:{row}", row, "hook-coverage", host, "VERIFY-FAIL", "install_tools verify"))
     return out
 
@@ -303,18 +381,44 @@ def load_report(path: str, now: _dt.datetime, max_age_hours: float) -> dict | No
 
 
 def _empty_state() -> dict:
-    return {"version": 1, "groups": {}, "events_since": "", "dm_paths": []}
+    return {"version": 1, "groups": {}, "events_since": "", "dm_paths": [], "repeat_pending": {}, "last_repeat_dm": ""}
+
+
+def _shape_problem(state: Any) -> bool:
+    """Whether a parsed state file is not what this code writes, all the way down, so a bad inner value holds the sends and
+    --reset-state can clear it, where it would otherwise crash every run."""
+    if not isinstance(state, dict) or not isinstance(state.get("groups"), dict):
+        return True
+    for group in state["groups"].values():
+        if not isinstance(group, dict) or not isinstance(group.get("paths", {}), dict):
+            return True
+        if not isinstance(group.get("issue"), (str, type(None))) or not isinstance(group.get("first_seen", ""), str):
+            return True
+        if type(group.get("generation", 0)) is not int:
+            return True
+    dm_paths = state.get("dm_paths", [])
+    return not (isinstance(state.get("events_since", ""), str) and isinstance(dm_paths, list)
+                and all(isinstance(p, str) for p in dm_paths) and isinstance(state.get("repeat_pending", {}), dict)
+                and isinstance(state.get("last_repeat_dm", ""), str))
+
+
+def _read_json(path: str) -> Any:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
 
 
 def load_state(path: str) -> dict:
-    try:
-        with open(path, encoding="utf-8") as fh:
-            state = json.load(fh)
-    except (OSError, ValueError):
-        return _empty_state()
-    if not isinstance(state, dict) or not isinstance(state.get("groups"), dict):
-        return _empty_state()
-    return {**_empty_state(), **state}
+    state = _read_json(path)
+    return _empty_state() if _shape_problem(state) else {**_empty_state(), **state}
+
+
+def _state_was_written(state_path: str, status_path: str) -> bool:
+    """Whether this host has ever had a state file.  A run that sent nothing writes a status file and no state, and that is no lost state."""
+    status = _read_json(status_path)
+    return os.path.exists(state_path) or (isinstance(status, dict) and status.get("state_written") is True)
 
 
 def state_problem(state_path: str, status_path: str) -> str | None:
@@ -323,10 +427,10 @@ def state_problem(state_path: str, status_path: str) -> str | None:
         with open(state_path, encoding="utf-8") as fh:
             state = json.load(fh)
     except FileNotFoundError:
-        return "the state file is gone but the status file says this ran before" if os.path.exists(status_path) else None
+        return "the state file is gone but the status file says it was written before" if _state_was_written(state_path, status_path) else None
     except (OSError, ValueError) as exc:
         return f"the state file is unreadable ({type(exc).__name__})"
-    return None if isinstance(state, dict) and isinstance(state.get("groups"), dict) else "the state file has the wrong shape"
+    return "the state file has the wrong shape" if _shape_problem(state) else None
 
 
 def _write_json(path: str, data: Mapping[str, Any]) -> None:
@@ -340,6 +444,13 @@ def _write_json(path: str, data: Mapping[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _nothing_sent(tool: str, code: int, stderr: str) -> bool:
+    """Whether this exit proves the CLI sent nothing."""
+    if code in REFUSED_EXITS.get(tool, ()):
+        return True
+    return tool == "simple-chat" and code == CHAT_NETWORK_EXIT and CHAT_MAYBE_SENT not in stderr
+
+
 class Filer:
     """Linear and Zulip through the fleet CLIs, as the seat itself.  Bodies go through 0600 files, as the CLIs ask."""
 
@@ -347,6 +458,7 @@ class Filer:
         self.seat, self.session, self.env_label, self.run = seat, session, env_label, run
         self.errors: list[str] = []
         self.outcome = OK  # of the last call
+        self.deduped = False  # whether the last filing found the uid already filed, which leaves that issue's text as it was
 
     def _call(self, argv: list[str], body: str | None = None, body_flag: str = "--body-file") -> str | None:
         path = None
@@ -372,7 +484,7 @@ class Filer:
                     pass
         if res.returncode != 0:
             detail = D.redact_text((res.stderr or "").strip())[:200]
-            self.outcome = REFUSED if res.returncode in REFUSED_EXITS else UNKNOWN
+            self.outcome = REFUSED if _nothing_sent(argv[0], res.returncode, res.stderr or "") else UNKNOWN
             self.errors.append(f"{argv[0]} {argv[1]}: exit {res.returncode}: {detail}")
             return None
         return res.stdout or ""
@@ -381,8 +493,10 @@ class Filer:
         out = self._call(["simple-board", "file", "--title", title, "--app", "AFC", "--severity", "P2",
                           "--by", self.seat, "--env", self.env_label, "--kind", "agent-report",
                           "--session", self.session, "--uid", uid], body, "--desc-file")
+        self.deduped = False
         if out is None:
             return None
+        self.deduped = "already filed" in out
         match = _ISSUE_ID.search(out)
         if match is None:
             self.errors.append("simple-board file: no issue id in its output")
@@ -419,6 +533,9 @@ def board_env(host: str) -> str:
 _TITLES = {
     "main-clone": "Main Clone Off Its Default Branch: {repo} ({host})",
     "exceptions": "Placement Exceptions Expired Or Near Expiry ({host})",
+    "exceptions-file": "Placement Exceptions File Unusable ({host})",
+    "code-work": "Code Clones Holding Work No Remote Has ({host})",
+    "mode-file": "Lane Guard Mode File Has Lines It Cannot Use ({host})",
     "hook-coverage": "Lane Guard Hooks Not Running ({host})",
 }
 
@@ -428,18 +545,64 @@ def _title(creator: str, repo: str, host: str) -> str:
     return template.format(creator=creator.title(), repo=repo, host=host.title())
 
 
-def _lines(items: Sequence[Finding], limit: int = 40) -> str:
+def _lines(items: Sequence[Finding], limit: int = LINES_PER_BODY) -> str:
     rows = [f"- `{D.redact_text(f.public)}`: {f.kind.lower()}, {D.redact_text(f.detail)}" for f in items[:limit]]
     if len(items) > limit:
         rows.append(f"- and {len(items) - limit} more")
     return "\n".join(rows)
 
 
-def _forget_resolved(state: dict, findings: Sequence[Finding]) -> None:
-    """Drop what the latest full look no longer sees, so a checkout fixed and broken again is reported again."""
+def _out_of_sight(path: str, roots: L.Roots) -> bool:
+    """Whether `path` lies on something not there right now:  a lanes symlink with no target, or a disk that is not mounted.  A sweep
+    says nothing about such a path, and AGENTS.md says these do stop resolving on a remount."""
+    if not path.startswith("/"):
+        return False
+    for root in roots.external_lanes_roots:
+        text = os.fspath(root)
+        if (path == text or path.startswith(text + "/")) and not os.path.isdir(text):
+            return True
+    parts = path.split("/")
+    if len(parts) > 2 and parts[1] == "Volumes" and not os.path.isdir(os.path.join("/Volumes", parts[2])):
+        return True
+    here = path
+    while here not in ("/", ""):
+        if os.path.islink(here) and not os.path.exists(here):
+            return True
+        here = os.path.dirname(here)
+    return False
+
+
+def _forget_resolved(state: dict, findings: Sequence[Finding], roots: L.Roots) -> int:
+    """Drop what the latest full look no longer sees, so a checkout fixed and broken again is reported again.  Returns how many it kept
+    only because it could not look."""
     current = {key for f in findings for key in f.keys}
+    held = 0
     for group in state["groups"].values():
-        group["paths"] = {k: v for k, v in group.get("paths", {}).items() if k in current}
+        kept = {}
+        for key, stamp in group.get("paths", {}).items():
+            if key in current:
+                kept[key] = stamp
+            elif _out_of_sight(key.split("|", 1)[0], roots):
+                kept[key] = stamp
+                held += 1
+        group["paths"] = kept
+    return held
+
+
+def _file_group(filer: Filer, group: dict, key: str, title: str, body: str, host: str, stamp: str) -> tuple[str | None, bool]:
+    """(issue, whether that issue now holds `body`).  A uid the board has seen answers with the old issue and its old text, closed or
+    not.  A closed one means moving to the next generation, and an open one means the findings still have to go in as a comment."""
+    for _ in range(MAX_GENERATIONS):
+        generation = int(group.get("generation", 0))
+        uid = f"placement-watch:{host}:{key}" + (f":{generation}" if generation else "")
+        issue = filer.file_issue(title, body, uid)
+        if issue is None or not filer.deduped:
+            return issue, issue is not None
+        if not filer.issue_is_closed(issue):
+            return issue, False
+        group.update(generation=generation + 1, first_seen=stamp)
+    filer.errors.append(f"simple-board file: {MAX_GENERATIONS} closed issues in a row for {key}")
+    return None, False
 
 
 def apply_findings(findings: Sequence[Finding], state: dict, filer: Filer | None, *, host: str,
@@ -467,20 +630,24 @@ def apply_findings(findings: Sequence[Finding], state: dict, filer: Filer | None
         title = _title(creator, repo, host)
         if group.get("issue") and filer.issue_is_closed(group["issue"]):
             group.update(issue=None, generation=int(group.get("generation", 0)) + 1, first_seen=stamp)
+        chunks = [items[i:i + LINES_PER_BODY] for i in range(0, len(items), LINES_PER_BODY)]
+        sent: list[Finding] = []
         if not group.get("issue"):
             body = (f"The placement watcher found these on the {host}.{SG}It never moves or deletes anything.{SG}"
-                    f"Rules: docs/protocols/lane-map.md.\n\n{_lines(items)}\n")
-            generation = int(group.get("generation", 0))
-            uid = f"placement-watch:{host}:{key}" + (f":{generation}" if generation else "")
-            issue = filer.file_issue(title, body, uid)
+                    f"Rules: docs/protocols/lane-map.md.\n\n{_lines(chunks[0])}\n")
+            issue, holds = _file_group(filer, group, key, title, body, host, stamp)
             if issue is None:
                 continue
             group["issue"] = issue
-            # The issue holds these findings now, whatever becomes of the post.
-            filer.post(f"{issue} {title}", f"repo: AI-Fleet-Coordinator{SG}{title}, filed as {issue}.\n\n{_lines(items, 15)}\n")
-        elif filer.comment(group["issue"], f"New since the last run:\n{_lines(items)}\n") == REFUSED:
-            continue
-        for f in items:
+            if holds:
+                # The issue holds these findings now, whatever becomes of the post.
+                sent += chunks.pop(0)
+                filer.post(f"{issue} {title}", f"repo: AI-Fleet-Coordinator{SG}{title}, filed as {issue}.\n\n{_lines(items, 15)}\n")
+        for chunk in chunks:
+            if filer.comment(group["issue"], f"New since the last run:\n{_lines(chunk)}\n") == REFUSED:
+                break
+            sent += chunk
+        for f in sent:
             for fingerprint in f.keys:
                 group["paths"][fingerprint] = stamp
     _notify_owner(findings, fresh, state, filer, now)
@@ -489,9 +656,11 @@ def apply_findings(findings: Sequence[Finding], state: dict, filer: Filer | None
 
 def _notify_owner(findings: Sequence[Finding], fresh: Mapping[str, list[Finding]], state: dict, filer: Filer,
                   now: _dt.datetime) -> None:
+    """Unpushed work goes at once.  A growing leak waits in `repeat_pending` for the day's one message, since each new path in an old
+    group would otherwise be a message an hour for as long as the issue stays open.  A path counts as told only once a message named it."""
     told = set(state.get("dm_paths", ()))
-    urgent = [f for f in findings if f.unpushed_in_code and f.path not in told]
-    repeat: list[Finding] = []
+    urgent = list({f.path: f for f in findings if f.unpushed_in_code and f.path not in told}.values())
+    pending: dict = state.setdefault("repeat_pending", {})
     for key, items in fresh.items():
         group = state["groups"].get(key) or {}
         try:
@@ -499,16 +668,33 @@ def _notify_owner(findings: Sequence[Finding], fresh: Mapping[str, list[Finding]
         except ValueError:
             continue
         if (now - first).days >= REPEAT_LEAK_DAYS:
-            repeat.extend(f for f in items if f.path not in told)
-    if not urgent and not repeat:
+            for f in items:
+                if f.path not in told:
+                    pending.setdefault(f.path, _lines([f]))
+    try:
+        last = _dt.datetime.fromisoformat(state.get("last_repeat_dm", ""))
+    except ValueError:
+        last = None
+    due = bool(pending) and (last is None or (now - last).total_seconds() >= REPEAT_DM_HOURS * 3600)
+    if not urgent and not due:
         return
+    shown_urgent = urgent[:DM_ROWS]
+    shown_repeat = sorted(pending)[:DM_ROWS] if due else []
     parts = []
-    if urgent:
-        parts.append(f"{len(urgent)} checkout(s) in the Code root hold unpushed work:\n{_lines(urgent, 10)}")
-    if repeat:
-        parts.append(f"{len(repeat)} new misplaced checkout(s) from a leak open over {REPEAT_LEAK_DAYS} days:\n{_lines(repeat, 10)}")
-    if filer.dm_owner("From the placement watcher.\n\n" + "\n\n".join(parts) + "\n") != REFUSED:
-        state["dm_paths"] = sorted(told | {f.path for f in (*urgent, *repeat)})
+    if shown_urgent:
+        more = f"\n- and {len(urgent) - DM_ROWS} more in the next message" if len(urgent) > DM_ROWS else ""
+        parts.append(f"{len(urgent)} checkout(s) in the Code root hold unpushed work:\n{_lines(shown_urgent, DM_ROWS)}{more}")
+    if shown_repeat:
+        more = f"\n- and {len(pending) - DM_ROWS} more in the next message" if len(pending) > DM_ROWS else ""
+        rows = "\n".join(pending[path] for path in shown_repeat)
+        parts.append(f"{len(pending)} new misplaced checkout(s) from a leak open over {REPEAT_LEAK_DAYS} days:\n{rows}{more}")
+    if filer.dm_owner("From the placement watcher.\n\n" + "\n\n".join(parts) + "\n") == REFUSED:
+        return
+    state["dm_paths"] = sorted(told | {f.path for f in shown_urgent} | set(shown_repeat))
+    for path in shown_repeat:
+        del pending[path]
+    if shown_repeat:
+        state["last_repeat_dm"] = now.isoformat(timespec="seconds")
 
 
 def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, session: str, report_path: str | None,
@@ -527,7 +713,8 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
     except (OSError, ValueError, L.LayoutError) as exc:
         if apply or filer is not None:
             _write_json(status_path, {"at": now.isoformat(timespec="seconds"), "ok": False, "input": None, "host": socket.gethostname(),
-                                      "findings": 0, "new": 0, "errors": [f"registry unreadable: {type(exc).__name__}"], "applied": False})
+                                      "findings": 0, "new": 0, "errors": [f"registry unreadable: {type(exc).__name__}"], "applied": False,
+                                      "state_written": _state_was_written(state_path, status_path)})
         return EXIT_STALE
     # Never this watcher's own last sweep:  an hourly job that read it back would look at the disk once every few hours.
     candidates = [report_path] if report_path else [os.path.join(home, MAINTAIN_REPORT)]
@@ -552,6 +739,10 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
         with contextlib.suppress(OSError):
             os.replace(state_path, f"{state_path}.reset-{now.strftime('%Y%m%dT%H%M%S')}")
         state, hold = _empty_state(), None
+        # Who has been told outlives the reset, or the owner gets every message again.
+        told = _read_json(os.path.join(state_root, TOLD_NAME))
+        if isinstance(told, dict) and isinstance(told.get("dm_paths"), list):
+            state["dm_paths"] = [p for p in told["dm_paths"] if isinstance(p, str)]
     if hold:
         errors.append(f"{hold}, so nothing was sent.  Check it, then run once with --reset-state.")
     active = filer
@@ -567,17 +758,33 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
                                           host=host, registry=registry)
     findings += events
     findings += hook_findings(home, roots, host, stable if verify_hooks else None)
+    findings += mode_findings(home, env)
+    unverified = any(f.kind == VERIFY_UNAVAILABLE for f in findings)
+    if unverified:
+        errors.append("install_tools verify could not run, so the hooks are unverified.")
+    # With no rows every excused checkout looks misplaced.  Report the file, and judge nothing against it until it is repaired.
+    unusable = P.load_exceptions_reporting(env=env)[1]
+    if unusable is None:
+        unusable = next((f.detail for f in findings if f.kind == "EXCEPTIONS-UNUSABLE"), None)
+    if unusable:
+        findings = [f for f in findings if f.kind not in _JUDGED_BY_ROWS and f.kind != "EXCEPTIONS-UNUSABLE"]
+        findings.append(Finding(f"exceptions:{P.EXCEPTIONS_NAME}", P.EXCEPTIONS_NAME, "exceptions-file", "AI-Fleet-Coordinator",
+                                "EXCEPTIONS-UNUSABLE", unusable))
+        errors.append(f"{unusable}, so no placement finding was judged.  Repair the file.")
     if hold:
         active = None
     fresh = apply_findings(findings, state, active, host=host, now=now, accept_burst=accept_burst)
+    out_of_sight = 0
     if active is not None:
         errors.extend(active.errors)
         # A failed filing keeps its events for the next run.  What did get through is remembered, so nothing is sent twice.
-        if not active.errors:
+        # So does a run that could not judge anything, and it forgets nothing either.
+        if not active.errors and not unusable:
             state["events_since"] = newest
             if report is not None:
-                _forget_resolved(state, findings)
+                out_of_sight = _forget_resolved(state, findings, roots)
         _write_json(state_path, state)
+        _write_json(os.path.join(state_root, TOLD_NAME), {"dm_paths": state.get("dm_paths", [])})
     for key, items in sorted(fresh.items()):
         out.write(f"{key}: {len(items)} new\n")
         for f in items[:10]:
@@ -591,10 +798,12 @@ def run_once(*, home: str, env: Mapping[str, str], apply: bool, seat: str, sessi
         "new": sum(len(v) for v in fresh.values()),
         "errors": errors,
         "applied": active is not None,
+        "out_of_sight": out_of_sight,
+        "state_written": bool(hold) or os.path.exists(state_path),  # a hold stays a hold, and a reset that sent nothing leaves none
     }
     if acting:
         _write_json(status_path, status)
-    if report is None:
+    if report is None or unusable or unverified:
         return EXIT_STALE
     return EXIT_FILING if errors else EXIT_OK
 

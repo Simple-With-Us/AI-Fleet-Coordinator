@@ -209,15 +209,15 @@ def validate_rows(data: Any) -> list[str]:
 
 
 def parse_rows(data: Any) -> tuple[ExceptionRow, ...]:
-    """The usable rows of a parsed file.  A malformed row or a catch-all pattern is dropped, never fatal:  a guard must not
-    fail on it, and a row that excuses everything must not load."""
+    """The usable rows of a parsed file.  A malformed row, a class this code does not know or a catch-all pattern is dropped, never
+    fatal:  a guard must not fail on it, and a row that excuses everything must not load.  validate_rows names what was dropped."""
     out: list[ExceptionRow] = []
     rows = data.get("exceptions") if isinstance(data, Mapping) else None
     for row in rows if isinstance(rows, list) else ():
         if not isinstance(row, Mapping) or any(not row.get(k) for k in REQUIRED_ROW_KEYS):
             continue
         hosts = row["hosts"]
-        if not isinstance(hosts, list) or _pattern_problem(str(row["pattern"])):
+        if not isinstance(hosts, list) or _pattern_problem(str(row["pattern"])) or row["class"] not in EXCEPTION_CLASSES:
             continue
         out.append(ExceptionRow(str(row["id"]), str(row["pattern"]), str(row["class"]), str(row["creator"]),
                                 str(row["reason"]), str(row["decided_by"]), str(row["decided_on"]),
@@ -225,41 +225,43 @@ def parse_rows(data: Any) -> tuple[ExceptionRow, ...]:
     return tuple(out)
 
 
-def load_exceptions(path: str | os.PathLike[str] | None = None,
-                    env: Mapping[str, str] | None = None) -> tuple[ExceptionRow, ...]:
-    """The rows on disk, for a caller that reports or decides a deny:  a missing or unreadable file is no exceptions at all,
-    which reports more, never less.  A caller that moves a checkout because no row names it uses load_exceptions_strict."""
-    env = os.environ if env is None else env
-    target = os.fspath(path) if path is not None else (env.get(ENV_EXCEPTIONS) or default_exceptions_path())
-    try:
-        with open(target, encoding="utf-8") as fh:
-            return parse_rows(json.load(fh))
-    except (OSError, ValueError):
-        return ()
-
-
-def load_exceptions_strict(path: str | os.PathLike[str] | None = None,
-                           env: Mapping[str, str] | None = None) -> tuple[ExceptionRow, ...]:
-    """The rows on disk, or ExceptionsUnusable.  For code_main_sync, where no row means free to move a pinned clone."""
+def load_exceptions_reporting(path: str | os.PathLike[str] | None = None,
+                              env: Mapping[str, str] | None = None) -> tuple[tuple[ExceptionRow, ...], str | None]:
+    """The usable rows on disk and, when the file is missing, unreadable or holds a bad row, what is wrong with it.  Rows that are gone
+    change what the guards deny and what the doctor reports, so everything that acts on the rows says why."""
     env = os.environ if env is None else env
     target = os.fspath(path) if path is not None else (env.get(ENV_EXCEPTIONS) or default_exceptions_path())
     try:
         with open(target, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError) as exc:
-        raise ExceptionsUnusable(f"exceptions file unusable: {type(exc).__name__}") from exc
+        return (), f"exceptions file unusable: {type(exc).__name__}"
     problems = validate_rows(data)
-    if problems:
-        raise ExceptionsUnusable(f"exceptions file has {len(problems)} bad row(s): {problems[0]}")
-    return parse_rows(data)
+    return parse_rows(data), (f"exceptions file has {len(problems)} bad row(s): {problems[0]}" if problems else None)
+
+
+def load_exceptions(path: str | os.PathLike[str] | None = None,
+                    env: Mapping[str, str] | None = None) -> tuple[ExceptionRow, ...]:
+    """The usable rows on disk.  A missing or unreadable file is no exceptions at all, so a caller that shows a person anything uses
+    load_exceptions_reporting, and one that moves a checkout because no row names it uses load_exceptions_strict."""
+    return load_exceptions_reporting(path, env)[0]
+
+
+def load_exceptions_strict(path: str | os.PathLike[str] | None = None,
+                           env: Mapping[str, str] | None = None) -> tuple[ExceptionRow, ...]:
+    """The rows on disk, or ExceptionsUnusable.  For code_main_sync, where no row means free to move a pinned clone."""
+    rows, problem = load_exceptions_reporting(path, env)
+    if problem:
+        raise ExceptionsUnusable(problem)
+    return rows
 
 
 def row_excuses(row: ExceptionRow, *, via: str, clone: bool, in_temp: bool, in_code: bool, mirror_or_local: bool) -> bool:
     """Whether a row excuses this one checkout command.  The module docstring has the table."""
     if row.cls in ("service", "backup"):
         return True
-    if row.cls in ("personal", "trash") or via != "shim" or not clone:
-        return False
+    if row.cls not in ("tool-cache", "package-manager", "package-temp", "third-party-build") or via != "shim" or not clone:
+        return False  # personal and trash excuse nothing here, and neither does a class this code has never heard of
     if row.cls == "third-party-build":
         return mirror_or_local
     if in_code:
@@ -274,7 +276,7 @@ def row_excuses_checkout(row: ExceptionRow, *, linked_worktree: bool, registered
     a personal row is for repos outside the fleet."""
     if row.cls in ("service", "backup", "trash"):
         return True
-    if linked_worktree:
+    if linked_worktree or row.cls not in EXCEPTION_CLASSES:
         return False
     return not (row.cls == "personal" and registered_app)
 
@@ -359,7 +361,8 @@ def mode_file_path(home: str | os.PathLike[str], env: Mapping[str, str] | None =
 
 
 def parse_mode(text: str) -> Mode:
-    """Unknown words are reported in `problems` and otherwise ignored: a typo must never turn a block on."""
+    """Unknown words are reported in `problems` and otherwise ignored:  a typo must never turn a block on, and a line that means
+    nothing leaves the lines before it standing.  The doctor and the watcher show `problems`."""
     mode, classes, isolation = MODE_DETECT, (), MODE_OFF
     problems: list[str] = []
     for raw in text.splitlines():
@@ -373,17 +376,18 @@ def parse_mode(text: str) -> Mode:
             else:
                 problems.append(f"bad isolation line: {raw.strip()}")
         elif head in MODES:
-            mode = head
-            if head == MODE_BLOCK:
-                named = [w.lower() for w in words[1:]]
-                bad = [w for w in named if w not in RULE_CLASSES]
-                if bad:
-                    problems.append(f"unknown rule classes: {', '.join(bad)}")
-                classes = tuple(w for w in named if w in RULE_CLASSES) if named else RULE_CLASSES
-                if named and not classes:
-                    mode = MODE_DETECT
-            elif len(words) > 1:
-                problems.append(f"only block takes classes: {raw.strip()}")
+            if head != MODE_BLOCK:
+                mode, classes = head, ()
+                if len(words) > 1:
+                    problems.append(f"only block takes classes: {raw.strip()}")
+                continue
+            named = [w.lower() for w in words[1:]]
+            bad = [w for w in named if w not in RULE_CLASSES]
+            if bad:
+                problems.append(f"unknown rule classes: {', '.join(bad)}")
+            good = tuple(w for w in named if w in RULE_CLASSES) if named else RULE_CLASSES
+            if good:
+                mode, classes = head, good
         else:
             problems.append(f"unknown line: {raw.strip()}")
     return Mode(mode, tuple(classes), isolation, tuple(problems))
@@ -396,8 +400,10 @@ def read_mode(home: str | os.PathLike[str], env: Mapping[str, str] | None = None
     try:
         with open(mode_file_path(home, env), encoding="utf-8") as fh:
             return parse_mode(fh.read(4096))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return Mode()
+    except (OSError, ValueError) as exc:
+        return Mode(problems=(f"mode file unreadable: {type(exc).__name__}",))
 
 
 def state_dir(home: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> str:
@@ -446,12 +452,17 @@ def log_event(home: str | os.PathLike[str], event: Mapping[str, Any],
         pass
 
 
-def read_events(path: str | os.PathLike[str], *, limit_bytes: int = EVENT_LOG_MAX_BYTES) -> list[dict]:
-    """The parseable lines of the event log (and its rotated sibling).  A torn line is skipped."""
+def read_events(path: str | os.PathLike[str], *, limit_bytes: int = 2 * EVENT_LOG_MAX_BYTES) -> list[dict]:
+    """The parseable lines of the event log (and its rotated sibling).  A log rotates only once it is past EVENT_LOG_MAX_BYTES, so
+    the limit is over that, or the line that crossed it would never be read.  A file past even this keeps its newest lines, and the
+    line the limit cuts through is skipped as torn."""
     out: list[dict] = []
     for candidate in (os.fspath(path) + ".1", os.fspath(path)):
         try:
             with open(candidate, "rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                if size > limit_bytes:
+                    fh.seek(size - limit_bytes)
                 data = fh.read(limit_bytes)
         except OSError:
             continue

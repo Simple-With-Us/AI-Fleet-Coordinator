@@ -1946,6 +1946,16 @@ def _is_strict_violation(co: Checkout) -> bool:
     return co.location_class == "UNSANCTIONED" and not co.tool_cache and co.scope != "third-party"
 
 
+def _throwaway_in_temp(co: Checkout, roots: L.Roots) -> bool:
+    """A test repo in a temp folder cloned from another local repo, which lane-map.md allows.  _origin_url has already followed that
+    origin, so a clone of a fleet repo is scope `fleet` by now.  A dead origin that sat under a fleet root still counts as fleet."""
+    if co.scope == "fleet" or not co._origin_local or "in-temp-dir" not in co.layout_reasons:
+        return False
+    origin = os.path.realpath(co._origin_local)
+    return not any(origin == os.fspath(root) or origin.startswith(os.fspath(root) + os.sep)
+                   for root in (roots.code_root, roots.apps_root, roots.lanes_root, *roots.external_lanes_roots))
+
+
 def placement_verdict(co: Checkout, roots: L.Roots, rows: Sequence[P.ExceptionRow], host: str,
                       today: _dt.date | None = None, registry: L.Registry | None = None) -> None:
     """Fill the placement fields of `co`.  Reads no file and changes nothing a cleaner reads.
@@ -1965,6 +1975,8 @@ def placement_verdict(co: Checkout, roots: L.Roots, rows: Sequence[P.ExceptionRo
         co.placement_exception_expired = hit.expired
     # A tool cache holds a tool's own clones.  A linked worktree in one was made by something else, so it is judged.
     if (co.tool_cache and co.kind != "LINKED-WORKTREE") or co.scope == "third-party" or (co.scope != "fleet" and not co.remote_url):
+        return
+    if _throwaway_in_temp(co, roots):
         return
     reason: str | None = None
     if co.layout_status in ("wrong", "unsanctioned"):
@@ -2060,6 +2072,19 @@ def _main_clones(ctx: _Ctx, ordered: Sequence[Checkout], behind_limit: int) -> l
             continue
         if parts[:-1] == code_root and co.kind == "FULL-CLONE" and co.remote_url:
             out.append(main_clone_status(ctx, co, behind_limit))
+    return out
+
+
+def _code_clone_work(ordered: Sequence[Checkout], main_clones: Sequence[dict]) -> list[dict]:
+    """A clone in the Code root with work HEAD does not reach that no remote has, which a reset of it would strand."""
+    by_path = {co.path: co for co in ordered}
+    out: list[dict] = []
+    for row in main_clones:
+        co = by_path[row["path"]]
+        other = max(0, (co.unpushed_all_branches or 0) - (co.unpushed or 0))
+        held = ([f"{other} commit(s) on other branches"] if other else []) + (["a stash"] if co.has_stash else [])
+        if held and not row["exception"]:
+            out.append({"type": "CODE-WORK", "path": co.path, "detail": " and ".join(held)})
     return out
 
 
@@ -2366,7 +2391,7 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
     anomalies.sort(key=lambda a: (_ANOMALY_ORDER.index(a["type"]), a["path"]))
     strict_violations = sum(1 for co in ordered if _is_strict_violation(co))
     total_found = len(ordered)
-    exception_rows = P.load_exceptions(env=env)
+    exception_rows, exceptions_problem = P.load_exceptions_reporting(env=env)
     host_kind = P.host_kind(env)
     for co in ordered:
         placement_verdict(co, roots, exception_rows, host_kind, registry=registry)
@@ -2383,10 +2408,19 @@ def build_report(home: str | os.PathLike[str], env: Mapping[str, str] | None = N
         {"type": "EXPIRED-EXCEPTION", "path": row.pattern, "detail": f"{row.id} expired {row.expires}"}
         for row in P.expired_rows(exception_rows, host=host_kind)
     ]
+    # Everything above is judged without the rows it has lost, so say that first and let the reader discount the rest.
+    if exceptions_problem:
+        placement_anomalies.insert(0, {"type": "EXCEPTIONS-UNUSABLE", "path": P.EXCEPTIONS_NAME, "detail": exceptions_problem})
     # A warning, not an anomaly:  nothing is wrong yet, so --strict-placement still passes, and the watcher files it ahead of the day.
     placement_warnings = [
         {"type": "EXPIRING-EXCEPTION", "path": row.pattern, "detail": f"{row.id} expires {row.expires}"}
         for row in P.expiring_rows(exception_rows, host=host_kind)
+    ]
+    # Also a warning:  old squash-merged branches look the same, so this asks a person to look and fails no check.
+    placement_warnings += _code_clone_work(ordered, main_clones)
+    placement_warnings += [
+        {"type": "MODE-FILE", "path": f"mode-file:{problem}", "detail": "that line of the lane-guard mode file does nothing"}
+        for problem in P.read_mode(os.fspath(roots.home), env).problems
     ]
     shown = ordered
     if only_class:

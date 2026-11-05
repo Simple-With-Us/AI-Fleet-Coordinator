@@ -4177,7 +4177,8 @@ def apply_platform(
                 + bad[0].detail,
             )
     if plan.action == "unchanged":
-        return Result(plat.key, "unchanged", f"{plan.path} already has the hook")
+        note = "".join("; " + n for n in plan.notes)
+        return Result(plat.key, "unchanged", f"{plan.path} already has the hook{note}")
     cfg = plan.cfg
     assert cfg is not None and plan.new_text is not None
     # Self-checks on the document we are about to write.
@@ -4674,6 +4675,18 @@ def verify_platform(
                 f"{elsewhere} more {HOOK_NAME} command(s) in the file are outside {plat.event} and do nothing",
             )
         )
+    if plat.config_rel == ".claude/settings.json":
+        group = entries[0].group
+        if group is not None and group.get("matcher") != CLAUDE_MATCHER:
+            out.append(
+                Check(
+                    t,
+                    "matcher",
+                    "WARN",
+                    f"the hook's group matcher is {group.get('matcher')!r}, not {CLAUDE_MATCHER!r}:  Agent, EnterWorktree and the "
+                    "other shells are not gated, so `isolation block` does nothing on this host",
+                )
+            )
     for problem in _switch_warnings(cfg.doc):
         out.append(
             Check(

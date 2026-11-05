@@ -16,7 +16,9 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -257,7 +259,7 @@ class InstalledCopy(unittest.TestCase):
 class FastPath(ShimReview):
     def words(self) -> set[str]:
         text = (PKG / "shims" / "git").read_text(encoding="utf-8")
-        block = text.split("# A builtin cannot be aliased", 1)[1].split('exec "$_fleet_real"', 1)[0]
+        block = text.split("# A builtin cannot be aliased", 1)[1].split('_fleet_exec "$_fleet_real"', 1)[0]
         block = "\n".join(line for line in block.splitlines()[1:] if not line.strip().startswith("#"))
         return {w for w in re.split(r"[\s|)\\]+", block) if w}
 
@@ -1178,3 +1180,922 @@ class SyncToken(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------- the second review round, on the shim
+
+
+def _stub(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+class ShellOptions(ShimReview):
+    def test_an_inherited_errexit_does_not_end_the_shim_before_git(self) -> None:
+        for args in (("update-server-info",), ("submodule", "status")):
+            with self.subTest(args=args):
+                res = self.git(*args, SHELLOPTS="errexit")
+                self.assertEqual(res.returncode, 0, res.stderr)
+
+    def test_a_python_that_fails_still_runs_git_under_errexit(self) -> None:
+        dest = self.lanes / "BotFleet" / "claude-e"
+        dest.parent.mkdir()
+        py = _stub(self.home / "py-fails", "exit 3")
+        res = self.git("worktree", "add", "-q", str(dest), SHELLOPTS="errexit", FLEET_GIT_SHIM_PYTHON=str(py))
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertTrue(dest.exists())
+
+    def test_an_inherited_xtrace_prints_nothing_of_the_shim(self) -> None:
+        res = self.git("update-server-info", SHELLOPTS="xtrace")
+        self.assertEqual((res.returncode, res.stderr), (0, ""))
+
+
+    def test_the_options_reach_git_as_they_came(self) -> None:
+        # A shell-script subcommand reads them.  Under nounset Apple's fails, and that is git's answer to give.
+        for opts in ("errexit", "xtrace", "nounset", "pipefail", "allexport", "errexit:nounset:xtrace"):
+            with self.subTest(opts=opts):
+                env = self.env(SHELLOPTS=opts)
+                env["PATH"] = "/usr/bin:/bin"
+                real = subprocess.run([TG.REAL_GIT, "submodule", "status"], cwd=self.repo, capture_output=True, text=True, env=env, timeout=30)
+                res = self.git("submodule", "status", SHELLOPTS=opts)
+                self.assertEqual((res.returncode, res.stdout, res.stderr), (real.returncode, real.stdout, real.stderr))
+
+    @unittest.skipUnless(os.path.exists("/bin/dash"), "needs dash")
+    def test_the_options_line_is_one_dash_accepts(self) -> None:
+        # /bin/sh is dash on a Debian host, and dash ends the script on a `set` letter it does not know, with the message hidden.
+        dest = self.lanes / "BotFleet" / "claude-d"
+        dest.parent.mkdir()
+        for args in (("rev-parse", "--git-dir"), ("worktree", "add", "-q", str(dest))):
+            with self.subTest(args=args):
+                res = subprocess.run(["/bin/dash", str(self.bin / "git"), *args], cwd=self.repo, capture_output=True, text=True,
+                                     env=self.env(SHELLOPTS="errexit"), timeout=30)
+                self.assertEqual((res.returncode, res.stderr), (0, ""))
+        self.assertTrue(dest.exists())
+
+    def test_posix_does_not_leak_into_a_bash_hook(self) -> None:
+        # Running as sh turns posix on, and an exported SHELLOPTS would hand that to a #!/bin/bash hook.
+        folder = self.home / "external"
+        folder.mkdir()
+        (folder / "git-shows").symlink_to(shutil.which("printenv"))
+        res = self.git("shows", "SHELLOPTS", SHELLOPTS="errexit", PATH=f"{self.bin}:{folder}:/usr/bin:/bin")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("errexit", res.stdout)
+        self.assertNotIn("posix", res.stdout)
+
+
+class BrokenInterpreterIsSilent(ShimReview):
+    """Callers parse git's output, so a broken interpreter adds nothing to it, and the only trace is the event."""
+
+    def worktree_with(self, py: str) -> subprocess.CompletedProcess:
+        dest = self.lanes / "BotFleet" / "claude-q"
+        dest.parent.mkdir()
+        res = self.git("worktree", "add", "-q", str(dest), FLEET_GIT_SHIM_PYTHON=py)
+        self.assertTrue(dest.exists())
+        return res
+
+    def test_a_loader_error_stays_out_of_gits_output(self) -> None:
+        res = self.worktree_with(str(_stub(self.home / "py-talks", 'echo "dyld: Library not loaded" >&2\necho junk\nexit 1')))
+        self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
+        self.assertEqual([e["detail"] for e in self.events() if e["action"] == "fail-open"], ["python exited 1"])
+
+    def test_a_corrupt_binary_stays_out_of_gits_output(self) -> None:
+        bad = self.home / "py-corrupt"
+        bad.write_bytes(b"\x7fELFgarbage")
+        bad.chmod(0o755)
+        res = self.worktree_with(str(bad))
+        self.assertEqual((res.returncode, res.stdout, res.stderr), (0, "", ""))
+
+    def test_a_child_that_outlives_the_interpreter_holds_no_pipe(self) -> None:
+        # subprocess reads to the end of the pipes, so this measures who still holds them.
+        start = time.monotonic()
+        res = self.worktree_with(str(_stub(self.home / "py-child", "sleep 9")))
+        self.assertLess(time.monotonic() - start, 7.5)
+        self.assertEqual((res.returncode, res.stderr), (0, ""))
+
+    def test_a_block_still_prints_why_and_leaves_no_note(self) -> None:
+        self.set_mode("block")
+        notes = self.home / "notes"
+        notes.mkdir()
+        dest = self.home / "stray"
+        res = self.git("clone", "-q", FLEET, str(dest), TMPDIR=str(notes))
+        self.blocked(res, dest)
+        self.assertTrue(res.stderr.startswith("fatal: Blocked"), res.stderr)
+        self.assertEqual(list(notes.iterdir()), [])
+
+    def test_a_block_with_no_note_still_blocks_and_says_so(self) -> None:
+        self.set_mode("block")
+        dest = self.home / "stray"
+        res = self.git("clone", "-q", FLEET, str(dest), TMPDIR=str(self.home / "no-such-folder"))
+        self.blocked(res, dest)
+
+
+class FetchIsJudgedWhereItWrites(ShimReview):
+    def setUp(self) -> None:
+        super().setUp()
+        self.set_mode("block")
+        self.temp = Path(tempfile.mkdtemp(dir="/var/tmp"))
+        self.addCleanup(shutil.rmtree, self.temp, True)
+
+    def test_a_repo_outside_temp_named_from_a_temp_folder_passes(self) -> None:
+        git_dir = str(self.repo / ".git")
+        self.assertEqual(self.decide("fetch", "origin", cwd=self.temp, GIT_DIR=git_dir), 0)
+        self.assertEqual(self.decide("--git-dir", git_dir, "fetch", FLEET, cwd=self.temp), 0)
+        self.assertEqual(self.decide(f"--git-dir={git_dir}", "fetch", "origin", cwd=self.temp), 0)
+        self.assertEqual(self.decide("--git-dir", git_dir, "--work-tree", str(self.repo), "pull", FLEET, cwd=self.temp), 0)
+
+    def test_a_repo_in_temp_named_from_outside_is_blocked(self) -> None:
+        dest = self.temp / "d"
+        self.real(["init", "-q", str(dest)], self.temp)
+        self.assertEqual(self.decide("--git-dir", str(dest / ".git"), "fetch", FLEET), GS.BLOCK_EXIT)
+        self.assertEqual(self.decide("fetch", FLEET, GIT_DIR=str(dest / ".git")), GS.BLOCK_EXIT)
+
+    def test_a_pull_writes_its_work_tree_too(self) -> None:
+        tree = self.temp / "tree"
+        self.assertEqual(self.decide("--git-dir", str(self.repo / ".git"), "--work-tree", str(tree), "pull", FLEET), GS.BLOCK_EXIT)
+        self.assertEqual(self.decide("pull", FLEET, GIT_DIR=str(self.repo / ".git"), GIT_WORK_TREE=str(tree)), GS.BLOCK_EXIT)
+
+
+class ClosedStderr(ShimReview):
+    def test_a_block_holds_with_stderr_closed(self) -> None:
+        self.set_mode("block")
+        dest = self.home / "x1"
+        res = subprocess.run(["/bin/sh", "-c", 'exec "$@" 2>&-', "sh", str(self.bin / "git"), "clone", "-q", FLEET, str(dest)],
+                             cwd=self.repo, capture_output=True, text=True, env=self.env(**NO_NET), timeout=30)
+        self.assertEqual(res.returncode, 128)
+        self.assertEqual([e["action"] for e in self.events()], ["block"])
+        self.assertFalse(dest.exists())
+
+
+class RealGitFromPath(ShimReview):
+    def test_a_wrapper_after_the_shim_runs_once(self) -> None:
+        count = self.home / "count"
+        wrap = self.home / "wrap"
+        _stub(wrap / "git", f'echo x >> "{count}"\nPATH=$(printf %s "$PATH" | sed "s#{wrap}:##")\nexport PATH\nexec git "$@"')
+        res = self.git("rev-parse", "--git-dir", PATH=f"{self.bin}:{wrap}:/usr/bin:/bin")
+        self.assertEqual((res.returncode, res.stdout.strip()), (0, ".git"), res.stderr)
+        self.assertEqual(len(count.read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_an_inherited_real_path_does_not_beat_path(self) -> None:
+        alt = self.home / "alt"
+        _stub(alt / "git", "echo ALT-GIT")
+        res = self.git("version", PATH=f"{self.bin}:{alt}:/usr/bin:/bin", FLEET_GIT_SHIM_REAL=TG.REAL_GIT)
+        self.assertEqual(res.stdout.strip(), "ALT-GIT")
+
+
+class InterpreterStall(ShimReview):
+    def test_a_stalled_interpreter_lets_git_run_and_holds_no_pipe(self) -> None:
+        py = _stub(self.home / "py-hangs", "exec sleep 9")
+        dest = self.lanes / "BotFleet" / "claude-s"
+        dest.parent.mkdir()
+        start = time.monotonic()
+        res = self.git("worktree", "add", "-q", str(dest), FLEET_GIT_SHIM_PYTHON=str(py))
+        took = time.monotonic() - start
+        self.assertLess(took, 7.5)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stderr, "")
+        self.assertTrue(dest.exists())
+        stalled = [e for e in self.events() if e["action"] == "fail-open"]
+        self.assertEqual(stalled[0]["detail"], "no answer from python")
+        self.assertTrue(stalled[0]["at"])
+
+    def test_a_missing_python_leaves_an_event_the_watcher_can_read(self) -> None:
+        shim = self.home / "bare" / "git"
+        shim.parent.mkdir()
+        shutil.copy(TG.SHIM, shim)  # no module beside this copy
+        res = subprocess.run([str(shim), "worktree", "add", "-q", str(self.home / "wt")], cwd=self.repo, capture_output=True, text=True,
+                             env=self.env(PATH="/usr/bin:/bin"), timeout=30)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertTrue(self.events()[0]["at"])
+
+
+class ShimCost(ShimReview):
+    def started_python(self, *args: str, cwd: Path | None = None, **env: str) -> bool:
+        marker = self.home / "started"
+        py = _stub(self.home / "py-marks", f'touch "{marker}"\nexit 0')
+        self.git(*args, cwd=cwd, FLEET_GIT_SHIM_PYTHON=str(py), **env)
+        started = marker.exists()
+        if started:
+            marker.unlink()
+        return started
+
+    def test_what_cannot_make_a_checkout_stays_out_of_python(self) -> None:
+        for args in (("-C", ".", "remote"), ("-C", ".", "remote", "-v"), ("-c", "a.b=c", "remote"), ("-C", ".", "stage", "-h"),
+                     ("-C", ".", "submodule", "status")):
+            with self.subTest(args=args):
+                self.assertFalse(self.started_python(*args))
+        # This fake home sits in a temp folder, so a fetch has to run from somewhere that is not.
+        for args in (("-c", "a.b=c", "fetch", str(self.repo)), ("-c", "a.b=c", "pull", str(self.repo)), ("-C", "/", "fetch", str(self.repo))):
+            with self.subTest(args=args):
+                self.assertFalse(self.started_python(*args, cwd=Path("/")))
+
+    def test_what_can_still_goes_to_python(self) -> None:
+        temp = Path(tempfile.mkdtemp(dir="/var/tmp"))
+        self.addCleanup(shutil.rmtree, temp, True)
+        self.real(["config", "alias.grab", "clone"], self.repo)
+        for args in (("-C", str(temp), "fetch", FLEET), ("-C", str(temp), "remote", "add", "-f", "o", FLEET), ("-C", ".", "grab", FLEET),
+                     ("-c", "a.b=c", "stage", "-h"), ("-C", ".", "-C", ".", "stage", "-h"), ("-C", "../..", "fetch", FLEET),
+                     ("--git-dir", str(self.repo / ".git"), "fetch", FLEET)):
+            with self.subTest(args=args):
+                self.assertTrue(self.started_python(*args, **NO_NET))
+
+    def test_an_alias_in_the_repo_named_by_minus_c_is_still_blocked(self) -> None:
+        self.set_mode("block")
+        self.real(["config", "alias.grab", "clone"], self.repo)
+        dest = self.home / "viaalias"
+        self.blocked(self.git("-C", str(self.repo), "grab", FLEET, str(dest), cwd=self.home, **NO_NET), dest)
+
+
+class MorePackageManagers(ShimReview):
+    def setUp(self) -> None:
+        super().setUp()
+        self.set_mode("block")
+
+    def test_an_editable_pip_install_clones_into_any_real_venv(self) -> None:
+        venv = self.home / "w" / "v"
+        (venv / "src").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        self.assertEqual(self.decide("clone", "--filter=blob:none", "--quiet", FLEET, str(venv / "src" / "dep")), 0)
+        self.assertEqual(self.events()[-1]["rule"], "pkg-pip-editable")
+
+    def test_a_folder_named_src_is_not_a_venv(self) -> None:
+        self.assertEqual(self.decide("clone", FLEET, str(self.home / "w" / "plain" / "src" / "dep")), GS.BLOCK_EXIT)
+
+    def test_a_worktree_never_passes_through_the_venv_row(self) -> None:
+        venv = self.home / "w" / "v"
+        (venv / "src").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("x\n", encoding="utf-8")
+        self.assertEqual(self.decide("worktree", "add", str(venv / "src" / "dep")), GS.BLOCK_EXIT)
+
+    def test_homebrew_and_yarn_temp_clones(self) -> None:
+        self.assertEqual(self.decide("clone", FLEET, str(self.home / "Library" / "Caches" / "Homebrew" / "x--git")), 0)
+        temp = Path(tempfile.mkdtemp(dir="/var/tmp"))
+        self.addCleanup(shutil.rmtree, temp, True)
+        self.assertEqual(self.decide("clone", FLEET, str(temp / "xfs-abc" / "repo")), 0)
+        self.assertEqual(self.decide("clone", FLEET, str(self.home / "xfs-abc" / "repo")), GS.BLOCK_EXIT)
+
+
+class UnusableExceptions(ShimReview):
+    def test_the_deny_names_the_file_and_the_event_marks_it(self) -> None:
+        self.set_mode("block")
+        rows = self.home / "rows.json"
+        rows.write_text("{ nope", encoding="utf-8")
+        err = io.StringIO()
+        full = {**self.env(FLEET_PLACEMENT_EXCEPTIONS=str(rows)), "FLEET_GIT_SHIM_REAL": TG.REAL_GIT}
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_NOSYSTEM": "1", "HOME": str(self.home)}):
+            rc = GS.decide(["clone", FLEET, str(self.home / ".npm" / "_cacache" / "tmp" / "git-cloneA")], str(self.repo), full, stderr=err)
+        self.assertEqual(rc, GS.BLOCK_EXIT)
+        self.assertIn("exceptions file cannot be used", err.getvalue())
+        self.assertEqual(self.events()[-1]["exceptions"], "unusable")
+
+    def test_the_reporting_load_says_why(self) -> None:
+        rows = self.home / "rows.json"
+        rows.write_text("{ nope", encoding="utf-8")
+        self.assertIn("JSONDecodeError", P.load_exceptions_reporting(rows, env={})[1])
+        self.assertIn("FileNotFoundError", P.load_exceptions_reporting(self.home / "gone.json", env={})[1])
+        rows.write_text(json.dumps({"exceptions": [TD_ROW("{home}/x", **{"class": "servcie"})]}), encoding="utf-8")
+        got, problem = P.load_exceptions_reporting(rows, env={})
+        self.assertEqual(got, ())
+        self.assertIn("servcie", problem)
+        self.assertIsNone(P.load_exceptions_reporting(SHIPPED, env={})[1])
+
+
+class UnknownClass(ShimReview):
+    def test_a_misspelled_class_excuses_nothing(self) -> None:
+        self.set_mode("block")
+        rows = self.home / "rows.json"
+        for cls in ("servcie", "Trash"):
+            rows.write_text(json.dumps({"exceptions": [TD_ROW("{home}/typoed", hosts=["mac", "server"], **{"class": cls})]}), encoding="utf-8")
+            with self.subTest(cls=cls):
+                self.assertEqual(self.decide("clone", FLEET, str(self.home / "typoed" / "x"), FLEET_PLACEMENT_EXCEPTIONS=str(rows)), GS.BLOCK_EXIT)
+
+    def test_row_excuses_and_the_doctor_refuse_it_too(self) -> None:
+        row = P.ExceptionRow("r", "{home}/x", "servcie", "c", "w", "d", "2026-01-01", "2099-01-01", ("mac",))
+        self.assertFalse(P.row_excuses(row, via="shim", clone=True, in_temp=False, in_code=False, mirror_or_local=False))
+        self.assertFalse(P.row_excuses_checkout(row, linked_worktree=False, registered_app=False))
+
+
+class ModeFile(unittest.TestCase):
+    def test_a_bad_line_leaves_a_good_one_standing(self) -> None:
+        m = P.parse_mode("block home\nblock bogus")
+        self.assertEqual((m.mode, m.block_classes), ("block", ("home",)))
+        self.assertTrue(m.problems)
+
+    def test_a_typo_alone_stays_detect_and_says_so(self) -> None:
+        m = P.parse_mode("block tmep")
+        self.assertEqual(m.mode, "detect")
+        self.assertIn("tmep", m.problems[0])
+
+    def test_a_later_good_line_still_wins(self) -> None:
+        self.assertEqual(P.parse_mode("block home\ndetect").mode, "detect")
+        self.assertEqual(P.parse_mode("block home\ndetect").block_classes, ())
+
+    def test_an_unreadable_mode_file_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(home, P.MODE_FILE_REL))
+            self.assertTrue(P.read_mode(home, {}).problems)
+            self.assertEqual(P.read_mode(os.path.join(home, "none"), {}).problems, ())
+
+
+class PartialBlockAlias(ShimReview):
+    URL = "https://github.com/Simple-With-Us/x"
+
+    def alias(self, *dests) -> str:
+        return "alias.four=!" + "; ".join(f"git clone {self.URL} {d}" for d in dests) + "; echo STILLRAN"
+
+    def test_a_blocked_class_later_in_the_alias_blocks(self) -> None:
+        temp = tempfile.mkdtemp(dir="/var/tmp")
+        self.addCleanup(shutil.rmtree, temp, True)
+        self.set_mode("block temp")
+        self.assertEqual(self.decide("-c", self.alias(self.code / "oops", f"{temp}/qqz"), "four"), GS.BLOCK_EXIT)
+        got = sorted((e["action"], e["class"]) for e in self.events())
+        self.assertEqual(got, [("block", "temp"), ("detect", "code")])
+
+    def test_a_temp_hit_does_not_hide_a_blocked_home_clone(self) -> None:
+        temp = tempfile.mkdtemp(dir="/var/tmp")
+        self.addCleanup(shutil.rmtree, temp, True)
+        self.set_mode("block home")
+        self.assertEqual(self.decide("-c", self.alias(self.home / "foo", f"{temp}/qqz"), "four"), GS.BLOCK_EXIT)
+        got = sorted((e["action"], e["class"]) for e in self.events())
+        self.assertEqual(got, [("block", "home"), ("detect", "temp")])
+
+    def test_the_hook_still_stops_at_the_first_hit(self) -> None:
+        c = TP.ctx("detect")
+        d = G.evaluate(TP.payload(f"git clone {FLEET} /tmp/a; git clone {FLEET} ~/Code/b"), c)
+        self.assertEqual(d.action, G.DENY)
+        self.assertIn("/tmp/a", d.reason)
+
+
+class OriginIdentity(ShimReview):
+    def setUp(self) -> None:
+        super().setUp()
+        self.set_mode("block")
+        self.temp = Path(tempfile.mkdtemp(dir="/var/tmp"))
+        self.addCleanup(shutil.rmtree, self.temp, True)
+        self.work = self.home / "work" / "hh"
+        self.work.parent.mkdir()
+        self.real(["clone", "-q", str(self.repo), str(self.work)], self.home)
+
+    def test_a_clone_of_a_clone_is_still_fleet(self) -> None:
+        self.assertEqual(self.decide("clone", str(self.work), str(self.temp / "qq")), GS.BLOCK_EXIT)
+        self.assertEqual(self.decide("-C", str(self.work), "worktree", "add", str(self.home / "y")), GS.BLOCK_EXIT)
+
+    def test_a_renamed_remote_is_still_fleet(self) -> None:
+        self.real(["remote", "rename", "origin", "upstream"], self.repo)
+        self.assertEqual(self.decide("-C", str(self.repo), "worktree", "add", str(self.temp / "qq")), GS.BLOCK_EXIT)
+        self.assertEqual(self.decide("-C", str(self.repo), "worktree", "add", str(self.code / "oops")), GS.BLOCK_EXIT)
+
+    def test_a_local_chain_that_ends_outside_the_fleet_is_not(self) -> None:
+        other = self.home / "mine"
+        other.mkdir()
+        self.real(["init", "-q", "-b", "main"], other)
+        self.real(["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"], other)
+        again = self.home / "mine2"
+        self.real(["clone", "-q", str(other), str(again)], self.home)
+        self.assertEqual(self.decide("clone", str(again), str(self.temp / "qq")), 0)
+
+    def test_an_origin_of_someone_else_wins_over_another_remote(self) -> None:
+        self.real(["remote", "set-url", "origin", "https://github.com/someone-else/x.git"], self.repo)
+        self.real(["remote", "add", "upstream", FLEET], self.repo)
+        self.assertEqual(self.decide("-C", str(self.repo), "worktree", "add", str(self.temp / "qq")), 0)
+
+    def test_an_origin_on_another_host_is_not_read_as_a_path(self) -> None:
+        self.real(["remote", "set-url", "origin", "git@gitlab.example.com:someone/x.git"], self.repo)
+        self.assertEqual(self.decide("-C", str(self.repo), "worktree", "add", str(self.temp / "qq")), 0)
+
+    def test_a_loop_of_local_origins_ends(self) -> None:
+        self.real(["remote", "set-url", "origin", str(self.work)], self.repo)
+        self.real(["remote", "set-url", "origin", str(self.repo)], self.work)
+        self.assertEqual(self.decide("clone", str(self.work), str(self.temp / "qq")), 0)
+
+
+class HookFolderNames(unittest.TestCase):
+    def test_a_folder_that_only_starts_with_an_app_name_is_nobodys(self) -> None:
+        for mode in ("block", "detect"):
+            d = G.evaluate(TP.payload(f"git -C {TP.HOME}/apps/botfleet-tools worktree add {TP.HOME}/s", cwd=TP.HOME), TP.ctx(mode))
+            self.assertEqual((d.action, d.detected), (G.ALLOW, ""), mode)
+
+    def test_a_flat_lane_is_still_the_apps(self) -> None:
+        d = G.evaluate(TP.payload(f"git -C {TP.HOME}/apps/botfleet-claude worktree add {TP.HOME}/s", cwd=TP.HOME), TP.ctx("block"))
+        self.assertEqual(d.action, G.DENY)
+
+    def test_the_older_temp_rule_still_goes_by_place(self) -> None:
+        d = G.evaluate(TP.payload(f"git -C {TP.HOME}/apps/botfleet-tools worktree add /tmp/s", cwd=TP.HOME), TP.ctx("detect"))
+        self.assertEqual(d.action, G.DENY)
+
+
+class NarrowMatcherIsVisible(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.realpath(self.tmp.name)
+        os.makedirs(os.path.join(self.home, ".claude"))
+
+    def cli(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, "-m", "fleet_lanes.install_tools", *args], cwd=REPO / "scripts", capture_output=True, text=True,
+                              env={"HOME": self.home, "PATH": "/usr/bin:/bin", "FLEET_LANES_EXTERNAL_ROOT": ""}, timeout=120)
+
+    def test_apply_and_verify_both_say_so(self) -> None:
+        self.assertEqual(self.cli("apply", "--home", self.home, "tools").returncode, 0)
+        hook = os.path.join(self.home, "apps", "lane-tools", "lane-guard-hook")
+        settings = Path(self.home, ".claude", "settings.json")
+        settings.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+            {"type": "command", "command": f"{hook} --format claude"}, {"type": "command", "command": "python3 ~/x.py"}]}]}}), encoding="utf-8")
+        applied = self.cli("apply", "--home", self.home, "claude", "--no-verify")
+        self.assertIn("left narrow", applied.stdout + applied.stderr)
+        verified = self.cli("verify", "--home", self.home, "claude")
+        self.assertRegex(verified.stdout, r"WARN\s+.*matcher")
+        self.assertIn("Agent, EnterWorktree", verified.stdout)
+
+
+# ---------------------------------------------------------------------------- the second review round, on the watcher
+
+
+class WatchRoundTwo(WatchReview):
+    def many(self, n: int) -> dict:
+        paths = [self.p(f"m{i:02d}") for i in range(n)]
+        return self.report([TW.anomaly(p) for p in paths], [{"path": p, "owner_repo": "Simple-With-Us/BotFleet"} for p in paths])
+
+    def remembered(self) -> set:
+        return {k for g in self.state_doc()["groups"].values() for k in g["paths"]}
+
+    def run_burst(self, report: dict, run) -> int:
+        filer = W.Filer("CLAUDE", "s", "Mac", run=run)
+        return W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=False,
+                          stable=None, now=TW.NOW, build_report=lambda *a, **k: report, filer=filer, out=io.StringIO(), accept_burst=True)
+
+
+class UnmountedDisk(WatchRoundTwo):
+    def setUp(self) -> None:
+        super().setUp()
+        self.ext = Path(self.home, "ExtDisk", "Lanes")
+        (self.ext / "Ex").mkdir(parents=True)
+        Path(self.home, "apps", "lanes").mkdir(parents=True)
+        os.symlink(self.ext / "Ex", Path(self.home, "apps", "lanes", "Ex"))
+        self.vars["FLEET_LANES_EXTERNAL_ROOT"] = str(self.ext)
+        self.path = str(self.ext / "Ex" / "clone")
+
+    def test_a_clean_sweep_with_the_disk_away_forgets_nothing(self) -> None:
+        run = Run()
+        self.run_watch(self.one(self.path), run)
+        sent = len([c for c in run.calls if c[1] != "show"])
+        shutil.rmtree(self.ext.parent)
+        self.assertEqual(self.run_watch(self.report([]), run), W.EXIT_OK)
+        self.assertEqual(self.remembered(), {f"{self.path}|misplaced"})
+        status = json.loads(Path(self.state, W.STATUS_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(status["out_of_sight"], 1)
+        (self.ext / "Ex").mkdir(parents=True)
+        self.run_watch(self.one(self.path), run)
+        self.assertEqual(len([c for c in run.calls if c[1] != "show"]), sent)
+
+    def test_a_clean_sweep_with_the_disk_here_forgets_it(self) -> None:
+        run = Run()
+        self.run_watch(self.one(self.path), run)
+        self.run_watch(self.report([]), run)
+        self.assertEqual(self.remembered(), set())
+
+    def test_a_dangling_lanes_link_counts_as_away(self) -> None:
+        link = Path(self.home, "apps", "lanes", "Ex", "clone")
+        roots = L.make_roots(self.home, self.vars, registry=L.load_registry(env=self.vars))
+        shutil.rmtree(self.ext / "Ex")
+        self.assertTrue(W._out_of_sight(str(link), roots))  # noqa: SLF001
+        self.assertFalse(W._out_of_sight(self.p("gone/here"), roots))  # noqa: SLF001
+
+
+class FirstInstall(WatchRoundTwo):
+    def applied(self, env: dict, **kw) -> int:
+        return W.run_once(home=self.home, env=env, apply=True, seat="CLAUDE", session="s", report_path=None, verify_hooks=False, stable=None,
+                          now=TW.NOW, build_report=lambda *a, **k: self.report([]), out=io.StringIO(), **kw)
+
+    def test_a_first_run_with_no_locator_does_not_hold_the_next(self) -> None:
+        self.assertEqual(self.applied(self.vars), W.EXIT_FILING)
+        self.assertFalse(Path(self.state, W.STATE_NAME).exists())
+        run = Run()
+        self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_OK)
+        self.assertTrue(run.named("simple-board", "file"))
+
+    def test_a_first_run_with_no_registry_does_not_hold_the_next(self) -> None:
+        with mock.patch.object(W.L, "load_registry", side_effect=OSError("no")):
+            self.assertEqual(self.applied(self.vars), W.EXIT_STALE)
+        run = Run()
+        self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_OK)
+
+    def test_a_reset_with_no_locator_does_not_leave_a_hold(self) -> None:
+        path = Path(self.state, W.STATE_NAME)
+        path.parent.mkdir(parents=True)
+        path.write_text("{not json", encoding="utf-8")
+        self.applied(self.vars, reset_state=True)
+        run = Run()
+        self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_OK)
+
+    def test_a_reset_with_no_locator_after_earlier_runs_does_not_leave_a_hold(self) -> None:
+        self.run_watch(self.one(self.p("foo")), Run())
+        Path(self.state, W.STATE_NAME).write_text("{not json", encoding="utf-8")
+        self.applied(self.vars, reset_state=True)
+        self.assertEqual(self.run_watch(self.one(self.p("foo")), Run()), W.EXIT_OK)
+
+    def test_a_real_loss_keeps_holding_run_after_run(self) -> None:
+        run = Run()
+        self.run_watch(self.one(self.p("foo")), run)
+        os.unlink(Path(self.state, W.STATE_NAME))
+        sent = len(run.calls)
+        for _ in range(3):
+            self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_FILING)
+        self.assertEqual(len(run.calls), sent)
+
+    def test_the_readme_names_the_locator_before_the_first_apply(self) -> None:
+        text = (PKG / "README.md").read_text(encoding="utf-8")
+        self.assertLess(text.index("export " + W.BEARER_LOCATOR + "="), text.index("--apply --accept-burst"))
+
+
+class CliExits(WatchRoundTwo):
+    def test_a_proven_board_refusal_keeps_the_findings(self) -> None:
+        for code in (2, 3, 4, 5, 6):
+            with self.subTest(code=code):
+                self.setUp()
+                run = Run()
+                self.run_watch(self.one(self.p("foo")), run)
+                both = self.report([TW.anomaly(self.p("foo")), TW.anomaly(self.p("bar"))],
+                                   [{"path": self.p("foo"), "owner_repo": "Simple-With-Us/BotFleet"},
+                                    {"path": self.p("bar"), "owner_repo": "Simple-With-Us/BotFleet"}])
+                run.code, run.verb = code, "comment"
+                self.assertEqual(self.run_watch(both, run), W.EXIT_FILING)
+                self.assertNotIn(f"{self.p('bar')}|misplaced", self.remembered())
+                run.code = 0
+                self.assertEqual(self.run_watch(both, run), W.EXIT_OK)
+                self.assertEqual(len(run.named("simple-board", "comment")), 2)
+
+    def test_a_dm_the_credential_refused_goes_out_once_it_is_fixed(self) -> None:
+        path = os.path.join(self.code, "BotFleet")
+        run = Run(code=3, verb="dm")
+        self.run_watch(self.one(path, unpushed=1), run)
+        self.assertEqual(self.state_doc()["dm_paths"], [])
+        run.code = 0
+        self.run_watch(self.one(path, unpushed=1), run)
+        self.assertEqual(self.state_doc()["dm_paths"], [path])
+        self.run_watch(self.one(path, unpushed=1), run)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 2)
+
+    def test_a_chat_network_error_that_may_have_delivered_is_never_resent(self) -> None:
+        class MaybeSent(Run):
+            def __call__(self, argv, **kw):
+                if argv[1] == "dm":
+                    self.calls.append(list(argv))
+                    return SimpleNamespace(returncode=6, stdout="", stderr="timed out.  The message was not retried.  Check your messages")
+                return super().__call__(argv, **kw)
+
+        path = os.path.join(self.code, "BotFleet")
+        run = MaybeSent()
+        for _ in range(3):
+            self.run_watch(self.one(path, unpushed=1), run)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+
+    def test_a_chat_network_error_before_sending_is_tried_again(self) -> None:
+        path = os.path.join(self.code, "BotFleet")
+        run = Run(code=6, verb="dm")
+        self.run_watch(self.one(path, unpushed=1), run)
+        run.code = 0
+        self.run_watch(self.one(path, unpushed=1), run)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 2)
+
+    def test_the_words_this_relies_on_are_in_the_clis(self) -> None:
+        text = (REPO / "scripts" / "agent_sync" / "cli.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(text.count(W.CHAT_MAYBE_SENT), 2)
+        self.assertIn("(already filed; unchanged)", (REPO / "scripts" / "linear-board" / "board").read_text(encoding="utf-8"))
+
+
+class BoardDedupe(WatchRoundTwo):
+    class Board(Run):
+        """The board's own answer to a uid it has seen:  the old issue, its text unchanged."""
+
+        def __init__(self, known: dict | None = None, **kw) -> None:
+            super().__init__(**kw)
+            self.known = known or {}
+            self.closed: set = set()
+
+        def __call__(self, argv, **kw):
+            if argv[:2] == ["simple-board", "show"]:
+                self.calls.append(list(argv))
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"status": "completed" if argv[2] in self.closed else "open"}), stderr="")
+            if argv[:2] == ["simple-board", "file"]:
+                uid = argv[argv.index("--uid") + 1]
+                if uid in self.known:
+                    self.calls.append(list(argv))
+                    return SimpleNamespace(returncode=0, stdout=f"filed x  {self.known[uid]}  (already filed; unchanged)\n", stderr="")
+                res = super().__call__(argv, **kw)
+                self.known[uid] = f"AFC-{self.issue}"
+                return res
+            return super().__call__(argv, **kw)
+
+    UID = "placement-watch:mac:claude|BotFleet"
+
+    def test_a_retried_filing_puts_the_new_rows_in_a_comment(self) -> None:
+        run = self.Board({self.UID: "AFC-700"})
+        run.issue = 700
+        self.assertEqual(self.run_watch(self.one(self.p("foo"), branch="claude/x"), run), W.EXIT_OK)
+        self.assertEqual(self.state_doc()["groups"]["claude|BotFleet"]["issue"], "AFC-700")
+        self.assertEqual(run.named("simple-chat", "post"), [])
+        comment = run.named("simple-board", "comment")[0]
+        self.assertIn("foo", comment[comment.index("--text") + 1])
+
+    def test_a_closed_issue_found_by_uid_gets_a_new_one(self) -> None:
+        run = self.Board({self.UID: "AFC-700"})
+        run.issue = 800
+        run.closed.add("AFC-700")
+        self.assertEqual(self.run_watch(self.one(self.p("foo"), branch="claude/x"), run), W.EXIT_OK)
+        group = self.state_doc()["groups"]["claude|BotFleet"]
+        self.assertEqual((group["issue"], group["generation"]), ("AFC-801", 1))
+        self.assertEqual(run.named("simple-board", "comment"), [])
+        self.assertTrue(any("foo" in body for body in run.bodies))
+
+    def test_a_reset_does_not_message_the_owner_or_post_again(self) -> None:
+        path = os.path.join(self.code, "BotFleet")
+        report = self.one(path, unpushed=1, branch="claude/x")
+        run = self.Board()
+        self.run_watch(report, run)
+        Path(self.state, W.STATE_NAME).write_text("{not json", encoding="utf-8")
+        filer = W.Filer("CLAUDE", "s", "Mac", run=run)
+        rc = W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=False, stable=None,
+                        now=TW.NOW, build_report=lambda *a, **k: report, filer=filer, out=io.StringIO(), reset_state=True)
+        self.assertEqual(rc, W.EXIT_OK)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+        self.assertEqual(len(run.named("simple-chat", "post")), 1)
+
+
+class EveryRowIsSent(WatchRoundTwo):
+    def test_past_the_display_limit_the_rows_go_in_comments(self) -> None:
+        run = Run()
+        self.assertEqual(self.run_burst(self.many(90), run), W.EXIT_OK)
+        sent = run.bodies[0] + "".join(c[c.index("--text") + 1] for c in run.named("simple-board", "comment"))
+        for i in range(90):
+            self.assertIn(f"m{i:02d}", sent)
+        self.assertEqual(len(run.named("simple-board", "comment")), 2)
+        self.assertEqual(len(self.remembered()), 90)
+
+    def test_a_refused_comment_remembers_only_what_went_out(self) -> None:
+        run = Run(code=4, verb="comment")
+        self.run_burst(self.many(60), run)
+        self.assertEqual(len(self.remembered()), 40)
+        run.code = 0
+        self.run_burst(self.many(60), run)
+        self.assertEqual(len(self.remembered()), 60)
+
+    def test_a_dm_past_its_limit_tells_the_rest_next_time(self) -> None:
+        paths = [os.path.join(self.code, f"R{i:02d}") for i in range(14)]
+        report = self.report([TW.anomaly(p) for p in paths], [{"path": p, "owner_repo": "Simple-With-Us/BotFleet", "unpushed": 1} for p in paths])
+        run = Run()
+        self.run_watch(report, run)
+        self.assertEqual(len(self.state_doc()["dm_paths"]), 10)
+        self.run_watch(report, run)
+        self.assertEqual(len(self.state_doc()["dm_paths"]), 14)
+
+
+class BadStateShapes(WatchRoundTwo):
+    SHAPES = ({"groups": {"x": None}}, {"groups": {"x": {"paths": 5}}}, {"groups": {"x": {"issue": 5, "paths": {}}}},
+              {"groups": {"x": {"generation": "z", "paths": {}}}}, {"groups": {}, "events_since": 5}, {"groups": {}, "dm_paths": 5},
+              {"groups": {}, "dm_paths": [5]}, {"groups": {}, "repeat_pending": 5}, {"groups": {}, "last_repeat_dm": 5})
+
+    def test_each_holds_the_sends_without_a_crash_and_a_reset_clears_it(self) -> None:
+        path = Path(self.state, W.STATE_NAME)
+        path.parent.mkdir(parents=True)
+        for shape in self.SHAPES:
+            with self.subTest(shape=shape):
+                path.write_text(json.dumps(shape), encoding="utf-8")
+                run = Run()
+                self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_FILING)
+                self.assertEqual(run.calls, [])
+                filer = W.Filer("CLAUDE", "s", "Mac", run=run)
+                rc = W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=False,
+                                stable=None, now=TW.NOW, build_report=lambda *a, **k: self.one(self.p("foo")), filer=filer, out=io.StringIO(),
+                                reset_state=True)
+                self.assertEqual(rc, W.EXIT_OK)
+
+
+class VerifyCannotRun(WatchRoundTwo):
+    def test_it_is_not_a_clean_result(self) -> None:
+        filer = W.Filer("CLAUDE", "s", "Mac", run=Run())
+        rc = W.run_once(home=self.home, env=self.vars, apply=False, seat="CLAUDE", session="s", report_path=None, verify_hooks=True,
+                        stable=self.p("nonexistent"), now=TW.NOW, build_report=lambda *a, **k: self.report([]), filer=filer, out=io.StringIO())
+        self.assertEqual(rc, W.EXIT_STALE)
+        status = json.loads(Path(self.state, W.STATUS_NAME).read_text(encoding="utf-8"))
+        self.assertFalse(status["ok"])
+        self.assertIn("verify", status["errors"][0])
+
+    def test_a_crash_is_none_and_clean_is_empty(self) -> None:
+        crash = lambda *_a, **_k: SimpleNamespace(returncode=1, stdout="")  # noqa: E731
+        clean = lambda *_a, **_k: SimpleNamespace(returncode=0, stdout="PASS x y z\n")  # noqa: E731
+        self.assertIsNone(W.verify_failures("/s", ("claude",), run=crash))
+        self.assertEqual(W.verify_failures("/s", ("claude",), run=clean), [])
+
+
+class DeadHookForms(DeadHooks):
+    def test_an_interpreter_or_a_home_prefix_does_not_hide_a_missing_script(self) -> None:
+        alive = Path(self.home, "alive.py")
+        alive.write_text("", encoding="utf-8")
+        self.write(".claude/settings.json", {"hooks": {"PreToolUse": [{"hooks": [
+            {"command": "/usr/bin/python3 /gone/a.py"}, {"command": "python3 -I ~/gone/b.py"}, {"command": "$HOME/gone/c"},
+            {"command": "~/gone/d arg"}, {"command": "FOO=1 /usr/bin/env python3 /gone/e.py"}, {"command": "/gone/f"},
+            {"command": f"python3 {alive}"}, {"command": "python3 -c 'print(1)'"}, {"command": "python3 -m gone.module"},
+            {"command": "bash -c '/gone/g'"}, {"command": "bash -lc '/gone/j'"}, {"command": "python3 $UNKNOWN/h.py"}, {"command": "$OTHER/i"}, {"command": "python3 relative.py"},
+        ]}]}})
+        got = sorted(cmd for _path, cmd in W.dead_hook_commands(self.home))
+        self.assertEqual(got, sorted(["/gone/a.py", f"{self.home}/gone/b.py", f"{self.home}/gone/c", f"{self.home}/gone/d", "/gone/e.py", "/gone/f"]))
+
+
+class EventLogBoundary(unittest.TestCase):
+    def test_the_line_that_crossed_the_limit_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            env = {P.ENV_STATE_DIR: home}
+            path = P.event_log_path(home, env)
+            written = 0
+            with mock.patch.object(P, "EVENT_LOG_MAX_BYTES", 2048):
+                while not os.path.exists(path + ".1"):
+                    P.log_event(home, {"n": written, "pad": "x" * 100}, env)
+                    written += 1
+            limit = 2048
+            with open(path + ".1", "rb") as fh:
+                self.assertGreater(len(fh.read()), limit)
+            seen = {e["n"] for e in P.read_events(path)}
+            self.assertEqual(seen, set(range(written)))
+
+    def test_the_default_limit_is_past_the_rotation_size(self) -> None:
+        import inspect
+
+        default = inspect.signature(P.read_events).parameters["limit_bytes"].default
+        self.assertGreater(default, P.EVENT_LOG_MAX_BYTES)
+
+    def test_a_file_past_the_limit_keeps_its_newest_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "log")
+            with open(path, "w", encoding="utf-8") as fh:
+                for i in range(100):
+                    fh.write(json.dumps({"n": i}) + "\n")
+            got = [e["n"] for e in P.read_events(path, limit_bytes=60)]
+            self.assertEqual(got[-1], 99)
+            self.assertNotIn(0, got)
+
+
+class CodeCloneWork(TD.Case):
+    def on_default(self) -> None:
+        TD.git(["remote", "set-url", "origin", str(self.upstream)], self.repo)
+        TD.git(["fetch", "-q", "origin"], self.repo)
+        TD.git(["remote", "set-head", "origin", "main"], self.repo)
+
+    def work(self, rep: dict) -> list[dict]:
+        return [w for w in rep["placement_warnings"] if w["type"] == "CODE-WORK"]
+
+    def test_commits_off_the_checked_out_branch_reach_the_owner(self) -> None:
+        self.on_default()
+        self.assertEqual(self.work(self.report()), [])
+        TD.git(["checkout", "-q", "-b", "wip"], self.repo)
+        TD.git(["commit", "-q", "--allow-empty", "-m", "side"], self.repo)
+        TD.git(["checkout", "-q", "main"], self.repo)
+        rep = self.report()
+        self.assertEqual([w["path"] for w in self.work(rep)], [str(self.repo)])
+        self.assertIn("1 commit(s) on other branches", self.work(rep)[0]["detail"])
+        self.assertEqual(self.co(rep, self.repo)["unpushed"], 0)
+        self.assertEqual(rep["main_clones"][0]["issues"], [])  # old squash-merged branches look the same, so no check fails on it
+        self.assertEqual(rep["placement_anomalies"], [])
+        registry = L.load_registry(env=self.vars)
+        found = W.findings_from_report(rep, L.make_roots(str(self.home), self.vars, registry=registry), registry)
+        self.assertEqual([(f.creator, f.unpushed_in_code) for f in found], [("code-work", True)])
+
+    def test_a_stash_reaches_the_owner(self) -> None:
+        self.on_default()
+        (self.repo / "f").write_text("x", encoding="utf-8")
+        TD.git(["add", "f"], self.repo)
+        TD.git(["stash", "-q"], self.repo)
+        self.assertIn("a stash", self.work(self.report())[0]["detail"])
+
+    def test_a_clone_with_a_row_is_left_alone(self) -> None:
+        self.on_default()
+        TD.git(["checkout", "-q", "-b", "wip"], self.repo)
+        TD.git(["commit", "-q", "--allow-empty", "-m", "side"], self.repo)
+        TD.git(["checkout", "-q", "main"], self.repo)
+        self.rows(self.row("{code}/BotFleet"))
+        self.assertEqual(self.work(self.report()), [])
+
+
+class OneMessagePerClone(WatchRoundTwo):
+    def test_many_clones_are_one_issue_and_one_message_each(self) -> None:
+        paths = [os.path.join(self.code, f"R{i}") for i in range(3)]
+        report = self.report([])
+        report["placement_warnings"] = [{"type": "CODE-WORK", "path": p, "detail": "a stash"} for p in paths]
+        run = Run()
+        self.run_watch(report, run)
+        self.run_watch(report, run)
+        self.assertEqual(len(run.named("simple-board", "file")), 1)
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+        self.assertEqual(self.state_doc()["dm_paths"], sorted(paths))
+
+
+class ThrowawayRepos(TD.Case):
+    def setUp(self) -> None:
+        super().setUp()
+        self.temp = Path(os.path.realpath(tempfile.mkdtemp(dir="/var/tmp")))
+        self.addCleanup(shutil.rmtree, self.temp, True)
+
+    def report_with_temp(self) -> dict:
+        return D.build_report(str(self.home), self.vars, cwd=None, use_gh=False, tmp_scan_roots=[self.temp], lsof_cwds=lambda: [])
+
+    def test_a_clone_of_a_local_test_repo_in_temp_is_not_misplaced(self) -> None:
+        bare = self.temp / "remote.git"
+        TD.git(["init", "-q", "--bare", "-b", "main", str(bare)], self.temp)
+        clone = self.temp / "t"
+        TD.git(["clone", "-q", str(bare), str(clone)], self.temp)
+        self.assertFalse(self.co(self.report_with_temp(), clone)["placement_violation"])
+
+    def test_a_clone_of_a_fleet_repo_in_temp_still_is(self) -> None:
+        clone = self.temp / "leak"
+        TD.git(["clone", "-q", str(self.repo), str(clone)], self.temp)
+        self.assertTrue(self.co(self.report_with_temp(), clone)["placement_violation"])
+
+    def test_a_network_origin_of_unknown_owner_in_temp_still_is(self) -> None:
+        clone = self.temp / "other"
+        TD.git(["init", "-q", str(clone)], self.temp)
+        TD.git(["remote", "add", "origin", "https://example.invalid/x/y.git"], clone)
+        self.assertTrue(self.co(self.report_with_temp(), clone)["placement_violation"])
+
+
+class DoctorSaysTheFileIsBroken(TD.Case):
+    def test_an_unusable_file_and_a_mode_typo_are_reported(self) -> None:
+        (self.home / "rows.json").write_text("{ nope", encoding="utf-8")
+        mode = self.home / ".config" / "fleet" / "lane-guard-mode"
+        mode.parent.mkdir(parents=True)
+        mode.write_text("block tmep\n", encoding="utf-8")
+        rep = self.report()
+        self.assertEqual(rep["placement_anomalies"][0]["type"], "EXCEPTIONS-UNUSABLE")
+        self.assertEqual(rep["placement_warnings"][0]["type"], "MODE-FILE")
+
+
+class WatcherAndBrokenFiles(WatchRoundTwo):
+    def test_a_broken_exceptions_file_files_only_itself(self) -> None:
+        Path(self.home, "none.json").write_text("{ nope", encoding="utf-8")
+        self.event(self.p("excused-really"))
+        report = self.one(self.p("excused"))
+        report["placement_anomalies"].insert(0, {"type": "EXCEPTIONS-UNUSABLE", "path": P.EXCEPTIONS_NAME, "detail": "broken"})
+        run = Run()
+        self.assertEqual(self.run_watch(report, run), W.EXIT_STALE)
+        self.assertEqual(list(self.state_doc()["groups"]), ["exceptions-file|AI-Fleet-Coordinator"])
+        self.assertIn("Unusable", run.named("simple-board", "file")[0][3])
+        self.assertEqual(self.state_doc()["events_since"], "")
+
+    def test_repairing_it_brings_the_real_findings_back(self) -> None:
+        Path(self.home, "none.json").write_text("{ nope", encoding="utf-8")
+        run = Run()
+        self.run_watch(self.one(self.p("foo")), run)
+        Path(self.home, "none.json").write_text('{"exceptions": []}\n', encoding="utf-8")
+        self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_OK)
+        self.assertIn(f"{self.p('foo')}|misplaced", self.remembered())
+
+    def test_a_detect_event_judged_without_rows_is_not_a_finding(self) -> None:
+        self.event(self.p("foo"), exceptions="unusable")
+        run = Run()
+        self.assertEqual(self.run_watch(self.report([]), run), W.EXIT_OK)
+        self.assertEqual(run.calls, [])
+
+    def test_a_mode_typo_is_filed_once(self) -> None:
+        mode = Path(self.home, ".config", "fleet", "lane-guard-mode")
+        mode.parent.mkdir(parents=True)
+        mode.write_text("block tmep\n", encoding="utf-8")
+        run = Run()
+        report = self.report([])
+        report["placement_warnings"] = [{"type": "MODE-FILE", "path": "mode-file:unknown rule classes: tmep", "detail": "d"}]
+        self.run_watch(report, run)
+        self.run_watch(report, run)
+        self.assertEqual(len(run.named("simple-board", "file")), 1)
+        self.assertIn("Mode File", run.named("simple-board", "file")[0][3])
+
+
+class RepeatLeakRate(WatchRoundTwo):
+    def old_group(self) -> None:
+        path = Path(self.state, W.STATE_NAME)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"groups": {"claude|BotFleet": {"first_seen": "2026-10-01T00:00:00+00:00", "issue": "AFC-1", "paths": {}}}}),
+                        encoding="utf-8")
+
+    def test_new_paths_in_an_old_group_message_the_owner_once_a_day(self) -> None:
+        self.old_group()
+        run = Run()
+        for i in range(3):
+            self.event(self.p(f"new{i}"))
+            self.run_watch(self.report([]), run, now=TW.NOW + dt.timedelta(hours=i))
+        self.assertEqual(len(run.named("simple-chat", "dm")), 1)
+        self.assertEqual(len(self.state_doc()["repeat_pending"]), 2)
+        self.event(self.p("new3"))
+        self.run_watch(self.report([]), run, now=TW.NOW + dt.timedelta(hours=25))
+        self.assertEqual(len(run.named("simple-chat", "dm")), 2)
+        self.assertEqual(self.state_doc()["repeat_pending"], {})
+        self.assertIn("new2", run.bodies[-1])
+
+    def test_a_refused_message_stays_pending_and_is_not_rate_limited(self) -> None:
+        self.old_group()
+        run = Run(code=3, verb="dm")
+        self.event(self.p("a"))
+        self.run_watch(self.report([]), run)
+        self.assertEqual(self.state_doc()["last_repeat_dm"], "")
+        run.code = 0
+        self.run_watch(self.report([]), run)
+        self.assertEqual(self.state_doc()["repeat_pending"], {})
+        self.assertEqual(len(run.named("simple-chat", "dm")), 2)

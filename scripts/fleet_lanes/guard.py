@@ -507,7 +507,9 @@ class GuardContext:
         exceptions: tuple[P.ExceptionRow, ...] = (),
         mode: P.Mode | None = None,
         host: str = P.HOST_MAC,
+        exceptions_problem: str | None = None,
     ) -> None:
+        self.exceptions_problem = exceptions_problem
         self.home = home
         self.env = env
         self.registry = registry
@@ -729,15 +731,17 @@ def make_context(
             registry = L.parse_registry({}, include_extras=True, source="fallback")
     raw_tmp = (env.get("TMPDIR") or "").strip()
     tmpdir = _norm(raw_tmp) if raw_tmp.startswith("/") else "/tmp"
+    rows, exceptions_problem = P.load_exceptions_reporting(env=env)
     return GuardContext(
         home=str(roots.home),
         env=env,
         registry=registry,
         roots=roots,
         tmpdir=tmpdir,
-        exceptions=P.load_exceptions(env=env),
+        exceptions=rows,
         mode=P.read_mode(str(roots.home), env),
         host=P.host_kind(env),
+        exceptions_problem=exceptions_problem,
     )
 
 
@@ -868,19 +872,38 @@ def _rule_class(rule: str) -> str:
 CLASS_EXCUSED = "excused"  # what the shim gets back for a destination an exception row covers;  never a block
 
 
+_MAX_ORIGIN_HOPS = 3
+
+
+def _venv_src_spelling(target: str) -> str | None:
+    """`pip install -e git+...` clones into <venv>/src/<name>, whatever the venv is called, and a pattern cannot say "any folder
+    holding a pyvenv.cfg".  So a real venv is spelled `.venv` here for the row to match.  Only the shim calls this:  it reads the disk."""
+    parent = os.path.dirname(target)
+    venv = os.path.dirname(parent)
+    if os.path.basename(parent) != "src" or not os.path.isfile(os.path.join(venv, "pyvenv.cfg")):
+        return None
+    return os.path.join(os.path.dirname(venv), ".venv", "src", os.path.basename(target))
+
+
 def evaluate_git_argv(
-    args: list[str], cwd: str, ctx: GuardContext, *, origin_of: Callable[[str], str | None] | None = None
+    args: list[str],
+    cwd: str,
+    ctx: GuardContext,
+    *,
+    origin_of: Callable[[str], Any] | None = None,
+    others: list[tuple[str, Decision]] | None = None,
 ) -> tuple[str, Decision] | None:
     """The shim's question: judge one real `git` argv, already past alias expansion.
 
     Returns (rule class, a DENY Decision whose reason is ready to print) when this checkout would be misplaced,
     (CLASS_EXCUSED, an ALLOW Decision naming the row) when an exception row covers it, and None when it is fine.  The caller
     applies the mode, because for the shim even temp and ~/Code obey it.  `origin_of` reads a repo's origin URL:  the shim
-    may touch the disk, where the hook may not, so here a repo is fleet by its origin and not only by where it sits.
+    may touch the disk, where the hook may not, so here a repo is fleet by its origin and not only by where it sits.  `origin_of`
+    answers with one URL or a list of them.  The answer is the one to act on, and any other verdict is added to `others`.
     """
     ev = _Evaluator(ctx, None, via="shim", origin_of=origin_of)
     ev._git(list(args), [], _State(_norm(cwd) if cwd.startswith("/") else _UNK))
-    return _shim_verdict(ev)
+    return _shim_verdict(ev, others)
 
 
 def evaluate_shell_text(
@@ -889,7 +912,8 @@ def evaluate_shell_text(
     ctx: GuardContext,
     *,
     args: Sequence[str] = (),
-    origin_of: Callable[[str], str | None] | None = None,
+    origin_of: Callable[[str], Any] | None = None,
+    others: list[tuple[str, Decision]] | None = None,
 ) -> tuple[str, Decision] | None:
     """The same question for a shell command, the body of a `!` git alias.  `args` are the alias's arguments, which git hands the
     shell as $1 and so on."""
@@ -898,22 +922,25 @@ def evaluate_shell_text(
     for i, arg in enumerate(args, 1):
         st.vars[str(i)] = arg
     ev.run(command, st)
-    return _shim_verdict(ev)
+    return _shim_verdict(ev, others)
 
 
-def _shim_verdict(ev: _Evaluator) -> tuple[str, Decision] | None:
-    if ev.hits:
-        hit = ev.hits[0]
-        cls = P.CLASS_ISOLATION if ev.is_harness_isolation(hit) else _rule_class(hit.rule)
-    elif ev.placement:
-        blocked = [row for row in ev.placement if ev.ctx.mode.blocks(row[0])]
-        cls, hit = blocked[0] if blocked else ev.placement[0]
-    elif ev.excused:
+def _shim_verdict(ev: _Evaluator, others: list[tuple[str, Decision]] | None = None) -> tuple[str, Decision] | None:
+    """A partial block has to see every checkout in a `!` alias, so a class it blocks counts wherever it comes in the alias, and one
+    that only detects never hides it.  A harness worktree the `isolation` line leaves alone comes last, because it logs nothing."""
+    rows = [(P.CLASS_ISOLATION if ev.is_harness_isolation(hit) else _rule_class(hit.rule), hit) for hit in ev.hits]
+    rows += ev.placement
+    if not rows:
+        if not ev.excused:
+            return None
         row, target, src = ev.excused[0]
         return CLASS_EXCUSED, Decision(ALLOW, "", row.id, ev.display(target), src.label)
-    else:
-        return None
-    return cls, Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)
+    mode = ev.ctx.mode
+    rows.sort(key=lambda r: (not mode.blocks(r[0]), r[0] == P.CLASS_ISOLATION and mode.isolation == P.MODE_OFF))
+    verdicts = [(cls, Decision(DENY, ev.reason(hit), hit.rule, ev.display(hit.target), hit.src.label)) for cls, hit in rows]
+    if others is not None:
+        others.extend(verdicts[1:])
+    return verdicts[0]
 
 
 def _isolation_request(payload: Any) -> bool:
@@ -1577,6 +1604,7 @@ class _Src:
     prefix: str | None = None
     owner_repo: str = ""
     kind: str = "repo"
+    loose: bool = False  # the app came only from a folder named <prefix>-<something>, which anyone's repo can be
 
 
 @dataclass(frozen=True)
@@ -1675,6 +1703,10 @@ class _Evaluator:
 
     # ---- driving
 
+    def _stop(self) -> bool:
+        """The hook denies at the first hit.  The shim goes on, because the mode file can block a later class and not the first."""
+        return bool(self.hits) and self.via != "shim"
+
     def run(self, text: str, st: _State) -> None:
         self._run_tokens(_lex(text), st)
 
@@ -1709,7 +1741,7 @@ class _Evaluator:
                 )
                 words, redirs = [], []
                 after_pipe = False
-                if self.hits:
+                if self._stop():
                     return
             if op == "|":
                 after_pipe = True
@@ -1955,6 +1987,19 @@ class _Evaluator:
                 return cand
         return None
 
+    def _only_prefix_named(self, name: str) -> bool:
+        """Whether an app matched this folder only because its name starts with the app's.  `<prefix>-<seat>` is a flat lane, so it
+        stays the app's;  `<prefix>-tools` may be anyone's."""
+        reg = self.ctx.registry
+        if reg.app_by_name(name) is not None:
+            return False
+        low = name.lower()
+        for text, _cand in self.ctx.app_names:
+            if low.startswith(text + "-"):
+                head = low[len(text) + 1 :].split("-", 1)[0]
+                return reg.seat_by_suffix(head) is None and reg.seat_by_name(head) is None
+        return False
+
     def _fleet_path_src(self, path: str) -> _Src | None:
         """A fleet source when `path` is under ~/Code/<child>, ~/apps/<child>, the lanes root or a
         harness worktree location."""
@@ -1986,6 +2031,7 @@ class _Evaluator:
                     app,
                     app.prefix if app else None,
                     app.owner_repo if app else "",
+                    loose=app is not None and root not in self.ctx.lanes_roots_f and self._only_prefix_named(first),
                 )
         comps = known.split("/")
         for pat in self.ctx.harness_f:
@@ -2031,19 +2077,40 @@ class _Evaluator:
             return None
         return self._local_src(_join(base, repo))
 
-    def _local_src(self, path: str) -> _Src | None:
+    def _local_src(self, path: str, hops: int = 0) -> _Src | None:
         """The fleet source a local repo stands for.  The hook goes by where it sits, since it must not touch the disk.  The shim
         asks the repo's origin, so a fleet checkout that got outside the roots is still fleet, and a repo under a root whose origin is
-        someone else's, or that has none, is not.  A folder name that happens to look like an app decides nothing here."""
+        someone else's, or that has no remote, is not.  An origin that is a local path is followed, since a clone of a clone is still
+        fleet, and a repo with no `origin` is asked about the remotes it does have.  A folder name that looks like an app decides
+        nothing here."""
         src = self._fleet_path_src(path)
         if self.origin_of is None:
             return src
-        url = self.origin_of(path) if path.startswith("/") and _UNK not in path else None
-        gh = _github_owner_repo(url) if url else None
-        by_origin = self._repo_src(*gh) if gh is not None else None
-        if by_origin is None:
+        answer = self.origin_of(path) if path.startswith("/") and _UNK not in path else None
+        for url in [answer] if isinstance(answer, str) else (answer or ()):
+            gh = _github_owner_repo(url)
+            if gh is not None:
+                by_origin = self._repo_src(*gh)
+            else:
+                by_origin = self._local_origin_src(url, path, hops)
+            if by_origin is not None:
+                return src if src is not None and src.app is not None else by_origin
+        return None
+
+    def _local_origin_src(self, url: str, path: str, hops: int) -> _Src | None:
+        """The fleet source behind an origin that is a local path, a few hops at most.  A folder that is gone counts by where it was."""
+        if hops >= _MAX_ORIGIN_HOPS:
             return None
-        return src if src is not None and src.app is not None else by_origin
+        local = url[7:] if url.lower().startswith("file://") else url
+        if "://" in local or re.match(r"^[^/:]+:", local):
+            return None  # another host, which _github_owner_repo has already said is not GitHub
+        if local.startswith("~/"):
+            local = _join(self.ctx.home, local[2:])
+        local = _join(path, local)
+        if os.path.isdir(local):
+            return self._local_src(local, hops + 1)
+        found = self._fleet_path_src(local)
+        return found if found is not None and found.app is not None else None
 
     def _tarball_src(self, url: str) -> _Src | None:
         for rx in _TARBALL_RES:
@@ -2057,6 +2124,9 @@ class _Evaluator:
         if not target.startswith("/") or _UNK in target:
             return False
         row = self.ctx.in_date_exception(target)
+        if row is None and self.origin_of is not None:
+            spelled = _venv_src_spelling(target)
+            row = self.ctx.in_date_exception(spelled) if spelled else None
         if row is None:
             return False
         if not P.row_excuses(
@@ -2290,6 +2360,9 @@ class _Evaluator:
         # owner either, may be anyone's, and these rules are new:  only the older temp and ~/Code rules go by place alone.
         if src.app is None and not src.owner_repo:
             return
+        # The hook cannot read an origin, so a folder name alone does not make a fleet repo under these rules.  The shim asked the origin.
+        if src.loose and self.origin_of is None:
+            return
         cls = self._placement_class(rule, self.ctx.respelled(target), src)
         if cls is None and self.origin_of is not None:
             # The shim can see the disk, so a symlink in the lanes root is judged where it lands.
@@ -2336,6 +2409,7 @@ class _Evaluator:
     def _git(self, args: list[str], redirs: list, st: _State) -> Any:
         eff = st.cwd
         gitdir: str | None = None
+        worktree: str | None = None
         i = 0
         n = len(args)
         while i < n:
@@ -2345,11 +2419,17 @@ class _Evaluator:
                     eff = _join(eff, args[i + 1])
                 i += 2
             elif a in ("--git-dir", "--work-tree"):
-                if a == "--git-dir" and i + 1 < n:
-                    gitdir = args[i + 1]
+                if i + 1 < n:
+                    if a == "--git-dir":
+                        gitdir = args[i + 1]
+                    else:
+                        worktree = args[i + 1]
                 i += 2
             elif a.startswith("--git-dir="):
                 gitdir = a.split("=", 1)[1]
+                i += 1
+            elif a.startswith("--work-tree="):
+                worktree = a.split("=", 1)[1]
                 i += 1
             elif a in _GIT_GLOBAL_VALUE:
                 i += 2
@@ -2370,7 +2450,9 @@ class _Evaluator:
         elif sub == "remote":
             self._remote(rest, eff, st)
         elif sub in ("fetch", "pull"):
-            self._fetch(rest, eff, st)
+            # What this writes is the repo it names, not the folder it runs in:  a fetch touches the git dir, and a pull its work tree too.
+            written = _join(eff, worktree) if sub == "pull" and worktree else repo_dir
+            self._fetch(rest, written, st)
         elif sub == "checkout-index":
             self._checkout_index(rest, eff, repo_dir)
         return None
@@ -2387,7 +2469,7 @@ class _Evaluator:
             return
         target = _join(eff, pos[1]) if len(pos) > 1 else _child(eff, _humanish(pos[0], bare))
         self._check(RULE_CLONE, target, src, "a bare clone" if bare else "a clone")
-        if sep_dir and not self.hits:
+        if sep_dir and not self._stop():
             self._check(RULE_CLONE, _join(eff, sep_dir), src, "the git directory of a clone")
 
     def _worktree(self, rest: list[str], eff: str, repo_dir: str) -> None:
@@ -2664,7 +2746,7 @@ class _Evaluator:
             else:
                 target = self._stdout_target(redirs, st)
             got = self._download(src, target, st)
-            if self.hits:
+            if self._stop():
                 return None
             stream = stream or got
         return stream
@@ -2718,7 +2800,7 @@ class _Evaluator:
                 )
                 target = _join(self._path(prefix, st) if prefix else st.cwd, tail)
             got = self._download(src, target, st)
-            if self.hits:
+            if self._stop():
                 return None
             stream = stream or got
         return stream
@@ -2929,6 +3011,14 @@ class _Evaluator:
         return seat is not None and self._lane_new_accepts(seat)
 
     def reason(self, hit: _Hit) -> str:
+        text = self._reason_text(hit)
+        problem = self.ctx.exceptions_problem
+        if problem:
+            text += (f"  The placement exceptions file cannot be used ({problem}), so no exception was applied;  "
+                     "if this path has a row, repair the file instead of moving the work.")
+        return text
+
+    def _reason_text(self, hit: _Hit) -> str:
         src = hit.src
         app = src.app
         prefix = app.prefix if app is not None else src.prefix

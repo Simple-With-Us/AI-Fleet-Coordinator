@@ -61,6 +61,7 @@ class WatchCase(unittest.TestCase):
         Path(reg).write_text(json.dumps(F.REGISTRY_DATA), encoding="utf-8")
         self.vars = {"HOME": self.home, P.ENV_STATE_DIR: self.state, "FLEET_APPS_JSON": reg, P.ENV_HOST_KIND: "mac",
                      "FLEET_LANES_EXTERNAL_ROOT": "", P.ENV_EXCEPTIONS: os.path.join(self.home, "none.json")}
+        Path(self.home, "none.json").write_text('{"exceptions": []}\n', encoding="utf-8")
         self.code = os.path.join(self.home, "Code")
 
     def report(self, anomalies: list[dict], checkouts: list[dict] | None = None, age_hours: float = 0.0) -> dict:
@@ -273,7 +274,7 @@ class Hooks(WatchCase):
 
     def test_verify_failures_are_parsed(self) -> None:
         def run(_argv, **_kw):
-            return SimpleNamespace(stdout="PASS  claude  entry  ok\nFAIL  minimax  hooks  stale\nverify: 1 FAIL\n")
+            return SimpleNamespace(returncode=1, stdout="PASS  claude  entry  ok\nFAIL  minimax  hooks  stale\nverify: 1 FAIL\n")
 
         self.assertEqual(W.verify_failures("/stable", ("minimax",), run=run), ["minimax hooks"])
 

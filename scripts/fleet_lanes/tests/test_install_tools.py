@@ -312,6 +312,8 @@ class World(unittest.TestCase):
         pkg.mkdir(parents=True)
         for m in T.REQUIRED_MODULES:
             shutil.copy(REAL_PKG / m, pkg / m)
+        # A real install ships it, and a deny says so when it is missing.
+        shutil.copy(REAL_PKG / T.EXCEPTIONS_FILE, pkg / T.EXCEPTIONS_FILE)
         if guard is not None:
             (pkg / "guard.py").write_text(guard, encoding="utf-8")
         if with_lane:
@@ -1020,7 +1022,7 @@ class ToolsTests(World):
         s = self.stable()
         names = sorted(p.name for p in (s / "fleet_lanes").iterdir())
         self.assertEqual(
-            names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE])
+            names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE, T.EXCEPTIONS_FILE])
         )  # no tests, no __pycache__
         self.assertFalse((s / "fleet_lanes" / "tests").exists())
         self.assertTrue((s / "fleet-apps.json").is_file())

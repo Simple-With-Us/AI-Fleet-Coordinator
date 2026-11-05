@@ -529,6 +529,60 @@
         "mac",
         "server"
       ]
+    },
+    {
+      "id": "pkg-pip-editable",
+      "pattern": "**/.venv/src",
+      "class": "package-manager",
+      "creator": "pip",
+      "reason": "`pip install -e git+...` clones into the venv's src folder.  The shim spells any real venv as .venv for this row.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-homebrew-cache-mac",
+      "pattern": "{home}/Library/Caches/Homebrew",
+      "class": "package-manager",
+      "creator": "homebrew",
+      "reason": "Homebrew clones a head or git formula into its download cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac"
+      ]
+    },
+    {
+      "id": "pkg-homebrew-cache-linux",
+      "pattern": "{home}/.cache/Homebrew",
+      "class": "package-manager",
+      "creator": "homebrew",
+      "reason": "Homebrew clones a head or git formula into its download cache.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "server"
+      ]
+    },
+    {
+      "id": "pkg-yarn-berry-temp",
+      "pattern": "**/xfs-*",
+      "class": "package-temp",
+      "creator": "yarn",
+      "reason": "Yarn Berry's temp clone of a git dependency.",
+      "decided_by": "CLAUDE, seeded from the AFC-618 review; the owner reviews at expiry",
+      "decided_on": "2026-11-04",
+      "expires": "2027-08-05",
+      "hosts": [
+        "mac",
+        "server"
+      ]
     }
   ]
 }

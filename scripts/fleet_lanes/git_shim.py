@@ -32,6 +32,7 @@ import time
 from collections.abc import Mapping, Sequence
 
 BLOCK_EXIT = 77
+ENV_DENY_NOTE = "FLEET_GIT_SHIM_DENY_NOTE"  # the file the shim prints a deny reason from, since Python has none of git's streams
 TIME_LIMIT_S = 3
 MAX_ALIAS_DEPTH = 64
 _GLOBAL_VALUE = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--exec-path",
@@ -131,36 +132,39 @@ def with_fleet_roots(env: Mapping[str, str]) -> dict[str, str]:
 
 
 def _origin_reader(real_git: str, env: Mapping[str, str]):
-    def read(path: str) -> str | None:
+    """Reads a repo's identity:  its origin URL when it has an origin, and otherwise every remote it does have, so renaming the remote
+    does not make a fleet repo someone else's."""
+
+    def read(path: str) -> list[str]:
         clean = {k: v for k, v in env.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
         try:
-            res = subprocess.run([real_git, "-C", path, "config", "--get", "remote.origin.url"], stdout=subprocess.PIPE,
+            res = subprocess.run([real_git, "-C", path, "config", "--get-regexp", r"^remote\..*\.url$"], stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL, text=True, timeout=1.0, check=False, env=clean)
         except (OSError, subprocess.SubprocessError):
-            return None
-        return res.stdout.strip() or None if res.returncode == 0 else None
+            return []
+        rows = [line.split(None, 1) for line in res.stdout.splitlines()] if res.returncode == 0 else []
+        urls = {row[0]: row[1].strip() for row in rows if len(row) == 2}
+        return [urls["remote.origin.url"]] if "remote.origin.url" in urls else list(urls.values())
 
     return read
 
 
 def _for_judging(args: Sequence[str], cwd: str, env: Mapping[str, str]) -> list[str]:
-    """The argv as the guard should read it:  GIT_DIR in the environment spelled as the flag, and a fetch from a named remote
-    spelled as that remote's URL, since this one process has not seen the `remote add` that named it."""
+    """The argv as the guard should read it:  GIT_DIR and GIT_WORK_TREE in the environment spelled as the flags, and a fetch from a
+    named remote spelled as that remote's URL, since this one process has not seen the `remote add` that named it."""
     global_opts, rest = _split_global(args)
-    git_dir = (env.get("GIT_DIR") or "").strip()
-    if git_dir and not any(a == "--git-dir" or a.startswith("--git-dir=") for a in global_opts):
-        global_opts = ["--git-dir", git_dir, *global_opts]
+    for name, flag in (("GIT_WORK_TREE", "--work-tree"), ("GIT_DIR", "--git-dir")):
+        value = (env.get(name) or "").strip()
+        if value and not any(a == flag or a.startswith(f"{flag}=") for a in global_opts):
+            global_opts = [flag, value, *global_opts]
     if rest and rest[0] in ("fetch", "pull"):
         named = [a for a in rest[1:] if not a.startswith("-")]
         name = named[0] if named else "origin"
         if "/" not in name and ":" not in name:
-            where = cwd
-            for i, a in enumerate(global_opts):
-                if a == "-C" and i + 1 < len(global_opts):
-                    where = os.path.join(where, global_opts[i + 1])
             try:
-                res = subprocess.run([env.get("FLEET_GIT_SHIM_REAL") or "git", "-C", where, "config", "--get", f"remote.{name}.url"],
-                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=1.0, check=False)
+                # Through the same options as the command, so -C, --git-dir and GIT_DIR all find the repo it will really write to.
+                res = subprocess.run([env.get("FLEET_GIT_SHIM_REAL") or "git", *global_opts, "config", "--get", f"remote.{name}.url"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=1.0, check=False, cwd=cwd)
                 url = res.stdout.strip() if res.returncode == 0 else ""
             except (OSError, subprocess.SubprocessError):
                 url = ""
@@ -173,7 +177,7 @@ def decide(args: Sequence[str], cwd: str, env: Mapping[str, str], *, stderr=None
     """The exit code for this argv.  Writes the deny reason when it blocks, and logs anything it would block."""
     from fleet_lanes import guard, placement
 
-    stderr = sys.stderr if stderr is None else stderr
+    stderr = sys.stderr if stderr is None else stderr  # None too when fd 2 is closed, and that changes nothing below
     env = with_fleet_roots(env)
     home = env.get("HOME") or os.path.expanduser("~")
     mode = placement.read_mode(home, env)
@@ -184,28 +188,39 @@ def decide(args: Sequence[str], cwd: str, env: Mapping[str, str], *, stderr=None
         return 0
     ctx = guard.make_context(env, home=home)
     origin_of = _origin_reader(env.get("FLEET_GIT_SHIM_REAL") or "git", env)
+    others: list = []
     if isinstance(expanded, ShellAlias):
-        verdict = guard.evaluate_shell_text(expanded, cwd, ctx, args=expanded.args, origin_of=origin_of)
+        verdict = guard.evaluate_shell_text(expanded, cwd, ctx, args=expanded.args, origin_of=origin_of, others=others)
     else:
-        verdict = guard.evaluate_git_argv(_for_judging(expanded, cwd, env), cwd, ctx, origin_of=origin_of)
+        verdict = guard.evaluate_git_argv(_for_judging(expanded, cwd, env), cwd, ctx, origin_of=origin_of, others=others)
     if verdict is None:
         return 0
-    cls, decision = verdict
-    if cls == placement.CLASS_ISOLATION and mode.isolation == placement.MODE_OFF:
-        return 0  # the owner has not ruled on harness worktrees, and `block code` must not rule for them
-    blocked = cls != guard.CLASS_EXCUSED and mode.blocks(cls)
-    action = "excused" if cls == guard.CLASS_EXCUSED else "block" if blocked else "detect"
-    placement.log_event(home, {
-        "via": "shim", "action": action, "class": cls, "rule": decision.rule_id,
-        "dest": decision.destination, "source": decision.source, "cwd": cwd, "seat": env.get("AGENT_SEAT", ""),
-        "host": placement.host_kind(env),
-    }, env)
-    if not blocked:
+    deny = None
+    for cls, decision in (verdict, *others):
+        if cls == placement.CLASS_ISOLATION and mode.isolation == placement.MODE_OFF:
+            continue  # the owner has not ruled on harness worktrees, and `block code` must not rule for them
+        blocked = cls != guard.CLASS_EXCUSED and mode.blocks(cls)
+        event = {
+            "via": "shim", "action": "excused" if cls == guard.CLASS_EXCUSED else "block" if blocked else "detect", "class": cls,
+            "rule": decision.rule_id, "dest": decision.destination, "source": decision.source, "cwd": cwd,
+            "seat": env.get("AGENT_SEAT", ""), "host": placement.host_kind(env),
+        }
+        if ctx.exceptions_problem:
+            event["exceptions"] = "unusable"  # judged with no rows, so the watcher reports the file and not this
+        placement.log_event(home, event, env)
+        if blocked and deny is None:
+            deny = decision
+    if deny is None:
         return 0
+    note = env.get(ENV_DENY_NOTE)
     try:
-        stderr.write(f"fatal: {decision.reason}\n")
-    except OSError:
-        pass  # a closed stderr changes nothing:  the event is logged and the command stays blocked
+        if note:
+            with open(note, "w", encoding="utf-8") as fh:
+                fh.write(f"fatal: {deny.reason}\n")
+        else:
+            stderr.write(f"fatal: {deny.reason}\n")
+    except (OSError, ValueError, AttributeError):
+        pass  # no way to say why changes nothing:  the event is logged and the command stays blocked
     return BLOCK_EXIT
 
 
