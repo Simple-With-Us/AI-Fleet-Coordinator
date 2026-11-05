@@ -39,6 +39,91 @@ class Writes(unittest.TestCase):
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(a, {**args, "files": files}, REPO)
 
+    def test_tree_sha_entries_reference_verified_existing_blobs(self):
+        import base64 as b64m
+        import hashlib as hl
+
+        a = "wf_git_tree_create"
+
+        def blob_of(raw):
+            sha = hl.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+            ).hexdigest()
+            return sha, {
+                "sha": sha,
+                "encoding": "base64",
+                "size": len(raw),
+                "content": b64m.b64encode(raw).decode(),
+            }
+
+        # A 61 KB blob, over the inline text cap, is referenceable once verified.
+        blob_sha, blob = blob_of(b"x = 1\n" * 8000)
+        tree_reply = {"sha": "b" * 40, "truncated": False, "tree": []}
+        args = {
+            "repo": REPO,
+            "base_tree": SHA,
+            "files": [
+                {"path": "big.py", "sha": blob_sha, "mode": "100644"},
+                {"path": "small.txt", "text": "hi", "mode": "100644"},
+            ],
+        }
+        c = Client(blob, tree_reply)
+        out = self.handle(c, a).run(a, args)["tree"]
+        self.assertEqual(out["files"], 2)
+        self.assertEqual(c.calls[0][0], "GET")
+        self.assertIn("/git/blobs/" + blob_sha, c.calls[0][1])
+        self.assertEqual(
+            c.calls[1][2]["tree"][0],
+            {"path": "big.py", "mode": "100644", "type": "blob", "sha": blob_sha},
+        )
+
+        # Content the relay scanner reads as credential-shaped is refused at the
+        # destination path even though the blob already exists upstream.
+        secret_sha, secret_blob = blob_of(b"Authorization: Bearer " + b"a1" * 12)
+        with self.assertRaises(Refused):
+            self.handle(Client(secret_blob), a).run(
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "s.py", "sha": secret_sha, "mode": "100644"}],
+                },
+            )
+        # An unverifiable blob identity is a definite refusal BEFORE any write
+        # is dispatched:  no tree POST happens, the idempotency key is released,
+        # and the caller may correct the reference and retry.
+        bad = dict(blob)
+        bad["content"] = b64m.b64encode(b"different bytes").decode()
+        with self.assertRaises(Refused):
+            self.handle(Client(bad), a).run(
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "big.py", "sha": blob_sha, "mode": "100644"}],
+                },
+            )
+        # Binary (non-UTF-8) blob content is refused:  parity with inline text.
+        bin_sha, bin_blob = blob_of(b"\xff\xfe\x00\x01binary")
+        with self.assertRaises(Refused):
+            self.handle(Client(bin_blob), a).run(
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "bin.dat", "sha": bin_sha, "mode": "100644"}],
+                },
+            )
+        # Shape refusals before any upstream call:  mixed keys, workflow path, bad mode.
+        for files in [
+            [{"path": "x", "sha": blob_sha, "text": "hi", "mode": "100644"}],
+            [{"path": ".github/workflows/x", "sha": blob_sha, "mode": "100644"}],
+            [{"path": "x", "sha": blob_sha, "mode": "120000"}],
+            [{"path": "x", "sha": "z" * 40, "mode": "100644"}],
+        ]:
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(a, {"repo": REPO, "base_tree": SHA, "files": files}, REPO)
+
     def test_commit_exact_tree_parents_and_no_identity_selector(self):
         a = "wf_git_commit_create"
         args = {"repo": REPO, "tree_sha": SHA, "parents": ["b" * 40], "message": "edit"}
