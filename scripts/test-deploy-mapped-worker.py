@@ -282,12 +282,17 @@ class Checks(unittest.TestCase):
         self.assertEqual(rev_parse.call_args.kwargs["timeout"], m.GIT_TIMEOUT_SECONDS)
         self.assertEqual(run.call_args.kwargs["timeout"], m.DEPLOY_TIMEOUT_SECONDS)
 
-    def test_a_git_timeout_counts_as_changed(self):
+    def test_a_broken_git_stops_the_run_instead_of_authorizing_a_deploy(self):
         target = {"paths": ["workers/one/**"]}
         hung = subprocess.TimeoutExpired("git", m.GIT_TIMEOUT_SECONDS)
-        with patch.object(m.subprocess, "run", side_effect=hung) as run:
-            self.assertTrue(m.worker_changed(SHA_A, SHA_B, target))
-        self.assertEqual(run.call_args.kwargs["timeout"], m.GIT_TIMEOUT_SECONDS)
+        for failure in (hung, FileNotFoundError("git")):
+            with (
+                self.subTest(failure),
+                patch.object(m.subprocess, "run", side_effect=failure) as run,
+                self.assertRaises(type(failure)),
+            ):
+                m.worker_changed(SHA_A, SHA_B, target)
+            self.assertEqual(run.call_args.kwargs["timeout"], m.GIT_TIMEOUT_SECONDS)
 
     def test_changed_worker_deploys_with_exact_tag_after_receipt(self):
         tags = iter([SHA_B, SHA_A])

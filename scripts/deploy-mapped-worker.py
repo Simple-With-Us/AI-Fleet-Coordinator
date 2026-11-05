@@ -135,6 +135,8 @@ def worker_changed(live, sha, target, cwd=None):
     Any doubt (no tag, malformed tag, a commit outside this checkout, a tag that is not
     an ancestor, a failed diff) counts as changed.  A deploy-script-only or unrelated
     merge therefore redeploys nothing and leaves the Worker's Durable Objects running.
+    A git that hangs or is missing raises instead: that is a broken job, not doubt about
+    the diff, and it must not authorize a deploy.
     """
     if not re.fullmatch(r"[0-9a-f]{40}", live or ""):
         return True
@@ -144,14 +146,11 @@ def worker_changed(live, sha, target, cwd=None):
             ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
         )
 
-    try:
-        if git("cat-file", "-e", live + "^{commit}").returncode != 0:
-            return True
-        if git("merge-base", "--is-ancestor", live, sha).returncode != 0:
-            return True
-        diff = git("diff", "--name-only", "--no-renames", "-z", live, sha)
-    except subprocess.TimeoutExpired:
+    if git("cat-file", "-e", live + "^{commit}").returncode != 0:
         return True
+    if git("merge-base", "--is-ancestor", live, sha).returncode != 0:
+        return True
+    diff = git("diff", "--name-only", "--no-renames", "-z", live, sha)
     if diff.returncode != 0:
         return True
     return any(path_is_relevant(path, target) for path in diff.stdout.split("\0") if path)

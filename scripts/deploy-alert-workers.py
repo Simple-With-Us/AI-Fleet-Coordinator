@@ -241,19 +241,26 @@ def qualify_credentials():
         if name == "pr-conflict-watch" and not cutover_receipt():
             print("Awaiting first verified real Zulip delivery; skipping " + name)
             continue
-        # A receipt is accepted as proof the credential reads the live targets, so these
-        # reads run for a stopped Worker too.  The watchdog's stop is a secret version with
-        # a label, so the tag is still found through it.
+        # A receipt is accepted as proof the credential reads the live targets, so this read
+        # must succeed for a stopped Worker too.
         settings = cloudflare("/workers/scripts/" + name + "/settings")
-        preflight_config(target, settings)
-        tag = deployed_tag(name)
-        if not isinstance(tag, str) or not re.fullmatch(r"[0-9a-f]{40}", tag):
-            raise RuntimeError("Missing qualified live version baseline")
-        # A stopped Worker fails its probe, and only that.  This step runs before the release
-        # step on every trigger, so failing here would stop the other target's release as
-        # well.  The release step still refuses this one and fails the run.
-        if guard_tripped(name):
-            print("Stopped by the budget guard; live reads done, probe skipped: " + name)
+        stopped = guard_tripped(name)
+        # This step runs before the release step on every trigger, so failing here stops the
+        # other target's release as well.  A stopped Worker is not released, so its release
+        # preconditions cannot do that, and it fails its probe by design.  The release step
+        # still refuses it and fails the run.
+        try:
+            preflight_config(target, settings)
+            tag = deployed_tag(name)
+            if not isinstance(tag, str) or not re.fullmatch(r"[0-9a-f]{40}", tag):
+                raise RuntimeError("Missing qualified live version baseline")
+        except RuntimeError:
+            if not stopped:
+                raise
+            print("Stopped by the budget guard; release preconditions unproven: " + name)
+            continue
+        if stopped:
+            print("Stopped by the budget guard; probe skipped: " + name)
             continue
         probe(target)
     print("Existing credential delivery and scoped live reads qualified; no deployment")

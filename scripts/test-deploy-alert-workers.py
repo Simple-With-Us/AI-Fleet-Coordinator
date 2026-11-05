@@ -128,30 +128,56 @@ class Tests(unittest.TestCase):
         self.assertIn("/workers/scripts/alert-ingress/settings", reads)
         self.assertIn("/workers/scripts/pr-conflict-watch/settings", reads)
 
-    def test_a_stopped_target_cannot_pass_qualification_unread(self):
-        def rejected(path):
-            raise RuntimeError("Cloudflare read rejected")
-
-        for patches, error in (
-            ({"cloudflare": rejected}, "read rejected"),
-            ({"deployed_tag": lambda name: None}, "Missing qualified live version baseline"),
+    def qualify_with_one_stopped(self, **patches):
+        """Qualify with alert-ingress stopped and pr-conflict-watch running; returns the probes."""
+        probed = []
+        with (
+            patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
+            patch.object(m, "current_main"),
+            patch.object(m, "cutover_receipt", return_value=True),
+            patch.object(m, "guard_tripped", side_effect=lambda name: name == "alert-ingress"),
+            patch.object(m, "preflight_config", patches.get("preflight", lambda *args: None)),
+            patch.object(m, "cloudflare", patches.get("read", lambda path: {})),
+            patch.object(m, "deployed_tag", patches.get("tag", lambda name: "a" * 40)),
+            patch.object(m, "probe", side_effect=probed.append),
         ):
-            with (
-                self.subTest(error),
-                patch.dict(
-                    m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}
-                ),
-                patch.object(m, "current_main"),
-                patch.object(m, "cutover_receipt", return_value=True),
-                patch.object(m, "guard_tripped", return_value=True),
-                patch.object(m, "preflight_config"),
-                patch.object(m, "cloudflare", patches.get("cloudflare", lambda path: {})),
-                patch.object(m, "deployed_tag", patches.get("deployed_tag", lambda name: "a" * 40)),
-                patch.object(m, "probe") as probe,
-                self.assertRaisesRegex(RuntimeError, error),
-            ):
-                m.qualify_credentials()
-            probe.assert_not_called()
+            m.qualify_credentials()
+        return probed
+
+    def test_a_stopped_target_still_needs_the_credential_read(self):
+        def read(path):
+            if "alert-ingress" in path:
+                raise RuntimeError("Cloudflare read rejected")
+            return {}
+
+        with self.assertRaisesRegex(RuntimeError, "read rejected"):
+            self.qualify_with_one_stopped(read=read)
+
+    def test_a_stopped_targets_preconditions_cannot_block_the_other_target(self):
+        running = [m.TARGETS["pr-conflict-watch"]]
+
+        def no_baseline(name):
+            return None if name == "alert-ingress" else "a" * 40
+
+        def drifted(target, settings):
+            if target is m.TARGETS["alert-ingress"]:
+                raise RuntimeError("Release would drop live limits")
+
+        self.assertEqual(self.qualify_with_one_stopped(tag=no_baseline), running)
+        self.assertEqual(self.qualify_with_one_stopped(preflight=drifted), running)
+
+    def test_a_running_targets_preconditions_still_fail_qualification(self):
+        def no_baseline(name):
+            return None if name == "pr-conflict-watch" else "a" * 40
+
+        def drifted(target, settings):
+            if target is m.TARGETS["pr-conflict-watch"]:
+                raise RuntimeError("Release would drop live limits")
+
+        with self.assertRaisesRegex(RuntimeError, "Missing qualified live version baseline"):
+            self.qualify_with_one_stopped(tag=no_baseline)
+        with self.assertRaisesRegex(RuntimeError, "drop live limits"):
+            self.qualify_with_one_stopped(preflight=drifted)
 
     def release(self, guard, tags):
         """Run main() through a real target change, with every external edge mocked."""
