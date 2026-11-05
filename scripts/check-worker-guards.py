@@ -121,7 +121,10 @@ def check_registry(registry: dict) -> list[str]:
             findings.append(f"registry: {name}: head_sampling_rate must be between 0 and 1")
         config = row.get("config")
         if config is None:
-            if not isinstance(row.get("no_config_reason"), str) or not row["no_config_reason"].strip():
+            if (
+                not isinstance(row.get("no_config_reason"), str)
+                or not row["no_config_reason"].strip()
+            ):
                 findings.append(f"registry: {name}: a null config needs no_config_reason")
         elif not isinstance(config, str):
             findings.append(f"registry: {name}: config must be a path or null")
@@ -160,14 +163,22 @@ def check_config(path: str, config: dict, registry: dict, plan: str) -> list[str
         elif not is_positive_int(value):
             findings.append(f"{path}: limits.{key} must be a positive integer")
         elif is_positive_int(top) and value > top:
-            findings.append(f"{path}: limits.{key} {value} is above the allowed {top} on the {plan} plan")
+            findings.append(
+                f"{path}: limits.{key} {value} is above the allowed {top} on the {plan} plan"
+            )
 
     if config.get("preview_urls") is not False:
         findings.append(f"{path}: preview_urls must be false")
 
-    observability = config.get("observability") if isinstance(config.get("observability"), dict) else {}
+    observability = (
+        config.get("observability") if isinstance(config.get("observability"), dict) else {}
+    )
     logs = observability.get("logs") if isinstance(observability.get("logs"), dict) else {}
-    rates = [v for v in (observability.get("head_sampling_rate"), logs.get("head_sampling_rate")) if v is not None]
+    rates = [
+        v
+        for v in (observability.get("head_sampling_rate"), logs.get("head_sampling_rate"))
+        if v is not None
+    ]
     if not rates:
         findings.append(f"{path}: observability.head_sampling_rate is implicit")
     top_rate = row.get("head_sampling_rate")

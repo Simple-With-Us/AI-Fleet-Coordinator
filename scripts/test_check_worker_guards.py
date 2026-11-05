@@ -102,7 +102,10 @@ class ConfigRules(Base):
         self.assertTrue(any("limits.cpu_ms must be a positive integer" in f for f in out), out)
 
     def test_preview_urls_unset_or_true_fails(self):
-        for text in (GOOD_TOML.replace("preview_urls = false\n", ""), GOOD_TOML.replace("preview_urls = false", "preview_urls = true")):
+        for text in (
+            GOOD_TOML.replace("preview_urls = false\n", ""),
+            GOOD_TOML.replace("preview_urls = false", "preview_urls = true"),
+        ):
             out = self.findings(text)
             self.assertTrue(any("preview_urls must be false" in f for f in out), out)
 
@@ -113,7 +116,9 @@ class ConfigRules(Base):
         self.assertTrue(any("is implicit" in f for f in out), out)
 
     def test_logs_level_sampling_counts_as_explicit(self):
-        text = GOOD_TOML.replace("head_sampling_rate = 0.5\n", "[observability.logs]\nhead_sampling_rate = 0.25\n")
+        text = GOOD_TOML.replace(
+            "head_sampling_rate = 0.5\n", "[observability.logs]\nhead_sampling_rate = 0.25\n"
+        )
         self.assertEqual(self.findings(text), [])
 
     def test_sampling_above_registry_fails(self):
@@ -211,7 +216,15 @@ class RegistryRules(Base):
         self.assertTrue(any("account_plan" in f for f in out), out)
 
     def test_null_config_needs_a_reason(self):
-        other = {"repo": REPO, "config": None, "status": "retire", "limits": {"cpu_ms": 1, "subrequests": 1}, "head_sampling_rate": 1, "health": "x", "deploy": "y"}
+        other = {
+            "repo": REPO,
+            "config": None,
+            "status": "retire",
+            "limits": {"cpu_ms": 1, "subrequests": 1},
+            "head_sampling_rate": 1,
+            "health": "x",
+            "deploy": "y",
+        }
         registry = copy.deepcopy(REGISTRY)
         registry["workers"]["other"] = other
         out = self.findings(registry=registry)
@@ -226,7 +239,11 @@ class RegistryRules(Base):
 
     def test_config_in_another_repo_is_not_looked_for(self):
         registry = copy.deepcopy(REGISTRY)
-        registry["workers"]["um"] = dict(registry["workers"]["w"], repo="Simple-With-Us/Usage-Monitor", config="workers/um/wrangler.jsonc")
+        registry["workers"]["um"] = dict(
+            registry["workers"]["w"],
+            repo="Simple-With-Us/Usage-Monitor",
+            config="workers/um/wrangler.jsonc",
+        )
         self.assertEqual(self.findings(registry=registry), [])
 
     def test_unreadable_registry_fails(self):
