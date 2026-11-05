@@ -167,7 +167,7 @@ try {
     }
   });
 
-  await step("failed auth:  a repeated wrong bearer costs no gate call, and past the IP limit nothing is written", async () => {
+  await step("failed auth:  past the IP limit nothing is written, and a verified credential is not blocked", async () => {
     const mf = start({}, { AUTH_FAIL_RATE_LIMITER: { namespace_id: "2", simple: { limit: 2, period: 60 } } });
     try {
       const { token: good, logGate } = await mint(mf);
@@ -200,6 +200,41 @@ try {
     } finally {
       await mf.dispose();
     }
+  });
+
+  await step("a client looping on an expired bearer writes one refusal row", async () => {
+    const mf = start();
+    try {
+      const expired = tokenFor();
+      const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "guards");
+      const gate = ns.get(ns.idFromName("CLAUDE"));
+      await gate.gbBearerMint({ hash: hashOf(expired), by: "test", expiresAt: Date.now() - 1000, mcpAccept: true });
+      for (let i = 0; i < 6; i++) assert.equal((await rpc(mf, expired, "ping")).status, 401);
+      const refused = (await gate.tail(40)).filter((row) => row.event === "gb_bearer_refused");
+      assert.equal(refused.length, 1, "an expired bearer writes one row, not one per retry");
+    } finally {
+      await mf.dispose();
+    }
+  });
+
+  await step("GUARD_MODE=off:  the SeatGate alarm sweeps nothing and rechecks in an hour", async () => {
+    // A real alarm cannot be fast-forwarded in Miniflare, so this runs the class's
+    // handler on a recording store.  Everything it could bill goes through the store.
+    const gateOut = path.join(dir, "seat-gate.mjs");
+    await build({
+      entryPoints: ["src/seat-gate.js"], bundle: true, format: "esm", platform: "neutral", outfile: gateOut, logLevel: "error",
+      plugins: [{ name: "stub-workers", setup(b) {
+        b.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: "workers", namespace: "stub" }));
+        b.onLoad({ filter: /.*/, namespace: "stub" }, () => ({ contents: "export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }" }));
+      } }],
+    });
+    const { SeatGate } = await import(gateOut);
+    const calls = [];
+    const storage = new Proxy({}, { get: (_, method) => async (...args) => { calls.push({ method, args }); return null; } });
+    const before = Date.now();
+    await new SeatGate({ storage }, { GUARD_MODE: "off" }).alarm();
+    assert.deepEqual(calls.map((call) => call.method), ["setAlarm"]);
+    assert.ok(calls[0].args[0] >= before + 3_600_000 && calls[0].args[0] <= Date.now() + 3_600_000);
   });
 
   await step("a rate-limited /oauth/token answers 429 and writes no row", async () => {

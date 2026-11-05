@@ -146,12 +146,13 @@ const LIMIT_RETRY_AFTER_S = 60;
 // holds a live verification for.
 const REFUSALS = new IdentityCache({ max: 2048 });
 const REFUSAL_WINDOW_MS = 60_000;
-let limitLoggedMinute = -1;
+const limitLoggedMinute = new Map();
 
+// One line per event per minute, so a quiet event never hides a runaway's.
 function logLimited(event) {
   const minute = Math.floor(Date.now() / 60_000);
-  if (minute === limitLoggedMinute) return;
-  limitLoggedMinute = minute;
+  if (limitLoggedMinute.get(event) === minute) return;
+  limitLoggedMinute.set(event, minute);
   console.log(JSON.stringify({ event }));
 }
 
@@ -224,9 +225,14 @@ async function noteAuthFailure(request, env, credential) {
   return false;
 }
 
-/** A bearer the gate called wrong stays wrong:  a new one is always a new random token. */
+/**
+ * A credential the gate refused for good stays refused:  wrong, expired or from a
+ * stale grant.  None of those heals, because a fix is always a new token.  So a client
+ * looping on one costs one gate check and one refusal row a minute per isolate, not
+ * one per request.  A pause heals on its own and is never remembered.
+ */
 function rememberBadBearer(hash) {
-  REFUSALS.set(`bad:${hash}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
+  if (hash) REFUSALS.set(`bad:${hash}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
 }
 
 const MAX_TOKEN_BODY = 16 * 1024;
@@ -390,6 +396,7 @@ async function serveMcp(request, env, ctx) {
     }
   }
   if (result.code !== "ok" && result.code !== "paused") {
+    rememberBadBearer(identityKey);
     const refused = invalidToken("This grant is no longer valid.");
     try {
       await seatGate.audit({ event: "mcp_refused", reason: result.code, status: 401 });
@@ -584,7 +591,7 @@ async function serveGbBearerMcp(request, env, token, ctx) {
       // incomplete - an attacker's guesses do not pause for our outage.
       try { await identityGate.gbBearerMismatch(identity, new Set(GB_IDENTITIES)); } catch { /* A counter is observability, never the security path. */ }
     }
-    if (checked.reason === "mismatch" || checked.reason === "none") rememberBadBearer(bearerHash);
+    rememberBadBearer(bearerHash);
     IDENTITY_CACHE.evict(bearerHash);
     return refuse();
   }
@@ -691,7 +698,7 @@ async function serveSbtBearerMcp(request, env, token, ctx) {
       // Static seat set for the same outage reason as the persona path.
       try { await seatGate.gbBearerMismatch(seat, new Set(BEARER_SEATS)); } catch { /* A counter is observability, never the security path. */ }
     }
-    if (checked.reason === "mismatch" || checked.reason === "none") rememberBadBearer(bearerHash);
+    rememberBadBearer(bearerHash);
     IDENTITY_CACHE.evict(bearerHash);
     return refuse();
   }

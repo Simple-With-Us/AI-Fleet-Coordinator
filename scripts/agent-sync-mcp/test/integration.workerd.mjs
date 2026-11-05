@@ -1071,6 +1071,10 @@ try {
     const dead = await call(t.body.access_token, "whoami");
     assert.equal(dead.status, 401);
     assert.match(dead.headers.get("www-authenticate"), /error="invalid_token"/);
+    // A client looping on the stale grant writes one refusal row, not one per retry.
+    for (let i = 0; i < 3; i++) assert.equal((await call(t.body.access_token, "whoami")).status, 401);
+    const refusedRows = (await ns.get(ns.idFromName("JET")).tail(40)).filter((row) => row.event === "mcp_refused" && row.reason === "stale_epoch");
+    assert.equal(refusedRows.length, 1);
     const r = await token({ grant_type: "refresh_token", refresh_token: t.body.refresh_token, client_id: CHATGPT_CLIENT });
     assert.equal(r.body.error, "invalid_grant");
   });
