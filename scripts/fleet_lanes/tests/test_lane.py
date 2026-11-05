@@ -416,7 +416,7 @@ class AllowlistTests(unittest.TestCase):
                 K.check_allowed(bad, write_root=root)
 
     def test_case_folding_is_a_runner_option(self) -> None:
-        argv = ["git", "worktree", "add", "-b", "claude/x", "/USERS/JAY/APPS/LANES/dealdex/claude-x", self.SHA]
+        argv = ["git", "worktree", "add", "-b", "claude/x", "/FLEET-LANE-TEST/APPS/LANES/dealdex/claude-x", self.SHA]
         K.check_allowed(argv, write_root=self.ROOT, fold=str.casefold)
 
     def test_valid_ref_name(self) -> None:
