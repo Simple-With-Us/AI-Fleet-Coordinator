@@ -63,12 +63,12 @@ test("check accepts the hash, refuses a wrong one, and rotating replaces the old
   const store = S.memoryStore();
   const a = await newGbBearer(ID);
   await S.gbBearerMint(store, { hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW);
-  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 5), { ok: true, mcp_accept: false });
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 5), { ok: true, mcp_accept: false, paused: false });
   const b = await newGbBearer(ID);
   assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 5), { ok: false, reason: "mismatch" });
   await S.gbBearerMint(store, { hash: b.hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 10);
   assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 20), { ok: false, reason: "mismatch" });
-  assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 20), { ok: true, mcp_accept: false });
+  assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 20), { ok: true, mcp_accept: false, paused: false });
   assert.equal((await S.gbBearerStatus(store, NOW + 20)).mint_count, 2);
 });
 
@@ -109,6 +109,7 @@ class Stub {
     this.seat = seat; this.paused = false; this.calls = []; this.audits = [];
     this.grantRef = "abcdef012345"; this.clientId = "gb-bearer"; this.zulip = {}; this.linear = null; this.recall = null;
     this.gate = { auditCall: async (row) => { this.audits.push(row); } };
+    this.auditRow = async (gate, row) => gate.auditCall(row); // the no-sink default, as on HostedTools
   }
   async call(name, args) { this.calls.push({ name, args }); return okResult("{}", { seat: this.seat }); }
   requireScope() {}
@@ -198,7 +199,7 @@ test("checked mint: fresh form mints, resubmit is acked from the stored outcome,
   const a = await newGbBearer(ID);
   const ok = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW), hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW);
   assert.equal(ok.minted, true);
-  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 5), { ok: true, mcp_accept: true });
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 5), { ok: true, mcp_accept: true, paused: false });
   // Same form again - a real HTTP resubmit carries a FRESH hash (the route
   // generates a new raw token per POST):  acked from the stored outcome, and
   // the bearer is untouched.
@@ -208,7 +209,7 @@ test("checked mint: fresh form mints, resubmit is acked from the stored outcome,
     reason: "completed",
     result: { created_at: NOW, expires_at: NOW + 1e9, mint_count: 1, mcp_accept: true },
   });
-  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 1005), { ok: true, mcp_accept: true }, "the first bearer survives the replay");
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 1005), { ok: true, mcp_accept: true, paused: false }, "the first bearer survives the replay");
   assert.equal((await S.gbBearerStatus(store, NOW + 1005)).expires_at, NOW + 1e9, "no state mutation on the ack");
   assert.ok(!JSON.stringify(again).includes(a.hash), "the ack carries metadata only");
   // Stale form (older than the TTL): refused, nothing minted.
@@ -221,7 +222,7 @@ test("checked mint: fresh form mints, resubmit is acked from the stored outcome,
   const b = await newGbBearer(ID);
   const ok2 = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW + 2000, "d".repeat(20)), hash: b.hash, by: "j", expiresAt: NOW + 3e9, mcpAccept: false }, NOW + 2000);
   assert.equal(ok2.minted, true);
-  assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 2005), { ok: true, mcp_accept: false });
+  assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 2005), { ok: true, mcp_accept: false, paused: false });
   // The refusal was audited, the refused mint left no trace in the bearer row.
   const auditRows = JSON.stringify([...store.map.keys()]);
   assert.ok(auditRows.includes("audit"));
@@ -240,7 +241,7 @@ test("a resubmitted form acks only /admin-visible metadata, whatever hash the re
   assert.equal(replay.result.mcp_accept, false, "the ORIGINAL mint's acceptance, not the retry's");
   assert.equal(replay.result.mint_count, 1);
   assert.ok(!("minted" in replay) || replay.minted === false);
-  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 1005), { ok: true, mcp_accept: false }, "the original bearer survives with its original acceptance");
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 1005), { ok: true, mcp_accept: false, paused: false }, "the original bearer survives with its original acceptance");
   assert.ok(JSON.stringify([...store.map.keys()]).includes("audit"), "the replay was audited");
 });
 

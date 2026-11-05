@@ -21,10 +21,10 @@ function aliases(writes) {
   }
   for (const command of writes) {
     if (command.name.startsWith('linear_archive_') && command.name.endsWith('_label')) {
-      out.push({ ...command, name: command.name.replace('linear_archive_', 'linear_retire_') });
+      out.push({ ...command, name: command.name.replace('linear_archive_', 'linear_retire_'), title: command.title.replace(/Archive/i, 'Retire') });
     }
     if (command.name.startsWith('linear_unarchive_') && command.name.endsWith('_label')) {
-      out.push({ ...command, name: command.name.replace('linear_unarchive_', 'linear_restore_') });
+      out.push({ ...command, name: command.name.replace('linear_unarchive_', 'linear_restore_'), title: command.title.replace(/Unarchive/i, 'Restore') });
     }
   }
   return out;
@@ -48,7 +48,7 @@ const WRITE_ALIASES = {
 function synonymCommands(commands, names) {
   return Object.entries(names).flatMap(([name, target]) => {
     const original = commands.find((c) => c.name === target);
-    return original ? [{ ...original, name, description: name === 'linear_create_attachment_from_upload'
+    return original ? [{ ...original, name, title: name.slice('linear_'.length).split('_').map(word => word[0].toUpperCase() + word.slice(1)).join(' '), description: name === 'linear_create_attachment_from_upload'
       ? 'Create an attachment record for an already uploaded asset.  Set input.url to the assetUrl from linear_prepare_attachment_upload and input.issueId to the target issue.  This does not upload file bytes.'
       : `${original.description}  Alias of ${target}.` }] : [];
   });

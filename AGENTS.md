@@ -19,6 +19,17 @@ Owner ruling, November 3, 2026, applies fleet-wide:
 - If 3 agents from 2 platforms agree to close a totally superseded PR, closure may proceed without Jay's or the PR owner's input.
 - Any agent may convert any PR to draft without anyone's permission.  Agents are encouraged to do so whenever a PR is not ready to merge.
 
+### Do-not-merge PRs and readiness criteria
+
+- Every PR marked do-not-merge, including an equivalent title, label or description hold, must be a draft.
+- The very beginning of its description must be a bullet list of the concrete criteria for becoming ready to merge, before references, summaries or other text.
+- Derive the criteria from the actual unresolved findings, dependencies and hold conditions.  Do not invent conditions, claim unverified work is complete, or treat a checklist as approval.
+- Preserve the existing hold, its setter and its release conditions.  Completing the bullets does not itself clear a hold, authorize activation or make the PR ready.
+- For a superseded PR that must never merge, say that in the first bullets and identify its replacement.  Do not invent a path to merge it; closure follows the separate superseded-PR rule above.
+
+Source: Jay's November 4, 2026 instructions to make all do-not-merge PRs drafts, put readiness criteria first in each description, and add this to policy.
+
+
 ## Infisical sole source of truth
 
 Owner directive: Infisical is the sole source of truth for this app's secrets, env variables, and tunable settings knobs (policy + key inventory: `INFISICAL.md`).  `scripts/fleet_rag/infisical_settings.py` implements the contract: load at startup into an in-memory cache, never fetch per-request, background refresh (daemon thread, SIGHUP, `POST /admin/reload-settings`) that keeps last-known-good on failure, and write-through on admin save (`POST /admin/settings`, admin bearer only) — Infisical first, then the cache; a failed write fails the save.  New settings for the fleet-recall-service go in Infisical (project "AI Fleet Coordinator"), not in env-var defaults; per-user settings never go in Infisical.  Prod is Infisical's only environment (owner 2026-10-10): `infisical_settings.py` defaults to prod and refuses any other slug, and `python3 scripts/check-infisical-env.py` (CI) flags a dev or staging default in env files and `cursor-cloud-start.sh`.  No secret values in code, logs, PRs, or chat — key names and `set`/`empty` flags only.  Tests: `cd scripts && python3 -m unittest fleet_rag.tests.test_infisical_settings fleet_rag.tests.test_infisical_admin`.  The Mac's short-lived jobs (LaunchAgents, hooks, CLIs) read their modes, caps and flags through `scripts/fleet_knobs` (one fetch per process, a 0600 last-known-good copy marked stale, secrets never cached and failing closed, local files only narrow; `INFISICAL.md` § Fleet knobs lists every key and `cd scripts && python3 -m fleet_knobs inventory --check ../INFISICAL.md` keeps it equal to the registry); tests: `cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t .`.

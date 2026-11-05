@@ -2302,7 +2302,7 @@ class Daemon:
 
     def _not_run(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
         """A wake that will not run now:  held back when its budget (or a full FIFO) refused it, else
-        dropped.  The table is in docs/protocols/agent-sync-server.md (Cloud Seats)."""
+        dropped.  The table is in docs/protocols/eavesdropper-server.md (Cloud Seats)."""
         if reason in HELD.HOLD_REASONS:
             self._hold(runner, pending, reason, now)
         else:
@@ -4625,8 +4625,12 @@ class Daemon:
                 self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
             return self._chat_queues[seat]
 
-    def session_labels(self, rows: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
-        """The registered letter for each catalog row, keyed by the row's stable id.
+    def session_letter_details(self, rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+        """The registered letter details for each row, keyed by the row's stable id.
+
+        Each value carries the letter, its cross-seat reference form, the registered
+        title, and the verified host the identity matched on.  `session_labels` is
+        the letter-only view of this same join, and `status` publishes the rest.
 
         The registry is the allocator (AFC-412) and the catalog is discovery, so this is
         the join between them.  It is read-only and it never breaks the wake:  a row with
@@ -4698,14 +4702,29 @@ class Daemon:
             # Some sessions lost their letter to a read that failed.  That is not a miss,
             # so it is reported rather than shown as a session that never had one.
             self.log.write("session-registry-partial", failed=len(failed))
-        labels: dict[str, tuple[str, str]] = {}
+        details: dict[str, dict[str, str]] = {}
         for identity, row_ids in owners.items():
             entry = found.get(identity)
             if not entry:
                 continue
+            detail = {
+                "letter": str(entry.get("label") or ""),
+                "letter_ref": str(entry.get("ref") or ""),
+                "title": str(entry.get("title") or ""),
+                # The identity matched exactly on this host, so it is the
+                # registered row's verified host, not a guess from the row.
+                "verified_host": identity[1],
+            }
             for row_id in row_ids:
-                labels[row_id] = (str(entry.get("label") or ""), str(entry.get("ref") or ""))
-        return labels
+                details[row_id] = detail
+        return details
+
+    def session_labels(self, rows: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+        """The registered letter for each catalog row, keyed by the row's stable id."""
+        return {
+            row_id: (detail["letter"], detail["letter_ref"])
+            for row_id, detail in self.session_letter_details(rows).items()
+        }
 
     def tagged_letter(
         self,
@@ -7549,21 +7568,62 @@ class Daemon:
                     "method": runner.cfg.routine.method if runner.cfg.routine else None,
                     "auth": runner.cfg.routine.auth if runner.cfg.routine else None,
                 }
-            leases = []
-            for lease_id in L.list_lease_ids(runner.paths):
-                lease = L.load_lease(runner.paths, lease_id)
-                alive, why = self.lease_alive(runner.paths, lease)
-                leases.append(
-                    {
-                        "lease_id": lease_id,
-                        "platform": lease.get("platform"),
-                        "alive": alive,
-                        "why": why,
-                        "topics": len(L.lease_topics(lease, now)),
-                        "watcher": L.watcher_alive(runner.paths, lease_id),
-                        "pending": len(L.pending_items(runner.paths, lease_id)),
-                    }
+            raw_leases = [
+                (lease_id, L.load_lease(runner.paths, lease_id))
+                for lease_id in L.list_lease_ids(runner.paths)
+            ]
+            # The session letters for this seat's leases (AFC-597), through the same
+            # registry join the wake path uses.  A lease names its platform in the
+            # attach vocabulary ("claude-code") where the registry keys the platform
+            # namespace ("claude", the catalog's own alias), and it carries no
+            # profile scope, so the scope every in-fleet registration path uses
+            # ("default", the catalog's default too) is the lookup's.  A session
+            # registered under any other scope simply misses here and its lease row
+            # carries no letter, rather than a letter guessed for it.  The join is
+            # read-only and degrades to no letters, so a missing or broken registry
+            # leaves today's rows intact instead of breaking status.
+            letter_details = (
+                self.session_letter_details(
+                    [
+                        {
+                            "id": lease_id,
+                            "platform": (
+                                "claude"
+                                if lease.get("platform") == "claude-code"
+                                else lease.get("platform")
+                            ),
+                            "profile_scope": lease.get("profile_scope") or "default",
+                            "session_id": lease.get("session_id") or lease.get("session"),
+                        }
+                        for lease_id, lease in raw_leases
+                    ]
                 )
+                if raw_leases
+                else {}
+            )
+            leases = []
+            for lease_id, lease in raw_leases:
+                alive, why = self.lease_alive(runner.paths, lease)
+                lease_row: dict[str, Any] = {
+                    "lease_id": lease_id,
+                    "platform": lease.get("platform"),
+                    "alive": alive,
+                    "why": why,
+                    "topics": len(L.lease_topics(lease, now)),
+                    "watcher": L.watcher_alive(runner.paths, lease_id),
+                    "pending": len(L.pending_items(runner.paths, lease_id)),
+                }
+                session_id = lease.get("session_id") or lease.get("session")
+                if isinstance(session_id, str) and session_id:
+                    lease_row["session_id"] = session_id
+                detail = letter_details.get(lease_id) or {}
+                if detail.get("letter"):
+                    lease_row["letter"] = detail["letter"]
+                if detail.get("title"):
+                    lease_row["title"] = self.scrub(detail["title"])
+                if detail.get("verified_host"):
+                    lease_row["verified_host"] = detail["verified_host"]
+                leases.append(lease_row)
             red = []
             if runner.error:
                 red.append(runner.error)

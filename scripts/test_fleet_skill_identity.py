@@ -793,7 +793,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         "MC",
         "MA",
         "KIMI",
-        "ZCODE",
+        "ZC",
     }
 
     def test_grok_roster_mention_is_grok_build_not_grok_build_tag(self) -> None:

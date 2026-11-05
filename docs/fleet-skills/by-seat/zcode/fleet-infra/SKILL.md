@@ -5,9 +5,9 @@ description: Access private fleet infrastructure inventory (host IPs, Tailscale 
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
 
-> **This install is for `ZCODE`.**  Chat tag `[ZCODE·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZCODE`, credential in Infisical Fleet-OPS `/zulip` (`ZCODE_ZULIP_EMAIL`, `ZCODE_ZULIP_KEY`, `ZCODE_ZULIP_SITE`).  Session tag `[ZCODE·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZCODE default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
 All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.
@@ -15,14 +15,11 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
 ## Canonical Inventory Location
 
 - **Local Workstation Agents (Mac/Terminal):**
-  Read directly from `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`.
+  Read directly from `~/Code/fleet-ops/ATTACK-MAP.md`.
   GitHub repo: [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (private).
 
 - **Cloud / Remote Agents (without a local clone):**
-  A seat with read access to the private repo fetches the file with `gh`:
-  ```bash
-  gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'
-  ```
+  A seat with read access to the private repo fetches the file with the relay tool `gr_wf_file_get` (`repo` = `Simple-With-Us/Fleet-OPS`, `path` = `ATTACK-MAP.md`, `ref` = the branch).
   A seat without access asks a Mac seat or the owner.  The old Mac relay copy of the map was retired 2026-10-19.
 
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
@@ -52,7 +49,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
    Read host IPs, Tailscale names, and Coolify UUIDs from `fleet-ops:ATTACK-MAP.md` (or ask a Mac seat with access).  Load tunables through Infisical at process start — never commit literals or teach agents to read ad-hoc process environment variables for infrastructure IDs.
 
 2. **Secrets Handoff Protection:**
-   Read credentials only with `fleet-secrets get NAME` (Infisical Fleet-OPS) or the app's own Infisical project.  Do not read process environment variables for secrets, and never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
+   Read credentials only with the consumer's own scoped Infisical service token (the `service-tokens` pack) or the app's own Infisical project; the shared `fleet-secrets` reader (Infisical Fleet-OPS) needs a working login on this host, and without one you stop and report it.  Do not read process environment variables for secrets, and never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
 
 3. **Mock Data in Tests & Documentation:**
    Use RFC 5737 documentation ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`) and generic mock UUIDs (`mock-app-uuid`, `mock-project-id`) in test fixtures and public rollouts.

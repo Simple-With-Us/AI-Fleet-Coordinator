@@ -301,7 +301,7 @@ class AgentSyncTests(HomeCase):
                  "minimax": ("MM", ".minimax/mcp.json", ("mcpServers",)),
                  "fx": ("FX", ".fx/mcp.json", ("mcp",)),
                  "kimi": ("KIMI", ".kimi-code/mcp.json", ("mcpServers",)),
-                 "zcode": ("ZCODE", ".zcode/cli/config.json", ("mcpServers",))}
+                 "zcode": ("ZC", ".zcode/cli/config.json", ("mcpServers",))}
         for key, (seat, rel, path) in seats.items():
             doc = self.load(rel)
             for k in path:
