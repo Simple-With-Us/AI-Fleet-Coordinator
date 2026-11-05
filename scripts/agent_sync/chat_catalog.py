@@ -1104,7 +1104,8 @@ class ChatCatalog:
             # the guard, or whose columns are not TEXT, are DROPPED from the
             # window instead (bounded-subset contract, documented and tested).
             sessions = conn.execute(
-                "SELECT id, directory, substr(title, 1, 4096), time_created FROM " + session_table
+                "SELECT id, directory, substr(title, 1, 4096), time_created FROM "
+                + session_table
                 + where
                 + (" AND" if where else " WHERE")
                 + " typeof(id) = 'text' AND length(id) <= 128"
@@ -1132,7 +1133,8 @@ class ChatCatalog:
                     "SELECT session_id, MAX(time_created) FROM "
                     + table
                     + " WHERE typeof(session_id) = 'text' AND length(session_id) <= 128"
-                    + " AND session_id IN (SELECT id FROM " + session_table
+                    + " AND session_id IN (SELECT id FROM "
+                    + session_table
                     + where
                     + (" AND" if where else " WHERE")
                     + " typeof(id) = 'text' AND length(id) <= 128"
@@ -1360,7 +1362,9 @@ class ChatCatalog:
             return None
         try:
             conn.execute("PRAGMA query_only = ON")
-            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            tables = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
             session_table = next((t for t in ("session", "session_v2") if t in tables), None)
             if session_table is None:
                 return None
@@ -1368,7 +1372,9 @@ class ChatCatalog:
             if not {"id", "directory", "title", "time_created"} <= session_cols:
                 return None
             newer_content = bool({"session_message", "session_input"} & tables)
-            archived_clause = " AND time_archived IS NULL" if "time_archived" in session_cols else ""
+            archived_clause = (
+                " AND time_archived IS NULL" if "time_archived" in session_cols else ""
+            )
             found = conn.execute(
                 "SELECT id, directory, substr(title, 1, 4096), time_created FROM "
                 + session_table
@@ -1395,9 +1401,9 @@ class ChatCatalog:
                 work = {"left": OPENCODE_SQLITE_WORK_STEPS, "tripped": False}
                 budget = [OPENCODE_EXCERPT_TOTAL_BYTES]
                 try:
-                    excerpts = self._opencode_excerpts_db_bulk(conn, [sid], tables, budget, work).get(
-                        sid, []
-                    )
+                    excerpts = self._opencode_excerpts_db_bulk(
+                        conn, [sid], tables, budget, work
+                    ).get(sid, [])
                 except _StoreOperational:
                     status = "metadata-only"
             return self._row(
@@ -1405,7 +1411,9 @@ class ChatCatalog:
                 "OPENCODE",
                 fsid,
                 cwd=cwd if isinstance(cwd, str) else None,
-                title=title if isinstance(title, str) and title.strip() else "OpenCode chat " + fsid[:12],
+                title=title
+                if isinstance(title, str) and title.strip()
+                else "OpenCode chat " + fsid[:12],
                 updated_at=stamp,
                 status=status,
                 source=str(db),
