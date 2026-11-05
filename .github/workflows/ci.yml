@@ -478,6 +478,20 @@ jobs:
     # file, which left this gate vacuous.
     - name: Alert ingress unit tests
       run: node --test workers/alert-ingress/src/*.test.js
+    # pr-conflict-watch, both trees: this directory and the zulip-cutover tree the alert
+    # pipeline releases, whose index.js needs its pinned dependencies.  Test files are
+    # named explicitly, for the reason above.
+    - name: PR conflict watch unit tests
+      run: |
+        node --test workers/pr-conflict-watch/*.test.js
+        npm ci --ignore-scripts --prefix workers/pr-conflict-watch/zulip-cutover
+        node --test workers/pr-conflict-watch/zulip-cutover/*.test.js
+    # The Worker deploy scripts.  worker-deploy.yml is gated off and the alert workflow
+    # runs only on main, so without this a broken deploy script would merge unnoticed.
+    - name: Worker deploy script tests
+      run: |
+        python3 scripts/test-deploy-mapped-worker.py
+        python3 scripts/test-deploy-alert-workers.py
     # Hosted ST-MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
     - name: ST-MCP Worker unit tests
