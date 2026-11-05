@@ -150,14 +150,19 @@ jobs:
     # Unwired tests are decoration:  a step is what makes the test real.
     - name: systemd unit template tests
       run: python3 -m unittest discover -s scripts/systemd -t scripts/systemd -v
-    - name: Coding memory controller tests
-      run: python3 -m unittest discover -s scripts/hetzner -p 'test_fleet_coding_memory.py' -v
+    - name: Coding CPU And Memory Controller Tests
+      run: |
+        python3 -m unittest discover -s scripts/hetzner -p 'test_fleet_coding_memory.py' -v
+        python3 -m unittest discover -s scripts/hetzner -p 'test_coding_resources.py' -v
+        python3 -m unittest discover -s scripts/hetzner -p 'test_install_resource_control.py' -v
     # fleet-server-status (AFC-548):  the server collector whose report the Muster
     # Server Status panel reads.  The drift against the previous report, the omission
     # of a measurement that could not be taken, the credential path filter and the
     # atomic private write.  Fakes only:  no docker, no network, no server.
     - name: fleet-server-status tests
       run: python3 scripts/test_fleet_server_status.py
+    - name: fleet-vm-status tests
+      run: python3 scripts/test_fleet_vm_status.py
     # Muster operations (AFC-563):  the Mac LaunchAgent collector and the allowlisted
     # control helper (plan then yes, the ssh forced-command gate, the audit row, and
     # no token in an argv, an answer or the audit).  Fakes only:  no launchctl,
@@ -166,6 +171,7 @@ jobs:
       run: |
         python3 scripts/test_fleet_mac_services.py
         python3 scripts/test_fleet_ops_control.py
+        python3 scripts/test_fleet_resource_control.py
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would
@@ -352,6 +358,13 @@ jobs:
       run: python3 scripts/test-public-activity.py
     - name: Verify fleet registry
       run: python3 scripts/check-fleet-registry.py
+    # Every tracked wrangler config carries runaway limits, keeps preview URLs off,
+    # states its log sampling and has a row in scripts/worker-registry.json
+    # (docs/cloudflare-workers.md, AFC-617).  Reads files only;  no network.
+    - name: Worker guard registry and limits
+      run: |
+        python3 scripts/test_check_worker_guards.py
+        python3 scripts/check-worker-guards.py
     # The registry's FLEET-PROTOCOL.md rows are read under the GENERATED header, which itself names Fleet-OPS.
     - name: Registry checks read FLEET-PROTOCOL.md under its header
       run: python3 scripts/test_check_fleet_registry.py
@@ -546,6 +559,12 @@ jobs:
       run: bash scripts/test-mac-auto-cleanup.sh
     - name: Mac resource watch tests
       run: bash scripts/test-mac-resource-watch.sh
+    # The coding-priority launcher (AFC-609):  the allowlist, the refusals, the
+    # receipt, and the live canary that MEASURES the nice value and the QoS
+    # clamp on a job this test launches.  That canary needs macOS, so this
+    # job is where it actually runs.
+    - name: Mac coding priority tests
+      run: python3 scripts/test_mac_coding_priority.py
 
   muster-macos-build:
     name: Muster macOS build
@@ -561,6 +580,17 @@ jobs:
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+      # The Swift names the image sets by string, so only the built bundle proves that
+      # both modes' artwork and the bundle's own icon came out of the asset compiler.
+      - name: Check the built app carries its icons
+        working-directory: muster
+        run: |
+          app=.build/CI/Build/Products/Debug/Muster.app
+          /usr/libexec/PlistBuddy -c 'Print CFBundleIconName' "$app/Contents/Info.plist" | grep -qx AppIcon
+          test -s "$app/Contents/Resources/AppIcon.icns"
+          xcrun --sdk macosx assetutil --info "$app/Contents/Resources/Assets.car" > .build/assets.json
+          grep -q '"MusterIconLight"' .build/assets.json
+          grep -q '"MusterIconDark"' .build/assets.json
       - name: Run the Muster unit tests
         working-directory: muster
         run: |

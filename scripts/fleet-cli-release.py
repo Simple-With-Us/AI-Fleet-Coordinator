@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 146 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 150 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -32,7 +32,13 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
 # and its implementation;  tests and the offline catalog fixture stay repo-only).
 # The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
-MAX_FILES = 146
+# The 147th is agent_sync/listener_registry.py, the Operator session-registry service the daemon
+# serves over the listener HTTPS API (Path B, operator.simplewithus.com).
+# The 148th is agent_sync/registry_api.py, the signed client the package's own registry callers
+# (the operator-registry CLI, the platform-letter registry side) use to reach that API.
+# The 149th is fleet_lanes/placement.py, which guard.py imports for the placement mode and exceptions (AFC-618).
+# The 150th is placement-exceptions.json beside it, without which every excused checkout reads as misplaced.
+MAX_FILES = 150
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
@@ -58,7 +64,7 @@ RECALL_MODULES = (
 # tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
-LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")
+LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement")
 AFC331_FILES = (
     "scripts/agent_sync/mcp/notes-tools.json",
     "scripts/agent_sync/mcp/recall-tools.json",
@@ -94,6 +100,7 @@ EXACT = frozenset(
         *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
         "scripts/fleet_lanes/bin/lane",
         *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
+        "scripts/fleet_lanes/placement-exceptions.json",
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
@@ -537,6 +544,14 @@ def codex_mcp_expected(bin_dir: Path) -> dict:
     }
 
 
+def assigned_codex_mcp_expected(home: Path) -> dict:
+    """The owner's assigned hosted transport; only recognize it, never install or rewrite it."""
+    return {
+        **codex_mcp_expected(home / ".local/bin"),
+        "command": str(home / ".local/libexec/codex-simple-tools"),
+    }
+
+
 def migrate_codex_mcp(home: Path, files: dict) -> None:
     """Rewrite a host's pre-rename Codex registration to `[mcp_servers.simple-chat]`, in `files` if it applies.
 
@@ -546,6 +561,8 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
     rewritten, and only when the host's table is exactly the registration this tool wrote (same
     `env_vars`, command one of those two wrappers).  The old key is not kept.  Anything else is still a
     conflict and still refused:  this never rewrites a hand-edited registration.
+    A current-key registration for the owner's assigned hosted transport is also recognized,
+    with the exact standard environment passthrough, and always left untouched.
     """
     bin_dir = home / ".local/bin"
     expected = codex_mcp_expected(bin_dir)
@@ -563,7 +580,7 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
     if not isinstance(servers, dict):
         raise Refused("invalid_codex_config")
     current = servers.get(CODEX_KEY)
-    if current is not None and current != expected:
+    if current is not None and current not in (expected, assigned_codex_mcp_expected(home)):
         raise Refused("existing_simple_chat_mcp_conflict")
     present = servers.get(LEGACY_CODEX_KEY)
     if present is None:

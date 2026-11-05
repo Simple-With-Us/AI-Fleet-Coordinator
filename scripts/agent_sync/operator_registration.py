@@ -972,7 +972,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from . import operator_registry as OR  # path resolution only;  no handle is opened
 
-    db_path = args.db or OR._default_db()
+    db_path = args.db or OR.default_db()
 
     if args.command == "sweep":
         print(json.dumps({"dropped": sweep(db_path)}))

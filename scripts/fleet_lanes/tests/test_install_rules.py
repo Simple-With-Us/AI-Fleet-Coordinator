@@ -1152,8 +1152,8 @@ def _load_seat_block_checker():
 class FleetBasicsTests(HomeCase):
     """Clutch, Kimi and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
 
-    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
-           "copilot": (".copilot/copilot-instructions.md", "nodefault")}
+    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "kimi"),
+           "zcode": (".zcode/AGENTS.md", "zcode"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
 
     def test_the_new_platforms_name_their_file_and_variant(self) -> None:
         for name, (rel, variant) in self.NEW.items():

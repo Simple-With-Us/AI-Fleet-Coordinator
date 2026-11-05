@@ -61,6 +61,7 @@ class Stub {
     this.clientId = "c";
     this.audits = [];
     this.gate = { auditCall: async (row) => { this.audits.push(row); } };
+    this.auditRow = async (gate, row) => gate.auditCall(row); // the no-sink default, as on HostedTools
   }
   async call() { return okResult("{}", {}); }
   requireScope() {}

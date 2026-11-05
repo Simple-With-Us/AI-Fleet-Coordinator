@@ -12,7 +12,14 @@ and this file is where they agree:
 
 The store is MiniMax Code's own session table; the letter lives in the Operator
 registry, which is one file for the fleet.  This host reads that file locally when the
-deployment points at the shared store — there is no SSH fallback with a private alias.
+deployment points at the shared store, and when it keeps no copy it asks the host that
+holds the registry through the transport command, the same hop the Claude path makes.
+When SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names the Operator's registry API, the call
+goes to that API instead, signed per principal:  the explicit URL is the cutover, and
+it wins over both the local file and the transport command.
+The transport is host configuration:  the helper names the command
+(MM_OPERATOR_REGISTRY_CMD, default mm-operator-registry) and never names a host, a
+user, an alias, an ssh flag, a remote path or a remote interpreter itself.
 
 A thread and its child both hold a letter, and they are placed the way every other platform
 places them (owner ruling, Nov 1 2026):  a main chat takes the next doubled pair in order
@@ -41,7 +48,11 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Iterator
 
 from agent_sync import secretscan
@@ -69,6 +80,22 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 # The Mac's checkout of AI-Fleet-Coordinator, on the Operator host and here.
 REPO_REL = "AI-Fleet-Coordinator/scripts"
+
+# The transport to the host that holds the Operator's registry:  a command, not a
+# host.  The command carries the host, the remote path and the remote interpreter, so
+# this helper names no host, no user, no alias, no ssh flag and no remote path
+# anywhere.  It is host configuration, never a guess.
+ENV_TRANSPORT = "MM_OPERATOR_REGISTRY_CMD"
+DEFAULT_TRANSPORT = "mm-operator-registry"
+# The whole hop, inside the hook's own timeout:  the hooks that call this run with eight
+# to ten seconds, so a hop that waits longer is a hook the runtime kills instead of one
+# that reports its own fault and goes on.
+REMOTE_TIMEOUT = 6
+
+# The registry's own guard answers this when the host that holds the registry keeps
+# none.  It is a configuration state, not a fault of this call, so it carries the code
+# the helper already used for it.
+NO_REGISTRY_ERROR = "no Operator registry on this host"
 
 
 class RegistryError(RuntimeError):
@@ -134,14 +161,17 @@ def registry_db() -> str:
 
 
 def repo_scripts_dir() -> str:
-    """This host's checkout of the fleet scripts, where the registry CLI lives.
+    """Where the registry CLI lives on this host.
 
-    The checkout is host configuration, so the host names it and this file never
-    writes a path:  the code root comes from the environment, the fleet's code root
-    sits beside its apps root, the Mac has its own layout, and a checkout running
-    this script is its own parent.
+    The checkout this script runs in comes first:  the helper and the CLI it calls
+    have to be the same version, or a verb the helper sends is an unknown one to the
+    CLI.  The other candidates are the host's own configuration, in the order the
+    house keeps them:  the code root comes from the environment, the fleet's code
+    root sits beside its apps root, the Mac has its own layout.
     """
     candidates = []
+    # A checkout running this script:  the scripts sit beside it.
+    candidates.append(os.path.dirname(os.path.realpath(__file__)))
     code_root = os.environ.get("FLEET_CODE_ROOT", "").strip()
     if code_root:
         candidates.append(os.path.join(code_root, "AI-Fleet-Coordinator", "scripts"))
@@ -153,8 +183,6 @@ def repo_scripts_dir() -> str:
     candidates.append(
         os.path.join(os.path.expanduser("~"), "Code", "AI-Fleet-Coordinator", "scripts")
     )
-    # A checkout running this script:  the scripts sit beside it.
-    candidates.append(os.path.dirname(os.path.realpath(__file__)))
     for candidate in candidates:
         if os.path.isdir(candidate) and os.path.isfile(
             os.path.join(candidate, "agent_sync", "operator_registry.py")
@@ -276,15 +304,272 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
+# ---- the registry transports ------------------------------------------------------
+#
+# registry_call reaches the Operator's registry three ways, in this order:
+#
+#   1. HTTPS, when SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names the Operator's registry API
+#      (the listener at operator.simplewithus.com, served under /registry/v1/):  the call
+#      is signed per principal with the key the key ref names (see _registry_https_call).
+#      The explicit URL is the cutover, and it wins over both routes below.
+#   2. The local registry CLI over the local file, when this host keeps a copy.
+#   3. The transport command (remote_registry_call, below), when this host keeps no
+#      copy:  the host that holds the registry is asked through the command the host
+#      configuration names.
+#
+# Neither variable set is today's behaviour for a host that keeps a copy, exactly:
+# the transition is safe because setting the URL is the cutover, not the code.
+
+#: The registry ops the API serves as GET reads;  every other op is a POST write.
+_REGISTRY_READ_OPS = ("resolve", "history", "held", "pending-outbox")
+
+#: CLI spellings that name a registry field under another name, folded for the API.
+_REGISTRY_ARG_ALIASES = {
+    "location": "verified_host",
+    "scope": "profile_scope",
+    "session_id": "native_session_id",
+}
+
+
+class _RegistryNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # a signed request never follows a redirect
+        return None
+
+
+_REGISTRY_OPENER = urllib.request.build_opener(_RegistryNoRedirect)
+
+
+def _registry_params(args: list[str]) -> dict:
+    """The registry CLI arguments after the op, as one JSON-ready mapping.
+
+    `--name=value` and `--name value` both fold to the field the API names, and a bare
+    `--flag` folds to True, so the HTTPS transport carries exactly what the
+    local CLI would have parsed."""
+    params: dict = {}
+    index = 0
+    while index < len(args):
+        token = args[index]
+        index += 1
+        if not token.startswith("--"):
+            params.setdefault("_args", []).append(token)
+            continue
+        name, equals, value = token[2:].partition("=")
+        key = _REGISTRY_ARG_ALIASES.get(name.replace("-", "_"), name.replace("-", "_"))
+        if equals:
+            params[key] = value
+        elif index < len(args) and not args[index].startswith("--"):
+            params[key] = args[index]
+            index += 1
+        else:
+            params[key] = True
+    return params
+
+
+def _registry_https_call(args: list[str], base_url: str, *, timeout: int) -> dict:
+    """One registry call over the Operator's HTTPS registry API, answered as its JSON.
+
+    The principal is SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL, else this seat.  The key
+    is read from the environment variable the key ref SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV
+    names (default SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY itself):  the `key_env` pattern the
+    listener already uses, so the key is named, never carried in this file, and never
+    logged.  The URL must be https, except for a loopback stub in a test."""
+    from agent_sync import listener_registry as RG
+
+    op = args[0] if args else ""
+    if op not in RG.OPS:
+        return {"error": "unknown registry op %r" % op, "code": "bad_op"}
+    parts = urllib.parse.urlsplit(base_url)
+    loopback = parts.hostname in ("127.0.0.1", "localhost", "::1")
+    if parts.scheme != "https" and not (parts.scheme == "http" and loopback):
+        return {
+            "error": "the registry URL must be https",
+            "code": "not_configured",
+        }
+    env = os.environ
+    principal = (env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL") or "").strip().upper() or SEAT
+    key_env = (
+        env.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV") or ""
+    ).strip() or "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
+    key = (env.get(key_env) or "").strip()
+    if not key:
+        return {
+            "error": "the registry key env %s is not set" % key_env,
+            "code": "not_configured",
+        }
+    params = _registry_params(args[1:])
+    # The local CLI's --db names a file on the registry's host, not a field of the call.
+    params.pop("db", None)
+    # mark-exported names its ids positionally on the CLI;  the API names them in the body.
+    positional = params.pop("_args", [])
+    if positional and op == "mark-exported":
+        params["outbox_ids"] = positional
+    path = RG.PREFIX + op
+    if op in _REGISTRY_READ_OPS:
+        method = "GET"
+        query = urllib.parse.urlencode(
+            {name: value for name, value in params.items() if value is not True}
+        )
+        body = b""
+    else:
+        method = "POST"
+        query = ""
+        body = json.dumps(params).encode("utf-8")
+    url = base_url.rstrip("/") + path + (("?" + query) if query else "")
+    request = urllib.request.Request(url, data=body if method == "POST" else None, method=method)
+    # An explicit User-Agent:  the API's host is Cloudflare-fronted and Cloudflare
+    # answers 1010 to Python's default urllib agent (the deploy-mapped-worker
+    # note), so the default would never reach the listener.
+    request.add_header("User-Agent", "mm-session-letter/1.0")
+    for name, value in RG.headers(key, method, path, query, principal, body, time.time()).items():
+        request.add_header(name, value)
+    try:
+        with _REGISTRY_OPENER.open(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read() or b""
+        try:
+            answer = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            answer = None
+        if isinstance(answer, dict):
+            answer.setdefault("code", "http_%s" % exc.code)
+            if method == "POST" and exc.code >= 500:
+                # A server-side failure can surface after the write was applied
+                # (the listener failing mid-answer, a proxy answering for it), so
+                # a write's outcome is unknown, as on the timeout path below.  A
+                # 4xx answer is the API's own refusal, spoken for itself:  the
+                # write was not applied and the outcome is known.
+                answer.setdefault("outcome", "outcome_unknown")
+            return answer
+        refusal = {"error": "the registry answered HTTP %s" % exc.code, "code": "http_error"}
+        if method == "POST" and exc.code >= 500:
+            refusal["outcome"] = "outcome_unknown"
+        return refusal
+    except (urllib.error.URLError, TimeoutError, OSError):
+        # A write may have been applied before the answer was lost, as on the local path.
+        answer = {"error": "the registry did not answer in time", "code": "timeout"}
+        if method == "POST":
+            answer["outcome"] = "outcome_unknown"
+        return answer
+    try:
+        answer = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return {"error": "unreadable answer", "code": "bad_json", "outcome": "outcome_unknown"}
+    if not isinstance(answer, dict):
+        return {
+            "error": "the registry answer was not an object",
+            "code": "bad_shape",
+            "outcome": "outcome_unknown",
+        }
+    return answer
+
+
+def _with_registry_code(answer: dict) -> dict:
+    """A registry answer, with the code the helper uses for a host that keeps no registry.
+
+    The registry's own guard answers one way when the host that holds it has no
+    registry file:  that is a configuration state, not a fault of this call, and the
+    helper keeps it quiet.
+    """
+    if answer.get("error") == NO_REGISTRY_ERROR and not answer.get("code"):
+        return dict(answer, code="no_registry")
+    return answer
+
+
+def remote_registry_call(args: list[str], *, timeout: int = REMOTE_TIMEOUT) -> dict:
+    """Ask the registry host through the transport command, the way the Claude path does.
+
+    The transport is host configuration:  the helper names the command and the command
+    carries the host, so this helper never names a host, a user, an alias, an ssh
+    flag, a remote path or a remote interpreter.  A transport command name that is not
+    a plain command name is refused, never run.
+    """
+    dest = str(os.environ.get(ENV_TRANSPORT) or "").strip() or DEFAULT_TRANSPORT
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
+        # Something the shell could read as an option or a second word:  refuse it
+        # rather than run it.  A refused transport is a fault of this host's
+        # configuration, never a call that never happened.
+        return {
+            "error": "the configured registry transport is not a plain command name",
+            "code": "remote_refused",
+        }
+    cmd = [dest] + list(args)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        # The hop started, so the write may have landed before the answer was lost:
+        # an unknown outcome, never a call that never happened.
+        return {
+            "error": "the registry host did not answer in time",
+            "code": "timeout",
+            "outcome": "outcome_unknown",
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        # A missing command is errno 2:  it is its own failure, the way a missing
+        # local registry tool is:  the operator has to know which one.
+        code = "missing_tool" if getattr(exc, "errno", None) == 2 else "remote_unreachable"
+        return {
+            "error": "the registry host did not answer (%s)" % type(exc).__name__,
+            "code": code,
+        }
+    out = (proc.stdout or "").strip()
+    if not out:
+        # The host answered with nothing:  the call may have landed, so the outcome
+        # is unknown rather than never.  The far side's own words are not copied
+        # here:  they can echo an argument the caller built, and a title is not
+        # something to write into an error message.
+        return {
+            "error": "the registry host answered with no result (status %s)"
+            % (proc.returncode if proc.returncode is not None else "none"),
+            "code": "remote_empty",
+            "outcome": "outcome_unknown",
+        }
+    try:
+        answer = json.loads(out.splitlines()[-1])
+    except json.JSONDecodeError:
+        return {
+            "error": "the registry host answered with something else",
+            "code": "remote_unparseable",
+            "outcome": "outcome_unknown",
+        }
+    if not isinstance(answer, dict):
+        return {
+            "error": "the registry host answered with something else",
+            "code": "remote_unparseable",
+            "outcome": "outcome_unknown",
+        }
+    if proc.returncode and "error" not in answer:
+        # The far side's exit code counts:  a call that failed with a non-zero exit is
+        # not a success, whatever its answer looks like.  This is the same rule the
+        # local path applies.
+        answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
+    return _with_registry_code(answer)
+
+
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
-    """Run the Operator's registry CLI and return its JSON answer."""
+    """Run the Operator's registry CLI and return its JSON answer.
+
+    The HTTPS registry API comes first when SIMPLE_TOOLS_OPERATOR_REGISTRY_URL names
+    it:  that explicit transport is the cutover, and it wins over the local file and
+    the transport command alike.  With no URL set, the routes below are unchanged."""
+    url = (os.environ.get("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL") or "").strip()
+    if url:
+        return _registry_https_call(args, url, timeout=timeout)
     local_db = registry_db()
     scripts = repo_scripts_dir()
     if not local_db or not scripts:
-        return {
-            "error": "the operator registry is not available on this host",
-            "code": "no_registry",
-        }
+        # This host keeps no registry of its own, so the Operator's one is on the host
+        # that holds it:  the transport command carries that host, and the registry's
+        # own CLI runs there, so both sides speak one dialect.
+        # The hop has its own bound:  it has to finish inside the hook's timeout, not
+        # inside the timeout the local call would use.
+        return remote_registry_call(args)
     cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
     previous = _install_signal_handlers()
     proc = None
@@ -350,7 +635,7 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         }
     if proc.returncode and "error" not in answer:
         answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
-    return answer
+    return _with_registry_code(answer)
 
 
 def _require_registry(answer: dict, *, needs_label: bool = False) -> dict:
@@ -490,48 +775,20 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     helper keeps the pair space:  a chat that held a pair comes back with a pair, and a
     reopen that would hand it a single letter is refused before anything is written.
 
-    The registry is opened here rather than through the CLI, because the CLI has no
-    reopen verb.  It is the same file the CLI is pointed at, and the same writer.
+    The reopen goes through the registry's own CLI, the same call as every other verb:
+    a host that keeps no registry asks the host that holds one, so a chat that comes
+    back to life gets its letter back there too.
     """
-    db = registry_db()
-    if not db:
-        raise RegistryError("the operator registry is not available on this host", "no_registry")
-    from agent_sync import operator_registry as OR
-    from agent_sync import platform_letter
-
-    reg = OR.SessionRegistry(db)
-    try:
-        letter, generation, previous = platform_letter.operator_reopen(
-            OR,
-            db,
-            reg,
-            record_id,
-            actor=SEAT,
-            source="the MM seat's session-letter hook",
-            pick=LETTER_PICK,
-            parent=parent_session_id,
-        )
-    except platform_letter.SpaceLost as exc:
-        # A chat that held a pair would come back with a single letter.  That is refused
-        # before anything is written, and the chat waits for a pair instead.
-        raise RegistryError(str(exc), "space_lost", "reopen_refused")
-    except OR.LabelExhausted as exc:
-        # Every letter in the space is live, so there is nothing to hand back.
-        raise RegistryError(str(exc), "label_exhausted", "reopen_refused")
-    except (OR.UnknownRecord, KeyError, ValueError, OSError) as exc:
-        # A record that is not there, or a registry file that cannot be read or written.
-        # Both are a registry fault, so both travel as one:  a caller never has to know
-        # which storage failure it was.
-        raise RegistryError(str(exc), "reopen_failed", "reopen_refused")
-    finally:
-        reg.close_db()
-    return {
-        "record_id": record_id,
-        "label": letter,
-        "generation": generation,
-        "previous": previous,
-        "outcome": "reopened",
-    }
+    args = [
+        "reopen",
+        "--record-id=" + record_id,
+        "--actor=" + SEAT,
+        "--source=the MM seat's session-letter hook",
+        "--letter-pick=" + LETTER_PICK,
+    ]
+    if parent_session_id:
+        args += ["--parent-session-id=" + parent_session_id]
+    return _require_registry(registry_call(args))
 
 
 def update_title(session_id: str, title: str, directories: list[str] | None = None) -> dict:
@@ -1371,7 +1628,15 @@ def hook_stop() -> int:
     if ok:
         try:
             update_title(session_id, title)
-        except (RegistryError, ValueError) as exc:
+        except RegistryError as exc:
+            # A registry that cannot be reached is not a reason to block the stop:  the
+            # chat already holds its letter, and a Stop hook that exits 2 keeps the
+            # agent in a loop while the far host is asleep.
+            _report_registry_fault(exc)
+            return 0
+        except ValueError as exc:
+            # The title carries a credential:  the refusal names the problem and never
+            # the value.
             sys.stderr.write("Could not update the registry: %s\n" % exc)
             return 2
         return 0
@@ -1395,7 +1660,11 @@ def hook_stop() -> int:
         return 2
     try:
         update_title(session_id, fallback)
-    except (RegistryError, ValueError) as exc:
+    except RegistryError as exc:
+        # The thread carries the title in the store;  the registry copy is a second
+        # copy, and the sweep carries it later.  A fault here never blocks the stop.
+        _report_registry_fault(exc)
+    except ValueError as exc:
         sys.stderr.write("Could not update the registry: %s\n" % exc)
         return 2
     sys.stderr.write("The thread was renamed to %r.\n" % fallback)

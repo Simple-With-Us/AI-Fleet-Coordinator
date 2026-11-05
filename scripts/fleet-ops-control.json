@@ -22,9 +22,22 @@
       {"label": "com.jay.operator-wake-alerter", "actions": ["start", "stop", "restart"]},
       {"label": "com.jay.sim-idle-reaper", "actions": ["start", "stop", "restart"]},
       {"label": "com.jays.weekly-fleet-mode-digest", "actions": ["start", "stop", "restart"]}
+    ],
+    "pm2Apps": [
+      {"name": "botfleet-mcp", "actions": ["start", "stop", "restart"]},
+      {"name": "shellular", "actions": ["start", "stop", "restart"]},
+      {"name": "code-main-keeper", "actions": ["start", "stop", "restart"]},
+      {"name": "vision-worker", "actions": ["start", "stop", "restart"]},
+      {"name": "xcode-health", "actions": ["start", "stop", "restart"]},
+      {"name": "agy-acp", "actions": ["start", "stop", "restart"]},
+      {"name": "grok-leader", "actions": ["start", "stop", "restart"]},
+      {"name": "grok-acp", "actions": ["start", "stop", "restart"]},
+      {"name": "clutch-web", "actions": ["start", "stop", "restart"]},
+      {"name": "seat-mcp", "actions": ["start", "stop", "restart"]}
     ]
   },
   "server": {
+    "resourcePolicy": true,
     "units": [
       {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"]},
       {"unit": "fleet-cli-git-update.timer", "scope": "system", "actions": ["start", "stop", "restart"]}

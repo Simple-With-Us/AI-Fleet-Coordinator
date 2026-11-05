@@ -1050,6 +1050,38 @@ def previous_resources(path):
     return previous
 
 
+def collect_resource_policy(path=Path("/run/fleet-coding-resources/status.json"), *, owner_uid=0):
+    """Read only the controller's public receipt; never its private policy or journal."""
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != owner_uid
+            or info.st_mode & 0o022
+            or info.st_size > 64 * 1024
+        ):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            raw = handle.read(64 * 1024 + 1)
+        if len(raw) > 64 * 1024:
+            return None
+        # The collector is launched with -I, so load the reviewed sibling explicitly.
+        spec = importlib.util.spec_from_file_location(
+            "fleet_resource_control",
+            Path(__file__).resolve().with_name("fleet_resource_control.py"),
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.sanitize_snapshot(json.loads(raw), require_fresh=False)
+    except (OSError, ValueError, ImportError, AttributeError, TypeError):
+        return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def build_report(
     coolify,
     processes,
@@ -1059,6 +1091,7 @@ def build_report(
     host_metrics=None,
     services=None,
     files_summary=None,
+    resource_policy=None,
 ):
     """The report,  as Muster reads it.
 
@@ -1102,6 +1135,8 @@ def build_report(
         document["services"] = services
     if files_summary is not None:
         document["filesSummary"] = files_summary
+    if resource_policy is not None:
+        document["resourcePolicy"] = resource_policy
     return document
 
 
@@ -1212,6 +1247,7 @@ def main(argv=None, run_command=run, proc=Path("/proc")):
         host_metrics=collect_host_metrics(proc=proc),
         services=collect_services(args.control, run_command=run_command),
         files_summary=summarize_files(found, args.file_limit),
+        resource_policy=collect_resource_policy(),
     )
 
     if args.dry_run:

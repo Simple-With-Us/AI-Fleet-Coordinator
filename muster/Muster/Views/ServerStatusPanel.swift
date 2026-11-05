@@ -310,6 +310,12 @@ struct ServerStatusPanel: View {
                     .controlSize(.small)
                     .disabled(controller.isPresenting)
                 }
+                Button("Logs") {
+                    controller.plan(.logs(unit: service.unit))
+                }
+                .controlSize(.small)
+                .disabled(controller.isPresenting)
+                .help("Plan reading this unit's last journal lines.")
             }
             FleetToolsStateBadge(state: service.state, width: 92)
         }

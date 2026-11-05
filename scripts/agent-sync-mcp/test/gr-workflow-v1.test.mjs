@@ -51,8 +51,48 @@ function harness(fetchImpl, enabled=true) {
   const gr=new GrRelayClient({baseUrl:'https://broker.invalid',accessId:'private-access-identifier',accessSecret:'private-access-secret',bearer:'caller-own-bearer',fetch:fetchImpl});
   return new HostedTools({seat:'JET-CHAT',scopes:['zulip:read','zulip:write'],clientId:'test',grantRef:'abc123',paused:false,config:{...loadConfig(testEnv()),grWorkflowEnabled:enabled},zulip:null,key:'',gate,gr,log:()=>{},sleep:async()=>{}});
 }
+test('Draft workflow diagnostics cross transport and hosted mapping without replay or prose',async()=>{
+  for (const code of ['graphql_forbidden','graphql_not_found','graphql_unprocessable','graphql_rate_limited','private-provider-text',null,['graphql_forbidden']]) {
+    let calls=0;
+    const tools=harness(async()=>{
+      calls++;
+      return new Response(JSON.stringify({error:'private-provider-text',outcome:'unknown',retryable:false,github_code:code}),{status:502});
+    });
+    const result=await tools.call('gr_wf_pr_draft',{repo,number:1});
+    assert.equal(result.isError,true);
+    const error=JSON.parse(result.content[0].text);
+    assert.equal(error.code,'outcome_unknown');
+    assert.equal(error.retryable,false);
+    assert.match(error.message,/Do not retry blindly/);
+    assert.equal(error.github_code,typeof code==='string'&&code.startsWith('graphql_')?code:undefined);
+    assert.doesNotMatch(JSON.stringify(result),/private-provider-text/);
+    assert.equal(calls,1);
+  }
+});
+test('held and unknown answers carry only a validated allowlisted github_code',async()=>{
+  for(const [status,outcome,code,want] of [
+    [409,'pending','graphql_forbidden','graphql_forbidden'],
+    [409,'unknown','graphql_rate_limited','graphql_rate_limited'],
+    [409,'pending','private-provider-text',undefined],
+    [409,'pending',{code:'graphql_forbidden'},undefined],
+    [409,'pending',['graphql_forbidden'],undefined],
+    [409,'pending',null,undefined],
+    [502,'unknown','graphql_not_found','graphql_not_found'],
+    [502,'unknown','private-provider-text',undefined],
+  ]) {
+    let calls=0;
+    const tools=harness(async()=>{calls++;return new Response(JSON.stringify({error:'private-provider-text',outcome,retryable:false,github_code:code}),{status});});
+    const result=await tools.call('gr_wf_pr_draft',{repo,number:1});
+    assert.equal(result.isError,true);
+    const error=JSON.parse(result.content[0].text);
+    assert.equal(error.code,'outcome_unknown');
+    assert.equal(error.github_code,want);
+    assert.doesNotMatch(JSON.stringify(result),/private-provider-text/);
+    assert.equal(calls,1);
+  }
+});
 test('default-off discovery, cache separation and direct-call denial',async()=>{
-  assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
+  assert.equal(loadConfig(testEnv({GR_WORKFLOW_TOOLS:""})).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,WF_V1_ACTIONS.length);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
