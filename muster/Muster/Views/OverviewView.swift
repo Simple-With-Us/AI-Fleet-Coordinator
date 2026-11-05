@@ -1,16 +1,25 @@
 import SwiftUI
 
-/// The fleet at a glance:  the verdict and the counts the last run gives, each one a
-/// way into the panel that holds its rows.
+/// Both machines at a glance,  then the seat setup the Mac checks,  each one a way into
+/// the panel that holds its rows.
 ///
-/// The counts come off the store's cells, which are the same cells the grid paints,
-/// so the overview cannot disagree with the grid it points at.  A run that could not
-/// be trusted leaves every engine count unknown:  the store has cleared its results, and a
-/// count of zero would read as a fleet with nothing wrong.
+/// The two place cards are built from the menu's own summary of each place,  so the
+/// Overview and the menu say the same thing in the same words.  The counts come off the
+/// store's cells,  which are the same cells the grid paints,  so the Overview cannot
+/// disagree with the grid it points at.  A run that could not be trusted leaves every
+/// engine count unknown:  the store has cleared its results,  and a count of zero would
+/// read as a fleet with nothing wrong.
 struct OverviewView: View {
     @EnvironmentObject private var store: FleetStore
     @EnvironmentObject private var monitor: DriftMonitor
+    @EnvironmentObject private var admin: FleetAdmin
+    @EnvironmentObject private var watch: PlaceWatch
+    @EnvironmentObject private var router: ServiceActionRouter
     @Binding var selection: MusterDestination
+
+    init(selection: Binding<MusterDestination>) {
+        _selection = selection
+    }
 
     private var counts: OverviewCounts {
         OverviewCounts.make(
@@ -21,8 +30,16 @@ struct OverviewView: View {
     }
 
     var body: some View {
+        let menu = MachineMenu(MachineMenuInputs(admin: admin, monitor: monitor, watch: watch, router: router))
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 12)], spacing: 12) {
+                    placeCard(menu.macCard)
+                    placeCard(menu.serverCard)
+                }
+                Divider()
+                Label("Seat Setup \(FleetHost.mac.onTitle)", systemImage: "square.grid.3x3")
+                    .font(.title3.weight(.semibold))
                 verdictRow
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
                     countCard(
@@ -30,49 +47,46 @@ struct OverviewView: View {
                         systemImage: "square.grid.3x3",
                         count: counts.red,
                         tint: counts.red.map { $0 > 0 ? .red : .secondary } ?? .secondary,
-                        subtitle: "Cells the grid paints red",
-                        destination: .complianceGrid
+                        lines: counts.redBreakdown ?? [],
+                        filter: .red
                     )
                     countCard(
-                        title: "Unknown",
-                        systemImage: "questionmark.square",
-                        count: counts.unknown,
-                        tint: counts.unknown.map { $0 > 0 ? .red : .secondary } ?? .secondary,
-                        subtitle: "Cells the app could not read",
-                        destination: .complianceGrid
-                    )
-                    countCard(
-                        title: "Missing",
-                        systemImage: "square.slash",
-                        count: counts.missing,
-                        tint: counts.missing.map { $0 > 0 ? .red : .secondary } ?? .secondary,
-                        subtitle: "Cells naming an absent artifact",
-                        destination: .complianceGrid
-                    )
-                    countCard(
-                        title: "Drift",
+                        title: "Drifted",
                         systemImage: "arrow.left.arrow.right",
                         count: counts.drift,
                         tint: counts.drift.map { $0 > 0 ? .orange : .secondary } ?? .secondary,
-                        subtitle: "Cells off their wanted state",
-                        destination: .complianceGrid
+                        lines: ["Differs from what the fleet expects"],
+                        filter: .drift
                     )
                     countCard(
-                        title: "Stale",
-                        systemImage: "clock.badge.exclamationmark",
+                        title: "Unproven",
+                        systemImage: "questionmark.diamond",
+                        count: counts.unproven,
+                        tint: counts.unproven.map { $0 > 0 ? .orange : .secondary } ?? .secondary,
+                        lines: ["Checked, but the check could not prove it"],
+                        filter: .unproven
+                    )
+                    // A result checked at another time is not a fault,  so this card has no
+                    // warning colour:  the engine's own rules say whether a result is too old.
+                    countCard(
+                        title: "Checked Earlier",
+                        systemImage: "clock",
                         count: counts.stale,
-                        tint: counts.stale.map { $0 > 0 ? .orange : .secondary } ?? .secondary,
-                        subtitle: "Cells checked apart from the rest",
-                        destination: .complianceGrid
-                    )
-                    countCard(
-                        title: "Drift History",
-                        systemImage: "exclamationmark.triangle",
-                        count: monitor.transitions.count,
                         tint: .secondary,
-                        subtitle: "Turns to red on record",
-                        destination: .driftHistory
+                        lines: ["Results from another time than the rest of this check"],
+                        filter: .all
                     )
+                    OverviewCardButton(hint: "Opens \(MusterDestination.driftHistory.title)") {
+                        selection = .driftHistory
+                    } label: {
+                        cardBody(
+                            title: "Drift History",
+                            systemImage: "exclamationmark.triangle",
+                            count: monitor.transitions.count,
+                            tint: .secondary,
+                            lines: ["Times something went red"]
+                        )
+                    }
                 }
                 watchLine
             }
@@ -81,61 +95,61 @@ struct OverviewView: View {
         }
     }
 
-    /// The verdict, its failing count and the watch state, which is what the owner
-    /// opens the window to learn.
+    // MARK: The two places
+
+    /// One machine,  in the menu's words,  opening the panel for that machine.
+    private func placeCard(_ card: PlaceCard) -> some View {
+        OverviewCardButton(hint: "Opens \(card.destination.title)") {
+            selection = card.destination
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Label(card.host.heading, systemImage: card.host.systemImage)
+                        .font(.headline)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                PlaceHealthLabel(health: card.health, font: .title3.weight(.semibold))
+                ForEach(Array(card.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    // MARK: The seat setup
+
+    /// The verdict,  its failing count and when the Mac last checked.
     private var verdictRow: some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(verdictColor)
-                .frame(width: 12, height: 12)
-            Text(verdictText)
-                .font(.title2.weight(.semibold).monospaced())
-            if let summary = store.summary {
-                Text("\(summary.failing) failing of \(summary.total)")
-                    .font(.callout.monospaced())
+            RunVerdictLabel(verdict: RunVerdict.make(phase: store.phase, verdict: store.summary?.overallVerdict))
+            if let failing = RunVerdict.failingText(store.summary) {
+                Text(failing)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             } else if store.phase == .running {
                 ProgressView().controlSize(.small)
             }
             Spacer()
             if let lastRunAt = monitor.lastRunAt {
-                Text("Last run \(lastRunAt.formatted(date: .omitted, time: .standard))")
+                Text("Last checked at \(FleetTime.clock(lastRunAt))")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
-        .foregroundStyle(verdictColor)
     }
 
-    private var verdictText: String {
-        switch store.phase {
-        case .idle: return "IDLE"
-        case .running: return "RUNNING"
-        case .loaded: return store.summary?.overallVerdict ?? "UNKNOWN"
-        case .failed: return "UNKNOWN"
-        }
-    }
-
-    private var verdictColor: Color {
-        switch store.phase {
-        case .idle: return .secondary
-        case .running: return .secondary
-        case .loaded:
-            switch store.summary?.overallVerdict {
-            case "PASS": return .green
-            case "FAIL": return .red
-            default: return .orange
-            }
-        case .failed: return .red
-        }
-    }
-
-    /// What the watcher holds, when it holds anything.
+    /// What the watcher holds,  when it holds anything.
     @ViewBuilder
     private var watchLine: some View {
         if monitor.isWatching {
             Label(
-                "Watching \(monitor.watchedPathCount) paths for \(monitor.watchedSeats.count) seats",
+                "Watching \(monitor.watchedPathCount) paths on the Mac for \(monitor.watchedSeats.count) seats",
                 systemImage: "eye"
             )
             .font(.callout)
@@ -143,41 +157,81 @@ struct OverviewView: View {
         }
     }
 
-    /// One count and the place it came from.  A nil count reads unknown, never zero.
+    /// One count,  opening the grid on the seats it counts.  A nil count reads unknown,
+    /// never zero.
     private func countCard(
         title: String,
         systemImage: String,
         count: Int?,
         tint: Color,
-        subtitle: String,
-        destination: MusterDestination
+        lines: [String],
+        filter: GridStateFilter
     ) -> some View {
-        Button {
-            selection = destination
+        OverviewCardButton(hint: "Opens \(MusterDestination.complianceGrid.title), showing \(filter.rawValue)") {
+            GridStateFilter.request(filter)
+            selection = .complianceGrid
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
+            cardBody(title: title, systemImage: systemImage, count: count, tint: tint, lines: lines)
+        }
+    }
+
+    private func cardBody(title: String, systemImage: String, count: Int?, tint: Color, lines: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
                 Label(title, systemImage: systemImage)
                     .font(.headline)
-                Text(count.map { "\($0)" } ?? "—")
-                    .font(.largeTitle.weight(.semibold).monospaced())
-                    .foregroundStyle(tint)
-                Text(count != nil ? subtitle : "Unknown")
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            Text(count.map { "\($0)" } ?? "\u{2014}")
+                .font(.largeTitle.weight(.semibold).monospaced())
+                .foregroundStyle(tint)
+            if count == nil {
+                Text("Not known")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(.background, in: RoundedRectangle(cornerRadius: 12))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary, lineWidth: 1)
+            } else {
+                ForEach(lines, id: \.self) { line in
+                    Text(line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
-        .buttonStyle(.plain)
     }
 }
 
-#Preview {
-    OverviewView(selection: .constant(.overview))
-        .environmentObject(FleetStore())
-        .environmentObject(DriftMonitor(grid: PreviewGrid.shared))
+/// A card that is a button,  and looks like one:  a chevron,  a border that answers the
+/// pointer,  and a hint that says where it goes.
+private struct OverviewCardButton<CardLabel: View>: View {
+    let hint: String
+    let action: () -> Void
+    let label: CardLabel
+    @State private var hovering = false
+
+    init(hint: String, action: @escaping () -> Void, @ViewBuilder label: () -> CardLabel) {
+        self.hint = hint
+        self.action = action
+        self.label = label()
+    }
+
+    var body: some View {
+        Button(action: action) {
+            label
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(hovering ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: 1)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityHint(hint)
+    }
 }

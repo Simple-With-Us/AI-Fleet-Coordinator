@@ -59,16 +59,17 @@ struct ResourceLimitsView: View {
                 Button {
                     Task { await refresh() }
                 } label: {
-                    Label("Refresh Policy", systemImage: "arrow.clockwise")
+                    Label("Read From The Server", systemImage: "arrow.clockwise")
                 }
                 .disabled(loading)
+                .help("Reads the resource policy from the server again.")
             }
         }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("Server Resource Limits")
+            Text(MusterDestination.serverResourceLimits.title)
                 .font(.largeTitle.weight(.semibold))
             Text("Set coding capacity while keeping host and production headroom visible.")
                 .font(.callout)

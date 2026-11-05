@@ -40,6 +40,8 @@ struct MusterApp: App {
                 .environmentObject(monitor)
                 .environmentObject(admin)
                 .environmentObject(router)
+                // The window reads the same places the menu does,  so the two cannot disagree.
+                .environmentObject(watch)
         }
         .defaultSize(width: 1080, height: 820)
         // One window:  the menu brings it forward,  and a second copy would show every
