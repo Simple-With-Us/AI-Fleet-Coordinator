@@ -42,6 +42,7 @@ guards = _load()
 def git(*args):
     subprocess.run(["git", *args], check=True, timeout=30)
 
+
 GOOD_TOML = """name = "w"
 preview_urls = false
 [limits]
