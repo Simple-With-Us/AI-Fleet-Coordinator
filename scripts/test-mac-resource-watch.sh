@@ -1160,4 +1160,293 @@ finally:
     shutil.rmtree(scratch, ignore_errors=True)
 print("scoped webhook token behaviour ok")
 PY
+
+# AFC-609: the watcher has to say WHY a delivery was skipped.
+#
+# A skipped webhook used to be one line -- "no valid urls/secrets found" --
+# for every possible cause:  a missing token file, a wrongly permissive token
+# file, a 404, a 403, a 500, a timeout, a truncated response and a bad body
+# all read as the same thing, so a run that had two perfectly good
+# credentials and lost them to a timeout looked exactly like a run whose
+# credentials were never configured.  The credential read now reports a
+# STATUS for each of those, and the log carries it.
+#
+# The fake Infisical is a LOCAL http server, so the test never touches the
+# real API and never holds a real credential.  The token is a synthetic
+# string;  the only thing the test proves about it is that it is sent in the
+# Authorization header and never printed.
+python3 - "$ROOT/mac-resource-watch.py" <<'PY' || fail "webhook credential status behaviour"
+import contextlib
+import http.server
+import importlib.util
+import io
+import json
+import os
+import pathlib
+import shutil
+import sys
+import tempfile
+import threading
+import time
+import urllib.parse
+
+spec = importlib.util.spec_from_file_location("watch", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+SYNTHETIC_TOKEN = "st." + "synthetic-test-token-not-a-credential"
+SYNTHETIC_URL = "https://hooks.example.invalid/synthetic"
+SYNTHETIC_SECRET = "whsec_" + "synthetic_value"
+SCOPED_FOLDER = "/botfleet-housekeeper-webhook"
+
+VALUES = {
+    "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL": SYNTHETIC_URL,
+    "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET": SYNTHETIC_SECRET,
+}
+#  A name in FAILED gets that HTTP status instead of 200.  A name in HANG
+#  makes the server stall past the client's timeout.  A name in TRUNCATED
+#  gets a Content-Length that promises more than the server writes.
+FAILED = {}
+HANG = set()
+TRUNCATED = set()
+REQUESTS = []
+AUTHORIZATIONS = []
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802 - the stdlib name
+        REQUESTS.append(self.path)
+        AUTHORIZATIONS.append(self.headers.get("Authorization", ""))
+        query = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+        folder = (query.get("secretPath") or [""])[0]
+        if folder != SCOPED_FOLDER:
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        name = self.path.split("?")[0].rsplit("/", 1)[-1]
+        if name in HANG:
+            time.sleep(5)
+        status = FAILED.get(name, 200)
+        if status != 200:
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = json.dumps(
+            {"secret": {"secretKey": name, "secretValue": VALUES.get(name, "")}}
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        if name in TRUNCATED:
+            self.send_header("Content-Length", str(len(body) + 64))
+            self.end_headers()
+            self.wfile.write(body[:8])
+            self.wfile.flush()
+            self.close_connection = True
+            return
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+mod.INFISICAL_API = "http://127.0.0.1:%d/api" % server.server_address[1]
+
+scratch = pathlib.Path(tempfile.mkdtemp(prefix="mrw-status-"))
+token_file = scratch / "mac-resource-watch-ro.token"
+mod.INFISICAL_TOKEN_FILE = token_file
+
+ENV_KEYS = (
+    "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL",
+    "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET",
+    "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL",
+    "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET",
+)
+saved_env = {key: os.environ.pop(key, None) for key in ENV_KEYS}
+
+
+def clear_env():
+    for key in ENV_KEYS:
+        os.environ.pop(key, None)
+
+
+try:
+    # 1. A missing token file is a MISSING TOKEN FILE, not "no valid
+    #    urls/secrets found" about everything.
+    token_file.unlink(missing_ok=True)
+    token, status = mod._service_token_status()
+    assert token == "", token
+    assert status == "no-token", status
+
+    # 2. A token file that is not 0600 is refused, and says so.
+    token_file.write_text(SYNTHETIC_TOKEN, encoding="utf-8")
+    for mode in (0o644, 0o400, 0o660):
+        os.chmod(token_file, mode)
+        token, status = mod._service_token_status()
+        assert token == "", (oct(mode), token)
+        assert status == "token-mode", (oct(mode), status)
+
+    # 3. A 0600 token file reads.
+    os.chmod(token_file, 0o600)
+    token, status = mod._service_token_status()
+    assert token == SYNTHETIC_TOKEN, token
+    assert status == "ok", status
+
+    # 3a. The value-only view of the same read agrees, and still refuses a
+    #     wrongly permissive file with no token at all.
+    assert mod._service_token() == SYNTHETIC_TOKEN
+    os.chmod(token_file, 0o644)
+    assert mod._service_token() == ""
+    os.chmod(token_file, 0o600)
+
+    # 4. Every refusal on the Infisical side is told apart.
+    for http_status, expected in ((404, "absent"), (403, "forbidden"), (500, "http-500")):
+        FAILED["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = http_status
+        value, status = mod._infisical_get_status(
+            "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", SCOPED_FOLDER, SYNTHETIC_TOKEN
+        )
+        assert value == "", (http_status, value)
+        assert status == expected, (http_status, status)
+    FAILED.clear()
+
+    # 5. A truncated response is its own outcome.
+    TRUNCATED.add("BOTFLEET_HOUSEKEEPER_WEBHOOK_URL")
+    value, status = mod._infisical_get_status(
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", SCOPED_FOLDER, SYNTHETIC_TOKEN
+    )
+    assert value == "", value
+    assert status == "truncated", status
+    TRUNCATED.clear()
+
+    # 6. A body that is not the shape the route answers is not silently
+    #    accepted as an empty secret.
+    FAILED["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = 200
+    VALUES["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = ""
+    value, status = mod._infisical_get_status(
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", SCOPED_FOLDER, SYNTHETIC_TOKEN
+    )
+    assert value == "", value
+    assert status == "bad-output", status
+    VALUES["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = SYNTHETIC_URL
+    FAILED.clear()
+
+    # 7. A timeout is retried ONCE and then says "timeout".  It must not be
+    #    reported as an absent key:  that is the failure that made the
+    #    2026-11-04 run skip a delivery it had the credentials for.
+    mod.INFISICAL_TIMEOUT = 0.25
+    mod.INFISICAL_RETRY_SEC = 0
+    HANG.add("BOTFLEET_HOUSEKEEPER_WEBHOOK_URL")
+    REQUESTS.clear()
+    value, status = mod._infisical_get_status(
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", SCOPED_FOLDER, SYNTHETIC_TOKEN
+    )
+    assert value == "", value
+    assert status == "timeout", status
+    assert len(REQUESTS) == 2, (
+        "a timeout must be retried exactly once, saw %d requests" % len(REQUESTS)
+    )
+    HANG.clear()
+    mod.INFISICAL_TIMEOUT = 15
+    mod.INFISICAL_RETRY_SEC = 2
+
+    # 8. Where the credentials came from, per wake.
+    clear_env()
+    REQUESTS.clear()
+    hooks, notes = mod.load_webhooks_status()
+    assert [name for name, _, _ in hooks] == ["BotFleet"], hooks
+    assert "BotFleet=ok" in notes, notes
+    assert "GrokBot=env-absent" in notes, notes
+    assert len(REQUESTS) == 2, REQUESTS
+
+    # 9. The plain list form still works and still costs two requests:  the
+    #    status form is an addition, not a replacement.
+    REQUESTS.clear()
+    hooks = mod.load_webhooks()
+    assert isinstance(hooks, list), type(hooks)
+    assert hooks == [("BotFleet", SYNTHETIC_URL, SYNTHETIC_SECRET)], hooks
+    assert len(REQUESTS) == 2, REQUESTS
+
+    # 10. The environment wins, and says so.
+    clear_env()
+    os.environ["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = SYNTHETIC_URL
+    os.environ["BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"] = SYNTHETIC_SECRET
+    REQUESTS.clear()
+    _url, _secret, status = mod._read_webhook_status(
+        SCOPED_FOLDER,
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL",
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET",
+    )
+    assert status == "env", status
+    assert not REQUESTS, REQUESTS
+
+    # 11. A pair split across the environment and Infisical says both.
+    clear_env()
+    os.environ["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = SYNTHETIC_URL
+    REQUESTS.clear()
+    _url, _secret, status = mod._read_webhook_status(
+        SCOPED_FOLDER,
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL",
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET",
+    )
+    assert status == "env+infisical", status
+    assert len(REQUESTS) == 1, REQUESTS
+
+    # 11a. The value-only view of the same read agrees, and drops the
+    #      status.
+    url, secret = mod._read_webhook(
+        SCOPED_FOLDER,
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL",
+        "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET",
+    )
+    assert url == SYNTHETIC_URL, url
+    assert secret == SYNTHETIC_SECRET, secret
+    clear_env()
+
+    # 12. Neither the token nor the webhook values are ever printed, and the
+    #     notes carry status tokens only.
+    REQUESTS.clear()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        mod.load_webhooks_status()
+    printed = out.getvalue()
+    assert SYNTHETIC_TOKEN not in printed, printed
+    assert SYNTHETIC_URL not in printed, printed
+    assert SYNTHETIC_SECRET not in printed, printed
+
+    # 13. The old vague line is gone, and the provenance line is there.
+    source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+    assert "webhooks skipped: no valid urls/secrets found" not in source, (
+        "the old line reported every failure as missing credentials")
+    assert "webhook credentials:" in source, (
+        "the watcher must log where the credentials came from")
+
+    # 14. The webhook url carries a token in its path, so no log line may
+    #     interpolate a url or a secret.  The secret LENGTH is fine:  it
+    #     says how much was sent without saying what it was.
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if "log(" not in stripped and "print(" not in stripped:
+            continue
+        for banned in ("{url}", "{secret}", "{bf_url}", "{gb_url}", "{bf_secret}", "{gb_secret}"):
+            assert banned not in stripped, f"a log line interpolates {banned}"
+    assert "secret_len={len(secret)}" in source, (
+        "a failed webhook call must log the secret LENGTH, never the secret")
+finally:
+    for key, value in saved_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    server.shutdown()
+    server.server_close()
+    shutil.rmtree(scratch, ignore_errors=True)
+print("webhook credential status behaviour ok")
+PY
 echo OK

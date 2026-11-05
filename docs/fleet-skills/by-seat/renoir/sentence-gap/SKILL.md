@@ -593,10 +593,10 @@ it in a different surface.
 
 The `simple-chat` CLI is already covered: `_scan_refusal` in
 `scripts/agent_sync/cli.py` refuses a secret-shaped body, topic or channel before the post goes
-out.  A `gh pr create --body-file` or `gh pr comment --body-file` relay bypasses that CLI, so the
-scan still has to run *before* the `gh` relay.
+out.  The relay tools `gr_open_pr` and `gr_comment_pr` bypass that CLI, so the
+scan still has to run *before* the relay write.
 
-Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
+Then pass the scanned text to the relay tools `gr_open_pr` or `gr_comment_pr`, or
 `simple-chat post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
 

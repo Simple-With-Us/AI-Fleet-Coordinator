@@ -11,6 +11,10 @@ The token is scoped to /botfleet-housekeeper-webhook alone, so the Grok Bot pair
 Infisical source.  There is no fleet-secrets fallback and no cached copy:  a missing,
 unreadable or wrongly permissive token file, or any Infisical error, yields no webhook.
 BotFleet is the primary wake.  Grok Bot is optional.
+
+The log says where each wake's credentials came from and, when they are missing, WHY
+(AFC-609), so a skipped delivery is never reported as the one vague line that said
+"no valid urls/secrets found" about every different failure.
 """
 
 from __future__ import annotations
@@ -56,6 +60,10 @@ INFISICAL_API = "https://app.infisical.com/api"
 INFISICAL_PROJECT_ID = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
 INFISICAL_ENVIRONMENT = "prod"
 INFISICAL_TIMEOUT = 15
+# One retry, and only for a timeout:  that is the one failure that is the
+# machine being slow rather than the credentials being wrong.  A 404, a 403
+# and a malformed body are NOT retried, because the answer will not change.
+INFISICAL_RETRY_SEC = 2
 CLEANUP = HOME / "apps" / "mac-auto-cleanup.sh"
 JANITOR = HOME / ".claude-disk-janitor" / "janitor.sh"
 # The exit codes that mean the cleanup itself ran.  75 is the cleanup
@@ -247,6 +255,35 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_FILE)
 
 
+def _service_token_status() -> tuple[str, str]:
+    """The scoped read-only Infisical token from its owner-only file, and why.
+
+    Returns (token, status).  The token is "" for every refusal, exactly as
+    before;  the status says WHICH refusal it was -- "no-token" (there is no
+    such file), "token-mode" (the file is not 0600) or "token-unreadable" --
+    because a watcher that skipped its delivery for one of those reasons has
+    to be able to tell the owner which one it was.
+
+    The token value is never printed, logged or echoed.
+    """
+    try:
+        mode = stat.S_IMODE(os.stat(INFISICAL_TOKEN_FILE).st_mode)
+    except FileNotFoundError:
+        return "", "no-token"
+    except OSError:
+        return "", "token-unreadable"
+    if mode != INFISICAL_TOKEN_MODE:
+        return "", "token-mode"
+    try:
+        with open(INFISICAL_TOKEN_FILE, encoding="utf-8") as handle:
+            token = handle.read().strip()
+    except OSError:
+        return "", "token-unreadable"
+    if not token:
+        return "", "no-token"
+    return token, "ok"
+
+
 def _service_token() -> str:
     """The scoped read-only Infisical token from its owner-only file, or "".
 
@@ -254,23 +291,28 @@ def _service_token() -> str:
     and no output:  the watcher then simply has no webhook, which is the
     fail-closed behaviour the scoped migration asks for.  The token value is
     never printed, logged or echoed.
+
+    This is the credential-only view;  `_service_token_status` is the same
+    read with the reason it came back empty.
     """
-    try:
-        mode = stat.S_IMODE(os.stat(INFISICAL_TOKEN_FILE).st_mode)
-    except OSError:
-        return ""
-    if mode != INFISICAL_TOKEN_MODE:
-        return ""
-    try:
-        with open(INFISICAL_TOKEN_FILE, encoding="utf-8") as handle:
-            token = handle.read().strip()
-    except OSError:
-        return ""
-    return token
+    return _service_token_status()[0]
 
 
-def _infisical_get(name: str, folder: str, token: str) -> str:
-    """One Infisical value read with the scoped service token, or "".
+def _infisical_get_status(name: str, folder: str, token: str) -> tuple[str, str]:
+    """One Infisical value read with the scoped service token, and the reason.
+
+    Returns (value, status).  The value is "" for every failure, exactly as
+    it was before;  the status is what says WHICH failure it was, so a
+    skipped delivery can be told apart from a delivery that was refused:
+
+      ok          a 200 with a usable body
+      absent      404 -- the name is not in that folder
+      forbidden   403 -- the token does not cover that folder
+      http-<code> any other non-200
+      timeout     the API did not answer in time
+      unreachable the transport failed
+      truncated   the response was incomplete or malformed
+      bad-output  the body was not the shape this route answers
 
     Reads the v3 raw route, which is the one this deployment answers
     (`/api/v3/secrets/raw/{name}`;  the v1 `/api/v1/secrets` route answers
@@ -280,11 +322,11 @@ def _infisical_get(name: str, folder: str, token: str) -> str:
     status, a transport error or an unparseable body yields "", and there is
     NO fallback to `fleet-secrets`, to the Automation identity or to any other
     credential source (AFC-621).  A token scoped to one folder is refused by
-    Infisical outside that scope, which lands here as a non-200 and yields
+    Infisical outside that scope, which lands here as a 403 and yields
     nothing.  The value is never printed or logged.
     """
     if not token:
-        return ""
+        return "", "no-token"
     query = urllib.parse.urlencode(
         {
             "projectId": INFISICAL_PROJECT_ID,
@@ -297,34 +339,70 @@ def _infisical_get(name: str, folder: str, token: str) -> str:
         url,
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(request, timeout=INFISICAL_TIMEOUT) as response:
-            if response.getcode() != 200:
-                return ""
-            raw = response.read()
-    except urllib.error.HTTPError:
-        return ""
-    except (urllib.error.URLError, OSError):
-        return ""
-    except (http.client.HTTPException, ValueError):
-        #  A truncated or malformed response raises http.client's own
-        #  exceptions (IncompleteRead, BadStatusLine), and those are neither
-        #  OSError nor URLError.  They must fail closed like every other
-        #  transport error: a crashed run would skip save_state() and make
-        #  the next scheduled run repeat the cleanup it already did.
-        return ""
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    # The raw route wraps the secret in a "secret" object;  a bare object is
-    # accepted too so an API shape change cannot silently empty the value.
-    inner = payload.get("secret")
-    secret = inner if isinstance(inner, dict) else payload
-    value = secret.get("secretValue")
-    return value.strip() if isinstance(value, str) else ""
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=INFISICAL_TIMEOUT) as response:
+                if response.getcode() != 200:
+                    return "", f"http-{response.getcode()}"
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            #  A 404 means the name is not in that folder and a 403 means the
+            #  token does not cover it.  They are different problems, and
+            #  only one of them is fixed by changing the token.
+            if exc.code == 404:
+                return "", "absent"
+            if exc.code == 403:
+                return "", "forbidden"
+            return "", f"http-{exc.code}"
+        except urllib.error.URLError as exc:
+            #  urlopen wraps the socket error, so a read that ran out of time
+            #  arrives here carrying a TimeoutError as its reason.
+            if isinstance(exc.reason, (socket.timeout, TimeoutError)):
+                if attempt == 0:
+                    time.sleep(INFISICAL_RETRY_SEC)
+                    continue
+                return "", "timeout"
+            return "", "unreachable"
+        except TimeoutError:
+            if attempt == 0:
+                time.sleep(INFISICAL_RETRY_SEC)
+                continue
+            return "", "timeout"
+        except (http.client.HTTPException, ValueError):
+            #  A truncated or malformed response raises http.client's own
+            #  exceptions (IncompleteRead, BadStatusLine), and those are neither
+            #  OSError nor URLError.  They must fail closed like every other
+            #  transport error: a crashed run would skip save_state() and make
+            #  the next scheduled run repeat the cleanup it already did.
+            return "", "truncated"
+        except OSError:
+            return "", "unreachable"
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return "", "bad-output"
+        if not isinstance(payload, dict):
+            return "", "bad-output"
+        # The raw route wraps the secret in a "secret" object;  a bare object is
+        # accepted too so an API shape change cannot silently empty the value.
+        inner = payload.get("secret")
+        secret = inner if isinstance(inner, dict) else payload
+        value = secret.get("secretValue")
+        if not isinstance(value, str) or not value.strip():
+            return "", "bad-output"
+        return value.strip(), "ok"
+    return "", "timeout"
+
+
+def _infisical_get(name: str, folder: str, token: str) -> str:
+    """One Infisical value read with the scoped service token, or "".
+
+    The credential-only view of `_infisical_get_status`:  the value is "" for
+    every failure, and the reason is dropped.  The watcher itself uses the
+    status form so it can say what went wrong;  this keeps the plain form
+    for a caller that only wants the value.
+    """
+    return _infisical_get_status(name, folder, token)[0]
 
 
 def _env_webhook(url_key: str, secret_key: str) -> tuple[str, str]:
@@ -332,44 +410,89 @@ def _env_webhook(url_key: str, secret_key: str) -> tuple[str, str]:
     return os.environ.get(url_key, "").strip(), os.environ.get(secret_key, "").strip()
 
 
-def _read_webhook(folder: str, url_key: str, secret_key: str) -> tuple[str, str]:
+def _read_webhook_status(folder: str, url_key: str, secret_key: str) -> tuple[str, str, str]:
     """Environment first, then the scoped Infisical service token (folder).
 
     The environment still wins, as before:  the launchd job may inject the
     pair directly, and an injected value is never second-guessed.  Otherwise
     the value comes from Infisical with the scoped token -- and from nowhere
     else.
+
+    Returns (url, secret, status).  The status says where the values came
+    from, or why they are missing:  "env", "ok", "env+infisical", "no-token",
+    "token-mode", "token-unreadable", "absent", "forbidden", "http-<code>",
+    "timeout", "unreachable", "truncated" or "bad-output".
     """
     url, secret = _env_webhook(url_key, secret_key)
     if url and secret:
-        return url, secret
-    token = _service_token()
+        return url, secret, "env"
+    token, token_status = _service_token_status()
     if not token:
-        return url, secret
-    if not url:
-        url = _infisical_get(url_key, folder, token)
-    if not secret:
-        secret = _infisical_get(secret_key, folder, token)
+        return url, secret, token_status
+    sources: list[str] = []
+    if url:
+        sources.append("env")
+    else:
+        url, status = _infisical_get_status(url_key, folder, token)
+        sources.append(status)
+    if secret:
+        sources.append("env")
+    else:
+        secret, status = _infisical_get_status(secret_key, folder, token)
+        sources.append(status)
+    if sources == ["env", "env"]:
+        return url, secret, "env"
+    if sources == ["env", "ok"] or sources == ["ok", "env"]:
+        return url, secret, "env+infisical"
+    if len(set(sources)) == 1:
+        return url, secret, sources[0]
+    return url, secret, "+".join(sources)
+
+
+def _read_webhook(folder: str, url_key: str, secret_key: str) -> tuple[str, str]:
+    """Environment first, then the scoped Infisical service token (folder).
+
+    The credential-only view of `_read_webhook_status`.
+    """
+    url, secret, _status = _read_webhook_status(folder, url_key, secret_key)
     return url, secret
 
 
-def load_webhooks() -> list[tuple[str, str, str]]:
-    """Return list of (name, url, secret).  Never print url/secret."""
+def load_webhooks_status() -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Return (hooks, notes).  Never print url/secret.
+
+    `hooks` is the list of (name, url, secret) the watcher will fire.
+    `notes` says, per wake, where its credentials came from and -- when they
+    are missing -- WHY, so a skipped delivery can be told apart from a
+    delivery that was refused.  The notes carry status tokens only:  no url,
+    no secret and no value of any kind is ever put in them.
+    """
     hooks: list[tuple[str, str, str]] = []
-    bf_url, bf_secret = _read_webhook(
+    notes: list[str] = []
+    bf_url, bf_secret, bf_status = _read_webhook_status(
         BF_SECRET_FOLDER, "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if bf_url and bf_secret:
         hooks.append(("BotFleet", bf_url, bf_secret))
+    notes.append(f"BotFleet={bf_status}")
     # The Grok Bot pair is environment-only:  the service token is scoped to
     # prod:/botfleet-housekeeper-webhook, so there is no Infisical path for
-    # it and no second token is read.
+    # it and no second token is read.  It is optional, so its absence never
+    # blocks the BotFleet wake.
     gb_url, gb_secret = _env_webhook(
         "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if gb_url and gb_secret:
         hooks.append(("GrokBot", gb_url, gb_secret))
-    return hooks
+        notes.append("GrokBot=env")
+    else:
+        notes.append("GrokBot=env-absent")
+    return hooks, notes
+
+
+def load_webhooks() -> list[tuple[str, str, str]]:
+    """Return list of (name, url, secret).  Never print url/secret."""
+    return load_webhooks_status()[0]
 
 
 def _housekeeper_owner_path() -> Path:
@@ -1291,9 +1414,10 @@ def _webhook_started(raw: str, status: int) -> tuple[bool, str]:
 
 
 def fire_webhook(hits: list[dict], sample_data: dict, cleaned: bool) -> bool:
-    hooks = load_webhooks()
+    hooks, notes = load_webhooks_status()
+    log("webhook credentials: " + " ".join(notes))
     if not hooks:
-        log("webhooks skipped: no valid urls/secrets found")
+        log("webhooks skipped: no complete url+secret pair (see the credential line above)")
         return False
     event_name = _event_name(hits)
     payload = {

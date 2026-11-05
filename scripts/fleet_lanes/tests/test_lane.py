@@ -9,6 +9,7 @@ global file, identity in the environment).  The environment given to `lane.main`
 neither the real home nor this process's AGENT_SEAT leaks in.  Nothing here touches the network or
 anything outside the temp directories.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -21,12 +22,13 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import tomllib
 import unittest
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
 from unittest import mock
 
 from fleet_lanes import doctor as D
@@ -35,14 +37,14 @@ from fleet_lanes import layout as L
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2]
 SHIM = SCRIPTS_DIR / "fleet_lanes" / "bin" / "lane"
-NOW = dt.datetime(2026, 10, 7, 16, 15, 0, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 10, 7, 16, 15, 0, tzinfo=dt.UTC)
 
 _APPS = [
     ("DealDex", "DD", "dealdex", "DealDex"),
     ("Socratic-Trade", "ST", "trading", "Socratic-Trade"),
     ("Congress.Trade", "CT", "congress", "Congress.Trade"),
-    ("Alpha", "BT", "alpha", "Alpha"),       # acronym BT ...
-    ("Beta", "BE", "bt", "Beta"),            # ... equals Beta's prefix: "bt" is ambiguous
+    ("Alpha", "BT", "alpha", "Alpha"),  # acronym BT ...
+    ("Beta", "BE", "bt", "Beta"),  # ... equals Beta's prefix: "bt" is ambiguous
 ]
 _SEATS = [
     ("CLAUDE", "claude", ["claude/", "agent/claude"], False),
@@ -54,13 +56,52 @@ _SEATS = [
     ("CURSOR", "cursor", ["cursor/"], False),
     ("GROK-BOT", "cursor", ["cursor/"], False),
     ("MONET", "monet", ["monet/"], True),
-    ("ODD", "odd", ["agent/odd"], False),    # no slash-terminated prefix: cannot name a branch
+    (
+        "ODD",
+        "odd",
+        ["agent/odd"],
+        False,
+    ),  # no slash-terminated prefix: cannot name a branch
 ]
 REGISTRY_DATA = {
     "owner": "Simple-With-Us",
-    "apps": [{"repo": r, "acronym": a, "worktreePrefix": p, "codeDir": c} for r, a, p, c in _APPS],
-    "seats": [{"tag": t, "worktreeSuffix": s, "branchPrefixes": b, **({"retired": True} if ret else {})}
-              for t, s, b, ret in _SEATS],
+    "apps": [
+        {"repo": r, "acronym": a, "worktreePrefix": p, "codeDir": c}
+        for r, a, p, c in _APPS
+    ],
+    "seats": [
+        {
+            "tag": t,
+            "worktreeSuffix": s,
+            "branchPrefixes": b,
+            **({"retired": True} if ret else {}),
+        }
+        for t, s, b, ret in _SEATS
+    ],
+    "seatApps": {
+        "bySeat": {"CLAUDE": "claude-code"},
+        "extraSeats": {},
+        "patterns": [
+            {
+                "match": "BF-*",
+                "app": "botfleet",
+                "lane": {
+                    "roles": ["COMPILER", "FIXER"],
+                    "folderTemplate": "bf-<role>",
+                    "branchTemplate": "bf-<role>/",
+                },
+            },
+            {
+                "match": "GB-*",
+                "app": "grok-bot",
+                "lane": {
+                    "roles": ["COMPILER", "PLUMBER"],
+                    "folderTemplate": "gb-<role>",
+                    "branchTemplate": "gb-<role>/",
+                },
+            },
+        ],
+    },
 }
 REGISTRY = L.parse_registry(REGISTRY_DATA)
 
@@ -69,14 +110,33 @@ REGISTRY = L.parse_registry(REGISTRY_DATA)
 # a pair that differs only in the alias rows, as the real fleet-apps.json does:  the GROK row has aliasPattern
 # and the GROK-BUILD row is retired and aliasOf GROK.  Both carry GROK-WEB, a cloud seat with no branch prefix.
 GROK_ALIAS_PATTERN = r"^grok[^a-z0-9]*build[^a-z0-9]*$"
-GROK_BUILD_MUST = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
-                   "grok/build/", "GrokBuild", "GROK--BUILD!!")
-GROK_BUILD_MUST_NOT = ("GROKBUILDER", "grok-build-bot", "grok2build", "GB-COMPILER", "BF-BUILDER", "Grok (Web/iOS)")
+GROK_BUILD_MUST = (
+    "GROK-BUILD",
+    "Grok-Build",
+    "grok-build",
+    "grok_build",
+    "Grok Build",
+    "GROK.BUILD",
+    "Grok (Build)",
+    "grok/build/",
+    "GrokBuild",
+    "GROK--BUILD!!",
+)
+GROK_BUILD_MUST_NOT = (
+    "GROKBUILDER",
+    "grok-build-bot",
+    "grok2build",
+    "GB-COMPILER",
+    "BF-BUILDER",
+    "Grok (Web/iOS)",
+)
 
 
 def _grok_registry_data(*, alias: bool) -> dict:
     data = copy.deepcopy(REGISTRY_DATA)
-    data["seats"].append({"tag": "GROK-WEB", "worktreeSuffix": "grok-web", "branchPrefixes": []})
+    data["seats"].append(
+        {"tag": "GROK-WEB", "worktreeSuffix": "grok-web", "branchPrefixes": []}
+    )
     if alias:
         for row in data["seats"]:
             if row["tag"] == "GROK":
@@ -85,24 +145,38 @@ def _grok_registry_data(*, alias: bool) -> dict:
                 row.update({"retired": True, "aliasOf": "GROK"})
     return data
 
+
 _HERMETIC = {
-    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C",
-    "GIT_AUTHOR_NAME": "Lane Test", "GIT_AUTHOR_EMAIL": "lane@example.invalid",
-    "GIT_COMMITTER_NAME": "Lane Test", "GIT_COMMITTER_EMAIL": "lane@example.invalid",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "LC_ALL": "C",
+    "GIT_AUTHOR_NAME": "Lane Test",
+    "GIT_AUTHOR_EMAIL": "lane@example.invalid",
+    "GIT_COMMITTER_NAME": "Lane Test",
+    "GIT_COMMITTER_EMAIL": "lane@example.invalid",
 }
 
 # ---- the shared template: a bare origin with main, release and a PR head, built once
 
-_TEMPLATE: Optional[tempfile.TemporaryDirectory] = None
-TEMPLATE_WORLD = ""      # origin/DealDex.git (bare) and home/Code/DealDex (a clone of it), copied per test
-TEMPLATE_URI = ""        # the file URL the template clone's origin points at, rewritten in each copy
-SHAS: Dict[str, str] = {}
+_TEMPLATE: tempfile.TemporaryDirectory | None = None
+TEMPLATE_WORLD = ""  # origin/DealDex.git (bare) and home/Code/DealDex (a clone of it), copied per test
+TEMPLATE_URI = (
+    ""  # the file URL the template clone's origin points at, rewritten in each copy
+)
+SHAS: dict[str, str] = {}
 
 
-def _git(args: List[str], cwd: Optional[str] = None, env: Optional[dict] = None, check: bool = True) -> str:
+def _git(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict | None = None,
+    check: bool = True,
+) -> str:
     full_env = {"PATH": os.environ.get("PATH", ""), **_HERMETIC, **(env or {})}
     full_env.setdefault("HOME", cwd or tempfile.gettempdir())
-    proc = subprocess.run(["git", *args], cwd=cwd, env=full_env, capture_output=True, text=True)
+    proc = subprocess.run(
+        ["git", *args], cwd=cwd, env=full_env, capture_output=True, text=True
+    )
     if check and proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {proc.stderr}")
     return proc.stdout.strip()
@@ -141,7 +215,10 @@ def setUpModule() -> None:
     os.makedirs(os.path.join(world, "home", "Code"))
     shutil.copytree(bare, os.path.join(world, "origin", "DealDex.git"))
     TEMPLATE_URI = Path(os.path.join(world, "origin", "DealDex.git")).as_uri()
-    _git(["clone", "-q", TEMPLATE_URI, os.path.join(world, "home", "Code", "DealDex")], env=env)
+    _git(
+        ["clone", "-q", TEMPLATE_URI, os.path.join(world, "home", "Code", "DealDex")],
+        env=env,
+    )
     TEMPLATE_WORLD = world
 
 
@@ -152,7 +229,8 @@ def tearDownModule() -> None:
 
 # ---- helpers
 
-def tree_hash(root: "str | Path", skip: "tuple[str | Path, ...]" = ()) -> str:
+
+def tree_hash(root: str | Path, skip: tuple[str | Path, ...] = ()) -> str:
     """A digest of every path, link target and file content under root, except the skipped trees."""
     h = hashlib.sha256()
     skips = [os.path.realpath(s) for s in skip]
@@ -162,39 +240,57 @@ def tree_hash(root: "str | Path", skip: "tuple[str | Path, ...]" = ()) -> str:
             dirnames[:] = []
             continue
         h.update(("D:" + os.path.relpath(dirpath, root) + "\n").encode())
-        for name in sorted(filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]):
+        for name in sorted(
+            filenames
+            + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]
+        ):
             p = os.path.join(dirpath, name)
             rel = os.path.relpath(p, root)
             if os.path.islink(p):
                 h.update(f"L:{rel}>{os.readlink(p)}\n".encode())
             else:
                 with open(p, "rb") as fh:
-                    h.update(f"F:{rel}:{os.stat(p).st_mode}:".encode() + hashlib.sha256(fh.read()).digest())
+                    h.update(
+                        f"F:{rel}:{os.stat(p).st_mode}:".encode()
+                        + hashlib.sha256(fh.read()).digest()
+                    )
     return h.hexdigest()
 
 
 class Result:
-    def __init__(self, rc: int, out: str, err: str, calls: List[List[str]]) -> None:
+    def __init__(self, rc: int, out: str, err: str, calls: list[list[str]]) -> None:
         self.rc, self.out, self.err, self.calls = rc, out, err, calls
 
     @property
-    def verbs(self) -> List[tuple]:
+    def verbs(self) -> list[tuple]:
         """The git or gh calls, without lane's global git flags."""
         return [tuple(c[4:]) if c[0] == "git" else tuple(c) for c in self.calls]
 
     def has(self, *prefix: str) -> bool:
-        return any(v[:len(prefix)] == prefix for v in self.verbs)
+        return any(v[: len(prefix)] == prefix for v in self.verbs)
 
     def json(self) -> dict:
         return json.loads(self.out)
 
 
-def gh_pr_json(sha: Optional[str] = None, state: str = "OPEN", ref: str = "feature/pr-work") -> D.CmdResult:
-    return D.CmdResult(0, json.dumps({"headRefOid": sha or SHAS["pr"], "headRefName": ref, "state": state,
-                                      "isCrossRepository": False}), "")
+def gh_pr_json(
+    sha: str | None = None, state: str = "OPEN", ref: str = "feature/pr-work"
+) -> D.CmdResult:
+    return D.CmdResult(
+        0,
+        json.dumps(
+            {
+                "headRefOid": sha or SHAS["pr"],
+                "headRefName": ref,
+                "state": state,
+                "isCrossRepository": False,
+            }
+        ),
+        "",
+    )
 
 
-class World(object):
+class World:
     """A fake home with ~/apps and ~/Code/DealDex (a clone of a local bare origin), copied from a template."""
 
     def __init__(self, case: unittest.TestCase) -> None:
@@ -207,33 +303,50 @@ class World(object):
         self.registry_path = self.root / "fleet-apps.json"
         shutil.copytree(TEMPLATE_WORLD, self.root, symlinks=True, dirs_exist_ok=True)
         config = self.tree / ".git" / "config"
-        config.write_text(config.read_text(encoding="utf-8").replace(TEMPLATE_URI, self.origin.as_uri()),
-                          encoding="utf-8")
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                TEMPLATE_URI, self.origin.as_uri()
+            ),
+            encoding="utf-8",
+        )
         self.registry_path.write_text(json.dumps(REGISTRY_DATA), encoding="utf-8")
-        self.env: Dict[str, str] = {
-            "PATH": os.environ.get("PATH", ""), "HOME": str(self.home), "XDG_CONFIG_HOME": str(self.home / ".config"),
-            **_HERMETIC, "FLEET_APPS_JSON": str(self.registry_path), "AGENT_SEAT": "CLAUDE",
+        self.env: dict[str, str] = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(self.home),
+            "XDG_CONFIG_HOME": str(self.home / ".config"),
+            **_HERMETIC,
+            "FLEET_APPS_JSON": str(self.registry_path),
+            "AGENT_SEAT": "CLAUDE",
         }
-        self.gh: Callable[[List[str]], D.CmdResult] = lambda argv: gh_pr_json()
+        self.gh: Callable[[list[str]], D.CmdResult] = lambda argv: gh_pr_json()
         self.roots = L.make_roots(self.home, self.env, registry=REGISTRY)
 
     # git against the fake world, hermetic
-    def git(self, args: List[str], cwd: "Optional[Path | str]" = None, check: bool = True) -> str:
+    def git(
+        self, args: list[str], cwd: Path | str | None = None, check: bool = True
+    ) -> str:
         return _git(args, cwd=str(cwd) if cwd else None, env=self.env, check=check)
 
-    def lane(self, *argv: str, env: Optional[dict] = None, clock: Optional[Callable[[], dt.datetime]] = None,
-             gh: Optional[Callable[[List[str]], D.CmdResult]] = None,
-             exec_override: Optional[Callable[[List[str]], Optional[D.CmdResult]]] = None) -> Result:
+    def lane(
+        self,
+        *argv: str,
+        env: dict | None = None,
+        clock: Callable[[], dt.datetime] | None = None,
+        gh: Callable[[list[str]], D.CmdResult] | None = None,
+        exec_override: Callable[[list[str]], D.CmdResult | None] | None = None,
+    ) -> Result:
         full_env = dict(self.env)
         for k, v in (env or {}).items():
             if v is None:
                 full_env.pop(k, None)
             else:
                 full_env[k] = v
-        calls: List[List[str]] = []
+        calls: list[list[str]] = []
         answer_gh = gh or self.gh
 
-        def exec_fn(argv_: List[str], cwd: Optional[str], child_env: dict, timeout: float) -> D.CmdResult:
+        def exec_fn(
+            argv_: list[str], cwd: str | None, child_env: dict, timeout: float
+        ) -> D.CmdResult:
             calls.append(list(argv_))
             if exec_override is not None:
                 forced = exec_override(list(argv_))
@@ -244,20 +357,48 @@ class World(object):
             return K.default_exec(argv_, cwd, child_env, timeout)
 
         out, err = io.StringIO(), io.StringIO()
-        rc = K.main(list(argv), env=full_env, clock=clock or (lambda: NOW), exec_fn=exec_fn, stdout=out, stderr=err)
+        rc = K.main(
+            list(argv),
+            env=full_env,
+            clock=clock or (lambda: NOW),
+            exec_fn=exec_fn,
+            stdout=out,
+            stderr=err,
+        )
         return Result(rc, out.getvalue(), err.getvalue(), calls)
 
-    def lane_path(self, slug: str = "fix-thing", repo: str = "DealDex", seat: str = "claude") -> Path:
+    def lane_path(
+        self, slug: str = "fix-thing", repo: str = "DealDex", seat: str = "claude"
+    ) -> Path:
         return self.roots.lanes_root / repo / f"{seat}-{slug}"
 
-    def review_path(self, pr: int = 7, seat: "Optional[str]" = None, repo: str = "DealDex") -> Path:
+    def review_path(
+        self, pr: int = 7, seat: str | None = None, repo: str = "DealDex"
+    ) -> Path:
         """lanes/<Repo>/review-pr-<n>, or review-pr-<n>-<seat> for the second seat on that PR."""
-        return self.roots.lanes_root / repo / (f"review-pr-{pr}" + (f"-{seat}" if seat else ""))
+        return (
+            self.roots.lanes_root
+            / repo
+            / (f"review-pr-{pr}" + (f"-{seat}" if seat else ""))
+        )
 
     def advance_origin(self, branch: str = "main") -> str:
         git_dir = str(self.origin)
-        tree = self.git(["--git-dir", git_dir, "rev-parse", f"refs/heads/{branch}^{{tree}}"])
-        new = self.git(["--git-dir", git_dir, "commit-tree", tree, "-p", f"refs/heads/{branch}", "-m", "advance"])
+        tree = self.git(
+            ["--git-dir", git_dir, "rev-parse", f"refs/heads/{branch}^{{tree}}"]
+        )
+        new = self.git(
+            [
+                "--git-dir",
+                git_dir,
+                "commit-tree",
+                tree,
+                "-p",
+                f"refs/heads/{branch}",
+                "-m",
+                "advance",
+            ]
+        )
         self.git(["--git-dir", git_dir, "update-ref", f"refs/heads/{branch}", new])
         return new
 
@@ -275,11 +416,12 @@ class WorldCase(unittest.TestCase):
 
 # --------------------------------------------------------------------------- the allowlist
 
+
 class AllowlistTests(unittest.TestCase):
     ROOT = "/fleet-lane-test/apps/lanes"  # a path that does not exist, so no real symlink on this host changes the answer
     SHA = "a" * 40
 
-    def check(self, argv: List[str], root: Optional[str] = ROOT) -> None:
+    def check(self, argv: list[str], root: str | None = ROOT) -> None:
         K.check_allowed(argv, write_root=root)
 
     def test_every_allowed_shape(self) -> None:
@@ -301,11 +443,34 @@ class AllowlistTests(unittest.TestCase):
             ["git", "rev-parse", "--verify", "HEAD"],
             ["git", "show-ref", "--verify", "--quiet", "refs/heads/claude/x"],
             ["git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"],
-            ["git", "for-each-ref", "--format=%(refname)", "refs/heads/claude/x", "refs/remotes/origin/claude/x"],
+            [
+                "git",
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/claude/x",
+                "refs/remotes/origin/claude/x",
+            ],
             ["git", "config", "--get", "remote.origin.url"],
-            ["gh", "pr", "view", "7", "--repo", "Simple-With-Us/DealDex", "--json",
-             "headRefOid,headRefName,state,isCrossRepository"],
-            ["gh", "pr", "view", "7", "--json", "headRefOid", "--repo", "Simple-With-Us/DealDex"],
+            [
+                "gh",
+                "pr",
+                "view",
+                "7",
+                "--repo",
+                "Simple-With-Us/DealDex",
+                "--json",
+                "headRefOid,headRefName,state,isCrossRepository",
+            ],
+            [
+                "gh",
+                "pr",
+                "view",
+                "7",
+                "--json",
+                "headRefOid",
+                "--repo",
+                "Simple-With-Us/DealDex",
+            ],
         ]
         for argv in allowed:
             with self.subTest(argv=argv):
@@ -314,24 +479,58 @@ class AllowlistTests(unittest.TestCase):
     def test_refused_commands(self) -> None:
         dest = self.ROOT + "/dealdex/claude-x"
         refused = [
-            [], [""], ["git"], ["git", ""], ["/usr/bin/git", "status"], ["bash", "-c", "true"], ["rm", "-rf", dest],
-            ["git", "status"], ["git", "diff"], ["git", "log", "-1"], ["git", "checkout", "main"],
-            ["git", "switch", "-c", "x"], ["git", "reset", "--hard", "origin/main"], ["git", "clean", "-fd"],
-            ["git", "stash"], ["git", "gc"], ["git", "push", "origin", "main"], ["git", "push", "--force"],
-            ["git", "pull"], ["git", "merge", "origin/main"], ["git", "rebase", "main"],
-            ["git", "branch", "-D", "claude/x"], ["git", "branch", "--show-current"],
-            ["git", "remote", "add", "x", "/tmp/y"], ["git", "clone", "x", dest], ["git", "init", dest],
-            ["git", "-C", "/tmp/x", "status"], ["git", "--git-dir=/tmp/x", "fetch"],
-            ["git", "update-ref", "-d", "refs/heads/main"], ["git", "worktree", "prune"],
-            ["git", "worktree", "remove", dest], ["git", "worktree", "remove", "--force", dest],
-            ["git", "worktree", "move", dest, "/tmp/x"], ["git", "worktree", "lock", dest],
-            ["git", "worktree", "repair"], ["git", "worktree", "list"],
+            [],
+            [""],
+            ["git"],
+            ["git", ""],
+            ["/usr/bin/git", "status"],
+            ["bash", "-c", "true"],
+            ["rm", "-rf", dest],
+            ["git", "status"],
+            ["git", "diff"],
+            ["git", "log", "-1"],
+            ["git", "checkout", "main"],
+            ["git", "switch", "-c", "x"],
+            ["git", "reset", "--hard", "origin/main"],
+            ["git", "clean", "-fd"],
+            ["git", "stash"],
+            ["git", "gc"],
+            ["git", "push", "origin", "main"],
+            ["git", "push", "--force"],
+            ["git", "pull"],
+            ["git", "merge", "origin/main"],
+            ["git", "rebase", "main"],
+            ["git", "branch", "-D", "claude/x"],
+            ["git", "branch", "--show-current"],
+            ["git", "remote", "add", "x", "/tmp/y"],
+            ["git", "clone", "x", dest],
+            ["git", "init", dest],
+            ["git", "-C", "/tmp/x", "status"],
+            ["git", "--git-dir=/tmp/x", "fetch"],
+            ["git", "update-ref", "-d", "refs/heads/main"],
+            ["git", "worktree", "prune"],
+            ["git", "worktree", "remove", dest],
+            ["git", "worktree", "remove", "--force", dest],
+            ["git", "worktree", "move", dest, "/tmp/x"],
+            ["git", "worktree", "lock", dest],
+            ["git", "worktree", "repair"],
+            ["git", "worktree", "list"],
             ["git", "worktree", "list", "--porcelain", "-z"],
-            ["git", "worktree", "add", "-f", dest, "claude/x"], ["git", "worktree", "add", "--force", dest, "claude/x"],
+            ["git", "worktree", "add", "-f", dest, "claude/x"],
+            ["git", "worktree", "add", "--force", dest, "claude/x"],
             ["git", "worktree", "add", "-B", "claude/x", dest, self.SHA],
-            ["git", "worktree", "add", "--orphan", "x", dest], ["git", "worktree", "add", "--lock", dest, "x"],
+            ["git", "worktree", "add", "--orphan", "x", dest],
+            ["git", "worktree", "add", "--lock", dest, "x"],
             ["git", "worktree", "add", "--no-checkout", dest, "claude/x"],
-            ["git", "worktree", "add", "-b", "claude/x", dest, "origin/main"],      # a start point must be a sha
+            [
+                "git",
+                "worktree",
+                "add",
+                "-b",
+                "claude/x",
+                dest,
+                "origin/main",
+            ],  # a start point must be a sha
             ["git", "worktree", "add", "-b", "claude/x", dest],
             ["git", "worktree", "add", "-b", "-x", dest, self.SHA],
             ["git", "worktree", "add", "-b", "claude/x", "relative/path", self.SHA],
@@ -339,34 +538,57 @@ class AllowlistTests(unittest.TestCase):
             ["git", "worktree", "add", "--detach", dest, "origin/main"],
             ["git", "worktree", "add", "--detach", dest, "HEAD"],
             ["git", "worktree", "add", dest],
-            ["git", "fetch"], ["git", "fetch", "origin"], ["git", "fetch", "origin", "main"],
-            ["git", "fetch", "--no-tags", "origin"], ["git", "fetch", "--no-tags", "upstream", "main"],
-            ["git", "fetch", "--no-tags", "origin", "main:main"], ["git", "fetch", "--no-tags", "origin", "+main"],
+            ["git", "fetch"],
+            ["git", "fetch", "origin"],
+            ["git", "fetch", "origin", "main"],
+            ["git", "fetch", "--no-tags", "origin"],
+            ["git", "fetch", "--no-tags", "upstream", "main"],
+            ["git", "fetch", "--no-tags", "origin", "main:main"],
+            ["git", "fetch", "--no-tags", "origin", "+main"],
             ["git", "fetch", "--no-tags", "origin", "main:refs/heads/main"],
             ["git", "fetch", "--no-tags", "origin", "--upload-pack=/tmp/x"],
-            ["git", "fetch", "--no-tags", "origin", "-f"], ["git", "fetch", "--no-tags", "origin", "--all"],
+            ["git", "fetch", "--no-tags", "origin", "-f"],
+            ["git", "fetch", "--no-tags", "origin", "--all"],
             ["git", "fetch", "--no-tags", "--force", "origin", "main"],
             ["git", "fetch", "--no-tags", "origin", "main", "release"],
             ["git", "fetch", "--no-tags", "https://example.invalid/r.git", "main"],
-            ["git", "fetch", "--no-tags", "origin", "a..b"], ["git", "fetch", "--no-tags", "origin", "a b"],
-            ["git", "fetch", "--no-tags", "origin", "x\ny"], ["git", "fetch", "--no-tags", "origin", "/abs"],
-            ["git", "fetch", "--no-tags", "origin", "x.lock"], ["git", "fetch", "--no-tags", "origin", "$(id)"],
-            ["git", "rev-parse", "HEAD"], ["git", "rev-parse", "--verify"], ["git", "rev-parse", "--verify", "-x", "HEAD"],
-            ["git", "rev-parse", "--verify", "-q", "-q", "HEAD"], ["git", "rev-parse", "--git-dir", "--foo"],
-            ["git", "rev-parse", "--verify", "a..b"], ["git", "rev-parse", "--verify", "HEAD~3"],
-            ["git", "rev-parse", "--verify", "--output=x"], ["git", "rev-parse", "--is-inside-work-tree"],
-            ["git", "show-ref"], ["git", "show-ref", "--verify", "refs/heads/x"],
-            ["git", "show-ref", "--verify", "--quiet", "HEAD"], ["git", "show-ref", "--verify", "--quiet", "refs/tags/v1"],
+            ["git", "fetch", "--no-tags", "origin", "a..b"],
+            ["git", "fetch", "--no-tags", "origin", "a b"],
+            ["git", "fetch", "--no-tags", "origin", "x\ny"],
+            ["git", "fetch", "--no-tags", "origin", "/abs"],
+            ["git", "fetch", "--no-tags", "origin", "x.lock"],
+            ["git", "fetch", "--no-tags", "origin", "$(id)"],
+            ["git", "rev-parse", "HEAD"],
+            ["git", "rev-parse", "--verify"],
+            ["git", "rev-parse", "--verify", "-x", "HEAD"],
+            ["git", "rev-parse", "--verify", "-q", "-q", "HEAD"],
+            ["git", "rev-parse", "--git-dir", "--foo"],
+            ["git", "rev-parse", "--verify", "a..b"],
+            ["git", "rev-parse", "--verify", "HEAD~3"],
+            ["git", "rev-parse", "--verify", "--output=x"],
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            ["git", "show-ref"],
+            ["git", "show-ref", "--verify", "refs/heads/x"],
+            ["git", "show-ref", "--verify", "--quiet", "HEAD"],
+            ["git", "show-ref", "--verify", "--quiet", "refs/tags/v1"],
             ["git", "show-ref", "--verify", "--quiet", "refs/heads/../x"],
-            ["git", "for-each-ref"], ["git", "for-each-ref", "--format=%(refname)"],
+            ["git", "for-each-ref"],
+            ["git", "for-each-ref", "--format=%(refname)"],
             ["git", "for-each-ref", "--format=%(objectname)", "refs/heads/x"],
             ["git", "for-each-ref", "--format=%(refname)", "refs/tags/x"],
             ["git", "for-each-ref", "--format=%(refname)", "--sort=-x", "refs/heads/x"],
-            ["git", "config", "--get", "user.name"], ["git", "config", "--get", "remote.origin.pushurl"],
-            ["git", "config", "--unset", "remote.origin.url"], ["git", "config", "remote.origin.url", "x"],
-            ["git", "config", "--get-all", "remote.origin.url"], ["git", "config", "--list"],
-            ["gh"], ["gh", "pr", "view"], ["gh", "pr", "view", "7"], ["gh", "pr", "list", "--repo", "a/b"],
-            ["gh", "pr", "merge", "7", "--repo", "a/b", "--json", "state"], ["gh", "pr", "checkout", "7"],
+            ["git", "config", "--get", "user.name"],
+            ["git", "config", "--get", "remote.origin.pushurl"],
+            ["git", "config", "--unset", "remote.origin.url"],
+            ["git", "config", "remote.origin.url", "x"],
+            ["git", "config", "--get-all", "remote.origin.url"],
+            ["git", "config", "--list"],
+            ["gh"],
+            ["gh", "pr", "view"],
+            ["gh", "pr", "view", "7"],
+            ["gh", "pr", "list", "--repo", "a/b"],
+            ["gh", "pr", "merge", "7", "--repo", "a/b", "--json", "state"],
+            ["gh", "pr", "checkout", "7"],
             ["gh", "pr", "view", "7", "--repo", "a/b", "--json", "state", "--web"],
             ["gh", "pr", "view", "7", "--repo", "a/b", "--json", "body"],
             ["gh", "pr", "view", "7", "--repo", "a/b", "--json", "state,state"],
@@ -377,7 +599,9 @@ class AllowlistTests(unittest.TestCase):
             ["gh", "pr", "view", "7", "--repo", "a b", "--json", "state"],
             ["gh", "pr", "view", "7", "--repo", "ab", "--json", "state"],
             ["gh", "pr", "view", "7", "--repo", "a/b", "--repo", "c/d"],
-            ["gh", "api", "repos/a/b"], ["gh", "repo", "clone", "a/b"], ["gh", "auth", "token"],
+            ["gh", "api", "repos/a/b"],
+            ["gh", "repo", "clone", "a/b"],
+            ["gh", "auth", "token"],
         ]
         for argv in refused:
             with self.subTest(argv=argv):
@@ -385,32 +609,86 @@ class AllowlistTests(unittest.TestCase):
                     self.check(argv)
 
     def test_non_string_and_nul_are_refused(self) -> None:
-        for argv in (["git", None], ["git", 5], ["git", "fetch\x00", "--no-tags", "origin", "main"]):
+        for argv in (
+            ["git", None],
+            ["git", 5],
+            ["git", "fetch\x00", "--no-tags", "origin", "main"],
+        ):
             with self.subTest(argv=argv):
                 with self.assertRaises(K.CommandRefused):
                     self.check(argv)  # type: ignore[arg-type]
 
-    def test_worktree_add_destination_must_be_strictly_inside_the_write_root(self) -> None:
+    def test_worktree_add_destination_must_be_strictly_inside_the_write_root(
+        self,
+    ) -> None:
         sha = self.SHA
         with self.assertRaises(K.CommandRefused):
-            self.check(["git", "worktree", "add", "-b", "claude/x", self.ROOT, sha])        # the root itself
+            self.check(
+                ["git", "worktree", "add", "-b", "claude/x", self.ROOT, sha]
+            )  # the root itself
         with self.assertRaises(K.CommandRefused):
-            self.check(["git", "worktree", "add", "-b", "claude/x", "/Users/jay/Code/DealDex-x", sha])
+            self.check(
+                [
+                    "git",
+                    "worktree",
+                    "add",
+                    "-b",
+                    "claude/x",
+                    "/Users/jay/Code/DealDex-x",
+                    sha,
+                ]
+            )
         with self.assertRaises(K.CommandRefused):
-            self.check(["git", "worktree", "add", "-b", "claude/x", self.ROOT + "-evil/x", sha])  # prefix trick
+            self.check(
+                ["git", "worktree", "add", "-b", "claude/x", self.ROOT + "-evil/x", sha]
+            )  # prefix trick
         with self.assertRaises(K.CommandRefused):
-            self.check(["git", "worktree", "add", "-b", "claude/x", self.ROOT + "/../x", sha])
+            self.check(
+                ["git", "worktree", "add", "-b", "claude/x", self.ROOT + "/../x", sha]
+            )
         with self.assertRaises(K.CommandRefused):
-            self.check(["git", "worktree", "add", "-b", "claude/x", self.ROOT + "/dealdex/claude-x", sha], root=None)
+            self.check(
+                [
+                    "git",
+                    "worktree",
+                    "add",
+                    "-b",
+                    "claude/x",
+                    self.ROOT + "/dealdex/claude-x",
+                    sha,
+                ],
+                root=None,
+            )
 
-    def test_worktree_add_destination_through_a_symlink_is_judged_by_its_real_path(self) -> None:
+    def test_worktree_add_destination_through_a_symlink_is_judged_by_its_real_path(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(prefix="lane-test-") as tmp:
-            root, outside = Path(os.path.realpath(tmp)) / "lanes", Path(os.path.realpath(tmp)) / "outside"
+            root, outside = (
+                Path(os.path.realpath(tmp)) / "lanes",
+                Path(os.path.realpath(tmp)) / "outside",
+            )
             (root / "dealdex").mkdir(parents=True)
             outside.mkdir()
             os.symlink(outside, root / "evil")
-            ok = ["git", "worktree", "add", "-b", "claude/x", str(root / "dealdex" / "claude-x"), self.SHA]
-            bad = ["git", "worktree", "add", "-b", "claude/x", str(root / "evil" / "claude-x"), self.SHA]
+            ok = [
+                "git",
+                "worktree",
+                "add",
+                "-b",
+                "claude/x",
+                str(root / "dealdex" / "claude-x"),
+                self.SHA,
+            ]
+            bad = [
+                "git",
+                "worktree",
+                "add",
+                "-b",
+                "claude/x",
+                str(root / "evil" / "claude-x"),
+                self.SHA,
+            ]
             K.check_allowed(ok, write_root=root)
             with self.assertRaises(K.CommandRefused):
                 K.check_allowed(bad, write_root=root)
@@ -420,55 +698,284 @@ class AllowlistTests(unittest.TestCase):
         K.check_allowed(argv, write_root=self.ROOT, fold=str.casefold)
 
     def test_valid_ref_name(self) -> None:
-        for ok in ("main", "claude/fix-thing", "release/1.2", "pull/7/head", "a_b", "feature/x.y"):
+        for ok in (
+            "main",
+            "claude/fix-thing",
+            "release/1.2",
+            "pull/7/head",
+            "a_b",
+            "feature/x.y",
+        ):
             self.assertTrue(K.valid_ref_name(ok), ok)
-        for bad in ("", "-x", "/x", "x/", "x//y", "a..b", "a b", "a:b", "+a", "a~1", "a^", "a*", "a?", "a[", "a\\b",
-                    "a.", ".hidden", "a/.b", "a.lock", "a/b.lock", "x" * 201, "a\nb", "a@{1}", None, 5):
+        for bad in (
+            "",
+            "-x",
+            "/x",
+            "x/",
+            "x//y",
+            "a..b",
+            "a b",
+            "a:b",
+            "+a",
+            "a~1",
+            "a^",
+            "a*",
+            "a?",
+            "a[",
+            "a\\b",
+            "a.",
+            ".hidden",
+            "a/.b",
+            "a.lock",
+            "a/b.lock",
+            "x" * 201,
+            "a\nb",
+            "a@{1}",
+            None,
+            5,
+        ):
             self.assertFalse(K.valid_ref_name(bad), repr(bad))
 
 
 class RunnerTests(unittest.TestCase):
     def test_a_refused_command_never_reaches_the_process_starter(self) -> None:
-        started: List[list] = []
-        run = K.Runner({"PATH": "/usr/bin"}, exec_fn=lambda *a: started.append(list(a)) or D.CmdResult(0))
-        for argv in (["git", "push"], ["git", "worktree", "remove", "/x"], ["rm", "-rf", "/"]):
+        started: list[list] = []
+        run = K.Runner(
+            {"PATH": "/usr/bin"},
+            exec_fn=lambda *a: started.append(list(a)) or D.CmdResult(0),
+        )
+        for argv in (
+            ["git", "push"],
+            ["git", "worktree", "remove", "/x"],
+            ["rm", "-rf", "/"],
+        ):
             with self.assertRaises(K.CommandRefused):
                 run(argv)
         self.assertEqual(started, [])
 
     def test_git_gets_global_flags_and_a_clean_environment(self) -> None:
-        seen: Dict[str, object] = {}
+        seen: dict[str, object] = {}
 
         def exec_fn(argv, cwd, env, timeout):
             seen.update(argv=list(argv), cwd=cwd, env=dict(env), timeout=timeout)
             return D.CmdResult(0, "")
 
-        base = {"PATH": "/usr/bin", "GIT_DIR": "/elsewhere/.git", "GIT_INDEX_FILE": "/x/index", "GIT_WORK_TREE": "/w",
-                "GIT_COMMON_DIR": "/c", "GIT_OBJECT_DIRECTORY": "/o", "AGENT_SEAT": "CLAUDE"}
-        K.Runner(base, exec_fn=exec_fn)(["git", "fetch", "--no-tags", "origin", "main"], cwd="/tree")
-        self.assertEqual(seen["argv"], ["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
-                                        "fetch", "--no-tags", "origin", "main"])
+        base = {
+            "PATH": "/usr/bin",
+            "GIT_DIR": "/elsewhere/.git",
+            "GIT_INDEX_FILE": "/x/index",
+            "GIT_WORK_TREE": "/w",
+            "GIT_COMMON_DIR": "/c",
+            "GIT_OBJECT_DIRECTORY": "/o",
+            "AGENT_SEAT": "CLAUDE",
+        }
+        K.Runner(base, exec_fn=exec_fn)(
+            ["git", "fetch", "--no-tags", "origin", "main"], cwd="/tree"
+        )
+        self.assertEqual(
+            seen["argv"],
+            [
+                "git",
+                "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
+                "fetch",
+                "--no-tags",
+                "origin",
+                "main",
+            ],
+        )
         self.assertEqual(seen["cwd"], "/tree")
         env = seen["env"]
-        for name in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"):
+        for name in (
+            "GIT_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+        ):
             self.assertNotIn(name, env)
         self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(env["LC_ALL"], "C")
-        self.assertEqual(seen["timeout"], 300.0)       # fetch gets a long cap
+        self.assertEqual(seen["timeout"], 300.0)  # fetch gets a long cap
         K.Runner(base, exec_fn=exec_fn)(["git", "rev-parse", "--git-dir"])
         self.assertEqual(seen["timeout"], 30.0)
-        K.Runner(base, exec_fn=exec_fn)(["gh", "pr", "view", "7", "--repo", "a/b", "--json", "state"])
+        K.Runner(base, exec_fn=exec_fn)(
+            ["gh", "pr", "view", "7", "--repo", "a/b", "--json", "state"]
+        )
         self.assertEqual(seen["argv"][0], "gh")
         self.assertEqual(seen["timeout"], 60.0)
 
     def test_the_default_starter_reports_a_missing_program_and_a_timeout(self) -> None:
-        self.assertFalse(K.default_exec(["definitely-not-a-program-xyz"], None, {"PATH": "/usr/bin"}, 5).ok)
-        res = K.default_exec(["sleep", "30"], None, {"PATH": os.environ.get("PATH", "")}, 0.3)
+        self.assertFalse(
+            K.default_exec(
+                ["definitely-not-a-program-xyz"], None, {"PATH": "/usr/bin"}, 5
+            ).ok
+        )
+        res = K.default_exec(
+            ["sleep", "30"], None, {"PATH": os.environ.get("PATH", "")}, 0.3
+        )
         self.assertTrue(res.timed_out)
         self.assertFalse(res.ok)
 
 
 # --------------------------------------------------------------------------- inputs
+
+
+class RoleLaneResolveTests(unittest.TestCase):
+    """AFC-620:  a BF-<ROLE> or GB-<ROLE> AGENT_SEAT resolves from the family's seatApps.patterns
+    `lane` block - folder bf-/gb-<role>, branch prefix bf-/gb-<role>/ - without a seats row.
+    resolve_seat reads only the registry it is given (REGISTRY carries the lane blocks)."""
+
+    def test_a_listed_role_resolves_to_its_lane(self) -> None:
+        seat = K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, REGISTRY)
+        self.assertEqual(
+            (seat.name, seat.suffix, seat.branch_prefixes),
+            ("BF-FIXER", "bf-fixer", ("bf-fixer/",)),
+        )
+
+    def test_the_role_tag_is_case_insensitive(self) -> None:
+        seat = K.resolve_seat({"AGENT_SEAT": "gb-plumber"}, REGISTRY)
+        self.assertEqual((seat.name, seat.suffix), ("GB-PLUMBER", "gb-plumber"))
+
+    def test_an_unlisted_role_is_refused_with_the_known_roles(self) -> None:
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "BF-ORACLE"}, REGISTRY)
+        msg = str(ctx.exception)
+        self.assertIn("no known role", msg)
+        self.assertIn("COMPILER", msg)
+        self.assertIn("FIXER", msg)
+
+    def test_a_seat_row_still_wins_over_a_pattern(self) -> None:
+        seat = K.resolve_seat({"AGENT_SEAT": "CLAUDE"}, REGISTRY)
+        self.assertEqual(seat.suffix, "claude")
+
+    def test_a_role_folder_owned_by_a_seat_is_refused(self) -> None:
+        data = copy.deepcopy(REGISTRY_DATA)
+        data["seats"].append(
+            {
+                "tag": "SQUATTER",
+                "worktreeSuffix": "bf-fixer",
+                "branchPrefixes": ["squatter/"],
+            }
+        )
+        registry = L.parse_registry(data)
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, registry)
+        self.assertIn("SQUATTER", str(ctx.exception))
+
+    def test_a_role_branch_prefix_colliding_with_a_seat_is_refused(self) -> None:
+        data = copy.deepcopy(REGISTRY_DATA)
+        data["seats"].append(
+            {
+                "tag": "SQUATTER",
+                "worktreeSuffix": "squatter",
+                "branchPrefixes": ["bf-fixer/"],
+            }
+        )
+        registry = L.parse_registry(data)
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, registry)
+        self.assertIn("branch prefix", str(ctx.exception))
+
+    def test_a_launchers_seat_wins_and_a_conflict_is_refused(self) -> None:
+        env = {
+            "AGENT_LAUNCHER": "botfleet",
+            "AGENT_LAUNCH_SEAT": "BF-FIXER",
+            "AGENT_SEAT": "BF-DEPLOYER",
+        }
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat(env, REGISTRY)
+        self.assertIn("botfleet", str(ctx.exception))
+        self.assertIn("BF-FIXER", str(ctx.exception))
+
+    def test_a_launch_seat_alone_is_enough(self) -> None:
+        seat = K.resolve_seat(
+            {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER"}, REGISTRY
+        )
+        self.assertEqual((seat.name, seat.suffix), ("BF-FIXER", "bf-fixer"))
+
+    def test_a_launch_seat_matching_agent_seat_is_no_conflict(self) -> None:
+        seat = K.resolve_seat(
+            {
+                "AGENT_LAUNCHER": "botfleet",
+                "AGENT_LAUNCH_SEAT": "BF-FIXER",
+                "AGENT_SEAT": "bf-fixer",
+            },
+            REGISTRY,
+        )
+        self.assertEqual(seat.name, "BF-FIXER")
+
+    def test_a_launcher_without_a_seat_assignment_is_refused(self) -> None:
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_LAUNCHER": "botfleet"}, REGISTRY)
+        self.assertIn("no seat assigned", str(ctx.exception))
+
+    def test_a_launch_seat_can_name_an_ordinary_seat_row(self) -> None:
+        seat = K.resolve_seat(
+            {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "CLAUDE"}, REGISTRY
+        )
+        self.assertEqual(seat.suffix, "claude")
+
+    def test_an_unknown_tag_keeps_the_old_refusal(self) -> None:
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "NOPE-1"}, REGISTRY)
+        self.assertIn("not a seat tag", str(ctx.exception))
+
+
+class RoleLaneStandaloneTests(unittest.TestCase):
+    """The installed standalone lane copy ships no agent_sync (AFC-620):  role resolution reads
+    layout's parsed role_lanes, and the launcher contract is applied from the environment alone."""
+
+    def _no_agent_sync(self):
+        return mock.patch.dict(
+            sys.modules, {"agent_sync": None, "agent_sync.identity": None}
+        )
+
+    def test_a_role_resolves_without_agent_sync(self) -> None:
+        with self._no_agent_sync():
+            seat = K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, REGISTRY)
+        self.assertEqual(
+            (seat.name, seat.suffix, seat.branch_prefixes),
+            ("BF-FIXER", "bf-fixer", ("bf-fixer/",)),
+        )
+
+    def test_a_launch_conflict_is_refused_without_agent_sync(self) -> None:
+        env = {
+            "AGENT_LAUNCHER": "botfleet",
+            "AGENT_LAUNCH_SEAT": "BF-FIXER",
+            "AGENT_SEAT": "BF-DEPLOYER",
+        }
+        with self._no_agent_sync(), self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat(env, REGISTRY)
+        self.assertIn("assigned BF-FIXER", str(ctx.exception))
+
+    def test_a_launch_seat_alone_resolves_without_agent_sync(self) -> None:
+        env = {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER"}
+        with self._no_agent_sync():
+            seat = K.resolve_seat(env, REGISTRY)
+        self.assertEqual((seat.name, seat.suffix), ("BF-FIXER", "bf-fixer"))
+
+    def test_a_matching_launch_and_agent_seat_resolve_without_agent_sync(self) -> None:
+        env = {
+            "AGENT_LAUNCHER": "botfleet",
+            "AGENT_LAUNCH_SEAT": "BF-FIXER",
+            "AGENT_SEAT": "bf-fixer",
+        }
+        with self._no_agent_sync():
+            seat = K.resolve_seat(env, REGISTRY)
+        self.assertEqual(seat.name, "BF-FIXER")
+
+    def test_a_launcher_without_a_seat_is_refused_without_agent_sync(self) -> None:
+        with self._no_agent_sync(), self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_LAUNCHER": "botfleet"}, REGISTRY)
+        self.assertIn("AGENT_LAUNCH_SEAT is not", str(ctx.exception))
+
+    def test_an_unlisted_role_is_refused_without_agent_sync(self) -> None:
+        with self._no_agent_sync(), self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "GB-KODY"}, REGISTRY)
+        self.assertIn("no known role", str(ctx.exception))
+
 
 class ResolveTests(unittest.TestCase):
     def test_app_by_each_field_and_any_case(self) -> None:
@@ -480,9 +987,15 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(K.resolve_app(REGISTRY, "  st  ").name, "Socratic-Trade")
 
     def test_dots_and_dashes_are_loose_only_when_nothing_matches_exactly(self) -> None:
-        self.assertEqual(K.resolve_app(REGISTRY, "congress.trade").name, "Congress.Trade")
-        self.assertEqual(K.resolve_app(REGISTRY, "Congress-Trade").name, "Congress.Trade")
-        self.assertEqual(K.resolve_app(REGISTRY, "socratic.trade").name, "Socratic-Trade")
+        self.assertEqual(
+            K.resolve_app(REGISTRY, "congress.trade").name, "Congress.Trade"
+        )
+        self.assertEqual(
+            K.resolve_app(REGISTRY, "Congress-Trade").name, "Congress.Trade"
+        )
+        self.assertEqual(
+            K.resolve_app(REGISTRY, "socratic.trade").name, "Socratic-Trade"
+        )
 
     def test_unknown_app_lists_candidates(self) -> None:
         with self.assertRaises(K.Refusal) as cm:
@@ -508,17 +1021,33 @@ class ResolveTests(unittest.TestCase):
                 K.resolve_app(REGISTRY, q)
 
     def test_seat_comes_only_from_agent_seat(self) -> None:
-        self.assertEqual(K.resolve_seat({"AGENT_SEAT": "CLAUDE"}, REGISTRY).suffix, "claude")
-        self.assertEqual(K.resolve_seat({"AGENT_SEAT": " ag "}, REGISTRY).suffix, "antigravity")
-        self.assertEqual(K.resolve_seat({"AGENT_SEAT": "MM"}, REGISTRY).suffix, "minimax")
-        self.assertEqual(K.resolve_seat({"AGENT_SEAT": "grok-build"}, REGISTRY).suffix, "grok-build")
-        self.assertEqual(K.resolve_seat({"AGENT_SEAT": "CURSOR"}, REGISTRY).suffix, "cursor")
+        self.assertEqual(
+            K.resolve_seat({"AGENT_SEAT": "CLAUDE"}, REGISTRY).suffix, "claude"
+        )
+        self.assertEqual(
+            K.resolve_seat({"AGENT_SEAT": " ag "}, REGISTRY).suffix, "antigravity"
+        )
+        self.assertEqual(
+            K.resolve_seat({"AGENT_SEAT": "MM"}, REGISTRY).suffix, "minimax"
+        )
+        self.assertEqual(
+            K.resolve_seat({"AGENT_SEAT": "grok-build"}, REGISTRY).suffix, "grok-build"
+        )
+        self.assertEqual(
+            K.resolve_seat({"AGENT_SEAT": "CURSOR"}, REGISTRY).suffix, "cursor"
+        )
 
     def test_seat_refusals(self) -> None:
-        for env, needle in (({}, "AGENT_SEAT is not set"), ({"AGENT_SEAT": ""}, "not set"), ({"AGENT_SEAT": "  "}, "not set"),
-                            ({"AGENT_SEAT": "NOPE"}, "not a seat tag"), ({"AGENT_SEAT": "antigravity"}, "not a seat tag"),
-                            ({"AGENT_SEAT": "minimax"}, "not a seat tag"), ({"AGENT_SEAT": "MONET"}, "retired"),
-                            ({"AGENT_SEAT": "GROK-BOT"}, "belongs to CURSOR")):
+        for env, needle in (
+            ({}, "AGENT_SEAT is not set"),
+            ({"AGENT_SEAT": ""}, "not set"),
+            ({"AGENT_SEAT": "  "}, "not set"),
+            ({"AGENT_SEAT": "NOPE"}, "not a seat tag"),
+            ({"AGENT_SEAT": "antigravity"}, "not a seat tag"),
+            ({"AGENT_SEAT": "minimax"}, "not a seat tag"),
+            ({"AGENT_SEAT": "MONET"}, "retired"),
+            ({"AGENT_SEAT": "GROK-BOT"}, "belongs to CURSOR"),
+        ):
             with self.subTest(env=env):
                 with self.assertRaises(K.Refusal) as cm:
                     K.resolve_seat(env, REGISTRY)
@@ -530,29 +1059,43 @@ class ResolveTests(unittest.TestCase):
         self.assertLess(len(str(cm.exception)), 400)
 
     def test_branch_is_the_first_registry_prefix_plus_the_slug(self) -> None:
-        self.assertEqual(K.branch_for(REGISTRY.seat_by_name("CLAUDE"), "fix-thing"), "claude/fix-thing")
-        self.assertEqual(K.branch_for(REGISTRY.seat_by_name("AG"), "fix-thing"), "ag/fix-thing")
-        self.assertEqual(K.branch_for(REGISTRY.seat_by_name("MM"), "fix-thing"), "minimax/fix-thing")
-        self.assertEqual(K.branch_for(REGISTRY.seat_by_name("GROK-BOT"), "x"), "cursor/x")
+        self.assertEqual(
+            K.branch_for(REGISTRY.seat_by_name("CLAUDE"), "fix-thing"),
+            "claude/fix-thing",
+        )
+        self.assertEqual(
+            K.branch_for(REGISTRY.seat_by_name("AG"), "fix-thing"), "ag/fix-thing"
+        )
+        self.assertEqual(
+            K.branch_for(REGISTRY.seat_by_name("MM"), "fix-thing"), "minimax/fix-thing"
+        )
+        self.assertEqual(
+            K.branch_for(REGISTRY.seat_by_name("GROK-BOT"), "x"), "cursor/x"
+        )
         with self.assertRaises(K.Refusal):
             K.branch_for(REGISTRY.seat_by_name("ODD"), "x")
         for bad in ("Bad_Slug", "", "a--b", "-x", "x-", "x" * 41, "a b", "../x", "a/b"):
-            with self.subTest(slug=bad):
-                with self.assertRaises(K.Refusal):
-                    K.branch_for(REGISTRY.seat_by_name("CLAUDE"), bad)
+            with self.subTest(slug=bad), self.assertRaises(K.Refusal):
+                K.branch_for(REGISTRY.seat_by_name("CLAUDE"), bad)
 
     def test_base_forms(self) -> None:
         self.assertEqual(K.parse_base(None), ("main", "origin/main"))
         self.assertEqual(K.parse_base(""), ("main", "origin/main"))
         self.assertEqual(K.parse_base("origin/release"), ("release", "origin/release"))
         self.assertEqual(K.parse_base("release"), ("release", "origin/release"))
-        self.assertEqual(K.parse_base("origin/claude/x"), ("claude/x", "origin/claude/x"))
-        self.assertEqual(K.parse_base("refs/remotes/origin/main"), ("main", "origin/main"))
+        self.assertEqual(
+            K.parse_base("origin/claude/x"), ("claude/x", "origin/claude/x")
+        )
+        self.assertEqual(
+            K.parse_base("refs/remotes/origin/main"), ("main", "origin/main")
+        )
         for bad in ("origin/a..b", "-x", "a:b", "origin/", "a b"):
             with self.assertRaises(K.Refusal):
                 K.parse_base(bad)
 
-    def test_the_real_registry_gives_every_live_seat_a_branch_prefix_and_folder_name(self) -> None:
+    def test_the_real_registry_gives_every_live_seat_a_branch_prefix_and_folder_name(
+        self,
+    ) -> None:
         registry = L.load_registry(L.default_registry_path({}))
         live = [s for s in registry.seats if not s.retired]
         self.assertTrue(live)
@@ -567,17 +1110,25 @@ class ResolveTests(unittest.TestCase):
                     with self.assertRaises(K.Refusal):
                         K.branch_for(seat, "x")
                     continue
-                self.assertEqual(K.branch_for(seat, "x"), seat.primary_branch_prefix() + "/x")
+                self.assertEqual(
+                    K.branch_for(seat, "x"), seat.primary_branch_prefix() + "/x"
+                )
         # Only seats the listener partition gives to the server may go without a prefix, plus GROK-BOT:  one
         # fleet-wide identity that opens no lanes (its GB-<ROLE> personas are the server seats), which had
         # CURSOR's cursor/ until F2 (2026-10-11) and so put one prefix on two seats.
         partition = tomllib.loads(
-            (SCRIPTS_DIR.parent / "docs" / "protocols" / "agent-sync-partition.toml").read_text(encoding="utf-8")
+            (
+                SCRIPTS_DIR.parent / "docs" / "protocols" / "agent-sync-partition.toml"
+            ).read_text(encoding="utf-8")
         )["seats"]
         for name in laneless:
             if name == "GROK-BOT":
                 continue
-            self.assertEqual(partition.get(name), "server", f"{name} has no branch prefix but is not a server seat")
+            self.assertEqual(
+                partition.get(name),
+                "server",
+                f"{name} has no branch prefix but is not a server seat",
+            )
         self.assertIn("GROK-BOT", laneless)
         retired = {s.name for s in registry.seats if s.retired}
         for tag in ("MONET", "RENOIR", "HARNESS", "DSH"):
@@ -585,7 +1136,9 @@ class ResolveTests(unittest.TestCase):
             with self.assertRaises(K.Refusal):
                 K.resolve_seat({"AGENT_SEAT": tag}, registry)
 
-    def test_the_real_registry_gives_a_lane_only_to_the_seat_that_owns_each_folder_name(self) -> None:
+    def test_the_real_registry_gives_a_lane_only_to_the_seat_that_owns_each_folder_name(
+        self,
+    ) -> None:
         # CURSOR and GROK-BOT share worktreeSuffix `cursor`.  GROK-BOT is one fleet-wide identity, not
         # a per-app coding seat (TEMPLATE-AGENTS.md), so it gets no lane.
         registry = L.load_registry(L.default_registry_path({}))
@@ -596,30 +1149,55 @@ class ResolveTests(unittest.TestCase):
             except K.Refusal:
                 refused.add(seat.name)
         self.assertIn("GROK-BOT", refused)
-        self.assertIn("CURSOR", {s.name for s in registry.seats if s.suffix in accepted})
-        self.assertEqual(len(accepted), len([s for s in registry.seats if not s.retired]) - len(refused),
-                         "no two accepted seats share a folder name")
+        self.assertIn(
+            "CURSOR", {s.name for s in registry.seats if s.suffix in accepted}
+        )
+        self.assertEqual(
+            len(accepted),
+            len([s for s in registry.seats if not s.retired]) - len(refused),
+            "no two accepted seats share a folder name",
+        )
 
-
-    def test_the_real_registry_reads_any_spelling_of_grok_build_as_the_grok_seat(self) -> None:
+    def test_the_real_registry_reads_any_spelling_of_grok_build_as_the_grok_seat(
+        self,
+    ) -> None:
         # The GROK row of fleet-apps.json carries the aliasPattern;  the retired GROK-BUILD row never answers
         # for its own name, so lane signs GROK whichever way AGENT_SEAT spells it (owner 2026-10-10).
         registry = L.load_registry(L.default_registry_path({}))
-        self.assertEqual(registry.seat_by_name("GROK").alias_pattern, GROK_ALIAS_PATTERN)
+        self.assertEqual(
+            registry.seat_by_name("GROK").alias_pattern, GROK_ALIAS_PATTERN
+        )
         retired = registry.seat_by_suffix("grok-build")
-        self.assertTrue(retired is not None and retired.retired, "the GROK-BUILD row stays, retired")
+        self.assertTrue(
+            retired is not None and retired.retired, "the GROK-BUILD row stays, retired"
+        )
         for raw in GROK_BUILD_MUST + ("  grok-build\n", "GROK", "grok"):
             with self.subTest(raw=raw):
                 seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
-                self.assertEqual((seat.name, seat.suffix, seat.retired), ("GROK", "grok", False))
+                self.assertEqual(
+                    (seat.name, seat.suffix, seat.retired), ("GROK", "grok", False)
+                )
                 self.assertEqual(K.branch_for(seat, "x"), "grok/x")
         for raw in GROK_BUILD_MUST_NOT + ("GROK-BOT",):
             with self.subTest(raw=raw):
+                # AFC-620:  GB-COMPILER is a real role now and BF-BUILDER a refused one;  neither is GROK.
+                if raw == "GB-COMPILER":
+                    seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                    self.assertEqual(
+                        (seat.name, seat.suffix), ("GB-COMPILER", "gb-compiler")
+                    )
+                    continue
                 with self.assertRaises(K.Refusal) as cm:
                     K.resolve_seat({"AGENT_SEAT": raw}, registry)
-                self.assertIn("belongs to CURSOR" if raw == "GROK-BOT" else "not a seat tag", str(cm.exception))
+                needle = {
+                    "GROK-BOT": "belongs to CURSOR",
+                    "BF-BUILDER": "no known role",
+                }.get(raw, "not a seat tag")
+                self.assertIn(needle, str(cm.exception))
         with self.subTest(raw="GROK-WEB"):
-            with self.assertRaises(K.Refusal) as cm:       # a cloud seat: no branch prefix, so no lane
+            with self.assertRaises(
+                K.Refusal
+            ) as cm:  # a cloud seat: no branch prefix, so no lane
                 K.branch_for(K.resolve_seat({"AGENT_SEAT": "GROK-WEB"}, registry), "x")
             self.assertIn("no branch prefix", str(cm.exception))
 
@@ -632,27 +1210,58 @@ class GrokBuildAliasResolveTests(unittest.TestCase):
         for raw in GROK_BUILD_MUST + ("  grok-build\n", "\tGrok (Build) "):
             with self.subTest(raw=raw):
                 seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
-                self.assertEqual((seat.name, seat.suffix, seat.retired), ("GROK", "grok", False))
+                self.assertEqual(
+                    (seat.name, seat.suffix, seat.retired), ("GROK", "grok", False)
+                )
                 self.assertEqual(registry.seat_by_name(raw).name, "GROK")
                 self.assertEqual(K.branch_for(seat, "x"), "grok/x")
                 self.assertEqual(seat.primary_branch_prefix(), "grok")
 
     def test_other_seats_still_resolve_by_their_own_tag_in_any_case(self) -> None:
         registry = L.parse_registry(_grok_registry_data(alias=True))
-        for raw, name in (("CLAUDE", "CLAUDE"), (" ag ", "AG"), ("mm", "MM"), ("Cursor", "CURSOR"), ("grok", "GROK")):
+        for raw, name in (
+            ("CLAUDE", "CLAUDE"),
+            (" ag ", "AG"),
+            ("mm", "MM"),
+            ("Cursor", "CURSOR"),
+            ("grok", "GROK"),
+        ):
             with self.subTest(raw=raw):
-                self.assertEqual(K.resolve_seat({"AGENT_SEAT": raw}, registry).name, name)
+                self.assertEqual(
+                    K.resolve_seat({"AGENT_SEAT": raw}, registry).name, name
+                )
 
-    def test_nothing_else_is_grok_and_each_keeps_the_outcome_it_has_without_the_alias(self) -> None:
+    def test_nothing_else_is_grok_and_each_keeps_the_outcome_it_has_without_the_alias(
+        self,
+    ) -> None:
         # GROK-BOT shares CURSOR's folder name;  every other value is not a seat tag.  GROK-WEB is a real
         # seat with no branch prefix, so it resolves and `branch_for` is what refuses it.
-        both = (L.parse_registry(_grok_registry_data(alias=False)), L.parse_registry(_grok_registry_data(alias=True)))
+        both = (
+            L.parse_registry(_grok_registry_data(alias=False)),
+            L.parse_registry(_grok_registry_data(alias=True)),
+        )
         for registry in both:
             for raw in GROK_BUILD_MUST_NOT:
-                with self.subTest(raw=raw, alias=bool(registry.seat_by_name("GROK").alias_pattern)):
+                # AFC-620:  GB-COMPILER resolves as a role lane and BF-BUILDER is refused as an unlisted
+                # role;  both outcomes come from the lane blocks, never from the GROK alias.
+                if raw == "GB-COMPILER":
+                    with self.subTest(
+                        raw=raw, alias=bool(registry.seat_by_name("GROK").alias_pattern)
+                    ):
+                        seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                        self.assertEqual(
+                            (seat.name, seat.suffix), ("GB-COMPILER", "gb-compiler")
+                        )
+                    continue
+                with self.subTest(
+                    raw=raw, alias=bool(registry.seat_by_name("GROK").alias_pattern)
+                ):
                     with self.assertRaises(K.Refusal) as cm:
                         K.resolve_seat({"AGENT_SEAT": raw}, registry)
-                    self.assertIn("not a seat tag", str(cm.exception))
+                    needle = (
+                        "no known role" if raw == "BF-BUILDER" else "not a seat tag"
+                    )
+                    self.assertIn(needle, str(cm.exception))
             with self.assertRaises(K.Refusal) as cm:
                 K.resolve_seat({"AGENT_SEAT": "GROK-BOT"}, registry)
             self.assertIn("belongs to CURSOR", str(cm.exception))
@@ -665,8 +1274,11 @@ class GrokBuildAliasResolveTests(unittest.TestCase):
         # The alias matches ASCII case only, so a dotted or dotless I never makes GROK.  The Kelvin sign lowercases
         # to a plain k in the exact-tag fallback, which reaches the retired GROK-BUILD row:  refused, never GROK.
         registry = L.parse_registry(_grok_registry_data(alias=True))
-        for raw, needle in (("grok-bu\u0130ld", "not a seat tag"), ("grok-bu\u0131ld", "not a seat tag"),
-                            ("GRO\u212a-BUILD", "retired")):
+        for raw, needle in (
+            ("grok-bu\u0130ld", "not a seat tag"),
+            ("grok-bu\u0131ld", "not a seat tag"),
+            ("GRO\u212a-BUILD", "retired"),
+        ):
             with self.subTest(raw=raw):
                 with self.assertRaises(K.Refusal) as cm:
                     K.resolve_seat({"AGENT_SEAT": raw}, registry)
@@ -681,7 +1293,15 @@ class GrokBuildAliasResolveTests(unittest.TestCase):
                 seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
                 self.assertEqual((seat.name, seat.suffix), ("GROK-BUILD", "grok-build"))
                 self.assertEqual(K.branch_for(seat, "x"), "grok-build/x")
-        for raw in ("grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)", "grok/build/", "GrokBuild", "GROK--BUILD!!"):
+        for raw in (
+            "grok_build",
+            "Grok Build",
+            "GROK.BUILD",
+            "Grok (Build)",
+            "grok/build/",
+            "GrokBuild",
+            "GROK--BUILD!!",
+        ):
             with self.subTest(raw=raw):
                 with self.assertRaises(K.Refusal) as cm:
                     K.resolve_seat({"AGENT_SEAT": raw}, registry)
@@ -692,7 +1312,9 @@ class GrokBuildAliasLaneTests(WorldCase):
     """`lane new` end to end, in the throwaway world, against the alias registry (owner ruling 2026-10-10)."""
 
     def use_registry(self, *, alias: bool = True) -> None:
-        self.w.registry_path.write_text(json.dumps(_grok_registry_data(alias=alias)), encoding="utf-8")
+        self.w.registry_path.write_text(
+            json.dumps(_grok_registry_data(alias=alias)), encoding="utf-8"
+        )
 
     def test_every_spelling_plans_the_grok_folder_and_the_grok_branch(self) -> None:
         w = self.w
@@ -701,40 +1323,78 @@ class GrokBuildAliasLaneTests(WorldCase):
         want = w.roots.lanes_root / "DealDex" / "grok-x"
         for raw in GROK_BUILD_MUST + ("  grok-build\n",):
             with self.subTest(raw=raw):
-                res = w.lane("new", "DealDex", "x", "--dry-run", "--json", env={"AGENT_SEAT": raw})
+                res = w.lane(
+                    "new",
+                    "DealDex",
+                    "x",
+                    "--dry-run",
+                    "--json",
+                    env={"AGENT_SEAT": raw},
+                )
                 self.assertEqual(res.rc, 0, res.err)
                 body = res.json()
-                self.assertEqual((body["seat"], body["tag"], body["branch"], body["path"]),
-                                 ("grok", "GROK", "grok/x", str(want)))
+                self.assertEqual(
+                    (body["seat"], body["tag"], body["branch"], body["path"]),
+                    ("grok", "GROK", "grok/x", str(want)),
+                )
                 self.assertNotIn("grok-build", (res.out + res.err).lower())
-                text = w.lane("new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": raw})
+                text = w.lane(
+                    "new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": raw}
+                )
                 self.assertEqual((text.rc, text.out), (0, f"{want}\n"), text.err)
                 self.assertNotIn("grok-build", (text.out + text.err).lower())
         self.assertNoChange(before)
 
-    def test_a_real_lane_made_under_one_spelling_is_a_grok_lane_and_every_spelling_finds_it_again(self) -> None:
+    def test_a_real_lane_made_under_one_spelling_is_a_grok_lane_and_every_spelling_finds_it_again(
+        self,
+    ) -> None:
         w = self.w
         self.use_registry()
         res = w.lane("new", "DealDex", "fix-thing", env={"AGENT_SEAT": "Grok (Build)"})
         path = w.lane_path(seat="grok")
         self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
-        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "grok/fix-thing")
+        self.assertEqual(
+            w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "grok/fix-thing"
+        )
         git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
         manifest = json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))
-        self.assertEqual((manifest["seat"], manifest["tag"], manifest["branch"]), ("grok", "GROK", "grok/fix-thing"))
-        everything = w.git(["worktree", "list", "--porcelain"], cwd=w.tree) + w.git(["branch", "--list"], cwd=w.tree)
+        self.assertEqual(
+            (manifest["seat"], manifest["tag"], manifest["branch"]),
+            ("grok", "GROK", "grok/fix-thing"),
+        )
+        everything = w.git(["worktree", "list", "--porcelain"], cwd=w.tree) + w.git(
+            ["branch", "--list"], cwd=w.tree
+        )
         self.assertNotIn("grok-build", everything)
-        self.assertEqual(sorted(p.name for p in (w.roots.lanes_root / "DealDex").iterdir()), ["grok-fix-thing"])
+        self.assertEqual(
+            sorted(p.name for p in (w.roots.lanes_root / "DealDex").iterdir()),
+            ["grok-fix-thing"],
+        )
         for raw in ("GROK-BUILD", "grok_build", "GROK"):
             with self.subTest(raw=raw):
                 again = w.lane("new", "DealDex", "fix-thing", env={"AGENT_SEAT": raw})
                 self.assertEqual((again.rc, again.out), (0, f"{path}\n"), again.err)
-                self.assertEqual(w.lane("path", "DealDex", "fix-thing", env={"AGENT_SEAT": raw}).out, f"{path}\n")
+                self.assertEqual(
+                    w.lane("path", "DealDex", "fix-thing", env={"AGENT_SEAT": raw}).out,
+                    f"{path}\n",
+                )
 
-    def test_what_is_not_grok_build_is_refused_exactly_as_before_and_runs_no_git(self) -> None:
+    def test_what_is_not_grok_build_is_refused_exactly_as_before_and_runs_no_git(
+        self,
+    ) -> None:
         w = self.w
-        cases = [(raw, "not a seat tag") for raw in GROK_BUILD_MUST_NOT]
-        cases += [("GROK-BOT", "belongs to CURSOR"), ("GROK-WEB", "no branch prefix")]
+        # AFC-620: GB-COMPILER is a role lane now (creates its lane; covered end-to-end in
+        # RoleLaneNewTests), and BF-BUILDER is refused as an unlisted role, not an unknown tag.
+        cases = [
+            (raw, "not a seat tag")
+            for raw in GROK_BUILD_MUST_NOT
+            if raw not in ("GB-COMPILER", "BF-BUILDER")
+        ]
+        cases += [
+            ("BF-BUILDER", "no known role"),
+            ("GROK-BOT", "belongs to CURSOR"),
+            ("GROK-WEB", "no branch prefix"),
+        ]
         for alias in (False, True):
             self.use_registry(alias=alias)
             before = w.everything_hash()
@@ -746,18 +1406,36 @@ class GrokBuildAliasLaneTests(WorldCase):
                     self.assertEqual(res.calls, [], "refused before any git or gh")
             self.assertNoChange(before)
 
-    def test_a_registry_without_an_alias_pattern_keeps_grok_build_as_its_own_lane(self) -> None:
+    def test_a_registry_without_an_alias_pattern_keeps_grok_build_as_its_own_lane(
+        self,
+    ) -> None:
         w = self.w
         self.use_registry(alias=False)
-        res = w.lane("new", "DealDex", "x", "--dry-run", "--json", env={"AGENT_SEAT": "GROK-BUILD"})
+        res = w.lane(
+            "new",
+            "DealDex",
+            "x",
+            "--dry-run",
+            "--json",
+            env={"AGENT_SEAT": "GROK-BUILD"},
+        )
         body = res.json()
-        self.assertEqual((res.rc, body["seat"], body["tag"], body["branch"]), (0, "grok-build", "GROK-BUILD", "grok-build/x"))
-        self.assertEqual(body["path"], str(w.roots.lanes_root / "DealDex" / "grok-build-x"))
-        spelled = w.lane("new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": "Grok Build"})
+        self.assertEqual(
+            (res.rc, body["seat"], body["tag"], body["branch"]),
+            (0, "grok-build", "GROK-BUILD", "grok-build/x"),
+        )
+        self.assertEqual(
+            body["path"], str(w.roots.lanes_root / "DealDex" / "grok-build-x")
+        )
+        spelled = w.lane(
+            "new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": "Grok Build"}
+        )
         self.assertEqual(spelled.rc, 64)
         self.assertIn("not a seat tag", spelled.err)
 
-    def test_the_folder_rule_is_unchanged_so_grok_still_cannot_take_a_slug_that_starts_with_build(self) -> None:
+    def test_the_folder_rule_is_unchanged_so_grok_still_cannot_take_a_slug_that_starts_with_build(
+        self,
+    ) -> None:
         # Folder and branch classification do not go through the alias.  GROK plus slug build-x is the
         # folder grok-build-x, which still reads as the retired GROK-BUILD's, whichever way the seat is spelled.
         w = self.w
@@ -773,43 +1451,226 @@ class GrokBuildAliasLaneTests(WorldCase):
 
 # --------------------------------------------------------------------------- lane new
 
+
+class RoleLaneNewTests(WorldCase):
+    """`lane new` end to end for lane-eligible roles (AFC-620), in the throwaway world:  the planned
+    path and branch must be CONFORMING all the way through _plan_path, not merely resolve."""
+
+    def use_role_registry(self) -> dict:
+        data = copy.deepcopy(REGISTRY_DATA)
+        data["seatApps"] = {
+            "bySeat": {"CLAUDE": "claude-code"},
+            "extraSeats": {},
+            "patterns": [
+                {
+                    "match": "BF-*",
+                    "app": "botfleet",
+                    "lane": {
+                        "roles": ["COMPILER", "FIXER"],
+                        "folderTemplate": "bf-<role>",
+                        "branchTemplate": "bf-<role>/",
+                    },
+                },
+                {
+                    "match": "GB-*",
+                    "app": "grok-bot",
+                    "lane": {
+                        "roles": ["PLUMBER"],
+                        "folderTemplate": "gb-<role>",
+                        "branchTemplate": "gb-<role>/",
+                    },
+                },
+            ],
+        }
+        self.w.registry_path.write_text(json.dumps(data), encoding="utf-8")
+        return data
+
+    def test_a_bf_role_plans_and_creates_a_conforming_lane(self) -> None:
+        w = self.w
+        data = self.use_role_registry()
+        res = w.lane(
+            "new",
+            "DealDex",
+            "probe",
+            "--dry-run",
+            "--json",
+            env={"AGENT_SEAT": "BF-FIXER"},
+        )
+        self.assertEqual(res.rc, 0, res.err)
+        want = w.roots.lanes_root / "DealDex" / "bf-fixer-probe"
+        self.assertEqual(
+            (
+                res.json()["seat"],
+                res.json()["tag"],
+                res.json()["branch"],
+                res.json()["path"],
+            ),
+            ("bf-fixer", "BF-FIXER", "bf-fixer/probe", str(want)),
+        )
+        res = w.lane("new", "DealDex", "probe", env={"AGENT_SEAT": "BF-FIXER"})
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertTrue(want.is_dir())
+        reg = L.parse_registry(data)
+        self.assertEqual(
+            L.check_branch_name("bf-fixer/probe", reg), L.BranchVerdict.CONFORMING
+        )
+        self.assertEqual(L.seat_from_branch("bf-fixer/probe", reg), "bf-fixer")
+
+    def test_a_gb_role_plans_a_conforming_lane(self) -> None:
+        w = self.w
+        self.use_role_registry()
+        res = w.lane(
+            "new",
+            "DealDex",
+            "probe",
+            "--dry-run",
+            "--json",
+            env={"AGENT_SEAT": "GB-PLUMBER"},
+        )
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertEqual(
+            (res.json()["seat"], res.json()["tag"], res.json()["branch"]),
+            ("gb-plumber", "GB-PLUMBER", "gb-plumber/probe"),
+        )
+
+    def test_an_unlisted_role_is_refused_end_to_end(self) -> None:
+        w = self.w
+        self.use_role_registry()
+        res = w.lane("new", "DealDex", "probe", env={"AGENT_SEAT": "BF-ORACLE"})
+        self.assertNotEqual(res.rc, 0)
+        self.assertIn("no known role", res.err)
+
+    def test_a_launch_seat_alone_plans_the_role_lane(self) -> None:
+        w = self.w
+        self.use_role_registry()
+        res = w.lane(
+            "new",
+            "DealDex",
+            "probe",
+            "--dry-run",
+            "--json",
+            env={
+                "AGENT_SEAT": None,
+                "AGENT_LAUNCHER": "botfleet",
+                "AGENT_LAUNCH_SEAT": "GB-PLUMBER",
+            },
+        )
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertEqual(res.json()["tag"], "GB-PLUMBER")
+
+    def test_a_launcher_conflict_is_refused_end_to_end(self) -> None:
+        w = self.w
+        self.use_role_registry()
+        res = w.lane(
+            "new",
+            "DealDex",
+            "probe",
+            env={
+                "AGENT_LAUNCHER": "botfleet",
+                "AGENT_LAUNCH_SEAT": "BF-FIXER",
+                "AGENT_SEAT": "BF-DEPLOYER",
+            },
+        )
+        self.assertNotEqual(res.rc, 0)
+        self.assertIn("BF-FIXER", res.err)
+
+
 class LaneNewTests(WorldCase):
     def test_happy_path(self) -> None:
         w = self.w
-        res = w.lane("new", "DealDex", "fix-thing", "--purpose", "Fix the thing", "--board", "a7dfde0e")
+        res = w.lane(
+            "new",
+            "DealDex",
+            "fix-thing",
+            "--purpose",
+            "Fix the thing",
+            "--board",
+            "a7dfde0e",
+        )
         path = w.lane_path()
         self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
         self.assertIn("created", res.err)
         self.assertTrue(path.is_dir())
-        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/fix-thing")
+        self.assertEqual(
+            w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/fix-thing"
+        )
         self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=path), SHAS["main"])
-        self.assertEqual(w.git(["status", "--porcelain"], cwd=path), "", "git status must be clean")
-        self.assertEqual(w.git(["config", "--get", "branch.claude/fix-thing.remote"], cwd=path, check=False), "")
-        self.assertEqual(L.classify_location(path, w.roots), L.LocationClass.LANE_NESTED)
+        self.assertEqual(
+            w.git(["status", "--porcelain"], cwd=path), "", "git status must be clean"
+        )
+        self.assertEqual(
+            w.git(
+                ["config", "--get", "branch.claude/fix-thing.remote"],
+                cwd=path,
+                check=False,
+            ),
+            "",
+        )
+        self.assertEqual(
+            L.classify_location(path, w.roots), L.LocationClass.LANE_NESTED
+        )
         verdict = L.explain_lane_name(path, REGISTRY, w.roots)
-        self.assertEqual((verdict.verdict, verdict.seat, verdict.slug), (L.NameVerdict.CONFORMING, "claude", "fix-thing"))
-        self.assertEqual(L.check_branch_name("claude/fix-thing", REGISTRY), L.BranchVerdict.CONFORMING)
+        self.assertEqual(
+            (verdict.verdict, verdict.seat, verdict.slug),
+            (L.NameVerdict.CONFORMING, "claude", "fix-thing"),
+        )
+        self.assertEqual(
+            L.check_branch_name("claude/fix-thing", REGISTRY),
+            L.BranchVerdict.CONFORMING,
+        )
         listed = w.git(["worktree", "list", "--porcelain"], cwd=w.tree)
         self.assertIn(f"worktree {path}", listed)
 
-    def test_manifest_lives_in_the_private_git_dir_and_has_the_agreed_fields(self) -> None:
+    def test_manifest_lives_in_the_private_git_dir_and_has_the_agreed_fields(
+        self,
+    ) -> None:
         w = self.w
-        w.lane("new", "DealDex", "fix-thing", "--purpose", "Fix the thing", "--board", "a7dfde0e")
+        w.lane(
+            "new",
+            "DealDex",
+            "fix-thing",
+            "--purpose",
+            "Fix the thing",
+            "--board",
+            "a7dfde0e",
+        )
         path = w.lane_path()
         git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
         self.assertEqual(git_dir.parent, w.tree / ".git" / "worktrees")
         manifest = json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest, {
-            "schema": 1, "tool": "lane new", "kind": "lane", "seat": "claude", "tag": "CLAUDE", "app": "DealDex",
-            "prefix": "dealdex", "lane_dir": "DealDex", "slug": "fix-thing", "branch": "claude/fix-thing",
-            "base": "origin/main",
-            "base_sha": SHAS["main"], "purpose": "Fix the thing", "board": "a7dfde0e",
-            "created_at": "2026-10-07T16:15:00+00:00",
-        })
-        self.assertFalse((path / "lane.json").exists(), "the manifest must not be in the working tree")
-        self.assertEqual(sorted(p.name for p in git_dir.glob("lane.json*")), ["lane.json"], "no temp file left behind")
+        self.assertEqual(
+            manifest,
+            {
+                "schema": 1,
+                "tool": "lane new",
+                "kind": "lane",
+                "seat": "claude",
+                "tag": "CLAUDE",
+                "app": "DealDex",
+                "prefix": "dealdex",
+                "lane_dir": "DealDex",
+                "slug": "fix-thing",
+                "branch": "claude/fix-thing",
+                "base": "origin/main",
+                "base_sha": SHAS["main"],
+                "purpose": "Fix the thing",
+                "board": "a7dfde0e",
+                "created_at": "2026-10-07T16:15:00+00:00",
+            },
+        )
+        self.assertFalse(
+            (path / "lane.json").exists(),
+            "the manifest must not be in the working tree",
+        )
+        self.assertEqual(
+            sorted(p.name for p in git_dir.glob("lane.json*")),
+            ["lane.json"],
+            "no temp file left behind",
+        )
 
-    def test_json_output_is_the_manifest_plus_the_path_and_nothing_else_on_stdout(self) -> None:
+    def test_json_output_is_the_manifest_plus_the_path_and_nothing_else_on_stdout(
+        self,
+    ) -> None:
         res = self.w.lane("new", "DealDex", "fix-thing", "--json")
         body = res.json()
         self.assertEqual(res.rc, 0, res.err)
@@ -829,29 +1690,45 @@ class LaneNewTests(WorldCase):
         self.assertEqual(res.rc, 0, res.err)
         self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=w.lane_path()), tip)
         names = [v[:4] if v[0] == "fetch" else v[:2] for v in res.verbs]
-        self.assertLess(names.index(("fetch", "--no-tags", "origin", "main")), names.index(("worktree", "add")))
+        self.assertLess(
+            names.index(("fetch", "--no-tags", "origin", "main")),
+            names.index(("worktree", "add")),
+        )
         add = [v for v in res.verbs if v[:2] == ("worktree", "add")][0]
         self.assertEqual(add[2:4], ("-b", "claude/fix-thing"))
-        self.assertEqual(add[5], tip, "the lane starts at the exact sha that went into the manifest")
+        self.assertEqual(
+            add[5], tip, "the lane starts at the exact sha that went into the manifest"
+        )
 
     def test_only_allowlisted_commands_run_and_none_pushes(self) -> None:
         res = self.w.lane("new", "DealDex", "fix-thing")
         self.assertEqual(res.rc, 0, res.err)
         for argv in res.calls:
-            K.check_allowed(argv[:1] + argv[4:] if argv[0] == "git" else argv, write_root=self.w.roots.lanes_root,
-                            fold=str.casefold)
+            K.check_allowed(
+                argv[:1] + argv[4:] if argv[0] == "git" else argv,
+                write_root=self.w.roots.lanes_root,
+                fold=str.casefold,
+            )
         self.assertFalse(res.has("push"))
         self.assertFalse(res.has("worktree", "remove"))
         self.assertFalse(res.has("worktree", "prune"))
 
-    def test_it_writes_nothing_outside_the_lanes_root_and_the_repo_git_dir(self) -> None:
+    def test_it_writes_nothing_outside_the_lanes_root_and_the_repo_git_dir(
+        self,
+    ) -> None:
         w = self.w
         before = tree_hash(w.root, skip=(w.roots.lanes_root, w.tree / ".git"))
         origin_before = tree_hash(w.origin)
         res = w.lane("new", "DealDex", "fix-thing")
         self.assertEqual(res.rc, 0, res.err)
-        self.assertEqual(tree_hash(w.root, skip=(w.roots.lanes_root, w.tree / ".git")), before)
-        self.assertEqual(tree_hash(w.origin), origin_before, "origin must be untouched: lane never pushes")
+        self.assertEqual(
+            tree_hash(w.root, skip=(w.roots.lanes_root, w.tree / ".git")), before
+        )
+        self.assertEqual(
+            tree_hash(w.origin),
+            origin_before,
+            "origin must be untouched: lane never pushes",
+        )
 
     def test_it_never_creates_a_janitor_keep_marker(self) -> None:
         w = self.w
@@ -865,46 +1742,87 @@ class LaneNewTests(WorldCase):
         # exits 0 and makes nothing, instead of failing on "branch already exists" or making a second lane.
         w = self.w
         old = w.roots.apps_root / "dealdex-claude-legacy"
-        w.git(["worktree", "add", "-q", "-b", "claude/legacy", str(old), "origin/main"], cwd=w.tree)
+        w.git(
+            ["worktree", "add", "-q", "-b", "claude/legacy", str(old), "origin/main"],
+            cwd=w.tree,
+        )
         before = w.everything_hash()
         res = w.lane("new", "DealDex", "legacy")
         self.assertEqual((res.rc, res.out), (0, f"{old}\n"), res.err)
         self.assertIn("old folder", res.err)
-        self.assertIn("stays there until it retires", res.err, "a flat lane is not moved by the layout migration")
+        self.assertIn(
+            "stays there until it retires",
+            res.err,
+            "a flat lane is not moved by the layout migration",
+        )
         self.assertNotIn("migration moves it", res.err)
-        self.assertIn(str(w.lane_path("legacy")), res.err, "it says where a fresh lane would go")
+        self.assertIn(
+            str(w.lane_path("legacy")), res.err, "it says where a fresh lane would go"
+        )
         self.assertFalse(res.has("fetch"))
         self.assertFalse(res.has("worktree", "add"))
         self.assertNoChange(before)
         body = w.lane("new", "DealDex", "legacy", "--json").json()
-        self.assertEqual((body["existing"], body["legacy_location"], body["path"]), (True, True, str(old)))
-        self.assertEqual(w.lane("new", "DealDex", "legacy", "--reuse-branch").out, f"{old}\n")
-        self.assertEqual(w.lane("new", "DealDex", "legacy", "--dry-run").out, f"{old}\n")
+        self.assertEqual(
+            (body["existing"], body["legacy_location"], body["path"]),
+            (True, True, str(old)),
+        )
+        self.assertEqual(
+            w.lane("new", "DealDex", "legacy", "--reuse-branch").out, f"{old}\n"
+        )
+        self.assertEqual(
+            w.lane("new", "DealDex", "legacy", "--dry-run").out, f"{old}\n"
+        )
         self.assertFalse(w.lane_path("legacy").exists())
         # another seat's slug of the same name is its own lane, not this one
         other = w.lane("new", "DealDex", "legacy", env={"AGENT_SEAT": "AG"})
         self.assertEqual(other.rc, 0, other.err)
         self.assertEqual(other.out, f"{w.lane_path('legacy', seat='antigravity')}\n")
 
-    def test_a_lane_in_an_old_prefix_folder_is_told_the_migration_moves_it(self) -> None:
+    def test_a_lane_in_an_old_prefix_folder_is_told_the_migration_moves_it(
+        self,
+    ) -> None:
         w = self.w
         old = w.roots.lanes_root / "dealdex" / "claude-legacy"
         old.parent.mkdir(parents=True)
         if (w.roots.lanes_root / "DealDex").exists():
-            self.skipTest("a case-insensitive volume: lanes/dealdex is lanes/DealDex, so it is not an old folder here")
-        w.git(["worktree", "add", "-q", "-b", "claude/legacy", str(old), "origin/main"], cwd=w.tree)
+            self.skipTest(
+                "a case-insensitive volume: lanes/dealdex is lanes/DealDex, so it is not an old folder here"
+            )
+        w.git(
+            ["worktree", "add", "-q", "-b", "claude/legacy", str(old), "origin/main"],
+            cwd=w.tree,
+        )
         res = w.lane("new", "DealDex", "legacy")
         self.assertEqual((res.rc, res.out), (0, f"{old}\n"), res.err)
-        self.assertIn(f"The layout migration moves it to {w.lane_path('legacy')}", res.err)
+        self.assertIn(
+            f"The layout migration moves it to {w.lane_path('legacy')}", res.err
+        )
 
-    def test_expected_path_uses_the_repo_folder_for_every_spelling_of_the_app(self) -> None:
+    def test_expected_path_uses_the_repo_folder_for_every_spelling_of_the_app(
+        self,
+    ) -> None:
         w = self.w
         for query in ("DealDex", "dealdex", "dd"):
-            self.assertEqual(w.lane("path", query, "x").out, f"{w.lane_path('x')}\n", query)
-        self.assertEqual(w.lane("path", "Congress-Trade", "x").out, f"{w.roots.lanes_root / 'Congress.Trade' / 'claude-x'}\n")
-        self.assertEqual(w.lane("path", "ct", "x").out, f"{w.roots.lanes_root / 'Congress.Trade' / 'claude-x'}\n")
-        self.assertEqual(w.lane("path", "trading", "x").out, f"{w.roots.lanes_root / 'Socratic-Trade' / 'claude-x'}\n")
-        self.assertEqual(w.lane("path", "Socratic-Trade", "x").out, f"{w.roots.lanes_root / 'Socratic-Trade' / 'claude-x'}\n")
+            self.assertEqual(
+                w.lane("path", query, "x").out, f"{w.lane_path('x')}\n", query
+            )
+        self.assertEqual(
+            w.lane("path", "Congress-Trade", "x").out,
+            f"{w.roots.lanes_root / 'Congress.Trade' / 'claude-x'}\n",
+        )
+        self.assertEqual(
+            w.lane("path", "ct", "x").out,
+            f"{w.roots.lanes_root / 'Congress.Trade' / 'claude-x'}\n",
+        )
+        self.assertEqual(
+            w.lane("path", "trading", "x").out,
+            f"{w.roots.lanes_root / 'Socratic-Trade' / 'claude-x'}\n",
+        )
+        self.assertEqual(
+            w.lane("path", "Socratic-Trade", "x").out,
+            f"{w.roots.lanes_root / 'Socratic-Trade' / 'claude-x'}\n",
+        )
 
     def test_idempotent_second_run(self) -> None:
         w = self.w
@@ -921,7 +1839,11 @@ class LaneNewTests(WorldCase):
         again = w.lane("new", "DealDex", "fix-thing", "--json", clock=lambda: later)
         body = again.json()
         self.assertTrue(body["existing"])
-        self.assertEqual(body["created_at"], "2026-10-07T16:15:00+00:00", "the first manifest is kept")
+        self.assertEqual(
+            body["created_at"],
+            "2026-10-07T16:15:00+00:00",
+            "the first manifest is kept",
+        )
         self.assertEqual(body["purpose"], "Fix the thing")
         self.assertEqual(body["path"], str(w.lane_path()))
 
@@ -947,8 +1869,12 @@ class LaneNewTests(WorldCase):
     def test_unknown_seat_and_retired_seat_are_refused(self) -> None:
         w = self.w
         before = w.everything_hash()
-        for tag, needle in (("NOPE", "not a seat tag"), ("antigravity", "not a seat tag"), ("MONET", "retired"),
-                            ("ODD", "no branch prefix")):
+        for tag, needle in (
+            ("NOPE", "not a seat tag"),
+            ("antigravity", "not a seat tag"),
+            ("MONET", "retired"),
+            ("ODD", "no branch prefix"),
+        ):
             with self.subTest(tag=tag):
                 res = w.lane("new", "DealDex", "fix-thing", env={"AGENT_SEAT": tag})
                 self.assertEqual((res.rc, res.out), (64, ""), res.err)
@@ -964,16 +1890,33 @@ class LaneNewTests(WorldCase):
 
     def test_each_seat_gets_its_whole_name_folder_and_registry_branch(self) -> None:
         w = self.w
-        cases = (("CLAUDE", "claude", "claude/x"), ("AG", "antigravity", "ag/x"), ("MM", "minimax", "minimax/x"),
-                 ("GROK", "grok", "grok/x"), ("GROK-BUILD", "grok-build", "grok-build/x"),
-                 ("CLUTCH", "clutch", "clutch/x"), ("CURSOR", "cursor", "cursor/x"))
+        cases = (
+            ("CLAUDE", "claude", "claude/x"),
+            ("AG", "antigravity", "ag/x"),
+            ("MM", "minimax", "minimax/x"),
+            ("GROK", "grok", "grok/x"),
+            ("GROK-BUILD", "grok-build", "grok-build/x"),
+            ("CLUTCH", "clutch", "clutch/x"),
+            ("CURSOR", "cursor", "cursor/x"),
+        )
         for tag, folder, branch in cases:
             with self.subTest(tag=tag):
-                res = w.lane("new", "DealDex", "x", "--dry-run", "--json", env={"AGENT_SEAT": tag})
+                res = w.lane(
+                    "new",
+                    "DealDex",
+                    "x",
+                    "--dry-run",
+                    "--json",
+                    env={"AGENT_SEAT": tag},
+                )
                 body = res.json()
                 self.assertEqual(res.rc, 0, res.err)
-                self.assertEqual((body["seat"], body["tag"], body["branch"]), (folder, tag, branch))
-                self.assertEqual(body["path"], str(w.roots.lanes_root / "DealDex" / f"{folder}-x"))
+                self.assertEqual(
+                    (body["seat"], body["tag"], body["branch"]), (folder, tag, branch)
+                )
+                self.assertEqual(
+                    body["path"], str(w.roots.lanes_root / "DealDex" / f"{folder}-x")
+                )
 
     def test_a_slug_that_reads_as_another_seat_is_refused(self) -> None:
         # GROK + slug build-x would be folder grok-build-x, which the layout reads as GROK-BUILD's.
@@ -983,18 +1926,27 @@ class LaneNewTests(WorldCase):
         self.assertEqual(res.rc, 64, res.err)
         self.assertIn("read as seat", res.err)
         self.assertNoChange(before)
-        ok = w.lane("new", "DealDex", "build-x", "--dry-run", env={"AGENT_SEAT": "GROK-BUILD"})
+        ok = w.lane(
+            "new", "DealDex", "build-x", "--dry-run", env={"AGENT_SEAT": "GROK-BUILD"}
+        )
         self.assertEqual(ok.rc, 0, ok.err)
 
-    def test_a_seat_that_shares_another_seats_folder_name_never_gets_that_seats_lane(self) -> None:
+    def test_a_seat_that_shares_another_seats_folder_name_never_gets_that_seats_lane(
+        self,
+    ) -> None:
         # CURSOR and GROK-BOT share worktreeSuffix `cursor`; the folder and cursor/ branch are CURSOR's.
         w = self.w
         first = w.lane("new", "DealDex", "x", env={"AGENT_SEAT": "CURSOR"})
         path = w.lane_path("x", seat="cursor")
         self.assertEqual((first.rc, first.out), (0, f"{path}\n"), first.err)
         before = w.everything_hash()
-        for argv in (("new", "DealDex", "x"), ("new", "DealDex", "x", "--dry-run"), ("new", "DealDex", "y"),
-                     ("path", "DealDex", "x"), ("new", "DealDex", "--review", "--pr", "7")):
+        for argv in (
+            ("new", "DealDex", "x"),
+            ("new", "DealDex", "x", "--dry-run"),
+            ("new", "DealDex", "y"),
+            ("path", "DealDex", "x"),
+            ("new", "DealDex", "--review", "--pr", "7"),
+        ):
             with self.subTest(argv=argv):
                 res = w.lane(*argv, env={"AGENT_SEAT": "GROK-BOT"})
                 self.assertEqual((res.rc, res.out), (64, ""), res.err)
@@ -1002,10 +1954,15 @@ class LaneNewTests(WorldCase):
                 self.assertEqual(res.calls, [], "refused before any git or gh")
         self.assertNoChange(before)
 
-    def test_an_existing_lane_whose_manifest_names_another_seat_is_not_handed_over(self) -> None:
+    def test_an_existing_lane_whose_manifest_names_another_seat_is_not_handed_over(
+        self,
+    ) -> None:
         w = self.w
         self.assertEqual(w.lane("new", "DealDex", "fix-thing").rc, 0)
-        manifest_path = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=w.lane_path())) / "lane.json"
+        manifest_path = (
+            Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=w.lane_path()))
+            / "lane.json"
+        )
         body = json.loads(manifest_path.read_text(encoding="utf-8"))
         body["tag"] = "CODEX"
         manifest_path.write_text(json.dumps(body), encoding="utf-8")
@@ -1015,36 +1972,62 @@ class LaneNewTests(WorldCase):
         self.assertIn("CODEX", res.err)
         self.assertNoChange(before)
 
-    def test_a_review_checkout_that_names_another_seat_is_not_handed_over_either(self) -> None:
+    def test_a_review_checkout_that_names_another_seat_is_not_handed_over_either(
+        self,
+    ) -> None:
         # A review has a way out a lane does not: the second seat gets review-pr-<n>-<seat>.  It is never
         # handed the first seat's folder, and the first seat's folder is left exactly as it was.
         w = self.w
         self.assertEqual(w.lane("new", "DealDex", "--review", "--pr", "7").rc, 0)
         plain = w.review_path()
-        manifest_path = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=plain)) / "lane.json"
+        manifest_path = (
+            Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=plain)) / "lane.json"
+        )
         body = json.loads(manifest_path.read_text(encoding="utf-8"))
         body["tag"] = "CODEX"
         manifest_path.write_text(json.dumps(body), encoding="utf-8")
         plain_before = manifest_path.read_text(encoding="utf-8")
         res = w.lane("new", "DealDex", "--review", "--pr", "7")
-        self.assertEqual((res.rc, res.out), (0, f"{w.review_path(seat='claude')}\n"), res.err)
+        self.assertEqual(
+            (res.rc, res.out), (0, f"{w.review_path(seat='claude')}\n"), res.err
+        )
         self.assertEqual(manifest_path.read_text(encoding="utf-8"), plain_before)
         again = w.lane("new", "DealDex", "--review", "--pr", "7")
-        self.assertEqual((again.rc, again.out), (0, f"{w.review_path(seat='claude')}\n"), again.err)
+        self.assertEqual(
+            (again.rc, again.out), (0, f"{w.review_path(seat='claude')}\n"), again.err
+        )
         self.assertIn("already exists", again.err)
         # the owner itself still gets the plain folder back
-        codex = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "CLUTCH"})
-        self.assertEqual(codex.out, f"{w.review_path(seat='clutch')}\n", "a third seat gets its own folder")
+        codex = w.lane(
+            "new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "CLUTCH"}
+        )
+        self.assertEqual(
+            codex.out,
+            f"{w.review_path(seat='clutch')}\n",
+            "a third seat gets its own folder",
+        )
 
     def test_bad_slugs_are_refused(self) -> None:
         w = self.w
         before = w.everything_hash()
-        for slug in ("Bad_Slug", "UPPER", "a--b", "x-", "x" * 41, "a b", "../x", "a/b", "\u00e4"):
+        for slug in (
+            "Bad_Slug",
+            "UPPER",
+            "a--b",
+            "x-",
+            "x" * 41,
+            "a b",
+            "../x",
+            "a/b",
+            "\u00e4",
+        ):
             with self.subTest(slug=slug):
                 res = w.lane("new", "DealDex", slug)
                 self.assertEqual((res.rc, res.out), (64, ""), res.err)
                 self.assertIn("slug", res.err)
-        with contextlib.redirect_stderr(io.StringIO()):      # argparse reads a leading dash as an option
+        with contextlib.redirect_stderr(
+            io.StringIO()
+        ):  # argparse reads a leading dash as an option
             self.assertEqual(w.lane("new", "DealDex", "-x").rc, 64)
         self.assertNoChange(before)
         self.assertEqual(w.lane("new", "DealDex").rc, 64)
@@ -1061,9 +2044,19 @@ class LaneNewTests(WorldCase):
         self.assertNoChange(before)
         self.assertFalse(res.has("fetch"), "refused offline, before any network step")
 
-    def test_branch_known_on_origin_from_an_earlier_fetch_is_refused_offline(self) -> None:
+    def test_branch_known_on_origin_from_an_earlier_fetch_is_refused_offline(
+        self,
+    ) -> None:
         w = self.w
-        w.git(["--git-dir", str(w.origin), "update-ref", "refs/heads/claude/fix-thing", SHAS["main"]])
+        w.git(
+            [
+                "--git-dir",
+                str(w.origin),
+                "update-ref",
+                "refs/heads/claude/fix-thing",
+                SHAS["main"],
+            ]
+        )
         w.git(["fetch", "-q", "origin", "claude/fix-thing"], cwd=w.tree)
         res = w.lane("new", "DealDex", "fix-thing")
         self.assertEqual(res.rc, 64, res.err)
@@ -1073,7 +2066,15 @@ class LaneNewTests(WorldCase):
 
     def test_branch_that_exists_only_on_origin_is_found_by_asking_origin(self) -> None:
         w = self.w
-        w.git(["--git-dir", str(w.origin), "update-ref", "refs/heads/claude/fix-thing", SHAS["main"]])
+        w.git(
+            [
+                "--git-dir",
+                str(w.origin),
+                "update-ref",
+                "refs/heads/claude/fix-thing",
+                SHAS["main"],
+            ]
+        )
         res = w.lane("new", "DealDex", "fix-thing")
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("already exists on origin", res.err)
@@ -1102,7 +2103,9 @@ class LaneNewTests(WorldCase):
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("already exists and is not a worktree", res.err)
         self.assertNoChange(before)
-        self.assertEqual((path / "precious.txt").read_text(encoding="utf-8"), "keep me\n")
+        self.assertEqual(
+            (path / "precious.txt").read_text(encoding="utf-8"), "keep me\n"
+        )
         self.assertFalse(res.has("fetch"))
 
     def test_existing_symlink_at_the_path_is_refused(self) -> None:
@@ -1118,14 +2121,19 @@ class LaneNewTests(WorldCase):
         w = self.w
         path = w.lane_path()
         path.parent.mkdir(parents=True)
-        w.git(["worktree", "add", "-q", "-b", "claude/other", str(path), "origin/main"], cwd=w.tree)
+        w.git(
+            ["worktree", "add", "-q", "-b", "claude/other", str(path), "origin/main"],
+            cwd=w.tree,
+        )
         before = w.everything_hash()
         res = w.lane("new", "DealDex", "fix-thing")
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("claude/other", res.err)
         self.assertNoChange(before)
 
-    def test_a_registered_worktree_whose_folder_is_missing_is_refused_with_a_prune_hint(self) -> None:
+    def test_a_registered_worktree_whose_folder_is_missing_is_refused_with_a_prune_hint(
+        self,
+    ) -> None:
         w = self.w
         w.lane("new", "DealDex", "fix-thing")
         shutil.rmtree(w.lane_path())
@@ -1134,7 +2142,11 @@ class LaneNewTests(WorldCase):
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("git worktree prune", res.err)
         self.assertNoChange(before)
-        self.assertIn(str(w.lane_path()), w.git(["worktree", "list", "--porcelain"], cwd=w.tree), "not pruned by lane")
+        self.assertIn(
+            str(w.lane_path()),
+            w.git(["worktree", "list", "--porcelain"], cwd=w.tree),
+            "not pruned by lane",
+        )
 
     def test_reuse_branch_checks_out_an_existing_local_branch(self) -> None:
         w = self.w
@@ -1144,7 +2156,9 @@ class LaneNewTests(WorldCase):
         self.assertEqual(res.rc, 0, res.err)
         path = w.lane_path("old-work")
         self.assertEqual(body["path"], str(path))
-        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/old-work")
+        self.assertEqual(
+            w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/old-work"
+        )
         self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=path), SHAS["release"])
         self.assertEqual(body["base_sha"], SHAS["release"])
         self.assertIsNone(body["base"])
@@ -1153,11 +2167,21 @@ class LaneNewTests(WorldCase):
 
     def test_reuse_branch_can_take_a_branch_that_only_exists_on_origin(self) -> None:
         w = self.w
-        w.git(["--git-dir", str(w.origin), "update-ref", "refs/heads/claude/remote-work", SHAS["release"]])
+        w.git(
+            [
+                "--git-dir",
+                str(w.origin),
+                "update-ref",
+                "refs/heads/claude/remote-work",
+                SHAS["release"],
+            ]
+        )
         res = w.lane("new", "DealDex", "remote-work", "--reuse-branch")
         self.assertEqual(res.rc, 0, res.err)
         path = w.lane_path("remote-work")
-        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/remote-work")
+        self.assertEqual(
+            w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/remote-work"
+        )
         self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=path), SHAS["release"])
 
     def test_reuse_branch_refusals(self) -> None:
@@ -1185,9 +2209,13 @@ class LaneNewTests(WorldCase):
                 res = w.lane("new", "DealDex", slug, "--base", base, "--json")
                 self.assertEqual(res.rc, 0, res.err)
                 self.assertEqual(res.json()["base"], "origin/release")
-                self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=w.lane_path(slug)), SHAS["release"])
+                self.assertEqual(
+                    w.git(["rev-parse", "HEAD"], cwd=w.lane_path(slug)), SHAS["release"]
+                )
 
-    def test_the_base_is_the_remote_tracking_ref_never_a_same_named_local_branch_or_tag(self) -> None:
+    def test_the_base_is_the_remote_tracking_ref_never_a_same_named_local_branch_or_tag(
+        self,
+    ) -> None:
         # `origin/main` alone is a DWIM name: refs/tags/origin/main and refs/heads/origin/main both win
         # over refs/remotes/origin/main.  A stale decoy must not become the lane's base.
         for kind in ("branch", "tag"):
@@ -1203,7 +2231,9 @@ class LaneNewTests(WorldCase):
                 self.assertEqual(res.rc, 0, res.err)
                 self.assertEqual(res.json()["base_sha"], SHAS["main"])
                 self.assertEqual(res.json()["base"], "origin/main")
-                self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=w.lane_path()), SHAS["main"])
+                self.assertEqual(
+                    w.git(["rev-parse", "HEAD"], cwd=w.lane_path()), SHAS["main"]
+                )
                 self.assertIn(SHAS["main"][:9], res.err)
 
     def test_missing_base_branch_is_an_external_failure(self) -> None:
@@ -1218,19 +2248,28 @@ class LaneNewTests(WorldCase):
 
     def test_fetch_failure_is_exit_69_and_creates_nothing(self) -> None:
         w = self.w
-        w.git(["remote", "set-url", "origin", (w.root / "no-such-origin.git").as_uri()], cwd=w.tree)
+        w.git(
+            ["remote", "set-url", "origin", (w.root / "no-such-origin.git").as_uri()],
+            cwd=w.tree,
+        )
         res = w.lane("new", "DealDex", "fix-thing")
         self.assertEqual((res.rc, res.out), (69, ""), res.err)
         self.assertIn("lane: error:", res.err)
         self.assertFalse(w.lane_path().exists())
-        self.assertFalse((w.roots.lanes_root).exists(), "no folder is created before the fetch works")
+        self.assertFalse(
+            (w.roots.lanes_root).exists(), "no folder is created before the fetch works"
+        )
 
     def test_credentials_in_git_errors_are_redacted(self) -> None:
         w = self.w
 
-        def failing(argv: List[str]) -> Optional[D.CmdResult]:
+        def failing(argv: list[str]) -> D.CmdResult | None:
             if "fetch" in argv:
-                return D.CmdResult(128, "", "fatal: unable to access 'https://user:s3cretTOKEN@example.invalid/r.git/': nope\n")
+                return D.CmdResult(
+                    128,
+                    "",
+                    "fatal: unable to access 'https://user:s3cretTOKEN@example.invalid/r.git/': nope\n",
+                )
             return None
 
         res = w.lane("new", "DealDex", "fix-thing", exec_override=failing)
@@ -1241,7 +2280,7 @@ class LaneNewTests(WorldCase):
     def test_worktree_add_failure_is_exit_69(self) -> None:
         w = self.w
 
-        def failing(argv: List[str]) -> Optional[D.CmdResult]:
+        def failing(argv: list[str]) -> D.CmdResult | None:
             if argv[4:6] == ["worktree", "add"]:
                 return D.CmdResult(128, "", "fatal: disk full\n")
             return None
@@ -1271,7 +2310,9 @@ class LaneNewTests(WorldCase):
         self.assertFalse(res.has("worktree", "add"))
         body = w.lane("new", "DealDex", "fix-thing", "--dry-run", "--json").json()
         self.assertTrue(body["dry_run"])
-        self.assertEqual(body["base_sha"], SHAS["main"], "from the origin/main already on disk")
+        self.assertEqual(
+            body["base_sha"], SHAS["main"], "from the origin/main already on disk"
+        )
         self.assertNoChange(before)
         missing = w.lane("new", "DealDex", "fix-thing", "--dry-run", "--reuse-branch")
         self.assertEqual(missing.rc, 0, missing.err)
@@ -1283,7 +2324,9 @@ class LaneNewTests(WorldCase):
         w.git(["branch", "claude/fix-thing", "origin/main"], cwd=w.tree)
         self.assertEqual(w.lane("new", "DealDex", "fix-thing", "--dry-run").rc, 64)
         self.assertEqual(w.lane("new", "DealDex", "Bad", "--dry-run").rc, 64)
-        self.assertEqual(w.lane("new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": None}).rc, 64)
+        self.assertEqual(
+            w.lane("new", "DealDex", "x", "--dry-run", env={"AGENT_SEAT": None}).rc, 64
+        )
 
     def test_alias_app_lookup_gives_the_same_lane(self) -> None:
         w = self.w
@@ -1292,7 +2335,9 @@ class LaneNewTests(WorldCase):
                 res = w.lane("new", query, "fix-thing", "--dry-run")
                 self.assertEqual((res.rc, res.out), (0, f"{w.lane_path()}\n"), res.err)
 
-    def test_unknown_and_ambiguous_apps_exit_64_with_candidates_and_run_nothing(self) -> None:
+    def test_unknown_and_ambiguous_apps_exit_64_with_candidates_and_run_nothing(
+        self,
+    ) -> None:
         w = self.w
         res = w.lane("new", "nonesuch", "x")
         self.assertEqual((res.rc, res.out, res.calls), (64, "", []))
@@ -1304,7 +2349,9 @@ class LaneNewTests(WorldCase):
         self.assertIn("Alpha", res.err)
         self.assertIn("Beta", res.err)
 
-    def test_app_without_an_integration_tree_is_refused_with_an_explanation(self) -> None:
+    def test_app_without_an_integration_tree_is_refused_with_an_explanation(
+        self,
+    ) -> None:
         res = self.w.lane("new", "upptime-status", "x")
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("no integration tree", res.err)
@@ -1334,8 +2381,12 @@ class LaneNewTests(WorldCase):
         w.git(["init", "-q", str(tree)])
         w.git(["remote", "add", "origin", w.origin.as_uri()], cwd=tree)
         before = w.everything_hash()
-        for argv in (("new", "codecaps", "x"), ("new", "codecaps", "x", "--dry-run"), ("new", "codecaps", "--review", "--pr", "7"),
-                     ("path", "codecaps", "x")):
+        for argv in (
+            ("new", "codecaps", "x"),
+            ("new", "codecaps", "x", "--dry-run"),
+            ("new", "codecaps", "--review", "--pr", "7"),
+            ("path", "codecaps", "x"),
+        ):
             with self.subTest(argv=argv):
                 res = w.lane(*argv)
                 self.assertEqual((res.rc, res.out, res.calls), (64, "", []), res.err)
@@ -1350,10 +2401,19 @@ class LaneNewTests(WorldCase):
         res = w.lane("new", "DealDex", "fix-thing", env={"FLEET_LAYOUT": "flat"})
         path = w.roots.apps_root / "dealdex-claude-fix-thing"
         self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
-        flat_roots = L.make_roots(w.home, {**w.env, "FLEET_LAYOUT": "flat"}, registry=REGISTRY)
-        self.assertEqual(L.classify_location(path, flat_roots), L.LocationClass.LANE_FLAT)
-        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/fix-thing")
-        self.assertFalse(w.roots.lanes_root.exists(), "nothing is created under apps/lanes in flat mode")
+        flat_roots = L.make_roots(
+            w.home, {**w.env, "FLEET_LAYOUT": "flat"}, registry=REGISTRY
+        )
+        self.assertEqual(
+            L.classify_location(path, flat_roots), L.LocationClass.LANE_FLAT
+        )
+        self.assertEqual(
+            w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/fix-thing"
+        )
+        self.assertFalse(
+            w.roots.lanes_root.exists(),
+            "nothing is created under apps/lanes in flat mode",
+        )
         self.assertEqual(w.git(["status", "--porcelain"], cwd=path), "")
         again = w.lane("new", "DealDex", "fix-thing", env={"FLEET_LAYOUT": "flat"})
         self.assertEqual((again.rc, again.out), (0, f"{path}\n"))
@@ -1405,7 +2465,9 @@ class LaneNewTests(WorldCase):
 
     def test_a_classification_other_than_a_lane_is_refused(self) -> None:
         w = self.w
-        with mock.patch.object(K.L, "classify_location", return_value=L.LocationClass.UNSANCTIONED):
+        with mock.patch.object(
+            K.L, "classify_location", return_value=L.LocationClass.UNSANCTIONED
+        ):
             res = w.lane("new", "DealDex", "fix-thing")
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("outside the lane map", res.err)
@@ -1422,8 +2484,13 @@ class LaneNewTests(WorldCase):
 
     def test_purpose_and_board_are_validated(self) -> None:
         w = self.w
-        for argv in (["--purpose", "line one\nline two"], ["--purpose", "x" * 301], ["--board", "has space"],
-                     ["--board", "x" * 65], ["--board", "-leading"]):
+        for argv in (
+            ["--purpose", "line one\nline two"],
+            ["--purpose", "x" * 301],
+            ["--board", "has space"],
+            ["--board", "x" * 65],
+            ["--board", "-leading"],
+        ):
             with self.subTest(argv=argv):
                 res = w.lane("new", "DealDex", "fix-thing", *argv)
                 self.assertEqual(res.rc, 64, res.err)
@@ -1434,19 +2501,33 @@ class LaneNewTests(WorldCase):
         self.assertEqual(w.lane("new", "DealDex", "x", "--pr", "7").rc, 64)
         self.assertEqual(w.lane("new", "DealDex", "--review").rc, 64)
         self.assertEqual(w.lane("new", "DealDex", "x", "--review", "--pr", "7").rc, 64)
-        self.assertEqual(w.lane("new", "DealDex", "--review", "--pr", "7", "--reuse-branch").rc, 64)
-        self.assertEqual(w.lane("new", "DealDex", "--review", "--pr", "7", "--base", "release").rc, 64)
+        self.assertEqual(
+            w.lane("new", "DealDex", "--review", "--pr", "7", "--reuse-branch").rc, 64
+        )
+        self.assertEqual(
+            w.lane("new", "DealDex", "--review", "--pr", "7", "--base", "release").rc,
+            64,
+        )
         for bad in ("0", "-1", "abc", "1.5", "99999999999"):
             with self.subTest(pr=bad):
-                self.assertEqual(w.lane("new", "DealDex", "--review", "--pr", bad).rc, 64)
+                self.assertEqual(
+                    w.lane("new", "DealDex", "--review", "--pr", bad).rc, 64
+                )
 
     def test_a_bad_layout_setting_warns_and_falls_back_to_nested(self) -> None:
-        res = self.w.lane("new", "DealDex", "fix-thing", "--dry-run", env={"FLEET_LAYOUT": "sideways"})
+        res = self.w.lane(
+            "new", "DealDex", "fix-thing", "--dry-run", env={"FLEET_LAYOUT": "sideways"}
+        )
         self.assertEqual((res.rc, res.out), (0, f"{self.w.lane_path()}\n"), res.err)
         self.assertIn("unrecognized FLEET_LAYOUT", res.err)
 
     def test_an_unreadable_registry_is_a_refusal(self) -> None:
-        res = self.w.lane("new", "DealDex", "x", env={"FLEET_APPS_JSON": str(self.w.root / "missing.json")})
+        res = self.w.lane(
+            "new",
+            "DealDex",
+            "x",
+            env={"FLEET_APPS_JSON": str(self.w.root / "missing.json")},
+        )
         self.assertEqual((res.rc, res.out), (64, ""))
         self.assertIn("cannot read the registry", res.err)
 
@@ -1468,24 +2549,42 @@ class ExternalLanesTests(WorldCase):
         os.symlink(self.phys_repo, self.lanes / "DealDex")
         self.env = {"FLEET_LANES_EXTERNAL_ROOT": str(self.ext)}
 
-    def test_lane_new_through_the_link_prints_the_lanes_path_and_git_records_the_real_one(self) -> None:
+    def test_lane_new_through_the_link_prints_the_lanes_path_and_git_records_the_real_one(
+        self,
+    ) -> None:
         w = self.w
         res = w.lane("new", "DealDex", "fix-thing", env=self.env)
         path = w.lane_path()
         self.assertEqual((res.rc, res.out), (0, f"{path}\n"), res.err)
         self.assertIn("created", res.err)
-        self.assertEqual(os.path.realpath(path), str(self.phys_repo / "claude-fix-thing"))
-        self.assertTrue((self.phys_repo / "claude-fix-thing" / ".git").exists(), "the lane is on the external disk")
-        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/fix-thing")
+        self.assertEqual(
+            os.path.realpath(path), str(self.phys_repo / "claude-fix-thing")
+        )
+        self.assertTrue(
+            (self.phys_repo / "claude-fix-thing" / ".git").exists(),
+            "the lane is on the external disk",
+        )
+        self.assertEqual(
+            w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path), "claude/fix-thing"
+        )
         self.assertEqual(w.git(["status", "--porcelain"], cwd=path), "")
         listed = w.git(["worktree", "list", "--porcelain"], cwd=w.tree)
-        self.assertIn(f"worktree {self.phys_repo / 'claude-fix-thing'}", listed, "git records the real path")
+        self.assertIn(
+            f"worktree {self.phys_repo / 'claude-fix-thing'}",
+            listed,
+            "git records the real path",
+        )
         roots = L.make_roots(w.home, {**w.env, **self.env}, registry=REGISTRY)
         for p in (path, self.phys_repo / "claude-fix-thing"):
-            self.assertEqual(L.classify_location(p, roots), L.LocationClass.LANE_NESTED, str(p))
+            self.assertEqual(
+                L.classify_location(p, roots), L.LocationClass.LANE_NESTED, str(p)
+            )
         git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
         self.assertTrue((git_dir / "lane.json").is_file(), "the manifest is written")
-        self.assertEqual(json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))["branch"], "claude/fix-thing")
+        self.assertEqual(
+            json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))["branch"],
+            "claude/fix-thing",
+        )
 
     def test_a_second_run_finds_the_lane_it_made_and_changes_nothing(self) -> None:
         w = self.w
@@ -1497,7 +2596,9 @@ class ExternalLanesTests(WorldCase):
         self.assertEqual(w.everything_hash(), before)
         self.assertFalse(res.has("worktree", "add"))
 
-    def test_lane_path_and_dry_run_print_the_lanes_path_and_change_nothing(self) -> None:
+    def test_lane_path_and_dry_run_print_the_lanes_path_and_change_nothing(
+        self,
+    ) -> None:
         w = self.w
         before = w.everything_hash()
         shown = w.lane("path", "DealDex", "fix-thing", env=self.env)
@@ -1516,32 +2617,70 @@ class ExternalLanesTests(WorldCase):
         again = w.lane("new", "DealDex", "--review", "--pr", "7", env=self.env)
         self.assertEqual((again.rc, again.out), (0, f"{w.review_path()}\n"), again.err)
 
-    def test_a_new_repo_folder_is_made_in_the_lanes_root_when_there_is_no_link(self) -> None:
+    def test_a_new_repo_folder_is_made_in_the_lanes_root_when_there_is_no_link(
+        self,
+    ) -> None:
         # the link is per repo folder: a repo without one keeps its lanes on the internal disk, as before
         w = self.w
         os.unlink(self.lanes / "DealDex")
         res = w.lane("new", "DealDex", "fix-thing", env=self.env)
         self.assertEqual((res.rc, res.out), (0, f"{w.lane_path()}\n"), res.err)
-        self.assertFalse(w.lane_path().is_symlink() or (self.lanes / "DealDex").is_symlink())
+        self.assertFalse(
+            w.lane_path().is_symlink() or (self.lanes / "DealDex").is_symlink()
+        )
         self.assertEqual(os.path.realpath(w.lane_path()), str(w.lane_path()))
 
-    def test_the_allowlist_treats_a_path_on_the_disk_as_inside_the_lanes_root(self) -> None:
+    def test_the_allowlist_treats_a_path_on_the_disk_as_inside_the_lanes_root(
+        self,
+    ) -> None:
         w = self.w
         roots = L.make_roots(w.home, {**w.env, **self.env}, registry=REGISTRY)
-        argv = ["git", "worktree", "add", "-b", "claude/x", str(self.lanes / "DealDex" / "claude-x"), SHAS["main"]]
+        argv = [
+            "git",
+            "worktree",
+            "add",
+            "-b",
+            "claude/x",
+            str(self.lanes / "DealDex" / "claude-x"),
+            SHAS["main"],
+        ]
         K.check_allowed(argv, write_root=roots.lanes_root, fold=L.logical_fold(roots))
         with self.assertRaises(K.CommandRefused):
-            K.check_allowed(argv, write_root=roots.lanes_root, fold=str.casefold)    # the old comparison would refuse
-        outside = ["git", "worktree", "add", "-b", "claude/x", str(self.ext / "Other" / "claude-x"), SHAS["main"]]
-        K.check_allowed(outside, write_root=roots.lanes_root, fold=L.logical_fold(roots))   # on the disk, so fine
-        elsewhere = ["git", "worktree", "add", "-b", "claude/x", str(w.home / "Elsewhere" / "claude-x"), SHAS["main"]]
+            K.check_allowed(
+                argv, write_root=roots.lanes_root, fold=str.casefold
+            )  # the old comparison would refuse
+        outside = [
+            "git",
+            "worktree",
+            "add",
+            "-b",
+            "claude/x",
+            str(self.ext / "Other" / "claude-x"),
+            SHAS["main"],
+        ]
+        K.check_allowed(
+            outside, write_root=roots.lanes_root, fold=L.logical_fold(roots)
+        )  # on the disk, so fine
+        elsewhere = [
+            "git",
+            "worktree",
+            "add",
+            "-b",
+            "claude/x",
+            str(w.home / "Elsewhere" / "claude-x"),
+            SHAS["main"],
+        ]
         with self.assertRaises(K.CommandRefused):
-            K.check_allowed(elsewhere, write_root=roots.lanes_root, fold=L.logical_fold(roots))
+            K.check_allowed(
+                elsewhere, write_root=roots.lanes_root, fold=L.logical_fold(roots)
+            )
 
     def test_without_the_setting_the_link_is_refused_in_words(self) -> None:
         w = self.w
         before = w.everything_hash()
-        res = w.lane("new", "DealDex", "fix-thing", env={"FLEET_LANES_EXTERNAL_ROOT": ""})
+        res = w.lane(
+            "new", "DealDex", "fix-thing", env={"FLEET_LANES_EXTERNAL_ROOT": ""}
+        )
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("is a symlink to", res.err)
         self.assertIn(str(self.phys_repo), res.err)
@@ -1563,13 +2702,16 @@ class ExternalLanesTests(WorldCase):
 
     def test_an_unmounted_disk_is_a_clear_refusal_and_creates_nothing(self) -> None:
         w = self.w
-        shutil.rmtree(self.ext)                      # the disk is gone: lanes/DealDex now leads nowhere
+        shutil.rmtree(self.ext)  # the disk is gone: lanes/DealDex now leads nowhere
         before = w.everything_hash()
         res = w.lane("new", "DealDex", "fix-thing", env=self.env)
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("does not exist", res.err)
         self.assertIn("mounted", res.err)
-        self.assertFalse(self.ext.exists(), "lane must not recreate the disk's folders on the wrong volume")
+        self.assertFalse(
+            self.ext.exists(),
+            "lane must not recreate the disk's folders on the wrong volume",
+        )
         self.assertEqual(w.everything_hash(), before)
         review = w.lane("new", "DealDex", "--review", "--pr", "7", env=self.env)
         self.assertEqual((review.rc, review.out), (64, ""), review.err)
@@ -1591,11 +2733,15 @@ class PathCommandTests(WorldCase):
         self.assertEqual((res.rc, res.out, res.calls), (0, f"{w.lane_path()}\n", []))
         self.assertNoChange(before)
         flat = w.lane("path", "DealDex", "fix-thing", env={"FLEET_LAYOUT": "flat"})
-        self.assertEqual(flat.out, f"{w.roots.apps_root / 'dealdex-claude-fix-thing'}\n")
+        self.assertEqual(
+            flat.out, f"{w.roots.apps_root / 'dealdex-claude-fix-thing'}\n"
+        )
 
     def test_refusals(self) -> None:
         w = self.w
-        self.assertEqual(w.lane("path", "DealDex", "fix-thing", env={"AGENT_SEAT": None}).rc, 64)
+        self.assertEqual(
+            w.lane("path", "DealDex", "fix-thing", env={"AGENT_SEAT": None}).rc, 64
+        )
         self.assertEqual(w.lane("path", "DealDex", "Bad Slug").rc, 64)
         self.assertEqual(w.lane("path", "nonesuch", "x").rc, 64)
         res = w.lane("path", "upptime-status", "x")
@@ -1606,25 +2752,52 @@ class PathCommandTests(WorldCase):
 
 # --------------------------------------------------------------------------- review checkouts
 
+
 class ReviewTests(WorldCase):
     def test_happy_path(self) -> None:
         w = self.w
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", "--purpose", "Check the PR", "--json")
+        res = w.lane(
+            "new",
+            "DealDex",
+            "--review",
+            "--pr",
+            "7",
+            "--purpose",
+            "Check the PR",
+            "--json",
+        )
         path = w.review_path()
         body = res.json()
         self.assertEqual(res.rc, 0, res.err)
         self.assertEqual(body["path"], str(path))
         self.assertEqual(w.git(["rev-parse", "HEAD"], cwd=path), SHAS["pr"])
-        self.assertEqual(w.git(["symbolic-ref", "-q", "HEAD"], cwd=path, check=False), "", "HEAD is detached")
+        self.assertEqual(
+            w.git(["symbolic-ref", "-q", "HEAD"], cwd=path, check=False),
+            "",
+            "HEAD is detached",
+        )
         self.assertEqual(w.git(["status", "--porcelain"], cwd=path), "")
         self.assertEqual(L.classify_location(path, w.roots), L.LocationClass.REVIEW)
         git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
         manifest = json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))
         expected = {
-            "schema": 1, "tool": "lane new", "kind": "review", "seat": "claude", "tag": "CLAUDE", "app": "DealDex",
-            "prefix": "dealdex", "lane_dir": "DealDex", "pr": 7, "head_sha": SHAS["pr"], "head_ref": "feature/pr-work",
-            "pr_state": "OPEN", "cross_repo": False, "purpose": "Check the PR", "board": None,
-            "created_at": "2026-10-07T16:15:00+00:00", "expires_at": "2026-10-14T16:15:00+00:00",
+            "schema": 1,
+            "tool": "lane new",
+            "kind": "review",
+            "seat": "claude",
+            "tag": "CLAUDE",
+            "app": "DealDex",
+            "prefix": "dealdex",
+            "lane_dir": "DealDex",
+            "pr": 7,
+            "head_sha": SHAS["pr"],
+            "head_ref": "feature/pr-work",
+            "pr_state": "OPEN",
+            "cross_repo": False,
+            "purpose": "Check the PR",
+            "board": None,
+            "created_at": "2026-10-07T16:15:00+00:00",
+            "expires_at": "2026-10-14T16:15:00+00:00",
         }
         self.assertEqual(manifest, expected)
         self.assertEqual({k: v for k, v in body.items() if k != "path"}, expected)
@@ -1638,25 +2811,51 @@ class ReviewTests(WorldCase):
     def test_the_exact_gh_and_git_calls(self) -> None:
         res = self.w.lane("new", "DealDex", "--review", "--pr", "7")
         self.assertEqual(res.rc, 0, res.err)
-        self.assertIn(("gh", "pr", "view", "7", "--repo", "Simple-With-Us/DealDex", "--json",
-                       "headRefOid,headRefName,state,isCrossRepository"), res.verbs)
+        self.assertIn(
+            (
+                "gh",
+                "pr",
+                "view",
+                "7",
+                "--repo",
+                "Simple-With-Us/DealDex",
+                "--json",
+                "headRefOid,headRefName,state,isCrossRepository",
+            ),
+            res.verbs,
+        )
         self.assertIn(("fetch", "--no-tags", "origin", "pull/7/head"), res.verbs)
         add = [v for v in res.verbs if v[:2] == ("worktree", "add")]
-        self.assertEqual(add, [("worktree", "add", "--detach", str(self.w.review_path()), SHAS["pr"])])
+        self.assertEqual(
+            add,
+            [("worktree", "add", "--detach", str(self.w.review_path()), SHAS["pr"])],
+        )
         for argv in res.calls:
-            K.check_allowed(argv[:1] + argv[4:] if argv[0] == "git" else argv, write_root=self.w.roots.lanes_root,
-                            fold=str.casefold)
+            K.check_allowed(
+                argv[:1] + argv[4:] if argv[0] == "git" else argv,
+                write_root=self.w.roots.lanes_root,
+                fold=str.casefold,
+            )
 
     def test_second_run_is_idempotent_and_does_not_update(self) -> None:
         w = self.w
         w.lane("new", "DealDex", "--review", "--pr", "7")
         before = w.everything_hash()
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", clock=lambda: NOW + dt.timedelta(days=3))
+        res = w.lane(
+            "new",
+            "DealDex",
+            "--review",
+            "--pr",
+            "7",
+            clock=lambda: NOW + dt.timedelta(days=3),
+        )
         self.assertEqual((res.rc, res.out), (0, f"{w.review_path()}\n"), res.err)
         self.assertIn("already exists", res.err)
         self.assertNoChange(before)
         self.assertEqual(res.calls[0][0], "git")
-        self.assertFalse(any(c[0] == "gh" for c in res.calls), "no network on an idempotent run")
+        self.assertFalse(
+            any(c[0] == "gh" for c in res.calls), "no network on an idempotent run"
+        )
         self.assertFalse(res.has("fetch"))
 
     def test_two_seats_get_separate_checkouts_of_the_same_pr(self) -> None:
@@ -1665,46 +2864,87 @@ class ReviewTests(WorldCase):
         w = self.w
         first = w.lane("new", "DealDex", "--review", "--pr", "7")
         self.assertEqual((first.rc, first.out), (0, f"{w.review_path()}\n"), first.err)
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"})
-        self.assertEqual((res.rc, res.out), (0, f"{w.review_path(seat='antigravity')}\n"), res.err)
+        res = w.lane(
+            "new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"}
+        )
+        self.assertEqual(
+            (res.rc, res.out), (0, f"{w.review_path(seat='antigravity')}\n"), res.err
+        )
         self.assertTrue(w.review_path().is_dir())
         self.assertTrue(w.review_path(seat="antigravity").is_dir())
-        self.assertEqual(L.classify_location(w.review_path(seat="antigravity"), w.roots), L.LocationClass.REVIEW)
+        self.assertEqual(
+            L.classify_location(w.review_path(seat="antigravity"), w.roots),
+            L.LocationClass.REVIEW,
+        )
         # reruns are idempotent for both seats and each finds its own folder
         again = w.lane("new", "DealDex", "--review", "--pr", "7")
         self.assertEqual((again.rc, again.out), (0, f"{w.review_path()}\n"), again.err)
-        again = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"})
-        self.assertEqual((again.rc, again.out), (0, f"{w.review_path(seat='antigravity')}\n"), again.err)
+        again = w.lane(
+            "new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"}
+        )
+        self.assertEqual(
+            (again.rc, again.out),
+            (0, f"{w.review_path(seat='antigravity')}\n"),
+            again.err,
+        )
         self.assertIn("already exists", again.err)
         # the manifests say who owns which
-        for path, seat in ((w.review_path(), "claude"), (w.review_path(seat="antigravity"), "antigravity")):
+        for path, seat in (
+            (w.review_path(), "claude"),
+            (w.review_path(seat="antigravity"), "antigravity"),
+        ):
             git_dir = Path(w.git(["rev-parse", "--absolute-git-dir"], cwd=path))
-            self.assertEqual(json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))["seat"], seat)
+            self.assertEqual(
+                json.loads((git_dir / "lane.json").read_text(encoding="utf-8"))["seat"],
+                seat,
+            )
         # `path --review` agrees with `new --review` for both seats and writes nothing
-        self.assertEqual(w.lane("path", "DealDex", "--review", "--pr", "7").out, f"{w.review_path()}\n")
-        self.assertEqual(w.lane("path", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"}).out,
-                         f"{w.review_path(seat='antigravity')}\n")
+        self.assertEqual(
+            w.lane("path", "DealDex", "--review", "--pr", "7").out,
+            f"{w.review_path()}\n",
+        )
+        self.assertEqual(
+            w.lane(
+                "path", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"}
+            ).out,
+            f"{w.review_path(seat='antigravity')}\n",
+        )
         # a third seat sees the plain name taken by someone else and gets its own
-        third = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "MM"})
-        self.assertEqual((third.rc, third.out), (0, f"{w.review_path(seat='minimax')}\n"), third.err)
+        third = w.lane(
+            "new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "MM"}
+        )
+        self.assertEqual(
+            (third.rc, third.out), (0, f"{w.review_path(seat='minimax')}\n"), third.err
+        )
 
-    def test_a_seat_that_made_the_suffixed_checkout_keeps_finding_it_when_the_plain_one_is_gone(self) -> None:
+    def test_a_seat_that_made_the_suffixed_checkout_keeps_finding_it_when_the_plain_one_is_gone(
+        self,
+    ) -> None:
         w = self.w
         w.lane("new", "DealDex", "--review", "--pr", "7")
         w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"})
         w.git(["worktree", "remove", "--force", str(w.review_path())], cwd=w.tree)
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"})
-        self.assertEqual((res.rc, res.out), (0, f"{w.review_path(seat='antigravity')}\n"), res.err)
+        res = w.lane(
+            "new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": "AG"}
+        )
+        self.assertEqual(
+            (res.rc, res.out), (0, f"{w.review_path(seat='antigravity')}\n"), res.err
+        )
         self.assertFalse(w.review_path().exists())
 
     def test_the_review_checkout_sits_beside_the_lanes_of_the_same_repo(self) -> None:
         w = self.w
         w.lane("new", "DealDex", "fix-thing")
         w.lane("new", "DealDex", "--review", "--pr", "7")
-        self.assertEqual(sorted(p.name for p in (w.roots.lanes_root / "DealDex").iterdir()),
-                         ["claude-fix-thing", "review-pr-7"])
-        self.assertEqual(sorted(p.name for p in w.roots.lanes_root.iterdir()), ["DealDex"],
-                         "no _review folder, no prefix folder")
+        self.assertEqual(
+            sorted(p.name for p in (w.roots.lanes_root / "DealDex").iterdir()),
+            ["claude-fix-thing", "review-pr-7"],
+        )
+        self.assertEqual(
+            sorted(p.name for p in w.roots.lanes_root.iterdir()),
+            ["DealDex"],
+            "no _review folder, no prefix folder",
+        )
 
     def test_path_review_prints_the_path_and_changes_nothing(self) -> None:
         w = self.w
@@ -1712,8 +2952,12 @@ class ReviewTests(WorldCase):
         res = w.lane("path", "dd", "--review", "--pr", "7")
         self.assertEqual((res.rc, res.out), (0, f"{w.review_path()}\n"), res.err)
         self.assertNoChange(before)
-        for argv in (["path", "DealDex", "--review"], ["path", "DealDex", "x", "--review", "--pr", "7"],
-                     ["path", "DealDex", "x", "--pr", "7"], ["path", "DealDex"]):
+        for argv in (
+            ["path", "DealDex", "--review"],
+            ["path", "DealDex", "x", "--review", "--pr", "7"],
+            ["path", "DealDex", "x", "--pr", "7"],
+            ["path", "DealDex"],
+        ):
             self.assertEqual(w.lane(*argv).rc, 64, argv)
 
     def test_dry_run_changes_nothing_and_skips_the_network(self) -> None:
@@ -1724,35 +2968,73 @@ class ReviewTests(WorldCase):
         self.assertFalse(any(c[0] == "gh" for c in res.calls))
         self.assertFalse(res.has("fetch"))
         self.assertNoChange(before)
-        body = w.lane("new", "DealDex", "--review", "--pr", "7", "--dry-run", "--json").json()
+        body = w.lane(
+            "new", "DealDex", "--review", "--pr", "7", "--dry-run", "--json"
+        ).json()
         self.assertTrue(body["dry_run"])
         self.assertIsNone(body["head_sha"])
 
     def test_seat_rules_apply(self) -> None:
         w = self.w
         for tag in (None, "MONET", "NOPE"):
-            res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": tag})
+            res = w.lane(
+                "new", "DealDex", "--review", "--pr", "7", env={"AGENT_SEAT": tag}
+            )
             self.assertEqual((res.rc, res.out, res.calls), (64, "", []))
 
     def test_gh_failures(self) -> None:
         w = self.w
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", gh=lambda argv: D.CmdResult(1, "", "gh: not logged in\n"))
+        res = w.lane(
+            "new",
+            "DealDex",
+            "--review",
+            "--pr",
+            "7",
+            gh=lambda argv: D.CmdResult(1, "", "gh: not logged in\n"),
+        )
         self.assertEqual((res.rc, res.out), (69, ""), res.err)
         self.assertIn("gh pr view 7 failed", res.err)
-        res = w.lane("new", "DealDex", "--review", "--pr", "999", gh=lambda argv: D.CmdResult(
-            1, "", "GraphQL: Could not resolve to a PullRequest with the number of 999. (repository.pullRequest)\n"))
+        res = w.lane(
+            "new",
+            "DealDex",
+            "--review",
+            "--pr",
+            "999",
+            gh=lambda argv: D.CmdResult(
+                1,
+                "",
+                "GraphQL: Could not resolve to a PullRequest with the number of 999. (repository.pullRequest)\n",
+            ),
+        )
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("PR 999 was not found", res.err)
         for text in ("not json", "{}", '{"headRefOid": "nothex"}', "[]"):
             with self.subTest(text=text):
-                res = w.lane("new", "DealDex", "--review", "--pr", "7", gh=lambda argv, t=text: D.CmdResult(0, t, ""))
+                res = w.lane(
+                    "new",
+                    "DealDex",
+                    "--review",
+                    "--pr",
+                    "7",
+                    gh=lambda argv, t=text: D.CmdResult(0, t, ""),
+                )
                 self.assertEqual((res.rc, res.out), (69, ""), res.err)
         self.assertFalse(w.review_path().exists())
-        self.assertFalse((w.roots.lanes_root / "DealDex").exists(), "nothing is created before the PR is looked up")
+        self.assertFalse(
+            (w.roots.lanes_root / "DealDex").exists(),
+            "nothing is created before the PR is looked up",
+        )
 
     def test_a_pr_head_that_moved_before_the_fetch_is_exit_69(self) -> None:
         w = self.w
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", gh=lambda argv: gh_pr_json(sha="a" * 40))
+        res = w.lane(
+            "new",
+            "DealDex",
+            "--review",
+            "--pr",
+            "7",
+            gh=lambda argv: gh_pr_json(sha="a" * 40),
+        )
         self.assertEqual((res.rc, res.out), (69, ""), res.err)
         self.assertIn("Run lane again", res.err)
         self.assertFalse(w.review_path().exists())
@@ -1760,14 +3042,23 @@ class ReviewTests(WorldCase):
 
     def test_fetch_failure_is_exit_69(self) -> None:
         w = self.w
-        res = w.lane("new", "DealDex", "--review", "--pr", "8")      # origin has no pull/8/head
+        res = w.lane(
+            "new", "DealDex", "--review", "--pr", "8"
+        )  # origin has no pull/8/head
         self.assertEqual((res.rc, res.out), (69, ""), res.err)
         self.assertIn("pull/8/head", res.err)
         self.assertFalse(w.review_path(8).exists())
 
     def test_a_closed_pr_is_checked_out_with_a_note(self) -> None:
         w = self.w
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", gh=lambda argv: gh_pr_json(state="MERGED"))
+        res = w.lane(
+            "new",
+            "DealDex",
+            "--review",
+            "--pr",
+            "7",
+            gh=lambda argv: gh_pr_json(state="MERGED"),
+        )
         self.assertEqual(res.rc, 0, res.err)
         self.assertIn("PR 7 is MERGED", res.err)
 
@@ -1778,7 +3069,18 @@ class ReviewTests(WorldCase):
         res = w.lane("new", "DealDex", "--review", "--pr", "7")
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         path.rmdir()
-        w.git(["worktree", "add", "-q", "-b", "claude/attached", str(path), "origin/main"], cwd=w.tree)
+        w.git(
+            [
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "claude/attached",
+                str(path),
+                "origin/main",
+            ],
+            cwd=w.tree,
+        )
         before = w.everything_hash()
         res = w.lane("new", "DealDex", "--review", "--pr", "7")
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
@@ -1788,19 +3090,33 @@ class ReviewTests(WorldCase):
     def test_flat_mode_still_puts_review_checkouts_in_the_repo_folder(self) -> None:
         # as before layout v2, a review does not depend on the layout mode (the guard's deny text offers it in both)
         w = self.w
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"FLEET_LAYOUT": "flat"})
+        res = w.lane(
+            "new", "DealDex", "--review", "--pr", "7", env={"FLEET_LAYOUT": "flat"}
+        )
         self.assertEqual((res.rc, res.out), (0, f"{w.review_path()}\n"), res.err)
-        flat_roots = L.make_roots(w.home, dict(w.env, FLEET_LAYOUT="flat"), registry=REGISTRY)
-        self.assertEqual(L.classify_location(w.review_path(), flat_roots), L.LocationClass.REVIEW)
+        flat_roots = L.make_roots(
+            w.home, dict(w.env, FLEET_LAYOUT="flat"), registry=REGISTRY
+        )
+        self.assertEqual(
+            L.classify_location(w.review_path(), flat_roots), L.LocationClass.REVIEW
+        )
 
     def test_review_root_outside_the_map_is_refused(self) -> None:
         w = self.w
-        res = w.lane("new", "DealDex", "--review", "--pr", "7", env={"FLEET_LANES_ROOT": "~/Code/lanes"})
+        res = w.lane(
+            "new",
+            "DealDex",
+            "--review",
+            "--pr",
+            "7",
+            env={"FLEET_LANES_ROOT": "~/Code/lanes"},
+        )
         self.assertEqual((res.rc, res.out), (64, ""), res.err)
         self.assertIn("inside", res.err)
 
 
 # --------------------------------------------------------------------------- two runs at once
+
 
 class ConcurrencyTests(WorldCase):
     """Two `lane new` runs for the same lane at the same moment.  Without a per-repo lock, both see
@@ -1808,14 +3124,16 @@ class ConcurrencyTests(WorldCase):
     while the winner prints its path.  Run B is started from inside run A's `worktree add` and given
     three seconds, which is when the unlocked B used to finish first."""
 
-    def _race(self, argv: "tuple[str, ...]", path: Path) -> "tuple[Result, Result]":
+    def _race(self, argv: tuple[str, ...], path: Path) -> tuple[Result, Result]:
         w = self.w
-        box: List[Result] = []
-        threads: List[threading.Thread] = []
+        box: list[Result] = []
+        threads: list[threading.Thread] = []
 
-        def start_b_inside_a(argv_: List[str]) -> Optional[D.CmdResult]:
+        def start_b_inside_a(argv_: list[str]) -> D.CmdResult | None:
             if argv_[4:6] == ["worktree", "add"] and not threads:
-                t = threading.Thread(target=lambda: box.append(w.lane(*argv)), daemon=True)
+                t = threading.Thread(
+                    target=lambda: box.append(w.lane(*argv)), daemon=True
+                )
                 threads.append(t)
                 t.start()
                 t.join(3)
@@ -1827,7 +3145,9 @@ class ConcurrencyTests(WorldCase):
         self.assertFalse(threads[0].is_alive(), "run B never finished")
         b = box[0]
         for name, res in (("A", a), ("B", b)):
-            self.assertEqual((res.rc, res.out), (0, f"{path}\n"), f"run {name}: {res.err}")
+            self.assertEqual(
+                (res.rc, res.out), (0, f"{path}\n"), f"run {name}: {res.err}"
+            )
         self.assertTrue(path.is_dir(), "the lane both runs printed must exist")
         listed = w.git(["worktree", "list", "--porcelain"], cwd=w.tree)
         self.assertNotIn("prunable", listed)
@@ -1841,7 +3161,10 @@ class ConcurrencyTests(WorldCase):
         w = self.w
         w.git(["branch", "--no-track", "claude/race", "origin/main"], cwd=w.tree)
         self._race(("new", "DealDex", "race", "--reuse-branch"), w.lane_path("race"))
-        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=w.lane_path("race")), "claude/race")
+        self.assertEqual(
+            w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=w.lane_path("race")),
+            "claude/race",
+        )
 
     def test_two_review_runs_for_the_same_pr(self) -> None:
         w = self.w
@@ -1851,7 +3174,10 @@ class ConcurrencyTests(WorldCase):
     def test_two_fresh_branch_runs_for_the_same_lane(self) -> None:
         w = self.w
         self._race(("new", "DealDex", "fix-thing"), w.lane_path())
-        self.assertEqual(w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=w.lane_path()), "claude/fix-thing")
+        self.assertEqual(
+            w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=w.lane_path()),
+            "claude/fix-thing",
+        )
 
     def test_the_lock_lives_in_the_git_common_dir_and_is_never_removed(self) -> None:
         w = self.w
@@ -1861,7 +3187,10 @@ class ConcurrencyTests(WorldCase):
         self.assertFalse(lock.exists(), "a dry run writes nothing, not even the lock")
         self.assertEqual(w.lane("new", "DealDex", "fix-thing").rc, 0)
         self.assertTrue(lock.is_file())
-        self.assertFalse(lock.name.endswith(".lock"), "git-style *.lock names get swept by stale-lock cleaners")
+        self.assertFalse(
+            lock.name.endswith(".lock"),
+            "git-style *.lock names get swept by stale-lock cleaners",
+        )
         self.assertEqual(w.lane("new", "DealDex", "--review", "--pr", "7").rc, 0)
         self.assertTrue(lock.is_file())
 
@@ -1880,17 +3209,28 @@ class ConcurrencyTests(WorldCase):
         self.assertFalse(res.has("fetch"))
         self.assertFalse(res.has("worktree", "add"))
         self.assertFalse(w.lane_path().exists())
-        self.assertEqual(w.lane("new", "DealDex", "fix-thing").rc, 0, "a later run goes through")
+        self.assertEqual(
+            w.lane("new", "DealDex", "fix-thing").rc, 0, "a later run goes through"
+        )
 
-    def test_a_worktree_that_is_gone_right_after_add_is_exit_69_not_a_printed_path(self) -> None:
+    def test_a_worktree_that_is_gone_right_after_add_is_exit_69_not_a_printed_path(
+        self,
+    ) -> None:
         w = self.w
-        for argv, path in ((("new", "DealDex", "fix-thing"), w.lane_path()),
-                           (("new", "DealDex", "--review", "--pr", "7"), w.review_path())):
+        for argv, path in (
+            (("new", "DealDex", "fix-thing"), w.lane_path()),
+            (("new", "DealDex", "--review", "--pr", "7"), w.review_path()),
+        ):
             with self.subTest(argv=argv):
-                def vanish(argv_: List[str]) -> Optional[D.CmdResult]:
+
+                def vanish(argv_: list[str]) -> D.CmdResult | None:
                     if argv_[4:6] == ["worktree", "add"]:
-                        real = K.default_exec(argv_, str(w.tree), K._child_env(w.env), 900)
-                        shutil.rmtree(path, ignore_errors=True)       # what a losing run's clean-up did
+                        real = K.default_exec(
+                            argv_, str(w.tree), K._child_env(w.env), 900
+                        )
+                        shutil.rmtree(
+                            path, ignore_errors=True
+                        )  # what a losing run's clean-up did
                         return real
                     return None
 
@@ -1901,14 +3241,18 @@ class ConcurrencyTests(WorldCase):
     def test_a_worktree_on_the_wrong_commit_after_add_is_exit_69(self) -> None:
         w = self.w
 
-        def wrong_head(argv_: List[str]) -> Optional[D.CmdResult]:
-            if argv_[4:6] == ["worktree", "list"] and any("worktree add" in " ".join(c) for c in seen):
+        def wrong_head(argv_: list[str]) -> D.CmdResult | None:
+            if argv_[4:6] == ["worktree", "list"] and any(
+                "worktree add" in " ".join(c) for c in seen
+            ):
                 real = K.default_exec(argv_, str(w.tree), K._child_env(w.env), 30)
-                return D.CmdResult(real.rc, real.out.replace(SHAS["main"], SHAS["release"]), real.err)
+                return D.CmdResult(
+                    real.rc, real.out.replace(SHAS["main"], SHAS["release"]), real.err
+                )
             seen.append(list(argv_))
             return None
 
-        seen: List[List[str]] = []
+        seen: list[list[str]] = []
         res = w.lane("new", "DealDex", "fix-thing", exec_override=wrong_head)
         self.assertEqual((res.rc, res.out), (69, ""), res.err)
         self.assertIn(SHAS["release"][:9], res.err)
@@ -1916,16 +3260,23 @@ class ConcurrencyTests(WorldCase):
 
 # --------------------------------------------------------------------------- command line
 
+
 class CommandLineTests(WorldCase):
     def test_ls_and_doctor_delegate_with_the_same_argv(self) -> None:
         for name in ("ls", "doctor"):
             with self.subTest(name=name):
                 out = io.StringIO()
                 with mock.patch.object(D, "main", return_value=2) as doctor_main:
-                    rc = K.main([name, "--json", "--no-gh", "--only-class", "LANE_NESTED"], env=self.w.env, stdout=out)
+                    rc = K.main(
+                        [name, "--json", "--no-gh", "--only-class", "LANE_NESTED"],
+                        env=self.w.env,
+                        stdout=out,
+                    )
                 self.assertEqual(rc, 2)
                 args, kwargs = doctor_main.call_args
-                self.assertEqual(args[0], ["--json", "--no-gh", "--only-class", "LANE_NESTED"])
+                self.assertEqual(
+                    args[0], ["--json", "--no-gh", "--only-class", "LANE_NESTED"]
+                )
                 self.assertIs(kwargs["stdout"], out)
                 self.assertEqual(kwargs["env"], self.w.env)
 
@@ -1937,8 +3288,15 @@ class CommandLineTests(WorldCase):
 
     def test_usage_errors_exit_64(self) -> None:
         w = self.w
-        for argv in ([], ["bogus"], ["new"], ["path"], ["path", "DealDex"], ["new", "DealDex", "x", "--no-such-flag"],
-                     ["new", "DealDex", "x", "--pr", "abc"]):
+        for argv in (
+            [],
+            ["bogus"],
+            ["new"],
+            ["path"],
+            ["path", "DealDex"],
+            ["new", "DealDex", "x", "--no-such-flag"],
+            ["new", "DealDex", "x", "--pr", "abc"],
+        ):
             with self.subTest(argv=argv):
                 with contextlib.redirect_stderr(io.StringIO()):
                     res = w.lane(*argv)
@@ -1951,7 +3309,16 @@ class CommandLineTests(WorldCase):
         self.assertIn("usage: lane", res.out)
         res = self.w.lane("new", "--help")
         self.assertEqual(res.rc, 0)
-        for flag in ("--base", "--purpose", "--board", "--reuse-branch", "--dry-run", "--json", "--review", "--pr"):
+        for flag in (
+            "--base",
+            "--purpose",
+            "--board",
+            "--reuse-branch",
+            "--dry-run",
+            "--json",
+            "--review",
+            "--pr",
+        ):
             self.assertIn(flag, res.out)
 
     def test_a_refused_command_inside_lane_is_an_internal_error(self) -> None:
@@ -1964,9 +3331,15 @@ class CommandLineTests(WorldCase):
 
 # --------------------------------------------------------------------------- the shim
 
+
 class ShimTests(WorldCase):
-    def run_shim(self, *argv: str, shim: "Path | str" = SHIM, env: Optional[dict] = None,
-                 cwd: "Path | str | None" = None) -> "subprocess.CompletedProcess":
+    def run_shim(
+        self,
+        *argv: str,
+        shim: Path | str = SHIM,
+        env: dict | None = None,
+        cwd: Path | str | None = None,
+    ) -> subprocess.CompletedProcess:
         full = dict(self.w.env)
         for k, v in (env or {}).items():
             if v is None:
@@ -1975,40 +3348,76 @@ class ShimTests(WorldCase):
                 full[k] = v
         # A neutral cwd by default: the test process runs from scripts/, whose own fleet_lanes would
         # hide a shim that imports from the working directory.
-        return subprocess.run([str(shim), *argv], capture_output=True, text=True, env=full, timeout=60,
-                              cwd=str(cwd if cwd is not None else self.w.root))
+        return subprocess.run(
+            [str(shim), *argv],
+            capture_output=True,
+            text=True,
+            env=full,
+            timeout=60,
+            cwd=str(cwd if cwd is not None else self.w.root),
+        )
 
-    def test_a_fleet_lanes_package_in_the_working_directory_never_shadows_the_checkout(self) -> None:
+    def test_a_fleet_lanes_package_in_the_working_directory_never_shadows_the_checkout(
+        self,
+    ) -> None:
         # Every AFC lane has scripts/fleet_lanes, so running the shim from another lane's scripts/
         # must still run THIS checkout's code.
         hijack = self.w.root / "hijack"
         (hijack / "fleet_lanes").mkdir(parents=True)
         (hijack / "fleet_lanes" / "__init__.py").write_text("", encoding="utf-8")
-        (hijack / "fleet_lanes" / "lane.py").write_text('print("HIJACKED")\n', encoding="utf-8")
+        (hijack / "fleet_lanes" / "lane.py").write_text(
+            'print("HIJACKED")\n', encoding="utf-8"
+        )
         older = self.w.root / "older"
         (older / "fleet_lanes").mkdir(parents=True)
-        (older / "fleet_lanes" / "__init__.py").write_text("", encoding="utf-8")   # a checkout without lane.py
-        pythons = [None] + (["/usr/bin/python3"] if os.access("/usr/bin/python3", os.X_OK) else [])
+        (older / "fleet_lanes" / "__init__.py").write_text(
+            "", encoding="utf-8"
+        )  # a checkout without lane.py
+        pythons = [None] + (
+            ["/usr/bin/python3"] if os.access("/usr/bin/python3", os.X_OK) else []
+        )
         for cwd in (hijack, older):
             for python in pythons:
                 with self.subTest(cwd=cwd.name, python=python):
                     env = {"FLEET_PYTHON": python} if python else None
-                    proc = self.run_shim("path", "DealDex", "fix-thing", cwd=cwd, env=env)
+                    proc = self.run_shim(
+                        "path", "DealDex", "fix-thing", cwd=cwd, env=env
+                    )
                     self.assertNotIn("HIJACKED", proc.stdout + proc.stderr)
-                    self.assertEqual((proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr)
-                    self.assertEqual(self.run_shim("path", "DealDex", "x", cwd=cwd, env={**(env or {}),
-                                                                                       "AGENT_SEAT": None}).returncode, 64)
+                    self.assertEqual(
+                        (proc.returncode, proc.stdout),
+                        (0, f"{self.w.lane_path()}\n"),
+                        proc.stderr,
+                    )
+                    self.assertEqual(
+                        self.run_shim(
+                            "path",
+                            "DealDex",
+                            "x",
+                            cwd=cwd,
+                            env={**(env or {}), "AGENT_SEAT": None},
+                        ).returncode,
+                        64,
+                    )
 
     def test_python_variables_cannot_redirect_the_import_either(self) -> None:
         hijack = self.w.root / "hijack"
         (hijack / "fleet_lanes").mkdir(parents=True)
         (hijack / "fleet_lanes" / "__init__.py").write_text("", encoding="utf-8")
-        (hijack / "fleet_lanes" / "lane.py").write_text('print("HIJACKED")\n', encoding="utf-8")
-        proc = self.run_shim("path", "DealDex", "fix-thing", env={"PYTHONPATH": str(hijack)})
+        (hijack / "fleet_lanes" / "lane.py").write_text(
+            'print("HIJACKED")\n', encoding="utf-8"
+        )
+        proc = self.run_shim(
+            "path", "DealDex", "fix-thing", env={"PYTHONPATH": str(hijack)}
+        )
         self.assertNotIn("HIJACKED", proc.stdout)
-        self.assertEqual((proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr)
+        self.assertEqual(
+            (proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr
+        )
 
-    def test_the_header_does_not_suggest_pointing_the_installed_path_at_the_shim(self) -> None:
+    def test_the_header_does_not_suggest_pointing_the_installed_path_at_the_shim(
+        self,
+    ) -> None:
         text = SHIM.read_text(encoding="utf-8")
         self.assertNotIn("such as ~/apps/lane works", text)
         self.assertIn("-I", text)
@@ -2021,7 +3430,9 @@ class ShimTests(WorldCase):
 
     def test_path_command_prints_the_path_and_nothing_else(self) -> None:
         proc = self.run_shim("path", "DealDex", "fix-thing")
-        self.assertEqual((proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr)
+        self.assertEqual(
+            (proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr
+        )
 
     def test_it_follows_a_symlink_to_find_the_scripts_dir(self) -> None:
         link_dir = self.w.root / "bin"
@@ -2029,15 +3440,23 @@ class ShimTests(WorldCase):
         link = link_dir / "lane"
         os.symlink(SHIM, link)
         proc = self.run_shim("path", "DealDex", "fix-thing", shim=link)
-        self.assertEqual((proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr)
+        self.assertEqual(
+            (proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr
+        )
         chain = link_dir / "lane2"
-        os.symlink("lane", chain)         # a relative link to a link
+        os.symlink("lane", chain)  # a relative link to a link
         proc = self.run_shim("path", "DealDex", "fix-thing", shim=chain)
-        self.assertEqual((proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr)
+        self.assertEqual(
+            (proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr
+        )
 
     def test_without_fleet_apps_json_it_uses_the_repo_registry(self) -> None:
         proc = self.run_shim("path", "DealDex", "smoke", env={"FLEET_APPS_JSON": None})
-        self.assertEqual((proc.returncode, proc.stdout), (0, f"{self.w.lane_path('smoke')}\n"), proc.stderr)
+        self.assertEqual(
+            (proc.returncode, proc.stdout),
+            (0, f"{self.w.lane_path('smoke')}\n"),
+            proc.stderr,
+        )
 
     def test_exit_codes_pass_through(self) -> None:
         proc = self.run_shim("path", "DealDex", "x", env={"AGENT_SEAT": None})
@@ -2047,11 +3466,21 @@ class ShimTests(WorldCase):
 
     def test_new_through_the_shim_creates_the_lane(self) -> None:
         proc = self.run_shim("new", "DealDex", "fix-thing")
-        self.assertEqual((proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr)
-        self.assertEqual(self.w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=self.w.lane_path()), "claude/fix-thing")
+        self.assertEqual(
+            (proc.returncode, proc.stdout), (0, f"{self.w.lane_path()}\n"), proc.stderr
+        )
+        self.assertEqual(
+            self.w.git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=self.w.lane_path()),
+            "claude/fix-thing",
+        )
 
     def test_a_bad_scripts_dir_is_reported_not_crashed(self) -> None:
-        proc = self.run_shim("path", "DealDex", "x", env={"FLEET_SCRIPTS_DIR": str(self.w.root / "nowhere")})
+        proc = self.run_shim(
+            "path",
+            "DealDex",
+            "x",
+            env={"FLEET_SCRIPTS_DIR": str(self.w.root / "nowhere")},
+        )
         self.assertEqual(proc.returncode, 69)
         self.assertIn("FLEET_SCRIPTS_DIR", proc.stderr)
 
