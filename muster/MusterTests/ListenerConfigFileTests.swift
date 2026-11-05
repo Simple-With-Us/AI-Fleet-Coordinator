@@ -1,8 +1,8 @@
 import XCTest
 
-/// The listener's configuration file:  what it reads,  and what a write leaves alone.
+/// The eavesdropper's configuration file:  what it reads,  and what a write leaves alone.
 final class ListenerConfigFileTests: XCTestCase {
-    /// A file like the listener's own.
+    /// A file like the eavesdropper's own.
     private let sample = """
     [daemon]
     owner_user_id = 4242  # pinned by `simple-chat daemon init`
@@ -76,7 +76,7 @@ final class ListenerConfigFileTests: XCTestCase {
         XCTAssertNil(document.value(section: "seat.NOPE", key: "wake"))
     }
 
-    /// A section header may carry a comment,  as the listener's own file does.
+    /// A section header may carry a comment,  as the eavesdropper's own file does.
     func test_a_section_header_with_a_comment_is_read() {
         let document = ListenerConfigDocument(text: """
         [seat.GROK]                       # terminal Grok and Grok Build are one seat
@@ -180,7 +180,7 @@ final class ListenerConfigFileTests: XCTestCase {
     ///
     /// The comma has to go inside the removed range.  Left behind it becomes a trailing
     /// comma,  and TOML 1.0 forbids one in an inline table,  so `tomllib.load` would
-    /// reject the whole file and the listener would fall back to an empty config.
+    /// reject the whole file and the eavesdropper would fall back to an empty config.
     func test_a_removal_of_the_last_inline_key_leaves_no_trailing_comma() throws {
         let document = ListenerConfigDocument(text: sample)
         let written = try document.removing(

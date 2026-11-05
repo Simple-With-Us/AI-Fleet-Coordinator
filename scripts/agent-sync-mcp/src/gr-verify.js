@@ -139,8 +139,9 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
     }
     return jsonResponse({ ok: false, reason: verdict.reason }, 200);
   }
-  const state = await identityGate.getState();
-  if (state.paused) return jsonResponse({ ok: false, reason: "paused" }, 200);
+  // The pause flag rides the bearer check's own answer (R1):  no second
+  // gate RPC for the one boolean, and the refusal stays in this position.
+  if (verdict.paused) return jsonResponse({ ok: false, reason: "paused" }, 200);
   // A wake-only (events-only) seat's bearer stays minted but verifies refused
   // here, so GR-MCP fails closed to 401 while the seat carries no tools.  The
   // refusal follows the same reviewed EVENTS_ONLY_SEATS var as the /mcp tool

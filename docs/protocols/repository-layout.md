@@ -25,6 +25,69 @@ For a multi-platform product, use `apps/ios`, `apps/macos` and `apps/android` fo
 
 These role names are a fleet convention.  They are not a claim that npm, SwiftPM or Gradle mandates an `apps` root.  The underlying package and dependency boundaries must remain valid under the relevant [npm workspace model](https://docs.npmjs.com/cli/v11/using-npm/workspaces/), [SwiftPM layout](https://www.swift.org/getting-started/library-swiftpm/) and [Gradle multi-project model](https://docs.gradle.org/current/userguide/multi_project_builds.html).
 
+## Multi-Platform Repository Example
+
+Use build and deployment boundaries to choose application folders.  The example below is illustrative; create only the directories the repository needs and retain each platform's normal project structure inside its application.
+
+```text
+repo/
+├── README.md
+├── AGENTS.md
+├── .github/workflows/
+├── apps/
+│   ├── ios/                 # Xcode project, targets and resources
+│   ├── macos/               # Mac application
+│   ├── android/             # Gradle project and modules
+│   ├── web/                 # Browser application
+│   ├── marketing/           # Independently deployed public website
+│   ├── server/              # Independently deployed backend, when needed
+│   └── browser-extension/   # Independently built extension, when needed
+├── packages/
+│   ├── product-core/        # Reusable business logic
+│   ├── api-contracts/       # Schemas and protocol definitions
+│   ├── apple-core/          # Shared Swift package
+│   ├── web-ui/              # Shared web components
+│   └── design-tokens/       # Shared colors, spacing and typography
+├── assets/brand/            # Shared original logos and artwork
+├── docs/
+│   ├── architecture/
+│   ├── decisions/
+│   ├── guides/
+│   ├── runbooks/
+│   └── reports/
+├── infra/                   # Deployment and infrastructure configuration
+├── scripts/                 # Thin repository commands
+├── tools/                   # Substantial development tools
+└── tests/e2e/               # Tests spanning applications
+```
+
+Give reusable packages specific names and explicit public interfaces.  Keep application-specific feature code, tests and resources with their application; extract shared code when another consumer needs it.  Declare dependencies in the relevant manifests rather than importing another application's internals through relative paths.  This follows the application/package separation in [Turborepo's repository guidance](https://turborepo.dev/docs/crafting-your-repository/structuring-a-repository) and deliberate sharing in [Nx's folder guidance](https://nx.dev/docs/kb/folder-structure).
+
+### Marketing Website
+
+Use `apps/marketing/` when the public website has its own build and deployment.  Keep its content, SEO metadata, public assets and site-specific components there; shared brand originals belong in `assets/brand/`, and reusable web components or design tokens belong in named packages.
+
+When marketing and authenticated pages share one Next.js runtime, keep them in `apps/web/`, organized with route groups such as `src/app/(marketing)/` and `src/app/(product)/`.  Those grouping names do not add URL segments.  Preserve framework route and asset conventions, as described in [Next.js project organization](https://nextjs.org/docs/app/getting-started/project-structure).  A separate marketing deployment needs its own configured deployment root, build command and output settings; sharing a repository does not require sharing a release cycle, as illustrated by [Vercel's monorepo deployment model](https://vercel.com/docs/monorepos).
+
+## Affected Builds And Deployments
+
+Build, test, package and deploy only the applications affected by a change.  A commit to the repository is not by itself a reason to rebuild or release every platform.  An application is affected when its own source or resources change, a direct or transitive dependency changes, or a relevant manifest, lockfile, code generator, build configuration or deployment configuration changes.
+
+| Change | Required Scope |
+| --- | --- |
+| iOS-only source or resources | Run the iOS checks and build; leave the website, Mac and Android releases untouched unless they consume the changed inputs. |
+| Marketing-only source, content or assets | Check and build the marketing website and deploy it through its normal release policy; leave native application releases untouched. |
+| Web application-only source | Check and build the web application; include marketing pages when they share that runtime. |
+| Shared library, API contract, design tokens or brand asset | Check the changed package or asset and every application that consumes it, including transitive consumers. |
+| Build tooling, manifests, lockfiles or infrastructure | Determine which targets consume the changed inputs and run their affected checks/builds; expand to all targets only when the change actually has repository-wide scope or the affected set cannot be established safely. |
+| Documentation-only changes | Run documentation, link and applicable repository-policy checks; do not build or release application binaries unless the documentation is itself a deployed application's input. |
+
+Implement this selection in CI and deployment triggers using maintained path mappings plus the actual dependency graph.  Include shared inputs in each consumer's trigger, account for renamed and deleted paths, and compare against the appropriate pull-request base or last deployed revision.  A path filter limited to `apps/ios/**` misses changes to an iOS dependency under `packages/`; a root lockfile change needs dependency analysis rather than an automatic assumption that every native app changed.
+
+Keep required pull-request checks reportable even when no application build is needed: use an always-running change classifier and required aggregate gate that reports success only after the selected checks pass.  Do not leave a required workflow permanently pending by filtering away its entire trigger.  Keep build selection separate from release authorization; a successful affected build does not itself authorize an App Store release or production deployment.
+
+Each migration batch must verify representative iOS-only, website-only, shared-dependency and documentation-only changes against its selection rules.  Record the selected and skipped targets, then verify that the hosting provider's automatic deployment behavior agrees with CI; CI filters alone do not prevent a separate hosting integration from deploying unrelated commits.
+
 ## Repository Profiles
 
 | Profile | Rule |
@@ -78,7 +141,7 @@ The original central library covered these sixteen local sources.  The accessib
 1. Record the current tree, exact source/destination paths, actual app/package boundary and active file reservations.  Read all relevant build manifests and ownership instructions before choosing a move.
 2. Preserve existing work in owned lanes and coordinate source ownership.  Move one coherent application, package or support area at a time with Git history retained.
 3. Update imports, manifests, project files, test fixtures, code generation, scripts, CI working directories/path filters, container contexts and deployment roots affected by that move.  Keep product identifiers, API contracts, public routes and data locations stable unless that batch explicitly changes them.
-4. Run the relevant language/build checks and required hosted platform jobs.  For deployed applications, verify the published revision, startup, public/authenticated surfaces appropriate to the change, and data/backup continuity separately from CI.
+4. Run the relevant language/build checks and required hosted platform jobs for the affected applications and their dependency graph, following Affected Builds And Deployments above.  Update and verify selection rules as paths move so unrelated platforms do not build or deploy.  For deployed applications, verify the published revision, startup, public/authenticated surfaces appropriate to the change, and data/backup continuity separately from CI.
 5. Read and address every review surface on the final head, merge through the repository's required path, regenerate the catalog and central documentation from published sources, and verify coverage and links.
 
 A batch is complete when the source has the agreed role boundary and its consumers work at the published revision.  A new README, catalog, symlink or unmerged rename proposal alone does not complete a structural migration.

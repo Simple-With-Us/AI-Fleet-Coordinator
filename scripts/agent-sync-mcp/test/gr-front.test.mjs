@@ -212,6 +212,53 @@ test("gr_open_pr runs through the front and returns the relay's answer", async (
   assert.equal(seen[0].body.repo, "a/b");
 });
 
+test("draft creation is optional, strictly boolean and uses the existing open route", async () => {
+  const args = { repo: "a/b", base: "main", head: "feature", title: "Title", body: "Body" };
+  const seen = [];
+  const tools = grHarness(new GrRelayClient({
+    baseUrl: "https://git-relay.example.test", accessId: "test-access-id",
+    accessSecret: "test-access-secret", bearer: "sbt_jet-chat_testbearer",
+    fetch: async (url, init) => {
+      seen.push({ url, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ number: 1, url: "url" }), { status: 200 });
+    },
+  }));
+  for (const extra of [{}, { draft: false }, { draft: true }]) {
+    const result = await tools.call("gr_open_pr", { ...args, ...extra });
+    assert.ok(!result.isError, result.content[0].text);
+    assert.deepEqual(seen.at(-1), { url: "https://git-relay.example.test/v1/open_pr", body: extra.draft === true ? { ...args, draft: true } : args });
+  }
+  for (const draft of [null, "true", "false", 1, 0, [], {}]) {
+    const result = await tools.call("gr_open_pr", { ...args, draft });
+    assert.equal(result.isError, true);
+  }
+  assert.equal(seen.length, 3);
+});
+
+test("omitted and false draft requests retain exact old-backend wire and signed body", async () => {
+  const args = { repo: "a/b", base: "main", head: "feature", title: "Title", body: "Body" };
+  const wire = [], signed = [];
+  const client = new GrRelayClient({
+    baseUrl: "https://git-relay.example.test", accessId: "test-access-id", accessSecret: "test-access-secret",
+    minter: async ({ body }) => { signed.push(body); return "gra2_" + "x".repeat(80); },
+    fetch: async (url, init) => {
+      wire.push(init.body);
+      // Model an older backend whose schema rejects every new field.
+      const keys = Object.keys(JSON.parse(init.body));
+      if (keys.some(key => !Object.hasOwn(args, key))) return new Response(JSON.stringify({ error: "unexpected field" }), { status: 400 });
+      return new Response(JSON.stringify({ number: 1, url: "url" }), { status: 200 });
+    },
+  });
+  for (const extra of [{}, { draft: false }]) assert.equal((await client.call("open_pr", { ...args, ...extra })).status, 200);
+  assert.deepEqual(wire, [JSON.stringify(args), JSON.stringify(args)]);
+  assert.deepEqual(signed, wire);
+  assert.equal((await client.call("open_pr", { ...args, draft: true })).status, 400);
+  assert.equal(JSON.parse(wire[2]).draft, true);
+  for (const draft of [null, "false", 0, 1, [], {}]) assert.equal((await client.call("open_pr", { ...args, draft })).status, 400);
+  assert.equal(wire.length, 3);
+  assert.equal(signed.length, 3);
+});
+
 test("gr tools answer not_configured when the front is absent, and a relay 4xx surfaces as relay_refused", async () => {
   const bare = grHarness(null);
   const missing = await bare.call("gr_merge_pr", { repo: "a/b", number: 1 });
@@ -386,6 +433,28 @@ test("grCall maps relay outcomes precisely and answers in the MCP result shape",
   const arrayRes = await arrayTools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "b" });
   assert.equal(arrayRes.isError, true);
   assert.match(arrayRes.content[0].text, /could not read/);
+});
+
+test("GraphQL unknown outcomes expose only fixed diagnostic codes without enabling retry", async () => {
+  for (const code of ["graphql_forbidden", "graphql_not_found", "graphql_unprocessable", "graphql_rate_limited", "private-provider-text", null, ["graphql_forbidden"]]) {
+    const tools = grHarness(new GrRelayClient({
+      baseUrl: "https://git-relay.example.test", accessId: "test-access-id",
+      accessSecret: "test-access-secret", bearer: "sbt_jet-chat_testbearer",
+      fetch: async () => new Response(JSON.stringify({
+        error: "github call outcome unknown", outcome: "unknown", retryable: false,
+        github_code: code, provider_message: "private-provider-text",
+      }), { status: 502 }),
+    }));
+    const result = await tools.call("gr_merge_pr", { repo: "a/b", number: 1 });
+    assert.equal(result.isError, true);
+    const error = JSON.parse(result.content[0].text);
+    assert.equal(error.code, "outcome_unknown");
+    assert.equal(error.retryable, false);
+    assert.match(error.message, /Do not retry blindly/);
+    const expected = typeof code === "string" && code.startsWith("graphql_") ? code : undefined;
+    assert.equal(error.github_code, expected);
+    assert.doesNotMatch(JSON.stringify(result), /private-provider-text/);
+  }
 });
 
 test("an upstream not_configured 503 never impersonates a local failure", async () => {

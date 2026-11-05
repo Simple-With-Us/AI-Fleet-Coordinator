@@ -63,6 +63,7 @@ struct OpsAuditEntry: Decodable, Identifiable, Equatable {
     /// The state the row reads as:  done is a pass,  refused is drift,  failed is a failure.
     var state: CellState {
         switch result ?? "" {
+        case "submitted": return .unproven
         case "done": return .passed
         case "planned": return .passed
         case "refused": return .drift

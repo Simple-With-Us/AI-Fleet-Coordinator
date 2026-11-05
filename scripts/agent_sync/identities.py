@@ -13,7 +13,7 @@ each kept only when its credentials are reachable:  its three Infisical /zulip n
 _KEY and _SITE, read through fleet-secrets;  AFC-359:  no credential folder is read by default), its file in the
 explicit AGENT_SYNC_SECRETS_DIR override, or, on the server instance, its own environment variables (the
 listener's `creds = "env"` seats in listener.toml, else the default ZULIP_<CODE>_EMAIL and
-ZULIP_<CODE>_API_KEY with ZULIP_SITE;  docs/protocols/agent-sync-server.md).  An override file wins, then
+ZULIP_<CODE>_API_KEY with ZULIP_SITE;  docs/protocols/eavesdropper-server.md).  An override file wins, then
 Infisical, then the environment.  Only key NAMES are read here, never values;  a value is read when the
 identity is first opened.  The owner's own account and the integration bots (BetterStack, Datadog,
 Linear, PagerDuty, Sentry) are never seats, so they never enter the set, whatever names Infisical or a

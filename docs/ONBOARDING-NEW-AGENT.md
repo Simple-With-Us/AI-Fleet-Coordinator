@@ -48,7 +48,10 @@ that drives Cursor cloud agents.  It is not Mac Grok (GROK, which Grok Build sha
 is **not** a per-app seat.  Do not run this script to create
 per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` personas need no
 registry row:  `seatApps.patterns` covers them (and the `BF-<ROLE>` bots), and the
-`GROK-BOT` row has no branch prefix because it opens no lanes.
+`GROK-BOT` row has no branch prefix because it opens no lanes.  The roles do open
+lanes (AFC-620):  a pattern's `lane` block lists them and renders the lane folder and
+branch prefix, so `AGENT_SEAT=GB-DEPLOYER` plans under `gb-deployer/` and signs
+`gb-deployer/<slug>` branches, and `BF-FIXER` does the same under `bf-fixer/`.
 
 ---
 
@@ -73,7 +76,11 @@ The key has three parts:
   owner-run (`JET` is `chatgpt`, `ECHO` and `WISE` are one app, `instinct`).
 - `patterns`:  families made of a role.  `BF-*` is `botfleet` (bot `bf-<role>-bot@`)
   and `GB-*` is `grok-bot` (bot `<role>-grok-bot@`).  The patterns accept any
-  well-formed role, so they cannot catch a misspelled one.
+  well-formed role, so they cannot catch a misspelled one.  A pattern's `lane`
+  block (AFC-620) names the roles that open lanes and their folder and branch
+  templates;  an unlisted role is refused with the known roles, and a role whose
+  rendered folder or branch prefix collides with a seat row or another pattern
+  fails the registry check.
 
 Two seats on one model are two apps when they are two products (`GROK` the
 terminal and `GROK-WEB`), and two seats in one product are one app (`ECHO` and

@@ -1,7 +1,7 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:15384c0bd973101f867d50167dd06a759923b0838bf3b24c16b2822d179ef226 -->
 # FLEET-PROTOCOL — Fleet Tools Manual
 
-This is the manual every AI agent seat uses to reach the owner's tools:  the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
+This is the manual every AI agent seat uses to reach the owner's tools: the command line CLIs, the MCP servers, and the shared bearer token that carries a seat's identity on every route.  It says what each tool is for, where it runs, how a seat is authenticated, and what the tools refuse.
 
 The working rules that used to live here -- how a seat claims work, lands it, closes it out, writes for the owner, and keeps a secret -- now live in each repository's `AGENTS.md`, where a seat meets them before it reads anything else.  What stays in this manual is the tool surface itself.
 
@@ -20,6 +20,7 @@ The working rules that used to live here -- how a seat claims work, lands it, cl
 - [Posting](#posting)
 - [Writing for the Owner](#writing-for-the-owner-sentence-gap-timestamps-copy-accuracy)
 - [App Version and Build Numbers](#app-version-and-build-numbers)
+- [Repository Layout](#repository-layout)
 - [Appendix A: Reference Tables](#appendix-a-reference-tables)
 ## How to Use This Document
 
@@ -567,6 +568,8 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | Grok:  web and iOS | GROK-WEB | grok-web-bot@ | A different surface, so a different default. |
 | Clutch | CLUTCH | clutch-bot@ | One seat for every model Clutch runs. |
 | MiniMax Code | MM | mm-bot@ | |
+| Kimi Code (`kimi` CLI) | KIMI | kimi-bot@ | |
+| Z Code desktop IDE | ZC | zc-bot@ | |
 | fx | FX | fx-bot@ | Whatever provider fx is logged into. |
 | Muse Code (`muse` CLI) | MC | mc-bot@ | The `muse-seat` wrapper keeps an assigned seat. |
 | OpenCode (`opencode` CLI) | OPENCODE | opencode-bot@ | The default is for a session Jay opens himself, whatever provider or model OpenCode runs. |
@@ -574,7 +577,7 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | Jet (ChatGPT, OpenAI dot) | JET, its own identity | openai-dot-bot@ | An ordinary Codex thread never signs JET. |
 | **Any session BotFleet launched** | **No default** | the role's own bot | The engine is not the bot's identity.  Only BotFleet assigns `BF-<ROLE>`. |
 | **A Cursor cloud agent Grok Bot drives** | **No default** | the GB persona's bot | Grok Bot assigns `GB-<NAME>`. |
-| **Engine-only CLIs** (Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine) | **No default** | none | Not seats.  Outside a launcher they ask. |
+| **Engine-only CLIs** (Droid, Hermes, Qwen, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine not registered as a seat) | **No default** | none | Not seats.  Outside a launcher they ask. |
 | **Headless runs** (`claude -p`, `codex exec`, an SDK call, cron) | **No default** | none | A script that wants a seat is a launcher and sets one. |
 | **An app several seats share** | **No default** | none | Conductor runs Claude Code, Codex, Cursor and OpenCode in one workspace app and sets no launcher variable, so each tool inside still reads its own platform file. |
 
@@ -590,6 +593,8 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 | GROK-WEB | `Grok Web` | none (cloud seat, no lanes) | none | grok-web-bot@ |
 | CLUTCH | `Clutch` | `clutch/` | `clutch` | clutch-bot@ |
 | MM | `MiniMax` | `minimax/` | `minimax` | mm-bot@ |
+| KIMI | `Kimi` | `kimi/` | `kimi` | kimi-bot@ |
+| ZC | `ZCode` | `zcode/` | `zcode` | zc-bot@ |
 | FX | `Fx` | `fx/` | `fx` | fx-bot@ |
 | MC | `Muse Code` | `muse-code/` | `muse-code` | mc-bot@ |
 | OPENCODE | `OpenCode` | `opencode/` | `opencode` | opencode-bot@ |
@@ -606,13 +611,12 @@ On the network the seat is proved, not claimed:  see [The Shared Bearer](#the-sh
 
 ### Availability
 
-- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, FX, MC, OPENCODE, MA, ECHO, WISE, and the BotFleet role bots.
+- **Available (normal):**  CLAUDE, CODEX, AG, CURSOR, GROK (terminal), GROK-WEB (cloud), CLUTCH, MM, KIMI, ZC, FX, MC, OPENCODE, MA, ECHO, WISE, and the BotFleet role bots.
 - **Retired.**  Never assign work to these seats, accept work from them, leave their work In Progress, or wait on them.  Unclaim any leftover lanes.
   - MONET (owner 2026-10-07):  the Monet Claude account and app are no longer used.
   - RENOIR (owner 2026-10-07):  the seat never opened; the Renoir Claude account and app are no longer used.
   - HARNESS (owner 2026-10-07):  replaced by CLUTCH.
   - DSH, DeepSeek Harness (2026-09-19):  use CLUTCH for the Clutch repository.
-  - KIMI, Kimi (owner 2026-08-21):  retired long-term.
   - Retired tags:  `GROK-BUILD` (an accepted spelling of GROK), `DEEPSEEK`, `MINIMAX` (now MM), `MUSE` (now MA).
 - Retired seats and tags have no Zulip bot.  Historical posts under them still mean those seats.  Existing `monet/`, `renoir/` and `harness/` branches and lanes stay readable.
 ## Posting
@@ -812,11 +816,12 @@ One limit is worth knowing:  a sentence end inside an inline code span is still 
 - Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central (`America/Chicago`) (owner 2026-08-09; broadened 2026-08-11, amended 2026-08-12, strengthened 2026-08-22, amended 2026-10-05, reaffirmed and tightened 2026-10-18).
 - This binds every agent, every bot and every platform, in every sentence the owner reads: chat, Zulip messages in every channel and topic, Linear issues and comments, PRs, Notes, commits, release notes and bot-to-bot.
 - Never lead with Zulu, a 24-hour UTC stamp, or a Unix epoch.  Converting is the writer's job.
-- Never type CDT, CST or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT`, not `3:15 CT`, not `08:15Z`.  This covers chat, Linear issues and comments, `STATUS.md`, rollout notes, Zulip #Work-In-Progress and every other topic, GitHub issue and PR bodies, Apple Notes and release notes.  The abbreviations exist only so the writer can do the conversion; they are never part of the sentence.
+- Never type CDT, CST or CT.  The owner assumes am/pm is their time.  The zone is assumed and never named either:  `Central` is as wrong as `CST`, and `America/Chicago` does not belong beside a time (owner 2026-10-29, reaffirmed 2026-11-03).  Write `3:15am`, not `3:15am CDT`, not `3:15 CT`, not `08:15Z`.  This covers chat, Linear issues and comments, `STATUS.md`, rollout notes, Zulip #Work-In-Progress and every other topic, GitHub issue and PR bodies, Apple Notes and release notes.  The abbreviations exist only so the writer can do the conversion; they are never part of the sentence.
 - When the calendar day matters, write `Mon, Oct 5, 2026 at 3:15am`.
-- Give only the Central time (owner 2026-10-18).  Convert every other zone before writing, and do not add the UTC stamp beside it:  a log line at `11:42Z` is `6:42am`, and the market opens at `8:30am`.  This includes times read from logs, APIs, CI and dashboards, which are usually UTC.  Quote a raw stamp only when the owner asks for one, or inside a code block that is itself machine output.
+- Give only the Central time (owner 2026-10-18).  Convert every other zone before writing, and do not add the UTC stamp beside it:  a log line at `11:42Z` is `6:42am` on a summer day and `5:42am` in winter, and the market opens at `8:30am`.  This includes times read from logs, APIs, CI and dashboards, which are usually UTC.  Quote a raw stamp only when the owner asks for one, or inside a code block that is itself machine output.
 - Never guess the conversion.  Use `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Offsets for checking:  [Appendix A](#appendix-a-reference-tables).
 - Machine-readable fields that are ISO-8601 by contract (API responses, JSON payloads, log lines, DB columns) stay UTC.  The rule is about prose a human reads, not wire formats.
+- The rule covers the times a human reads in agent prose:  a market bell stays as the market writes it (`9:30 AM ET`), and a machine-readable field keeps its own format, so a build number or a commit stamp is build provenance and not an owner-facing sentence.  Quote a field you repeat verbatim as it is;  convert only when you write the time in prose.
 - **Exception (owner 2026-08-12):** in product UI, the iOS app and any browser or desktop UI render times in the viewer's device timezone.  A user in another zone seeing their own trade times in Central would be the bug.  The exception covers end-user product surfaces only.  It never relaxes the Central rule for agent-to-agent or agent-to-owner writing.  It also does not apply to server-side console pages that pin a market-day boundary: `app/console/lib/format.ts` pins `America/Chicago` on purpose to match `startOfDayInTimeZone` in `src/lib/db-execution.ts`, so "today's P&L" agrees with the accounting day boundary.
 
 ### Copy Accuracy
@@ -926,3 +931,67 @@ simple-board status <id> completed --resolution "Landed in #2894."
 simple-board status <id> duplicate --of <canonical id>   # a duplicate needs the issue it duplicates
 simple-board whoami                                      # verified seat and whether a write would succeed
 ```
+## Repository Layout
+
+This policy gives new and existing repositories a predictable place for maintained docs, scripts, tests and product marketing assets.  It is additive: existing source trees, native platform conventions, project files and generated-output locations remain in place.
+
+## Common Structure
+
+Use these names at the repository root when the repository owns that kind of material:
+
+- `README.md`: purpose, supported targets, setup and primary developer commands.
+- `AGENTS.md`: repository-specific agent rules and pointers to shared policy.
+- `docs/`: maintained design, architecture, operations and rollout documentation.
+- `scripts/`: maintained developer and operations automation.
+- `tests/` or `Tests/`: automated tests, using the stack mapping below.
+- `marketing/README.md`: product-copy sources and factual-claim owners.
+- `marketing/screenshots/`: original captures and derived working assets.
+
+Do not create empty directory trees only to satisfy a checklist.  A scaffold may add README placeholders, and a team may remove a placeholder when the repository has no material of that kind.  Keep generated output in the directory its build tool already owns, and list generated paths in `.gitignore` or the relevant tool configuration.
+
+## Stack Mappings
+
+Keep each platform's established build layout.  This standard organizes project material around that layout rather than moving application source into one shared `src/` directory.
+
+| Stack | Tests | Source convention |
+|---|---|---|
+| macOS or iOS Swift | `Tests/` | Keep XcodeGen inputs, targets and Swift sources in their existing project-defined locations. |
+| Web or Node | `tests/` | Keep app and package-manager workspaces in their existing locations. |
+| Python | `tests/` | Keep importable packages in the package layout selected by the project. |
+| Mixed, docs-only or operations-only | Declare the test directory already used by the repo, or omit it when there are no automated tests. | Preserve each toolchain's current source and generated-output layout. |
+
+When a repository deliberately uses another convention, state it in its root `README.md` or `AGENTS.md`.  Do not rename a working test directory as part of unrelated work.
+
+## Marketing And Screenshot Organization
+
+Keep marketing copy and assets separate from application source and build output.  `marketing/README.md` names the copy sources and their factual owners; product claims must match the live release state and the canonical copy rules.
+
+Under `marketing/screenshots/`, use `macos/`, `ios/` or `web/` for the capture platform.  Each platform may contain `drafts/` for source captures and review work.  Do not label an image or campaign approved unless the owner-approved release process records that approval.  A folder name or README is not an approval.
+
+Preserve original captures unchanged.  Store edits as separate files and describe the change in a same-stem Markdown sidecar.  Use lowercase ASCII and hyphens with this filename pattern:
+
+`<product>-<platform>-<surface>-<build>-<locale>-<state>.<ext>`
+
+The sidecar records capture date, app version/build, device or viewport, OS/browser, appearance, and intended use.  Use `draft` for unapproved work; use a release-approved state only after its approval is recorded.  Omit inapplicable fields explicitly instead of inventing them.
+
+Check screenshot paths against the repository's ignore rules.  A broad rule such as `screenshots/` can ignore nested marketing captures; use a scoped ignore pattern or an exception and confirm that intended assets are tracked.
+
+## Audit And Additive Scaffold
+
+`scripts/repository-layout/repository_layout.py` provides a read-only audit by default.  It reports expected paths, the selected stack mapping and whether a representative screenshot path is ignored.  Review its output as a checklist; the audit does not prove that product copy is accurate or that a screenshot is approved.
+
+```sh
+python3 scripts/repository-layout/repository_layout.py --root . --json
+python3 scripts/repository-layout/repository_layout.py --root . --stack macos
+```
+
+The scaffold plans by default.  To apply it, pass an explicit repository root and `--apply` from a clean, namespaced branch in the caller's own lane under `~/apps/lanes/`.  It requires the caller's pre-set `AGENT_SEAT` and checks that seat against the canonical branch-prefix and lane-folder mapping; it does not infer ownership from the branch.  Unsupported seats, ignored candidate files, dirty or mismatched lanes, non-root paths and symlink targets are refused before writes.  Directory-relative no-follow file creation prevents a symlink swap from redirecting a write.  It only creates missing README placeholders and never overwrites existing files.  Review the diff before committing.
+
+```sh
+python3 scripts/repository-layout/repository_layout.py --root /absolute/path/to/owned-lane --stack macos --apply
+python3 scripts/repository-layout/repository_layout.py --root /absolute/path/to/owned-lane --stack ios --platform ios --apply
+```
+
+Set `AGENT_SEAT` through the normal seat setup before applying.  Do not replace a value already assigned by a launcher.  `--platform` may be repeated for each screenshot platform the repository actually supports; without it, the scaffold creates no platform-specific screenshot directories.
+
+Adoption is repository-by-repository.  A report of current top-level paths is a snapshot, not evidence that a repository has adopted this policy or that every asset is tracked.

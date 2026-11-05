@@ -103,13 +103,13 @@ struct ListenerStatus: Decodable, Equatable {
 
     /// The pin that proves a seat's binary works.
     struct Pin: Decodable, Equatable {
-        /// Whether the listener holds the pin.
+        /// Whether the eavesdropper holds the pin.
         var pinned: Bool?
         /// The pinned muse binary.
         var pinned_muse: String?
         /// The pinned claude binary.
         var pinned_claude: String?
-        /// The listener's own reason,  when the pin is not what it should be.
+        /// The eavesdropper's own reason,  when the pin is not what it should be.
         var why: String?
     }
 
@@ -123,32 +123,32 @@ struct ListenerStatus: Decodable, Equatable {
         var ts: Double?
     }
 
-    /// The listener's own state.
+    /// The eavesdropper's own state.
     struct State: Decodable, Equatable {
         /// The seats,  by tag.
         var seats: [String: Seat]?
         /// The kill switch,  by scope.
         var pause: [String: PauseEntry]?
-        /// When the listener last published.
+        /// When the eavesdropper last published.
         var updated: Double?
-        /// When the listener started.
+        /// When the eavesdropper started.
         var started: Double?
-        /// The listener's version.
+        /// The eavesdropper's version.
         var version: String?
     }
 
-    /// Whether the listener is running.
+    /// Whether the eavesdropper is running.
     var running: Bool?
     /// Its pid.
     var pid: Int?
     /// The state itself.
     var status: State?
-    /// The plugin the listener runs,  when it runs one.
+    /// The plugin the eavesdropper runs,  when it runs one.
     var plugin: JSONValue?
-    /// The launch agent that keeps the listener alive.
+    /// The launch agent that keeps the eavesdropper alive.
     var launch_agent: JSONValue?
 
-    /// The seat's state,  when the listener has one.
+    /// The seat's state,  when the eavesdropper has one.
     func seat(_ tag: String) -> Seat? {
         status?.seats?[tag]
     }
@@ -158,12 +158,12 @@ struct ListenerStatus: Decodable, Equatable {
         status?.pause ?? [:]
     }
 
-    /// When the listener last published its state.
+    /// When the eavesdropper last published its state.
     var updated: Date? {
         status?.updated.map { Date(timeIntervalSince1970: $0) }
     }
 
-    /// The seats the listener knows.
+    /// The seats the eavesdropper knows.
     var seatTags: [String] {
         (status?.seats ?? [:]).keys.sorted()
     }
@@ -185,7 +185,7 @@ struct AgentSyncInvocation: Equatable {
         self.timeout = timeout
     }
 
-    /// `daemon status --json`:  the listener's own published state.
+    /// `daemon status --json`:  the eavesdropper's own published state.
     static func status() -> AgentSyncInvocation {
         AgentSyncInvocation(["daemon", "status", "--json"])
     }
@@ -204,7 +204,7 @@ struct AgentSyncInvocation: Equatable {
 
     /// `daemon reload`:  re-read the configuration file.
     ///
-    /// A reload does not re-read a seat's budget,  so a changed budget needs a listener
+    /// A reload does not re-read a seat's budget,  so a changed budget needs an eavesdropper
     /// restart.  The panel says so instead of pretending the reload was enough.
     static func reload() -> AgentSyncInvocation {
         AgentSyncInvocation(["daemon", "reload"])
@@ -327,7 +327,7 @@ struct AgentSyncCLI: AgentSyncRunning {
 
     /// The child environment.
     ///
-    /// HOME stays,  because the listener's state lives under it.  PYTHON* and FLEET_* go,
+    /// HOME stays,  because the eavesdropper's state lives under it.  PYTHON* and FLEET_* go,
     /// so nothing in the app's environment can point the command line at another checkout.
     static func sanitizedEnvironment(_ environment: [String: String]) -> [String: String] {
         var result = environment.filter { key, _ in

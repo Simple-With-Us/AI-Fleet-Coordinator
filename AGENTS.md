@@ -10,6 +10,26 @@ This repository contains shared engineering tools.  Keep private inventory and 
 
 The same text is in `TEMPLATE-AGENTS.md`, which the other fleet repos copy.
 
+## Superseded PR closure and draft conversion
+
+Owner ruling, November 3, 2026, applies fleet-wide:
+
+- An agent may close a totally superseded PR if that agent made the PR being closed.
+- If another agent made the totally superseded PR, ask that agent first.  If no reply arrives within 20 minutes, ask Jay.  An agent may ask Jay first if urgent.
+- If 3 agents from 2 platforms agree to close a totally superseded PR, closure may proceed without Jay's or the PR owner's input.
+- Any agent may convert any PR to draft without anyone's permission.  Agents are encouraged to do so whenever a PR is not ready to merge.
+
+### Do-not-merge PRs and readiness criteria
+
+- Every PR marked do-not-merge, including an equivalent title, label or description hold, must be a draft.
+- The very beginning of its description must be a bullet list of the concrete criteria for becoming ready to merge, before references, summaries or other text.
+- Derive the criteria from the actual unresolved findings, dependencies and hold conditions.  Do not invent conditions, claim unverified work is complete, or treat a checklist as approval.
+- Preserve the existing hold, its setter and its release conditions.  Completing the bullets does not itself clear a hold, authorize activation or make the PR ready.
+- For a superseded PR that must never merge, say that in the first bullets and identify its replacement.  Do not invent a path to merge it; closure follows the separate superseded-PR rule above.
+
+Source: Jay's November 4, 2026 instructions to make all do-not-merge PRs drafts, put readiness criteria first in each description, and add this to policy.
+
+
 ## Infisical sole source of truth
 
 Owner directive: Infisical is the sole source of truth for this app's secrets, env variables, and tunable settings knobs (policy + key inventory: `INFISICAL.md`).  `scripts/fleet_rag/infisical_settings.py` implements the contract: load at startup into an in-memory cache, never fetch per-request, background refresh (daemon thread, SIGHUP, `POST /admin/reload-settings`) that keeps last-known-good on failure, and write-through on admin save (`POST /admin/settings`, admin bearer only) — Infisical first, then the cache; a failed write fails the save.  New settings for the fleet-recall-service go in Infisical (project "AI Fleet Coordinator"), not in env-var defaults; per-user settings never go in Infisical.  Prod is Infisical's only environment (owner 2026-10-10): `infisical_settings.py` defaults to prod and refuses any other slug, and `python3 scripts/check-infisical-env.py` (CI) flags a dev or staging default in env files and `cursor-cloud-start.sh`.  No secret values in code, logs, PRs, or chat — key names and `set`/`empty` flags only.  Tests: `cd scripts && python3 -m unittest fleet_rag.tests.test_infisical_settings fleet_rag.tests.test_infisical_admin`.  The Mac's short-lived jobs (LaunchAgents, hooks, CLIs) read their modes, caps and flags through `scripts/fleet_knobs` (one fetch per process, a 0600 last-known-good copy marked stale, secrets never cached and failing closed, local files only narrow; `INFISICAL.md` § Fleet knobs lists every key and `cd scripts && python3 -m fleet_knobs inventory --check ../INFISICAL.md` keeps it equal to the registry); tests: `cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t .`.
@@ -22,7 +42,7 @@ Search fleet recall before re-deriving lessons.  Record reusable findings at cl
 
 GitHub work goes through the fleet's GitHub tools: `git-relay` is the GitHub relay, and `GR-MCP` (`git-relay mcp`) is its MCP wrapper, exposing `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`.  The relay is the only path in the fleet that mints per-bot GitHub App tokens, so a seat never holds an App id, a private key, or a token expiry; PR-write authoring runs under the owner's scoped PR-only token, so a PR is authored as the owner and the review bots work normally, while every other action runs under the seat's own GitHub App token.  Per-seat policy can only narrow the underlying credential, never exceed it, and every call, allowed or denied, is audited.  A seat reaches these tools with its own bearer token, and the tool names are the same on every path.  **The relay is not deployed yet**, so keep using the interim `gh` and shell path until the owner decides the cutover.
 
-**Linear project linkifiers (AFC-565).**  New Linear projects are linkified automatically - a Linear webhook on Project create/update hits the Operator listener at /linear/v1/projects, which verifies the Linear-Signature and runs scripts/linear_project_linkifiers.py: it upserts the literal P-TEAM-N Zulip linkifier with an ID-only project link using the Operator's realm-admin key, then opens a PR that updates TARGET in scripts/zulip_linkifiers.py and PROJECT_PATHS in scripts/apple-notes-coding.sh (the generated BEGIN/END blocks; never hand-edit inside them), and the parity test keeps them equal.  Its secrets (ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY, LINEAR_API_KEY, LINEAR_WEBHOOK_SECRET, GITHUB_TOKEN) are read only from Infisical AI Fleet Coordinator prod /operator-linkifiers through its own scoped read-only Infisical service token (AFC_OPERATOR_LINKIFIERS_READ_TOKEN, bound to the container as OPERATOR_LINKIFIERS_INFISICAL_TOKEN), no env fallbacks, per the owner's 10/26 service-token policy.  Backfill by hand with `python3 scripts/linear_project_linkifiers.py backfill --token-file F --apply-zulip --write-files`, where F holds the scoped read-only Infisical service token (AFC_OPERATOR_LINKIFIERS_READ_TOKEN) in a 0600 file whose permissions are checked before use.
+**Linear project linkifiers (AFC-565).**  New Linear projects are linkified automatically - a Linear webhook on Project create/update hits the Operator eavesdropper at /linear/v1/projects, which verifies the Linear-Signature and runs scripts/linear_project_linkifiers.py: it upserts the literal P-TEAM-N Zulip linkifier with an ID-only project link using the Operator's realm-admin key, then opens a PR that updates TARGET in scripts/zulip_linkifiers.py and PROJECT_PATHS in scripts/apple-notes-coding.sh (the generated BEGIN/END blocks; never hand-edit inside them), and the parity test keeps them equal.  Its secrets (ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY, LINEAR_API_KEY, LINEAR_WEBHOOK_SECRET, GITHUB_TOKEN) are read only from Infisical AI Fleet Coordinator prod /operator-linkifiers through its own scoped read-only Infisical service token (AFC_OPERATOR_LINKIFIERS_READ_TOKEN, bound to the container as OPERATOR_LINKIFIERS_INFISICAL_TOKEN), no env fallbacks, per the owner's 10/26 service-token policy.  Backfill by hand with `python3 scripts/linear_project_linkifiers.py backfill --token-file F --apply-zulip --write-files`, where F holds the scoped read-only Infisical service token (AFC_OPERATOR_LINKIFIERS_READ_TOKEN) in a 0600 file whose permissions are checked before use.
 
 ## CI runners
 

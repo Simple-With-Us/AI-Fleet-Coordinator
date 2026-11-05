@@ -276,6 +276,34 @@ export async function reserve(store, { kind, policy }, now = Date.now()) {
   return { ok: true, waitMs };
 }
 
+/**
+ * The grant check and one call's slot reservation as ONE decision (R1, DO
+ * burn reduction;  the same composition claimGrAssert already makes for its
+ * check-and-claim).  Runs `check`, and only when the check passes runs
+ * `reserve`, inside a single storage transaction, so the pair costs one
+ * Durable Object invocation instead of two and no state change can land
+ * between them:  a grant refused by the check never takes a slot, a paused
+ * seat never takes a slot (check reports the pause, as it does standalone),
+ * and a slot is taken only for the grant state that was just validated.
+ *
+ * Returns { code } with check's code when the check does not pass, or
+ * { code: "ok", slot } with reserve's full result - including its own
+ * refusals (rate_limited, budget_exhausted), which surface exactly as they
+ * do when reserve follows a passed check today.  Callers that must refuse
+ * BEFORE any tool machinery runs (serveMcp's HTTP 401 for a stale grant)
+ * keep calling check on its own;  this composition is for call sites that
+ * run the check and a reserve back to back for one call.
+ */
+export async function checkAndReserve(store, { epoch, approvedAt, phase, kind, policy }, now = Date.now()) {
+  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  return store.transaction(async (txn) => {
+    const gate = await check(txn, { epoch, approvedAt, phase }, now);
+    if (gate.code !== "ok") return { code: gate.code };
+    const slot = await reserve(txn, { kind, policy }, now);
+    return { code: "ok", slot };
+  });
+}
+
 // ---- shared provider quota (a separate Durable Object name per provider identity, never a seat)
 //
 // The Linear API limits requests per user or app user (5,000 an hour, plus a complexity budget), so the
@@ -707,6 +735,30 @@ export async function auditCall(store, row, now = Date.now()) {
   return store.transaction((txn) => auditCallInner(txn, row, now));
 }
 
+/**
+ * Many audit rows in one transaction (R2, DO burn reduction):  the write
+ * half of the worker isolate's audit buffer (src/audit-batch.js).  Each
+ * entry is { row, at } and lands exactly as auditCall(row) would at time
+ * `at` - same field discipline, same caps, same error and geo side rows -
+ * but the whole batch costs one Durable Object invocation and one storage
+ * transaction, so the read/modify/write sequences of individual rows can
+ * never interleave with another writer either.  EVERY entry lands:  the
+ * batch is never truncated, and { written } is the true count, because a
+ * caller that cleared its buffer on a silent partial write would lose
+ * audit rows invisibly.
+ */
+export async function auditCallBatch(store, entries, now = Date.now()) {
+  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  if (!Array.isArray(entries)) throw new TypeError("audit batch entries must be an array");
+  return store.transaction(async (txn) => {
+    for (const entry of entries) {
+      const at = Number.isFinite(entry?.at) ? entry.at : now;
+      await auditCallInner(txn, entry?.row ?? {}, at);
+    }
+    return { written: entries.length };
+  });
+}
+
 /** The newest call rows, newest first. */
 export async function callTail(store, limit = 40) {
   const days = ((await store.get("call_days")) ?? []).filter((d) => typeof d === "string").sort().reverse();
@@ -785,8 +837,8 @@ export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at win
 // How long one request holds a wake it claimed.  Longer than the Worker's
 // inline delivery (WAKE_BUDGET_MS in events.js, 10 seconds from the request's
 // arrival), so a live delivery is never claimed twice.  Shorter than the
-// listener's retry span (2, 5 and 10 seconds of backoff after its first
-// failure), so the listener's last retry claims again a wake whose isolate died
+// eavesdropper's retry span (2, 5 and 10 seconds of backoff after its first
+// failure), so the eavesdropper's last retry claims again a wake whose isolate died
 // mid-delivery.
 export const WAKE_LEASE_MS = 15 * 1000;
 const WAKE_SEEN_CAP = 500;
@@ -959,9 +1011,9 @@ async function putWakeSeen(store, seen) {
 }
 
 /**
- * Claim one wake for delivery.  A settled wake_id (the listener retrying after
+ * Claim one wake for delivery.  A settled wake_id (the eavesdropper retrying after
  * a lost response) is "duplicate".  A claim whose lease is still running is
- * "in_flight":  another request is delivering it, and the listener retries
+ * "in_flight":  another request is delivering it, and the eavesdropper retries
  * later.  A claim whose lease ran out (that request died mid-delivery) is
  * claimed again.  The claim holds until eventSettleWake, which only its
  * `token` may call, so a wake is remembered once it was delivered or dropped,
@@ -1005,7 +1057,7 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
  * End a claim (WAKE_OUTCOMES).  Only the request that holds it (`token`) may:
  * one whose lease ran out and was claimed again changes nothing.
  * "retry" (no delivery, and one failed in a way worth retrying) forgets the
- * wake, so the listener's retry claims it again.  Every other outcome settles
+ * wake, so the eavesdropper's retry claims it again.  Every other outcome settles
  * it, and a repeat is "duplicate" from then on.  "channel_refused" is audited
  * with the stream's numeric id only.
  * Returns {ok: true}, or {ok: false} when the claim is no longer this one's.
@@ -1538,7 +1590,12 @@ export async function gbBearerCheck(store, hash, now = Date.now()) {
   if (!sameHash(String(row.hash), String(hash))) return { ok: false, reason: "mismatch" };
   if (Number(row.expires_at) <= now) return { ok: false, reason: "expired" };
   if (now - Number(row.last_used_at || 0) >= 3_600_000) await store.put(GB_BEARER_KEY, { ...row, last_used_at: now });
-  return { ok: true, mcp_accept: row.mcp_accept === true };
+  // The pause flag rides this answer (R1, DO burn reduction):  the bearer
+  // routes in src/index.js used to spend a second RPC on getState() for this
+  // one boolean, which this instance already holds.  It is reported ONLY on
+  // the ok shape - a wrong or expired bearer learns nothing about the seat,
+  // exactly as before.
+  return { ok: true, mcp_accept: row.mcp_accept === true, paused: (await store.get("paused")) === true };
 }
 
 /** For /admin:  times and counts only, no hash. */

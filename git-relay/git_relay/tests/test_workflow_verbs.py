@@ -96,6 +96,36 @@ class Tests(unittest.TestCase):
             Client(), Policy(read_only), Minter(), "swu-wise", "wf_file_get", REPO
         )
 
+    def test_draft_transitions_mint_contents_write_and_enforce_ceiling(self):
+        # GitHub draft/ready GraphQL mutations need contents:write as well as PR write.
+        for action in ("wf_pr_draft", "wf_pr_ready"):
+            with self.subTest(action=action):
+                minter = Minter()
+                WorkflowVerbs.for_action(Client(), Policy(), minter, "swu-wise", action, REPO)
+                self.assertEqual(
+                    minter.calls[0][2],
+                    {
+                        "pull_requests": "write",
+                        "contents": "write",
+                        "metadata": "read",
+                    },
+                )
+                for ceiling in (
+                    {"pull_requests": "write", "contents": "read", "metadata": "read"},
+                    {"pull_requests": "read", "contents": "write", "metadata": "read"},
+                ):
+                    denied_minter = Minter()
+                    with self.assertRaises(Refused):
+                        WorkflowVerbs.for_action(
+                            Client(),
+                            Policy(ceiling),
+                            denied_minter,
+                            "swu-wise",
+                            action,
+                            REPO,
+                        )
+                    self.assertEqual(denied_minter.calls, [])
+
     def test_denied_repo_action_and_unknown_action_and_mint_failure(self):
         with self.assertRaises(Refused):
             WorkflowVerbs.for_action(Client(), Policy(), Minter(), "swu-wise", "wf_tree", "x/y")

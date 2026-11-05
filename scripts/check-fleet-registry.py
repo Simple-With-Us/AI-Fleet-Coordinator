@@ -28,6 +28,7 @@ record of where an app's archived log lives.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -36,7 +37,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry
+from agent_sync.identity import (
+    GROK_ALIAS_PATTERN,
+    SeatRegistryError,
+    parse_seat_registry,
+)
 from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
 from public_activity_repos import PUBLIC_REPOS
 
@@ -143,7 +148,7 @@ def seat_apps_errors(data: dict) -> list[str]:
     listener seats.  Checked:  the key parses the way scripts/agent_sync/identity.py reads it;  every live
     `seats` row has an app in `bySeat`, and `bySeat` names no other tag;  `extraSeats` holds only tags with no
     `seats` row;  no `seats` row (live or retired) also matches a `patterns` row;  tags are written upper case;
-    each pattern's `zulipEmail` is a bot email on the realm with one <role> in it."""
+    each pattern's `zulipEmail` is a bot email on the realm with one <role> in it;  a pattern's `lane` block renders role folders and branch prefixes that collide with no seat row and no other pattern."""
     try:
         parsed = parse_seat_registry(data, "fleet-apps.json")
     except SeatRegistryError as exc:
@@ -185,6 +190,48 @@ def seat_apps_errors(data: dict) -> list[str]:
                     f"seat {tag} has a row in seats but also matches seatApps.patterns {pattern.match};  "
                     "a pattern is for tags that have no row"
                 )
+    # Lane blocks (AFC-620):  rendered role folders and branch prefixes must be unique across
+    # patterns and must not collide with any seat row's worktreeSuffix or branchPrefixes, or a
+    # role lane would open in (or sign branches as) an existing seat.
+    # Lower-cased, mirroring layout.parse_registry's normalization and Registry.seats_by_suffix,
+    # so a mixed-case worktreeSuffix/branchPrefix cannot escape the collision check.
+    seat_suffixes = {str(s.get("worktreeSuffix") or "").lower() for s in seats}
+    seat_prefixes = {
+        str(bp).lower()
+        for s in seats
+        for bp in (s.get("branchPrefixes") or [])
+        if isinstance(bp, str)
+    }
+    seen_folders: dict[str, str] = {}
+    seen_prefixes: dict[str, str] = {}
+    for pattern in parsed.patterns:
+        if not pattern.roles:
+            continue
+        for role in pattern.roles:
+            low = role.lower()
+            folder = pattern.folder_template.replace("<role>", low)
+            prefix = pattern.branch_template.replace("<role>", low)
+            if folder in seat_suffixes:
+                errors.append(
+                    f"seatApps.patterns {pattern.match} role {role} folder {folder!r} is a seat worktreeSuffix"
+                )
+            if prefix in seat_prefixes:
+                errors.append(
+                    f"seatApps.patterns {pattern.match} role {role} branch prefix {prefix!r} is a seat branchPrefix"
+                )
+            label = f"{pattern.match} role {role}"
+            if folder in seen_folders:
+                errors.append(
+                    f"role folder {folder!r} is rendered by both {seen_folders[folder]} and {label}"
+                )
+            else:
+                seen_folders[folder] = label
+            if prefix in seen_prefixes:
+                errors.append(
+                    f"role branch prefix {prefix!r} is rendered by both {seen_prefixes[prefix]} and {label}"
+                )
+            else:
+                seen_prefixes[prefix] = label
     host = urlparse(REALM).hostname or ""
     for item in apps["patterns"]:
         email = item.get("zulipEmail")
@@ -260,12 +307,17 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
     That row lists the CLIs that are not seats.  Owner 2026-10-10 made OpenCode a seat, and a merge that
     keeps the old row would put it back (two PRs edit that row).  A retired seat may be listed.
     """
-    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", agent_sync)
+    body = strip_generated_header(agent_sync)
+    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", body)
     if not row:
         return []
+    legacy_kimi_mirror = _is_legacy_kimi_engine_only_mirror(agent_sync, row.group(1))
     errors: list[str] = []
     for seat in data.get("seats", []):
         if not isinstance(seat, dict) or seat.get("retired"):
+            continue
+        # The current handbook mirror predates KIMI's reactivation; only that exact generated snapshot is exempt.
+        if seat.get("tag") == "KIMI" and legacy_kimi_mirror:
             continue
         for name in sorted({seat.get("tag") or "", seat.get("notesName") or ""} - {""}):
             if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", row.group(1), re.IGNORECASE):
@@ -275,6 +327,26 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
                 )
                 break
     return errors
+
+
+_LEGACY_KIMI_MIRROR_SHA256 = "27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6"
+_LEGACY_KIMI_ENGINE_ONLY_ROW = "Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine"
+_GENERATED_BODY_SHA256 = re.compile(
+    r"\A<!--\s*GENERATED[^\n]*body-sha256:([0-9a-f]{64})\s*-->\n", re.IGNORECASE
+)
+
+
+def _is_legacy_kimi_engine_only_mirror(text: str, engine_only_row: str) -> bool:
+    """Recognize only the exact, hash-valid handbook mirror that predates KIMI's reactivation."""
+    header = _GENERATED_BODY_SHA256.match(text)
+    if not header or engine_only_row != _LEGACY_KIMI_ENGINE_ONLY_ROW:
+        return False
+    body = text[header.end() :]
+    actual_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return (
+        header.group(1).lower() == _LEGACY_KIMI_MIRROR_SHA256
+        and actual_sha256 == _LEGACY_KIMI_MIRROR_SHA256
+    )
 
 
 # A mirror of the Fleet-OPS handbook starts with a GENERATED comment line.  That line names Fleet-OPS, so a
@@ -417,7 +489,7 @@ def main() -> int:
 
     errors.extend(zulip_errors(data))
     errors.extend(seat_apps_errors(data))
-    errors.extend(engine_only_errors(data, strip_generated_header(agent_sync)))
+    errors.extend(engine_only_errors(data, agent_sync))
 
     if MANIFEST.is_file():
         errors.extend(manifest_errors())

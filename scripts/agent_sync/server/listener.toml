@@ -1,5 +1,5 @@
 # simple-chat listener config for the SERVER instance (the Coolify container on the Hetzner box).
-# Design:  docs/protocols/agent-sync-server.md in AI-Fleet-Coordinator.
+# Design:  docs/protocols/eavesdropper-server.md in AI-Fleet-Coordinator.
 #
 # It holds no secrets.  Each seat's Zulip email and API key, ZULIP_SITE, and each routine's URL and sender key reach
 # the container as environment variables, from one of two sources under the same names.  Infisical (fleet-secrets'
@@ -78,7 +78,7 @@ enabled = false
 # The signed read API (AFC-330, scripts/agent_sync/listener_api.py):  GET /listener/v1/<SEAT>/<record> for
 # the hosted Worker's listener_* tools.  Each seat's key is its hmac routine key (JET_ROUTINE_KEY) or
 # <CODE>_ROUTINE_KEY, the same value as the Worker's WAKE_HMAC_KEY_<SEAT>;  a seat without one gets 404.
-# Read-only.  Enable only after the reverse proxy routes /listener/v1/ here (docs/protocols/agent-sync-server.md).
+# Read-only.  Enable only after the reverse proxy routes /listener/v1/ here (docs/protocols/eavesdropper-server.md).
 [listener_api]
 enabled = false
 bind = "0.0.0.0"
