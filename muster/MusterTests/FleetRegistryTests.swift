@@ -109,17 +109,17 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(summary.zulipChannel, "work-in-progress")
         XCTAssertEqual(summary.apps.count, 3)
 
-        let st = summary.apps[0]
-        XCTAssertEqual(st.acronym, "ST")
-        XCTAssertTrue(st.hasCodeCheckout)
-        XCTAssertTrue(st.hasIntegrationCheckout)
-        XCTAssertTrue(st.hasPublishScript)
-        XCTAssertEqual(st.activeLanes, 1)
-        XCTAssertEqual(st.dirtyLanes, 0)
-        XCTAssertEqual(st.openPullRequests, 1)
-        XCTAssertEqual(st.blockedPullRequests, 0)
-        XCTAssertEqual(st.activeClaims, 1)
-        XCTAssertEqual(st.state, .passed)
+        let socratic = summary.apps[0]
+        XCTAssertEqual(socratic.acronym, "ST")
+        XCTAssertTrue(socratic.hasCodeCheckout)
+        XCTAssertTrue(socratic.hasIntegrationCheckout)
+        XCTAssertTrue(socratic.hasPublishScript)
+        XCTAssertEqual(socratic.activeLanes, 1)
+        XCTAssertEqual(socratic.dirtyLanes, 0)
+        XCTAssertEqual(socratic.openPullRequests, 1)
+        XCTAssertEqual(socratic.blockedPullRequests, 0)
+        XCTAssertEqual(socratic.activeClaims, 1)
+        XCTAssertEqual(socratic.state, .passed)
 
         let fm = summary.apps[1]
         XCTAssertEqual(fm.acronym, "FM")
@@ -166,8 +166,13 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertNil(jet.cliTool)
     }
 
-    func test_fleet_app_state_is_unproven_when_any_fleet_view_section_is_unknown() throws {
-        let envelopeUnknownPRs = """
+    /// An envelope with no items, where one named section could not look at its source.
+    private func envelopeWithUnknownSection(_ unknown: String) throws -> FleetViewEnvelope {
+        func section(_ name: String) -> String {
+            let state = name == unknown ? "UNKNOWN" : "OK"
+            return #"{ "state": "\#(state)", "reason": "fixture", "items": [] }"#
+        }
+        let json = """
         {
           "schemaVersion": 1,
           "tool": "fleet-view",
@@ -176,22 +181,76 @@ final class FleetRegistryTests: XCTestCase {
           "summary": { "lanes": 0, "pullRequests": 0, "claims": 0, "overallVerdict": "UNKNOWN" },
           "requestCounts": { "github": 0, "linear": 0, "githubMax": 60, "linearMax": 30 },
           "sections": {
-            "lanes": { "state": "OK", "reason": "0 lane(s)", "items": [] },
-            "pullRequests": { "state": "UNKNOWN", "reason": "github timeout", "items": [] },
-            "claims": { "state": "OK", "reason": "0 claim(s)", "items": [] }
+            "lanes": \(section("lanes")),
+            "pullRequests": \(section("pullRequests")),
+            "claims": \(section("claims"))
           },
           "notes": []
         }
         """
-        let envelope = try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(envelopeUnknownPRs.utf8))
+        return try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(json.utf8))
+    }
+
+    private func firstAppState(unknownSection: String) throws -> CellState {
         let summary = FleetRegistryReader.build(
             from: Data(sampleRegistry.utf8),
-            viewOutput: envelope,
+            viewOutput: try envelopeWithUnknownSection(unknownSection),
             toolsReading: nil,
             pathExists: { _ in false }
         )
-        // With pullRequests reported UNKNOWN, an unobserved app must be .unproven rather than .passed.
-        XCTAssertEqual(summary.apps[0].state, .unproven)
+        return summary.apps[0].state
+    }
+
+    func test_fleet_app_state_is_unproven_when_any_fleet_view_section_is_unknown() throws {
+        for unknownSection in ["lanes", "pullRequests"] {
+            XCTAssertEqual(
+                try firstAppState(unknownSection: unknownSection),
+                .unproven,
+                "\(unknownSection) reported UNKNOWN, so an unobserved app must not read as passed"
+            )
+        }
+
+        // FLEETVIEW-3 belongs to the Apps And Work Truth batch:  `claimsUnproven` in
+        // FleetRegistry.swift is inverted, so unknown claims still read as passed.  The expectation
+        // is not strict, so main stays green whichever change lands first.  Remove this wrapper
+        // when that fix lands, and claims joins the list above.
+        let options = XCTExpectedFailure.Options()
+        options.isStrict = false
+        try XCTExpectFailure("FLEETVIEW-3:  unknown claims still read as passed", options: options) {
+            XCTAssertEqual(try firstAppState(unknownSection: "claims"), .unproven)
+        }
+    }
+
+    /// The slugs FLEETVIEW-12 (Apps And Work Truth batch) still has to add to the metadata table.
+    /// This list may only shrink:  a new unmapped slug fails below.
+    private static let slugsAwaitingMetadata: Set<String> = ["kimi-code", "zcode", "amp"]
+
+    func test_the_real_registry_decodes_and_every_slug_is_accounted_for() throws {
+        // .../muster/MusterTests/FleetRegistryTests.swift -> repo root is three levels up
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("fleet-apps.json"))
+
+        let summary = FleetRegistryReader.build(from: data)
+        XCTAssertNil(summary.problem)
+        XCTAssertFalse(summary.apps.isEmpty)
+
+        let document = try JSONDecoder().decode(FleetRegistryDocument.self, from: data)
+        let sections = try XCTUnwrap(document.seatApps)
+        var declared = Set((sections.bySeat ?? [:]).values)
+        declared.formUnion((sections.extraSeats ?? [:]).values)
+        declared.formUnion((sections.patterns ?? []).map(\.app))
+        XCTAssertFalse(declared.isEmpty)
+
+        let shown = Set(summary.codingApps.map(\.appSlug))
+        XCTAssertTrue(declared.isSubset(of: shown), "not shown:  \(declared.subtracting(shown).sorted())")
+
+        // An app with no row in the metadata table shows its raw slug as its name.
+        let unmapped = Set(summary.codingApps.filter { $0.displayName == $0.appSlug }.map(\.appSlug))
+        XCTAssertTrue(
+            unmapped.isSubset(of: Self.slugsAwaitingMetadata),
+            "add these to codingAppMetadata:  \(unmapped.subtracting(Self.slugsAwaitingMetadata).sorted())"
+        )
     }
 
     func test_stale_doctor_report_is_not_consumed_as_mac_cli_currency() throws {
