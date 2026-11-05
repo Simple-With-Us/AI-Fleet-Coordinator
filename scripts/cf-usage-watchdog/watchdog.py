@@ -13,7 +13,10 @@ Credentials come from fleet-secrets, live in memory only and never reach a log o
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import fcntl
+import http.client
 import json
 import os
 import subprocess
@@ -40,6 +43,8 @@ TRIP_MARKER = "GUARD-TRIPPED"
 UNOWNED = {"__unknown__", "(account)", ""}
 EVENTS_MAX_BYTES = 5_000_000
 ALERT_LINES_MAX = 20
+INVENTORY_RETRY_SECONDS = 900
+NETWORK_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException)
 
 
 class PollError(Exception):
@@ -349,10 +354,11 @@ def owners_for(metric: str, resource: str, inventory: dict) -> list:
     if metric.startswith(("workers.", "do.")):
         if resource in UNOWNED:
             return []
-        if workers:
-            return [resource] if resource in workers else []
-        # No inventory yet:  these two name a script in the data, the others an unmapped namespace id.
-        return [resource] if metric.startswith("workers.") or metric == "do.requests" else []
+        # These two name a script in the data, so a Worker newer than the inventory can still stop.
+        if metric.startswith("workers.") or metric == "do.requests":
+            return [resource]
+        # The others hold a namespace id until the inventory maps it to a script.
+        return [resource] if resource in workers else []
     family = metric.split(".", 1)[0]
     return sorted(inventory.get("owners", {}).get(family, {}).get(resource, []))
 
@@ -378,6 +384,13 @@ class Store:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.state_path = directory / "state.json"
         self.events_path = directory / "events.jsonl"
+
+    @contextlib.contextmanager
+    def lock(self):
+        """One writer of the state file at a time:  the timer's run or a manual re-arm."""
+        with open(self.directory / ".lock", "w", encoding="utf-8") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
 
     def load(self) -> dict:
         state: dict = {}
@@ -502,14 +515,17 @@ class Connections:
             finally:
                 exc.close()
             raise ApiError(exc.code, codes) from None
-        except (urllib.error.URLError, OSError) as exc:
+        except NETWORK_ERRORS as exc:
             raise ApiError(0, [type(exc).__name__]) from None
         if not raw:
             return {}
         try:
-            return json.loads(raw)
+            answer = json.loads(raw)
         except ValueError:
             raise ApiError(0, ["not-json"]) from None
+        if not isinstance(answer, dict):
+            raise ApiError(0, ["not-json"])
+        return answer
 
     def graphql(self, query: str, variables: dict) -> dict:
         try:
@@ -517,7 +533,14 @@ class Connections:
         except ApiError as exc:
             raise PollError(f"graphql-http-{exc.status}") from None
         if answer.get("errors"):
-            raise PollError(f"graphql-errors-{len(answer['errors'])}")
+            # Cloudflare's own code, such as budget, says whether it is a quota or a real fault.
+            codes = {
+                str((item.get("extensions") or {}).get("code", ""))
+                for item in answer["errors"]
+                if isinstance(item, dict)
+            }
+            named = "-".join(sorted(code for code in codes if code.isidentifier()))
+            raise PollError(f"graphql-errors-{len(answer['errors'])}-{named or 'uncoded'}")
         accounts = ((answer.get("data") or {}).get("viewer") or {}).get("accounts") or []
         if len(accounts) != 1:
             raise PollError("graphql-no-account")
@@ -533,6 +556,8 @@ class Connections:
         conf = self.cfg["zulip"]
         env = {key: value for key, value in self.env.items() if not key.startswith("INFISICAL_")}
         env["AGENT_SEAT"] = conf["seat"]
+        # The seat wrapper turns on hosted reads only;  without this a post is refused with exit 2.
+        env["SIMPLE_CHAT_REMOTE_WRITES"] = "1"
         command = [
             "simple-chat",
             "post",
@@ -572,7 +597,7 @@ class Connections:
         )
         try:
             status, _ = self._request("POST", PUSHOVER_URL, form.encode("utf-8"))
-        except (urllib.error.URLError, OSError):
+        except NETWORK_ERRORS:
             return False
         return status == 200
 
@@ -597,12 +622,34 @@ class Connections:
             return None
         try:
             status, _ = self._request("GET", self._heartbeat_url)
-        except (urllib.error.URLError, OSError):
+        except NETWORK_ERRORS:
             return False
         return status < 300
 
 
 # ---------------------------------------------------------------- the actions
+
+
+def label_live_deployment(conn: Any, path: str, message: str) -> Any:
+    """A new deployment of the live split as it stands, carrying `message`.  The deployers read only
+    the newest deployment's message."""
+    result = conn.api("GET", f"{path}/deployments")
+    try:
+        versions = [
+            {"version_id": item["version_id"], "percentage": item["percentage"]}
+            for item in result["deployments"][0]["versions"]
+        ]
+    except (KeyError, IndexError, TypeError):
+        raise ApiError(0, ["no-live-deployment"]) from None
+    return conn.api(
+        "POST",
+        f"{path}/deployments",
+        {
+            "strategy": "percentage",
+            "versions": versions,
+            "annotations": {"workers/message": message[:1000]},
+        },
+    )
 
 
 class Watchdog:
@@ -627,6 +674,7 @@ class Watchdog:
         self.limits = cfg["limits"]
         self.base = f"/accounts/{cfg['account_id']}"
         self.undelivered = False
+        self.last_failure_status = 0
         self.beat: bool | None = None
         self._usage = empty_usage()
 
@@ -681,6 +729,7 @@ class Watchdog:
         try:
             result = call()
         except ApiError as exc:
+            self.last_failure_status = exc.status
             self.store.event(
                 "action_failed",
                 worker=worker,
@@ -713,31 +762,32 @@ class Watchdog:
             "target_per_minute": target,
             "polls": 0,
             "previous_version": previous_version,
+            "guard_set": False,
+            "marked": False,
         }
         self.state["trips"][worker] = trip
         day = minute.strftime("%Y-%m-%d")
         self.state["trips_by_day"][day] = self.state["trips_by_day"].get(day, 0) + 1
         self.store.save(self.state)
-        set_off = self._step(
-            worker,
-            "guard_mode_off",
-            previous_version,
-            lambda: self.conn.api(
-                "PUT",
-                f"{self.base}/workers/scripts/{worker}/secrets",
-                {"name": GUARD_SECRET, "type": "secret_text", "text": "off"},
-            ),
-        )
-        if set_off is False:
+        if not self._set_guard_off(worker, trip):
+            final = self._guard_failure_is_final(trip)
+            next_step = (
+                "Moving straight to the fallback stop."
+                if final
+                else "That may pass, so the fallback stop waits for the next tries."
+            )
             self.notify(
                 f"Could not set {GUARD_SECRET} on {worker}",
                 [
-                    f"Moving straight to the fallback stop.{GAP}Previous version:  {previous_version}."
+                    f"{next_step}{GAP}It keeps trying the secret each minute.{GAP}Previous version:  {previous_version}."
                 ],
             )
-            self.harden(worker)
+            self._mark_tripped(worker, trip)
+            if final:
+                self.harden(worker)
+            self.store.save(self.state)
             return
-        self._mark_tripped(worker, breach, previous_version)
+        self._mark_tripped(worker, trip)
         self.notify(
             f"Tripped {worker}",
             [
@@ -746,28 +796,101 @@ class Watchdog:
         )
         self.store.save(self.state)
 
-    def _mark_tripped(self, worker: str, breach: dict, previous_version: str) -> None:
-        """Label the live version so the deployers can refuse to undo the trip.  Best effort."""
-        version = self.current_version(worker)
-        if "," in version or version == "unknown":
-            return
-        message = f"{TRIP_MARKER} cf-usage-watchdog {breach['metric']} {breach['window']} previous {previous_version}"
-        self._step(
+    def _set_guard_off(self, worker: str, trip: dict) -> bool:
+        done = self._step(
+            worker,
+            "guard_mode_off",
+            trip.get("previous_version", "unknown"),
+            lambda: self.conn.api(
+                "PUT",
+                f"{self.base}/workers/scripts/{worker}/secrets",
+                {"name": GUARD_SECRET, "type": "secret_text", "text": "off"},
+            ),
+        )
+        trip["guard_set"] = done is not False
+        if trip["guard_set"]:
+            trip["marked"] = False  # The secret's own new deployment replaced any earlier label.
+            trip["guard_failures"] = 0
+        else:
+            trip["guard_failures"] = trip.get("guard_failures", 0) + 1
+            status = self.last_failure_status
+            trip["guard_failure_transient"] = status == 0 or status == 429 or status >= 500
+        return trip["guard_set"]
+
+    def _guard_failure_is_final(self, trip: dict) -> bool:
+        """A refusal will not change, so the fallback stop follows at once.  A network fault or a
+        Cloudflare 5xx or 429 gets the same number of polls as any escalation, because the fallback
+        takes hostnames down and one lost call should not do that."""
+        return (
+            not trip.get("guard_failure_transient")
+            or trip.get("guard_failures", 0) > self.limits["escalate_after_polls"]
+        )
+
+    def _mark_tripped(self, worker: str, trip: dict) -> None:
+        """Label the newest deployment so the deployers refuse to undo the trip.  They read only the
+        newest one, so this repeats the live split as it stands and runs again until it lands."""
+        previous_version = trip.get("previous_version", "unknown")
+        message = f"{TRIP_MARKER} cf-usage-watchdog {trip['metric']} {trip['window']} previous {previous_version}"
+        path = f"{self.base}/workers/scripts/{worker}"
+        done = self._step(
             worker,
             "mark_tripped",
             previous_version,
-            lambda: self.conn.api(
-                "POST",
-                f"{self.base}/workers/scripts/{worker}/deployments",
-                {
-                    "strategy": "percentage",
-                    "versions": [{"version_id": version, "percentage": 100}],
-                    "annotations": {"workers/message": message[:1000]},
-                },
-            ),
+            lambda: label_live_deployment(self.conn, path, message),
         )
+        trip["marked"] = done is not False
 
     # ---- stage 3:  the fallback stop
+
+    def _run_pending(self, worker: str, trip: dict) -> None:
+        """The stop steps not yet done.  Each is safe to repeat, and only what failed runs again."""
+        path = f"{self.base}/workers/scripts/{worker}"
+        hostnames = {d.get("id"): d.get("hostname") for d in trip["previous"]["domains"]}
+        remaining = []
+        for step in trip["pending"]:
+            if step == "empty_schedules":
+                name, call = step, lambda: self.conn.api("PUT", f"{path}/schedules", [])
+            elif step == "disable_subdomain":
+                name, call = (
+                    step,
+                    lambda: self.conn.api(
+                        "POST", f"{path}/subdomain", {"enabled": False, "previews_enabled": False}
+                    ),
+                )
+            else:
+                domain_id = step.split(":", 1)[1]
+                name = f"detach_domain {hostnames.get(domain_id)}"
+                call = lambda d=domain_id: self.conn.api(  # noqa: E731
+                    "DELETE", f"{self.base}/workers/domains/{d}"
+                )
+            if self._step(worker, name, trip.get("previous_version", "unknown"), call) is False:
+                remaining.append(step)
+        trip["pending"] = remaining
+
+    def retry_unfinished(self, worker: str, trip: dict) -> None:
+        """A failed action must not stay failed:  a lost API call otherwise leaves a runaway running
+        behind a recorded trip.  Runs each poll until everything has landed."""
+        if not trip.get("guard_set", True):
+            self._set_guard_off(worker, trip)
+        if not trip.get("marked", True):
+            self._mark_tripped(worker, trip)
+        if trip.get("stage") == 2 and not trip.get("guard_set", True):
+            if self._guard_failure_is_final(trip):
+                self.harden(worker)
+        elif trip.get("stage") == 3 and trip.get("pending"):
+            self._run_pending(worker, trip)
+            if (
+                trip["pending"]
+                and self.epoch - trip.get("last_stuck_alert", 0)
+                >= self.limits["realert_minutes"] * 60
+            ):
+                if self.notify(
+                    f"Fallback stop is incomplete on {worker}",
+                    [
+                        f"Still failing:  {', '.join(trip['pending'])}.{GAP}It tries again each minute.{GAP}Stop it by hand if this does not clear."
+                    ],
+                ):
+                    trip["last_stuck_alert"] = self.epoch
 
     def harden(self, worker: str) -> None:
         trip = self.state["trips"][worker]
@@ -803,41 +926,21 @@ class Watchdog:
             return
         trip["stage"] = 3
         trip["previous"] = previous
-        self.store.save(self.state)  # What re-arm needs, before anything is changed.
-        results = [
-            self._step(
-                worker,
-                "empty_schedules",
-                previous_version,
-                lambda: self.conn.api("PUT", f"{path}/schedules", []),
-            ),
-            self._step(
-                worker,
-                "disable_subdomain",
-                previous_version,
-                lambda: self.conn.api(
-                    "POST", f"{path}/subdomain", {"enabled": False, "previews_enabled": False}
-                ),
-            ),
+        trip["pending"] = [
+            "empty_schedules",
+            "disable_subdomain",
+            *(f"detach:{d['id']}" for d in previous["domains"]),
         ]
-        for domain in previous["domains"]:
-            results.append(
-                self._step(
-                    worker,
-                    f"detach_domain {domain.get('hostname')}",
-                    previous_version,
-                    lambda d=domain: self.conn.api(
-                        "DELETE", f"{self.base}/workers/domains/{d['id']}"
-                    ),
-                )
-            )
-        failed = sum(1 for result in results if result is False)
+        self.store.save(self.state)  # What re-arm needs, before anything is changed.
+        self._run_pending(worker, trip)
+        failed = len(trip["pending"])
         hosts = ", ".join(d.get("hostname", "?") for d in previous["domains"]) or "none"
         self.notify(
             f"Fallback stop on {worker}",
             [
                 f"Emptied its cron triggers, turned off workers.dev and preview URLs, and detached custom domains ({hosts}).{GAP}"
-                f"{failed} step(s) failed.{GAP}Durable Object alarms keep running on a Worker without the budget guard, so check that one by hand.{GAP}"
+                f"{failed} step(s) failed, and those try again each minute.{GAP}"
+                f"Durable Object alarms, email routes, service bindings and zone routes can still run a Worker without the budget guard, so check that one by hand.{GAP}"
                 f"Previous version:  {previous_version}.{GAP}Re-arm:  watchdog.py rearm {worker} --apply."
             ],
         )
@@ -852,13 +955,15 @@ class Watchdog:
             minutes=self.limits["lag_minutes"] + self.limits["rate_window_minutes"]
         )
         for worker, trip in list(self.state["trips"].items()):
-            trip["polls"] = trip.get("polls", 0) + 1
+            self.retry_unfinished(worker, trip)
             after = dt.datetime.strptime(trip["trip_minute"], "%Y-%m-%dT%H:%M:00Z").replace(
                 tzinfo=dt.UTC
             ) + dt.timedelta(minutes=1)
             start = max(after, first)
             if start > last:
                 continue
+            # Only a poll that holds minutes from after the trip counts toward escalating.
+            trip["polls"] = trip.get("polls", 0) + 1
             count = int((last - start).total_seconds() // 60) + 1
             series = usage["minutes"].get(trip["metric"], {}).get(trip["resource"], {})
             total = sum(
@@ -897,6 +1002,15 @@ class Watchdog:
 
     # ---- the run
 
+    def _rearm_holds(self, worker: str, breach: dict) -> bool:
+        """After a re-arm the day-to-date total stays over until 6 PM, and the month's until the 1st.
+        Those two must not trip the same Worker straight back;  a 5-minute rate still does."""
+        held = self.state.get("rearmed", {}).get(worker) or {}
+        floor = floor_minute(self.now)
+        return (breach["window"] == "day" and held.get("day") == floor.strftime("%Y-%m-%d")) or (
+            breach["window"] == "month" and held.get("month") == floor.strftime("%Y-%m")
+        )
+
     def apply_breaches(self, breaches: list, inventory: dict) -> None:
         due = [
             b
@@ -908,7 +1022,11 @@ class Watchdog:
         # Observe mode only reports, so it reads each Worker's version when it has something new to say.
         for breach in breaches if self.mode == "enforce" else due:
             for worker in trip_targets(self.cfg, self.profile, breach, inventory):
-                if worker not in self.state["trips"] and worker not in wanted:
+                if (
+                    worker not in self.state["trips"]
+                    and worker not in wanted
+                    and not self._rearm_holds(worker, breach)
+                ):
                     wanted[worker] = breach
         versions: dict = {}
         for worker in {
@@ -991,11 +1109,61 @@ class Watchdog:
 
     def run(self) -> int:
         try:
+            return self._run()
+        except Exception as exc:  # noqa: BLE001 - A surprise must reach an owner, not only the journal.
+            trace = exc.__traceback__
+            while trace is not None and trace.tb_next is not None:
+                trace = trace.tb_next
+            # The type and line only:  an exception's text could carry a response body.
+            where = trace.tb_lineno if trace is not None else 0
+            self.handle_poll_failure(f"internal-{type(exc).__name__}-line-{where}")
+            self.store.save(self.state)
+            return 1
+
+    def _unmapped_breach(self, breaches: list, inventory: dict) -> bool:
+        """A breach that could trip but has no owner, which a Worker or binding newer than the
+        inventory would look like."""
+        return any(
+            not trip_targets(self.cfg, self.profile, breach, inventory)
+            and breach["top"] not in UNOWNED
+            and not self.cfg["metrics"][breach["metric"]].get("alert_only")
+            and (
+                breach["scope"] != "account"
+                or self.cfg["profiles"][self.profile].get("trip_top_contributor")
+            )
+            for breach in breaches
+        )
+
+    def _run(self) -> int:
+        try:
             account = self.conn.graphql(build_query(), query_variables(self.cfg, self.now))
+            # A cron fires inside every 5-minute window, so an empty one is an analytics fault that
+            # would otherwise read as all clear.
+            if not account.get("wm"):
+                raise PollError("analytics-empty")
         except PollError as exc:
             self.handle_poll_failure(str(exc))
             self.store.save(self.state)
             return 1
+        inventory = self.refresh_inventory_if_stale()
+        usage = parse_usage(account, inventory.get("ns_to_script", {}))
+        self._usage = usage
+        self.beat = self.conn.heartbeat()
+        self.store.event("poll_ok", heartbeat=self.beat, trips=sorted(self.state["trips"]))
+        if self.mode == "enforce":
+            self.check_trips(usage)
+        breaches = evaluate(self.cfg, self.profile, usage)
+        tried = max(inventory.get("at", 0), self.state.get("inventory_tried", 0))
+        if (
+            self._unmapped_breach(breaches, inventory)
+            and self.epoch - tried >= INVENTORY_RETRY_SECONDS
+        ):
+            inventory = self.refresh_inventory()
+            self._usage = usage = parse_usage(account, inventory.get("ns_to_script", {}))
+            breaches = evaluate(self.cfg, self.profile, usage)
+        self.apply_breaches(breaches, inventory)
+        self.daily_check_if_due(inventory)
+        # Last, so a crash above still counts toward the blind alert.
         if (
             self.state.pop("poll_failed_since", None) is not None
             and self.state.pop("poll_fail_alerted", None) is not None
@@ -1004,15 +1172,6 @@ class Watchdog:
                 "Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False
             )
         self.state.pop("poll_fail_alerted", None)
-        inventory = self.refresh_inventory_if_stale()
-        usage = parse_usage(account, inventory.get("ns_to_script", {}))
-        self._usage = usage
-        self.beat = self.conn.heartbeat()
-        self.store.event("poll_ok", heartbeat=self.beat, trips=sorted(self.state["trips"]))
-        if self.mode == "enforce":
-            self.check_trips(usage)
-        self.apply_breaches(evaluate(self.cfg, self.profile, usage), inventory)
-        self.daily_check_if_due(inventory)
         self.prune()
         self.store.save(self.state)
         return 1 if self.undelivered else 0
@@ -1026,13 +1185,32 @@ class Watchdog:
         self.state["trips_by_day"] = {
             day: count for day, count in self.state["trips_by_day"].items() if day == today
         }
+        month = today[:7]
+        self.state["rearmed"] = {
+            worker: held
+            for worker, held in self.state.get("rearmed", {}).items()
+            if held.get("month") == month
+        }
 
     # ---- the daily read:  who owns what, and does the account still match git
 
     def refresh_inventory_if_stale(self) -> dict:
         inventory = self.state.get("inventory") or {}
-        if self.epoch - inventory.get("at", 0) < 86400:
+        today = floor_minute(self.now).strftime("%Y-%m-%d")
+        # The daily check compares the live account, so it gets a fresh read at the turn of the day.
+        if (
+            self.epoch - inventory.get("at", 0) < 86400
+            and self.state.get("daily_check_day") == today
+        ):
             return inventory
+        # A read that keeps failing, or a daily check that cannot post, must not repeat it each minute.
+        if inventory and self.epoch - self.state.get("inventory_tried", 0) < INVENTORY_RETRY_SECONDS:
+            return inventory
+        return self.refresh_inventory()
+
+    def refresh_inventory(self) -> dict:
+        inventory = self.state.get("inventory") or {}
+        self.state["inventory_tried"] = self.epoch
         try:
             inventory = self.read_inventory()
         except (ApiError, KeyError, TypeError) as exc:
@@ -1130,7 +1308,8 @@ def compare_registry(inventory: dict, registry: dict | None) -> list | None:
                 drift.append(
                     f"{name} limits.{key} is {(live.get('limits') or {}).get(key)}, the registry says {wanted}."
                 )
-        if entry.get("preview_urls") is False and live.get("previews_enabled"):
+        # Off is the fleet's rule for every Worker, so a registry row need not repeat it.
+        if entry.get("preview_urls", False) is False and live.get("previews_enabled"):
             drift.append(f"{name} has preview URLs on, the registry says off.")
         if entry.get("workers_dev") is False and live.get("workers_dev"):
             drift.append(f"{name} has workers.dev on, the registry says off.")
@@ -1140,7 +1319,15 @@ def compare_registry(inventory: dict, registry: dict | None) -> list | None:
 # ---------------------------------------------------------------- re-arm
 
 
-def rearm(cfg: dict, conn: Any, store: Store, state: dict, worker: str, apply: bool) -> int:
+def rearm(
+    cfg: dict,
+    conn: Any,
+    store: Store,
+    state: dict,
+    worker: str,
+    apply: bool,
+    now: dt.datetime | None = None,
+) -> int:
     """Undo a trip from what it recorded.  Manual on purpose.  Without --apply it only prints the plan."""
     trip = state["trips"].get(worker)
     if not trip:
@@ -1183,9 +1370,11 @@ def rearm(cfg: dict, conn: Any, store: Store, state: dict, worker: str, apply: b
         print("Dry run.  Add --apply to do this.")
         return 0
     failed = 0
-    for method, url, body in plan:
+
+    def attempt(method: str, url: str, call: Callable) -> None:
+        nonlocal failed
         try:
-            conn.api(method, url, body)
+            call()
             store.event("rearm_step", worker=worker, method=method, path=url.replace(base, ""))
         except ApiError as exc:
             failed += 1
@@ -1197,13 +1386,47 @@ def rearm(cfg: dict, conn: Any, store: Store, state: dict, worker: str, apply: b
                 status=exc.status,
                 codes=exc.codes,
             )
+
+    # The secret may never have landed, or an earlier partial re-arm removed it, and deleting what
+    # is not there would fail forever.  Deleting it makes a new deployment, which clears the
+    # deployers' label;  with nothing to delete that has to be done on purpose.
+    names: list | None = None
+    try:
+        names = [item.get("name") for item in conn.api("GET", f"{path}/secrets") or []]
+    except ApiError as exc:
+        failed += 1
+        store.event(
+            "rearm_failed",
+            worker=worker,
+            method="GET",
+            path=f"{path}/secrets".replace(base, ""),
+            status=exc.status,
+            codes=exc.codes,
+        )
+    if names is not None:
+        if GUARD_SECRET in names:
+            attempt("DELETE", plan[0][1], lambda: conn.api("DELETE", plan[0][1]))
+        else:
+            attempt(
+                "POST",
+                f"{path}/deployments",
+                lambda: label_live_deployment(conn, path, "cf-usage-watchdog re-armed"),
+            )
+    for method, url, body in plan[1:]:
+        attempt(method, url, lambda m=method, u=url, b=body: conn.api(m, u, b))
     if failed:
         print(f"{failed} step(s) failed;  the trip stays recorded.  Fix them and run this again.")
         return 1
+    moment = now or dt.datetime.fromtimestamp(time.time(), dt.UTC)
+    state.setdefault("rearmed", {})[worker] = {
+        "day": moment.strftime("%Y-%m-%d"),
+        "month": moment.strftime("%Y-%m"),
+    }
     del state["trips"][worker]
     store.save(state)
     print(
         f"{worker} re-armed.  It stays on the version the trip left live;  previous version {trip.get('previous_version')}."
+        "  The day-to-date and month-to-date rules will not trip it again until they reset;  the 5-minute rate still can."
     )
     return 0
 
@@ -1232,7 +1455,8 @@ def validate_config(cfg: dict) -> list:
 
 
 def read_knobs(stop_file: Path) -> tuple:
-    """Mode and profile from Infisical through fleet_knobs.  Anything wrong reads as observe."""
+    """Mode and profile through fleet_knobs:  Infisical, then its last-known-good copy (marked stale),
+    then the defaults.  A broken read of the knobs themselves reads as observe."""
     try:
         sys.path.insert(0, str(HERE.parent))
         from fleet_knobs import knobs
@@ -1285,8 +1509,8 @@ def main(argv: list | None = None) -> int:
         print_thresholds(cfg)
         return 0
     store = Store(default_state_dir(dict(os.environ)))
-    state = store.load()
     if args.command == "status":
+        state = store.load()
         print(
             json.dumps(
                 {"trips": state["trips"], "poll_failed_since": state.get("poll_failed_since")},
@@ -1296,16 +1520,18 @@ def main(argv: list | None = None) -> int:
         )
         return 0
     conn = Connections(cfg)
-    if args.command == "rearm":
-        if not args.worker:
-            parser.error("rearm needs a Worker name")
-        return rearm(cfg, conn, store, state, args.worker, args.apply)
-    mode, profile = read_knobs(store.directory / "STOP")
-    if profile not in cfg["profiles"]:
-        store.event("profile_unknown")
-        profile = "paid"
-    now = dt.datetime.fromtimestamp(time.time(), dt.UTC)
-    return Watchdog(cfg, conn, store, state, now, mode, profile).run()
+    if args.command == "rearm" and not args.worker:
+        parser.error("rearm needs a Worker name")
+    with store.lock():
+        state = store.load()
+        if args.command == "rearm":
+            return rearm(cfg, conn, store, state, args.worker, args.apply)
+        mode, profile = read_knobs(store.directory / "STOP")
+        if profile not in cfg["profiles"]:
+            store.event("profile_unknown")
+            profile = "paid"
+        now = dt.datetime.fromtimestamp(time.time(), dt.UTC)
+        return Watchdog(cfg, conn, store, state, now, mode, profile).run()
 
 
 if __name__ == "__main__":

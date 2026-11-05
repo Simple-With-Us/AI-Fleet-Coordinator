@@ -13,7 +13,6 @@ Environment=PATH=/home/jay/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Holds one line, INFISICAL_TOKEN=<read-only service token>.  Root-owned, mode 0600.
 EnvironmentFile=/etc/cf-usage-watchdog/infisical.env
 ExecStart=/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/cf-usage-watchdog/watchdog.py run
-ConditionPathExists=/home/jay/.local/share/fleet-cli/repo/scripts/cf-usage-watchdog/watchdog.py
 TimeoutStartSec=170
 UMask=0077
 NoNewPrivileges=yes

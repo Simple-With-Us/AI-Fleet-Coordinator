@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import fcntl
+import http.client
 import io
 import json
 import os
@@ -38,6 +40,10 @@ INVENTORY = {
     },
     "owners": {"d1": {DB: [WORKER]}, "kv": {}, "r2": {"receipts": ["usage-monitor-receipt-inbox"]}},
     "ns_to_script": {"ns-1": "simple-tools-mcp"},
+}
+BACKGROUND = {
+    "sum": {"requests": 1, "cpuTimeUs": 0},
+    "dimensions": {"scriptName": "alert-ingress", "datetimeMinute": "2026-11-05T12:25:00Z"},
 }
 
 
@@ -76,19 +82,23 @@ class Fake:
         self.configured: bool | None = True
         self.pages: list = []
         self.posts: list = []
+        self.secrets = ["GUARD_MODE"]
         self.scripts = [{"id": name} for name in INVENTORY["workers"]] if inventory else []
 
     def graphql(self, query, variables):
         self.queries.append((query, variables))
         if isinstance(self.account, Exception):
             raise self.account
-        return self.account
+        # The account always has some traffic in the window;  an empty one is its own test.
+        return {"wm": [BACKGROUND], **self.account}
 
     def api(self, method, path, body=None):
         self.calls.append((method, path.replace(BASE, ""), body))
         for pattern, error in self.fail.items():
             if re.search(pattern, f"{method} {path}"):
                 raise error
+        if path.endswith("/secrets") and method == "GET":
+            return [{"name": name, "type": "secret_text"} for name in self.secrets]
         if path.endswith("/deployments") and method == "GET":
             return {
                 "deployments": [{"versions": [{"version_id": "old-version", "percentage": 100}]}]
@@ -521,6 +531,102 @@ class EscalationTests(Base):
         failures = [post for post in self.fake.posts if "Fallback stop failed" in post]
         self.assertEqual(len(failures), 1, "one message an hour, not one a minute")
 
+    def test_escalation_takes_two_polls_that_hold_minutes_from_after_the_trip(self):
+        self.trip_then(per_minute_after=5000, polls=4)
+        self.assertEqual(self.state["trips"][WORKER]["polls"], 1)
+        self.assertEqual(self.state["trips"][WORKER]["stage"], 2, "one reading is not enough")
+        at = NOW + dt.timedelta(minutes=5)
+        self.poll(
+            d1_rows(
+                per_minute={
+                    minute(-back, at): (5000 if minute(-back, at) > minute(0) else 1)
+                    for back in range(3, 8)
+                }
+            ),
+            at=at,
+        )
+        self.assertEqual(self.state["trips"][WORKER]["stage"], 3)
+
+    def test_a_failed_stop_step_runs_again_until_it_lands(self):
+        self.fake.fail[r"PUT .*/schedules"] = wd.ApiError(500, [1])
+        self.trip_then(per_minute_after=5000, polls=5)
+        trip = self.state["trips"][WORKER]
+        self.assertEqual(trip["pending"], ["empty_schedules"])
+        recorded = list(trip["previous"]["schedules"])
+        self.fake.fail.clear()
+        self.poll({}, at=NOW + dt.timedelta(minutes=6))
+        self.assertEqual(trip["pending"], [])
+        self.assertIn(("PUT", f"/workers/scripts/{WORKER}/schedules", []), self.fake.writes())
+        self.assertEqual(trip["previous"]["schedules"], recorded, "re-arm still has the original")
+        subdomain_writes = [c for c in self.fake.writes() if c[1].endswith("/subdomain")]
+        self.assertEqual(len(subdomain_writes), 1, "what worked does not run again")
+
+    def test_a_stop_step_that_stays_failed_alerts_hourly_not_each_minute(self):
+        self.fake.fail[r"PUT .*/schedules"] = wd.ApiError(500, [1])
+        self.trip_then(per_minute_after=5000, polls=8)
+        stuck = [post for post in self.fake.posts if "Fallback stop is incomplete" in post]
+        self.assertEqual(len(stuck), 1)
+
+    def test_a_failed_off_switch_is_retried_and_the_label_follows_it(self):
+        self.fake.fail[r"PUT .*/secrets"] = wd.ApiError(500, [1])
+        self.poll(d1_rows(day=2_000_000))
+        trip = self.state["trips"][WORKER]
+        self.assertFalse(trip["guard_set"])
+        self.assertTrue(trip["marked"], "the label also covers a stop with no secret")
+        labels = [c for c in self.fake.writes() if c[1].endswith("/deployments")]
+        self.assertEqual(len(labels), 1)
+        self.fake.fail.clear()
+        self.poll(at=NOW + dt.timedelta(minutes=1))
+        self.assertTrue(trip["guard_set"])
+        labels = [c for c in self.fake.writes() if c[1].endswith("/deployments")]
+        self.assertEqual(len(labels), 2, "the secret's new deployment cleared the first label")
+
+    def test_a_passing_fault_on_the_off_switch_does_not_take_hostnames_down(self):
+        self.fake.fail[r"PUT .*/secrets"] = wd.ApiError(503, [])
+        self.poll(d1_rows(day=2_000_000))
+        self.assertEqual(self.state["trips"][WORKER]["stage"], 2)
+        self.fake.fail.clear()
+        self.poll(at=NOW + dt.timedelta(minutes=1))
+        self.assertEqual(self.state["trips"][WORKER]["stage"], 2)
+        self.assertTrue(self.state["trips"][WORKER]["guard_set"])
+        self.assertFalse([c for c in self.fake.writes() if c[1].endswith("/schedules")])
+
+    def test_a_fault_that_keeps_failing_reaches_the_fallback(self):
+        self.fake.fail[r"PUT .*/secrets"] = wd.ApiError(503, [])
+        self.poll(d1_rows(day=2_000_000))
+        self.poll(at=NOW + dt.timedelta(minutes=1))
+        self.assertEqual(self.state["trips"][WORKER]["stage"], 2)
+        self.poll(at=NOW + dt.timedelta(minutes=2))
+        self.assertEqual(self.state["trips"][WORKER]["stage"], 3)
+
+    def test_a_failed_label_is_retried(self):
+        self.fake.fail[r"POST .*/deployments"] = wd.ApiError(500, [1])
+        self.poll(d1_rows(day=2_000_000))
+        trip = self.state["trips"][WORKER]
+        self.assertFalse(trip["marked"])
+        self.fake.fail.clear()
+        self.poll(at=NOW + dt.timedelta(minutes=1))
+        self.assertTrue(trip["marked"])
+
+    def test_the_label_repeats_a_gradual_split(self):
+        original = self.fake.api
+        split = [
+            {"version_id": "a", "percentage": 90},
+            {"version_id": "b", "percentage": 10},
+        ]
+
+        def api(method, path, body=None):
+            if path.endswith("/deployments") and method == "GET":
+                self.fake.calls.append((method, path.replace(BASE, ""), body))
+                return {"deployments": [{"versions": split}]}
+            return original(method, path, body)
+
+        self.fake.api = api
+        self.poll(d1_rows(day=2_000_000))
+        post = next(c for c in self.fake.writes() if c[1].endswith("/deployments"))
+        self.assertEqual(post[2]["versions"], split)
+        self.assertTrue(self.state["trips"][WORKER]["marked"])
+
     def test_observe_after_a_trip_does_not_escalate(self):
         self.poll(d1_rows(per_minute={minute(-3 - i): 5000 for i in range(5)}))
         at = NOW + dt.timedelta(minutes=6)
@@ -575,6 +681,74 @@ class PollFailureTests(Base):
         self.fake.beat = None
         self.assertEqual(self.poll({}), 0)
 
+    def test_an_empty_analytics_answer_is_blind_not_all_clear(self):
+        original = self.fake.graphql
+        self.fake.graphql = lambda query, variables: {**original(query, variables), "wm": []}
+        self.assertEqual(self.poll({}), 1)
+        self.assertFalse([call for call in self.fake.calls if call[0] == "HEARTBEAT"])
+        self.poll({}, at=NOW + dt.timedelta(minutes=5))
+        self.assertIn("analytics-empty", self.fake.posts[0])
+
+    def test_a_surprise_exception_reaches_an_owner_and_never_trips(self):
+        self.fake.account = {"wd": [{"sum": {"requests": None}, "dimensions": {"scriptName": "w"}}]}
+        self.fake.account["wd"][0]["sum"]["cpuTimeUs"] = None
+        self.assertEqual(self.poll(), 1)
+        self.poll(at=NOW + dt.timedelta(minutes=5))
+        self.assertIn("internal-TypeError", self.fake.posts[0])
+        self.assertEqual(self.fake.writes(), [])
+
+
+class InventoryAgeTests(Base):
+    def rows(self, script="brand-new-worker"):
+        return {
+            "wd": [
+                {"sum": {"requests": 9_000_000, "cpuTimeUs": 0}, "dimensions": {"scriptName": script}}
+            ]
+        }
+
+    def test_a_worker_newer_than_the_inventory_can_still_trip(self):
+        self.poll(self.rows())
+        self.assertIn("brand-new-worker", self.state["trips"])
+
+    def test_a_binding_newer_than_the_inventory_refreshes_it_and_then_trips(self):
+        original = self.fake.api
+        self.state["inventory"]["at"] = NOW.timestamp() - 3600
+
+        def api(method, path, body=None):
+            if path.endswith(f"{WORKER}/settings"):
+                return {"bindings": [{"type": "d1", "id": "db-new"}]}
+            if path.endswith("/durable_objects/namespaces"):
+                return []
+            return original(method, path, body)
+
+        self.fake.api = api
+        account = {
+            "d1d": [
+                {
+                    "sum": {"rowsWritten": 2_000_000, "rowsRead": 0},
+                    "dimensions": {"databaseId": "db-new"},
+                }
+            ]
+        }
+        self.poll(account)
+        self.assertEqual(self.state["inventory"]["owners"]["d1"]["db-new"], [WORKER])
+        self.assertIn(WORKER, self.state["trips"])
+
+    def test_an_unbound_resource_does_not_reread_the_inventory_every_minute(self):
+        self.state["inventory"]["at"] = NOW.timestamp() - 3600
+        account = {
+            "r2d": [
+                {
+                    "sum": {"requests": 900_000},
+                    "dimensions": {"bucketName": "s3-client-bucket", "actionType": "PutObject"},
+                }
+            ]
+        }
+        self.poll(account)
+        self.poll(at=NOW + dt.timedelta(minutes=1))
+        reads = [c for c in self.fake.calls if c[0] == "GET" and c[1] == "/workers/scripts"]
+        self.assertEqual(len(reads), 1)
+
 
 class DailyCheckTests(Base):
     def setUp(self):
@@ -614,6 +788,11 @@ class DailyCheckTests(Base):
         self.assertEqual(self.fake.pages, [], "drift is not a page")
         self.check(registry)
         self.assertEqual(len(self.fake.posts), 1)
+
+    def test_preview_urls_count_even_when_a_registry_row_does_not_name_them(self):
+        registry = {"workers": {"alert-ingress": {"status": "auto", "limits": {}}}}
+        self.check(registry)
+        self.assertIn("alert-ingress has preview URLs on", self.fake.posts[0])
 
     def test_list_shaped_registry_reads(self):
         path = Path(self.tmp.name) / "list.json"
@@ -733,6 +912,49 @@ class RearmTests(Base):
     def test_not_tripped(self):
         self.assertEqual(self.rearm(True), 2)
 
+    def test_a_secret_that_is_already_gone_does_not_block_it_and_the_label_is_cleared(self):
+        self.tripped()
+        self.fake.secrets = []
+        self.assertEqual(self.rearm(True), 0)
+        self.assertFalse([c for c in self.fake.calls if c[0] == "DELETE" and "secrets" in c[1]])
+        post = next(c for c in self.fake.writes() if c[1].endswith("/deployments"))
+        self.assertFalse(post[2]["annotations"]["workers/message"].startswith("GUARD-TRIPPED"))
+        self.assertNotIn(WORKER, self.state["trips"])
+
+    def test_an_unreadable_secret_list_keeps_the_trip(self):
+        self.tripped()
+        self.fake.fail[r"GET .*/secrets$"] = wd.ApiError(500, [])
+        self.assertEqual(self.rearm(True), 1)
+        self.assertIn(WORKER, self.state["trips"])
+
+    def test_day_total_does_not_trip_straight_back_but_a_rate_still_does(self):
+        self.tripped()
+        with contextlib.redirect_stdout(io.StringIO()):
+            wd.rearm(self.cfg, self.fake, self.store, self.state, WORKER, True, now=NOW)
+        at = NOW + dt.timedelta(minutes=1)
+        self.poll(d1_rows(day=2_000_000), at=at)
+        self.assertNotIn(WORKER, self.state["trips"])
+        self.assertTrue(any("D1 rows written" in post for post in self.fake.posts), "still alerts")
+        at = NOW + dt.timedelta(minutes=2)
+        self.poll(
+            {
+                **d1_rows(day=2_000_000),
+                **d1_rows(per_minute={minute(-3 - i, at): 5000 for i in range(5)}),
+            },
+            at=at,
+        )
+        self.assertIn(WORKER, self.state["trips"])
+
+    def test_day_total_trips_again_the_next_day(self):
+        self.tripped()
+        with contextlib.redirect_stdout(io.StringIO()):
+            wd.rearm(self.cfg, self.fake, self.store, self.state, WORKER, True, now=NOW)
+        tomorrow = NOW + dt.timedelta(days=1)
+        self.state["daily_check_day"] = tomorrow.strftime("%Y-%m-%d")
+        self.state["inventory"]["at"] = tomorrow.timestamp()
+        self.poll(d1_rows(day=2_000_000), at=tomorrow)
+        self.assertIn(WORKER, self.state["trips"])
+
 
 class ConnectionTests(Base):
     TOKEN = "credential-value-never-logged"
@@ -815,6 +1037,27 @@ class ConnectionTests(Base):
         with self.assertRaises(wd.PollError):
             conn.graphql("q", {})
 
+    def test_a_quota_error_is_named(self):
+        answer = json.dumps(
+            {"data": None, "errors": [{"message": "x", "extensions": {"code": "budget"}}]}
+        ).encode()
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [answer])
+        with self.assertRaises(wd.PollError) as caught:
+            conn.graphql("q", {})
+        self.assertEqual(str(caught.exception), "graphql-errors-1-budget")
+
+    def test_a_broken_http_answer_is_a_poll_failure_not_a_crash(self):
+        conn = self.conn(
+            {"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [http.client.IncompleteRead(b"")]
+        )
+        with self.assertRaises(wd.PollError):
+            conn.graphql("q", {})
+
+    def test_a_json_answer_that_is_not_an_object_is_a_poll_failure(self):
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [b"[1]"])
+        with self.assertRaises(wd.PollError):
+            conn.graphql("q", {})
+
     def test_graphql_sends_the_token_and_returns_the_account(self):
         answer = json.dumps(
             {"data": {"viewer": {"accounts": [{"wd": []}]}}, "errors": None}
@@ -857,6 +1100,7 @@ class ConnectionTests(Base):
         )
         self.assertEqual(kwargs["input"], "hello")
         self.assertEqual(kwargs["env"]["AGENT_SEAT"], "CLAUDE")
+        self.assertEqual(kwargs["env"]["SIMPLE_CHAT_REMOTE_WRITES"], "1")
         self.assertNotIn("INFISICAL_TOKEN", kwargs["env"])
         self.assertLessEqual(len(self.cfg["zulip"]["topic"]), 60)
 
@@ -922,6 +1166,14 @@ class StoreTests(Base):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(self.store.load()["trips"], {})
 
+    def test_the_lock_excludes_a_second_writer(self):
+        with self.store.lock():
+            with open(self.store.directory / ".lock", encoding="utf-8") as other:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with open(self.store.directory / ".lock", encoding="utf-8") as other:
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def test_events_are_private_and_rotate(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.store.event("one")
@@ -966,6 +1218,11 @@ class UnitFileTests(unittest.TestCase):
         )
         self.assertIn("EnvironmentFile=/etc/cf-usage-watchdog/infisical.env", text)
         self.assertNotIn("%h", text)
+
+    def test_no_condition_in_the_service_section(self):
+        # systemd ignores one there, and a skipped run of a watchdog would be silent anyway.
+        text = self.read("cf-usage-watchdog.service")
+        self.assertNotIn("Condition", text)
 
     def test_timer_is_every_minute(self):
         text = self.read("cf-usage-watchdog.timer")

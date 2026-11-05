@@ -8,7 +8,7 @@ A one-minute timer on the server that reads one Cloudflare account's usage and a
 
 One GraphQL query per run covers Workers invocations, Durable Object invocations and periodic groups, D1, KV, R2 operations and R2 storage.  The query was run against the live account on Nov 4, 2026 and returned every dataset.  Day-to-date starts at midnight UTC, which is 6:00 PM in Chicago.  The 5-minute rate leaves out the newest 2 minutes, because the analytics run about 1 to 2 minutes behind.
 
-Who owns what (which Worker binds which D1 database, KV namespace or R2 bucket, and which script a Durable Object namespace belongs to) comes from the live API once a day and stays in the state file, so no private inventory is in the repo.  A resource no Worker binds, such as a bucket reached by an S3 client, can only alert.
+Who owns what (which Worker binds which D1 database, KV namespace or R2 bucket, and which script a Durable Object namespace belongs to) comes from the live API once a day and stays in the state file, so no private inventory is in the repo.  A breach on a resource the stored list does not know reads the list again, at most every 15 minutes, so a new binding can still stop its Worker.  A resource no Worker binds, such as a bucket reached by an S3 client, can only alert.
 
 ## Rules and profiles
 
@@ -19,38 +19,38 @@ Who owns what (which Worker binds which D1 database, KV namespace or R2 bucket, 
 
 ## Modes
 
-Mode and profile are the fleet knobs `CF_USAGE_WATCHDOG_MODE` (`observe` by default, or `enforce`) and `CF_USAGE_WATCHDOG_PROFILE` (`paid` by default, or `free`).  A failed knob read means observe.  A file named `STOP` in the state directory forces observe.
+Mode and profile are the fleet knobs `CF_USAGE_WATCHDOG_MODE` (`observe` by default, or `enforce`) and `CF_USAGE_WATCHDOG_PROFILE` (`paid` by default, or `free`).  When Infisical cannot be read, the knobs fall back to fleet_knobs' last-known-good copy, marked stale, and then to the defaults, so a brief outage does not switch off enforce.  A broken read of the knobs themselves means observe.  A file named `STOP` in the state directory forces observe.
 
 - **observe** alerts and logs what it would have tripped.  It changes nothing on Cloudflare.
 - **enforce** also runs the actions below.  At most 1 Worker trips per run and 3 per UTC day, so a bad reading cannot take the whole account down.
 
-A failed poll alerts after 5 minutes and never trips.  The run exits 1 on a failed poll or an alert nobody received, so the unit shows as failed.
+A failed poll alerts after 5 minutes and never trips.  So does an empty Workers answer, which would otherwise read as all clear, and any unexpected error in a run.  The poll shares Cloudflare's GraphQL quota of about 300 queries per 5 minutes with whatever else uses the same credential, and the alert names the code `budget` when that is why it is blind.  The run exits 1 on a failed poll or an alert nobody received, so the unit shows as failed.
 
 ## Actions, in order
 
 Each one is logged with the version that was live before it, in the journal and in `events.jsonl`.
 
 1. Post to Zulip through `simple-chat` as the CLAUDE seat, and page through Pushover.
-2. `PUT /workers/scripts/{name}/secrets` with `GUARD_MODE=off`, then label the live deployment with a message starting `GUARD-TRIPPED` so a deployer can refuse to undo the trip.
-3. If the rate has not fallen after 2 polls that hold minutes from after the trip, the fallback stop:  empty the cron triggers, turn off workers.dev and preview URLs, and detach custom domains.  With the 2-minute lag that is about 5 minutes after the trip.  The rate has fallen when it is under the threshold (a rate trip), or under half the rate at the trip (a day trip).
+2. `PUT /workers/scripts/{name}/secrets` with `GUARD_MODE=off`, then label the newest deployment with a message starting `GUARD-TRIPPED` so a deployer can refuse to undo the trip.  If the secret write fails, the label still goes on and the write repeats each minute.  A refusal sends the Worker to the fallback stop at once, and a network fault, a 429 or a 5xx does after 2 more tries, because the fallback takes hostnames down.
+3. If the rate has not fallen after 2 polls that hold minutes from after the trip, the fallback stop:  empty the cron triggers, turn off workers.dev and preview URLs, and detach custom domains.  With the 2-minute lag that is about 5 minutes after the trip.  The rate has fallen when it is under the threshold (a rate trip), or under half the rate at the trip (a day trip).  A step that fails runs again each minute until it lands, with an alert each hour, and steps that worked do not repeat.
 
 Requests a stopped Worker rejects still count, so an outside caller in a loop keeps the request rate up until step 3 removes the hostname.
 
-**The alert path has a known weak spot.**  On this server `simple-chat` reaches Zulip through the hosted server, which is the simple-tools-mcp Worker on this same account, with no direct fallback.  If that Worker is the one tripped, or the account is capped, the Zulip post fails.  Pushover is then the only alert that goes out, so configure it before turning on enforce.  The daily check names it when it is missing.
+**The alert path has a known weak spot.**  On this server `simple-chat` reaches Zulip through the hosted server, which needs `SIMPLE_CHAT_REMOTE_WRITES=1` for a post (the watchdog sets it), which is the simple-tools-mcp Worker on this same account, with no direct fallback.  If that Worker is the one tripped, or the account is capped, the Zulip post fails.  Pushover is then the only alert that goes out, so configure it before turning on enforce.  The daily check names it when it is missing.
 
 ## Why the stop is the fallback and not a stub version
 
 The audit proposed a pre-uploaded stub version that keeps the Durable Object classes and answers 503.  The docs make that plausible but not proven here:  a version can be uploaded without deploying, only the last 100 uploaded versions can be deployed, every secret change creates a version, and no deployment can cross a Durable Object lifecycle change, so a stub would need re-uploading on a schedule.  Whether Cloudflare accepts a stub with these class exports and bindings can only be shown by uploading one, which this work did not do.  So this uses the documented fallback.
 
-The cost is one real gap:  **the fallback does not stop Durable Object alarms.**  A Worker that has bundled the budget guard stops them through `GUARD_MODE=off`.  One that has not keeps running them, and the alert says to check it by hand.  A stub can replace the fallback after a rehearsal on a scratch Worker.
+The cost is one real gap:  **the fallback does not stop Durable Object alarms, email routes, service bindings or zone routes.**  The token cannot touch zone routes, and the audit measured none on this account's zones.  A Worker that has bundled the budget guard stops them through `GUARD_MODE=off`.  One that has not keeps running them, and the alert says to check it by hand.  A stub can replace the fallback after a rehearsal on a scratch Worker.
 
 ## Re-arm
 
-Re-arm is manual.  `python3 watchdog.py status` lists trips.  `python3 watchdog.py rearm WORKER` prints the plan, and `--apply` deletes `GUARD_MODE` and restores the cron triggers, workers.dev and domains the trip recorded.  It does not roll the code back:  the Worker stays on the version the trip left live, and the previous version id is in the log.
+Re-arm is manual.  `python3 watchdog.py status` lists trips.  `python3 watchdog.py rearm WORKER` prints the plan, and `--apply` deletes `GUARD_MODE` and restores the cron triggers, workers.dev and domains the trip recorded.  It does not roll the code back:  the Worker stays on the version the trip left live, and the previous version id is in the log.  The day-to-date total stays over until 6:00 PM and a month-to-date total until the 1st, so those rules will not trip the same Worker straight back;  they still alert, and the 5-minute rate can still trip it.  A re-arm and the timer's run take turns on a lock, so neither overwrites the other's state.
 
 ## Daily check
 
-Once a UTC day it compares the live Worker list, `limits`, workers.dev and preview URLs with `scripts/worker-registry.json`.  The file may be absent, and its absence is only logged.  It posts to Zulip when the differences change, and it never pages.  It also names a missing page path or heartbeat.
+Once a UTC day it reads the account again and compares the live Worker list, `limits`, workers.dev and preview URLs with `scripts/worker-registry.json`.  Preview URLs count as drift unless a registry row says `preview_urls: true`, since off is the fleet's rule.  The file may be absent, and its absence is only logged.  It posts to Zulip when the differences change, and it never pages.  It also names a missing page path or heartbeat.
 
 ## Credentials
 
