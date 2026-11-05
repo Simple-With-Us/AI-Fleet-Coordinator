@@ -551,6 +551,11 @@ enum SeatPinState: Equatable {
     case pinned(PinEvidence)
     /// A pin file is there, and the eavesdropper says it does not hold.
     case notHolding(PinEvidence, why: String)
+    /// A pin file is there, and no current word from the eavesdropper says whether it holds:  its
+    /// status could not be read, is old, or carries no pin verdict for the seat.  A file that is
+    /// there is never shown as a pin that holds.  The text says why nothing is known, and
+    /// `needsLook` is false only when a current status reported the seat with no verdict.
+    case fileOnly(PinEvidence, why: String, needsLook: Bool)
     /// No pin file, with the eavesdropper's reason when it gave one.
     case missing(runtime: String, why: String?)
     /// The pin file is there and could not be read.
@@ -563,6 +568,7 @@ enum SeatPinState: Equatable {
         switch self {
         case .notNeeded, .pinned, .unknownWake: return false
         case .notHolding, .missing, .unreadable: return true
+        case .fileOnly(_, _, let needsLook): return needsLook
         }
     }
 }
@@ -664,6 +670,9 @@ struct WakeSeat: Identifiable, Equatable {
     var pinState: SeatPinState = .unknownWake
     /// The fallback the file names, if any.
     var fallbackRuntime: String? = nil
+    /// What is known about the fallback's own pin, or nil when the file names no fallback.  A pin
+    /// file that is there and could not be read is unreadable, never missing.
+    var fallbackPinState: SeatPinState? = nil
     /// When the last passing test wake left a pin candidate, by pin key.  The eavesdropper pins
     /// only a candidate under a day old.
     var candidates: [String: Date] = [:]
@@ -728,6 +737,13 @@ struct WakeSeat: Identifiable, Equatable {
             ? "The section says instance = \"server\""
             : "The seat partition does not give \(seat) to the Mac"
         return "The Mac's configuration file holds a [seat.\(seat)] section.\u{00A0} \(why), so the eavesdropper refuses every reload and will refuse its next start until the section is gone."
+    }
+
+    /// Whether the seat's settings are shown.  The owner's own choice holds once made, so an edit
+    /// being typed, or the seat starting or stopping needing attention, never folds them away.
+    /// Before any choice they are open when the seat needs attention or holds an edit.
+    func settingsOpen(choice: Bool?, hasEdits: Bool) -> Bool {
+        choice ?? (needsAttention || hasEdits)
     }
 
     /// Whether the seat belongs under the Problems Only filter.
@@ -842,7 +858,13 @@ enum WakeSettingsBuilder {
         var model = WakeSettingsModel()
         model.running = sources.status?.running ?? false
         if let status = sources.status {
-            model.runState = status.running == true ? .running : .stopped
+            // The status is read field by field, so `running` can be missing or of another type.
+            // Then Muster does not know, and never says the eavesdropper has stopped.
+            switch status.running {
+            case true?: model.runState = .running
+            case false?: model.runState = .stopped
+            case nil: model.runState = .unknown("The eavesdropper's status did not say whether it is running.")
+            }
         } else {
             model.runState = .unknown(
                 sources.statusProblem ?? "The eavesdropper's status could not be read."
@@ -917,8 +939,11 @@ enum WakeSettingsBuilder {
                 seatOff: seatOff, pins: pins, config: sources.config
             )
             // A pass or a drift is a claim about what a running eavesdropper uses now.  An old
-            // status, or one a stopped eavesdropper left, cannot make it.
-            guard !current, sources.status != nil, row.state == .match || row.state == .drift else {
+            // status, or one a stopped eavesdropper left, cannot make it.  A row whose value Muster
+            // read from a pin file itself is not the eavesdropper's word, so the status's age says
+            // nothing about it.
+            guard !current, sources.status != nil, row.state == .match || row.state == .drift,
+                  Self.liveComesFromStatus(key, wake: wake) else {
                 return row
             }
             return WakeSetting(
@@ -933,14 +958,24 @@ enum WakeSettingsBuilder {
         } else {
             seatPin = Self.pinState(
                 wake: wake, live: live, pins: pins,
-                unreadable: sources.unreadablePins[tag] ?? [:]
+                unreadable: sources.unreadablePins[tag] ?? [:],
+                statusIsCurrent: current,
+                statusRead: sources.status != nil
             )
         }
         let ownPin: PinEvidence?
         switch seatPin {
-        case .pinned(let evidence), .notHolding(let evidence, _): ownPin = evidence
+        case .pinned(let evidence), .notHolding(let evidence, _), .fileOnly(let evidence, _, _): ownPin = evidence
         default: ownPin = nil
         }
+        let fallbackPinState = host.isElsewhere
+            ? nil
+            : Self.fallbackPinState(
+                fallback: fallback, live: live, pins: pins,
+                unreadable: sources.unreadablePins[tag] ?? [:],
+                statusIsCurrent: current,
+                statusRead: sources.status != nil
+            )
         let pause = host.isElsewhere ? nil : pauseEntry(seat: published, status: sources.status)
         return WakeSeat(
             seat: tag,
@@ -974,6 +1009,7 @@ enum WakeSettingsBuilder {
             liveWakeText: live?.wake,
             pinState: seatPin,
             fallbackRuntime: fallback,
+            fallbackPinState: fallbackPinState,
             candidates: host.isElsewhere ? [:] : (sources.candidates[tag] ?? [:]),
             usageProblem: host.isElsewhere ? nil : sources.usageProblems[tag],
             tornRecentRows: host.isElsewhere ? 0 : (sources.tornRows[tag] ?? 0),
@@ -991,8 +1027,13 @@ enum WakeSettingsBuilder {
 
     /// What a seat's status says when it is not current.
     private static func staleNote(_ sources: WakeSettingsSources) -> String {
-        guard sources.status?.running == true else {
+        switch sources.status?.running {
+        case true?:
+            break
+        case false?:
             return "The eavesdropper is not running, so this is the last value it published, not one it uses now."
+        case nil:
+            return "The eavesdropper's status does not say whether it is running, so this may not be what it uses now."
         }
         guard let updated = sources.status?.updated, let readAt = sources.readAt else {
             return "The eavesdropper's status does not say when it was written, so this may not be current."
@@ -1001,15 +1042,28 @@ enum WakeSettingsBuilder {
         return "The eavesdropper last published \(age), so this may not be what it uses now."
     }
 
-    /// The pin a seat's own wake needs, judged by the eavesdropper when it published a verdict.
+    /// Whether a row's live value is the eavesdropper's own word, rather than one Muster read from
+    /// a pin file:  the muse model, the mcode binary and the fallback come from pin files.
+    static func liveComesFromStatus(_ key: WakeSettingKey, wake: String?) -> Bool {
+        switch key {
+        case .mcodePath, .fallback: return false
+        case .model: return wake != "muse"
+        default: return true
+        }
+    }
+
+    /// The pin a seat's own wake needs, judged by the eavesdropper's own current verdict.
     ///
     /// The pin is chosen by the seat's wake and nothing else:  a leftover muse pin on a Claude
-    /// seat proves nothing about it, and the mcode fallback's pin is not the seat's own.
+    /// seat proves nothing about it, and the mcode fallback's pin is not the seat's own.  A pin
+    /// file with no current verdict on it is only a file:  it is never called a pin that holds.
     static func pinState(
         wake: String?,
         live: ListenerStatus.Seat?,
         pins: [String: PinEvidence],
-        unreadable: [String: String]
+        unreadable: [String: String],
+        statusIsCurrent: Bool = true,
+        statusRead: Bool = true
     ) -> SeatPinState {
         let type = WakeType(rawValue: wake ?? WakeType.inbox.rawValue)
         guard let type else { return .unknownWake }
@@ -1017,11 +1071,21 @@ enum WakeSettingsBuilder {
         if let problem = unreadable[key] {
             return .unreadable(runtime: key, problem: problem)
         }
-        let verdict = live?.pin
         guard let evidence = pins[key] else {
-            return .missing(runtime: key, why: verdict?.why)
+            return .missing(runtime: key, why: live?.pin?.why)
         }
-        guard let verdict else { return .pinned(evidence) }
+        guard statusRead else {
+            return .fileOnly(evidence, why: "Muster could not read the eavesdropper's status, so it cannot say whether the pin holds.", needsLook: true)
+        }
+        guard statusIsCurrent else {
+            return .fileOnly(evidence, why: "The eavesdropper's status is not current, so it cannot say whether the pin holds now.", needsLook: true)
+        }
+        guard let live else {
+            return .fileOnly(evidence, why: "The eavesdropper did not report this seat, so it did not say whether the pin holds.", needsLook: true)
+        }
+        guard let verdict = live.pin, verdict.pinned != nil || verdict.why != nil else {
+            return .fileOnly(evidence, why: "The eavesdropper did not say whether it holds.", needsLook: false)
+        }
         if verdict.pinned == true {
             return .pinned(evidence.judged(pinned: true, why: nil))
         }
@@ -1123,13 +1187,11 @@ enum WakeSettingsBuilder {
         case .mcodePath:
             return pins["mcode"]?.binary.map { .text($0) }
         case .fallback:
-            // The fallback the file names is proved by that runtime's own pin.
-            guard let fallback else { return nil }
-            if fallback == "openrouter", let pinned = live?.fallback?.pinned {
-                return pinned ? .text("pinned") : nil
-            }
-            guard let pin = pins[WakeType.fallbackPinKey(fallback)] else { return nil }
-            return .text(pin.age.map { "pin file, \($0)" } ?? "pin file")
+            // Only an OpenRouter fallback has a verdict the eavesdropper publishes.  Any other
+            // fallback's pin file is one Muster reads itself, so it is in the note, not in the
+            // eavesdropper's column.
+            guard fallback == "openrouter", let pinned = live?.fallback?.pinned else { return nil }
+            return pinned ? .text("pinned") : nil
         case .fallbackUncontained:
             // The eavesdropper does not publish this,  so the panel has nothing live to compare.
             return nil
@@ -1212,7 +1274,9 @@ enum WakeSettingsBuilder {
             if fallback == "openrouter", let pinned = publishedFallback?.pinned {
                 return pinned ? .match : .unproven
             }
-            return pins[WakeType.fallbackPinKey(fallback)] == nil ? .unproven : .match
+            // A pin file the eavesdropper gives no verdict on proves only that it is there:  the
+            // eavesdropper warns about a stale one elsewhere, so it is never a pass here.
+            return pins[WakeType.fallbackPinKey(fallback)] == nil ? .unproven : .unpublished
         case .mcodePath:
             guard configured != nil else { return .unset }
             guard live != nil else { return .unproven }
@@ -1288,6 +1352,11 @@ enum WakeSettingsBuilder {
             if key == .fallbackUncontained {
                 return "The eavesdropper reads this one,  but does not publish it,  so only the file can be shown."
             }
+            if key == .fallback {
+                let title = fallback.map { PinEvidence.runtimeTitle(WakeType.fallbackPinKey($0)) } ?? "fallback"
+                let age = fallback.flatMap { pins[WakeType.fallbackPinKey($0)]?.age }.map { ", \($0)" } ?? ""
+                return "The \(title) pin file is there\(age).\u{00A0} The eavesdropper does not publish whether it still holds, so a stale one shows only in its warnings."
+            }
             return "The eavesdropper reports this seat and does not publish this setting, so only the file's value can be shown."
         case .unset:
             return "The file holds nothing,  so the eavesdropper's default is in effect."
@@ -1306,10 +1375,7 @@ enum WakeSettingsBuilder {
                 return "Proved by the muse pin,  \(age)."
             }
             if key == .fallback {
-                if fallback == "openrouter", publishedFallback?.pinned == true {
-                    return "The eavesdropper says the OpenRouter fallback's pin holds."
-                }
-                return "The fallback's pin file is there.\u{00A0} The eavesdropper does not publish whether it still holds, so a stale one shows only in its warnings."
+                return "The eavesdropper says the OpenRouter fallback's pin holds."
             }
             return ""
         }
@@ -1331,6 +1397,52 @@ enum WakeSettingsBuilder {
             return evidence.judged(pinned: pinned, why: pinned ? nil : live?.fallback?.pin?.why)
         }
         return evidence
+    }
+
+    /// What is known about the fallback's own pin.
+    ///
+    /// Only an OpenRouter fallback has a verdict the eavesdropper publishes.  Any other fallback's
+    /// pin file proves only that it is there:  the eavesdropper warns about a stale one elsewhere,
+    /// so it is never shown as a pin that holds.
+    static func fallbackPinState(
+        fallback: String?,
+        live: ListenerStatus.Seat?,
+        pins: [String: PinEvidence],
+        unreadable: [String: String],
+        statusIsCurrent: Bool = true,
+        statusRead: Bool = true
+    ) -> SeatPinState? {
+        guard let fallback else { return nil }
+        let key = WakeType.fallbackPinKey(fallback)
+        if let problem = unreadable[key] {
+            return .unreadable(runtime: key, problem: problem)
+        }
+        let isOpenRouter = fallback == "openrouter"
+        let verdict = isOpenRouter ? live?.fallback : nil
+        guard let evidence = pins[key] else {
+            return .missing(runtime: key, why: verdict?.pin?.why)
+        }
+        guard isOpenRouter else {
+            return .fileOnly(
+                evidence,
+                why: "The eavesdropper does not publish whether this pin still holds, so a stale one shows only in its warnings.",
+                needsLook: false
+            )
+        }
+        guard statusRead else {
+            return .fileOnly(evidence, why: "Muster could not read the eavesdropper's status, so it cannot say whether the pin holds.", needsLook: true)
+        }
+        guard statusIsCurrent else {
+            return .fileOnly(evidence, why: "The eavesdropper's status is not current, so it cannot say whether the pin holds now.", needsLook: true)
+        }
+        guard let pinned = verdict?.pinned else {
+            return .fileOnly(evidence, why: "The eavesdropper did not say whether it holds.", needsLook: live == nil)
+        }
+        if pinned {
+            return .pinned(evidence.judged(pinned: true, why: nil))
+        }
+        let why = verdict?.pin?.why ?? "not_pinned"
+        return .notHolding(evidence.judged(pinned: false, why: why), why: why)
     }
 
     /// The pause entry that covers this seat:  its own first, then the one on every seat.

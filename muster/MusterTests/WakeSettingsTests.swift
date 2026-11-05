@@ -802,11 +802,6 @@ final class WakeSettingsTests: XCTestCase {
         var reloadExit: Int32 = 0
         var reloadError = ""
         var resumeOutput = "resumed MM\n"
-        var testWakeOutput = ""
-        var testWakeErrors = ""
-        var testWakeExit: Int32 = 0
-        var pinOutput = ""
-        var pinExit: Int32 = 0
         var configAtCheck: Data?
         var candidateAtCheck: String?
         var configURL: URL?
@@ -844,11 +839,6 @@ final class WakeSettingsTests: XCTestCase {
             case "reload":
                 reloaded = reloadExit == 0
                 return AgentSyncCLIResult(exitCode: reloadExit, stdout: "", stderr: reloadError)
-            case "test-wake":
-                if arguments.contains("--pin") {
-                    return AgentSyncCLIResult(exitCode: pinExit, stdout: pinOutput, stderr: "")
-                }
-                return AgentSyncCLIResult(exitCode: testWakeExit, stdout: testWakeOutput, stderr: testWakeErrors)
             default:
                 return AgentSyncCLIResult(exitCode: 0, stdout: "", stderr: "")
             }
@@ -1452,8 +1442,9 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(setting.state.isProblem)
     }
 
-    /// A fallback its pin proves is a pass.
-    func test_a_pinned_fallback_is_a_pass() {
+    /// A fallback pin file the eavesdropper gives no verdict on is not a pass:  it is NOT REPORTED,
+    /// and the note says the file is there.  The mcode binary its pin names still matches.
+    func test_a_pinned_fallback_is_not_reported() {
         let pins = ["MM": ["mcode": PinEvidence(
             runtime: "mcode",
             binary: "/tmp/fixture-apps/mcode-bin",
@@ -1463,7 +1454,9 @@ final class WakeSettingsTests: XCTestCase {
             why: nil
         )]]
         let setting = row(.fallback, status: statusJSON, pins: pins)
-        XCTAssertEqual(setting.state, .match)
+        XCTAssertEqual(setting.state, .unpublished)
+        XCTAssertNil(setting.live)
+        XCTAssertTrue(setting.note.contains("pin file is there"))
         let mcode = row(.mcodePath, status: statusJSON, pins: pins)
         XCTAssertEqual(mcode.state, .match)
     }

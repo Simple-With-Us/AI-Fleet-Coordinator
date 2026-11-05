@@ -253,15 +253,19 @@ final class WakeSettingsStore: ObservableObject {
         var reading = DraftReading()
         for key in WakeSettingKey.seatKeys {
             guard let text = values[key], before[key] != text else { continue }
+            let trimmed = text.trimmingCharacters(in: .whitespaces)
+            let was = before[key] ?? WakeSetting.unsetText
+            let saysNothing = trimmed.isEmpty || trimmed == WakeSetting.unsetText
+            // A field cleared over a setting the file did not hold is no edit, as `changedKeys`
+            // says:  there is nothing to take out.
+            if saysNothing, was == WakeSetting.unsetText { continue }
             if let reason = key.refusalReason {
                 reading.refusals.append("\(key.title): \(reason)")
                 continue
             }
-            let trimmed = text.trimmingCharacters(in: .whitespaces)
-            let was = before[key] ?? WakeSetting.unsetText
             // A picker and a seeded field say "nothing set" with a dash, and a cleared field says
             // it with nothing.  Both mean take the setting out of the file.
-            if trimmed.isEmpty || trimmed == WakeSetting.unsetText {
+            if saysNothing {
                 reading.edits.append(WakeSettingsWriter.Edit(seat: seat, key: key, value: nil))
                 reading.changes.append("\(key.title): \(was) to nothing set")
                 // A seat with no wake line is an inbox seat (`section.get("wake", "inbox")`).
@@ -532,6 +536,21 @@ final class WakeSettingsStore: ObservableObject {
             say("Nothing was paused for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
             return
         }
+        // The pause file decides first:  the last status read may have failed or be old, and a
+        // wakes-only pause written over a full one would let live interrupts back in.
+        switch Self.ownPauseEntry(seat: seat, at: location.pauseURL) {
+        case .full:
+            say("Nothing was changed for \(seat).\u{00A0} A full pause is already in force, and a wakes-only pause would loosen it.")
+            return
+        case .wakesOnly:
+            say("Nothing was changed for \(seat).\u{00A0} Its wakes are already paused.")
+            return
+        case .unreadable(let why):
+            say("Nothing was paused for \(seat).\u{00A0} The Mac's pause file could not be read, so Muster cannot tell whether a full pause is in force, and a wakes-only pause would loosen one:  \(why)", failure: true)
+            return
+        case .noEntry:
+            break
+        }
         let current = model.seats.first(where: { $0.seat == seat })
         if current?.paused == true {
             say("Nothing was changed for \(seat).\u{00A0} A full pause is already in force, and a wakes-only pause would loosen it.")
@@ -550,6 +569,38 @@ final class WakeSettingsStore: ObservableObject {
             report += "\u{00A0} Muster cannot say the Mac holds this seat, so it may not be the eavesdropper that wakes it."
         }
         await run(invocation, success: report, auditVerb: "wake-pause", seat: seat)
+    }
+
+    /// What the Mac's pause file holds for a seat's own entry.
+    enum OwnPauseEntry: Equatable {
+        /// No entry names the seat, or there is no pause file.
+        case noEntry
+        /// The seat's entry stops its wakes only.
+        case wakesOnly
+        /// The seat's entry stops its wakes and its live interrupts.
+        case full
+        /// The file is there and could not be read.  The text says why.
+        case unreadable(String)
+    }
+
+    /// Reads the seat's own entry from the pause file, the way the eavesdropper does:  a JSON object
+    /// keyed by the upper-cased seat tag, where an entry without `wakes_only: true` is a full pause.
+    /// The entry on every seat (`*`) is left alone by a seat's pause, so it is not read here.
+    nonisolated static func ownPauseEntry(seat: String, at url: URL) -> OwnPauseEntry {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .noEntry }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            return .unreadable(error.localizedDescription)
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .unreadable("The pause file at \(url.path) is not a JSON object.")
+        }
+        guard let entry = (object[seat.uppercased()] ?? object[seat]) as? [String: Any] else {
+            return .noEntry
+        }
+        return (entry["wakes_only"] as? Bool) == true ? .wakesOnly : .full
     }
 
     /// Lifts the kill switch on the Mac's eavesdropper.  This lets wakes run again, so unlike the pause
@@ -597,23 +648,61 @@ final class WakeSettingsStore: ObservableObject {
 
     // MARK: The test wake and the pin
 
-    /// Whether Pin can be offered for a runtime of a seat, or why not.
+    /// What lets Pin through for a runtime of a seat, or why nothing does.
+    enum PinGate: Equatable {
+        /// A test wake run in this panel passed, and its answer is on screen.
+        case inSession
+        /// A passing test wake run outside this panel left a candidate at this time.  Muster never
+        /// saw that test's answer, so the confirmation says so.
+        case candidate(Date)
+        /// Pin is not offered.  The text says why.
+        case blocked(String)
+
+        /// Why Pin is not offered, or nil when it is.
+        var blocker: String? {
+            if case .blocked(let why) = self { return why }
+            return nil
+        }
+
+        /// When the candidate Muster did not see was left, when that is what lets Pin through.
+        var candidateAt: Date? {
+            if case .candidate(let at) = self { return at }
+            return nil
+        }
+
+        /// What the confirmation says about the test it pins:  nothing more for one this panel
+        /// showed, and that Muster never saw the answer for one run elsewhere.
+        var confirmationNote: String? {
+            guard let at = candidateAt else { return nil }
+            return "Muster did not see this test's answer:  it was run outside this panel at \(FleetTime.clock(at)).\u{00A0} Pin only if you read it there."
+        }
+    }
+
+    /// Whether Pin can be offered for a runtime of a seat, and on what.
     ///
     /// The eavesdropper pins only a candidate a passing test wake left under a day ago, and a person
     /// is meant to read that test's answer first.  So Pin waits for a passing test wake run here, whose
-    /// answer the panel shows, or for a candidate under a day old from a run made elsewhere.
-    func pinBlocker(seat: String, runtime: String, pinKey: String) -> String? {
+    /// answer the panel shows, or for a candidate under a day old from a run made elsewhere, which
+    /// the confirmation names as one Muster did not see.
+    func pinGate(seat: String, runtime: String, pinKey: String, now: Date = Date()) -> PinGate {
         if let report = testReports[seat], report.kind == .run, report.runtime == runtime {
             switch report.verdict {
-            case .passed: return nil
-            case .failed: return "The last test wake did not pass, so there is nothing to pin."
-            case .unclear: return "The last test wake did not say it passed, so Muster will not offer to pin it."
+            case .passed: return .inSession
+            case .failed: return .blocked("The last test wake did not pass, so there is nothing to pin.")
+            case .unclear: return .blocked("The last test wake did not say it passed, so Muster will not offer to pin it.")
             }
         }
-        if model.seats.first(where: { $0.seat == seat })?.hasPinnableCandidate(pinKey) == true {
-            return nil
+        if let seatModel = model.seats.first(where: { $0.seat == seat }),
+           seatModel.hasPinnableCandidate(pinKey, now: now),
+           let at = seatModel.candidates[pinKey] {
+            return .candidate(at)
         }
-        return "No passing test wake in the last day.\u{00A0} Run one and read its answer first."
+        return .blocked("No passing test wake in the last day.\u{00A0} Run one and read its answer first.")
+    }
+
+    /// Why Pin is not offered for a runtime of a seat, or nil when it is.
+    func pinBlocker(seat: String, runtime: String, pinKey: String) -> String? {
+        pinGate(seat: seat, runtime: runtime, pinKey: pinKey).blocker
     }
 
     /// Runs the seat's wake on the canned hostile messages, and keeps everything it printed.
@@ -627,12 +716,11 @@ final class WakeSettingsStore: ObservableObject {
             say("A \(running?.title.lowercased() ?? "run") for \(running?.seat ?? "a seat") is still running, so no second one was started.", failure: true)
             return
         }
+        // `running` gates Apply, Test and Pin while this runs, for up to fifteen minutes.  The busy
+        // count is not held, so Pause, Refresh and the timer keep working, and the panel's age line
+        // keeps telling the truth meanwhile.
         running = RunningAction(seat: seat, title: "Test wake", startedAt: Date())
-        begin()
-        defer {
-            end()
-            running = nil
-        }
+        defer { running = nil }
         do {
             let result = try await runner.run(AgentSyncInvocation.testWakeRun(seat: seat, runtime: runtime))
             let report = TestWakeReport.make(from: result, seat: seat, runtime: runtime, kind: .run)
@@ -658,12 +746,9 @@ final class WakeSettingsStore: ObservableObject {
             say("A \(running?.title.lowercased() ?? "run") for \(running?.seat ?? "a seat") is still running, so nothing was pinned.", failure: true)
             return
         }
+        // As with the test wake, only `running` is held, so Pause and Refresh keep working.
         running = RunningAction(seat: seat, title: "Pin", startedAt: Date())
-        begin()
-        defer {
-            end()
-            running = nil
-        }
+        defer { running = nil }
         do {
             let result = try await runner.run(AgentSyncInvocation.testWakePin(seat: seat, runtime: runtime))
             let report = TestWakeReport.make(from: result, seat: seat, runtime: runtime, kind: .pin)

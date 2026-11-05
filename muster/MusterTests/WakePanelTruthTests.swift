@@ -93,6 +93,23 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertEqual(running.runState, .running)
     }
 
+    /// A status that does not say whether the eavesdropper runs, or says it in another type, is not
+    /// a stopped eavesdropper either, and an old value it holds is not called a stopped one's.
+    func test_a_status_without_a_running_flag_is_unknown() {
+        for json in [#"{"status": {}}"#, #"{"running": "yes", "status": {}}"#] {
+            let model = WakeSettingsBuilder.build(sources(status: json))
+            guard case .unknown(let why) = model.runState else {
+                return XCTFail("expected unknown for \(json), got \(model.runState)")
+            }
+            XCTAssertTrue(why.contains("did not say whether it is running"))
+            XCTAssertNotEqual(model.runState.title, ListenerRunState.stopped.title)
+        }
+        let json = #"{"status": {"seats": {"MM": {"wake": "muse", "budget": {"wakes_per_hour": 5}}}}}"#
+        let row = setting(.wakesPerHour, of: seat("MM", in: WakeSettingsBuilder.build(sources(status: json))))
+        XCTAssertEqual(row.state, .stale)
+        XCTAssertFalse(row.note.contains("is not running"))
+    }
+
     /// One field in a shape Muster does not expect costs that field only, not the whole status.
     func test_a_mistyped_field_does_not_blank_the_status() throws {
         let json = """
@@ -166,6 +183,22 @@ final class WakePanelTruthTests: XCTestCase {
         XCTAssertTrue(row.note.contains("not running"))
     }
 
+    /// A row whose value Muster read from a pin file is not the eavesdropper's word, so a stopped
+    /// eavesdropper does not turn it into NOT CURRENT with a note that it published the value.
+    func test_pin_backed_rows_keep_their_own_state_when_the_status_is_old() {
+        let json = #"{"running": false, "status": {"seats": {"MM": {"wake": "muse", "budget": {"wakes_per_hour": 5}}}}}"#
+        let pins = ["MM": ["muse": pin("muse", model: "muse-spark-1.3-contributor")]]
+        let mm = seat("MM", in: WakeSettingsBuilder.build(sources(status: json, pins: pins)))
+        let model = setting(.model, of: mm)
+        XCTAssertEqual(model.state, .match)
+        XCTAssertFalse(model.note.contains("last value it published"))
+        XCTAssertEqual(setting(.wakesPerHour, of: mm).state, .stale)
+        XCTAssertTrue(WakeSettingsBuilder.liveComesFromStatus(.model, wake: "openrouter"))
+        XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.model, wake: "muse"))
+        XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.mcodePath, wake: "claude"))
+        XCTAssertFalse(WakeSettingsBuilder.liveComesFromStatus(.fallback, wake: "claude"))
+    }
+
     // MARK: The model and the pin, by the seat's own runtime
 
     /// A Claude seat's model is reported by nothing, so it is not reported:  never UNPROVEN, and
@@ -216,6 +249,70 @@ final class WakePanelTruthTests: XCTestCase {
         let holding = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse", "pin": {"pinned": true}}}}}"#
         let pinned = seat("MM", in: WakeSettingsBuilder.build(sources(status: holding, pins: pins)))
         XCTAssertEqual(pinned.pinState, .pinned(pins["MM"]!["muse"]!))
+    }
+
+    /// A pin file that is there is never a pin that holds without the eavesdropper's current word:
+    /// not when the status could not be read, not when it is old, and not when it gave no verdict.
+    func test_a_pin_file_without_a_current_verdict_is_not_pinned() {
+        let pins = ["MM": ["muse": pin("muse", model: "muse-spark-1.3-contributor")]]
+
+        var unread = sources(status: nil, pins: pins)
+        unread.statusProblem = "The eavesdropper's status command failed:  boom"
+        let blind = seat("MM", in: WakeSettingsBuilder.build(unread))
+        guard case .fileOnly(let evidence, let why, let needsLook) = blind.pinState else {
+            return XCTFail("expected a pin file with no verdict, got \(blind.pinState)")
+        }
+        XCTAssertEqual(evidence, pins["MM"]!["muse"]!)
+        XCTAssertTrue(why.contains("could not read"))
+        XCTAssertTrue(needsLook)
+        XCTAssertTrue(blind.pinState.isProblem)
+        XCTAssertEqual(blind.pin, pins["MM"]!["muse"]!)
+
+        let published = 1_792_657_970.0
+        let holding = #"{"running": true, "status": {"updated": \#(published), "seats": {"MM": {"wake": "muse", "pin": {"pinned": true}}}}}"#
+        var old = sources(status: holding, pins: pins)
+        old.readAt = Date(timeIntervalSince1970: published + 14 * 60)
+        guard case .fileOnly(_, let oldWhy, true) = seat("MM", in: WakeSettingsBuilder.build(old)).pinState else {
+            return XCTFail("an old verdict must not say the pin holds now")
+        }
+        XCTAssertTrue(oldWhy.contains("not current"))
+
+        let silent = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse"}}}}"#
+        let quiet = seat("MM", in: WakeSettingsBuilder.build(sources(status: silent, pins: pins)))
+        XCTAssertEqual(
+            quiet.pinState,
+            .fileOnly(pins["MM"]!["muse"]!, why: "The eavesdropper did not say whether it holds.", needsLook: false)
+        )
+        XCTAssertFalse(quiet.pinState.isProblem)
+    }
+
+    /// The fallback's own pin:  an mcode pin file is only a file, one that cannot be read is
+    /// unreadable and not missing, and an OpenRouter fallback goes by the eavesdropper's verdict.
+    func test_the_fallback_pin_state_is_its_own() {
+        let json = #"{"running": true, "status": {"seats": {"MM": {"wake": "muse"}}}}"#
+        let filed = seat("MM", in: WakeSettingsBuilder.build(sources(status: json, pins: ["MM": ["mcode": pin("mcode")]])))
+        guard case .fileOnly(_, let why, false) = filed.fallbackPinState else {
+            return XCTFail("expected an mcode pin file with no verdict, got \(String(describing: filed.fallbackPinState))")
+        }
+        XCTAssertTrue(why.contains("does not publish"))
+        XCTAssertEqual(setting(.fallback, of: filed).state, .unpublished)
+
+        var unreadable = sources(status: json)
+        unreadable.unreadablePins = ["MM": ["mcode": "boom"]]
+        let broken = seat("MM", in: WakeSettingsBuilder.build(unreadable))
+        XCTAssertEqual(broken.fallbackPinState, .unreadable(runtime: "mcode", problem: "boom"))
+
+        let missing = seat("MM", in: WakeSettingsBuilder.build(sources(status: json)))
+        XCTAssertEqual(missing.fallbackPinState, .missing(runtime: "mcode", why: nil))
+
+        let routerKey = WakeType.fallbackPinKey("openrouter")
+        let routerPins = ["ROUTER": [routerKey: pin(routerKey, binary: nil, model: "anthropic/claude-sonnet-4")]]
+        let pinned = #"{"running": true, "status": {"seats": {"ROUTER": {"wake": "openrouter", "fallback": {"pinned": true}}}}}"#
+        let router = seat("ROUTER", in: WakeSettingsBuilder.build(sources(status: pinned, pins: routerPins)))
+        XCTAssertEqual(router.fallbackPinState, .pinned(routerPins["ROUTER"]![routerKey]!))
+
+        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json)))
+        XCTAssertNil(quiet.fallbackPinState)
     }
 
     /// An inbox seat needs no pin and has nothing to test, and says so.
@@ -427,7 +524,7 @@ final class WakePanelTruthTests: XCTestCase {
     // MARK: The store
 
     @MainActor
-    private func makeStore(_ fake: Fake, home: URL) async -> WakeSettingsStore {
+    private func makeStore(_ fake: AgentSyncRunning, home: URL) async -> WakeSettingsStore {
         let store = WakeSettingsStore(
             location: ListenerStateLocation(home: home),
             runner: fake,
@@ -548,6 +645,172 @@ final class WakePanelTruthTests: XCTestCase {
         await store.pause(seat: "MM")
         XCTAssertFalse(fake.commands.contains("pause"))
         XCTAssertTrue(store.message?.contains("would loosen it") == true)
+    }
+
+    /// With the status unread, the pause file itself still stops a wakes-only pause over a full
+    /// one, and a pause file that cannot be read stops the pause with its reason.
+    @MainActor
+    func test_the_pause_file_guards_a_full_pause_when_the_status_is_not_read() async throws {
+        let home = try makeHome(config: mmConfig)
+        let pauseURL = ListenerStateLocation(home: home).pauseURL
+        try FileManager.default.createDirectory(at: pauseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"MM": {"wakes_only": false, "by": "owner-dm", "ts": 1792535804.0}}"#
+            .write(to: pauseURL, atomically: true, encoding: .utf8)
+        let fake = Fake()
+        fake.statusExit = 1
+        let store = await makeStore(fake, home: home)
+        XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MM" })?.paused, false)
+        await store.pause(seat: "MM")
+        XCTAssertFalse(fake.commands.contains("pause"))
+        XCTAssertTrue(store.message?.contains("would loosen it") == true)
+
+        try "not json".write(to: pauseURL, atomically: true, encoding: .utf8)
+        await store.pause(seat: "MM")
+        XCTAssertFalse(fake.commands.contains("pause"))
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("pause file could not be read") == true)
+
+        XCTAssertEqual(WakeSettingsStore.ownPauseEntry(seat: "MM", at: home.appendingPathComponent("nothing.json")), .noEntry)
+        try #"{"*": {"wakes_only": false}, "MM": {"wakes_only": true}}"#.write(to: pauseURL, atomically: true, encoding: .utf8)
+        XCTAssertEqual(WakeSettingsStore.ownPauseEntry(seat: "MM", at: pauseURL), .wakesOnly)
+        XCTAssertEqual(WakeSettingsStore.ownPauseEntry(seat: "CLAUDE", at: pauseURL), .noEntry)
+        try #"{"MM": {}}"#.write(to: pauseURL, atomically: true, encoding: .utf8)
+        XCTAssertEqual(WakeSettingsStore.ownPauseEntry(seat: "mm", at: pauseURL), .full)
+    }
+
+    /// A stand-in whose test wake runs until the test lets it finish.
+    private final class SlowFake: AgentSyncRunning, @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls: [String] = []
+        private var released = false
+        private var started = false
+
+        var commands: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return calls
+        }
+
+        var testWakeStarted: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return started
+        }
+
+        private var isReleased: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return released
+        }
+
+        func release() {
+            lock.lock()
+            released = true
+            lock.unlock()
+        }
+
+        private func note(_ command: String) {
+            lock.lock()
+            calls.append(command)
+            if command == "test-wake" { started = true }
+            lock.unlock()
+        }
+
+        func run(_ invocation: AgentSyncInvocation) async throws -> AgentSyncCLIResult {
+            let command = invocation.arguments.count > 1 ? invocation.arguments[1] : ""
+            note(command)
+            switch command {
+            case "status":
+                return AgentSyncCLIResult(exitCode: 0, stdout: #"{"running": true, "status": {"seats": {}, "pause": {}}}"#, stderr: "")
+            case "test-wake":
+                var waited = 0
+                while !isReleased, waited < 1000 {
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                    waited += 1
+                }
+                return AgentSyncCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
+            default:
+                return AgentSyncCLIResult(exitCode: 0, stdout: "", stderr: "")
+            }
+        }
+    }
+
+    /// A test wake runs for minutes, so it holds only its own gate:  the panel is not busy, and the
+    /// pause, the kill switch, still runs while it does.
+    @MainActor
+    func test_a_running_test_wake_leaves_the_pause_working() async throws {
+        let home = try makeHome(config: mmConfig)
+        let fake = SlowFake()
+        let store = await makeStore(fake, home: home)
+        let run = Task { await store.testWake(seat: "MM", runtime: "muse") }
+        var waited = 0
+        while !fake.testWakeStarted, waited < 500 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        XCTAssertTrue(fake.testWakeStarted)
+        XCTAssertNotNil(store.running)
+        XCTAssertFalse(store.isBusy)
+        await store.pause(seat: "MM")
+        XCTAssertTrue(fake.commands.contains("pause"))
+        XCTAssertFalse(store.messageIsFailure)
+        fake.release()
+        await run.value
+        XCTAssertNil(store.running)
+        XCTAssertEqual(store.testReports["MM"]?.verdict, .passed)
+    }
+
+    /// Pin let through by a candidate from a test run elsewhere says Muster never saw its answer;
+    /// one let through by a test shown here does not need to.
+    @MainActor
+    func test_a_candidate_from_elsewhere_is_named_as_unseen() async throws {
+        let home = try makeHome(config: mmConfig)
+        let location = ListenerStateLocation(home: home)
+        let candidate = location.candidateURL(seat: "MM", runtime: "muse")
+        try FileManager.default.createDirectory(at: candidate.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let at = (Date().timeIntervalSince1970 - 3600).rounded()
+        try #"{"at": \#(at), "muse": "/bin/muse"}"#.write(to: candidate, atomically: true, encoding: .utf8)
+        let fake = Fake()
+        let store = await makeStore(fake, home: home)
+
+        let gate = store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse")
+        XCTAssertEqual(gate, .candidate(Date(timeIntervalSince1970: at)))
+        XCTAssertNil(store.pinBlocker(seat: "MM", runtime: "muse", pinKey: "muse"))
+        let note = try XCTUnwrap(gate.confirmationNote)
+        XCTAssertTrue(note.contains("Muster did not see this test's answer"))
+        XCTAssertTrue(note.contains(FleetTime.clock(Date(timeIntervalSince1970: at))))
+        XCTAssertTrue(note.contains("\u{00A0} Pin only if you read it there."))
+
+        fake.testWake = AgentSyncCLIResult(exitCode: 0, stdout: "PASS, NOT PINNED YET: read the result above\n", stderr: "")
+        await store.testWake(seat: "MM", runtime: "muse")
+        let shown = store.pinGate(seat: "MM", runtime: "muse", pinKey: "muse")
+        XCTAssertEqual(shown, .inSession)
+        XCTAssertNil(shown.confirmationNote)
+    }
+
+    /// A field cleared over a setting the file never held is no edit:  the summary and the write
+    /// agree with the Edited mark.
+    @MainActor
+    func test_a_cleared_field_over_nothing_is_no_edit() {
+        let reading = WakeSettingsStore.readDraft(
+            seat: "MM",
+            values: [.model: "", .musePath: " ", .usdPerDay: ""],
+            before: [.model: WakeSetting.unsetText, .musePath: WakeSetting.unsetText, .usdPerDay: WakeSetting.unsetText]
+        )
+        XCTAssertEqual(reading, WakeSettingsStore.DraftReading())
+    }
+
+    /// A seat's settings follow the owner's own choice once made, so typing an edit, or the seat
+    /// starting to need attention, never folds them away;  before a choice they follow the seat.
+    func test_a_seat_the_owner_opened_stays_open() {
+        let json = #"{"running": true, "status": {"seats": {"QUIET": {"wake": "inbox"}}}}"#
+        let quiet = seat("QUIET", in: WakeSettingsBuilder.build(sources(status: json)))
+        XCTAssertFalse(quiet.needsAttention)
+        XCTAssertFalse(quiet.settingsOpen(choice: nil, hasEdits: false))
+        XCTAssertTrue(quiet.settingsOpen(choice: nil, hasEdits: true))
+        XCTAssertTrue(quiet.settingsOpen(choice: true, hasEdits: false))
+        XCTAssertTrue(quiet.settingsOpen(choice: true, hasEdits: true))
+        XCTAssertFalse(quiet.settingsOpen(choice: false, hasEdits: true))
     }
 
     // MARK: Small pieces

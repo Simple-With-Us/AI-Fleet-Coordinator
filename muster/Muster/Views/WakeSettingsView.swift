@@ -32,9 +32,10 @@ struct WakeSettingsView: View {
     @State private var seatFilter: SeatFilter = .all
     @State private var searchText: String = ""
     @State private var pendingWakeAction: PendingWakeAction?
-    /// Seats whose settings the owner opened or closed by hand.  A seat that needs attention or
-    /// holds an edit starts open, and any other starts closed.
-    @State private var toggledSeats: Set<String> = []
+    /// Whether the owner opened (true) or closed (false) a seat's settings by hand.  A seat the
+    /// owner has not touched is open when it needs attention or holds an edit, and closed
+    /// otherwise.  A choice the owner made stays, so typing an edit never folds the field away.
+    @State private var seatOpen: [String: Bool] = [:]
 
     private var filteredSeats: [WakeSeat] {
         let base: [WakeSeat]
@@ -340,7 +341,7 @@ struct WakeSettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("The Eavesdropper")
                 .font(.headline)
-            WakeGridHeader(labels: ["Setting", "The file", "The eavesdropper"])
+            WakeGridHeader(labels: ["Setting", "The File", "The Eavesdropper"])
             ForEach(store.model.daemonSettings) { setting in
                 WakeSettingRow(
                     setting: setting,
@@ -530,7 +531,7 @@ struct WakeSettingsView: View {
     /// offers only the pause.
     private func localSeatSection(_ seat: WakeSeat) -> some View {
         let changed = store.changedKeys(seat: seat.seat)
-        let expanded = (seat.needsAttention || !changed.isEmpty) != toggledSeats.contains(seat.seat)
+        let expanded = seat.settingsOpen(choice: seatOpen[seat.seat], hasEdits: !changed.isEmpty)
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(seat.seat)
@@ -556,11 +557,7 @@ struct WakeSettingsView: View {
                 }
             }
             Button {
-                if toggledSeats.contains(seat.seat) {
-                    toggledSeats.remove(seat.seat)
-                } else {
-                    toggledSeats.insert(seat.seat)
-                }
+                seatOpen[seat.seat] = !expanded
             } label: {
                 Label(
                     expanded ? "Hide Settings" : "Show Settings",
@@ -688,7 +685,7 @@ struct WakeSettingsView: View {
             : "\(hidden) settings that do not apply to a \(wake ?? "inbox") wake are not shown."
         let moved = store.movedUnderneath[seat.seat] ?? []
         return VStack(alignment: .leading, spacing: 4) {
-            WakeGridHeader(labels: ["Setting", "The file", "The eavesdropper"])
+            WakeGridHeader(labels: ["Setting", "The File", "The Eavesdropper"])
             ForEach(shown) { setting in
                 WakeSettingRow(
                     setting: setting,
@@ -718,10 +715,17 @@ struct WakeSettingsView: View {
         let testRuntime = seat.testRuntime
         let noTest = seat.configuredWake?.noPinReason
             ?? (seat.configuredWake == nil ? "The file names no wake for this seat, so it is an inbox seat and runs nothing to test." : nil)
-        let pinBlocker = testRuntime.map { store.pinBlocker(seat: seat.seat, runtime: $0, pinKey: $0) } ?? noTest
+        let pinGate = testRuntime.map { store.pinGate(seat: seat.seat, runtime: $0, pinKey: $0) }
+        let pinBlocker: String?
+        if let gate = pinGate {
+            pinBlocker = gate.blocker
+        } else {
+            pinBlocker = noTest
+        }
         let fallback = seat.fallbackRuntime
         let fallbackKey = fallback.map(WakeType.fallbackPinKey)
-        let fallbackPinBlocker = fallbackKey.map { store.pinBlocker(seat: seat.seat, runtime: "fallback", pinKey: $0) } ?? nil
+        let fallbackPinGate = fallbackKey.map { store.pinGate(seat: seat.seat, runtime: "fallback", pinKey: $0) }
+        let fallbackPinBlocker = fallbackPinGate?.blocker
         let busy = store.isBusy || store.running != nil
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -753,12 +757,15 @@ struct WakeSettingsView: View {
                 .disabled(busy || testRuntime == nil)
                 .help(noTest ?? "Runs this seat's wake on canned hostile messages.\u{00A0} Nothing is posted.")
                 Button {
-                    pendingWakeAction = PendingWakeAction(kind: .pin, seat: seat.seat, runtime: testRuntime)
+                    pendingWakeAction = PendingWakeAction(
+                        kind: .pin, seat: seat.seat, runtime: testRuntime,
+                        candidateAt: pinGate?.candidateAt
+                    )
                 } label: {
                     Label("Pin…", systemImage: "pin")
                 }
                 .disabled(busy || testRuntime == nil || pinBlocker != nil)
-                .help(pinBlocker ?? "Pins what the passing test wake ran.\u{00A0} It asks for Touch ID.")
+                .help(pinBlocker ?? pinGate.map(Self.pinHelp) ?? "Pins what the passing test wake ran.\u{00A0} It asks for Touch ID.")
                 if let fallback, testRuntime != nil {
                     Divider().frame(height: 16)
                     Button {
@@ -769,12 +776,15 @@ struct WakeSettingsView: View {
                     .disabled(busy)
                     .help("Runs the \(fallback) fallback on the same canned hostile messages.\u{00A0} Nothing is posted.")
                     Button {
-                        pendingWakeAction = PendingWakeAction(kind: .pin, seat: seat.seat, runtime: "fallback", fallback: fallback)
+                        pendingWakeAction = PendingWakeAction(
+                            kind: .pin, seat: seat.seat, runtime: "fallback", fallback: fallback,
+                            candidateAt: fallbackPinGate?.candidateAt
+                        )
                     } label: {
                         Label("Pin Fallback…", systemImage: "pin")
                     }
                     .disabled(busy || fallbackPinBlocker != nil)
-                    .help(fallbackPinBlocker ?? "Pins what the passing fallback test ran.\u{00A0} It asks for Touch ID.")
+                    .help(fallbackPinBlocker ?? fallbackPinGate.map(Self.pinHelp) ?? "Pins what the passing fallback test ran.\u{00A0} It asks for Touch ID.")
                 }
             }
             if let noTest {
@@ -787,8 +797,22 @@ struct WakeSettingsView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if let note = pinGate?.confirmationNote {
+                Label("Pin:  \(note)", systemImage: "eye.slash")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// What Pin's tooltip says when it is offered:  that it pins the test this panel showed, or
+    /// that Muster never saw the answer of a test run elsewhere.
+    private static func pinHelp(_ gate: WakeSettingsStore.PinGate) -> String {
+        if let note = gate.confirmationNote {
+            return note + "\u{00A0} It asks for Touch ID."
+        }
+        return "Pins what the passing test shown here ran.\u{00A0} It asks for Touch ID."
     }
 
     /// The draft's binding for one setting.
@@ -897,32 +921,27 @@ struct WakeSettingsView: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
             pinFact(seat.pinState)
-            if let fallback = seat.fallbackRuntime {
-                let title = PinEvidence.runtimeTitle(WakeType.fallbackPinKey(fallback))
-                if let pin = seat.fallbackPin {
-                    if pin.pinned {
-                        factLine("\(title) pin file is there:  \(pin.binary ?? pin.model ?? "no binary named"), \(pin.age ?? "no date")", problem: false)
-                    } else {
-                        factLine("\(title) pin does not hold.\u{00A0} \(PinEvidence.words(forWhy: pin.why ?? "not_pinned"))", problem: true)
-                    }
-                } else {
-                    factLine("No \(title.lowercased()) pin.\u{00A0} Test the fallback, read the result, then pin it.", problem: true)
-                }
+            if let fallbackState = seat.fallbackPinState {
+                pinFact(fallbackState, missingAdvice: "Test the fallback, read the result, then pin it.")
             }
         }
     }
 
+    /// One pin, in words.  A pin file nobody gave a current verdict on is shown with a question
+    /// mark, never a check mark:  that it is there does not say it holds.
     @ViewBuilder
-    private func pinFact(_ state: SeatPinState) -> some View {
+    private func pinFact(_ state: SeatPinState, missingAdvice: String? = nil) -> some View {
         switch state {
         case .notNeeded(let why):
             factLine("No pin needed.\u{00A0} \(why)", problem: false)
         case .pinned(let pin):
             factLine("\(PinEvidence.runtimeTitle(pin.runtime)) pin holds:  \(pin.binary ?? pin.model ?? "no binary named")\(pin.model.map { ", model \($0)" } ?? ""), \(pin.age ?? "no date")", problem: false)
         case .notHolding(let pin, let why):
-            factLine("\(PinEvidence.runtimeTitle(pin.runtime)) pin does not hold.\u{00A0} \(PinEvidence.words(forWhy: why))  Pinned \(pin.binary ?? pin.model ?? "nothing named"), \(pin.age ?? "no date").", problem: true)
+            factLine("\(PinEvidence.runtimeTitle(pin.runtime)) pin does not hold.\u{00A0} \(PinEvidence.words(forWhy: why))\u{00A0} Pinned \(pin.binary ?? pin.model ?? "nothing named"), \(pin.age ?? "no date").", problem: true)
+        case .fileOnly(let pin, let why, let needsLook):
+            factLine("\(PinEvidence.runtimeTitle(pin.runtime)) pin file is there:  \(pin.binary ?? pin.model ?? "no binary named"), \(pin.age ?? "no date").\u{00A0} \(why)", problem: needsLook, unknown: true)
         case .missing(let runtime, let why):
-            factLine("No \(PinEvidence.runtimeTitle(runtime)) pin.\u{00A0} \(PinEvidence.words(forWhy: why ?? "not_pinned"))", problem: true)
+            factLine("No \(PinEvidence.runtimeTitle(runtime)) pin.\u{00A0} \(missingAdvice ?? PinEvidence.words(forWhy: why ?? "not_pinned"))", problem: true)
         case .unreadable(let runtime, let problem):
             factLine("The \(PinEvidence.runtimeTitle(runtime)) pin could not be read.\u{00A0} \(problem)", problem: true)
         case .unknownWake:
@@ -930,10 +949,11 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// One fact, with a symbol when it is a problem, so colour is never the only sign.
-    private func factLine(_ text: String, problem: Bool) -> some View {
+    /// One fact, with a symbol as well as a colour, so colour is never the only sign:  a warning
+    /// for a problem, a question mark for something not known, and a check mark otherwise.
+    private func factLine(_ text: String, problem: Bool, unknown: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 5) {
-            Image(systemName: problem ? "exclamationmark.triangle.fill" : "checkmark.circle")
+            Image(systemName: problem ? "exclamationmark.triangle.fill" : (unknown ? "questionmark.circle" : "checkmark.circle"))
                 .font(.system(size: 10))
                 .foregroundStyle(problem ? Color.orange : Color.secondary)
                 .accessibilityHidden(true)
@@ -1239,6 +1259,9 @@ private struct PendingWakeAction: Identifiable {
     var fallback: String? = nil
     /// The changes this would make, in words.
     var detail: String = ""
+    /// For a pin let through by a candidate from a test run outside this panel:  when that test
+    /// left it.  Muster never saw its answer, so the confirmation says so.
+    var candidateAt: Date? = nil
     var id: String { "\(kind)-\(seat)-\(runtime ?? "")" }
 
     /// What is being tested or pinned, in words.
@@ -1281,7 +1304,10 @@ private struct PendingWakeAction: Identifiable {
         case .testWake:
             return "This runs \(subject) on this Mac against canned hostile messages.\u{00A0} Nothing is posted, and no wake budget is spent.\u{00A0} It uses the provider's quota and can take up to \(Int(AgentSyncInvocation.testWakeTimeout / 60)) minutes.\u{00A0} You then read its answer and decide whether to pin it."
         case .pin:
-            return "This pins what the last passing test of \(subject) ran, as proved.\u{00A0} The eavesdropper refuses a test over a day old, or one whose binary or model has changed since.\u{00A0} It asks for Touch ID."
+            let pins = "This pins what the last passing test of \(subject) ran, as proved.\u{00A0} The eavesdropper refuses a test over a day old, or one whose binary or model has changed since.\u{00A0} It asks for Touch ID."
+            guard let at = candidateAt,
+                  let note = WakeSettingsStore.PinGate.candidate(at).confirmationNote else { return pins }
+            return note + "\n\n" + pins
         case .removeSection:
             return "This takes the [seat.\(seat)] section out of the Mac's eavesdropper configuration file and keeps a backup of the old file.\u{00A0} The Mac's eavesdropper refuses this section, so it can only stop the eavesdropper."
         case .resume:
