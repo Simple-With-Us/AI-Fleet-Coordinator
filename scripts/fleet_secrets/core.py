@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -524,20 +524,37 @@ def fetch_project(
             for name in sorted(wanted)
         ]
 
+    # A whole folder may be large.  One named secret is small, and up to MAX_NAMED_READS run at once.
+    max_bytes = MAX_OUTPUT_BYTES if wanted is None else MAX_VERIFIED_BYTES
+
     def read_one(item: tuple) -> tuple:
-        return item[0], _api_json(
-            "GET", item[1], token, None, env, max_bytes=MAX_OUTPUT_BYTES, deadline=deadline
+        name, endpoint = item
+        status, payload = _api_json(
+            "GET", endpoint, token, None, env, max_bytes=max_bytes, deadline=deadline
         )
+        missing = name is not None and status == 404
+        if not missing and (status != 200 or not isinstance(payload, dict)):
+            raise SecretsError("fetch-failed")
+        return name, None if missing else payload
 
     # Named reads share one deadline, and the knobs ask for every registered name at once, so they
-    # run side by side:  one after another, 31 names took about 13 s against an 8 s budget.
+    # run side by side:  one after another, 31 names took about 13 s against an 8 s budget.  The
+    # first failure cancels every read that has not started.
+    answers: dict = {}
     with ThreadPoolExecutor(max_workers=MAX_NAMED_READS) as pool:
-        answers = list(pool.map(read_one, endpoints))
-    for expected_name, (status, payload) in answers:
-        if expected_name is not None and status == 404:
+        futures = [pool.submit(read_one, item) for item in endpoints]
+        try:
+            for future in as_completed(futures):
+                name, payload = future.result()
+                answers[name] = payload
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+    for expected_name, _endpoint in endpoints:
+        payload = answers[expected_name]
+        if payload is None:
             continue
-        if status != 200 or not isinstance(payload, dict):
-            raise SecretsError("fetch-failed")
         records = payload.get("secrets") if expected_name is None else [payload.get("secret")]
         if not isinstance(records, list):
             raise SecretsError("fetch-failed: bad-output")
