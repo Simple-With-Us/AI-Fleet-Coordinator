@@ -186,10 +186,10 @@ SPECS = {
     "wf_tag_delete": ({"contents": "write"}, True),
     "wf_pr_draft": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_pr_ready": ({"pull_requests": "write", "contents": "write"}, True),
-    "wf_pr_close": ({"pull_requests": "write"}, True),
-    "wf_pr_reopen": ({"pull_requests": "write"}, True),
-    "wf_automerge_enable": ({"pull_requests": "write"}, True),
-    "wf_automerge_disable": ({"pull_requests": "write"}, True),
+    "wf_pr_close": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_pr_reopen": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_automerge_enable": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_automerge_disable": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_threads": ({"pull_requests": "read"}, False),
     "wf_assignees_add": ({"issues": "write"}, True),
     "wf_assignees_remove": ({"issues": "write"}, True),
@@ -3332,7 +3332,8 @@ class WorkflowVerbs:
         result = self._fixed_graph(query, {"id": node}, "dequeuePullRequest")
         return {"entry": self._queue_receipt(result.get("mergeQueueEntry"), node)}
 
-    def _pr_node(self, repo, number):
+    def _pr_read(self, repo, number):
+        """The PR and its checked node id, read before any write."""
         try:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
         except RelayGitHubError as exc:
@@ -3342,7 +3343,10 @@ class WorkflowVerbs:
         node = data.get("node_id")
         if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
             raise Refused("PR node unavailable")
-        return node
+        return data, node
+
+    def _pr_node(self, repo, number):
+        return self._pr_read(repo, number)[1]
 
     def _fixed_graph(self, query, variables, field, write=True):
         try:
@@ -3379,7 +3383,10 @@ class WorkflowVerbs:
 
     def wf_pr_draft(self, repo, args):
         _only(args, ("repo", "number"))
-        node = self._pr_node(repo, _int(args, "number"))
+        data, node = self._pr_read(repo, _int(args, "number"))
+        # GitHub answers a transition to the state a PR already has with an error, which reads as an unknown outcome.
+        if data.get("draft") is True:
+            return {"pull": {"id": node, "isDraft": True}}
         query = "mutation($id: ID!) { convertPullRequestToDraft(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
         result = self._fixed_graph(query, {"id": node}, "convertPullRequestToDraft")
         pull = _sub(result, "pullRequest")
@@ -3389,7 +3396,9 @@ class WorkflowVerbs:
 
     def wf_pr_ready(self, repo, args):
         _only(args, ("repo", "number"))
-        node = self._pr_node(repo, _int(args, "number"))
+        data, node = self._pr_read(repo, _int(args, "number"))
+        if data.get("draft") is False:
+            return {"pull": {"id": node, "isDraft": False}}
         query = "mutation($id: ID!) { markPullRequestReadyForReview(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
         result = self._fixed_graph(query, {"id": node}, "markPullRequestReadyForReview")
         pull = _sub(result, "pullRequest")
@@ -3398,7 +3407,11 @@ class WorkflowVerbs:
         return {"pull": pull}
 
     def _pr_set_state(self, repo, args, mutation, wanted):
-        node = self._pr_node(repo, _int(args, "number"))
+        data, node = self._pr_read(repo, _int(args, "number"))
+        if data.get("merged") is True:
+            raise Refused("a merged PR cannot change state")
+        if str(data.get("state")).upper() == wanted:
+            return {"pull": {"id": node, "state": wanted}}
         query = (
             "mutation($id: ID!) { %s(input:{pullRequestId:$id}) { pullRequest { id state } } }"
             % mutation

@@ -58,6 +58,42 @@ class PrControls(unittest.TestCase):
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(action, {**args, "query": "arbitrary"}, REPO)
 
+    def test_a_pr_already_in_that_state_writes_nothing(self):
+        cases = (
+            ("wf_pr_draft", {"draft": True}, {"id": "PR_abc", "isDraft": True}),
+            ("wf_pr_ready", {"draft": False}, {"id": "PR_abc", "isDraft": False}),
+            ("wf_pr_close", {"state": "closed"}, {"id": "PR_abc", "state": "CLOSED"}),
+            ("wf_pr_reopen", {"state": "open"}, {"id": "PR_abc", "state": "OPEN"}),
+        )
+        for action, fields, pull in cases:
+            c = Client({"node_id": "PR_abc", **fields})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
+            self.assertEqual(h.run(action, {"repo": REPO, "number": 1}), {"pull": pull}, action)
+            self.assertEqual(len(c.calls), 1, action)
+
+    def test_a_merged_pr_is_refused_before_any_write(self):
+        for action in ("wf_pr_close", "wf_pr_reopen"):
+            c = Client({"node_id": "PR_abc", "merged": True, "state": "closed"})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
+            with self.assertRaises(Refused):
+                h.run(action, {"repo": REPO, "number": 1})
+            self.assertEqual(len(c.calls), 1, action)
+
+    def test_graphql_pr_mutations_mint_contents_write(self):
+        from git_relay.workflow_verbs import SPECS
+
+        for action in (
+            "wf_pr_draft",
+            "wf_pr_ready",
+            "wf_pr_close",
+            "wf_pr_reopen",
+            "wf_automerge_enable",
+            "wf_automerge_disable",
+        ):
+            self.assertEqual(
+                SPECS[action][0], {"pull_requests": "write", "contents": "write"}, action
+            )
+
     def test_close_is_unknown_when_the_state_did_not_change(self):
         for pull in ({"id": "PR_abc", "state": "OPEN"}, {"id": "PR_other", "state": "CLOSED"}):
             c = Client({"node_id": "PR_abc"}, {"data": {"closePullRequest": {"pullRequest": pull}}})
