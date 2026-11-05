@@ -457,7 +457,9 @@ final class ServiceActionRouter: ObservableObject {
             actionState = .running(sheetSubject(for: action))
         case .finished(let action, let outcome):
             let succeeded = outcome.isSuccess(for: .yes)
-            settle(succeeded: succeeded)
+            // A run that may have landed is not a refused one,  so what the owner asked for
+            // stays on the record.
+            settle(succeeded: succeeded || outcome.runNotKnown)
             let made = sheetSubject(for: action)
             if succeeded {
                 actionState = .done(made, at: Date())
@@ -484,8 +486,8 @@ final class ServiceActionRouter: ObservableObject {
         return made
     }
 
-    /// Settles the owner's stop:  a run that did what it was asked keeps the record,  and
-    /// anything else,  the sheet closed without a run included,  restores it.
+    /// Settles the owner's stop:  a run that did what it was asked,  or may have,  keeps the
+    /// record,  and anything else,  the sheet closed without a run included,  restores it.
     private func settle(succeeded: Bool) {
         guard let serviceID = pendingServiceID else { return }
         admin.endControllerAction(serviceID: serviceID, succeeded: succeeded)

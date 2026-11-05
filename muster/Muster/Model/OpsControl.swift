@@ -867,8 +867,8 @@ struct OpsResult: Decodable, Equatable {
     let baselineStartMonotonic: UInt64?
     /// The machine the helper says it ran on,  when it says.  Knob answers never carry it.
     let host: String?
-    /// True when `host` is there and is not a string,  which is not the same as a helper
-    /// too old to say.
+    /// True when `host` is there and is not a string,  null included,  which is not the same
+    /// as a helper too old to carry the field.
     let hostIsMalformed: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -900,7 +900,6 @@ struct OpsResult: Decodable, Equatable {
         baselineStartMonotonic = try? container.decodeIfPresent(UInt64.self, forKey: .baselineStartMonotonic)
         host = try? container.decodeIfPresent(String.self, forKey: .host)
         hostIsMalformed = host == nil && container.contains(.host)
-            && (try? container.decodeNil(forKey: .host)) != true
     }
 }
 
@@ -1150,6 +1149,13 @@ enum OpsResultParser {
         return !errors.contains("could not resolve hostname")
             && !errors.contains("permission denied")
             && !errors.contains("host key verification failed")
+            && !neverConnected(errors)
+    }
+
+    /// True when ssh says it could not open the connection,  so no command was sent.  Its
+    /// words for that all start `ssh: connect to host`,  whatever the cause.
+    private static func neverConnected(_ errors: String) -> Bool {
+        errors.contains("connect to host")
     }
 
     /// The fixed sentence for an answer that did not come from the machine the button names.
@@ -1225,9 +1231,9 @@ enum OpsResultParser {
             if errors.contains("host key verification failed") {
                 return "The server's host key is not known to ssh,\(ServerStatusCopy.sentenceGap)so nothing was sent."
             }
-            // A plan changes nothing either way.  A run that lost the server cannot say how
-            // far it got.
-            return mode == .plan
+            // A plan changes nothing either way,  and a connection that never opened sent
+            // nothing.  A run that lost the server cannot say how far it got.
+            return mode == .plan || neverConnected(errors)
                 ? "The server did not answer, so nothing ran."
                 : "The server did not answer, so the Mac cannot say whether this ran."
         }

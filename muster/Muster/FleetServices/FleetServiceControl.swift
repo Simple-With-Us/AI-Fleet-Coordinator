@@ -71,12 +71,15 @@ public final class FleetServiceControl {
     }
 
     /// A LaunchAgent's state once it reached the wanted one,  or once the
-    /// looks ran out,  so a change that landed is not read as one that did not.
+    /// budget ran out,  so a change that landed is not read as one that did not.
+    ///
+    /// Each look runs launchctl,  which can take its whole timeout when it
+    /// is wedged,  so the budget is time and not a number of looks.
     private func settledAgentState(_ label: String,
                                    wanted: ManagedServiceState,
                                    attempts: Int) async -> ManagedServiceState {
         await ManagedServices.settle(to: wanted,
-                                     attempts: attempts,
+                                     within: Double(max(attempts, 0)) * agentSettleInterval,
                                      interval: agentSettleInterval) {
             self.startup.state(ofAgent: label).managedState
         }

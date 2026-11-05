@@ -122,10 +122,12 @@ final class OpsActionPlaceTests: XCTestCase {
         XCTAssertFalse(outcome.isSuccess(for: .yes))
     }
 
-    func testANullHostIsAMissingHost() {
+    /// Only a helper with no `host` field at all is one too old to say.
+    func testANullHostIsRefusedOnAPlan() {
         let outcome = parse(#"{"ok":true,"result":"planned","commands":[["x"]],"host":null}"#,
                             mode: .plan, action: timerRestart)
-        XCTAssertTrue(outcome.isSuccess(for: .plan))
+        XCTAssertEqual(outcome.kind, .refused)
+        XCTAssertFalse(outcome.isSuccess(for: .plan))
         XCTAssertNil(outcome.answeredFrom)
     }
 
@@ -162,10 +164,19 @@ final class OpsActionPlaceTests: XCTestCase {
         XCTAssertEqual(plan.detail, "The server did not answer, so nothing ran.")
         XCTAssertEqual(plan.kind, .failed)
         XCTAssertFalse(plan.runNotKnown)
+        // The connection never opened,  so a run sent nothing either.
         let run = OpsResultParser.parse(silent, mode: .yes, action: timerRestart, timeout: 90)
-        XCTAssertEqual(run.detail, "The server did not answer, so the Mac cannot say whether this ran.")
-        XCTAssertEqual(run.kind, .unknown, "the words and the kind have to agree")
-        XCTAssertTrue(run.runNotKnown)
+        XCTAssertEqual(run.detail, "The server did not answer, so nothing ran.")
+        XCTAssertEqual(run.kind, .failed)
+        XCTAssertFalse(run.runNotKnown)
+        // A connection that opened and then went may have run the command.
+        let lost = OpsProcessResult(exitCode: 255, stdout: "", stderr: "client_loop: send disconnect: Broken pipe")
+        let lostRun = OpsResultParser.parse(lost, mode: .yes, action: timerRestart, timeout: 90)
+        XCTAssertEqual(lostRun.detail, "The server did not answer, so the Mac cannot say whether this ran.")
+        XCTAssertEqual(lostRun.kind, .unknown, "the words and the kind have to agree")
+        XCTAssertTrue(lostRun.runNotKnown)
+        XCTAssertEqual(OpsResultParser.parse(lost, mode: .plan, action: timerRestart, timeout: 90).detail,
+                       "The server did not answer, so nothing ran.")
         let lookup = OpsProcessResult(exitCode: 255, stdout: "", stderr: "ssh: Could not resolve hostname server.test")
         let alias = OpsControlRoute.serverAlias
         XCTAssertEqual(OpsResultParser.parse(lookup, mode: .plan, action: timerRestart, timeout: 90).detail,
@@ -251,7 +262,7 @@ final class ServiceActionRouterTests: XCTestCase {
             startup: startup,
             mcpServer: nil,
             stopServer: { try await api.stopServer() },
-            agentSettleInterval: 0)
+            agentSettleInterval: 0.05)
         let admin = FleetAdmin(control: control,
                                startup: startup,
                                presence: ServerPresenceProbe(port: server.port, connect: { _ in server.presence() }),
@@ -459,6 +470,24 @@ final class ServiceActionRouterTests: XCTestCase {
         XCTAssertEqual(rig.router.actionState, expected)
         rig.controller.dismiss()
         XCTAssertEqual(rig.router.actionState, expected)
+    }
+
+    /// The stop may have landed,  so what the owner asked for stays on the record.
+    func testAStopThatIsNotKnownKeepsTheOwnersRecord() async throws {
+        let rig = await makeRig(yes: #"{"ok":true,"result":"done","commands":[["x"]],"host":"server"}"#)
+        let stop = try action(.stop, "shellular", on: rig)
+        rig.router.start(stop)
+        try await waitUntil { self.isReview(rig.controller) }
+        rig.controller.confirm()
+        try await waitUntil {
+            if case .finished = rig.controller.phase { return true }
+            return false
+        }
+        await rig.admin.refresh()
+        XCTAssertEqual(recordedStop(rig), true)
+        if case .notKnown = rig.router.actionState {} else {
+            XCTFail("\(String(describing: rig.router.actionState))")
+        }
     }
 
     func testARunThatIsNotKnownNeverSaysItDidNotHappen() {

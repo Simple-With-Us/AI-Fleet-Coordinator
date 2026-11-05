@@ -340,7 +340,9 @@ final class FleetAdmin: ObservableObject {
             reason = error.localizedDescription
         }
         if let reason {
-            ownerStops.restore(previous)
+            // A change that may have landed is not a refused one,  so what the owner asked
+            // for stays on the record.
+            if !notKnown { ownerStops.restore(previous) }
             if notKnown {
                 let subject = ServiceActionSubject(title: service.title, host: service.host, action: action)
                 problem = FleetActionWords.line(for: .notKnown(subject, reason: reason))

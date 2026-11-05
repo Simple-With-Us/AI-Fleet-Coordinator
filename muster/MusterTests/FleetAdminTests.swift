@@ -216,6 +216,8 @@ final class FleetAdminTests: XCTestCase {
 
         XCTAssertEqual(admin.lastResult?.notKnown, true)
         XCTAssertEqual(admin.lastResult?.reason, "its port on the Mac could not be read")
+        // The stop may have landed,  so what the owner asked for stays on the record.
+        XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, true)
     }
 
     /// A port still held is known,  so it stays a stop that did not land.
@@ -230,6 +232,22 @@ final class FleetAdminTests: XCTestCase {
 
         XCTAssertEqual(admin.lastResult?.notKnown, false)
         XCTAssertEqual(admin.problem, "BotFleet Server did not stop on the Mac:  its port on the Mac is still answering")
+        XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, false)
+    }
+
+    /// A LaunchAgent that never gets there is given a budget in time,  not an open-ended
+    /// number of looks.
+    func testAnAgentThatNeverSettlesGivesUpWithinItsBudget() async {
+        let commands = FleetAdminCommands()
+        commands.companionStaysUp = true
+        let admin = makeAdmin(commands: commands, server: FleetAdminServer())
+        await waitForTheFleet(admin)
+
+        let began = Date()
+        await admin.perform(.stop, serviceID: "app.botfleet.companion")
+
+        XCTAssertEqual(admin.lastResult?.reason, "it still reads running")
+        XCTAssertLessThan(Date().timeIntervalSince(began), 5)
     }
 
     func testAStartWaitsAsLongAsAnyOtherServiceAndLongerThanAStop() {
@@ -349,7 +367,7 @@ final class FleetAdminTests: XCTestCase {
             startup: startup,
             mcpServer: nil,
             stopServer: { try await api.stopServer() },
-            agentSettleInterval: 0)
+            agentSettleInterval: 0.05)
         return FleetAdmin(control: control,
                           startup: startup,
                           presence: ServerPresenceProbe(port: server.port, connect: { _ in server.presence() }),
