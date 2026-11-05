@@ -2,7 +2,7 @@
 
     cd scripts && python3 -m unittest fleet_lanes.tests.test_guard -v
 
-Every context is built from a literal home (/Users/jay), an explicit env dict and the frozen
+Every context is built from a literal home (/Users/fixture-home), an explicit env dict and the frozen
 registry in fixtures_guard, with case-insensitive comparison passed explicitly, so neither the
 real home nor the process environment leaks in.  No test touches the network, and the only files
 written are a registry copy for the hook CLI tests, inside a TemporaryDirectory.
@@ -149,7 +149,7 @@ class CodeDestinationTests(unittest.TestCase):
         return G.evaluate(_payload(command, cwd or home), _ctx_at_home(home))
 
     def test_fleet_worktree_destinations_under_code_are_denied_on_mac_and_linux(self) -> None:
-        for home in ("/Users/jay", "/root"):
+        for home in ("/Users/fixture-home", "/root"):
             code = f"{home}/Code"
             with self.subTest(home=home, operation="add"):
                 result = self._evaluate(
@@ -178,7 +178,7 @@ class CodeDestinationTests(unittest.TestCase):
         self.assertEqual(result.destination, "~/Code/BotFleet/bad")
 
     def test_canonical_registered_integration_clone_is_allowed(self) -> None:
-        for home in ("/Users/jay", "/root"):
+        for home in ("/Users/fixture-home", "/root"):
             with self.subTest(home=home, tool="git"):
                 result = self._evaluate(
                     home,
@@ -505,7 +505,7 @@ class ExternalLanesTests(unittest.TestCase):
         return G.evaluate(_payload(command), _ctx(dict(F.BASE_ENV, **env)))
 
     def test_cloning_an_external_lane_into_temp_is_denied_like_its_lanes_path(self) -> None:
-        via_link = self._decide("git clone /Users/jay/apps/lanes/DealDex/claude-x /tmp/y")
+        via_link = self._decide("git clone /Users/fixture-home/apps/lanes/DealDex/claude-x /tmp/y")
         real = self._decide("git clone /Volumes/External/Lanes/DealDex/claude-x /tmp/y")
         self.assertEqual((via_link.action, via_link.rule_id), ("deny", G.RULE_CLONE))
         self.assertEqual((real.action, real.rule_id), ("deny", G.RULE_CLONE))
@@ -785,17 +785,17 @@ class PayloadShapeTests(unittest.TestCase):
             "hook_event_name": "beforeShellExecution",
             "command": self.CMD,
             "cwd": "",
-            "workspace_roots": ["/Users/jay/Code/BotFleet"],
+            "workspace_roots": ["/Users/fixture-home/Code/BotFleet"],
         }
         self.assertEqual(G.evaluate(p, _ctx()).rule_id, G.RULE_WORKTREE_ADD)
-        p["cwd"] = "/Users/jay/Code/BotFleet"
+        p["cwd"] = "/Users/fixture-home/Code/BotFleet"
         p["workspace_roots"] = []
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
 
     def test_antigravity_run_command(self) -> None:
         p = {
             "tool_name": "run_command",
-            "tool_input": {"CommandLine": self.CMD, "Cwd": "/Users/jay/Code/BotFleet"},
+            "tool_input": {"CommandLine": self.CMD, "Cwd": "/Users/fixture-home/Code/BotFleet"},
         }
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
 
@@ -804,7 +804,7 @@ class PayloadShapeTests(unittest.TestCase):
             "tool_name": "shell",
             "tool_input": {
                 "command": ["bash", "-lc", self.CMD],
-                "workdir": "/Users/jay/Code/BotFleet",
+                "workdir": "/Users/fixture-home/Code/BotFleet",
             },
         }
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
@@ -821,12 +821,12 @@ class PayloadShapeTests(unittest.TestCase):
         p = {
             "tool_name": "shell",
             "cwd": F.HOME,
-            "tool_input": {"command": self.CMD, "workdir": "/Users/jay/Code/BotFleet"},
+            "tool_input": {"command": self.CMD, "workdir": "/Users/fixture-home/Code/BotFleet"},
         }
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
         p = {
             "tool_name": "run_command",
-            "cwd": "/Users/jay/apps/lanes/DealDex/claude-x",
+            "cwd": "/Users/fixture-home/apps/lanes/DealDex/claude-x",
             "tool_input": {
                 "CommandLine": "git clone https://github.com/Simple-With-Us/DealDex.git",
                 "Cwd": "/tmp/x",
@@ -1081,7 +1081,7 @@ class LexerTests(unittest.TestCase):
     def test_quotes_and_escapes(self) -> None:
         self.assertEqual(
             self._words("""a 'b c' "d $HOME" e\\ f '$HOME'"""),
-            ["a", "b c", "d /Users/jay", "e f", "$HOME"],
+            ["a", "b c", "d /Users/fixture-home", "e f", "$HOME"],
         )
 
     def test_redirections_are_not_words(self) -> None:
@@ -1111,11 +1111,11 @@ class LexerTests(unittest.TestCase):
 
     def test_mktemp_forms(self) -> None:
         ev = G._Evaluator(_ctx(), None)
-        st = G._State("/Users/jay/apps/x")
+        st = G._State("/Users/fixture-home/apps/x")
         self.assertEqual(ev._mktemp(["-d"], st), F.TMPDIR_N + "/tmp.XXXXXXXXXX")
         self.assertEqual(ev._mktemp(["-d", "-t", "pre"], st), F.TMPDIR_N + "/pre")
         self.assertEqual(ev._mktemp(["-d", "/tmp/gt.XXXX"], st), "/tmp/gt.XXXX")
-        self.assertEqual(ev._mktemp(["-d", "rel.XXXX"], st), "/Users/jay/apps/x/rel.XXXX")
+        self.assertEqual(ev._mktemp(["-d", "rel.XXXX"], st), "/Users/fixture-home/apps/x/rel.XXXX")
         self.assertEqual(ev._mktemp(["-p", "/var/tmp", "-d"], st), "/var/tmp/tmp.XXXXXXXXXX")
         self.assertEqual(ev._mktemp(["--tmpdir=/opt/t", "x.XXXX"], st), "/opt/t/x.XXXX")
 
@@ -1126,8 +1126,8 @@ class LexerTests(unittest.TestCase):
         self.assertEqual(ev._where(F.TMPDIR_N + "/x"), "temp")
         self.assertEqual(ev._where("/tmp/gatetest-" + G._UNK), "temp")
         self.assertEqual(ev._where(G._UNK + "/repo"), "unknown")
-        self.assertEqual(ev._where("/Users/jay/apps/" + G._UNK), "unknown")
-        self.assertEqual(ev._where("/Users/jay/apps/lanes/x"), "other")
+        self.assertEqual(ev._where("/Users/fixture-home/apps/" + G._UNK), "unknown")
+        self.assertEqual(ev._where("/Users/fixture-home/apps/lanes/x"), "other")
         self.assertEqual(ev._where(F.SCRATCH + "/dd"), "scratch")
         self.assertEqual(ev._where(F.SCRATCH.replace("/private/tmp/", "/tmp/") + "/dd"), "scratch")
         self.assertEqual(ev._where("/var/folders/aa/bb/T/claude-501/s/x"), "scratch")
@@ -1146,7 +1146,7 @@ class ReviewFindingTests(unittest.TestCase):
         self.assertEqual(G._join("/tmp", G._UNK), G._UNK)
 
     def test_whole_tree_pathspecs(self) -> None:
-        base = "/Users/jay/Code/BotFleet/scripts"
+        base = "/Users/fixture-home/Code/BotFleet/scripts"
         for spec in (
             "",
             ".",
@@ -1163,8 +1163,8 @@ class ReviewFindingTests(unittest.TestCase):
             ":(top)",
             ":(glob)src",
             "/",
-            "/Users/jay/Code/BotFleet",
-            "/Users/jay/Code/BotFleet/scripts/",
+            "/Users/fixture-home/Code/BotFleet",
+            "/Users/fixture-home/Code/BotFleet/scripts/",
         ):
             with self.subTest(spec=spec):
                 self.assertTrue(G._whole_tree_pathspec(spec, base))
@@ -1175,7 +1175,7 @@ class ReviewFindingTests(unittest.TestCase):
             "src/**/x",
             "./x.mjs",
             "../package.json",
-            "/Users/jay/Code/BotFleet/scripts/x.mjs",
+            "/Users/fixture-home/Code/BotFleet/scripts/x.mjs",
             G._UNK,
             "src/" + G._UNK,
         ):

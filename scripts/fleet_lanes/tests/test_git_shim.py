@@ -12,6 +12,8 @@ import time
 import unittest
 from pathlib import Path
 
+import fleet_lanes  # noqa: F401 - before REAL_GIT:  a test run takes an installed shim off PATH
+
 PKG = Path(__file__).resolve().parent.parent
 SHIM = PKG / "shims" / "git"
 REAL_GIT = shutil.which("git") or "/usr/bin/git"
@@ -256,6 +258,23 @@ class FailOpen(ShimCase):
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertTrue((self.home / "t4").is_dir())
         self.assertIn("fail-open", (self.state / "lane-guard-events.jsonl").read_text(encoding="utf-8"))
+
+    def test_a_shell_fail_open_in_a_test_run_never_writes_the_real_log(self) -> None:
+        """The shell's own writer, with its account lookup swapped for this fake home, since `~name` reads the account database.  The
+        existing fail-open tests prove a test run with any other home still logs."""
+        text = SHIM.read_text(encoding="utf-8")
+        lookup = '_fleet_acct=$(/usr/bin/id -un 2>/dev/null) && eval "_fleet_acct=~$_fleet_acct"'
+        self.assertIn(lookup, text)
+        start = text.index("_fleet_fail_open() {")
+        body = text[start:text.index("\n}\n", start) + 3].replace(lookup, f'_fleet_acct="{self.home}"')
+        script = self.home / "writer.sh"
+        script.write_text(f"#!/bin/sh\n{body}\n_fleet_fail_open probe\n", encoding="utf-8")
+        log = self.state / "lane-guard-events.jsonl"
+        subprocess.run(["/bin/sh", str(script)], env={"HOME": str(self.home), "FLEET_LANES_TEST_RUN": "1", "PATH": "/usr/bin:/bin"}, check=True)
+        self.assertFalse(log.exists())
+        other = self.home / "other"
+        subprocess.run(["/bin/sh", str(script)], env={"HOME": str(other), "FLEET_LANES_TEST_RUN": "1", "PATH": "/usr/bin:/bin"}, check=True)
+        self.assertTrue((other / ".local" / "state" / "fleet" / "lane-guard-events.jsonl").exists())
 
     def test_a_crashing_decision_module_runs_git(self) -> None:
         self.set_mode("block")

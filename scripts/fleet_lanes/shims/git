@@ -39,6 +39,11 @@ _fleet_exec() {
 # Leave a trace for the watcher.  Only ever called when something has already gone wrong, so `date` costs nothing that matters.
 _fleet_fail_open() {
   _fleet_log=${FLEET_LANE_GUARD_STATE_DIR:-${HOME:-/tmp}/.local/state/fleet}/lane-guard-events.jsonl
+  # A test run must not reach the real log (placement.writes_real_log_in_a_test), and this shell cannot be fooled by a HOME it was given.
+  if [ -n "${FLEET_LANES_TEST_RUN:-}" ]; then
+    _fleet_acct=$(/usr/bin/id -un 2>/dev/null) && eval "_fleet_acct=~$_fleet_acct"
+    [ "$_fleet_log" = "$_fleet_acct/.local/state/fleet/lane-guard-events.jsonl" ] && return 0
+  fi
   /bin/mkdir -p "${_fleet_log%/*}" 2>/dev/null
   _fleet_at=$(/bin/date -u +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null)
   { printf '{"action":"fail-open","at":"%s","detail":"%s","via":"shim"}\n' "$_fleet_at" "$1" >>"$_fleet_log"; } 2>/dev/null
