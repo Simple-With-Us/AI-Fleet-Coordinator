@@ -304,6 +304,10 @@ class TransportTests(Fixture):
         bundle = {}
         for stderr, code in (
             (b"fleet-cli: release_retention_limit\n", "receiver_release_retention_limit"),
+            (
+                b"fleet-cli: smoke_start_failed_simple_chat_version_errno_2\n",
+                "receiver_smoke_start_failed_simple_chat_version_errno_2",
+            ),
             (b"fleet-cli: Bad Code\n", "ssh_failed"),
             (b"permission denied\n", "ssh_failed"),
             (b"", "ssh_failed"),

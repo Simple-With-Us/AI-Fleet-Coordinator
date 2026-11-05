@@ -992,6 +992,38 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue((self.base / "releases" / old[0]).is_dir())
         self.assertIn(old[1], removed)
 
+    def test_prune_tolerates_a_dangling_pointer(self):
+        self.receive()
+        # A dangling `previous` link has no release to protect and must not abort pruning.
+        (self.base / "previous").symlink_to("releases/" + "d" * 64)
+        old = self._fake_releases(4)
+        proc = self.home / "proc"
+        proc.mkdir()
+        removed = release.prune(self.base, 1, proc)
+        self.assertIn(old[0], removed)
+        current = release.release_at(self.base, "current").name
+        self.assertNotIn(current, removed)
+
+    def test_prune_tolerates_a_plain_file_pointer(self):
+        self.receive()
+        (self.base / "previous").write_text("not a link")
+        old = self._fake_releases(4)
+        proc = self.home / "proc"
+        proc.mkdir()
+        removed = release.prune(self.base, 1, proc)
+        self.assertIn(old[0], removed)
+
+    def test_smoke_failure_leaves_retention_unchanged(self):
+        self.receive()
+        old = self._fake_releases(release.KEEP_RELEASES + 5)
+        before = sorted(path.name for path in (self.base / "releases").iterdir())
+        with mock.patch.object(release, "smoke", side_effect=release.Refused("smoke_failed")):
+            with self.assertRaisesRegex(release.Refused, "smoke_failed"):
+                self.receive(make_bundle("two"), install=False)
+        after = sorted(path.name for path in (self.base / "releases").iterdir())
+        self.assertEqual(before, after)
+        self.assertTrue(set(old) <= set(after))
+
     def test_prune_leaves_foreign_entries_alone(self):
         self.receive()
         releases = self.base / "releases"
