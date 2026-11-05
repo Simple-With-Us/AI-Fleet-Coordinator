@@ -8,7 +8,7 @@ final class FleetViewCollectorTests: XCTestCase {
     private static let allErrors: [ServiceError] = [
         .scriptsNotFound,
         .cliFailed("Traceback (most recent call last):\nImportError: boom\n"),
-        .unparseable,
+        .unparseable("dataCorrupted(The given data was not valid JSON.)"),
         .unknownSchema(9),
         .timedOut,
         .outputTooLarge,
@@ -85,8 +85,96 @@ final class FleetViewCollectorTests: XCTestCase {
         let noise = String(repeating: "x y ", count: 5000)
         let lots = (0..<500).map { "line \($0)" }.joined(separator: "\n") + "\n" + noise
         let failure = FleetViewFailure(error: ServiceError.cliFailed(lots))
-        XCTAssertEqual(failure.detail?.count, FleetViewFailure.maximumLineCharacters + 1)
-        XCTAssertEqual(failure.fullDetail?.split(separator: "\n").count, FleetViewFailure.copiedLineCount)
+        // The last line is cut back to a word boundary, and it says how much is gone.
+        let kept = String(String(repeating: "x y ", count: 500).dropLast())
+        XCTAssertEqual(failure.detail, kept + " \u{2026} 18000 more characters")
+        // The 40 lines carried, and a first line that says the earlier 461 are not there.
+        let copied = failure.fullDetail?.split(separator: "\n").map(String.init) ?? []
+        XCTAssertEqual(copied.count, FleetViewFailure.copiedLineCount + 1)
+        XCTAssertEqual(copied.first, "\u{2026} 461 earlier lines not shown")
+        XCTAssertEqual(copied.last, failure.detail)
+    }
+
+    func test_nothing_says_lines_are_missing_when_none_are() {
+        let lots = (0..<FleetViewFailure.copiedLineCount).map { "line \($0)" }.joined(separator: "\n")
+        let failure = FleetViewFailure(error: ServiceError.cliFailed(lots))
+        XCTAssertTrue(failure.fullDetail?.hasPrefix("line 0\n") ?? false)
+        XCTAssertFalse(failure.copyText.contains("\u{2026}"))
+    }
+
+    func test_one_missing_line_is_singular() {
+        let lots = (0...FleetViewFailure.copiedLineCount).map { "line \($0)" }.joined(separator: "\n")
+        let failure = FleetViewFailure(error: ServiceError.cliFailed(lots))
+        XCTAssertTrue(failure.fullDetail?.hasPrefix("\u{2026} 1 earlier line not shown\nline 1\n") ?? false)
+    }
+
+    /// Stderr is capped at 4 MB, not its lines, so one line can be all of it.  Both forms finish
+    /// well inside the limit here, which is generous so a slow runner does not fail it, and a
+    /// scrub that walked the whole line would not come close.
+    func test_a_single_four_megabyte_line_is_quick_and_says_it_was_cut() {
+        let size = FleetViewService.maximumOutputBytes
+        let limit: TimeInterval = 20
+
+        let oneWord = String(repeating: "a", count: size)
+        var started = Date()
+        let cut = FleetViewFailure(error: ServiceError.cliFailed(oneWord))
+        XCTAssertLessThan(Date().timeIntervalSince(started), limit)
+        XCTAssertEqual(cut.detail, "\(ConfigFileReader.redactionMark) \u{2026} \(size) more characters")
+
+        // The token sits exactly where the cut lands, so half of it would survive a plain cut.
+        let fakeToken = "ghp_" + String(repeating: "a1", count: 18)
+        let padding = String(repeating: "x ", count: (FleetViewFailure.maximumLineCharacters - 10) / 2)
+        let words = padding + fakeToken + " " + String(repeating: "y ", count: size / 2)
+        started = Date()
+        let spaced = FleetViewFailure(error: ServiceError.cliFailed(words))
+        XCTAssertLessThan(Date().timeIntervalSince(started), limit)
+        XCTAssertFalse(spaced.detail?.contains("ghp_") ?? true)
+        XCTAssertTrue(spaced.detail?.contains("more characters") ?? false)
+    }
+
+    func test_an_answer_that_will_not_decode_gives_the_decoders_reason() throws {
+        let directory = try makeTemporaryDirectory()
+        let script = directory.appendingPathComponent("python3")
+        try """
+        #!/bin/sh
+        echo "this is not json"
+        echo "a warning from the collector" >&2
+        exit 0
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        XCTAssertThrowsError(try FleetViewService.fetch(
+            executable: script, arguments: [], currentDirectory: nil, environment: [:], timeout: 10
+        )) { error in
+            guard let service = error as? ServiceError, case .unparseable = service else {
+                return XCTFail("expected unparseable, got \(error)")
+            }
+            let failure = FleetViewFailure(error: error)
+            XCTAssertNotNil(failure.detail)
+            XCTAssertTrue(failure.reason.contains("could not read its answer"))
+            XCTAssertTrue(failure.copyText.contains("a warning from the collector"))
+            XCTAssertFalse(failure.detail?.contains("a warning from the collector") ?? true)
+        }
+    }
+
+    func test_an_answer_that_will_not_decode_still_has_a_reason_with_a_silent_stderr() throws {
+        let directory = try makeTemporaryDirectory()
+        let script = directory.appendingPathComponent("python3")
+        try """
+        #!/bin/sh
+        echo '{"schemaVersion": 1}'
+        exit 0
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        XCTAssertThrowsError(try FleetViewService.fetch(
+            executable: script, arguments: [], currentDirectory: nil, environment: [:], timeout: 10
+        )) { error in
+            guard let service = error as? ServiceError, case .unparseable = service else {
+                return XCTFail("expected unparseable, got \(error)")
+            }
+            XCTAssertNotNil(FleetViewFailure(error: error).detail)
+        }
     }
 
     func test_a_real_failure_reaches_the_banner_through_fetch() throws {
@@ -115,6 +203,8 @@ final class FleetViewCollectorTests: XCTestCase {
         // Fake values, assembled here so the source carries nothing credential shaped.
         let fakeGitHubToken = "ghp_" + String(repeating: "a1", count: 18)
         let fakeGitHubPat = "github_pat_" + String(repeating: "b2", count: 11)
+        let fakeCloudKey = "wJalrXUtnFEMI/" + "K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
+        let fakePemLine = "MIIEvQIBADANBgkq/" + "hkiG9w0BAQEFAASC/" + "BKcwggSjAgEAAoIBAQC7"
         let cases: [(input: String, leaked: String)] = [
             ("fatal: could not read from https://x-access-token:abc123secret@github.com/a/b.git", "abc123secret"),
             ("fatal: bad url https://abc123secretvalue@github.com/a/b", "abc123secretvalue"),
@@ -147,12 +237,78 @@ final class FleetViewCollectorTests: XCTestCase {
             ("GET https://example.com/a?id=\(fakeGitHubPat) failed", fakeGitHubPat),
             ("GET https://example.com/a#\(fakeGitHubToken) failed", fakeGitHubToken),
             ("POST https://hooks.example.com/k9Pq2mXv7Rt4Zw8Bn1/send failed", "k9Pq2mXv7Rt4Zw8Bn1"),
+            // Text before a URL in the same word, and a second URL in the word.
+            (#"{"token":"\#(fakeGitHubToken)","url":"https://x.example"}"#, fakeGitHubToken),
+            ("TOKEN=abc123secret,url=https://x.example", "abc123secret"),
+            ("\(fakeGitHubToken),https://x.example", fakeGitHubToken),
+            ("https://a:b@c.example,https://x:hunter2@z.example", "hunter2"),
+            ("https://a.example/?sig=hunter2,https://x.example", "hunter2"),
+            // A secret name later in the word than the first separator.
+            (#"{"user":"jay","token":"my-secret-value"}"#, "my-secret-value"),
+            ("ERROR:root:token=hunter2", "hunter2"),
+            ("a=1&token=hunter2", "hunter2"),
+            (#"{\"token\":\"abc123secret\"}"#, "abc123secret"),
+            (#"{\"token\": \"abc123secret\"}"#, "abc123secret"),
+            // A quoted scheme word, a scheme word that is not Bearer or Basic, and spaced separators.
+            ("{'Authorization': 'Bearer my-secret-value'}", "my-secret-value"),
+            (#"Authorization: "Bearer hunter2""#, "hunter2"),
+            (#"{\"Authorization\": \"Bearer hunter2\"}"#, "hunter2"),
+            ("Authorization: token my-secret-value", "my-secret-value"),
+            ("password = hunter2", "hunter2"),
+            ("TOKEN= hunter2", "hunter2"),
+            (#""token" : "hunter2""#, "hunter2"),
+            ("password  :=  hunter2", "hunter2"),
+            // Session cookies and signed URLs, which FLEET-UI-COPY.md names.
+            ("Cookie: session=hunter2", "hunter2"),
+            ("Cookie: a=1; session=hunter2", "hunter2"),
+            ("Set-Cookie: sessionid=abc123; Path=/", "abc123"),
+            ("set-cookie : sessionid=abc123; Path=/", "abc123"),
+            (#"{"Cookie":"session=hunter2"}"#, "hunter2"),
+            ("{'Cookie': 'session=hunter2'}", "hunter2"),
+            ("session=hunter2", "hunter2"),
+            ("https://x.example/a?sig=hunter2", "hunter2"),
+            ("https://x.example/a?signature=hunter2", "hunter2"),
+            ("https://x.example/a?page=1&X-Amz-Signature=hunter2", "hunter2"),
+            ("https://x.example/a?X-Amz-Credential=hunter2", "hunter2"),
+            ("https://x.example/a?X-Goog-Signature=hunter2", "hunter2"),
+            ("https://x.example/a?code=hunter2", "hunter2"),
+            ("https://x.example/a?key=hunter2", "hunter2"),
+            ("https://x.example/a?auth=hunter2", "hunter2"),
+            ("https://x.example/a?session=hunter2", "hunter2"),
+            ("https://x.example/a?sid=hunter2", "hunter2"),
+            ("https://x.example/cb#access_token=hunter2", "hunter2"),
+            ("https://x.example/a;token=hunter2", "hunter2"),
+            // No scheme, so only the shape of each path segment says it is a token, and long
+            // base64 that holds slashes.  The cloud key is the one in the vendor's own docs.
+            ("POST hooks.example.com/services/\(fakeGitHubToken) failed", fakeGitHubToken),
+            (fakeCloudKey, "bPxRfiCYEXAMPLEKEY"),
+            ("key=\(fakeCloudKey)", "bPxRfiCYEXAMPLEKEY"),
+            (fakePemLine, "hkiG9w0BAQEFAASC"),
         ]
         for (input, leaked) in cases {
             let scrubbed = FleetViewFailure.scrub(input)
             XCTAssertFalse(scrubbed.contains(leaked), "leaked from \(input):  \(scrubbed)")
             XCTAssertTrue(scrubbed.contains(ConfigFileReader.redactionMark), input)
         }
+    }
+
+    /// The scheme word stays, because it says what kind of credential was hidden.
+    func test_the_scheme_word_is_kept_and_the_value_is_not() {
+        XCTAssertEqual(
+            FleetViewFailure.scrub("{'Authorization': 'Bearer my-secret-value'}"),
+            "{'Authorization': 'Bearer \(ConfigFileReader.redactionMark)"
+        )
+        XCTAssertEqual(
+            FleetViewFailure.scrub("Authorization: token my-secret-value"),
+            "Authorization: token \(ConfigFileReader.redactionMark)"
+        )
+    }
+
+    func test_a_cookie_hides_the_rest_of_its_line() {
+        XCTAssertEqual(
+            FleetViewFailure.scrub("Set-Cookie: sessionid=abc123; Path=/"),
+            "Set-Cookie: \(ConfigFileReader.redactionMark)"
+        )
     }
 
     func test_the_detail_is_scrubbed_on_screen_and_on_the_clipboard() {
@@ -174,6 +330,13 @@ final class FleetViewCollectorTests: XCTestCase {
             "a token was rejected",
             "at 2026-10-20T12:00:00Z the run stopped",
             "claude-opus-5-5 and python3.9 and x86_64 stay readable",
+            "GET https://example.com/a?page=1&id=7 failed",
+            "fatal: could not read from https://github.com:443/example/Fixture-Repo.git",
+            "url=https://example.com/a,next=https://example.com/b",
+            "File \"/usr/local/lib/python3.9/site-packages/fleet_view/collectors.py\", line 19, in <module>",
+            "ERROR:root:the run stopped",
+            "see hooks.example.com/services/status for details",
+            "~/Code/AI-Fleet-Coordinator/scripts/fleet_view/__main__.py",
         ] {
             XCTAssertEqual(FleetViewFailure.scrub(line), line)
         }
@@ -227,7 +390,9 @@ final class FleetViewCollectorTests: XCTestCase {
         let view = scriptsDirectory.deletingLastPathComponent()
             .appendingPathComponent("muster/Muster/FleetView.swift")
         let source = try String(contentsOf: view, encoding: .utf8)
-        XCTAssertTrue(source.contains("failure = FleetViewFailure(error: error)"))
+        // Worked out off the main thread, because stderr can be 4 MB in one line.
+        XCTAssertTrue(source.contains("await Task.detached(priority: .userInitiated) {\n                FleetViewFailure(error: error)"))
+        XCTAssertTrue(source.contains("failure = described"))
         XCTAssertTrue(source.contains("refreshClock.recordFailure()"))
         XCTAssertTrue(source.contains("refreshClock.recordSuccess(generatedAt: loaded.generatedAt)"))
         XCTAssertFalse(source.contains("refreshedAt"))

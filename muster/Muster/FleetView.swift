@@ -344,9 +344,10 @@ struct FleetView: View {
         .task { await refresh() }
     }
 
-    /// Why the refresh failed, in words the owner can read and can pass to an agent.  An error
-    /// is never clipped here (FLEET-UI-COPY.md):  every line wraps, and Copy Details carries the
-    /// end of what the command printed, not only the last line shown.
+    /// Why the refresh failed, in words the owner can read and can pass to an agent.  Every line
+    /// wraps, and Copy Details carries the end of what the command printed, not only the last
+    /// line shown.  The output is capped, and a cap says so in the text (FLEET-UI-COPY.md):
+    /// `… N more characters` on a long line and `… N earlier lines not shown` at the top.
     private func failureBanner(_ failure: FleetViewFailure) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Fleet Data Unknown", systemImage: "exclamationmark.triangle")
@@ -419,9 +420,14 @@ struct FleetView: View {
             // pull request and claim counts of zero, which reads as a fleet measured
             // and found idle rather than one this refresh could not see.  The banner
             // above the list says the counts are unknown;  nothing under it may spell
-            // a number of its own.
+            // a number of its own.  The words are worked out off the main thread, because
+            // stderr can be 4 MB, and the lists clear after that, so the page is never empty
+            // with no banner.
+            let described = await Task.detached(priority: .userInitiated) {
+                FleetViewFailure(error: error)
+            }.value
             envelope = nil
-            failure = FleetViewFailure(error: error)
+            failure = described
             refreshClock.recordFailure()
             registrySummary = FleetRegistrySummary()
         }

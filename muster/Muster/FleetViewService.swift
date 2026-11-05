@@ -12,7 +12,7 @@ enum FleetViewService {
     enum ServiceError: Error, LocalizedError {
         case scriptsNotFound
         case cliFailed(String)
-        case unparseable
+        case unparseable(String)
         case unknownSchema(Int)
         case timedOut
         case outputTooLarge
@@ -23,7 +23,7 @@ enum FleetViewService {
         var errorDescription: String? {
             switch self {
             case .scriptsNotFound:
-                return "Muster could not find the fleet scripts on the Mac.\u{00A0} Check that ~/Code/AI-Fleet-Coordinator is there, or choose the folder under Scripts Directory in Settings."
+                return "Muster could not find the fleet scripts on the Mac.\u{00A0} Check that ~/Code/AI-Fleet-Coordinator/scripts is there, or choose that scripts folder under Scripts Directory in Settings."
             case .cliFailed:
                 return "The fleet-view command stopped with an error on the Mac, so no lanes, pull requests or claims were read.\u{00A0} Copy the details and send them to an agent."
             case .unparseable:
@@ -43,9 +43,9 @@ enum FleetViewService {
         /// anything reaches the screen or the clipboard.
         fileprivate var commandOutput: String? {
             switch self {
-            case .cliFailed(let text), .launchFailed(let text):
+            case .cliFailed(let text), .launchFailed(let text), .unparseable(let text):
                 return text
-            case .scriptsNotFound, .unparseable, .unknownSchema, .timedOut, .outputTooLarge:
+            case .scriptsNotFound, .unknownSchema, .timedOut, .outputTooLarge:
                 return nil
             }
         }
@@ -129,11 +129,17 @@ enum FleetViewService {
                 stderrText.isEmpty ? "exit \(outcome.status)" : stderrText
             )
         }
-        guard let envelope = try? JSONDecoder().decode(FleetViewEnvelope.self, from: outcome.stdout) else {
+        let envelope: FleetViewEnvelope
+        do {
+            envelope = try JSONDecoder().decode(FleetViewEnvelope.self, from: outcome.stdout)
+        } catch {
             if outcome.status != 0, !stderrText.isEmpty {
                 throw ServiceError.cliFailed(stderrText)
             }
-            throw ServiceError.unparseable
+            // The decoder's words go last, because the banner shows the last line:  this is the
+            // failure to expect when the app and the checkout have drifted apart.
+            let decodeFailure = String(describing: error)
+            throw ServiceError.unparseable(stderrText.isEmpty ? decodeFailure : stderrText + "\n" + decodeFailure)
         }
         guard envelope.schemaVersion == 1 else {
             throw ServiceError.unknownSchema(envelope.schemaVersion)
@@ -260,32 +266,41 @@ enum FleetViewService {
 /// which is the line a Python traceback or a CLI refusal ends on.  The text is scrubbed here,
 /// before it can reach the screen or the clipboard, because a child's stderr can quote a URL
 /// or a header with a credential in it, and Muster never shows one.
-struct FleetViewFailure: Equatable {
+struct FleetViewFailure: Equatable, Sendable {
     let reason: String
     /// The command's last line, scrubbed.  Nil when the command said nothing.
     let detail: String?
-    /// The end of what the command printed, scrubbed, for the Copy button.
+    /// The end of what the command printed, scrubbed, for the Copy button.  It says so when it
+    /// starts part way through what the command printed.
     let fullDetail: String?
 
-    /// A failure line longer than this is cut, so a child cannot flood the banner.
+    /// A failure line longer than this is cut and marked, so a child cannot flood the banner.
     static let maximumLineCharacters = 2000
     /// How many of the command's last lines the Copy button carries.
     static let copiedLineCount = 40
 
+    /// Callers keep this off the main thread, because stderr can be 4 MB in a single line.
     init(error: Error) {
         let service = error as? FleetViewService.ServiceError
         reason = service?.errorDescription
             ?? "The refresh failed for a reason Muster does not recognize.\u{00A0} Copy the details and send them to an agent."
         let raw = service == nil ? error.localizedDescription : (service?.commandOutput ?? "")
-        // The suffix comes first:  stderr can be 4 MB, and only these lines are kept.
-        let lines = raw
-            .split(whereSeparator: \.isNewline)
+        // Bytes and not characters, because this walks everything the command printed.
+        let lines = raw.utf8
+            .split(whereSeparator: { $0 == 10 || $0 == 13 })
+            .filter { line in line.contains { $0 != 32 && $0 != 9 } }
+        let shown = lines
             .suffix(Self.copiedLineCount)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { Self.scrubbedLine(String(decoding: $0, as: UTF8.self)) }
             .filter { !$0.isEmpty }
-            .map { Self.bounded(Self.scrub($0)) }
-        detail = lines.last
-        fullDetail = lines.isEmpty ? nil : lines.joined(separator: "\n")
+        detail = shown.last
+        if shown.isEmpty {
+            fullDetail = nil
+        } else {
+            let earlier = lines.count - Self.copiedLineCount
+            let marker = earlier == 1 ? "\u{2026} 1 earlier line not shown" : "\u{2026} \(earlier) earlier lines not shown"
+            fullDetail = (earlier > 0 ? [marker] + shown : shown).joined(separator: "\n")
+        }
     }
 
     /// The reason and the command's own words, ready to paste to an agent.
@@ -294,9 +309,17 @@ struct FleetViewFailure: Equatable {
         return reason + "\n\n" + fullDetail
     }
 
-    private static func bounded(_ line: String) -> String {
-        guard line.count > maximumLineCharacters else { return line }
-        return String(line.prefix(maximumLineCharacters)) + "\u{2026}"
+    /// One line, scrubbed and bounded.  The cut comes before the scrub, so the scrub's cost has a
+    /// ceiling however long the line is, and it drops the word it lands in, because half a token
+    /// no longer has a token's shape.  A line with nowhere to cut is one word, so it is all hidden.
+    private static func scrubbedLine(_ raw: String) -> String {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        let count = line.count
+        guard count > maximumLineCharacters else { return scrub(line) }
+        let kept = line.prefix(maximumLineCharacters)
+        let whole = kept.lastIndex(where: \.isWhitespace).map { String(kept[..<$0]) } ?? ""
+        let shown = whole.isEmpty ? ConfigFileReader.redactionMark : scrub(whole)
+        return "\(shown) \u{2026} \(count - whole.count) more characters"
     }
 
     // MARK: Scrubbing
@@ -307,35 +330,88 @@ struct FleetViewFailure: Equatable {
         "sk-", "xoxb-", "xoxp-", "lin_api_", "st.", "AKIA", "eyJ",
     ]
 
-    /// One line of command output with anything credential shaped replaced.
+    /// Names that are secret in command output but not in a config file.  The config panel shares
+    /// `ConfigFileReader.secretKeyNames`, so these stay here and do not widen it.
+    private static let outputSecretNames: Set<String> = ["session", "sessionid", "session_id", "sid"]
+    /// Query names that carry a credential or a signature in a URL, where a plain `key` or `code`
+    /// is more likely to be one than it is elsewhere.
+    private static let secretQueryNames: Set<String> = [
+        "sig", "signature", "x-amz-signature", "x-amz-credential", "x-goog-signature",
+        "code", "key", "auth",
+    ]
+    /// A cookie header's whole value is secret, however many pairs it has.
+    private static let cookieHeaderNames: Set<String> = ["cookie", "cookies", "set-cookie"]
+    /// A word that is only a separator, as in `password = abc` and `"token" : "abc"`.
+    private static let separatorWords: Set<String> = ["=", ":", "=>", ":="]
+
+    private static let punctuation = CharacterSet(charactersIn: "\"'`,;()[]{}<>\\")
+    private static let dashes = CharacterSet(charactersIn: "-")
+    /// What ends a name inside a word, so `{"user":"jay","token":"abc"}` and `a=1&token=abc` both
+    /// find `token`.
+    private static let nameBreaks = Set<Character>("\"'`,;()[]{}<>&?\\=:")
+    /// What splits a word into the pieces whose shape is checked.
+    private static let pieceBreaks = Set<Character>("/?#&=:\"'`,;()[]{}<>\\")
+    /// The same, without the slash and the equals sign, which base64 uses inside a value.
+    private static let blobBreaks = Set<Character>("?#&:\"'`,;()[]{}<>\\")
+
+    /// One line of command output with what looks like a credential replaced.
     ///
-    /// It works word by word:  a URL's userinfo and secret query values, a `key=value` or
-    /// `key: value` whose key names a secret, the word after `Bearer` or `Basic`, and any
-    /// word or quoted piece of a word that has a credential's shape.  It over-redacts on
-    /// purpose, because a hidden word costs less than a leaked token.
+    /// This is a best-effort filter over the shapes the table in `FleetViewCollectorTests` lists,
+    /// and not a guarantee:  it works word by word on a URL's userinfo and secret query values,
+    /// any `key=value` or `key: value` in a word whose key names a secret, the value after a
+    /// spaced separator, the word after `Bearer` or `Basic`, the whole of a cookie header, and
+    /// any word or piece of a word that has a credential's shape.  It over-redacts on purpose,
+    /// because a hidden word costs less than a leaked token.
     static func scrub(_ line: String) -> String {
         let mark = ConfigFileReader.redactionMark
         var redactNext = false
+        var previous = ""
         var out: [String] = []
-        // A tab separates words too, or a credential after one would hide inside a longer word.
-        let spaced = line.replacingOccurrences(of: "\t", with: " ")
+        // Any whitespace separates words, or a credential after it would hide in a longer word.
+        let spaced = String(line.map { (character: Character) -> Character in
+            character.isWhitespace ? " " : character
+        })
         for word in spaced.split(separator: " ", omittingEmptySubsequences: false).map(String.init) {
             if word.isEmpty {
                 out.append(word)
                 continue
             }
-            let lowered = word.lowercased()
-            // Checked before redactNext, so `Authorization: Bearer abc` hides `abc` and
-            // keeps the scheme word, which says what kind of credential it was.
-            if lowered == "bearer" || lowered == "basic" {
+            defer { previous = word }
+            let bare = word.trimmingCharacters(in: punctuation).lowercased()
+            // Checked before redactNext, so `Authorization: Bearer abc` hides `abc` and keeps
+            // the scheme word, which says what kind of credential it was.
+            if bare == "bearer" || bare == "basic" {
                 out.append(word)
                 redactNext = true
                 continue
             }
             if redactNext {
+                // `Authorization: token abc`:  this word is the scheme, and the next is the value.
+                if bare == "token" {
+                    out.append(word)
+                    continue
+                }
                 out.append(mark)
                 redactNext = false
                 continue
+            }
+            if let separator = firstSeparator(in: word, whereNameIs: isCookieHeader) {
+                out.append(String(word[...separator]))
+                out.append(mark)
+                break
+            }
+            if separatorWords.contains(word) {
+                let name = lastName(in: previous)
+                if isCookieHeader(name) {
+                    out.append(word)
+                    out.append(mark)
+                    break
+                }
+                if isSecretName(name) {
+                    out.append(word)
+                    redactNext = true
+                    continue
+                }
             }
             let (scrubbed, nextIsSecret) = scrubWord(word)
             out.append(scrubbed)
@@ -344,67 +420,128 @@ struct FleetViewFailure: Equatable {
         return out.joined(separator: " ")
     }
 
+    private static func isSecretName(_ name: String) -> Bool {
+        ConfigFileReader.isSecretKey(name) || outputSecretNames.contains(name.lowercased())
+    }
+
+    private static func isCookieHeader(_ name: String) -> Bool {
+        cookieHeaderNames.contains(name.lowercased())
+    }
+
+    /// The last name in some text, without quotes, brackets, escapes or a flag's dashes.
+    private static func lastName(in text: String) -> String {
+        let last = text.split(whereSeparator: { nameBreaks.contains($0) }).last
+        return last.map { $0.trimmingCharacters(in: dashes) } ?? ""
+    }
+
+    /// The first `=` or `:` in a word whose name matches, in one pass over the word.
+    private static func firstSeparator(in word: String, whereNameIs matches: (String) -> Bool) -> String.Index? {
+        var nameStart = word.startIndex
+        var name = ""
+        var index = word.startIndex
+        while index < word.endIndex {
+            let character = word[index]
+            if nameBreaks.contains(character) {
+                if nameStart < index {
+                    name = word[nameStart..<index].trimmingCharacters(in: dashes)
+                }
+                if character == "=" || character == ":", matches(name) {
+                    return index
+                }
+                nameStart = word.index(after: index)
+            }
+            index = word.index(after: index)
+        }
+        return nil
+    }
+
     private static func scrubWord(_ word: String) -> (text: String, nextIsSecret: Bool) {
         let mark = ConfigFileReader.redactionMark
         if word.contains("://") {
             return (scrubURL(word), false)
         }
-        let punctuation = CharacterSet(charactersIn: "\"'`,;()[]{}<>")
-        // `token=abc` and `"token":"abc"`:  the value is in this word.
-        if let separator = word.firstIndex(where: { $0 == "=" || $0 == ":" }) {
-            let name = word[..<separator]
-                .trimmingCharacters(in: punctuation.union(CharacterSet(charactersIn: "-")))
+        // `token=abc` and `"token":"abc"`:  the value is in this word, and nothing after it is kept.
+        // `token=`, `password:` and `"token":`:  the value is the next word.
+        if let separator = firstSeparator(in: word, whereNameIs: isSecretName) {
             let value = word[word.index(after: separator)...]
-            if !value.isEmpty, ConfigFileReader.isSecretKey(name) {
-                return (String(word[...separator]) + mark, false)
-            }
-        }
-        // `--token abc`, `password: abc` and `"token": "abc"`, the way Python prints JSON and a
-        // dict:  the value is the next word.
-        let bare = word.trimmingCharacters(in: punctuation)
-        if !bare.contains("="), bare.hasPrefix("--") || bare.hasSuffix(":") {
-            let name = bare.trimmingCharacters(in: punctuation.union(CharacterSet(charactersIn: "-:")))
-            if ConfigFileReader.isSecretKey(name) {
+            if value.trimmingCharacters(in: punctuation).isEmpty {
                 return (word, true)
             }
+            return (String(word[...separator]) + mark, false)
+        }
+        // `--token abc`:  the value is the next word.
+        let bare = word.trimmingCharacters(in: punctuation)
+        if bare.hasPrefix("--"), isSecretName(bare.trimmingCharacters(in: dashes)) {
+            return (word, true)
         }
         var text = word
-        let pieces = word.split(whereSeparator: { "=:\"'`,;()[]{}<>".contains($0) }).map(String.init)
+        for chunk in word.split(whereSeparator: { blobBreaks.contains($0) }).map(String.init) where isOpaqueBlob(chunk) {
+            text = text.replacingOccurrences(of: chunk, with: mark)
+        }
+        // A slash splits pieces too, so a URL with no scheme gets each path segment checked.
+        let pieces = text.split(whereSeparator: { pieceBreaks.contains($0) }).map(String.init)
         for piece in pieces where isSecretShaped(piece) {
             text = text.replacingOccurrences(of: piece, with: mark)
         }
         return (text, false)
     }
 
+    /// Every URL in a word, and what comes before each.  A loop and not recursion, because a line
+    /// can hold a URL for every few of its characters.
     private static func scrubURL(_ word: String) -> String {
         let mark = ConfigFileReader.redactionMark
-        guard let scheme = word.range(of: "://") else { return word }
-        let start = String(word[..<scheme.upperBound])
-        var rest = String(word[scheme.upperBound...])
-        let authority = rest.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
-        if let at = authority.lastIndex(of: "@") {
-            rest = mark + String(rest[at...])
-        }
-        if let query = rest.firstIndex(of: "?") {
-            let pairs = rest[rest.index(after: query)...].split(separator: "&")
-            let hasSecret = pairs.contains { pair in
-                let name = pair.prefix { $0 != "=" }
-                return ConfigFileReader.isSecretKey(String(name))
+        var out = ""
+        var remaining = word
+        while let scheme = remaining.range(of: "://") {
+            let before = String(remaining[..<scheme.lowerBound])
+            // A secret name before the URL opens a value that may run through it, so the URL goes too.
+            if let separator = firstSeparator(in: before, whereNameIs: isSecretName) {
+                return out + String(before[...separator]) + mark
             }
-            if hasSecret {
-                rest = String(rest[...query]) + mark
+            out += scrubWord(before).text + "://"
+            var rest = String(remaining[scheme.upperBound...])
+            let authority = rest.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+            if let at = authority.lastIndex(of: "@") {
+                rest = mark + String(rest[at...])
             }
+            if let query = rest.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+                let pairs = rest[rest.index(after: query)...].split(whereSeparator: { "&;?#".contains($0) })
+                let hasSecret = pairs.contains { pair in
+                    let name = String(pair.prefix { $0 != "=" })
+                    return isSecretName(name) || secretQueryNames.contains(name.lowercased())
+                }
+                if hasSecret {
+                    rest = String(rest[...query]) + mark
+                }
+            }
+            if rest.contains("://") {
+                remaining = rest
+                continue
+            }
+            if let separator = firstSeparator(in: rest, whereNameIs: isSecretName),
+               !rest[rest.index(after: separator)...].trimmingCharacters(in: punctuation).isEmpty {
+                return out + String(rest[...separator]) + mark
+            }
+            // A token can also sit in the path, a query value or the fragment, as a webhook's does.
+            let pieces = rest.split(whereSeparator: { pieceBreaks.contains($0) }).map(String.init)
+            for piece in pieces where isSecretShaped(piece) {
+                rest = rest.replacingOccurrences(of: piece, with: mark)
+            }
+            return out + rest
         }
-        // A token can also sit in the path, a query value or the fragment, as a webhook's does.
-        let pieces = rest.split(whereSeparator: { "/?#&=:\"'`,;()[]{}<>".contains($0) }).map(String.init)
-        for piece in pieces where isSecretShaped(piece) {
-            rest = rest.replacingOccurrences(of: piece, with: mark)
-        }
-        return start + rest
+        return out + remaining
+    }
+
+    /// A long run of base64 or the like, which can hold slashes:  a cloud secret key, or a line
+    /// of a PEM body.  A path starts with a slash, a tilde or a dot, or has other characters in it.
+    private static func isOpaqueBlob(_ text: String) -> Bool {
+        guard text.count >= 40, let first = text.first, !"/~.".contains(first) else { return false }
+        let inAlphabet = text.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "+/=".contains($0)) }
+        return inAlphabet && text.contains { $0.isNumber || $0 == "+" }
     }
 
     private static func isSecretShaped(_ piece: String) -> Bool {
-        guard piece.count >= 12, !piece.contains("/") else { return false }
+        guard piece.count >= 12 else { return false }
         if secretPrefixes.contains(where: { piece.hasPrefix($0) }) { return true }
         // A short opaque run:  letters and digits together, and nothing else.  A timestamp or
         // a dashed name has other characters in it, and a plain word has no digit.
