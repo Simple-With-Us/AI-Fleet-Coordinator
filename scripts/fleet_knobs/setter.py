@@ -189,13 +189,16 @@ def read_old(reader: Callable[[str], tuple], name: str) -> tuple[Any, str, bool 
     return answer[0], answer[1], stale, reason
 
 
-def _peek(name: str) -> tuple[Any, str]:
-    """Another knob's (value, source) from the read this process already made."""
+def _peek(name: str) -> tuple[Any, bool]:
+    """Another knob's (value, known) from the read this process already made.
+
+    A default answered while Infisical could not be read, or a read that failed, is not
+    known:  it says nothing about whether the other knob is set."""
     try:
         knob = knobs.resolve(name)
     except Exception:  # noqa: BLE001 - a dependency check is information only
-        return None, "unknown"
-    return knob.value, knob.source
+        return None, False
+    return knob.value, not (knob.source == "default" and knob.stale)
 
 
 _DIRECTION_SENTENCES = {
@@ -229,8 +232,10 @@ def plan_notes(
     for value, other in spec.requires:
         if value != text:
             continue
-        other_value, _where = _peek(other)
-        if other_value in (None, "", False, (), {}):
+        other_value, other_known = _peek(other)
+        if not other_known:
+            warnings.append(f"{text} also needs {other}, and whether that is set is not known.")
+        elif other_value in (None, "", False, (), {}):
             warnings.append(
                 f"{text} also needs {other}, which is not set, so it will do less than its name says."
             )

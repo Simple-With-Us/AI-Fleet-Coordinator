@@ -287,6 +287,21 @@ class PlanTruthTests(KnobTestCase):
         self.assertIn("The current value could not be read", answer["detail"])
         self.assertNotIn("do more than it does now", answer["detail"])
 
+    def test_a_requirement_is_not_called_unset_when_infisical_was_not_read(self):
+        from fleet_knobs import knobs
+
+        self.fake.set(mode="fail")
+        knobs.resolve("CLAIM_EXPIRY_LAUNCH_AT")  # the failed read this process already made
+        answer, _code = self.plan(
+            "CLAIM_EXPIRY_MODE",
+            "act",
+            reader=lambda n: ("dry-run", "default", True, "unreachable:x"),
+        )
+        self.assertIn(
+            "act also needs CLAIM_EXPIRY_LAUNCH_AT, and whether that is set is not known.",
+            answer["detail"],
+        )
+
     def test_an_invalid_value_infisical_holds_can_be_reset(self):
         # Sentry on #1384:  a value the spec refuses reads as the default, but Infisical holds
         # it, so a reset has something to remove and is planned.
