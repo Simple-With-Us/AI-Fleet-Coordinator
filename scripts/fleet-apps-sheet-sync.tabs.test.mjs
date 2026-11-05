@@ -66,10 +66,9 @@ test("Grok shows as plain Grok, GROK-BUILD as a retired alias, retired seats as 
   assert.equal(grok[1], "Grok");
   const alias = seatsRows.find(r => r[0] === "GROK-BUILD");
   assert.match(alias[4], /^Retired 2026-10-08/);
-  for (const t of ["MONET", "RENOIR", "HARNESS", "DSH", "KIMI"]) {
+  for (const t of ["MONET", "RENOIR", "HARNESS", "DSH"]) {
     assert.match(seatsRows.find(r => r[0] === t)[4], /^Retired/, t);
   }
-  assert.match(seatsRows.find(r => r[0] === "KIMI")[4], /2026-08-21/);
 });
 
 test("credential cells carry names and paths only", () => {

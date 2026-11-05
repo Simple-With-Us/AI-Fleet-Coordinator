@@ -69,7 +69,7 @@ class HomeCase(unittest.TestCase):
 
 
 TOOL_DIRS = {"opencode": ".config/opencode", "kimi": ".kimi-code", "copilot": ".copilot", "muse": ".config/muse",
-             "minimax": ".minimax", "fx": ".fx", "clutch": ".clutch/dsh"}
+             "minimax": ".minimax", "fx": ".fx", "clutch": ".clutch/dsh", "zcode": ".zcode/cli"}
 
 
 class ShapeTests(HomeCase):
@@ -80,6 +80,7 @@ class ShapeTests(HomeCase):
         return {
             ".config/opencode/opencode.json": {"mcp": {"servers": {"fleet-recall": {"type": "local", "command": ["python3", r]}}}},
             ".kimi-code/mcp.json": {"mcpServers": {"fleet-recall": {"command": "python3", "args": [r]}}},
+            ".zcode/cli/config.json": {"mcpServers": {"fleet-recall": {"command": "python3", "args": [r]}}},
             ".copilot/mcp-config.json": {"mcpServers": {"fleet-recall": {"tools": ["*"], "type": "local", "command": "python3", "args": [r]}}},
             ".config/muse/settings.json": {"mcpServers": {"fleet-recall": {"type": "stdio", "command": "python3", "args": [r], "mode": "optional"}}},
             ".minimax/mcp.json": {"mcpServers": {"fleet-recall": {"type": "stdio", "enabled": True, "configured": True,
@@ -98,7 +99,7 @@ class ShapeTests(HomeCase):
             with self.subTest(rel=rel):
                 self.assertEqual(self.load(rel), want)
                 self.assertEqual(stat.S_IMODE(os.stat(self.path(rel)).st_mode), 0o600, "a new config is owner-only")
-        self.assertIn("Summary: 6 files changed.", out)
+        self.assertIn("Summary: 7 files changed.", out)
         # a second apply changes nothing and writes no backup
         before = {rel: self.read(rel) for rel in self.expect()}
         code, out, _ = self.run_cli("apply", *keys)
@@ -298,7 +299,9 @@ class AgentSyncTests(HomeCase):
         seats = {"opencode": ("OPENCODE", ".config/opencode/opencode.json", ("mcp", "servers")),
                  "muse": ("MC", ".config/muse/settings.json", ("mcpServers",)),
                  "minimax": ("MM", ".minimax/mcp.json", ("mcpServers",)),
-                 "fx": ("FX", ".fx/mcp.json", ("mcp",))}
+                 "fx": ("FX", ".fx/mcp.json", ("mcp",)),
+                 "kimi": ("KIMI", ".kimi-code/mcp.json", ("mcpServers",)),
+                 "zcode": ("ZC", ".zcode/cli/config.json", ("mcpServers",))}
         for key, (seat, rel, path) in seats.items():
             doc = self.load(rel)
             for k in path:
@@ -309,7 +312,7 @@ class AgentSyncTests(HomeCase):
                 argv = ([entry["command"]] + entry["args"]) if isinstance(entry["command"], str) else entry["command"]
                 self.assertEqual(argv, [self.agent_sync, "mcp", "--default-seat", seat])
                 self.assertNotIn("env", entry, "never a pinned AGENT_SEAT")
-        for key, rel in (("kimi", ".kimi-code/mcp.json"), ("copilot", ".copilot/mcp-config.json")):
+        for key, rel in (("copilot", ".copilot/mcp-config.json"),):
             with self.subTest(key=key):
                 self.assertNotIn("simple-chat", self.read(rel), "a tool with no default seat has no seat to register")
 

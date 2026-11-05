@@ -238,7 +238,7 @@ export class IdentityRouter {
   }
 
   async audit(row) {
-    await this.callerTools.safely(() => this.callerTools.gate.auditCall({
+    await this.callerTools.safely(() => this.callerTools.auditRow(this.callerTools.gate, {
       seat: this.seat, authenticated_seat: this.seat, grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId,
       outcome: "error", retryable: false, ...row,
     }));
@@ -375,7 +375,7 @@ export class IdentityRouter {
       transport: "hosted",
       identities: this.allowed.map((identity) => this.status(identity)),
     };
-    await this.callerTools.safely(() => this.callerTools.gate.auditCall({
+    await this.callerTools.safely(() => this.callerTools.auditRow(this.callerTools.gate, {
       seat: this.seat, authenticated_seat: this.seat, acting_identity: this.seat,
       grant_ref: this.callerTools.grantRef, client_id: this.callerTools.clientId, tool: name, outcome: "ok",
     }));

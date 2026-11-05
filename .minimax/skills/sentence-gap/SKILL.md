@@ -11,7 +11,7 @@ description: >-
 > **Runtime (MiniMax).**  MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
 
-Source of truth: `/Users/jay/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
+Source of truth: `~/Code/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 
 The block below is the canonical protocol, pasted verbatim.  Follow it exactly.  Do not weaken it.  Cloud agents without the Mac filesystem still have the full protocol in this file.
 
@@ -595,10 +595,10 @@ it in a different surface.
 
 The `simple-chat` CLI is already covered: `_scan_refusal` in
 `scripts/agent_sync/cli.py` refuses a secret-shaped body, topic or channel before the post goes
-out.  A `gh pr create --body-file` or `gh pr comment --body-file` relay bypasses that CLI, so the
-scan still has to run *before* the `gh` relay.
+out.  The relay tools `gr_open_pr` and `gr_comment_pr` bypass that CLI, so the
+scan still has to run *before* the relay write.
 
-Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
+Then pass the scanned text to the relay tools `gr_open_pr` or `gr_comment_pr`, or
 `simple-chat post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
 

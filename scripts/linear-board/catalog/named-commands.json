@@ -96,7 +96,7 @@
       "name": "linear_list_issues",
       "root": "issues",
       "selection": "nodes { id identifier title url createdAt updatedAt priority estimate dueDate state { id name type } assignee { id name } team { id name key } project { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Issues",
+      "title": "Linear: List Issues",
       "tool_description": "List issues with status, ownership, and project context.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -149,7 +149,7 @@
       "name": "linear_get_issue",
       "root": "issue",
       "selection": "id identifier title description url createdAt updatedAt priority estimate dueDate state { id name type } assignee { id name } team { id name key } project { id name } cycle { id name number }",
-      "title": "Get Issue",
+      "title": "Linear: Get Issue",
       "tool_description": "Retrieve one issue by ID or identifier.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -248,7 +248,7 @@
       "name": "linear_list_comments",
       "root": "comments",
       "selection": "nodes { id body createdAt updatedAt issue { id identifier title } user { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Comments",
+      "title": "Linear: List Comments",
       "tool_description": "List comments, optionally filtered by issue or another supported comment field.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -301,7 +301,7 @@
       "name": "linear_get_comment",
       "root": "comment",
       "selection": "id body createdAt updatedAt issue { id identifier title } user { id name }",
-      "title": "Get Comment",
+      "title": "Linear: Get Comment",
       "tool_description": "Retrieve one comment by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -400,7 +400,7 @@
       "name": "linear_list_attachments",
       "root": "attachments",
       "selection": "nodes { id title subtitle url source sourceType createdAt updatedAt issue { id identifier title } } pageInfo { hasNextPage endCursor }",
-      "title": "List Attachments",
+      "title": "Linear: List Attachments",
       "tool_description": "List attachments and their linked issues.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -453,7 +453,7 @@
       "name": "linear_get_attachment",
       "root": "attachment",
       "selection": "id title subtitle url source sourceType createdAt updatedAt issue { id identifier title }",
-      "title": "Get Attachment",
+      "title": "Linear: Get Attachment",
       "tool_description": "Retrieve one attachment by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -552,7 +552,7 @@
       "name": "linear_list_cycles",
       "root": "cycles",
       "selection": "nodes { id name number description startsAt endsAt completedAt isActive team { id name key } } pageInfo { hasNextPage endCursor }",
-      "title": "List Cycles",
+      "title": "Linear: List Cycles",
       "tool_description": "List cycles with their team and date range.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -605,7 +605,7 @@
       "name": "linear_get_cycle",
       "root": "cycle",
       "selection": "id name number description startsAt endsAt completedAt isActive team { id name key }",
-      "title": "Get Cycle",
+      "title": "Linear: Get Cycle",
       "tool_description": "Retrieve one cycle by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -704,7 +704,7 @@
       "name": "linear_list_custom_views",
       "root": "customViews",
       "selection": "nodes { id name description modelName shared slugId team { id name key } } pageInfo { hasNextPage endCursor }",
-      "title": "List Custom Views",
+      "title": "Linear: List Custom Views",
       "tool_description": "List custom views available to the authenticated Linear account.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -757,7 +757,7 @@
       "name": "linear_get_custom_view",
       "root": "customView",
       "selection": "id name description modelName shared slugId filterData team { id name key }",
-      "title": "Get Custom View",
+      "title": "Linear: Get Custom View",
       "tool_description": "Retrieve one custom view by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -856,7 +856,7 @@
       "name": "linear_list_documents",
       "root": "documents",
       "selection": "nodes { id title summary url createdAt updatedAt team { id name key } } pageInfo { hasNextPage endCursor }",
-      "title": "List Documents",
+      "title": "Linear: List Documents",
       "tool_description": "List documents with title, summary, URL, and parent context.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -909,7 +909,7 @@
       "name": "linear_get_document",
       "root": "document",
       "selection": "id title summary content url createdAt updatedAt team { id name key }",
-      "title": "Get Document",
+      "title": "Linear: Get Document",
       "tool_description": "Retrieve one document by ID, including its content.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1008,7 +1008,7 @@
       "name": "linear_list_workflow_states",
       "root": "workflowStates",
       "selection": "nodes { id name description type color position team { id name key } } pageInfo { hasNextPage endCursor }",
-      "title": "List Workflow States",
+      "title": "Linear: List Workflow States",
       "tool_description": "List issue workflow states and their teams.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1061,7 +1061,7 @@
       "name": "linear_get_workflow_state",
       "root": "workflowState",
       "selection": "id name description type color position team { id name key }",
-      "title": "Get Workflow State",
+      "title": "Linear: Get Workflow State",
       "tool_description": "Retrieve one workflow state by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1114,7 +1114,7 @@
       "name": "linear_get_triage_responsibility",
       "root": "triageResponsibility",
       "selection": "id action manualSelection { assignmentIndex userIds } team { id name key } currentUser { id name } timeSchedule { id name }",
-      "title": "Get Triage Responsibility",
+      "title": "Linear: Get Triage Responsibility",
       "tool_description": "Retrieve one triage responsibility by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1213,7 +1213,7 @@
       "name": "linear_list_issue_labels",
       "root": "issueLabels",
       "selection": "nodes { id name description color groupType isGroup team { id name key } } pageInfo { hasNextPage endCursor }",
-      "title": "List Issue Labels",
+      "title": "Linear: List Issue Labels",
       "tool_description": "List issue labels with their team and group metadata.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1266,7 +1266,7 @@
       "name": "linear_get_issue_label",
       "root": "issueLabel",
       "selection": "id name description color groupType isGroup team { id name key }",
-      "title": "Get Issue Label",
+      "title": "Linear: Get Issue Label",
       "tool_description": "Retrieve one issue label by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1365,7 +1365,7 @@
       "name": "linear_list_project_labels",
       "root": "projectLabels",
       "selection": "nodes { id name description color groupType isGroup team { id name key } } pageInfo { hasNextPage endCursor }",
-      "title": "List Project Labels",
+      "title": "Linear: List Project Labels",
       "tool_description": "List project labels with their team and group metadata.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1418,7 +1418,7 @@
       "name": "linear_get_project_label",
       "root": "projectLabel",
       "selection": "id name description color groupType isGroup team { id name key }",
-      "title": "Get Project Label",
+      "title": "Linear: Get Project Label",
       "tool_description": "Retrieve one project label by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1517,7 +1517,7 @@
       "name": "linear_list_projects",
       "root": "projects",
       "selection": "nodes { id name description url state health startDate targetDate createdAt updatedAt } pageInfo { hasNextPage endCursor }",
-      "title": "List Projects",
+      "title": "Linear: List Projects",
       "tool_description": "List projects with status, health, and schedule details.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1570,7 +1570,7 @@
       "name": "linear_get_project",
       "root": "project",
       "selection": "id name description content url state health startDate targetDate createdAt updatedAt",
-      "title": "Get Project",
+      "title": "Linear: Get Project",
       "tool_description": "Retrieve one project by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1669,7 +1669,7 @@
       "name": "linear_list_project_milestones",
       "root": "projectMilestones",
       "selection": "nodes { id name description targetDate sortOrder project { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Project Milestones",
+      "title": "Linear: List Project Milestones",
       "tool_description": "List project milestones and their target dates.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1722,7 +1722,7 @@
       "name": "linear_get_project_milestone",
       "root": "projectMilestone",
       "selection": "id name description targetDate sortOrder project { id name }",
-      "title": "Get Project Milestone",
+      "title": "Linear: Get Project Milestone",
       "tool_description": "Retrieve one project milestone by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1821,7 +1821,7 @@
       "name": "linear_list_teams",
       "root": "teams",
       "selection": "nodes { id name displayName key description cyclesEnabled } pageInfo { hasNextPage endCursor }",
-      "title": "List Teams",
+      "title": "Linear: List Teams",
       "tool_description": "List teams visible to the authenticated Linear account.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1874,7 +1874,7 @@
       "name": "linear_get_team",
       "root": "team",
       "selection": "id name displayName key description cyclesEnabled",
-      "title": "Get Team",
+      "title": "Linear: Get Team",
       "tool_description": "Retrieve one team by ID or key.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -1973,7 +1973,7 @@
       "name": "linear_list_users",
       "root": "users",
       "selection": "nodes { id name displayName active admin guest } pageInfo { hasNextPage endCursor }",
-      "title": "List Users",
+      "title": "Linear: List Users",
       "tool_description": "List users visible to the authenticated Linear account.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2026,7 +2026,7 @@
       "name": "linear_get_user",
       "root": "user",
       "selection": "id name displayName active admin guest",
-      "title": "Get User",
+      "title": "Linear: Get User",
       "tool_description": "Retrieve one user by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2060,7 +2060,7 @@
       "name": "linear_get_workspace",
       "root": "organization",
       "selection": "id name createdAt",
-      "title": "Get Workspace",
+      "title": "Linear: Get Workspace",
       "tool_description": "Retrieve the authenticated workspace's public name and identifier.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2094,7 +2094,7 @@
       "name": "linear_list_templates",
       "root": "templates",
       "selection": "id name description type updatedAt team { id name key }",
-      "title": "List Templates",
+      "title": "Linear: List Templates",
       "tool_description": "List templates available to the authenticated Linear account.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2180,7 +2180,7 @@
       "name": "linear_search_templates",
       "root": "templateSearch",
       "selection": "id name description type updatedAt team { id name key }",
-      "title": "Search Templates",
+      "title": "Linear: Search Templates",
       "tool_description": "Find templates matching a Linear template filter.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2233,7 +2233,7 @@
       "name": "linear_get_template",
       "root": "template",
       "selection": "id name description type templateData updatedAt team { id name key }",
-      "title": "Get Template",
+      "title": "Linear: Get Template",
       "tool_description": "Retrieve one template by ID, including its template data.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2332,7 +2332,7 @@
       "name": "linear_list_notifications",
       "root": "notifications",
       "selection": "nodes { id type title subtitle createdAt readAt url } pageInfo { hasNextPage endCursor }",
-      "title": "List Notifications",
+      "title": "Linear: List Notifications",
       "tool_description": "List notifications visible to the authenticated user.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2385,7 +2385,7 @@
       "name": "linear_get_notification",
       "root": "notification",
       "selection": "id type title subtitle createdAt readAt url",
-      "title": "Get Notification",
+      "title": "Linear: Get Notification",
       "tool_description": "Retrieve one notification by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2484,7 +2484,7 @@
       "name": "linear_list_project_updates",
       "root": "projectUpdates",
       "selection": "nodes { id body health createdAt updatedAt project { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Project Updates",
+      "title": "Linear: List Project Updates",
       "tool_description": "List project updates with health and linked project.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2537,7 +2537,7 @@
       "name": "linear_get_project_update",
       "root": "projectUpdate",
       "selection": "id body health createdAt updatedAt project { id name }",
-      "title": "Get Project Update",
+      "title": "Linear: Get Project Update",
       "tool_description": "Retrieve one project update by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2636,7 +2636,7 @@
       "name": "linear_list_initiatives",
       "root": "initiatives",
       "selection": "nodes { id name description status health targetDate createdAt updatedAt owner { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Initiatives",
+      "title": "Linear: List Initiatives",
       "tool_description": "List initiatives with owner, health, and target date.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2689,7 +2689,7 @@
       "name": "linear_get_initiative",
       "root": "initiative",
       "selection": "id name description status health targetDate createdAt updatedAt owner { id name }",
-      "title": "Get Initiative",
+      "title": "Linear: Get Initiative",
       "tool_description": "Retrieve one initiative by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2788,7 +2788,7 @@
       "name": "linear_list_initiative_updates",
       "root": "initiativeUpdates",
       "selection": "nodes { id body health createdAt updatedAt initiative { id name } user { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Initiative Updates",
+      "title": "Linear: List Initiative Updates",
       "tool_description": "List initiative updates with health and parent initiative.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2841,7 +2841,7 @@
       "name": "linear_get_initiative_update",
       "root": "initiativeUpdate",
       "selection": "id body health createdAt updatedAt initiative { id name } user { id name }",
-      "title": "Get Initiative Update",
+      "title": "Linear: Get Initiative Update",
       "tool_description": "Retrieve one initiative update by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2925,7 +2925,7 @@
       "name": "linear_list_favorites",
       "root": "favorites",
       "selection": "nodes { id title type createdAt updatedAt } pageInfo { hasNextPage endCursor }",
-      "title": "List Favorites",
+      "title": "Linear: List Favorites",
       "tool_description": "List favorites for the authenticated user.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -2978,7 +2978,7 @@
       "name": "linear_get_favorite",
       "root": "favorite",
       "selection": "id title type createdAt updatedAt",
-      "title": "Get Favorite",
+      "title": "Linear: Get Favorite",
       "tool_description": "Retrieve one favorite by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3062,7 +3062,7 @@
       "name": "linear_list_roadmaps",
       "root": "roadmaps",
       "selection": "nodes { id name description url createdAt updatedAt owner { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Roadmaps",
+      "title": "Linear: List Roadmaps",
       "tool_description": "List roadmaps with owner and workspace details.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3115,7 +3115,7 @@
       "name": "linear_get_roadmap",
       "root": "roadmap",
       "selection": "id name description url createdAt updatedAt owner { id name }",
-      "title": "Get Roadmap",
+      "title": "Linear: Get Roadmap",
       "tool_description": "Retrieve one roadmap by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3214,7 +3214,7 @@
       "name": "linear_list_customer_needs",
       "root": "customerNeeds",
       "selection": "nodes { id body createdAt updatedAt customer { id name } issue { id identifier title } } pageInfo { hasNextPage endCursor }",
-      "title": "List Customer Needs",
+      "title": "Linear: List Customer Needs",
       "tool_description": "List customer needs (Linear's customer request records) with linked customer and issue.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3267,7 +3267,7 @@
       "name": "linear_get_customer_need",
       "root": "customerNeed",
       "selection": "id body createdAt updatedAt customer { id name } issue { id identifier title }",
-      "title": "Get Customer Need",
+      "title": "Linear: Get Customer Need",
       "tool_description": "Retrieve one customer need by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3366,7 +3366,7 @@
       "name": "linear_list_customers",
       "root": "customers",
       "selection": "nodes { id name domains createdAt updatedAt } pageInfo { hasNextPage endCursor }",
-      "title": "List Customers",
+      "title": "Linear: List Customers",
       "tool_description": "List customer records with their key contact and status metadata.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3419,7 +3419,7 @@
       "name": "linear_get_customer",
       "root": "customer",
       "selection": "id name domains createdAt updatedAt",
-      "title": "Get Customer",
+      "title": "Linear: Get Customer",
       "tool_description": "Retrieve one customer by ID.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3518,7 +3518,7 @@
       "name": "linear_list_releases",
       "root": "releases",
       "selection": "nodes { id name slugId version description createdAt updatedAt targetDate startDate url stage { id name type } pipeline { id name type } } pageInfo { hasNextPage endCursor }",
-      "title": "List Releases",
+      "title": "Linear: List Releases",
       "tool_description": "List releases with their pipeline and stage.  Requires a Linear plan or workspace configuration that enables Releases.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3571,7 +3571,7 @@
       "name": "linear_get_release",
       "root": "release",
       "selection": "id name slugId version description createdAt updatedAt targetDate startDate url stage { id name type } pipeline { id name type } releaseNote { id title }",
-      "title": "Get Release",
+      "title": "Linear: Get Release",
       "tool_description": "Retrieve one release by ID or slug.  Requires a Linear plan or workspace configuration that enables Releases.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3670,7 +3670,7 @@
       "name": "linear_list_release_notes",
       "root": "releaseNotes",
       "selection": "nodes { id title url generationStatus releaseCount createdAt updatedAt pipeline { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Release Notes",
+      "title": "Linear: List Release Notes",
       "tool_description": "List release notes with linked releases.  Requires a Linear plan or workspace configuration that enables Releases.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3723,7 +3723,7 @@
       "name": "linear_get_release_note",
       "root": "releaseNote",
       "selection": "id title url generationStatus releaseCount createdAt updatedAt pipeline { id name }",
-      "title": "Get Release Note",
+      "title": "Linear: Get Release Note",
       "tool_description": "Retrieve one release note by ID or slug.  Requires a Linear plan or workspace configuration that enables Releases.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3822,7 +3822,7 @@
       "name": "linear_list_release_pipelines",
       "root": "releasePipelines",
       "selection": "nodes { id name slugId type isProduction approximateReleaseCount createdAt updatedAt url } pageInfo { hasNextPage endCursor }",
-      "title": "List Release Pipelines",
+      "title": "Linear: List Release Pipelines",
       "tool_description": "List release pipelines and their release settings.  Requires a Linear plan or workspace configuration that enables Releases.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3875,7 +3875,7 @@
       "name": "linear_get_release_pipeline",
       "root": "releasePipeline",
       "selection": "id name slugId type isProduction approximateReleaseCount createdAt updatedAt url",
-      "title": "Get Release Pipeline",
+      "title": "Linear: Get Release Pipeline",
       "tool_description": "Retrieve one release pipeline by ID or slug.  Requires a Linear plan or workspace configuration that enables Releases.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -3974,7 +3974,7 @@
       "name": "linear_list_release_stages",
       "root": "releaseStages",
       "selection": "nodes { id name color frozen position type createdAt updatedAt pipeline { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Release Stages",
+      "title": "Linear: List Release Stages",
       "tool_description": "List release stages and their parent pipelines.  Requires a Linear plan or workspace configuration that enables Releases.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4027,7 +4027,7 @@
       "name": "linear_get_release_stage",
       "root": "releaseStage",
       "selection": "id name color frozen position type createdAt updatedAt pipeline { id name }",
-      "title": "Get Release Stage",
+      "title": "Linear: Get Release Stage",
       "tool_description": "Retrieve one release stage by ID.  Requires a Linear plan or workspace configuration that enables Releases.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4126,7 +4126,7 @@
       "name": "linear_list_agent_skills",
       "root": "agentSkills",
       "selection": "nodes { id title description shared teamId createdAt updatedAt owner { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Agent Skills",
+      "title": "Linear: List Agent Skills",
       "tool_description": "List agent skills visible to the authenticated Linear account.  Agent skills are a Developer Preview feature.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4179,7 +4179,7 @@
       "name": "linear_get_agent_skill",
       "root": "agentSkill",
       "selection": "id title description body shared teamId createdAt updatedAt owner { id name }",
-      "title": "Get Agent Skill",
+      "title": "Linear: Get Agent Skill",
       "tool_description": "Retrieve one agent skill, including its body.  Agent skills are a Developer Preview feature.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4278,7 +4278,7 @@
       "name": "linear_list_issue_statuses",
       "root": "workflowStates",
       "selection": "nodes { id name description type color position team { id name key } } pageInfo { hasNextPage endCursor }",
-      "title": "List Workflow States",
+      "title": "Linear: List Issue Statuses",
       "tool_description": "List issue workflow states and their teams.  Alias of linear_list_workflow_states.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4331,7 +4331,7 @@
       "name": "linear_get_issue_status",
       "root": "workflowState",
       "selection": "id name description type color position team { id name key }",
-      "title": "Get Workflow State",
+      "title": "Linear: Get Issue Status",
       "tool_description": "Retrieve one workflow state by ID.  Alias of linear_get_workflow_state.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4430,7 +4430,7 @@
       "name": "linear_list_milestones",
       "root": "projectMilestones",
       "selection": "nodes { id name description targetDate sortOrder project { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Project Milestones",
+      "title": "Linear: List Milestones",
       "tool_description": "List project milestones and their target dates.  Alias of linear_list_project_milestones.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4483,7 +4483,7 @@
       "name": "linear_get_milestone",
       "root": "projectMilestone",
       "selection": "id name description targetDate sortOrder project { id name }",
-      "title": "Get Project Milestone",
+      "title": "Linear: Get Milestone",
       "tool_description": "Retrieve one project milestone by ID.  Alias of linear_get_project_milestone.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4582,7 +4582,7 @@
       "name": "linear_get_notifications",
       "root": "notifications",
       "selection": "nodes { id type title subtitle createdAt readAt url } pageInfo { hasNextPage endCursor }",
-      "title": "List Notifications",
+      "title": "Linear: Get Notifications",
       "tool_description": "List notifications visible to the authenticated user.  Alias of linear_list_notifications.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4681,7 +4681,7 @@
       "name": "linear_get_status_updates",
       "root": "projectUpdates",
       "selection": "nodes { id body health createdAt updatedAt project { id name } } pageInfo { hasNextPage endCursor }",
-      "title": "List Project Updates",
+      "title": "Linear: Get Status Updates",
       "tool_description": "List project updates with health and linked project.  Alias of linear_list_project_updates.  Uses this seat's Linear app and existing API limits."
     },
     {
@@ -4744,7 +4744,7 @@
       "name": "linear_create_issue",
       "root": "issueCreate",
       "selection": "success issue { id identifier title }",
-      "title": "Create Issue",
+      "title": "Linear: Create Issue",
       "tool_description": "Create a Linear issue.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -4820,7 +4820,7 @@
       "name": "linear_update_issue",
       "root": "issueUpdate",
       "selection": "success issue { id identifier title }",
-      "title": "Update Issue",
+      "title": "Linear: Update Issue",
       "tool_description": "Update a Linear issue.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -4882,7 +4882,7 @@
       "name": "linear_delete_issue",
       "root": "issueDelete",
       "selection": "success entity { id }",
-      "title": "Delete Issue",
+      "title": "Linear: Delete Issue",
       "tool_description": "Delete a Linear issue using Linear's normal deletion policy.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -4955,7 +4955,7 @@
       "name": "linear_archive_issue",
       "root": "issueArchive",
       "selection": "success entity { id }",
-      "title": "Archive Issue",
+      "title": "Linear: Archive Issue",
       "tool_description": "Archive a Linear issue.  Set trash only when moving it to trash is intended.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5017,7 +5017,7 @@
       "name": "linear_unarchive_issue",
       "root": "issueUnarchive",
       "selection": "success entity { id }",
-      "title": "Restore Issue",
+      "title": "Linear: Restore Issue",
       "tool_description": "Restore an archived Linear issue.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5091,7 +5091,7 @@
       "name": "linear_share_issue",
       "root": "issueShare",
       "selection": "success issue { id identifier title }",
-      "title": "Share Issue",
+      "title": "Linear: Share Issue",
       "tool_description": "Share a Linear issue with a user.  Linear enforces record-level access permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5165,7 +5165,7 @@
       "name": "linear_unshare_issue",
       "root": "issueUnshare",
       "selection": "success issue { id identifier title }",
-      "title": "Unshare Issue",
+      "title": "Linear: Unshare Issue",
       "tool_description": "Remove a user's share access to a Linear issue.  Linear enforces record-level access permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5228,7 +5228,7 @@
       "name": "linear_create_comment",
       "root": "commentCreate",
       "selection": "success comment { id body }",
-      "title": "Create Comment",
+      "title": "Linear: Create Comment",
       "tool_description": "Create a comment on a Linear issue.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5304,7 +5304,7 @@
       "name": "linear_update_comment",
       "root": "commentUpdate",
       "selection": "success comment { id body }",
-      "title": "Update Comment",
+      "title": "Linear: Update Comment",
       "tool_description": "Update a Linear comment.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5366,7 +5366,7 @@
       "name": "linear_delete_comment",
       "root": "commentDelete",
       "selection": "success",
-      "title": "Delete Comment",
+      "title": "Linear: Delete Comment",
       "tool_description": "Delete a Linear comment.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5439,7 +5439,7 @@
       "name": "linear_resolve_comment",
       "root": "commentResolve",
       "selection": "success comment { id body }",
-      "title": "Resolve Comment",
+      "title": "Linear: Resolve Comment",
       "tool_description": "Resolve a Linear comment thread.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5501,7 +5501,7 @@
       "name": "linear_unresolve_comment",
       "root": "commentUnresolve",
       "selection": "success comment { id body }",
-      "title": "Unresolve Comment",
+      "title": "Linear: Unresolve Comment",
       "tool_description": "Reopen a resolved Linear comment thread.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5564,7 +5564,7 @@
       "name": "linear_create_document",
       "root": "documentCreate",
       "selection": "success document { id title }",
-      "title": "Create Document",
+      "title": "Linear: Create Document",
       "tool_description": "Create a Linear document.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5640,7 +5640,7 @@
       "name": "linear_update_document",
       "root": "documentUpdate",
       "selection": "success document { id title }",
-      "title": "Update Document",
+      "title": "Linear: Update Document",
       "tool_description": "Update a Linear document.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5702,7 +5702,7 @@
       "name": "linear_delete_document",
       "root": "documentDelete",
       "selection": "success entity { id }",
-      "title": "Delete Document",
+      "title": "Linear: Delete Document",
       "tool_description": "Delete a Linear document.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5764,7 +5764,7 @@
       "name": "linear_unarchive_document",
       "root": "documentUnarchive",
       "selection": "success entity { id }",
-      "title": "Restore Document",
+      "title": "Linear: Restore Document",
       "tool_description": "Restore an archived Linear document.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5840,7 +5840,7 @@
       "name": "linear_create_project",
       "root": "projectCreate",
       "selection": "success project { id name }",
-      "title": "Create Project",
+      "title": "Linear: Create Project",
       "tool_description": "Create a Linear project.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5916,7 +5916,7 @@
       "name": "linear_update_project",
       "root": "projectUpdate",
       "selection": "success project { id name }",
-      "title": "Update Project",
+      "title": "Linear: Update Project",
       "tool_description": "Update a Linear project.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -5978,7 +5978,7 @@
       "name": "linear_delete_project",
       "root": "projectDelete",
       "selection": "success entity { id }",
-      "title": "Delete Project",
+      "title": "Linear: Delete Project",
       "tool_description": "Delete a Linear project.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6051,7 +6051,7 @@
       "name": "linear_archive_project",
       "root": "projectArchive",
       "selection": "success entity { id }",
-      "title": "Archive Project",
+      "title": "Linear: Archive Project",
       "tool_description": "Archive a Linear project.  Set trash only when moving it to trash is intended.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6113,7 +6113,7 @@
       "name": "linear_unarchive_project",
       "root": "projectUnarchive",
       "selection": "success entity { id }",
-      "title": "Restore Project",
+      "title": "Linear: Restore Project",
       "tool_description": "Restore an archived Linear project.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6176,7 +6176,7 @@
       "name": "linear_create_issue_label",
       "root": "issueLabelCreate",
       "selection": "success issueLabel { id name }",
-      "title": "Create Issue Label",
+      "title": "Linear: Create Issue Label",
       "tool_description": "Create a Linear issue label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6252,7 +6252,7 @@
       "name": "linear_update_issue_label",
       "root": "issueLabelUpdate",
       "selection": "success issueLabel { id name }",
-      "title": "Update Issue Label",
+      "title": "Linear: Update Issue Label",
       "tool_description": "Update a Linear issue label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6314,7 +6314,7 @@
       "name": "linear_delete_issue_label",
       "root": "issueLabelDelete",
       "selection": "success",
-      "title": "Delete Issue Label",
+      "title": "Linear: Delete Issue Label",
       "tool_description": "Delete a Linear issue label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6376,7 +6376,7 @@
       "name": "linear_retire_issue_label",
       "root": "issueLabelRetire",
       "selection": "success issueLabel { id name }",
-      "title": "Retire Issue Label",
+      "title": "Linear: Retire Issue Label",
       "tool_description": "Retire a Linear issue label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6438,7 +6438,7 @@
       "name": "linear_restore_issue_label",
       "root": "issueLabelRestore",
       "selection": "success issueLabel { id name }",
-      "title": "Restore Issue Label",
+      "title": "Linear: Restore Issue Label",
       "tool_description": "Restore a retired Linear issue label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6512,7 +6512,7 @@
       "name": "linear_create_project_label",
       "root": "projectLabelCreate",
       "selection": "success projectLabel { id name }",
-      "title": "Create Project Label",
+      "title": "Linear: Create Project Label",
       "tool_description": "Create a Linear project label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6599,7 +6599,7 @@
       "name": "linear_update_project_label",
       "root": "projectLabelUpdate",
       "selection": "success projectLabel { id name }",
-      "title": "Update Project Label",
+      "title": "Linear: Update Project Label",
       "tool_description": "Update a Linear project label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6661,7 +6661,7 @@
       "name": "linear_delete_project_label",
       "root": "projectLabelDelete",
       "selection": "success",
-      "title": "Delete Project Label",
+      "title": "Linear: Delete Project Label",
       "tool_description": "Delete a Linear project label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6723,7 +6723,7 @@
       "name": "linear_retire_project_label",
       "root": "projectLabelRetire",
       "selection": "success projectLabel { id name }",
-      "title": "Retire Project Label",
+      "title": "Linear: Retire Project Label",
       "tool_description": "Retire a Linear project label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6785,7 +6785,7 @@
       "name": "linear_restore_project_label",
       "root": "projectLabelRestore",
       "selection": "success projectLabel { id name }",
-      "title": "Restore Project Label",
+      "title": "Linear: Restore Project Label",
       "tool_description": "Restore a retired Linear project label.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6848,7 +6848,7 @@
       "name": "linear_create_project_milestone",
       "root": "projectMilestoneCreate",
       "selection": "success projectMilestone { id name }",
-      "title": "Create Project Milestone",
+      "title": "Linear: Create Project Milestone",
       "tool_description": "Create a milestone for a Linear project.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6924,7 +6924,7 @@
       "name": "linear_update_project_milestone",
       "root": "projectMilestoneUpdate",
       "selection": "success projectMilestone { id name }",
-      "title": "Update Project Milestone",
+      "title": "Linear: Update Project Milestone",
       "tool_description": "Update a Linear project milestone.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -6986,7 +6986,7 @@
       "name": "linear_delete_project_milestone",
       "root": "projectMilestoneDelete",
       "selection": "success",
-      "title": "Delete Project Milestone",
+      "title": "Linear: Delete Project Milestone",
       "tool_description": "Delete a Linear project milestone.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7062,7 +7062,7 @@
       "name": "linear_update_cycle",
       "root": "cycleUpdate",
       "selection": "success cycle { id name }",
-      "title": "Update Cycle",
+      "title": "Linear: Update Cycle",
       "tool_description": "Update a Linear cycle.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7124,7 +7124,7 @@
       "name": "linear_archive_cycle",
       "root": "cycleArchive",
       "selection": "success entity { id }",
-      "title": "Archive Cycle",
+      "title": "Linear: Archive Cycle",
       "tool_description": "Archive a Linear cycle.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7187,7 +7187,7 @@
       "name": "linear_create_attachment",
       "root": "attachmentCreate",
       "selection": "success attachment { id title url }",
-      "title": "Create Attachment",
+      "title": "Linear: Create Attachment",
       "tool_description": "Create an attachment record on a Linear issue.  This does not upload file bytes.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7263,7 +7263,7 @@
       "name": "linear_update_attachment",
       "root": "attachmentUpdate",
       "selection": "success attachment { id title url }",
-      "title": "Update Attachment",
+      "title": "Linear: Update Attachment",
       "tool_description": "Update a Linear attachment record.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7325,7 +7325,7 @@
       "name": "linear_delete_attachment",
       "root": "attachmentDelete",
       "selection": "success",
-      "title": "Delete Attachment",
+      "title": "Linear: Delete Attachment",
       "tool_description": "Delete a Linear attachment record.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7421,7 +7421,7 @@
       "name": "linear_link_attachment_url",
       "root": "attachmentLinkURL",
       "selection": "success attachment { id title url }",
-      "title": "Link Attachment URL",
+      "title": "Linear: Link Attachment URL",
       "tool_description": "Link a URL as an attachment to a Linear issue.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7510,7 +7510,7 @@
       "name": "linear_prepare_attachment_upload",
       "root": "fileUpload",
       "selection": "success uploadFile { uploadUrl assetUrl headers { key value } contentType filename size }",
-      "title": "Prepare Attachment Upload",
+      "title": "Linear: Prepare Attachment Upload",
       "tool_description": "Prepare signed upload metadata only.  Send file bytes with PUT through the trusted client, and keep the signed URL and headers private; this command does not upload bytes or make the asset public.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7573,7 +7573,7 @@
       "name": "linear_create_project_update",
       "root": "projectUpdateCreate",
       "selection": "success projectUpdate { id health body }",
-      "title": "Create Project Update",
+      "title": "Linear: Create Project Update",
       "tool_description": "Create a Linear project update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7649,7 +7649,7 @@
       "name": "linear_update_project_update",
       "root": "projectUpdateUpdate",
       "selection": "success projectUpdate { id health body }",
-      "title": "Update Project Update",
+      "title": "Linear: Update Project Update",
       "tool_description": "Update a Linear project update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7711,7 +7711,7 @@
       "name": "linear_delete_project_update",
       "root": "projectUpdateDelete",
       "selection": "success",
-      "title": "Delete Project Update",
+      "title": "Linear: Delete Project Update",
       "tool_description": "Delete a Linear project update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7773,7 +7773,7 @@
       "name": "linear_archive_project_update",
       "root": "projectUpdateArchive",
       "selection": "success entity { id }",
-      "title": "Archive Project Update",
+      "title": "Linear: Archive Project Update",
       "tool_description": "Archive a Linear project update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7835,7 +7835,7 @@
       "name": "linear_unarchive_project_update",
       "root": "projectUpdateUnarchive",
       "selection": "success entity { id }",
-      "title": "Restore Project Update",
+      "title": "Linear: Restore Project Update",
       "tool_description": "Restore an archived Linear project update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7898,7 +7898,7 @@
       "name": "linear_create_custom_view",
       "root": "customViewCreate",
       "selection": "success customView { id name }",
-      "title": "Create Custom View",
+      "title": "Linear: Create Custom View",
       "tool_description": "Create a Linear custom view.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -7974,7 +7974,7 @@
       "name": "linear_update_custom_view",
       "root": "customViewUpdate",
       "selection": "success customView { id name }",
-      "title": "Update Custom View",
+      "title": "Linear: Update Custom View",
       "tool_description": "Update a Linear custom view.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8036,7 +8036,7 @@
       "name": "linear_delete_custom_view",
       "root": "customViewDelete",
       "selection": "success",
-      "title": "Delete Custom View",
+      "title": "Linear: Delete Custom View",
       "tool_description": "Delete a Linear custom view.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8099,7 +8099,7 @@
       "name": "linear_create_template",
       "root": "templateCreate",
       "selection": "success template { id name }",
-      "title": "Create Template",
+      "title": "Linear: Create Template",
       "tool_description": "Create a Linear template.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8175,7 +8175,7 @@
       "name": "linear_update_template",
       "root": "templateUpdate",
       "selection": "success template { id name }",
-      "title": "Update Template",
+      "title": "Linear: Update Template",
       "tool_description": "Update a Linear template.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8237,7 +8237,7 @@
       "name": "linear_delete_template",
       "root": "templateDelete",
       "selection": "success",
-      "title": "Delete Template",
+      "title": "Linear: Delete Template",
       "tool_description": "Delete a Linear template.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8313,7 +8313,7 @@
       "name": "linear_update_notification",
       "root": "notificationUpdate",
       "selection": "success notification { id category }",
-      "title": "Update Notification",
+      "title": "Linear: Update Notification",
       "tool_description": "Update a Linear notification.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8375,7 +8375,7 @@
       "name": "linear_archive_notification",
       "root": "notificationArchive",
       "selection": "success entity { id }",
-      "title": "Archive Notification",
+      "title": "Linear: Archive Notification",
       "tool_description": "Archive a Linear notification.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8437,7 +8437,7 @@
       "name": "linear_unarchive_notification",
       "root": "notificationUnarchive",
       "selection": "success entity { id }",
-      "title": "Restore Notification",
+      "title": "Linear: Restore Notification",
       "tool_description": "Restore an archived Linear notification.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8500,7 +8500,7 @@
       "name": "linear_create_issue_relation",
       "root": "issueRelationCreate",
       "selection": "success issueRelation { id type }",
-      "title": "Create Issue Relation",
+      "title": "Linear: Create Issue Relation",
       "tool_description": "Create a relation between Linear issues.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8576,7 +8576,7 @@
       "name": "linear_update_issue_relation",
       "root": "issueRelationUpdate",
       "selection": "success issueRelation { id type }",
-      "title": "Update Issue Relation",
+      "title": "Linear: Update Issue Relation",
       "tool_description": "Update a Linear issue relation.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8638,7 +8638,7 @@
       "name": "linear_delete_issue_relation",
       "root": "issueRelationDelete",
       "selection": "success",
-      "title": "Delete Issue Relation",
+      "title": "Linear: Delete Issue Relation",
       "tool_description": "Delete a Linear issue relation.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8701,7 +8701,7 @@
       "name": "linear_create_initiative",
       "root": "initiativeCreate",
       "selection": "success initiative { id name }",
-      "title": "Create Initiative",
+      "title": "Linear: Create Initiative",
       "tool_description": "Create a Linear initiative.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8777,7 +8777,7 @@
       "name": "linear_update_initiative",
       "root": "initiativeUpdate",
       "selection": "success initiative { id name }",
-      "title": "Update Initiative",
+      "title": "Linear: Update Initiative",
       "tool_description": "Update a Linear initiative.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8839,7 +8839,7 @@
       "name": "linear_delete_initiative",
       "root": "initiativeDelete",
       "selection": "success",
-      "title": "Delete Initiative",
+      "title": "Linear: Delete Initiative",
       "tool_description": "Delete a Linear initiative.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8901,7 +8901,7 @@
       "name": "linear_archive_initiative",
       "root": "initiativeArchive",
       "selection": "success entity { id }",
-      "title": "Archive Initiative",
+      "title": "Linear: Archive Initiative",
       "tool_description": "Archive a Linear initiative.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -8963,7 +8963,7 @@
       "name": "linear_unarchive_initiative",
       "root": "initiativeUnarchive",
       "selection": "success entity { id }",
-      "title": "Restore Initiative",
+      "title": "Linear: Restore Initiative",
       "tool_description": "Restore an archived Linear initiative.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9026,7 +9026,7 @@
       "name": "linear_create_initiative_update",
       "root": "initiativeUpdateCreate",
       "selection": "success initiativeUpdate { id health body }",
-      "title": "Create Initiative Update",
+      "title": "Linear: Create Initiative Update",
       "tool_description": "Create a Linear initiative update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9102,7 +9102,7 @@
       "name": "linear_update_initiative_update",
       "root": "initiativeUpdateUpdate",
       "selection": "success initiativeUpdate { id health body }",
-      "title": "Update Initiative Update",
+      "title": "Linear: Update Initiative Update",
       "tool_description": "Update a Linear initiative update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9164,7 +9164,7 @@
       "name": "linear_archive_initiative_update",
       "root": "initiativeUpdateArchive",
       "selection": "success entity { id }",
-      "title": "Archive Initiative Update",
+      "title": "Linear: Archive Initiative Update",
       "tool_description": "Archive a Linear initiative update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9226,7 +9226,7 @@
       "name": "linear_unarchive_initiative_update",
       "root": "initiativeUpdateUnarchive",
       "selection": "success entity { id }",
-      "title": "Restore Initiative Update",
+      "title": "Linear: Restore Initiative Update",
       "tool_description": "Restore an archived Linear initiative update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9289,7 +9289,7 @@
       "name": "linear_create_initiative_relation",
       "root": "initiativeRelationCreate",
       "selection": "success initiativeRelation { id sortOrder }",
-      "title": "Create Initiative Relation",
+      "title": "Linear: Create Initiative Relation",
       "tool_description": "Create a parent-child relation between Linear initiatives.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9365,7 +9365,7 @@
       "name": "linear_update_initiative_relation",
       "root": "initiativeRelationUpdate",
       "selection": "success initiativeRelation { id sortOrder }",
-      "title": "Update Initiative Relation",
+      "title": "Linear: Update Initiative Relation",
       "tool_description": "Update a Linear initiative relation.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9427,7 +9427,7 @@
       "name": "linear_delete_initiative_relation",
       "root": "initiativeRelationDelete",
       "selection": "success",
-      "title": "Delete Initiative Relation",
+      "title": "Linear: Delete Initiative Relation",
       "tool_description": "Delete a Linear initiative relation.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9490,7 +9490,7 @@
       "name": "linear_add_initiative_project",
       "root": "initiativeToProjectCreate",
       "selection": "success initiativeToProject { id sortOrder }",
-      "title": "Add Initiative Project",
+      "title": "Linear: Add Initiative Project",
       "tool_description": "Associate a Linear project with an initiative.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9566,7 +9566,7 @@
       "name": "linear_update_initiative_project",
       "root": "initiativeToProjectUpdate",
       "selection": "success initiativeToProject { id sortOrder }",
-      "title": "Update Initiative Project",
+      "title": "Linear: Update Initiative Project",
       "tool_description": "Update a Linear initiative-to-project association.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9628,7 +9628,7 @@
       "name": "linear_remove_initiative_project",
       "root": "initiativeToProjectDelete",
       "selection": "success",
-      "title": "Remove Initiative Project",
+      "title": "Linear: Remove Initiative Project",
       "tool_description": "Remove a project from a Linear initiative.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9691,7 +9691,7 @@
       "name": "linear_create_workflow_state",
       "root": "workflowStateCreate",
       "selection": "success workflowState { id name }",
-      "title": "Create Workflow State",
+      "title": "Linear: Create Workflow State",
       "tool_description": "Create a Linear workflow state.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9767,7 +9767,7 @@
       "name": "linear_update_workflow_state",
       "root": "workflowStateUpdate",
       "selection": "success workflowState { id name }",
-      "title": "Update Workflow State",
+      "title": "Linear: Update Workflow State",
       "tool_description": "Update a Linear workflow state.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9829,7 +9829,7 @@
       "name": "linear_archive_workflow_state",
       "root": "workflowStateArchive",
       "selection": "success entity { id }",
-      "title": "Archive Workflow State",
+      "title": "Linear: Archive Workflow State",
       "tool_description": "Archive a Linear workflow state.  Linear requires its issues to be archived first.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9892,7 +9892,7 @@
       "name": "linear_complete_release",
       "root": "releaseComplete",
       "selection": "success release { id name }",
-      "title": "Complete Release",
+      "title": "Linear: Complete Release",
       "tool_description": "Mark a Linear release as completed.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -9955,7 +9955,7 @@
       "name": "linear_create_release",
       "root": "releaseCreate",
       "selection": "success release { id name url }",
-      "title": "Create Release",
+      "title": "Linear: Create Release",
       "tool_description": "Create a Linear release.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10031,7 +10031,7 @@
       "name": "linear_update_release",
       "root": "releaseUpdate",
       "selection": "success release { id name url }",
-      "title": "Update Release",
+      "title": "Linear: Update Release",
       "tool_description": "Update a Linear release.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10093,7 +10093,7 @@
       "name": "linear_delete_release",
       "root": "releaseDelete",
       "selection": "success entity { id }",
-      "title": "Delete Release",
+      "title": "Linear: Delete Release",
       "tool_description": "Delete a Linear release.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10155,7 +10155,7 @@
       "name": "linear_archive_release",
       "root": "releaseArchive",
       "selection": "success entity { id }",
-      "title": "Archive Release",
+      "title": "Linear: Archive Release",
       "tool_description": "Archive a Linear release.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10217,7 +10217,7 @@
       "name": "linear_unarchive_release",
       "root": "releaseUnarchive",
       "selection": "success entity { id }",
-      "title": "Restore Release",
+      "title": "Linear: Restore Release",
       "tool_description": "Restore an archived Linear release.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10280,7 +10280,7 @@
       "name": "linear_create_release_note",
       "root": "releaseNoteCreate",
       "selection": "success releaseNote { id title url }",
-      "title": "Create Release Note",
+      "title": "Linear: Create Release Note",
       "tool_description": "Create a Linear release note.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10356,7 +10356,7 @@
       "name": "linear_update_release_note",
       "root": "releaseNoteUpdate",
       "selection": "success releaseNote { id title url }",
-      "title": "Update Release Note",
+      "title": "Linear: Update Release Note",
       "tool_description": "Update a Linear release note.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10418,7 +10418,7 @@
       "name": "linear_delete_release_note",
       "root": "releaseNoteDelete",
       "selection": "success",
-      "title": "Delete Release Note",
+      "title": "Linear: Delete Release Note",
       "tool_description": "Delete a Linear release note.  The server still enforces release-plan permissions.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10481,7 +10481,7 @@
       "name": "linear_create_agent_skill",
       "root": "agentSkillCreate",
       "selection": "success agentSkill { id title }",
-      "title": "Create Agent Skill",
+      "title": "Linear: Create Agent Skill",
       "tool_description": "Create a Linear agent skill.  The server still enforces skill-developer preview access.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10557,7 +10557,7 @@
       "name": "linear_update_agent_skill",
       "root": "agentSkillUpdate",
       "selection": "success agentSkill { id title }",
-      "title": "Update Agent Skill",
+      "title": "Linear: Update Agent Skill",
       "tool_description": "Update a Linear agent skill.  The server still enforces skill-developer preview access.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10619,7 +10619,7 @@
       "name": "linear_delete_agent_skill",
       "root": "agentSkillDelete",
       "selection": "success",
-      "title": "Delete Agent Skill",
+      "title": "Linear: Delete Agent Skill",
       "tool_description": "Delete a Linear agent skill.  The server still enforces skill-developer preview access.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -10694,7 +10694,7 @@
       "name": "linear_save_issue",
       "root": "issueCreate",
       "selection": "success issue { id identifier title }",
-      "title": "Linear Save Issue",
+      "title": "Linear: Save Issue",
       "tool_description": "Create or update a issue.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -10714,7 +10714,7 @@
           "name": "linear_create_issue",
           "root": "issueCreate",
           "selection": "success issue { id identifier title }",
-          "title": "Create Issue"
+          "title": "Linear: Create Issue"
         },
         "update": {
           "args": [
@@ -10741,7 +10741,7 @@
           "name": "linear_update_issue",
           "root": "issueUpdate",
           "selection": "success issue { id identifier title }",
-          "title": "Update Issue"
+          "title": "Linear: Update Issue"
         }
       }
     },
@@ -10817,7 +10817,7 @@
       "name": "linear_save_comment",
       "root": "commentCreate",
       "selection": "success comment { id body }",
-      "title": "Linear Save Comment",
+      "title": "Linear: Save Comment",
       "tool_description": "Create or update a comment.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -10837,7 +10837,7 @@
           "name": "linear_create_comment",
           "root": "commentCreate",
           "selection": "success comment { id body }",
-          "title": "Create Comment"
+          "title": "Linear: Create Comment"
         },
         "update": {
           "args": [
@@ -10864,7 +10864,7 @@
           "name": "linear_update_comment",
           "root": "commentUpdate",
           "selection": "success comment { id body }",
-          "title": "Update Comment"
+          "title": "Linear: Update Comment"
         }
       }
     },
@@ -10940,7 +10940,7 @@
       "name": "linear_save_document",
       "root": "documentCreate",
       "selection": "success document { id title }",
-      "title": "Linear Save Document",
+      "title": "Linear: Save Document",
       "tool_description": "Create or update a document.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -10960,7 +10960,7 @@
           "name": "linear_create_document",
           "root": "documentCreate",
           "selection": "success document { id title }",
-          "title": "Create Document"
+          "title": "Linear: Create Document"
         },
         "update": {
           "args": [
@@ -10987,7 +10987,7 @@
           "name": "linear_update_document",
           "root": "documentUpdate",
           "selection": "success document { id title }",
-          "title": "Update Document"
+          "title": "Linear: Update Document"
         }
       }
     },
@@ -11076,7 +11076,7 @@
       "name": "linear_save_project",
       "root": "projectCreate",
       "selection": "success project { id name }",
-      "title": "Linear Save Project",
+      "title": "Linear: Save Project",
       "tool_description": "Create or update a project.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -11105,7 +11105,7 @@
           "name": "linear_create_project",
           "root": "projectCreate",
           "selection": "success project { id name }",
-          "title": "Create Project"
+          "title": "Linear: Create Project"
         },
         "update": {
           "args": [
@@ -11132,7 +11132,7 @@
           "name": "linear_update_project",
           "root": "projectUpdate",
           "selection": "success project { id name }",
-          "title": "Update Project"
+          "title": "Linear: Update Project"
         }
       }
     },
@@ -11208,7 +11208,7 @@
       "name": "linear_save_issue_label",
       "root": "issueLabelCreate",
       "selection": "success issueLabel { id name }",
-      "title": "Linear Save Issue Label",
+      "title": "Linear: Save Issue Label",
       "tool_description": "Create or update a issue label.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -11228,7 +11228,7 @@
           "name": "linear_create_issue_label",
           "root": "issueLabelCreate",
           "selection": "success issueLabel { id name }",
-          "title": "Create Issue Label"
+          "title": "Linear: Create Issue Label"
         },
         "update": {
           "args": [
@@ -11255,7 +11255,7 @@
           "name": "linear_update_issue_label",
           "root": "issueLabelUpdate",
           "selection": "success issueLabel { id name }",
-          "title": "Update Issue Label"
+          "title": "Linear: Update Issue Label"
         }
       }
     },
@@ -11342,7 +11342,7 @@
       "name": "linear_save_project_label",
       "root": "projectLabelCreate",
       "selection": "success projectLabel { id name }",
-      "title": "Linear Save Project Label",
+      "title": "Linear: Save Project Label",
       "tool_description": "Create or update a project label.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -11370,7 +11370,7 @@
           "name": "linear_create_project_label",
           "root": "projectLabelCreate",
           "selection": "success projectLabel { id name }",
-          "title": "Create Project Label"
+          "title": "Linear: Create Project Label"
         },
         "update": {
           "args": [
@@ -11405,7 +11405,7 @@
           "name": "linear_update_project_label",
           "root": "projectLabelUpdate",
           "selection": "success projectLabel { id name }",
-          "title": "Update Project Label"
+          "title": "Linear: Update Project Label"
         }
       }
     },
@@ -11481,7 +11481,7 @@
       "name": "linear_save_project_milestone",
       "root": "projectMilestoneCreate",
       "selection": "success projectMilestone { id name }",
-      "title": "Linear Save Project Milestone",
+      "title": "Linear: Save Project Milestone",
       "tool_description": "Create or update a project milestone.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -11501,7 +11501,7 @@
           "name": "linear_create_project_milestone",
           "root": "projectMilestoneCreate",
           "selection": "success projectMilestone { id name }",
-          "title": "Create Project Milestone"
+          "title": "Linear: Create Project Milestone"
         },
         "update": {
           "args": [
@@ -11528,7 +11528,7 @@
           "name": "linear_update_project_milestone",
           "root": "projectMilestoneUpdate",
           "selection": "success projectMilestone { id name }",
-          "title": "Update Project Milestone"
+          "title": "Linear: Update Project Milestone"
         }
       }
     },
@@ -11604,7 +11604,7 @@
       "name": "linear_save_attachment",
       "root": "attachmentCreate",
       "selection": "success attachment { id title url }",
-      "title": "Linear Save Attachment",
+      "title": "Linear: Save Attachment",
       "tool_description": "Create or update a attachment.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -11624,7 +11624,7 @@
           "name": "linear_create_attachment",
           "root": "attachmentCreate",
           "selection": "success attachment { id title url }",
-          "title": "Create Attachment"
+          "title": "Linear: Create Attachment"
         },
         "update": {
           "args": [
@@ -11651,7 +11651,7 @@
           "name": "linear_update_attachment",
           "root": "attachmentUpdate",
           "selection": "success attachment { id title url }",
-          "title": "Update Attachment"
+          "title": "Linear: Update Attachment"
         }
       }
     },
@@ -11727,7 +11727,7 @@
       "name": "linear_save_project_update",
       "root": "projectUpdateCreate",
       "selection": "success projectUpdate { id health body }",
-      "title": "Linear Save Project Update",
+      "title": "Linear: Save Project Update",
       "tool_description": "Create or update a project update.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -11747,7 +11747,7 @@
           "name": "linear_create_project_update",
           "root": "projectUpdateCreate",
           "selection": "success projectUpdate { id health body }",
-          "title": "Create Project Update"
+          "title": "Linear: Create Project Update"
         },
         "update": {
           "args": [
@@ -11774,7 +11774,7 @@
           "name": "linear_update_project_update",
           "root": "projectUpdateUpdate",
           "selection": "success projectUpdate { id health body }",
-          "title": "Update Project Update"
+          "title": "Linear: Update Project Update"
         }
       }
     },
@@ -11850,7 +11850,7 @@
       "name": "linear_save_custom_view",
       "root": "customViewCreate",
       "selection": "success customView { id name }",
-      "title": "Linear Save Custom View",
+      "title": "Linear: Save Custom View",
       "tool_description": "Create or update a custom view.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -11870,7 +11870,7 @@
           "name": "linear_create_custom_view",
           "root": "customViewCreate",
           "selection": "success customView { id name }",
-          "title": "Create Custom View"
+          "title": "Linear: Create Custom View"
         },
         "update": {
           "args": [
@@ -11897,7 +11897,7 @@
           "name": "linear_update_custom_view",
           "root": "customViewUpdate",
           "selection": "success customView { id name }",
-          "title": "Update Custom View"
+          "title": "Linear: Update Custom View"
         }
       }
     },
@@ -11973,7 +11973,7 @@
       "name": "linear_save_template",
       "root": "templateCreate",
       "selection": "success template { id name }",
-      "title": "Linear Save Template",
+      "title": "Linear: Save Template",
       "tool_description": "Create or update a template.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -11993,7 +11993,7 @@
           "name": "linear_create_template",
           "root": "templateCreate",
           "selection": "success template { id name }",
-          "title": "Create Template"
+          "title": "Linear: Create Template"
         },
         "update": {
           "args": [
@@ -12020,7 +12020,7 @@
           "name": "linear_update_template",
           "root": "templateUpdate",
           "selection": "success template { id name }",
-          "title": "Update Template"
+          "title": "Linear: Update Template"
         }
       }
     },
@@ -12096,7 +12096,7 @@
       "name": "linear_save_issue_relation",
       "root": "issueRelationCreate",
       "selection": "success issueRelation { id type }",
-      "title": "Linear Save Issue Relation",
+      "title": "Linear: Save Issue Relation",
       "tool_description": "Create or update a issue relation.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -12116,7 +12116,7 @@
           "name": "linear_create_issue_relation",
           "root": "issueRelationCreate",
           "selection": "success issueRelation { id type }",
-          "title": "Create Issue Relation"
+          "title": "Linear: Create Issue Relation"
         },
         "update": {
           "args": [
@@ -12143,7 +12143,7 @@
           "name": "linear_update_issue_relation",
           "root": "issueRelationUpdate",
           "selection": "success issueRelation { id type }",
-          "title": "Update Issue Relation"
+          "title": "Linear: Update Issue Relation"
         }
       }
     },
@@ -12219,7 +12219,7 @@
       "name": "linear_save_initiative",
       "root": "initiativeCreate",
       "selection": "success initiative { id name }",
-      "title": "Linear Save Initiative",
+      "title": "Linear: Save Initiative",
       "tool_description": "Create or update a initiative.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -12239,7 +12239,7 @@
           "name": "linear_create_initiative",
           "root": "initiativeCreate",
           "selection": "success initiative { id name }",
-          "title": "Create Initiative"
+          "title": "Linear: Create Initiative"
         },
         "update": {
           "args": [
@@ -12266,7 +12266,7 @@
           "name": "linear_update_initiative",
           "root": "initiativeUpdate",
           "selection": "success initiative { id name }",
-          "title": "Update Initiative"
+          "title": "Linear: Update Initiative"
         }
       }
     },
@@ -12342,7 +12342,7 @@
       "name": "linear_save_initiative_update",
       "root": "initiativeUpdateCreate",
       "selection": "success initiativeUpdate { id health body }",
-      "title": "Linear Save Initiative Update",
+      "title": "Linear: Save Initiative Update",
       "tool_description": "Create or update a initiative update.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -12362,7 +12362,7 @@
           "name": "linear_create_initiative_update",
           "root": "initiativeUpdateCreate",
           "selection": "success initiativeUpdate { id health body }",
-          "title": "Create Initiative Update"
+          "title": "Linear: Create Initiative Update"
         },
         "update": {
           "args": [
@@ -12389,7 +12389,7 @@
           "name": "linear_update_initiative_update",
           "root": "initiativeUpdateUpdate",
           "selection": "success initiativeUpdate { id health body }",
-          "title": "Update Initiative Update"
+          "title": "Linear: Update Initiative Update"
         }
       }
     },
@@ -12465,7 +12465,7 @@
       "name": "linear_save_initiative_relation",
       "root": "initiativeRelationCreate",
       "selection": "success initiativeRelation { id sortOrder }",
-      "title": "Linear Save Initiative Relation",
+      "title": "Linear: Save Initiative Relation",
       "tool_description": "Create or update a initiative relation.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -12485,7 +12485,7 @@
           "name": "linear_create_initiative_relation",
           "root": "initiativeRelationCreate",
           "selection": "success initiativeRelation { id sortOrder }",
-          "title": "Create Initiative Relation"
+          "title": "Linear: Create Initiative Relation"
         },
         "update": {
           "args": [
@@ -12512,7 +12512,7 @@
           "name": "linear_update_initiative_relation",
           "root": "initiativeRelationUpdate",
           "selection": "success initiativeRelation { id sortOrder }",
-          "title": "Update Initiative Relation"
+          "title": "Linear: Update Initiative Relation"
         }
       }
     },
@@ -12588,7 +12588,7 @@
       "name": "linear_save_workflow_state",
       "root": "workflowStateCreate",
       "selection": "success workflowState { id name }",
-      "title": "Linear Save Workflow State",
+      "title": "Linear: Save Workflow State",
       "tool_description": "Create or update a workflow state.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -12608,7 +12608,7 @@
           "name": "linear_create_workflow_state",
           "root": "workflowStateCreate",
           "selection": "success workflowState { id name }",
-          "title": "Create Workflow State"
+          "title": "Linear: Create Workflow State"
         },
         "update": {
           "args": [
@@ -12635,7 +12635,7 @@
           "name": "linear_update_workflow_state",
           "root": "workflowStateUpdate",
           "selection": "success workflowState { id name }",
-          "title": "Update Workflow State"
+          "title": "Linear: Update Workflow State"
         }
       }
     },
@@ -12711,7 +12711,7 @@
       "name": "linear_save_release",
       "root": "releaseCreate",
       "selection": "success release { id name url }",
-      "title": "Linear Save Release",
+      "title": "Linear: Save Release",
       "tool_description": "Create or update a release.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -12731,7 +12731,7 @@
           "name": "linear_create_release",
           "root": "releaseCreate",
           "selection": "success release { id name url }",
-          "title": "Create Release"
+          "title": "Linear: Create Release"
         },
         "update": {
           "args": [
@@ -12758,7 +12758,7 @@
           "name": "linear_update_release",
           "root": "releaseUpdate",
           "selection": "success release { id name url }",
-          "title": "Update Release"
+          "title": "Linear: Update Release"
         }
       }
     },
@@ -12834,7 +12834,7 @@
       "name": "linear_save_release_note",
       "root": "releaseNoteCreate",
       "selection": "success releaseNote { id title url }",
-      "title": "Linear Save Release Note",
+      "title": "Linear: Save Release Note",
       "tool_description": "Create or update a release note.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -12854,7 +12854,7 @@
           "name": "linear_create_release_note",
           "root": "releaseNoteCreate",
           "selection": "success releaseNote { id title url }",
-          "title": "Create Release Note"
+          "title": "Linear: Create Release Note"
         },
         "update": {
           "args": [
@@ -12881,7 +12881,7 @@
           "name": "linear_update_release_note",
           "root": "releaseNoteUpdate",
           "selection": "success releaseNote { id title url }",
-          "title": "Update Release Note"
+          "title": "Linear: Update Release Note"
         }
       }
     },
@@ -12957,7 +12957,7 @@
       "name": "linear_save_agent_skill",
       "root": "agentSkillCreate",
       "selection": "success agentSkill { id title }",
-      "title": "Linear Save Agent Skill",
+      "title": "Linear: Save Agent Skill",
       "tool_description": "Create or update a agent skill.  Supply id to update; omit id to create.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -12977,7 +12977,7 @@
           "name": "linear_create_agent_skill",
           "root": "agentSkillCreate",
           "selection": "success agentSkill { id title }",
-          "title": "Create Agent Skill"
+          "title": "Linear: Create Agent Skill"
         },
         "update": {
           "args": [
@@ -13004,7 +13004,7 @@
           "name": "linear_update_agent_skill",
           "root": "agentSkillUpdate",
           "selection": "success agentSkill { id title }",
-          "title": "Update Agent Skill"
+          "title": "Linear: Update Agent Skill"
         }
       }
     },
@@ -13080,7 +13080,7 @@
       "name": "linear_save_milestone",
       "root": "projectMilestoneCreate",
       "selection": "success projectMilestone { id name }",
-      "title": "Linear Save Project Milestone",
+      "title": "Linear: Save Milestone",
       "tool_description": "Create or update a project milestone.  Supply id to update; omit id to create.  Alias of linear_save_project_milestone.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -13100,7 +13100,7 @@
           "name": "linear_create_project_milestone",
           "root": "projectMilestoneCreate",
           "selection": "success projectMilestone { id name }",
-          "title": "Create Project Milestone"
+          "title": "Linear: Create Project Milestone"
         },
         "update": {
           "args": [
@@ -13127,7 +13127,7 @@
           "name": "linear_update_project_milestone",
           "root": "projectMilestoneUpdate",
           "selection": "success projectMilestone { id name }",
-          "title": "Update Project Milestone"
+          "title": "Linear: Update Project Milestone"
         }
       }
     },
@@ -13203,7 +13203,7 @@
       "name": "linear_save_status_update",
       "root": "projectUpdateCreate",
       "selection": "success projectUpdate { id health body }",
-      "title": "Linear Save Project Update",
+      "title": "Linear: Save Status Update",
       "tool_description": "Create or update a project update.  Supply id to update; omit id to create.  Alias of linear_save_project_update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected.",
       "variants": {
         "create": {
@@ -13223,7 +13223,7 @@
           "name": "linear_create_project_update",
           "root": "projectUpdateCreate",
           "selection": "success projectUpdate { id health body }",
-          "title": "Create Project Update"
+          "title": "Linear: Create Project Update"
         },
         "update": {
           "args": [
@@ -13250,7 +13250,7 @@
           "name": "linear_update_project_update",
           "root": "projectUpdateUpdate",
           "selection": "success projectUpdate { id health body }",
-          "title": "Update Project Update"
+          "title": "Linear: Update Project Update"
         }
       }
     },
@@ -13313,7 +13313,7 @@
       "name": "linear_delete_status_update",
       "root": "projectUpdateDelete",
       "selection": "success",
-      "title": "Delete Project Update",
+      "title": "Linear: Delete Status Update",
       "tool_description": "Delete a Linear project update.  Alias of linear_delete_project_update.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -13389,7 +13389,7 @@
       "name": "linear_mark_notification",
       "root": "notificationUpdate",
       "selection": "success notification { id category }",
-      "title": "Update Notification",
+      "title": "Linear: Mark Notification",
       "tool_description": "Update a Linear notification.  Alias of linear_update_notification.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     },
     {
@@ -13452,7 +13452,7 @@
       "name": "linear_create_attachment_from_upload",
       "root": "attachmentCreate",
       "selection": "success attachment { id title url }",
-      "title": "Create Attachment",
+      "title": "Linear: Create Attachment From Upload",
       "tool_description": "Create an attachment record for an already uploaded asset.  Set input.url to the assetUrl from linear_prepare_attachment_upload and input.issueId to the target issue.  This does not upload file bytes.  Uses this seat's Linear app and existing API limits.  Requires a unique idempotency key; unknown outcomes are never replayed automatically.  Fleet ownership labels remain protected."
     }
   ],

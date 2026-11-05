@@ -6,7 +6,9 @@ description: >-
 
 # Fleet DNS and Registrars (ALL AGENTS)
 
-> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **This install is for `KIMI`.**  Chat tag `[KIMI·session8]`.  Notes `Kimi`.  Branches `kimi/`.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `KIMI`, credential in Infisical Fleet-OPS `/zulip` (`KIMI_ZULIP_EMAIL`, `KIMI_ZULIP_KEY`, `KIMI_ZULIP_SITE`).  Session tag `[KIMI·session8]`, and the `simple-chat` CLI writes it for you.
+
+> **Runtime (Kimi Code).**  Kimi Code CLI runs from `~/.local/bin/kimi` with config in `~/.kimi-code`.  Skills installed here (`~/.kimi-code/skills`) are loaded by Kimi Code.  Start Kimi inside a lane (`~/apps/lanes/<Repo>/kimi-<slug>`).  A seat a launcher assigned beats the KIMI default.
 
 
 Cloudflare is the DNS manager for every fleet domain.  Registrar and Cloudflare account are separate.
@@ -41,7 +43,7 @@ Each account's login, and the zones each account holds, are private inventory in
 
 | Registrar | Use for |
 |-----------|---------|
-| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` lives in Infisical Fleet-OPS; read it only with `fleet-secrets get NAMECHEAP_API_KEY` (do not read process environment variables for it, and never print or commit the value).  If Infisical is unreachable or the key is missing, stop with a clear error — do not substitute another source. |
+| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` lives in Infisical Fleet-OPS; read it only with the consumer's own scoped Infisical service token (the `service-tokens` pack) — or the shared `fleet-secrets get NAMECHEAP_API_KEY` reader when it has a working login on this host (do not read process environment variables for it, and never print or commit the value).  If Infisical is unreachable or the key is missing, stop with a clear error — do not substitute another source. |
 | UnstoppableDomains | The operator's private store names which apex lives here |
 | Cloudflare registrar | The ST product domains only (assignment in the private store) |
 

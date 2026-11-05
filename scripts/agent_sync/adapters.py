@@ -438,7 +438,10 @@ def pin_state(paths: L.SeatPaths, claude: str | None) -> dict[str, Any]:
     """Why the wake pin does or does not match the binary (AFC-256).  `pinned()` is a plain bool and
     cannot tell a seat that was never pinned from one whose pin went stale, and the two need different
     answers from the owner:  the first is a fresh install waiting on manual test 3, the second means a
-    claude auto-update moved the realpath and every wake since has been degrading to inbox-only.
+    claude auto-update moved the realpath out from under the pin.  The state is reported, never
+    repaired here -- no read ever rewrites a pin -- and which states hold a wake is the daemon's
+    call:  since the owner's 2026-11-03 ruling a drifted pin is advisory (the daemon logs the drift
+    and runs the installed binary), while a seat that was never pinned still waits.
 
     `why` is None when pinned, else `no_claude` (no binary to pin), `not_pinned` (nothing recorded yet)
     or `pin_stale` (a pin was recorded and the binary has since moved).  `pinned_claude` is the realpath
@@ -534,6 +537,7 @@ def pin_candidate(paths: L.SeatPaths, claude: str, now: float) -> str | None:
 # (owner 2026-10-11:  cost is not the concern;  spam and cascade are).
 #
 #     muse exec --model muse-spark-1.3-contributor --reasoning-effort minimal
+#               --contributor-mode on
 #               --prompt-file <prompt> --output-schema <schema>
 #               --json --approval-mode never
 #               --disable-shell --disable-write --disable-web-tools
@@ -709,7 +713,12 @@ def muse_argv(muse: str, model: str) -> list[str]:
 
     The three path slots are filled in by MuseRunner.run against the wake dir;  the fleet tag set
     (the enum of the schema's route seat) travels in the schema file itself (wakes.schema_text),
-    which is why it is not an argv parameter here."""
+    which is why it is not an argv parameter here.
+
+    Contributor mode is named on the command line, not inherited (owner directive, 2026-11-03):
+    the wake's model is the contributor tier, and `--contributor-mode on` is a per-run override
+    that is never persisted, so naming it keeps the run on contributor terms even if the ambient
+    settings.json flag ever flips off under it."""
     return [
         muse,
         "exec",
@@ -721,6 +730,8 @@ def muse_argv(muse: str, model: str) -> list[str]:
         MUSE_REASONING_EFFORT,
         "--provider",
         MUSE_PROVIDER,
+        "--contributor-mode",
+        "on",
         "--prompt-file",
         MUSE_PROMPT_SLOT,
         "--output-schema",
@@ -748,6 +759,11 @@ def muse_env(
 
     Every ANTHROPIC_*, CLAUDE_*, AGENT_*, ZULIP_* and MUSE_* variable is dropped, so the run uses
     the muse subscription login the daemon's user already has and never a second seat's identity.
+    One credential is carried through on purpose:  META_API_KEY, when the environment the daemon
+    itself runs in carries one.  A headless run cannot read the login Keychain item (the consent
+    prompt is unreachable to it), so the daemon's environment is the injection point the owner
+    authorized (2026-11-03);  the key stays out of config files and off the command line, and an
+    absent or empty value invents nothing -- the run then uses the subscription login as before.
     With `seat` (a wake, or test-wake) the listener is the reference launcher (FLEET-PROTOCOL
     Identity Rules):  it names the seat it is waking and clears every inherited identity variable
     first.  The wake has no tools and posts nothing itself (the daemon posts its validated reply as
@@ -761,6 +777,9 @@ def muse_env(
         "TMPDIR": env.get("TMPDIR") or "/tmp",
         "PATH": wake_path,
     }
+    api_key = env.get("META_API_KEY")
+    if api_key:
+        out["META_API_KEY"] = api_key
     if seat:
         out.update(
             {
@@ -1027,9 +1046,12 @@ def muse_pin_state(paths: L.SeatPaths, muse: str | None) -> dict[str, Any]:
     yet), `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing
     about this command), `pin_stale` (the binary moved, or the command, contract or schema changed
     under it), or `pin_unreadable` (the contract or schema could not be read, so nothing can be
-    verified).  A seat whose muse pin has never been verified HOLDS and says why:  it never
-    self-heals, because the pin records that a person checked this build's wake contract.  The
-    last three are named apart because the remediation differs:  a moved binary and a changed
+    verified).  The state is reported, never repaired here:  no read ever rewrites a pin, because
+    the pin records that a person checked this build's wake contract.  Which states hold a wake
+    and which merely drift is the daemon's call -- since the owner's 2026-11-03 ruling a recorded
+    pin that drifted (`pin_stale`, `pin_unverified`) is advisory and the wake runs on the
+    installed build, while no pin, no binary and an unreadable contract still hold.  The last
+    three are named apart because the remediation differs:  a moved binary and a changed
     contract both end in re-pinning, an unreadable contract does not, and only one of them is a
     moved binary."""
     if not muse:
@@ -1423,8 +1445,8 @@ def quota_red(provider: str, now: float | None = None, path: str | None = None) 
 # --------------------------------------------------------------------------------------------
 #
 #   mcode exec --prompt-mode work --permission off --output-format json
-#             --model minimax/MiniMax-M3.1-Flash
-#             --output-schema <schema> --max-steps N --timeout 4m --cwd <inert dir>
+#             --model minimax/MiniMax-M3.1-Flash --effort low
+#             --output-schema <schema> --max-steps N --timeout 210s --cwd <inert dir>
 #             -o <last-message file> --prompt
 #
 # The same contract shape as muse:  `--output-schema` shapes the final answer, `--permission off`
@@ -1462,9 +1484,27 @@ MCODE_MAX_STEPS = 16
 # timeout here means no answer at all rather than a slower answer.  The margin over the measured
 # run is therefore worth more than the 30s it adds to a path that already spent the primary's
 # 240s.  It is still 30s under the outer deadline, so the daemon's kill stays a backstop.
-MCODE_TIMEOUT = "3m30s"
+#
+# The single-unit form is load-bearing, not style:  mcode 0.6.12 rejects the compound duration
+# "3m30s" at argv validation (verified live, 2026-11-03), so the same 210 seconds is spelled
+# "210s", the form mcode accepts.
+MCODE_TIMEOUT = "210s"
 MCODE_PROMPT_MODE = "work"
 MCODE_PERMISSION = "off"
+# The reasoning effort, named on every fallback run (owner directive, 2026-11-03:  "don't do
+# default").  An unset effort is not a neutral middle:  MiniMax's own default is MAX, the
+# highest and most expensive thinking tier, so a fallback wake left unset would pay the top
+# reasoning price for a bounded four-message prompt.  The owner's determination is that
+# MiniMax-M3.1 at its lowest effort is cheaper and faster than M3 at none, so the floor is
+# asked for explicitly rather than inherited from whatever the install's default happens
+# to be.
+#
+# The floor's NAME differs from muse's, because the two runtimes' vocabularies differ:
+# muse's lowest tier is `minimal`, but mcode 0.6.12 has no `minimal` level at all and
+# rejects it at argv validation ("Available levels: default, low, medium, high, xhigh,
+# max";  verified live, 2026-11-03).  mcode's lowest named tier is `low`.  Do not unify
+# the two constants:  each names the floor its own runtime actually accepts.
+MCODE_REASONING_EFFORT = "low"
 # The fallback's PROMPT BOUND, and the reason the step budget is provable at all.  mcode has no
 # sandbox and no tool-deny switch, so `--max-steps` is the ONLY bound on how much the fallback may
 # act, and the step cost grows with the prompt:  the daemon can build a wake prompt with up to
@@ -1518,6 +1558,8 @@ def mcode_argv(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> list[str]:
         "json",
         "--model",
         model,
+        "--effort",
+        MCODE_REASONING_EFFORT,
         "--input",
         "-",
         "--output-schema",
@@ -1769,8 +1811,10 @@ def mcode_wake_fingerprint(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> str 
 def mcode_pin_state(
     paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAULT_MODEL
 ) -> dict[str, Any]:
-    """Why the fallback pin does or does not match the command.  Same never-self-heal rule as the
-    other two, on its own file, so a fallback is only trusted once a person verified it.
+    """Why the fallback pin does or does not match the command.  Same reporting discipline as the
+    other two, on its own file:  the states are named apart, never repaired on read, and the
+    daemon decides which of them hold the fallback (a recorded pin that drifted is advisory
+    since the owner's 2026-11-03 ruling, exactly as for the primaries).
 
     `why` is None when pinned, else `no_mcode` (no binary to pin), `not_pinned` (nothing recorded),
     `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing about

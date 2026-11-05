@@ -87,10 +87,31 @@ struct OpsActionSheet: View {
                 }
                 planBlock(outcome, heading: "Running")
             }
-        case .finished(_, let outcome):
+        case .finished(let action, let outcome):
             VStack(alignment: .leading, spacing: 8) {
+                if controller.isRechecking {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Checking the recorded update; no update is started.")
+                            .font(.callout)
+                    }
+                }
                 resultLine(outcome)
-                if !outcome.commands.isEmpty {
+                if let invocationID = outcome.invocationID {
+                    Text("Service invocation: \(invocationID)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if case .serverUpdate = action, outcome.kind == .submitted,
+                   outcome.invocationID == nil || outcome.baselineStartMonotonic == nil {
+                    Text("A complete service invocation receipt was not captured, so this request cannot be rechecked.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let logText = outcome.logText {
+                    logBlock(logText, lines: outcome.logLines)
+                } else if !outcome.commands.isEmpty {
                     planBlock(outcome, heading: outcome.kind == .planned ? "The plan" : "What ran")
                 }
             }
@@ -140,6 +161,23 @@ struct OpsActionSheet: View {
         }
     }
 
+    /// A logs run's journal text:  scrollable and selectable,  so the owner can copy it.
+    private func logBlock(_ text: String, lines: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(lines.map { "The last \($0) journal lines" } ?? "The last journal lines")
+                .font(.headline)
+            ScrollView {
+                Text(text.isEmpty ? "The journal held no lines for this unit." : text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 320)
+            .padding(10)
+            .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
     /// The old and the new value of a knob write,  and where the old one came from,  so the
     /// owner sees what the write replaces before approving it.
     private func knobChangeBlock(_ change: OpsKnobChange, finished: Bool) -> some View {
@@ -183,6 +221,7 @@ struct OpsActionSheet: View {
 
     private func resultTitle(_ outcome: OpsOutcome) -> String {
         switch outcome.kind {
+        case .submitted: return "Submitted; completion is not yet verified."
         case .done: return outcome.isSuccess(for: .yes) ? "Done." : "The helper said done, but did not say it worked."
         case .planned: return "The plan could not be confirmed."
         case .refused: return "The helper refused the action."
@@ -211,6 +250,10 @@ struct OpsActionSheet: View {
                 Button("Close") { }
                     .disabled(true)
             case .idle, .finished, .failed:
+                if controller.canRecheckUpdate {
+                    Button("Recheck Update") { controller.recheckSubmittedUpdate() }
+                        .disabled(controller.isRechecking)
+                }
                 Button("Close") { controller.dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
