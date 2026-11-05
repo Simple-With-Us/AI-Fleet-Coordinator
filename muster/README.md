@@ -2,38 +2,69 @@
 
 Muster is the fleet owner's native SwiftUI macOS 14+ control app.  It shows what runs on the Mac and what runs on the server as two named places, and it acts on each through a route that names the machine.
 
+## Every Panel
+
+Every place in the window's sidebar has one row here, and `MusterTests/ReadmeSurfaceTests.swift` fails when a place in `MusterDestination` (`Muster/Model/MusterNavigation.swift`) has no row or a row names no place.  About says which machine the panel's data describes.  The last column says what the panel can change and by which route.
+
+A route marked **plan and Touch ID** runs the helper with `--plan` first, which changes nothing, shows that plan in a sheet, asks Touch ID, plans again and refuses if the plan changed, and only then runs `--yes`.  One such action runs at a time, app-wide.  Everything that changes the server goes over `/usr/bin/ssh` to the `fleet-ops-ctl` alias, whose forced command on the server runs `scripts/fleet-ops-control.py --from-ssh` and checks the allowlist again;  the server's helper writes its own audit row there, and Muster adds one marked `"via": "muster"` to the Mac's `~/.local/state/fleet-tools/ops-audit.jsonl`.  The allowlist is `scripts/fleet-ops-control.json`.
+
+| Panel | About | Data From | How Fresh | Can Change, And The Route |
+| --- | --- | --- | --- | --- |
+| Overview | The Mac | The last engine run's cells, the same cells Compliance Grid paints, and Drift History's count | Each engine run;  a run that could not be trusted leaves every count unknown, never zero | Nothing;  each card opens its panel |
+| Compliance Grid | The Mac:  every rule in `fleet-seats.json` is collected on the Mac today | `/usr/bin/python3 -m fleet_config status --json --no-doctor`, run on the Mac from the repository's `scripts/` against `fleet-seats.json` and `fleet-apps.json` | The engine runs at launch, when a watched file changes, every ten minutes and on the toolbar's Refresh;  each cell shows its own age | A red cell's fix (see Apply Preview):  `fleet_config apply SEAT KIND --plan`, one confirmation, then `--yes`, on the Mac;  Touch ID for persistence-class writes is inside the engine |
+| Apps & Work | Across the fleet | `fleet-view status --json` (`scripts/fleet_view/`, run with `/usr/bin/python3` on the Mac), which reads `fleet-apps.json`, git in each lane, `gh` and `simple-board list`, plus the doctor's `report.json` | On open and on Refresh;  it shows the collector's own time, and a failed refresh clears the lists to Unknown | Nothing |
+| Seats | The Mac's listener, and Zulip | The listener's `~/.agent-sync/listener/status.json`, and `simple-chat users`, `presence` and `search` | On open, every five minutes and on Refresh;  a listener file over 60 seconds old reads as unknown | Nothing:  `ChatCLI` refuses any verb but those three |
+| Drift History | The Mac | `~/Library/Application Support/Muster/drift-history.json`, which the drift monitor writes when a cell turns red | As each turn happens | Clear History empties the list on the Mac |
+| Services | The Mac | pm2 (through `node`), `/bin/launchctl`, the BotFleet MCP Server's own health endpoint and BotFleet Server's own local API, read live | Every two minutes, on open and on Refresh | pm2 rows and allowlisted LaunchAgents:  Start, Stop and Restart through `fleet-ops-control.py` on the Mac, plan and Touch ID.  BotFleet Server and any LaunchAgent the allowlist does not name:  the direct route (`launchctl`, and BotFleet Server's own API for its Stop), with no plan, no Touch ID and no audit row.  BotFleet Server's Start At Mac Login, and Launch Muster At Login |
+| Wake & Listener | The Mac's listener | `~/.agent-sync/listener.toml`, the listener's `status.json` and `pause.json`, wake pins and `wakes.jsonl`, and `simple-chat daemon status --json` | On open and on Refresh | `listener.toml`, written only after `simple-chat daemon check-config` accepts the candidate, then `daemon reload`;  pause, resume, test wake and pin through `simple-chat daemon`, each after a confirmation.  Only seats the partition gives the Mac are changed;  a seat whose holder is not known keeps only its pause |
+| Controls | Across the fleet | The knob registry in `INFISICAL.md` and the Mac's last-known-good copy `~/.local/state/fleet-knobs/lkg.json`;  secret names and the doctor's booleans from `fleet-secrets names` and `fleet-secrets doctor --json`;  Recall Settings from the recall service | On open and on Refresh;  a copy older than an hour is stale and one older than 48 hours is not a reading | A non-secret knob:  `python3 -m fleet_knobs set` or `unset` on the Mac, plan and Touch ID, changing a value every machine reads.  A secret is never edited here |
+| Seat Detail | The Mac | The engine's answers for the MiniMax seat, and `~/.minimax` on disk (allowlisted `config.yaml` keys, plugins, hooks and agents) | Each engine run | Nothing |
+| Server Status | The server | `~/.local/state/fleet-tools/server-status.json`:  the server's `fleet-server-status.timer` writes it every 15 minutes, and the Mac's `com.jay.fleet-tools-doctor` copies it every 15 minutes | On open, after an action and on Refresh;  a report over 45 minutes old is not current | Units the report marks controllable:  Start, Stop, Restart and Logs;  a Coolify application named by its label:  Redeploy.  All over `fleet-ops-ctl`, plan and Touch ID |
+| Resource Limits | The server | `server resource-status coding` over `fleet-ops-ctl`:  a read-only plan, with no Touch ID | On open and on Refresh;  the receipt's age shows in seconds | One coding resource field per review:  `server resource-policy`, checked against the revision read, plan and Touch ID |
+| Hosts | The Mac and the server | `~/.local/state/fleet-tools/report.json` (`com.jay.fleet-tools-doctor`, every 15 minutes, reaching the server over the read-only `fleet-tools-ro` alias) and `worker-health.json` (`com.jay.fleet-worker-health`, every 15 minutes) | On open and on Refresh;  a report over 45 minutes old reads as unknown | Nothing |
+| Virtual Machines | Each fleet VM | `~/.local/state/fleet-tools/vms/*.json`, pulled by `fleet-tools-doctor.py --vms`;  the doctor's LaunchAgent in this repository does not pass `--vms`, so nothing here schedules the pull | On open and on Refresh;  a report over 45 minutes old reads as unknown | Nothing, by the owner's call |
+| Operations | The Mac and the server | `mac-services.json` (`com.jay.fleet-mac-services`, every five minutes, or a live read on Refresh), the allowlist, the last 50 rows of the Mac's `ops-audit.jsonl`, and Hog Hunter's `hoghunter-mac.json` | On open and on Refresh;  the agents' file is current for 15 minutes and Hog Hunter's for five | LaunchAgents:  Start, Stop and Restart on the Mac, which the helper refuses for an agent the allowlist does not name;  server updates (`server update NAME`) over `fleet-ops-ctl`.  Both plan and Touch ID |
+
+Settings holds the repository root and the scripts directory Muster runs from, the Zulip seat Seats reads as, the theme and Short Menu Bar Text.
+
+Muster stores no credential.  It runs `/usr/bin/python3` for the engine, `fleet-view`, `fleet-ops-control.py` and `fleet_knobs`;  `simple-chat` for Seats and Wake & Listener;  `fleet-secrets` for Controls;  pm2 through `node`, and `/bin/launchctl`, for the Services panel's reads and its direct route;  and `/usr/bin/ssh` to `fleet-ops-ctl` for the server.  Two places do read a credential, by its key name through `fleet-secrets get`, for one request, and never show or store it:  Controls' Recall Settings, for the admin token whose key name it is given, and a BotFleet host configured with an auth token.
+
 ## The Menu Bar
 
 The menu bar item names both places:  `Mac OK · Server OK`, `Mac 2 · Server OK` for two things needing attention, `Mac 2+` when something else could not be read as well, and `?` for a place not read inside its window, or one with nothing wrong and some part not read.  Short Menu Bar Text in Settings shortens it to `M OK · S ?`.
 
 The menu has a The Mac section and a The Server section, and everything sits under the place it runs on.  Opening it reads memory and never contacts the server.  Ask The Server Now is the one thing that does, only on a click, and an answer never turns the bar to OK, because only a current report does that.
 
+Under The Mac, the menu says when the Mac was last checked and counts its services.  A service that failed or is not known moves to the top.  Seat Setup lists red and drifted cells, each opening Compliance Grid.  Services On The Mac holds every service with the Start, Restart and Stop its state allows, and Check The Mac Again reads everything again.  Under The Server, it says when the server wrote its report and when the Mac copied it, counts timers and apps, and gives the fullest disk, memory and any high load.  Timers On The Server offers Restart or Start, and Read Logs, from the allowlist;  Stop stays in the Server Status panel, because stopping the report timer would blind this section.  When the report is not current the section says why, and it offers Fetch From The Server Again… (a plan to restart the Mac's doctor agent) where a new fetch could help.
+
+The count beside a place adds up what needs attention there.  On the Mac:  red and drifted cells, services that failed or are not known, and a stopped fetch.  On the server:  units that are not active, apps that exited or are unhealthy, each disk and the memory at 85% or more, and a load of two per cpu or more.  A part that was not read is never counted as zero.
+
 An action that ends in … opens a sheet or an alert first.  pm2 rows, allowlisted LaunchAgents and everything on the server go through the plan and Touch ID, from the menu and the window alike.  BotFleet Server and any LaunchAgent the allowlist does not name stay on the direct route, with no plan, no Touch ID and no audit row.  Their Stop asks first, and BotFleet Server's Restart asks first only when a fresh read finds work in flight.
 
 ## Scope
 
-- `Muster/` contains the app entry point, the Fleet Overview grid (with seat/problem filtering and compliance rules from `fleet-seats.json`), the Fleet View (AFC-394 & AFC-536:  Production/Library/Infra/Marketing apps and Coding Apps from `fleet-apps.json`, plus lanes, open PRs, and Linear claims per seat from `scripts/fleet_view/` and `simple-board`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host from `~/.local/state/fleet-tools/report.json`, filterable across Coding App CLIs, Fleet Tools, Dev Tools, Services & Harnesses, and Checkouts & Presence), the Server Status panel (AFC-548:  what the server's own collector says about Coolify, its busiest processes, and the drift of the fleet's config files, from `~/.local/state/fleet-tools/server-status.json`), the Seat Activity panel (AFC-395:  open sessions, listener state, Zulip presence and the last Zulip post, per seat), the Wake Settings panel (live Operator status, held-back wake queues, chat nudges, CodeCaps quota, and wake ledger reasons via `scripts/simple-chat`), the Controls panel (Infisical fleet knobs with search and category filters), and the Drift History panel (AFC-390:  every cell that turned red, kept in `~/Library/Application Support/Muster/drift-history.json`).
+- `Muster/` holds the app:  every panel in the table under Every Panel, the menu bar item, Settings, and the models behind them, which `MusterTests/` covers without a view.
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
 
-The app reads no credentials of its own.  It has no sample fleet records or inferred health state.  The CLIs it runs are `fleet-config` (see Apply Preview below), only when asked, and `simple-chat`, from the Seat Activity panel and Wake Settings panel.  Collector and grid integration remain separate work.
+Muster has no sample fleet records and no inferred health state:  a source that cannot be read shows as unknown, never as a pass or a zero.  What it runs, and the two places it reads a credential, are under Every Panel.
 
-The Fleet Hosts panel reads one local file and runs nothing:  the doctor's own report, which `com.jay.fleet-tools-doctor` writes every fifteen minutes and which covers the Mac and the server together.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and a host the doctor could not reach reads as unknown rather than as a failure.
+The Hosts panel reads two local files and runs nothing:  the doctor's own report, which `com.jay.fleet-tools-doctor` writes every fifteen minutes and which covers the Mac and the server together, and the Worker Health report.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and a host the doctor could not reach reads as unknown rather than as a failure.
 
 ## Server Status
 
-The Server Status panel (AFC-548) reads one local file and runs nothing:  the server's own collector report, `~/.local/state/fleet-tools/server-status.json`, which `scripts/fleet-server-status.py` writes on the server.  It shows the Coolify resources and their state, the busiest processes on the host, and the watched config files whose drift is not `unchanged`.
+The Server Status panel (AFC-548) reads one local file:  the server's own collector report, `~/.local/state/fleet-tools/server-status.json`, which `scripts/fleet-server-status.py` writes on the server and the Mac's doctor copies to the Mac.  It shows the host's load, memory and disks, the units the allowlist names or watches, the Coolify resources and their state, the busiest processes on the host, and the watched config files whose drift is not `unchanged`.  Its Start, Stop, Restart, Logs and Redeploy buttons run nothing on their own:  each one plans its action on the server over `fleet-ops-ctl` and asks Touch ID first, as Every Panel describes.
 
-The collector is read only apart from that one report file, and it reads no credential:  Coolify comes from Docker's own labels and container stats, a process is identified by its executable and never by its argv or its environment, and a path that looks like a credential is never hashed and never listed.  A measurement that cannot be taken is left out of the report rather than reported as a zero, and a file that is gone reads as `missing` rather than as a zero byte file.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and an empty half of the report reads as unproven rather than as a pass.
+The collector is read only apart from that one report file, and it reads no credential:  Coolify comes from Docker's own labels and container stats, a process is identified by its executable and never by its argv or its environment, and a path that looks like a credential is never hashed and never listed.  A measurement that cannot be taken is left out of the report rather than reported as a zero, and a file that is gone reads as `missing` rather than as a zero byte file.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and an empty half of the report reads as unproven rather than as a pass.
 
 ## Seat Activity
 
 The Seat Activity panel (AFC-395) shows one row per seat from the app's own roster:  the open sessions the listener holds for it, the listener's own state for it, its Zulip presence, its last Zulip post, and whether that post reports the seat at quota.  Every column names its source on screen.
 
-Two sources, and no third:  the listener's own published state at `~/.agent-sync/listener/status.json`, and the fleet chat CLI (`simple-chat`).  The panel reads the CLI's `users`, `presence` and `search` verbs and nothing else;  `ChatCLI` refuses any other verb before a process exists,  so the panel cannot write to Zulip.  It never posts as Jay:  the CLI resolves the credential of the bot seat named by `MUSTER_ZULIP_SEAT` (default `CLAUDE`),  and the app never sees a key.
+Two sources, and no third:  the listener's own published state at `~/.agent-sync/listener/status.json`, and the fleet chat CLI (`simple-chat`).  The panel reads the CLI's `users`, `presence` and `search` verbs and nothing else;  `ChatCLI` refuses any other verb before a process exists,  so the panel cannot write to Zulip.  It never posts as Jay:  the CLI resolves the credential of the bot seat named by `MUSTER_ZULIP_SEAT`, or else the seat chosen in Settings (default `CLAUDE`),  and the app never sees a key.
 
-A refresh makes at most one `users` call, one `presence` call per seat and one `search` call per seat,  so the ceiling is `1 + 2 * seats`;  the panel shows the count it made beside the ceiling.  A source that fails leaves its column Unknown with the reason under the row:  a missing binary, a refused call, an unreadable file, a listener state file more than 60 seconds old and a presence record that does not exist all read as unknown,  never as "no sessions" and never as "offline".
+A refresh makes at most one `users` call, one `presence` call per seat and one `search` call per seat,  so the ceiling is `1 + 2 * seats`;  the panel shows the count it made beside the ceiling.  A source that fails leaves its column Unknown with the reason under the row:  a missing binary, a refused call, an unreadable file, a listener state file more than 60 seconds old and a presence record that does not exist all read as unknown,  never as "no sessions" and never as "offline".
 
 ## Drift Alerts
 
@@ -85,7 +116,7 @@ MUSTER_BUILD_NUMBER="$MERGED_BUILD_NUMBER" ./muster/script/build_and_run.sh --ve
 
 The script never force-kills a process.  A second concurrent invocation fails against a local lock; after an interrupted process, inspect whether a build is still active before removing `muster/.build/run.lock`.
 
-Optional modes are `--logs`, `--telemetry`, and `--debug`.  Log modes stream unified logs after launch; the scaffold has no custom telemetry events yet.  The build lock and staging are released before a log stream or debugger blocks.  Debug mode attaches LLDB to the installed process and is subject to macOS Developer Tools permissions and hardened-runtime debugger restrictions.
+Optional modes are `--logs`, `--telemetry`, and `--debug`.  Log modes stream unified logs after launch;  `--telemetry` shows Muster's own subsystem, whose one category today is `drift`, from the drift monitor.  The build lock and staging are released before a log stream or debugger blocks.  Debug mode attaches LLDB to the installed process and is subject to macOS Developer Tools permissions and hardened-runtime debugger restrictions.
 
 Full local builds follow the repository build coordination protocol.  The script is an on-demand developer helper, not an always-on service.
 
@@ -97,7 +128,7 @@ Full local builds follow the repository build coordination protocol.  The scrip
 
 Debug uses `services.jays.Muster.dev`, a distinct development bundle ID.  Both configurations deliberately install to the same `~/Applications/Muster.app` path so they cannot leave multiple normal app copies.  Run the default Release command after quitting a development build to replace it with the stable identity.
 
-These bundle IDs are scaffold choices pending product identity onboarding.  They are not a finalized fleet registry, Apple portal, or distribution registration.
+These bundle IDs are working choices pending product identity onboarding.  They are not a finalized fleet registry, Apple portal, or distribution registration.
 
 ## Verify Locally
 
@@ -123,7 +154,7 @@ codesign -d --verbose=4 ~/Applications/Muster.app
 test ! -d muster/dist
 ```
 
-Expect a Developer ID Application authority and the `runtime` signing flag.  Inspect the window for the light appearance and unavailable fleet status.  Native Mac UI verification follows repository policy through code review and CI; process verification alone does not prove rendered appearance.
+Expect a Developer ID Application authority and the `runtime` signing flag.  The owner does no manual UI checks:  native Mac UI is verified through code review and the CI job named Muster macOS build, which builds the app unsigned, checks the built bundle's icons and runs the unit tests.  Process verification alone does not prove rendered appearance.
 
 ## Apply Preview
 
@@ -133,11 +164,13 @@ The Touch ID gate for persistence-class writes lives inside the engine, behind a
 
 The repository root is a setting:  the `fleetConfigRepoRoot` user default (`defaults write services.jays.Muster fleetConfigRepoRoot /path/to/repo`), then the `MUSTER_REPO_ROOT` environment variable, then `~/Code/AI-Fleet-Coordinator`.
 
-Apply unit tests are an XcodeGen target that compiles the non-view sources directly, so they run unsigned.  The same target decodes the server, Worker Health and LaunchAgent fixtures in `MusterTests/Fixtures/` (current, old shape, malformed and stale) and drives the operations flow with an injected runner, so no test starts a process or asks Touch ID:
+Apply unit tests are an XcodeGen target that compiles the non-view sources directly, so the tests need no signing of their own.  The scheme still builds the Developer ID app target, so the command passes the same signing overrides as the CI job named Muster macOS build, and this is the command that job runs.  The same target decodes the server, Worker Health and LaunchAgent fixtures in `MusterTests/Fixtures/` (current, old shape, malformed and stale), drives the operations flow with an injected runner, so no test starts a process or asks Touch ID, and checks this README's Every Panel table against the app's places:
 
 ```sh
 cd muster && xcodegen generate --spec project.yml
-xcodebuild -project Muster.xcodeproj -scheme Muster -destination 'platform=macOS' test
+xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
+  -destination 'platform=macOS' -derivedDataPath .build/CITest \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= test
 ```
 
 ## Hog Hunter On This Mac
