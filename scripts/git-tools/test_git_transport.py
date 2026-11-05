@@ -461,7 +461,59 @@ class Publish(unittest.TestCase):
             self.assertEqual(G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0), 0)
         self.assertEqual(self.puts(), [])
 
-    def test_the_outcome_store_survives_concurrent_saves(self):
+    def _writer_source(self, key, batches):
+        return f"""
+import importlib.machinery, importlib.util, os, sys
+os.environ["SIMPLE_GIT_STATE_DIR"] = {str(self.root / 'state')!r}
+loader = importlib.machinery.SourceFileLoader("g", {str(HERE / 'git')!r})
+spec = importlib.util.spec_from_loader("g", loader)
+G = importlib.util.module_from_spec(spec)
+loader.exec_module(G)
+lock = G._publish_store_lock()
+try:
+    store = G._publish_store_load()
+    state = store.setdefault({key!r}, {{"batches": {{}}}})
+    for number, outcome in {batches!r}.items():
+        prior = state["batches"].get(number)
+        if prior == "unknown":
+            sys.exit(3)  # unknown is terminal:  never overwritten, never replayed
+        state["batches"][number] = outcome
+    G._publish_store_save(store)
+finally:
+    lock.close()
+"""
+
+    def test_concurrent_independent_writers_lose_no_records(self):
+        # Independent CLI processes, not threads:  every writer's record survives.
+        procs = [
+            subprocess.Popen(
+                ["python3", "-c", self._writer_source(f"op{n}", {"1": "ok"})],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for n in range(6)
+        ]
+        for proc in procs:
+            self.assertEqual(proc.wait(timeout=60), 0)
+        store = G._publish_store_load()
+        self.assertEqual(
+            {k: v["batches"] for k, v in store.items()},
+            {f"op{n}": {"1": "ok"} for n in range(6)},
+        )
+
+    def test_a_concurrent_ok_cannot_overwrite_an_unknown(self):
+        # The same operation's unknown batch is terminal across processes.
+        source = self._writer_source("shared-op", {"1": "unknown"})
+        self.assertEqual(
+            subprocess.run(["python3", "-c", source], capture_output=True, timeout=60).returncode, 0
+        )
+        source = self._writer_source("shared-op", {"1": "ok"})
+        done = subprocess.run(["python3", "-c", source], capture_output=True, timeout=60)
+        self.assertEqual(done.returncode, 3)
+        store = G._publish_store_load()
+        self.assertEqual(store["shared-op"]["batches"]["1"], "unknown")
+
+    def test_the_store_save_is_an_atomic_replace(self):
         import threading
 
         errors = []

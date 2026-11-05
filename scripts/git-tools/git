@@ -37,6 +37,7 @@ import argparse
 import base64
 import binascii
 import contextlib
+import fcntl
 import getpass
 import hashlib
 import http.client
@@ -1655,12 +1656,24 @@ def _publish_store_load() -> dict:
         return {}
 
 
+def _publish_store_lock():
+    """One cross-process lock held for a publish's whole send phase:  independent CLI writers are serialized, so
+    no read-modify-write can lose another run's record, and a batch recorded unknown is seen - and honored -
+    by every later run of the same operation before it sends anything.  flock releases if the process dies."""
+    path = _publish_store_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    handle = open(path.with_suffix(".lock"), "w")
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    return handle
+
+
 def _publish_store_save(store: dict) -> None:
     path = _publish_store_path()
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        with open(tmp, "w") as handle:
+        # A unique sibling per save:  os.replace stays atomic, and concurrent writers never share a temp name.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as handle:
             json.dump(store, handle)
         os.replace(tmp, path)
     except OSError as exc:
@@ -1738,75 +1751,78 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         if hit is not None:
             die(f"refused before sending:  {hit}", EXIT_USAGE)
         del payload
-    store = _publish_store_load()
-    state = _publish_state(store, _publish_key(a.repo, a.branch, a.base, a.message, files))
-    if a.base:
-        base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
-        branch_state = state["batches"].get("branch")
-        if branch_state == "unknown":
-            die(
-                "an earlier branch creation's outcome is unknown;  check the branch before running this again",
-                EXIT_ERROR,
-            )
-        if branch_state != "ok":
-            outcome, _ = _outcome_of(
-                lambda: _tool_call(
-                    tools, "gr_wf_branch_create", {"repo": a.repo, "branch": a.branch, "sha": base}, bearer, seat, deadline
+    lock = _publish_store_lock()
+    try:
+        store = _publish_store_load()
+        state = _publish_state(store, _publish_key(a.repo, a.branch, a.base, a.message, files))
+        if a.base:
+            base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
+            branch_state = state["batches"].get("branch")
+            if branch_state == "unknown":
+                die(
+                    "an earlier branch creation's outcome is unknown;  check the branch before running this again",
+                    EXIT_ERROR,
                 )
+            if branch_state != "ok":
+                outcome, _ = _outcome_of(
+                    lambda: _tool_call(
+                        tools, "gr_wf_branch_create", {"repo": a.repo, "branch": a.branch, "sha": base}, bearer, seat, deadline
+                    )
+                )
+                if outcome == "unknown":
+                    state["batches"]["branch"] = "unknown"
+                    _publish_store_save(store)
+                    die("the branch creation's outcome is unknown;  check the branch before running this again", EXIT_ERROR)
+                if outcome == "ok":
+                    state["batches"]["branch"] = "ok"
+                    _publish_store_save(store)
+                # A definite refusal releases the key:  nothing was created, a corrected rerun may try again.
+            head = base
+        else:
+            head = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline))
+        remote = _remote_tree_shas(tools, a.repo, head, bearer, seat, deadline)
+        for number, batch in enumerate(batches, 1):
+            prior = state["batches"].get(str(number))
+            if prior == "unknown":
+                _publish_store_save(store)
+                die(
+                    f"batch {number}'s earlier outcome is unknown;  check the branch before running this again",
+                    EXIT_ERROR,
+                )
+            if prior == "ok":
+                print(f"batch {number} already committed by an earlier run")
+                continue
+            pending = [(path, data) for path, data in batch if remote.get(path) != _git_blob_sha(data)]
+            if not pending:
+                state["batches"][str(number)] = "ok"
+                _publish_store_save(store)
+                print(f"batch {number} already on the branch")
+                continue
+            payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), pending)
+            outcome, out = _outcome_of(
+                lambda: _tool_call(tools, "gr_wf_files_put", {**payload, "expected_head_sha": head}, bearer, seat, deadline)
             )
             if outcome == "unknown":
-                state["batches"]["branch"] = "unknown"
+                state["batches"][str(number)] = "unknown"
                 _publish_store_save(store)
-                die("the branch creation's outcome is unknown;  check the branch before running this again", EXIT_ERROR)
-            if outcome == "ok":
-                state["batches"]["branch"] = "ok"
-                _publish_store_save(store)
-            # A definite refusal releases the key:  nothing was created, a corrected rerun may try again.
-        head = base
-    else:
-        head = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline))
-    remote = _remote_tree_shas(tools, a.repo, head, bearer, seat, deadline)
-    for number, batch in enumerate(batches, 1):
-        prior = state["batches"].get(str(number))
-        if prior == "unknown":
-            _publish_store_save(store)
-            die(
-                f"batch {number}'s earlier outcome is unknown;  check the branch before running this again",
-                EXIT_ERROR,
-            )
-        if prior == "ok":
-            print(f"batch {number} already committed by an earlier run")
-            continue
-        pending = [(path, data) for path, data in batch if remote.get(path) != _git_blob_sha(data)]
-        if not pending:
+                die(
+                    f"batch {number}'s outcome is unknown;  check the branch before running this again",
+                    EXIT_ERROR,
+                )
+            if outcome == "refused":
+                raise SystemExit(EXIT_ERROR)  # definite: nothing was written, a corrected rerun may try again
+            commit = (out.get("structured") or {}).get("commit")
+            if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+                die("the server did not report the new commit;  check the branch before trying again", EXIT_ERROR)
+            head = commit
+            for path, data in pending:
+                remote[path] = _git_blob_sha(data)
             state["batches"][str(number)] = "ok"
             _publish_store_save(store)
-            print(f"batch {number} already on the branch")
-            continue
-        payload = _publish_payload(a.repo, a.branch, a.message, number, len(batches), pending)
-        outcome, out = _outcome_of(
-            lambda: _tool_call(tools, "gr_wf_files_put", {**payload, "expected_head_sha": head}, bearer, seat, deadline)
-        )
-        if outcome == "unknown":
-            state["batches"][str(number)] = "unknown"
-            _publish_store_save(store)
-            die(
-                f"batch {number}'s outcome is unknown;  check the branch before running this again",
-                EXIT_ERROR,
-            )
-        if outcome == "refused":
-            raise SystemExit(EXIT_ERROR)  # definite: nothing was written, a corrected rerun may try again
-        commit = (out.get("structured") or {}).get("commit")
-        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-            die("the server did not report the new commit;  check the branch before trying again", EXIT_ERROR)
-        head = commit
-        for path, data in pending:
-            remote[path] = _git_blob_sha(data)
-        state["batches"][str(number)] = "ok"
-        _publish_store_save(store)
-        print(f"{commit}  {len(payload['files'])} file(s)")
-    return 0
-
+            print(f"{commit}  {len(payload['files'])} file(s)")
+        return 0
+    finally:
+        lock.close()
 
 def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str, deadline: float) -> dict:
     """path -> blob sha for the branch head's tree, for skip-what-already-matches;  empty when unreadable."""
