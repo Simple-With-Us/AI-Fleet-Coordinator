@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1939,3 +1940,81 @@ class StopHookTest(unittest.TestCase):
         ):
             self.assertEqual(M.hook_stop(), 2)
         self.assertIn("secret_detected", stderr.getvalue())
+
+
+class RegistryHttpsCallTest(unittest.TestCase):
+    """_registry_https_call:  the registry API's client discipline (Path B)."""
+
+    def _call(self, args, *, error=None, raw=b'{"label": "AA"}'):
+        captured = {}
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return raw
+
+        class _Opener:
+            def open(self, request, timeout=None):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                if error is not None:
+                    raise error
+                return _Response()
+
+        env = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "k" * 40}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(M, "_REGISTRY_OPENER", _Opener()),
+        ):
+            answer = M._registry_https_call(args, "https://operator.example.test", timeout=5)
+        return answer, captured["request"]
+
+    def _http_error(self, code, body):
+        return urllib.error.HTTPError(
+            "https://operator.example.test", code, "error", None, io.BytesIO(body)
+        )
+
+    def test_the_request_carries_an_explicit_user_agent(self):
+        # The API's host is Cloudflare-fronted, and Cloudflare answers 1010 to
+        # Python's default urllib agent:  the call names itself instead.
+        _answer, request = self._call(["resolve", "--platform=minimax", "--letter=AA"])
+        self.assertEqual(request.get_header("User-agent"), "mm-session-letter/1.0")
+
+    def test_a_post_5xx_with_a_json_body_is_outcome_unknown(self):
+        answer, _request = self._call(
+            ["touch", "--platform=minimax"],
+            error=self._http_error(500, b'{"error": "boom"}'),
+        )
+        self.assertEqual(answer["code"], "http_500")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_post_5xx_without_a_json_body_is_outcome_unknown(self):
+        answer, _request = self._call(
+            ["touch", "--platform=minimax"],
+            error=self._http_error(502, b"bad gateway"),
+        )
+        self.assertEqual(answer["code"], "http_error")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_post_4xx_answer_is_a_definitive_refusal(self):
+        # A 4xx is the API speaking for itself:  the write was not applied, so
+        # the outcome is known and no idempotency re-check is owed.
+        answer, _request = self._call(
+            ["register", "--platform=minimax"],
+            error=self._http_error(403, b'{"error": "refused", "code": "issuer_refused"}'),
+        )
+        self.assertEqual(answer["code"], "issuer_refused")
+        self.assertNotIn("outcome", answer)
+
+    def test_a_get_5xx_is_not_a_write_outcome(self):
+        answer, _request = self._call(
+            ["resolve", "--platform=minimax", "--letter=AA"],
+            error=self._http_error(500, b'{"error": "boom"}'),
+        )
+        self.assertEqual(answer["code"], "http_500")
+        self.assertNotIn("outcome", answer)

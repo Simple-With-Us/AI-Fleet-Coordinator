@@ -1,6 +1,13 @@
 import Foundation
 import Combine
 
+enum FleetServiceActionRouting {
+    static func usesFleetAdmin(serviceID: String, label: String, allowlist: OpsAllowlist?) -> Bool {
+        if serviceID == FleetServiceRegistry.server.id { return true }
+        return allowlist?.verbs(forMacAgent: label).isEmpty != false
+    }
+}
+
 // Starting,  stopping,  restarting and updating the fleet's processes,  and writing a knob.
 //
 // Muster holds no credential and touches no process itself.  It runs two helpers and reads
@@ -48,7 +55,7 @@ enum OpsControlRoute {
 
     /// A plan only reads,  so it is short.
     static let planTimeout: TimeInterval = 90
-    /// An update can take minutes:  `systemctl start` waits for a oneshot unit to finish.
+    /// Allow time for an update helper's bounded completion check after submission.
     static let runTimeout: TimeInterval = 900
     /// How long a timed-out helper has to exit after SIGTERM before it gets SIGKILL.
     static let killGrace: TimeInterval = 5
@@ -91,11 +98,15 @@ enum OpsAction: Equatable {
     case pm2App(verb: OpsVerb, name: String)
     /// `server logs UNIT`,  run on the server:  the last journal lines,  read only.
     case logs(unit: String)
+    /// Change one coding resource-policy field,  reviewed against a revision on the server.
+    case serverResource(field: String, value: String, revision: String)
+    /// Read the server's coding resource-policy receipt,  without changing anything.
+    case resourceStatus
 
     /// True when the action runs on the server,  over ssh.
     var runsOnServer: Bool {
         switch self {
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs: return true
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return true
         case .macAgent, .knobSet, .knobUnset, .pm2App: return false
         }
     }
@@ -111,6 +122,8 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return "Reset \(key) to the default"
         case .pm2App(let verb, let name): return "\(verb.title) \(name) (pm2) on this Mac"
         case .logs(let unit): return "Read the last logs of \(unit) on the server"
+        case .serverResource(let field, let value, _): return "Set server \(resourceTitle(field)) to \(value)"
+        case .resourceStatus: return "Read server resource policy"
         }
     }
 
@@ -125,6 +138,8 @@ enum OpsAction: Equatable {
         case .knobUnset: return "knob unset"
         case .pm2App(let verb, _): return "pm2 \(verb.rawValue)"
         case .logs: return "server logs"
+        case .serverResource: return "server resource policy"
+        case .resourceStatus: return "server resource status"
         }
     }
 
@@ -142,6 +157,8 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return key
         case .pm2App(_, let name): return name
         case .logs(let unit): return unit
+        case .serverResource(let field, _, _): return "coding.\(field)"
+        case .resourceStatus: return "coding"
         }
     }
 
@@ -156,6 +173,21 @@ enum OpsAction: Equatable {
         case .knobUnset(let key): return ["unset", key]
         case .pm2App(let verb, let name): return ["pm2", verb.rawValue, name]
         case .logs(let unit): return ["server", "logs", unit]
+        case .serverResource(let field, let value, let revision):
+            return ["server", "resource-policy", "\(field).\(value).\(revision)"]
+        case .resourceStatus: return ["server", "resource-status", "coding"]
+        }
+    }
+
+    private func resourceTitle(_ field: String) -> String {
+        switch field {
+        case "cpu-cores": return "CPU Cores"
+        case "cpu-weight": return "CPU Weight"
+        case "ram-budget-gib": return "RAM Budget"
+        case "ram-critical-gib": return "Critical RAM Budget"
+        case "ram-reserve-gib": return "Host RAM Reserve"
+        case "borrow-idle": return "Idle Memory Borrowing"
+        default: return "Resource Policy"
         }
     }
 }
@@ -217,6 +249,9 @@ struct OpsCommandBuilder {
 
     /// The longest knob value Muster passes on.
     static let maximumValueLength = 1024
+    private static let resourcePolicyFields: Set<String> = [
+        "cpu-cores", "cpu-weight", "ram-budget-gib", "ram-critical-gib", "ram-reserve-gib", "borrow-idle",
+    ]
 
     /// A label,  unit,  update name or uuid is a plain token:  it starts with a letter or a
     /// digit and holds only letters,  digits,  `.`,  `_`,  `-` and `@`.  A token that could
@@ -290,6 +325,10 @@ struct OpsCommandBuilder {
         }
     }
 
+    static func isInvocationID(_ value: String) -> Bool {
+        value.count == 32 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
     /// A pm2 application name in the helper's own shape:  the registry's lowercase
     /// names, never a flag or a path.
     static func isPM2Name(_ value: String) -> Bool {
@@ -330,6 +369,23 @@ struct OpsCommandBuilder {
         return true
     }
 
+    private static func isSafeResourceRevision(_ value: String) -> Bool {
+        value.count == 64 && value.unicodeScalars.allSatisfy {
+            $0.isASCII && ((65...70).contains($0.value) || (97...102).contains($0.value) || (48...57).contains($0.value))
+        } && !value.contains(where: { $0.isUppercase })
+    }
+
+    private static func isSafeResourceValue(field: String, value: String) -> Bool {
+        if field == "borrow-idle" { return value == "0" || value == "1" }
+        guard !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
+              let number = Int(value), number <= 10_000, String(number) == value else { return false }
+        switch field {
+        case "cpu-cores", "cpu-weight", "ram-critical-gib": return number >= 1
+        case "ram-budget-gib", "ram-reserve-gib": return number >= 2
+        default: return false
+        }
+    }
+
     /// Check an action's values before anything runs.
     static func validate(_ action: OpsAction) throws {
         switch action {
@@ -354,6 +410,12 @@ struct OpsCommandBuilder {
             }
         case .logs(let unit):
             guard isUnitName(unit) else { throw OpsControlError.invalidArgument("unit name") }
+        case .serverResource(let field, let value, let revision):
+            guard resourcePolicyFields.contains(field) else { throw OpsControlError.invalidArgument("resource field") }
+            guard isSafeResourceValue(field: field, value: value) else { throw OpsControlError.invalidArgument("resource value") }
+            guard isSafeResourceRevision(revision) else { throw OpsControlError.invalidArgument("resource revision") }
+        case .resourceStatus:
+            break
         }
     }
 
@@ -367,7 +429,7 @@ struct OpsCommandBuilder {
         switch action {
         case .macAgent, .pm2App: return helperURL
         case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs: return nil
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus: return nil
         }
     }
 
@@ -409,9 +471,33 @@ struct OpsCommandBuilder {
         return environment
     }
 
+    /// The sole receipt recheck route is observation of a captured fleet-cli invocation.
+    func updateStatusInvocation(name: String, invocationID: String, baselineStartMonotonic: UInt64) throws -> OpsInvocation {
+        guard name == "fleet-cli", Self.isInvocationID(invocationID) else {
+            throw OpsControlError.invalidArgument("update invocation receipt")
+        }
+        return serverInvocation(
+            tail: ["server", "update-status", "\(name).\(invocationID).\(baselineStartMonotonic)", "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
+    private func serverInvocation(tail: [String], timeout: TimeInterval) -> OpsInvocation {
+        OpsInvocation(
+            executable: OpsControlRoute.ssh,
+            arguments: OpsControlRoute.sshOptions + [OpsControlRoute.serverAlias, "--"] + tail,
+            workingDirectory: "/",
+            environment: sshEnvironment,
+            timeout: timeout
+        )
+    }
+
     /// The one invocation for an action and a mode.
     func invocation(for action: OpsAction, mode: OpsMode) throws -> OpsInvocation {
         try Self.validate(action)
+        if case .resourceStatus = action, mode != .plan {
+            throw OpsControlError.invalidArgument("read-only resource status mode")
+        }
         let timeout = mode == .plan ? OpsControlRoute.planTimeout : OpsControlRoute.runTimeout
         var tail = action.verbArguments + [mode.flag, "--json"]
         if case .knobSet(let key, let value) = action {
@@ -439,17 +525,11 @@ struct OpsCommandBuilder {
                 environment: localEnvironment,
                 timeout: timeout
             )
-        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs:
+        case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus:
             // `--` ends ssh's own options,  so nothing after the alias is read as one.  The
             // server's forced command reads the rest from SSH_ORIGINAL_COMMAND and checks it
             // against its own allowlist again.
-            return OpsInvocation(
-                executable: OpsControlRoute.ssh,
-                arguments: OpsControlRoute.sshOptions + [OpsControlRoute.serverAlias, "--"] + tail,
-                workingDirectory: "/",
-                environment: sshEnvironment,
-                timeout: timeout
-            )
+            return serverInvocation(tail: tail, timeout: timeout)
         }
     }
 }
@@ -608,9 +688,16 @@ struct OpsResult: Decodable, Equatable {
     let output: String?
     /// How many journal lines `output` holds.
     let lines: Int?
+    /// The server's direct coding resource-policy receipt,  when the status verb returned one.
+    let resourcePolicy: ResourcePolicySnapshot?
+    let executionState: String?
+    let verified: Bool
+    let invocationID: String?
+    let baselineStartMonotonic: UInt64?
 
     enum CodingKeys: String, CodingKey {
-        case ok, verb, target, commands, result, detail, old, new, lkg, output, lines
+        case ok, verb, target, commands, result, detail, old, new, lkg, output, lines, resourcePolicy
+        case executionState, verified, invocationID, baselineStartMonotonic
         case oldSource = "old_source"
     }
 
@@ -630,6 +717,11 @@ struct OpsResult: Decodable, Equatable {
         lkg = try? container.decodeIfPresent(String.self, forKey: .lkg)
         output = try? container.decodeIfPresent(String.self, forKey: .output)
         lines = try? container.decodeIfPresent(Int.self, forKey: .lines)
+        resourcePolicy = try? container.decodeIfPresent(ResourcePolicySnapshot.self, forKey: .resourcePolicy)
+        executionState = try? container.decodeIfPresent(String.self, forKey: .executionState)
+        verified = (try? container.decodeIfPresent(Bool.self, forKey: .verified)) == true
+        invocationID = try? container.decodeIfPresent(String.self, forKey: .invocationID)
+        baselineStartMonotonic = try? container.decodeIfPresent(UInt64.self, forKey: .baselineStartMonotonic)
     }
 }
 
@@ -681,6 +773,7 @@ struct OpsKnobChange: Equatable {
 /// The helper's result word.
 enum OpsResultKind: String {
     case planned
+    case submitted
     case done
     case refused
     case failed
@@ -703,6 +796,12 @@ struct OpsOutcome: Equatable {
     var logText: String? = nil
     /// How many journal lines `logText` holds.
     var logLines: Int? = nil
+    /// The direct resource-policy receipt,  when a status read supplied one.
+    var resourcePolicy: ResourcePolicySnapshot? = nil
+    /// Only a fixed-shape systemd receipt is displayed, never arbitrary helper output.
+    var invocationID: String? = nil
+    var executionState: String? = nil
+    var baselineStartMonotonic: UInt64? = nil
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -769,10 +868,34 @@ enum OpsResultParser {
         var detail = ApplyCopy.normalize(answer.detail ?? "")
         // A plan changes nothing.  A plan that answers "done" is a helper that did something
         // it was not asked to,  and the app says so rather than calling it a plan.
-        if mode == .plan && kind == .done {
+        if mode == .plan && (kind == .done || kind == .submitted) {
+            let reported = kind.rawValue
             kind = .failed
-            let warning = "The helper answered \"done\" to a plan."
+            let warning = "The helper answered \"\(reported)\" to a plan."
             detail = detail.isEmpty ? warning : ApplyCopy.join(warning, detail)
+        }
+        let invocationID = answer.invocationID.flatMap { value -> String? in
+            OpsCommandBuilder.isInvocationID(value) ? value : nil
+        }
+        if mode == .yes && kind == .done {
+            let completed: Bool
+            switch action {
+            case .serverUpdate:
+                completed = answer.verified && answer.executionState == "completed" && invocationID != nil
+            case .coolifyRedeploy:
+                completed = answer.verified && answer.executionState == "completed"
+            default:
+                completed = answer.executionState == nil || answer.executionState == "completed"
+            }
+            if !answer.ok || result.exitCode != 0 {
+                kind = .failed
+            } else if !completed {
+                kind = .submitted
+                detail = "The request was submitted; completion has not been verified."
+            }
+        }
+        if kind == .submitted && (!answer.ok || result.exitCode != 0) {
+            kind = .failed
         }
         if detail.isEmpty {
             detail = defaultDetail(kind: kind, exitCode: result.exitCode)
@@ -807,7 +930,11 @@ enum OpsResultParser {
             exitCode: result.exitCode,
             knobChange: knobChange,
             logText: logText,
-            logLines: logLines
+            logLines: logLines,
+            resourcePolicy: answer.resourcePolicy,
+            invocationID: invocationID,
+            executionState: answer.executionState,
+            baselineStartMonotonic: answer.baselineStartMonotonic
         )
     }
 
@@ -852,6 +979,7 @@ enum OpsResultParser {
     private static func defaultDetail(kind: OpsResultKind, exitCode: Int32) -> String {
         switch kind {
         case .planned: return "Nothing has run yet."
+        case .submitted: return "The request was submitted; completion has not been verified."
         case .done: return "Done."
         case .refused: return "The helper refused the action."
         case .failed: return "The helper said the action failed (exit \(exitCode))."
@@ -886,6 +1014,73 @@ enum OpsResultParser {
             return "The helper printed no answer (exit \(result.exitCode))."
         }
         return ApplyCopy.join("The helper printed no answer (exit \(result.exitCode)).", tail)
+    }
+}
+
+/// Observes one captured update invocation without starting another update.
+struct OpsUpdateReceiptReader {
+    var runner: OpsRunning = OpsProcessRunner()
+    var makeBuilder: () -> OpsCommandBuilder = {
+        OpsCommandBuilder(repoRoot: FleetConfigLocation.resolve().repoRoot)
+    }
+
+    func read(name: String, invocationID: String, baselineStartMonotonic: UInt64) async -> OpsOutcome {
+        func unverified(_ detail: String, expired: Bool = false) -> OpsOutcome {
+            OpsOutcome(kind: .submitted, ok: false, commands: [], detail: detail, exitCode: 0,
+                       invocationID: OpsCommandBuilder.isInvocationID(invocationID) ? invocationID : nil,
+                       executionState: expired ? "expired" : "submitted",
+                       baselineStartMonotonic: baselineStartMonotonic)
+        }
+        do {
+            let invocation = try makeBuilder().updateStatusInvocation(name: name, invocationID: invocationID, baselineStartMonotonic: baselineStartMonotonic)
+            let process = try await runner.run(invocation)
+            guard !process.timedOut, let answer = OpsResultParser.decode(process.stdout),
+                  answer.invocationID == invocationID,
+                  answer.baselineStartMonotonic == baselineStartMonotonic else {
+                return unverified("The recorded service invocation could not be read; completion remains unverified.")
+            }
+            if answer.executionState == "expired" {
+                return unverified("The recorded service invocation is no longer current; its completion cannot be verified by rechecking.", expired: true)
+            }
+            // The transport uses --plan and cannot mutate; these result words describe
+            // the recorded invocation, not an update executed by this read.
+            let outcome = OpsResultParser.parse(process, mode: .yes, action: .serverUpdate(name: name), timeout: invocation.timeout)
+            if outcome.isSuccess(for: .yes) { return outcome }
+            if outcome.kind == .failed, answer.verified, answer.executionState == "failed" { return outcome }
+            return unverified("The recorded update has no verified terminal result yet.\(ServerStatusCopy.sentenceGap)Recheck observes the same invocation and never starts another update.")
+        } catch {
+            return unverified("The receipt could not be checked; completion remains unverified.\(ServerStatusCopy.sentenceGap)\(error.localizedDescription)")
+        }
+    }
+}
+
+/// Reads one direct policy receipt over the existing fixed,  read-only ssh route.
+///
+/// This deliberately bypasses the confirmation sheet because `resource-status --plan`
+/// cannot change state.  Resource writes still go through `OpsController.plan`,  review,
+/// Touch ID and the controller's fresh-plan comparison.
+struct OpsResourcePolicyReader {
+    var runner: OpsRunning = OpsProcessRunner()
+    var makeBuilder: () -> OpsCommandBuilder = {
+        OpsCommandBuilder(repoRoot: FleetConfigLocation.resolve().repoRoot)
+    }
+
+    func read(now: Date? = nil) async -> ResourcePolicyReading {
+        let action = OpsAction.resourceStatus
+        do {
+            let invocation = try makeBuilder().invocation(for: action, mode: .plan)
+            let process = try await runner.run(invocation)
+            let outcome = OpsResultParser.parse(process, mode: .plan, action: action, timeout: invocation.timeout)
+            guard outcome.isSuccess(for: .plan) else { return .unavailable(outcome.detail) }
+            guard let snapshot = outcome.resourcePolicy else {
+                return .unavailable("The server did not include a resource policy receipt.")
+            }
+            let data = try JSONEncoder().encode(snapshot)
+            let receivedAt = now ?? Date()
+            return ResourcePolicyReading.decode(data, now: receivedAt, directReceiptAt: receivedAt)
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
     }
 }
 
@@ -1018,6 +1213,7 @@ final class OpsController: ObservableObject {
     @Published private(set) var notice: String?
     /// Counts every `--yes` run that ended,  so a view can read its data again.
     @Published private(set) var completedRuns = 0
+    @Published private(set) var isRechecking = false
 
     private let runner: OpsRunning
     private let makeBuilder: () -> OpsCommandBuilder
@@ -1041,6 +1237,7 @@ final class OpsController: ObservableObject {
 
     /// True while a helper is running.
     var isBusy: Bool {
+        if isRechecking { return true }
         switch phase {
         case .planning, .running: return true
         default: return false
@@ -1049,6 +1246,31 @@ final class OpsController: ObservableObject {
 
     /// True while there is anything to show in the sheet.
     var isPresenting: Bool { phase != .idle }
+
+    var canRecheckUpdate: Bool {
+        guard case .finished(.serverUpdate(let name), let outcome) = phase else { return false }
+        return name == "fleet-cli" && outcome.kind == .submitted && outcome.invocationID != nil
+            && outcome.baselineStartMonotonic != nil && outcome.executionState != "expired"
+    }
+
+    /// A receipt read has no approval or write path and may be closed while pending.
+    func recheckSubmittedUpdate() {
+        guard canRecheckUpdate, task == nil,
+              case .finished(let action, let previous) = phase,
+              case .serverUpdate(let name) = action, let invocationID = previous.invocationID,
+              let baseline = previous.baselineStartMonotonic else { return }
+        isRechecking = true
+        notice = nil
+        let reader = OpsUpdateReceiptReader(runner: runner, makeBuilder: makeBuilder)
+        task = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            let outcome = await reader.read(name: name, invocationID: invocationID, baselineStartMonotonic: baseline)
+            guard !Task.isCancelled, let self else { return }
+            self.phase = .finished(action, outcome)
+            self.isRechecking = false
+            self.task = nil
+        }
+    }
 
     /// Plan an action and show the plan.
     ///
@@ -1091,6 +1313,14 @@ final class OpsController: ObservableObject {
     /// Close the sheet.  A run in flight is never cut short,  so this does nothing while a
     /// helper is running.
     func dismiss() {
+        if isRechecking {
+            task?.cancel()
+            task = nil
+            isRechecking = false
+            phase = .idle
+            notice = nil
+            return
+        }
         guard !isBusy else { return }
         phase = .idle
         notice = nil

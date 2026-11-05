@@ -195,11 +195,11 @@ struct FleetServicesPanel: View {
             planThroughController(.pm2App(verb: verb, name: appName),
                                   action: action, entry: entry)
         case .launchAgent(let label):
-            if entry.id == FleetServiceRegistry.server.id {
-                performThroughAdmin(action, entry: entry)
-            } else if let allowlist, allowlist.verbs(forMacAgent: label).isEmpty {
+            if FleetServiceActionRouting.usesFleetAdmin(
+                serviceID: entry.id, label: label, allowlist: allowlist
+            ) {
                 // The helper fails closed on a label its allowlist does not name,
-                // so a row with no entry keeps the fleet admin path the menubar
+                // so an unlisted row keeps the fleet admin path the menubar
                 // still uses until the owner adds that label to the allowlist.
                 performThroughAdmin(action, entry: entry)
             } else {

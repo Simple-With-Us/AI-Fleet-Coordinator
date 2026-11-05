@@ -140,8 +140,17 @@ struct FleetOverviewView: View {
             MiniMaxDetailView()
         case .serverStatus:
             ServerStatusPanel()
+        case .serverResourceLimits:
+            ResourceLimitsView(
+                readPolicy: { await OpsResourcePolicyReader().read() },
+                onReviewChange: { field, value, revision in
+                    OpsController.shared.plan(.serverResource(field: field, value: value, revision: revision))
+                }
+            )
         case .hosts:
             FleetHostsView()
+        case .virtualMachines:
+            VirtualMachinesView()
         case .operations:
             OperationsView()
         }
@@ -241,22 +250,7 @@ struct FailureBanner: View {
     }
 }
 
-/// The theme the window follows.
-enum ThemeChoice: String, CaseIterable, Identifiable {
-    case system
-    case light
-    case dark
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .system: return "System"
-        case .light: return "Light"
-        case .dark: return "Dark"
-        }
-    }
-
+extension ThemeChoice {
     /// The scheme the window asks for;  nil leaves the system in charge.
     var colorScheme: ColorScheme? {
         switch self {

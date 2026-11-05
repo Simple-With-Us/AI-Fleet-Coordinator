@@ -23,7 +23,7 @@ What happens to an entry:
   - expired:  `ttl_hours` passed AND the owner was told about it by a digest that was actually shown
     (a Mac banner;  `told_seq`).  On the server nothing shows the owner anything that way:  the
     `#alerts` digest (heldalert.py, AFC-257) is a post the owner has not opened, which is not the
-    same promise as a banner, so it does not mark anything told (docs/protocols/agent-sync-server.md,
+    same promise as a banner, so it does not mark anything told (docs/protocols/eavesdropper-server.md,
     The Held-Back Digest on This Instance).  There nothing expires:  an entry stays until it is
     surfaced or lost past the caps.
 Each end is also a ledger row for the held-back wake's id, written once the last entry that wake

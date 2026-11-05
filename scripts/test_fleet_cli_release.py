@@ -791,6 +791,68 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
             self.receive()
 
+    def _write_assigned_codex_registration(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir(exist_ok=True)
+        assigned = release.assigned_codex_mcp_expected(self.home)
+        raw = (
+            "# Owner-selected hosted transport; keep its custody wrapper.\n"
+            "[mcp_servers.simple-chat]\ncommand = " + json.dumps(assigned["command"]) + "\n"
+            "env_vars = " + json.dumps(assigned["env_vars"]) + "\n"
+        ).encode()
+        config.write_bytes(raw)
+        config.chmod(0o600)
+        return config, raw
+
+    def test_update_preserves_assigned_transport_and_adds_missing_wrappers(self):
+        self.receive()
+        config, raw = self._write_assigned_codex_registration()
+        missing = self.home / ".local/bin/platform-letter"
+        missing.unlink()
+        result = self.receive(make_bundle("two"), install=False)
+        self.assertEqual(result["status"], "activated")
+        self.assertEqual(config.read_bytes(), raw)
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(missing.is_file())
+
+    def test_install_preserves_assigned_transport_without_rewriting_it(self):
+        config, raw = self._write_assigned_codex_registration()
+        self.assertEqual(self.receive()["status"], "activated")
+        self.assertEqual(config.read_bytes(), raw)
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+
+    def test_assigned_transport_requires_the_exact_known_path_and_shape(self):
+        for change in (
+            {"command": str(self.home / ".local/bin/codex-simple-tools")},
+            {"command": "/owner/custom"},
+            {"args": []},
+            {"env_vars": []},
+        ):
+            with self.subTest(change=change):
+                config, _ = self._write_assigned_codex_registration()
+                entry = {**release.assigned_codex_mcp_expected(self.home), **change}
+                raw = (
+                    "[mcp_servers.simple-chat]\n"
+                    + "\n".join(key + " = " + json.dumps(value) for key, value in entry.items())
+                    + "\n"
+                ).encode()
+                config.write_bytes(raw)
+                with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
+                    release.new_wrapper_plan(self.home)
+                self.assertEqual(config.read_bytes(), raw)
+
+    def test_assigned_and_legacy_keys_together_are_still_refused(self):
+        config, raw = self._write_assigned_codex_registration()
+        legacy = release.codex_mcp_expected(self.home / ".local/bin")
+        raw += (
+            "[mcp_servers.agent-sync]\ncommand = " + json.dumps(legacy["command"]) + "\n"
+            "env_vars = " + json.dumps(legacy["env_vars"]) + "\n"
+        ).encode()
+        config.write_bytes(raw)
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            release.new_wrapper_plan(self.home)
+        self.assertEqual(config.read_bytes(), raw)
+
     def test_non_table_codex_shapes_are_refused_not_an_internal_error(self):
         config = self.home / ".codex/config.toml"
         config.parent.mkdir()

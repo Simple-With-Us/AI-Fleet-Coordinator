@@ -6,14 +6,14 @@ final class MusterNavigationTests: XCTestCase {
 
     /// Every place the tab bar held is still named once.
     ///
-    /// Eleven panels sat behind the tab bar;  with the overview the sidebar names
-    /// twelve places, and a place named twice or not at all is a panel lost or
-    /// doubled in the move.
+    /// The overview and thirteen panels each need exactly one destination.
+    /// A duplicated or absent place loses or doubles a panel.
     func test_sidebar_names_every_place_once() {
         let named = [MusterDestination.overview] + MusterDestination.fleet + MusterDestination.thisMac + MusterDestination.server
-        XCTAssertEqual(named.count, 12)
+        XCTAssertEqual(named.count, 14)
         XCTAssertEqual(Set(named), Set(MusterDestination.allCases))
-        XCTAssertEqual(MusterDestination.allCases.count, 12)
+        XCTAssertEqual(MusterDestination.allCases.count, 14)
+        XCTAssertEqual(MusterDestination.server, [.serverStatus, .serverResourceLimits, .hosts, .virtualMachines, .operations])
     }
 
     func test_saved_spelling_restores_its_place() {

@@ -40,12 +40,12 @@ test("a seat mint with mcp_accept checks ok and reports the choice; without it t
   const store = S.memoryStore();
   const yes = await newSeatBearer(SEAT);
   await S.gbBearerMint(store, { hash: yes.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW);
-  assert.deepEqual(await S.gbBearerCheck(store, yes.hash, NOW + 5), { ok: true, mcp_accept: true });
+  assert.deepEqual(await S.gbBearerCheck(store, yes.hash, NOW + 5), { ok: true, mcp_accept: true, paused: false });
 
   const store2 = S.memoryStore();
   const no = await newSeatBearer(SEAT);
   await S.gbBearerMint(store2, { hash: no.hash, by: "j", expiresAt: NOW + 1e9 }, NOW);
-  assert.deepEqual(await S.gbBearerCheck(store2, no.hash, NOW + 5), { ok: true, mcp_accept: false });
+  assert.deepEqual(await S.gbBearerCheck(store2, no.hash, NOW + 5), { ok: true, mcp_accept: false, paused: false });
 });
 
 test("minting without mcp_accept never serves the consent-bypassing route", async () => {

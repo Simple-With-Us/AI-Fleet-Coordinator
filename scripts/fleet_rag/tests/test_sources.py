@@ -1487,7 +1487,8 @@ class ChatLogTests(unittest.TestCase):
         self.assertFalse(_attests_health(["board", "effort-log"], True, None, None))
         for name in ("board", "effort-log"):
             self.assertNotIn(name, sources.NIGHTLY_SOURCES)
-            self.assertIn(name, sources.GENERATORS)
+            self.assertNotIn(name, sources.SOURCES)
+            self.assertNotIn(name, sources.GENERATORS)
 
     def test_nightly_sources_exclude_chat_log(self) -> None:
         self.assertNotIn("chat-log", sources.NIGHTLY_SOURCES)

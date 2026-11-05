@@ -36,6 +36,9 @@ export const RelayResponseSchema = z.looseObject({
 
 export const GR_TIMEOUT_MS = 15_000;
 export const GR_RESPONSE_LIMIT = 262_144; // bytes:  a relay answer is small JSON
+export const GRAPHQL_ERROR_CODES = Object.freeze([
+  "graphql_forbidden", "graphql_not_found", "graphql_unprocessable", "graphql_rate_limited",
+]);
 export const GR_SECRETS = Object.freeze({
   accessId: "GR_ACCESS_CLIENT_ID",
   accessSecret: "GR_ACCESS_CLIENT_SECRET",
@@ -186,11 +189,20 @@ export class GrRelayClient {
       if (response.status < 400 || response.status > 599 || !body || typeof body!=="object" || Array.isArray(body)) return unavailable();
       const errorShape = z.object({error:z.string().max(1000),retryable:z.boolean().optional(),outcome:z.enum(['pending','unknown','refused']).optional()}).safeParse(body);
       if(!errorShape.success) return unavailable();
+      const parsed=errorShape.data;
+      // The relay's github_code is external data:  validate it with zod before
+      // any use.  A code outside the allowlist (or of the wrong type) is
+      // dropped, never reflected.
+      const githubCodeShape=z.enum(GRAPHQL_ERROR_CODES).optional().safeParse(body.github_code);
+      const githubCode=githubCodeShape.success?githubCodeShape.data:undefined;
+      const outcomeUnknown=()=>({status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,...(githubCode?{github_code:githubCode}:{})}});
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
-      if(response.status===409 && ['pending','unknown'].includes(body.outcome))
-        return {status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false}};
-      if(response.status>=500 && body.retryable!==true) return unavailable();
-      return {status:response.status,body:{error:"workflow_request_refused", ...(body.retryable===true ? {retryable:true} : {})}};
+      if(response.status===409 && ['pending','unknown'].includes(parsed.outcome)) return outcomeUnknown();
+      if(response.status>=500 && parsed.retryable!==true) {
+        if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
+        return unavailable();
+      }
+      return {status:response.status,body:{error:"workflow_request_refused", ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
@@ -202,6 +214,13 @@ export class GrRelayClient {
    * and HTTP status.  Never throws on a relay refusal - a 4xx body is data
    * the tool caller should see (its own allowlist answer). */
   async call(action, args) {
+    if (action === "open_pr" && args && Object.hasOwn(args, "draft")) {
+      if (typeof args.draft !== "boolean") return { status: 400, body: { error: "draft_must_be_boolean" } };
+      if (args.draft === false) {
+        args = { ...args };
+        delete args.draft;
+      }
+    }
     const body = JSON.stringify(args ?? {});
     const credential = await this.#credential(action, body);
     if (credential === null) return { status: 503, body: { error: "not_configured" }, localFailure: true };
@@ -277,7 +296,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_open_pr",
     title: "Open Pull Request",
     description: "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
-    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" } }),
+    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" } }),
   },
   {
     name: "gr_edit_pr",

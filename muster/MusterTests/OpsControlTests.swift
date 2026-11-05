@@ -1,5 +1,34 @@
 import XCTest
 
+final class FleetServicesPanelRoutingTests: XCTestCase {
+    func test_launch_agents_use_admin_when_allowlist_is_missing_or_empty() {
+        let serviceID = "com.jay.unlisted-agent"
+
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: serviceID, label: serviceID, allowlist: nil
+        ))
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: serviceID, label: serviceID, allowlist: OpsAllowlist()
+        ))
+    }
+
+    func test_listed_launch_agent_uses_controller_and_server_keeps_admin_route() {
+        let label = "com.jay.allowed-agent"
+        let allowlist = OpsAllowlist(macAgents: [
+            OpsAllowlist.Entry(name: label, actions: [OpsVerb.start.rawValue])
+        ])
+
+        XCTAssertFalse(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: label, label: label, allowlist: allowlist
+        ))
+        XCTAssertTrue(FleetServiceActionRouting.usesFleetAdmin(
+            serviceID: FleetServiceRegistry.server.id,
+            label: FleetServiceRegistry.server.id,
+            allowlist: allowlist
+        ))
+    }
+}
+
 // The operations control:  the argv Muster builds for each action,  how it reads a
 // helper's answer,  and the plan,  confirm and run flow with an injected runner.
 //
@@ -59,6 +88,40 @@ final class OpsCommandBuilderTests: XCTestCase {
         )
         XCTAssertTrue(OpsAction.logs(unit: "fleet-server-status.timer").runsOnServer)
         XCTAssertEqual(OpsAction.logs(unit: "fleet-server-status.timer").auditVerb, "server logs")
+    }
+
+    func test_resource_policy_write_and_status_use_the_fixed_ssh_routes() throws {
+        let revision = String(repeating: "a", count: 64)
+        let action = OpsAction.serverResource(field: "cpu-cores", value: "8", revision: revision)
+        let write = try exampleBuilder().invocation(for: action, mode: .plan)
+        XCTAssertEqual(write.executable, "/usr/bin/ssh")
+        XCTAssertEqual(write.arguments, sshPrefix + [
+            "server", "resource-policy", "cpu-cores.8.\(revision)", "--plan", "--json",
+        ])
+        XCTAssertTrue(action.runsOnServer)
+        XCTAssertEqual(action.auditVerb, "server resource policy")
+        XCTAssertEqual(action.auditTarget, "coding.cpu-cores")
+
+        let status = try exampleBuilder().invocation(for: .resourceStatus, mode: .plan)
+        XCTAssertEqual(status.executable, "/usr/bin/ssh")
+        XCTAssertEqual(status.arguments, sshPrefix + ["server", "resource-status", "coding", "--plan", "--json"])
+        XCTAssertThrowsError(try exampleBuilder().invocation(for: .resourceStatus, mode: .yes))
+    }
+
+    func test_resource_policy_action_rejects_unlisted_fields_values_and_revisions() {
+        let invalid: [OpsAction] = [
+            .serverResource(field: "shell", value: "8", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-cores", value: "0", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-weight", value: "10001", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "ram-budget-gib", value: "2.5", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "borrow-idle", value: "true", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "borrow-idle", value: "2", revision: String(repeating: "a", count: 64)),
+            .serverResource(field: "cpu-cores", value: "8", revision: String(repeating: "A", count: 64)),
+            .serverResource(field: "cpu-cores", value: "8", revision: "short"),
+        ]
+        for action in invalid {
+            XCTAssertThrowsError(try exampleBuilder().invocation(for: action, mode: .plan), "\(action)")
+        }
     }
 
     func test_a_server_verb_goes_over_ssh_to_the_alias() throws {
@@ -232,6 +295,18 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertEqual(outcome.detail, "Nothing has run.")
     }
 
+    func test_a_resource_status_answer_carries_its_typed_receipt() throws {
+        let revision = String(repeating: "a", count: 64)
+        let policy = #"{"schemaVersion":1,"generatedAt":"2026-11-03T12:30:00Z","policyRevision":"\#(revision)","desired":{"cpuCores":8,"cpuWeight":100,"ramPressureGiB":8,"ramCriticalGiB":4,"reserveGiB":4,"allowBorrowing":false},"observed":{"cpuOnline":16,"cpuCores":8,"cpuWeight":50,"cpuGroups":4,"cpuMismatches":0,"ramTotalBytes":17179869184,"ramCurrentBytes":5368709120,"ramTargetBytes":8589934592,"mode":"normal","codingGroups":4,"productionGroups":2,"controlWriteFailures":0,"controlSuspended":0,"policyStale":false,"actualHighMismatches":0,"updatedAt":"2026-11-03T12:25:00Z"},"status":"applied"}"#
+        let stdout = #"{"ok":true,"verb":"server resource status","target":"coding","commands":[["server","resource-status","coding"]],"result":"planned","resourcePolicy":\#(policy)}"#
+        let outcome = OpsResultParser.parse(
+            result(stdout), mode: .plan, action: .resourceStatus, timeout: 90
+        )
+        XCTAssertTrue(outcome.isSuccess(for: .plan))
+        XCTAssertEqual(outcome.resourcePolicy?.policyRevision, revision)
+        XCTAssertEqual(outcome.resourcePolicy?.desired.allowBorrowing, false)
+    }
+
     func test_a_run_reads_as_done() throws {
         let outcome = OpsResultParser.parse(
             result(try fixture("ops_result_done", "json")), mode: .yes, action: unit, timeout: 900
@@ -239,6 +314,44 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertEqual(outcome.kind, .done)
         XCTAssertTrue(outcome.isSuccess(for: .yes))
         XCTAssertEqual(outcome.detail, "Done.")
+    }
+
+    func test_async_acceptance_never_claims_completion_even_from_legacy_helpers() {
+        for action in [OpsAction.serverUpdate(name: "fleet-cli"), .coolifyRedeploy(uuid: "exampleuuid1", name: "example")] {
+            for json in [
+                #"{"ok":true,"result":"done","detail":"done"}"#,
+                #"{"ok":true,"result":"submitted","executionState":"submitted","verified":false}"#,
+                #"{"ok":true,"result":"done","executionState":"submitted","verified":true}"#,
+                #"{"ok":true,"result":"done","executionState":"completed","verified":false}"#,
+                #"{"ok":true,"result":"done","executionState":"completed","verified":"true"}"#,
+            ] {
+                let outcome = OpsResultParser.parse(result(json), mode: .yes, action: action, timeout: 900)
+                XCTAssertEqual(outcome.kind, .submitted)
+                XCTAssertFalse(outcome.isSuccess(for: .yes))
+            }
+        }
+    }
+
+    func test_update_completion_requires_a_verified_invocation_receipt() {
+        let action = OpsAction.serverUpdate(name: "fleet-cli")
+        let receipt = String(repeating: "a", count: 32)
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let completed = OpsResultParser.parse(result(json), mode: .yes, action: action, timeout: 900)
+        XCTAssertTrue(completed.isSuccess(for: .yes))
+        XCTAssertEqual(completed.invocationID, receipt)
+        let invalid = json.replacingOccurrences(of: receipt, with: "not-a-receipt")
+        XCTAssertEqual(OpsResultParser.parse(result(invalid), mode: .yes, action: action, timeout: 900).kind, .submitted)
+        XCTAssertNil(OpsResultParser.parse(result(invalid), mode: .yes, action: action, timeout: 900).invocationID)
+        XCTAssertEqual(OpsResultParser.parse(result(json), mode: .plan, action: action, timeout: 90).kind, .failed)
+    }
+
+    func test_submitted_is_not_success_when_the_helper_exits_with_failure() {
+        let json = #"{"ok":true,"result":"submitted"}"#
+        let outcome = OpsResultParser.parse(result(json, exit: 1), mode: .yes, action: unit, timeout: 900)
+        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertFalse(outcome.isSuccess(for: .yes))
+        let audit = OpsAuditEntry(time: nil, host: "server", verb: "server update", target: "fleet-cli", result: "submitted")
+        XCTAssertEqual(audit.state, .unproven)
     }
 
     func test_a_plan_that_answers_done_is_a_failure() throws {
@@ -385,6 +498,83 @@ final class OpsResultParserTests: XCTestCase {
 }
 
 // MARK: - The allowlist and the audit log
+
+final class OpsUpdateReceiptTests: XCTestCase {
+    private let receipt = String(repeating: "a", count: 32)
+
+    private func read(_ json: String, exit: Int32 = 0, timedOut: Bool = false) async -> (OpsOutcome, FakeOpsRunner) {
+        let runner = FakeOpsRunner { _, _ in
+            OpsProcessResult(exitCode: exit, stdout: json, stderr: "", timedOut: timedOut)
+        }
+        let reader = OpsUpdateReceiptReader(runner: runner, makeBuilder: { exampleBuilder() })
+        return (await reader.read(name: "fleet-cli", invocationID: receipt, baselineStartMonotonic: 100), runner)
+    }
+
+    func test_verified_same_invocation_success_is_read_over_plan_only() async {
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let (outcome, runner) = await read(json)
+        XCTAssertTrue(outcome.isSuccess(for: .yes))
+        XCTAssertEqual(runner.recorded.first?.suffix(5).map { $0 }, [
+            "server", "update-status", "fleet-cli.\(receipt).100", "--plan", "--json",
+        ])
+        XCTAssertFalse(runner.recorded.flatMap { $0 }.contains("--yes"))
+    }
+
+    func test_verified_same_invocation_failure_is_terminal() async {
+        let json = #"{"ok":false,"result":"failed","executionState":"failed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100,"detail":"The recorded update failed."}"#
+        let (outcome, _) = await read(json, exit: 1)
+        XCTAssertEqual(outcome.kind, .failed)
+        XCTAssertEqual(outcome.detail, "The recorded update failed.")
+    }
+
+    func test_missing_replaced_or_unverified_receipts_never_complete_the_update() async {
+        for json in [
+            #"{"ok":true,"result":"done"}"#,
+            #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#,
+            #"{"ok":true,"result":"submitted","executionState":"submitted","verified":false,"invocationID":"\#(receipt)","baselineStartMonotonic":100,"errorCode":"invocation_not_current"}"#,
+        ] {
+            let (outcome, _) = await read(json)
+            XCTAssertEqual(outcome.kind, .submitted)
+            XCTAssertFalse(outcome.isSuccess(for: .yes))
+            XCTAssertEqual(outcome.invocationID, receipt)
+        }
+    }
+
+    func test_a_timed_out_receipt_read_stays_unverified() async {
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let (outcome, _) = await read(json, timedOut: true)
+        XCTAssertEqual(outcome.kind, .submitted)
+    }
+
+    func test_recheck_requires_the_original_exact_integer_baseline() async {
+        for raw in ["true", "-1", "1.5", "18446744073709551616", "\"100\"", "101"] {
+            let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":\#(raw)}"#
+            let (outcome, _) = await read(json)
+            XCTAssertEqual(outcome.kind, .submitted, raw)
+        }
+        let json = #"{"ok":true,"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)"}"#
+        let (missing, _) = await read(json)
+        XCTAssertEqual(missing.kind, .submitted)
+        let maximum = OpsResultParser.decode(#"{"baselineStartMonotonic":18446744073709551615}"#)
+        XCTAssertEqual(maximum?.baselineStartMonotonic, UInt64.max)
+        let invocation = try? exampleBuilder().updateStatusInvocation(name: "fleet-cli", invocationID: receipt, baselineStartMonotonic: .max)
+        XCTAssertTrue(invocation?.arguments.contains("fleet-cli.\(receipt).18446744073709551615") == true)
+    }
+
+    func test_an_expired_receipt_remains_unverified_and_cannot_be_rechecked() async {
+        let json = #"{"ok":true,"result":"submitted","executionState":"expired","verified":false,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let (outcome, _) = await read(json)
+        XCTAssertEqual(outcome.kind, .submitted)
+        XCTAssertEqual(outcome.executionState, "expired")
+        XCTAssertFalse(outcome.isSuccess(for: .yes))
+    }
+
+    func test_recheck_cannot_name_another_update_or_inject_an_invocation() {
+        for (name, id) in [("other", receipt), ("fleet-cli", "--yes"), ("fleet-cli", receipt + ".extra")] {
+            XCTAssertThrowsError(try exampleBuilder().updateStatusInvocation(name: name, invocationID: id, baselineStartMonotonic: 100))
+        }
+    }
+}
 
 final class OpsAllowlistAndAuditTests: XCTestCase {
     func test_the_allowlist_names_the_buttons() throws {
@@ -559,6 +749,32 @@ private func isFinished(_ phase: OpsController.Phase) -> Bool {
     return false
 }
 
+private actor ReceiptReadGate {
+    var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        started = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private struct GatedReceiptRunner: OpsRunning {
+    let base: FakeOpsRunner
+    let gate: ReceiptReadGate
+    let answer: String
+    func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult {
+        if invocation.arguments.contains("update-status") {
+            await gate.wait()
+            return OpsProcessResult(exitCode: 0, stdout: answer, stderr: "")
+        }
+        return try await base.run(invocation)
+    }
+}
+
 @MainActor
 final class OpsControllerFlowTests: XCTestCase {
     private let action = OpsAction.serverUnit(verb: .restart, unit: "fleet-server-status.timer")
@@ -621,6 +837,37 @@ final class OpsControllerFlowTests: XCTestCase {
         XCTAssertFalse(ops.isBusy)
     }
 
+    func test_closing_a_pending_recheck_does_not_reopen_the_sheet_or_run_an_update() async throws {
+        let receipt = String(repeating: "a", count: 32)
+        let planned = #"{"ok":true,"commands":[],"result":"planned"}"#
+        let submitted = #"{"ok":true,"commands":[],"result":"submitted","invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let completed = #"{"ok":true,"commands":[],"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let base = FakeOpsRunner { invocation, _ in
+            OpsProcessResult(exitCode: 0, stdout: invocation.arguments.contains("--plan") ? planned : submitted, stderr: "")
+        }
+        let gate = ReceiptReadGate()
+        let runner = GatedReceiptRunner(base: base, gate: gate, answer: completed)
+        let ops = OpsController(runner: runner, makeBuilder: { exampleBuilder() }, auditURL: nil, checksInstall: false)
+        ops.plan(.serverUpdate(name: "fleet-cli"))
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        XCTAssertTrue(ops.canRecheckUpdate)
+        ops.recheckSubmittedUpdate()
+        for _ in 0..<400 {
+            if await gate.started { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let started = await gate.started
+        XCTAssertTrue(started)
+        ops.dismiss()
+        await gate.release()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(ops.phase, .idle)
+        XCTAssertFalse(ops.isRechecking)
+        XCTAssertEqual(base.recorded.filter { $0.contains("--yes") }.count, 1)
+    }
+
     func test_a_plan_that_changed_after_review_is_not_run() async throws {
         let changed = #"{"ok": true, "commands": [["systemctl", "--user", "restart", "something-else.timer"]], "result": "planned"}"#
         let fake = try runner(planAfterReview: changed)
@@ -638,6 +885,31 @@ final class OpsControllerFlowTests: XCTestCase {
         XCTAssertNotNil(ops.notice)
         XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
         XCTAssertEqual(ops.completedRuns, 0)
+    }
+
+    func test_a_resource_policy_plan_with_a_changed_revision_or_old_value_is_not_run() async throws {
+        let revision = String(repeating: "a", count: 64)
+        let action = OpsAction.serverResource(field: "cpu-cores", value: "9", revision: revision)
+        let first = #"{"ok":true,"commands":[["resource-policy","coding","\#(revision)","cpu-cores","8","9"]],"result":"planned"}"#
+        let changed = #"{"ok":true,"commands":[["resource-policy","coding","\#(revision)","cpu-cores","7","9"]],"result":"planned"}"#
+        let fake = FakeOpsRunner { invocation, count in
+            if invocation.arguments.contains("--plan") {
+                return OpsProcessResult(exitCode: 0, stdout: count == 1 ? first : changed, stderr: "")
+            }
+            return OpsProcessResult(exitCode: 0, stdout: #"{"ok":true,"commands":[],"result":"done"}"#, stderr: "")
+        }
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(action))
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops) { phase in
+            if case .review(_, let outcome) = phase {
+                return outcome.commandLines == ["resource-policy coding \(revision) cpu-cores 7 9"]
+            }
+            return false
+        }
+        XCTAssertTrue(ops.notice?.contains("changed") == true)
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
     }
 
     func test_a_second_plan_that_is_refused_shows_its_own_refusal() async throws {

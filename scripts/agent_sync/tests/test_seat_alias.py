@@ -103,7 +103,7 @@ class ResolveTests(unittest.TestCase):
                 self.assertIn("a launched session keeps its launcher's seat", got.problem)
 
     def test_the_other_retired_tags_get_no_alias(self) -> None:
-        for raw in ("MONET", "RENOIR", "HARNESS", "MINIMAX", "DEEPSEEK", "KIMI", "DSH"):
+        for raw in ("MONET", "RENOIR", "HARNESS", "MINIMAX", "DEEPSEEK", "DSH"):
             with self.subTest(raw=raw):
                 self.assertEqual(I.resolve_seat({"AGENT_SEAT": raw}).seat, raw)
 

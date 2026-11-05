@@ -17,6 +17,7 @@ RELAUNCH=0
 usage() {
     echo "Usage: $0 [--verify|--logs|--telemetry|--debug] [--development] [--relaunch]"
     echo "Set MUSTER_SIGNING_IDENTITY to an exact Developer ID Application name or SHA-1 to select it."
+    echo "Set MUSTER_BUILD_NUMBER to the 12-digit merge-time build number (YYYYMMDDHHMM)."
 }
 
 for argument in "$@"; do
@@ -28,6 +29,12 @@ for argument in "$@"; do
         *) usage >&2; exit 2 ;;
     esac
 done
+
+BUILD_NUMBER="${MUSTER_BUILD_NUMBER:-}"
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]{12}$ ]]; then
+    echo "MUSTER_BUILD_NUMBER must be the 12-digit merge-time build number (YYYYMMDDHHMM); refusing installation with a default build number." >&2
+    exit 2
+fi
 
 for command in xcodebuild xcodegen python3; do
     if ! command -v "$command" >/dev/null 2>&1; then
@@ -107,6 +114,7 @@ xcodebuild \
     "CONFIGURATION_BUILD_DIR=$DIST_DIR" \
     "CODE_SIGN_IDENTITY=$SIGNING_IDENTITY" \
     "DEVELOPMENT_TEAM=$TEAM_ID" \
+    "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
     build
 
 /usr/bin/codesign --verify --strict --deep "$STAGED_APP"

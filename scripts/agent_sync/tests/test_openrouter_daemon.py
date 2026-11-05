@@ -513,22 +513,31 @@ class FallbackTests(OpenRouterHarness):
         (event,) = self.log_events("wake-fallback")
         self.assertTrue(event["primary_error"].startswith("timed out after"), event)
 
-    def test_a_stale_muse_pin_skips_the_primary_and_the_fallback_answers(self) -> None:
-        """The MM seat's case today:  the muse binary moved, so every wake was dropped with pin_stale."""
+    def test_a_stale_muse_pin_runs_the_primary_on_the_installed_build_and_logs_the_drift(self) -> None:
+        """The MM seat's case today:  the muse binary moved, so every wake was dropped with
+        pin_stale.  Pins are advisory now (owner ruling, 2026-11-03):  the primary runs on the
+        build that is installed, the fallback never stands in, the drift is logged once with the
+        pinned and current builds, and status still reports the stale pin so it gets re-pinned."""
         A.record_muse_pin(
             self.seat_paths("MM"), str(self.tmp / "muse-bin-1.4.11-R6667.1"), self.clock.time(), model=MUSE_MODEL
         )
         daemon = self.mm()
         self.mm_wake(daemon)
-        self.assert_answered_by_the_fallback(muse_runs=0)
-        (event,) = self.log_events("wake-primary-skipped")
-        self.assertIn("pin_stale", event["reason"])
+        self.assertEqual(self.router.requests(), [], "the fallback never stands in for a drifted pin")
+        self.assertEqual(self.final()["adapter"], "muse")
+        self.assertEqual(self.final()["state"], "done")
+        self.assertEqual(self.muse_runs(), 1)
+        self.assertEqual(self.log_events("wake-primary-skipped"), [])
+        (drift,) = self.log_events("wake-pin-drift")
+        self.assertEqual(drift["why"], "pin_stale")
+        self.assertIn("muse-bin-1.4.11-R6667.1", str(drift["pinned"]))
+        self.assertIn("muse-bin-1.4.12-R6909.1", str(drift["current"]))
         status = daemon.status()["seats"]["MM"]
-        self.assertTrue(status["fallback"]["stands_in"])
-        self.assertEqual(status["fallback"]["primary_hold"], "pin_stale")
+        self.assertFalse(status["fallback"]["stands_in"])
+        self.assertFalse(status["fallback"]["primary_hold"])
         self.assertTrue(any("wake pin is stale" in red for red in status["red"]), "the stale muse pin is still reported")
         daemon.write_status()
-        self.assertIn("ANSWERING IN PLACE OF THE WAKE (pin_stale)", self.run_cli("status").out)
+        self.assertNotIn("ANSWERING IN PLACE OF THE WAKE", self.run_cli("status").out)
 
     def test_a_muse_that_was_never_pinned_skips_the_primary_too(self) -> None:
         os.unlink(self.seat_paths("MM").wake_pin_muse)
@@ -542,28 +551,49 @@ class FallbackTests(OpenRouterHarness):
         self.mm_wake(daemon)
         self.assert_answered_by_the_fallback(muse_runs=0)
 
-    def test_without_the_fallback_a_stale_muse_pin_still_drops_the_wake(self) -> None:
+    def test_without_a_fallback_a_stale_muse_pin_still_answers_on_the_installed_build(self) -> None:
+        """No fallback configured:  the drifted pin used to drop the wake outright.  Advisory now,
+        so the seat answers on the build that is installed and the drift is in the log."""
         self.mm_config("muse")
         A.record_muse_pin(
             self.seat_paths("MM"), str(self.tmp / "muse-bin-1.4.11-R6667.1"), self.clock.time(), model=MUSE_MODEL
         )
         daemon = self.mm()
         self.mm_wake(daemon)
-        self.assertEqual((self.final()["state"], self.final()["reason"]), ("dropped", "pin_stale"))
+        self.assertEqual((self.final()["state"], self.final()["adapter"]), ("done", "muse"))
+        self.assertEqual(self.muse_runs(), 1)
         self.assertEqual(self.router.requests(), [])
+        (drift,) = self.log_events("wake-pin-drift")
+        self.assertEqual(drift["why"], "pin_stale")
 
-    def test_the_mcode_fallback_does_not_stand_in_for_a_primary_that_cannot_run(self) -> None:
-        """Only the OpenRouter fallback skips a held primary.  mcode answers a run that started and
-        failed, as before, so a stale muse pin behind `fallback = "mcode"` still drops the wake."""
+    def test_a_drifted_primary_runs_so_the_mcode_fallback_never_stands_in(self) -> None:
+        """Only the OpenRouter fallback skips a held primary, and a drifted pin no longer holds
+        the primary at all (owner ruling, 2026-11-03):  behind `fallback = "mcode"` the muse
+        primary runs on the installed build and answers, so there is nothing to stand in for."""
         self.mm_config("muse", extra='fallback = "mcode"\nfallback_uncontained_ok = true')
         A.record_muse_pin(
             self.seat_paths("MM"), str(self.tmp / "muse-bin-1.4.11-R6667.1"), self.clock.time(), model=MUSE_MODEL
         )
         daemon = self.mm()
         self.mm_wake(daemon)
-        self.assertEqual((self.final()["state"], self.final()["reason"]), ("dropped", "pin_stale"))
+        self.assertEqual((self.final()["state"], self.final()["adapter"]), ("done", "muse"))
+        self.assertEqual(self.muse_runs(), 1)
         self.assertEqual(self.log_events("wake-primary-skipped"), [])
         self.assertEqual(self.router.requests(), [])
+        (drift,) = self.log_events("wake-pin-drift")
+        self.assertEqual(drift["why"], "pin_stale")
+
+    def test_the_mcode_fallback_does_not_stand_in_for_a_primary_that_is_held(self) -> None:
+        """The other half of the rule above, unchanged:  a primary that is genuinely held (never
+        pinned) still drops the wake behind an mcode fallback, because mcode answers only a run
+        that started and failed -- it never skips a primary that cannot run."""
+        self.mm_config("muse", extra='fallback = "mcode"\nfallback_uncontained_ok = true')
+        os.unlink(self.seat_paths("MM").wake_pin_muse)
+        daemon = self.mm()
+        self.mm_wake(daemon)
+        self.assertEqual((self.final()["state"], self.final()["reason"]), ("dropped", "not_pinned"))
+        self.assertEqual(self.log_events("wake-primary-skipped"), [])
+        self.assertEqual(self.log_events("wake-fallback"), [])
         self.assertEqual(self.muse_runs(), 0)
 
     def test_an_unpinned_fallback_is_held_and_the_wake_fails_with_the_primarys_reason(self) -> None:
@@ -591,15 +621,21 @@ class FallbackTests(OpenRouterHarness):
         status = daemon.status()["seats"]["MM"]
         self.assertTrue(any("fallback pin is stale" in red and "--runtime fallback --run" in red for red in status["red"]))
 
-    def test_a_primary_pin_stands_in_for_nothing_when_the_fallback_is_also_down(self) -> None:
+    def test_a_drifted_primary_answers_even_when_the_fallback_cannot_stand_in(self) -> None:
+        """The fallback's own pin is gone, so it cannot stand in -- and no longer needs to:  the
+        drifted primary pin is advisory, so the primary runs on the installed build and answers
+        instead of dropping the wake the way it did when both pins gated it."""
         os.unlink(self.seat_paths("MM").wake_pin_openrouter_fallback)
         A.record_muse_pin(
             self.seat_paths("MM"), str(self.tmp / "muse-bin-1.4.11-R6667.1"), self.clock.time(), model=MUSE_MODEL
         )
         daemon = self.mm()
         self.mm_wake(daemon)
-        self.assertEqual((self.final()["state"], self.final()["reason"]), ("dropped", "pin_stale"))
+        self.assertEqual((self.final()["state"], self.final()["adapter"]), ("done", "muse"))
+        self.assertEqual(self.muse_runs(), 1)
         self.assertEqual(self.router.requests(), [])
+        (drift,) = self.log_events("wake-pin-drift")
+        self.assertEqual(drift["why"], "pin_stale")
         self.assertFalse(daemon.status()["seats"]["MM"]["fallback"]["stands_in"])
 
     def test_a_fallback_that_fails_too_keeps_both_reasons(self) -> None:
