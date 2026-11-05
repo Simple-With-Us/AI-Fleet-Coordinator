@@ -1,0 +1,20 @@
+[Unit]
+Description=Cloudflare account usage watchdog, one poll (scripts/cf-usage-watchdog)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jay
+Group=jay
+Environment=HOME=/home/jay
+Environment=AGENT_SEAT=CLAUDE
+Environment=PATH=/home/jay/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Holds one line, INFISICAL_TOKEN=<read-only service token>.  Root-owned, mode 0600.
+EnvironmentFile=/etc/cf-usage-watchdog/infisical.env
+ExecStart=/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/cf-usage-watchdog/watchdog.py run
+ConditionPathExists=/home/jay/.local/share/fleet-cli/repo/scripts/cf-usage-watchdog/watchdog.py
+TimeoutStartSec=170
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes

@@ -354,6 +354,8 @@ jobs:
       run: sudo apt-get update -qq && sudo apt-get install -y -qq restic
     - name: Fleet work backup tests
       run: python3 scripts/fleet-work-backup/test_fleet_work_backup.py
+    - name: Cloudflare usage watchdog tests
+      run: python3 scripts/cf-usage-watchdog/test_watchdog.py
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
     - name: Verify fleet registry

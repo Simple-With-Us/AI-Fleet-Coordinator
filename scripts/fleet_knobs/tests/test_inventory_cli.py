@@ -56,6 +56,8 @@ PLAN_KEYS = {
     "APPLE_NOTES_PIN_RETRY",  # AFC-431:  whether the pin Shortcut run is retried
     "COMPLIANCE_CERT_EXPIRY_DAYS",  # AFC-400:  the certificate expiry window the compliance rule reads
     "COMPLIANCE_SECRETS_FINDINGS_MAX",  # AFC-400:  the secrets-hygiene tolerance the compliance rule reads
+    "CF_USAGE_WATCHDOG_MODE",  # AFC-617:  observe or enforce
+    "CF_USAGE_WATCHDOG_PROFILE",  # AFC-617:  which threshold profile applies
 }
 
 
