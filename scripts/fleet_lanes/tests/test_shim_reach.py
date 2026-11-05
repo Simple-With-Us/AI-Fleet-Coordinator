@@ -141,6 +141,18 @@ class ThroughTheDoctor(TD.Case):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(text)["shim_reach"], self.REACH)
 
+    def test_a_copy_of_the_tools_without_the_module_still_runs(self) -> None:
+        """The server's reviewed CLI bundle carries the doctor and not this module, and `lane` has to run there."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(D, "_shim_reach_module", return_value=None):
+            rc = D.main(["--no-gh", "--home", str(self.home), "--tmp-root", str(self.home / "no-tmp"), "--strict-placement"], env=self.vars, stdout=out, stderr=err)
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertIn("no shim_reach module", out.getvalue())
+        self.assertNotIn("SHIM REACH", out.getvalue())
+
+    def test_the_doctor_does_not_import_the_module_when_it_loads(self) -> None:
+        self.assertNotIn("from . import shim_reach as", Path(D.__file__).read_text(encoding="utf-8"))
+
     def test_a_plain_report_starts_no_shells(self) -> None:
         rc, text, called = self.run_main()
         self.assertEqual(rc, 0)

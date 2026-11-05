@@ -145,7 +145,6 @@ from typing import Callable, Iterable, Mapping, Sequence
 
 from . import layout as L
 from . import placement as P
-from . import shim_reach as S
 
 __all__ = [
     "FRESH_DAYS",
@@ -2623,7 +2622,7 @@ def render_text(report: Mapping) -> str:
                    f"Main clones {len(report['main_clones'])}")
     out.append("")
     if report.get("shim_reach") is not None:
-        out += S.render(report["shim_reach"]) + [""]
+        out += _shim_reach_module().render(report["shim_reach"]) + [""]
     if report.get("placement_anomalies"):
         out.append(f"PLACEMENT ({len(report['placement_anomalies'])})")
         out += [f"  {a['type']:<18} {a['path']}  {a['detail']}" for a in report["placement_anomalies"]]
@@ -2761,7 +2760,11 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         fresh_days=args.fresh_days, cleaner_retention_days=args.cleaner_retention_days,
         main_clone_behind=args.main_clone_behind)
     if args.shim_reach or args.strict_placement:
-        report["shim_reach"] = S.shim_reach(home, env)
+        reach = _shim_reach_module()
+        if reach is not None:
+            report["shim_reach"] = reach.shim_reach(home, env)
+        else:
+            report["warnings"].append("this copy of the tools has no shim_reach module, so shim reach was not checked.")
     text = json.dumps(report, indent=2, sort_keys=False) + "\n"
     if args.write:
         _write_atomic(args.write, text)
@@ -2774,6 +2777,15 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
     if args.strict and report["summary"]["strict_violations"]:
         return 2
     return 2 if args.strict_placement and report["summary"]["placement_violations"] else 0
+
+
+def _shim_reach_module():
+    """Imported only when asked for, because the server's reviewed CLI bundle carries the doctor without it, and `lane` must still run."""
+    try:
+        from . import shim_reach
+    except ImportError:
+        return None
+    return shim_reach
 
 
 def _cleaner_notes(report: Mapping) -> list[str]:

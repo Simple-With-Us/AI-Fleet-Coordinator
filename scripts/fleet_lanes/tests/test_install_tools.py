@@ -6721,7 +6721,7 @@ class ServerRootResolutionTests(World):
         """
         pkg = Path(self.source.scripts_dir) / "fleet_lanes"
         shutil.copytree(REAL_PKG / "rules", pkg / "rules")
-        for module in ("install_rules.py", "doctor.py", "shim_reach.py"):
+        for module in ("install_rules.py", "doctor.py"):
             shutil.copy(REAL_PKG / module, pkg / module)
         return self.source
 

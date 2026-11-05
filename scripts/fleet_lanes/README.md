@@ -501,7 +501,7 @@ launchd has no permission for `/Volumes/External` unless the owner grants it, an
 
 ### How far the shim reaches
 
-The shim only sees a process that finds it first on PATH.  `lane ls --strict-placement` (or `--shim-reach`) starts each common shell shape from launchd's default PATH, asks it `command -v git`, and prints a `SHIM REACH` section, also in the JSON as `shim_reach`.  It fails no check, and a plain `lane ls` starts no shells.  `unknown` means a shape could not be asked, such as a dotfile that took over 15 seconds, and is not a no.
+The shim only sees a process that finds it first on PATH.  `lane ls --strict-placement` (or `--shim-reach`) starts each common shell shape from launchd's default PATH, asks it `command -v git`, and prints a `SHIM REACH` section, also in the JSON as `shim_reach`.  It fails no check, and a plain `lane ls` starts no shells.  The server's reviewed CLI bundle carries the doctor without this module, so there it warns and skips the section.  `unknown` means a shape could not be asked, such as a dotfile that took over 15 seconds, and is not a no.
 
 On the owner's Mac `~/bin` is first on PATH only through `~/.zshrc`, so only `zsh -ic` starts at the shim.  One line reaches the shape agents use most, and it is the owner's to approve, because nothing here edits a dotfile.  Add it as the last line of `~/.zprofile`:
 
