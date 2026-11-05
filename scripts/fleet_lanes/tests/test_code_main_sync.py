@@ -24,7 +24,8 @@ def run(args: list[str], cwd: Path) -> str:
 
 
 REMOTE = "https://github.com/example-org/example-repo.git"
-# Split so the relay's secret scan, which reads every pushed file, does not take a fake header for a real one.
+# Split so no secret scan takes this fake header for a real one:  gr_wf_file_put and gr_wf_files_put refuse
+# credential-shaped file content (git-relay workflow_verbs.py), and the gitleaks workflow reads the PR's files.
 SCHEME = "Bear" "er"
 
 
