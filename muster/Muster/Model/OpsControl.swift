@@ -998,6 +998,8 @@ struct OpsOutcome: Equatable {
     /// True when a run may have done its work and the Mac cannot say:  it lost the helper,
     /// or the answer does not count.  A plan changes nothing,  so a plan is never this.
     var runNotKnown: Bool = false
+    /// True when this answers a plan,  which ran nothing however it came out.
+    var isPlan: Bool = false
 
     /// True when the run did what its mode asks for:  a plan that planned,  or a run that
     /// was done.  The helper's `ok`,  its result word and its exit code must all agree.
@@ -1017,7 +1019,7 @@ struct OpsOutcome: Equatable {
     /// What the sheet calls those commands once the action has ended.  It says what ran only
     /// when something is known to have run.
     var commandsHeading: String {
-        if kind == .planned || kind == .refused { return "The plan" }
+        if isPlan || kind == .planned || kind == .refused { return "The plan" }
         return runNotKnown ? "What the helper named" : "What ran"
     }
 }
@@ -1062,7 +1064,8 @@ enum OpsResultParser {
                 kind: canHaveChanged ? .unknown : .failed, ok: false, commands: [],
                 detail: "The helper did not finish within \(Int(timeout)) seconds.",
                 exitCode: result.exitCode,
-                runNotKnown: canHaveChanged
+                runNotKnown: canHaveChanged,
+                isPlan: mode == .plan
             )
         }
         guard let answer = decode(result.stdout) else {
@@ -1071,7 +1074,8 @@ enum OpsResultParser {
                 kind: landed ? .unknown : .failed, ok: false, commands: [],
                 detail: unreadableDetail(result, action: action, mode: mode),
                 exitCode: result.exitCode,
-                runNotKnown: landed
+                runNotKnown: landed,
+                isPlan: mode == .plan
             )
         }
         var kind = OpsResultKind(rawValue: answer.result ?? "") ?? .unknown
@@ -1099,7 +1103,7 @@ enum OpsResultParser {
             }
             if !answer.ok || result.exitCode != 0 {
                 kind = canHaveChanged ? .unknown : .failed
-                detail = unbackedDetail("done", exitCode: result.exitCode)
+                detail = unbackedDetail("done", answer: answer, exitCode: result.exitCode, helperWords: detail)
             } else if !completed {
                 kind = .submitted
                 detail = "The request was submitted; completion has not been verified."
@@ -1107,7 +1111,7 @@ enum OpsResultParser {
         }
         if kind == .submitted && (!answer.ok || result.exitCode != 0) {
             kind = canHaveChanged ? .unknown : .failed
-            detail = unbackedDetail("submitted", exitCode: result.exitCode)
+            detail = unbackedDetail("submitted", answer: answer, exitCode: result.exitCode, helperWords: detail)
         }
         let isKnobAction: Bool
         if case .knobSet = action { isKnobAction = true }
@@ -1160,7 +1164,8 @@ enum OpsResultParser {
             executionState: answer.executionState,
             baselineStartMonotonic: answer.baselineStartMonotonic,
             answeredFrom: answeredFrom,
-            runNotKnown: canHaveChanged && kind == .unknown
+            runNotKnown: canHaveChanged && kind == .unknown,
+            isPlan: mode == .plan
         )
     }
 
@@ -1177,9 +1182,16 @@ enum OpsResultParser {
         return result.exitCode != 126 && result.exitCode != 127
     }
 
-    /// The sentence for a helper that reports the work and does not stand behind the report.
-    private static func unbackedDetail(_ word: String, exitCode: Int32) -> String {
-        "The helper said \(word), but did not say it worked (exit \(exitCode))."
+    /// The sentence for a helper that reports the work and does not stand behind the report,
+    /// naming what disagrees with it,  and then the helper's own words.
+    private static func unbackedDetail(_ word: String,
+                                       answer: OpsResult,
+                                       exitCode: Int32,
+                                       helperWords: String) -> String {
+        let sentence = answer.ok
+            ? "The helper said \(word), but it exited with code \(exitCode)."
+            : "The helper said \(word), but its answer was not ok (exit \(exitCode))."
+        return helperWords.isEmpty ? sentence : ApplyCopy.join(sentence, helperWords)
     }
 
     /// What stopped ssh before any command was sent.

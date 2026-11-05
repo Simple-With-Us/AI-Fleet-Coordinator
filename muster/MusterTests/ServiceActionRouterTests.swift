@@ -542,20 +542,27 @@ final class ServiceActionRouterTests: XCTestCase {
         let notKnown = ServiceActionState.notKnown(shellular, reason: "no answer")
         let failed = ServiceActionState.failed(shellular, reason: "pm2 said no")
         let toggle = "The login item did not change:  no"
+        func heading(_ state: ServiceActionState?, _ problem: String?, notKnown: Bool = false) -> String {
+            FleetActionWords.panelHeading(actionState: state, adminProblem: problem, adminProblemIsNotKnown: notKnown)
+        }
         // The plan route writes only to the router.
-        XCTAssertEqual(FleetActionWords.panelHeading(actionState: notKnown, adminProblem: nil),
-                       FleetActionWords.notKnownHeading)
+        XCTAssertEqual(heading(notKnown, nil), FleetActionWords.notKnownHeading)
         // The direct route writes the same sentence to both.
-        XCTAssertEqual(FleetActionWords.panelHeading(actionState: notKnown,
-                                                     adminProblem: FleetActionWords.line(for: notKnown)),
+        XCTAssertEqual(heading(notKnown, FleetActionWords.line(for: notKnown), notKnown: true),
                        FleetActionWords.notKnownHeading)
-        // Anything else under the heading is a real failure.
-        XCTAssertEqual(FleetActionWords.panelHeading(actionState: notKnown, adminProblem: toggle),
+        // The two records can hold different not-known sentences,  and neither is a failure.
+        XCTAssertEqual(heading(notKnown, "Whether BotFleet Server stopped on the Mac is not known:  no", notKnown: true),
+                       FleetActionWords.notKnownHeading)
+        // An older direct action can stay in the admin while a plan is on screen.
+        XCTAssertEqual(heading(.running(shellular), "Whether BotFleet Server stopped on the Mac is not known:  no",
+                               notKnown: true),
+                       FleetActionWords.notKnownHeading)
+        // A sentence that reports a failure is a real failure,  whatever is beside it.
+        XCTAssertEqual(heading(notKnown, toggle), FleetActionWords.didNotWorkHeading)
+        XCTAssertEqual(heading(failed, nil), FleetActionWords.didNotWorkHeading)
+        XCTAssertEqual(heading(failed, FleetActionWords.line(for: notKnown), notKnown: true),
                        FleetActionWords.didNotWorkHeading)
-        XCTAssertEqual(FleetActionWords.panelHeading(actionState: failed, adminProblem: nil),
-                       FleetActionWords.didNotWorkHeading)
-        XCTAssertEqual(FleetActionWords.panelHeading(actionState: nil, adminProblem: toggle),
-                       FleetActionWords.didNotWorkHeading)
+        XCTAssertEqual(heading(nil, toggle), FleetActionWords.didNotWorkHeading)
         XCTAssertEqual(FleetActionWords.notKnownHeading, "The Last Change Is Not Known")
         XCTAssertEqual(FleetActionWords.didNotWorkHeading, "The Last Change Did Not Work")
     }
@@ -587,7 +594,9 @@ final class ServiceActionRouterTests: XCTestCase {
     }
 
     private func panelHeading(_ rig: Rig) -> String {
-        FleetActionWords.panelHeading(actionState: rig.router.actionState, adminProblem: rig.admin.problem)
+        FleetActionWords.panelHeading(actionState: rig.router.actionState,
+                                      adminProblem: rig.admin.problem,
+                                      adminProblemIsNotKnown: rig.admin.problemIsNotKnown)
     }
 
     /// Fails a direct action,  which writes the same sentence to both records.

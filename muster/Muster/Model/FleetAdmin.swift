@@ -113,7 +113,12 @@ final class FleetAdmin: ObservableObject {
     /// The service an action is running against,  so the menu can say that it is busy.
     @Published private(set) var busyServiceID: String?
     /// The last refusal,  in the owner's words.
-    @Published private(set) var problem: String?
+    @Published private(set) var problem: String? {
+        didSet { problemIsNotKnown = false }
+    }
+    /// True when `problem` says the Mac cannot tell how a change ended,  rather than that it
+    /// did not work.
+    @Published private(set) var problemIsNotKnown = false
     /// Whether a read is in flight.
     @Published private(set) var reading = false
     /// When the last read landed,  or nil before the first one.
@@ -349,12 +354,15 @@ final class FleetAdmin: ObservableObject {
                         notKnown = true
                     }
                 } else if action == .start || action == .restart {
+                    let deadline = Date().addingTimeInterval(startWait.budget)
                     switch await Self.watchThePort(until: .present, presence: presence, wait: startWait) {
                     case .present:
                         // A wrapper exits at once when the port is already healthy,  which
-                        // replaces nothing,  so a listener does not prove a restart.
+                        // replaces nothing,  so a listener does not prove a restart.  This look
+                        // shares the port's budget,  so a restart holds the row for one wait.
                         guard action == .restart else { break }
-                        switch await Self.watchForANewProcess(after: processBefore, api: api, wait: startWait) {
+                        switch await Self.watchForANewProcess(after: processBefore, api: api,
+                                                              interval: startWait.interval, until: deadline) {
                         case .replaced: break
                         case .sameProcess:
                             reason = "the same process is still on its port, so it was not replaced"
@@ -408,6 +416,7 @@ final class FleetAdmin: ObservableObject {
             if notKnown {
                 let subject = ServiceActionSubject(title: service.title, host: service.host, action: action)
                 problem = FleetActionWords.line(for: .notKnown(subject, reason: reason))
+                problemIsNotKnown = true
             } else {
                 problem = "\(FleetActionWords.didNot(action, title: service.title, host: service.host)):  \(reason)"
             }
@@ -483,15 +492,15 @@ final class FleetAdmin: ObservableObject {
     }
 
     /// Watches for a process on the port other than the one that held it before,  until the
-    /// budget runs out,  and says what the last look found.
+    /// deadline,  and says what the last look found.  There is always one look.
     ///
     /// A look can cost a whole request timeout,  so the budget is time and not a number of
     /// looks.  With nothing to compare against,  a process that answers proves nothing.
     private nonisolated static func watchForANewProcess(after before: ServerProcessBefore,
                                                         api: ControlAPI,
-                                                        wait: ServerPortWait) async -> ServerProcessChange {
+                                                        interval: TimeInterval,
+                                                        until deadline: Date) async -> ServerProcessChange {
         if case .notRead = before { return .notRead }
-        let deadline = Date().addingTimeInterval(wait.budget)
         while true {
             var last = ServerProcessChange.notRead
             if let pid = await api.serverPID() {
@@ -500,7 +509,7 @@ final class FleetAdmin: ObservableObject {
             }
             let remaining = deadline.timeIntervalSinceNow
             if remaining <= 0 { return last }
-            try? await Task.sleep(nanoseconds: UInt64(min(wait.interval, remaining) * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(min(interval, remaining) * 1_000_000_000))
         }
     }
 

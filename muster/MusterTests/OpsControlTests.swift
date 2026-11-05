@@ -350,7 +350,7 @@ final class OpsResultParserTests: XCTestCase {
         let outcome = OpsResultParser.parse(result(json, exit: 1), mode: .yes, action: unit, timeout: 900)
         XCTAssertEqual(outcome.kind, .unknown)
         XCTAssertTrue(outcome.runNotKnown)
-        XCTAssertEqual(outcome.detail, "The helper said submitted, but did not say it worked (exit 1).")
+        XCTAssertEqual(outcome.detail, "The helper said submitted, but it exited with code 1.")
         XCTAssertFalse(outcome.isSuccess(for: .yes))
         let audit = OpsAuditEntry(time: nil, host: "server", verb: "server update", target: "fleet-cli", result: "submitted")
         XCTAssertEqual(audit.state, .unproven)
@@ -382,7 +382,8 @@ final class OpsResultParserTests: XCTestCase {
         // It said it did the work and did not stand behind that,  so it may have done it.
         XCTAssertEqual(outcome.kind, .unknown)
         XCTAssertTrue(outcome.runNotKnown)
-        XCTAssertEqual(outcome.detail, "The helper said done, but did not say it worked (exit 1).")
+        // The answer said ok,  so the words name the exit code and keep the helper's own.
+        XCTAssertEqual(outcome.detail, ApplyCopy.join("The helper said done, but it exited with code 1.", "Done."))
     }
 
     func test_a_done_answer_that_is_not_ok_is_not_known() {
@@ -391,6 +392,7 @@ final class OpsResultParserTests: XCTestCase {
         )
         XCTAssertEqual(outcome.kind, .unknown)
         XCTAssertTrue(outcome.runNotKnown)
+        XCTAssertEqual(outcome.detail, ApplyCopy.join("The helper said done, but its answer was not ok (exit 0).", "ran"))
     }
 
     /// The helper's own word for a failure stands:  it knows how it ended.
@@ -442,7 +444,7 @@ final class OpsResultParserTests: XCTestCase {
             (result("", exit: 15, timedOut: true), "The helper did not finish within 900 seconds."),
             (result("", exit: 255), "The server did not answer, so nothing came back."),
             (result("", exit: 1), "The helper printed no answer (exit 1)."),
-            (result(#"{"ok":true,"result":"done"}"#, exit: 1), "The helper said done, but did not say it worked (exit 1)."),
+            (result(#"{"ok":true,"result":"done"}"#, exit: 1), "The helper said done, but it exited with code 1."),
         ]
         for (answer, words) in wrong {
             let outcome = OpsResultParser.parse(answer, mode: .yes, action: logs, timeout: 900)
@@ -473,6 +475,17 @@ final class OpsResultParserTests: XCTestCase {
         let done = #"{"ok":true,"result":"done","commands":[["x"]],"host":"mac"}"#
         XCTAssertEqual(OpsResultParser.parse(result(done), mode: .yes, action: unit, timeout: 900).commandsHeading,
                        "What the helper named")
+        // A plan ran nothing,  however it came out.
+        let wordless = #"{"ok":true,"result":"maybe","commands":[["x"]]}"#
+        for answer in [done.replacingOccurrences(of: #","host":"mac""#, with: ""), wordless] {
+            let plan = OpsResultParser.parse(result(answer), mode: .plan, action: unit, timeout: 90)
+            XCTAssertFalse(plan.isSuccess(for: .plan))
+            XCTAssertEqual(plan.commandsHeading, "The plan", answer)
+        }
+        XCTAssertEqual(OpsResultParser.parse(result("", exit: 1), mode: .plan, action: unit, timeout: 90).isPlan, true)
+        XCTAssertEqual(OpsResultParser.parse(result("", exit: 15, timedOut: true), mode: .plan, action: unit, timeout: 90).isPlan,
+                       true)
+        XCTAssertEqual(OpsResultParser.parse(result(wordless), mode: .yes, action: unit, timeout: 900).isPlan, false)
     }
 
     func test_only_a_read_changes_nothing() {

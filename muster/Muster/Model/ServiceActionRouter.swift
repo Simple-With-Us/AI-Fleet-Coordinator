@@ -213,10 +213,16 @@ enum FleetActionWords {
     /// The heading above what `panelProblem` says.  It claims a failure only when one of the
     /// sentences under it reports one,  so a run the Mac cannot say anything about is not
     /// called a change that did not work.
-    static func panelHeading(actionState: ServiceActionState?, adminProblem: String?) -> String {
-        guard let actionState, case .notKnown = actionState else { return didNotWorkHeading }
-        if let adminProblem, adminProblem != line(for: actionState) { return didNotWorkHeading }
-        return notKnownHeading
+    ///
+    /// - Parameter adminProblemIsNotKnown:  True when `adminProblem` is itself a not-known
+    ///   sentence.  The admin says so,  because the two records need not hold the same one.
+    static func panelHeading(actionState: ServiceActionState?,
+                             adminProblem: String?,
+                             adminProblemIsNotKnown: Bool) -> String {
+        if case .some(.failed) = actionState { return didNotWorkHeading }
+        if adminProblem != nil { return adminProblemIsNotKnown ? notKnownHeading : didNotWorkHeading }
+        if case .some(.notKnown) = actionState { return notKnownHeading }
+        return didNotWorkHeading
     }
 
     /// The line on a row the owner stopped on purpose.  A stop that did not read as landed is

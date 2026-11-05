@@ -401,6 +401,7 @@ final class FleetAdminTests: XCTestCase {
 
         XCTAssertEqual(admin.lastResult?.notKnown, true)
         XCTAssertEqual(admin.lastResult?.reason, "its port on the Mac could not be read")
+        XCTAssertTrue(admin.problemIsNotKnown)
         // The stop may have landed,  so what the owner asked for stays on the record.
         XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, true)
     }
@@ -417,7 +418,43 @@ final class FleetAdminTests: XCTestCase {
 
         XCTAssertEqual(admin.lastResult?.notKnown, false)
         XCTAssertEqual(admin.problem, "BotFleet Server did not stop on the Mac:  its port on the Mac is still answering")
+        XCTAssertFalse(admin.problemIsNotKnown)
         XCTAssertEqual(admin.entries.first { $0.id == FleetServiceRegistry.server.id }?.stoppedByOwner, false)
+    }
+
+    /// The flag goes with the sentence it describes,  so the next problem does not inherit it.
+    func testANotKnownFlagDoesNotOutliveItsProblem() async {
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: FleetAdminCommands(), server: server,
+                              stopWait: ServerPortWait(attempts: 2, interval: 0))
+        await waitForTheFleet(admin)
+        server.portCannotBeRead()
+        await admin.perform(.stop, serviceID: FleetServiceRegistry.server.id)
+        XCTAssertTrue(admin.problemIsNotKnown)
+
+        admin.beginControllerAction(.start, serviceID: "shellular")
+
+        XCTAssertNil(admin.problem)
+        XCTAssertFalse(admin.problemIsNotKnown)
+    }
+
+    /// The port and the process share one wait,  so a restart holds the row for one budget.
+    func testARestartLooksForTheProcessWithinThePortsBudget() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
+                              startWait: ServerPortWait(attempts: 5, interval: 0.1))
+        await waitForTheFleet(admin)
+        server.keepItsProcess()
+        // The port takes most of the budget to answer,  which leaves one or two looks.
+        server.closePort(forLooks: 4)
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.reason, "the same process is still on its port, so it was not replaced")
+        // A second budget of its own would make six looks,  and the read that follows adds one.
+        XCTAssertLessThan(server.looksAtTheProcessAfterAKickstart, 5)
     }
 
     /// A look can cost launchctl's whole timeout,  so the budget is time and not a number of
@@ -698,6 +735,17 @@ final class FleetAdminServer {
     private var losesStopAnswer = false
     /// True when a stop whose answer is lost still reaches the server.
     private var lostStopLands = false
+    /// True once launchd was asked to run the wrapper.
+    private var wasKickstarted = false
+    /// How many times the health check named the process since the kickstart.
+    private var processLooks = 0
+
+    /// How many times the health check named the process since the kickstart.
+    var looksAtTheProcessAfterAKickstart: Int {
+        state.lock()
+        defer { state.unlock() }
+        return processLooks
+    }
 
     /// The `blockingWork` value the server's status carries,  as JSON,  or nil for none.
     var blockingWorkJSON: String? {
@@ -804,6 +852,7 @@ final class FleetAdminServer {
         state.lock()
         defer { state.unlock() }
         stoppedNow = false
+        wasKickstarted = true
         if saysNothingAfterKickstart { saysNothing = true }
         guard !keepsProcess else { return }
         if slowLooks > 0 {
@@ -834,6 +883,7 @@ final class FleetAdminServer {
     func nextPID() -> Int {
         state.lock()
         defer { state.unlock() }
+        if wasKickstarted { processLooks += 1 }
         if let looks = looksBeforeReplaced {
             if looks == 0 {
                 pid += 1

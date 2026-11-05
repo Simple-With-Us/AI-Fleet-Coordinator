@@ -21,7 +21,8 @@ struct FleetServicesPanel: View {
                 serverCard
                 if let problem = lastProblem {
                     problemBox(problem, heading: FleetActionWords.panelHeading(actionState: router.actionState,
-                                                                               adminProblem: admin.problem))
+                                                                               adminProblem: admin.problem,
+                                                                               adminProblemIsNotKnown: admin.problemIsNotKnown))
                 }
                 servicesSection
             }
