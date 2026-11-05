@@ -402,6 +402,13 @@ def _lookup_seat(registry: L.Registry, text: str) -> L.Seat | None:
     seat = registry.seat_by_name(t)
     if seat is None:
         seat = registry.seat_by_suffix(t.lower())
+    if seat is None:
+        # Role lanes (AFC-620): a BF-<ROLE>/GB-<ROLE> tag or its folder names the synthesized role
+        # lane seat, so prune/doctor can scope to its lanes.  Roles never become seats rows.
+        for rl in registry.role_lanes:
+            if rl.tag.upper() == t.upper() or rl.folder == t.lower():
+                seat = L.Seat(name=rl.tag, suffix=rl.folder, branch_prefixes=(rl.branch_prefix,))
+                break
     return seat
 
 
@@ -1194,7 +1201,11 @@ def _prune(ctx: K.Ctx, args: argparse.Namespace, now: float) -> int:
     registry = ctx.registry
     own: L.Seat | None = None
     raw_own = (ctx.env.get(K.ENV_SEAT) or "").strip()
-    if raw_own:
+    launched = bool(
+        (ctx.env.get("AGENT_LAUNCHER") or "").strip()
+        or (ctx.env.get("AGENT_LAUNCH_SEAT") or "").strip()
+    )
+    if raw_own or launched:
         own = K.resolve_seat(ctx.env, registry)
     seats: set | None
     if args.seat:

@@ -563,7 +563,15 @@ def _parse_role_lanes(data: Mapping[str, object]) -> tuple[RoleLane, ...]:
         if not isinstance(item, Mapping):
             continue
         match, lane = item.get("match"), item.get("lane")
-        if not isinstance(match, str) or match.count("*") != 1 or not isinstance(lane, Mapping):
+        # Same supported form as identity._pattern_lane: a bare family prefix, star last.  A
+        # suffixed pattern (X-*-BOT) is not lane-enabled in either parser, so the two cannot
+        # diverge on a future scheme.
+        if (
+            not isinstance(match, str)
+            or match.count("*") != 1
+            or not match.endswith("*")
+            or not isinstance(lane, Mapping)
+        ):
             continue
         roles, folder_t, branch_t = lane.get("roles"), lane.get("folderTemplate"), lane.get("branchTemplate")
         if not isinstance(roles, list) or not isinstance(folder_t, str) or not isinstance(branch_t, str):

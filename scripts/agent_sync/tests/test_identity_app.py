@@ -100,6 +100,38 @@ class RoleLaneBlockTests(unittest.TestCase):
         with self.assertRaises(I.SeatRegistryError):
             I.parse_seat_registry(self._data(good, match="BOTH-*-SIDES-*"))
 
+    def test_a_suffixed_match_is_not_lane_enabled(self) -> None:
+        good = {"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}
+        with self.assertRaises(I.SeatRegistryError):
+            I.parse_seat_registry(self._data(good, match="BF-*-BOT"))
+
+    def test_renders_must_be_kebab_slugs(self) -> None:
+        for role in ("FIXER-", "FI--XER"):
+            lane = {"roles": [role], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}
+            with self.subTest(role=role):
+                with self.assertRaises(I.SeatRegistryError):
+                    I.parse_seat_registry(self._data(lane))
+        long_role = "F" * 45
+        with self.assertRaises(I.SeatRegistryError):
+            I.parse_seat_registry(
+                self._data({"roles": [long_role], "folderTemplate": "bf-<role>",
+                            "branchTemplate": "bf-<role>/"}))
+
+    def test_the_check_flags_duplicate_renders_and_mixed_case_suffixes(self) -> None:
+        check = load_check()
+        lane = {"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}
+        data = {"seats": [], "seatApps": {"bySeat": {}, "extraSeats": {}, "patterns": [
+            {"match": "BF-*", "app": "botfleet", "lane": lane},
+            {"match": "BF-F*", "app": "botfleet", "lane": lane},
+        ]}}
+        errors = check.seat_apps_errors(data)
+        self.assertTrue(any("rendered by both" in e for e in errors), errors)
+        data2 = self._data(lane)
+        data2["seats"] = [{"tag": "SQUAT", "worktreeSuffix": "BF-Fixer", "branchPrefixes": []}]
+        data2["seatApps"]["bySeat"] = {"SQUAT": "claude-code"}
+        errors2 = check.seat_apps_errors(data2)
+        self.assertTrue(any("worktreeSuffix" in e for e in errors2), errors2)
+
     def test_the_check_reports_seat_and_pattern_collisions(self) -> None:
         check = load_check()
         data = self._data({"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"})

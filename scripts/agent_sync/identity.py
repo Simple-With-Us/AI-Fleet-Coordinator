@@ -319,6 +319,11 @@ def _pattern_lane(where: str, item: Mapping[str, Any]) -> tuple[tuple[str, ...],
         raise SeatRegistryError("%s lane must be an object" % where)
     if item["match"].count("*") != 1:
         raise SeatRegistryError("%s lane requires a match with exactly one *" % where)
+    if not item["match"].endswith("*"):
+        raise SeatRegistryError(
+            "%s lane requires a match ending in '*' (a bare family prefix like BF-*);  "
+            "suffixed patterns are not lane-enabled" % where
+        )
     roles = lane.get("roles")
     if (
         not isinstance(roles, list)
@@ -340,16 +345,28 @@ def _pattern_lane(where: str, item: Mapping[str, Any]) -> tuple[tuple[str, ...],
             )
     for role in roles:
         folder = folder_t.replace("<role>", role.lower())
-        if not _FOLDER_SLUG_RE.fullmatch(folder):
+        if (
+            not _FOLDER_SLUG_RE.fullmatch(folder)
+            or len(folder) > 40
+            or folder.endswith("-")
+            or "--" in folder
+        ):
             raise SeatRegistryError(
                 "%s lane.folderTemplate renders invalid folder %r for role %s"
+                " (must be lowercase kebab, 1..40 chars, no trailing or doubled dash)"
                 % (where, folder, role)
             )
         branch = branch_t.replace("<role>", role.lower())
-        if not branch.endswith("/") or not _FOLDER_SLUG_RE.fullmatch(branch[:-1]):
+        if (
+            not branch.endswith("/")
+            or not _FOLDER_SLUG_RE.fullmatch(branch[:-1])
+            or len(branch[:-1]) > 40
+            or branch[:-1].endswith("-")
+            or "--" in branch[:-1]
+        ):
             raise SeatRegistryError(
                 "%s lane.branchTemplate renders invalid prefix %r for role %s"
-                % (where, branch, role)
+                " (one lowercase-kebab segment + /, 1..40 chars)" % (where, branch, role)
             )
     return tuple(roles), folder_t, branch_t
 

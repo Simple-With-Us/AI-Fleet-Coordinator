@@ -23,6 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from fleet_lanes import doctor as D
+from fleet_lanes import layout as L
 from fleet_lanes import lane as K
 from fleet_lanes import retire as R
 
@@ -287,6 +288,32 @@ class WorldCase(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- the allowlist
+
+
+class RoleLaneLookupTests(unittest.TestCase):
+    """AFC-620:  prune/doctor seat lookup resolves a BF-<ROLE>/GB-<ROLE> tag or folder to the
+    synthesized role lane seat;  roles never become seats rows."""
+
+    def _registry(self) -> L.Registry:
+        return L.parse_registry({
+            "owner": "Simple-With-Us",
+            "apps": [],
+            "seats": [{"tag": "CLAUDE", "worktreeSuffix": "claude", "branchPrefixes": ["claude/"]}],
+            "seatApps": {"bySeat": {}, "extraSeats": {}, "patterns": [
+                {"match": "BF-*", "app": "botfleet",
+                 "lane": {"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}}]},
+        })
+
+    def test_a_role_tag_and_its_folder_resolve(self) -> None:
+        reg = self._registry()
+        seat = R._lookup_seat(reg, "BF-FIXER")
+        self.assertIsNotNone(seat)
+        self.assertEqual((seat.name, seat.suffix), ("BF-FIXER", "bf-fixer"))
+        seat = R._lookup_seat(reg, "bf-fixer")
+        self.assertIsNotNone(seat)
+        self.assertEqual(seat.name, "BF-FIXER")
+        self.assertIsNone(R._lookup_seat(reg, "BF-KODY"))
+        self.assertEqual(R._lookup_seat(reg, "CLAUDE").suffix, "claude")
 
 
 class AllowlistTests(unittest.TestCase):

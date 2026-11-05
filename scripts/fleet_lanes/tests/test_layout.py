@@ -990,6 +990,28 @@ class RoleLaneConformanceTests(HomeCase):
         self.assertEqual(L.seat_from_branch("gb-deployer/fix", self.reg), "gb-deployer")
 
 
+class RoleLaneParserTests(unittest.TestCase):
+    """layout's tolerant role-lane reader is constrained to the same supported form as
+    identity._pattern_lane (bare family prefix, star last);  suffixed patterns yield nothing."""
+
+    def test_a_suffixed_match_yields_no_role_lanes(self) -> None:
+        data = dict(REGISTRY_DATA)
+        data["seatApps"] = {"bySeat": {}, "extraSeats": {}, "patterns": [
+            {"match": "BF-*-BOT", "app": "botfleet",
+             "lane": {"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}}]}
+        reg = L.parse_registry(data)
+        self.assertEqual(reg.role_lanes, ())
+
+    def test_a_bare_prefix_match_yields_role_lanes(self) -> None:
+        data = dict(REGISTRY_DATA)
+        data["seatApps"] = {"bySeat": {}, "extraSeats": {}, "patterns": [
+            {"match": "BF-*", "app": "botfleet",
+             "lane": {"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}}]}
+        reg = L.parse_registry(data)
+        self.assertEqual([(rl.tag, rl.folder, rl.branch_prefix) for rl in reg.role_lanes],
+                         [("BF-FIXER", "bf-fixer", "bf-fixer/")])
+
+
 class LaneNameTests(HomeCase):
     """Real directory names from the 2026-10-07 sweep, judged by the name alone."""
 

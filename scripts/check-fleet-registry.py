@@ -189,9 +189,11 @@ def seat_apps_errors(data: dict) -> list[str]:
     # Lane blocks (AFC-620):  rendered role folders and branch prefixes must be unique across
     # patterns and must not collide with any seat row's worktreeSuffix or branchPrefixes, or a
     # role lane would open in (or sign branches as) an existing seat.
-    seat_suffixes = {str(s.get("worktreeSuffix") or "") for s in seats}
+    # Lower-cased, mirroring layout.parse_registry's normalization and Registry.seats_by_suffix,
+    # so a mixed-case worktreeSuffix/branchPrefix cannot escape the collision check.
+    seat_suffixes = {str(s.get("worktreeSuffix") or "").lower() for s in seats}
     seat_prefixes = {
-        str(bp) for s in seats for bp in (s.get("branchPrefixes") or []) if isinstance(bp, str)
+        str(bp).lower() for s in seats for bp in (s.get("branchPrefixes") or []) if isinstance(bp, str)
     }
     seen_folders: dict[str, str] = {}
     seen_prefixes: dict[str, str] = {}
@@ -210,16 +212,19 @@ def seat_apps_errors(data: dict) -> list[str]:
                 errors.append(
                     f"seatApps.patterns {pattern.match} role {role} branch prefix {prefix!r} is a seat branchPrefix"
                 )
-            prior = seen_folders.setdefault(folder, f"{pattern.match} role {role}")
-            if prior != f"{pattern.match} role {role}":
+            label = f"{pattern.match} role {role}"
+            if folder in seen_folders:
                 errors.append(
-                    f"role folder {folder!r} is rendered by both {prior} and {pattern.match} role {role}"
+                    f"role folder {folder!r} is rendered by both {seen_folders[folder]} and {label}"
                 )
-            prior = seen_prefixes.setdefault(prefix, f"{pattern.match} role {role}")
-            if prior != f"{pattern.match} role {role}":
+            else:
+                seen_folders[folder] = label
+            if prefix in seen_prefixes:
                 errors.append(
-                    f"role branch prefix {prefix!r} is rendered by both {prior} and {pattern.match} role {role}"
+                    f"role branch prefix {prefix!r} is rendered by both {seen_prefixes[prefix]} and {label}"
                 )
+            else:
+                seen_prefixes[prefix] = label
     host = urlparse(REALM).hostname or ""
     for item in apps["patterns"]:
         email = item.get("zulipEmail")

@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import tomllib
@@ -61,6 +62,18 @@ REGISTRY_DATA = {
     "apps": [{"repo": r, "acronym": a, "worktreePrefix": p, "codeDir": c} for r, a, p, c in _APPS],
     "seats": [{"tag": t, "worktreeSuffix": s, "branchPrefixes": b, **({"retired": True} if ret else {})}
               for t, s, b, ret in _SEATS],
+    "seatApps": {
+        "bySeat": {"CLAUDE": "claude-code"},
+        "extraSeats": {},
+        "patterns": [
+            {"match": "BF-*", "app": "botfleet",
+             "lane": {"roles": ["COMPILER", "FIXER"], "folderTemplate": "bf-<role>",
+                      "branchTemplate": "bf-<role>/"}},
+            {"match": "GB-*", "app": "grok-bot",
+             "lane": {"roles": ["COMPILER", "PLUMBER"], "folderTemplate": "gb-<role>",
+                      "branchTemplate": "gb-<role>/"}},
+        ],
+    },
 }
 REGISTRY = L.parse_registry(REGISTRY_DATA)
 
@@ -472,126 +485,120 @@ class RunnerTests(unittest.TestCase):
 
 class RoleLaneResolveTests(unittest.TestCase):
     """AFC-620:  a BF-<ROLE> or GB-<ROLE> AGENT_SEAT resolves from the family's seatApps.patterns
-    `lane` block - folder bf-/gb-<role>, branch prefix bf-/gb-<role>/ - without a seats row."""
-
-    def _write_registry(self, tmp: Path, data: dict) -> Path:
-        path = tmp / "fleet-apps.json"
-        path.write_text(json.dumps(data), encoding="utf-8")
-        return path
-
-    def _data(self) -> dict:
-        return {
-            "seats": REGISTRY_DATA["seats"],
-            "seatApps": {
-                "bySeat": {"CLAUDE": "claude-code"},
-                "extraSeats": {},
-                "patterns": [
-                    {"match": "BF-*", "app": "botfleet",
-                     "lane": {"roles": ["COMPILER", "FIXER"], "folderTemplate": "bf-<role>",
-                              "branchTemplate": "bf-<role>/"}},
-                    {"match": "GB-*", "app": "grok-bot",
-                     "lane": {"roles": ["PLUMBER"], "folderTemplate": "gb-<role>",
-                              "branchTemplate": "gb-<role>/"}},
-                ],
-            },
-        }
+    `lane` block - folder bf-/gb-<role>, branch prefix bf-/gb-<role>/ - without a seats row.
+    resolve_seat reads only the registry it is given (REGISTRY carries the lane blocks)."""
 
     def test_a_listed_role_resolves_to_its_lane(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            seat = K.resolve_seat({"AGENT_SEAT": "BF-FIXER", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        seat = K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, REGISTRY)
         self.assertEqual((seat.name, seat.suffix, seat.branch_prefixes), ("BF-FIXER", "bf-fixer", ("bf-fixer/",)))
 
     def test_the_role_tag_is_case_insensitive(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            seat = K.resolve_seat({"AGENT_SEAT": "gb-plumber", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        seat = K.resolve_seat({"AGENT_SEAT": "gb-plumber"}, REGISTRY)
         self.assertEqual((seat.name, seat.suffix), ("GB-PLUMBER", "gb-plumber"))
 
     def test_an_unlisted_role_is_refused_with_the_known_roles(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            with self.assertRaises(K.Refusal) as ctx:
-                K.resolve_seat({"AGENT_SEAT": "BF-ORACLE", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "BF-ORACLE"}, REGISTRY)
         msg = str(ctx.exception)
         self.assertIn("no known role", msg)
         self.assertIn("COMPILER", msg)
         self.assertIn("FIXER", msg)
 
     def test_a_seat_row_still_wins_over_a_pattern(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            seat = K.resolve_seat({"AGENT_SEAT": "CLAUDE", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        seat = K.resolve_seat({"AGENT_SEAT": "CLAUDE"}, REGISTRY)
         self.assertEqual(seat.suffix, "claude")
 
     def test_a_role_folder_owned_by_a_seat_is_refused(self) -> None:
         data = copy.deepcopy(REGISTRY_DATA)
         data["seats"].append({"tag": "SQUATTER", "worktreeSuffix": "bf-fixer", "branchPrefixes": ["squatter/"]})
         registry = L.parse_registry(data)
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            with self.assertRaises(K.Refusal) as ctx:
-                K.resolve_seat({"AGENT_SEAT": "BF-FIXER", "FLEET_APPS_JSON": str(apps)}, registry)
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, registry)
         self.assertIn("SQUATTER", str(ctx.exception))
 
     def test_a_role_branch_prefix_colliding_with_a_seat_is_refused(self) -> None:
         data = copy.deepcopy(REGISTRY_DATA)
         data["seats"].append({"tag": "SQUATTER", "worktreeSuffix": "squatter", "branchPrefixes": ["bf-fixer/"]})
         registry = L.parse_registry(data)
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            with self.assertRaises(K.Refusal) as ctx:
-                K.resolve_seat({"AGENT_SEAT": "BF-FIXER", "FLEET_APPS_JSON": str(apps)}, registry)
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, registry)
         self.assertIn("branch prefix", str(ctx.exception))
 
     def test_a_launchers_seat_wins_and_a_conflict_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            env = {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER",
-                   "AGENT_SEAT": "BF-DEPLOYER", "FLEET_APPS_JSON": str(apps)}
-            with self.assertRaises(K.Refusal) as ctx:
-                K.resolve_seat(env, REGISTRY)
+        env = {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER",
+               "AGENT_SEAT": "BF-DEPLOYER"}
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat(env, REGISTRY)
         self.assertIn("botfleet", str(ctx.exception))
         self.assertIn("BF-FIXER", str(ctx.exception))
 
     def test_a_launch_seat_alone_is_enough(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            seat = K.resolve_seat(
-                {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER",
-                 "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        seat = K.resolve_seat({"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER"}, REGISTRY)
         self.assertEqual((seat.name, seat.suffix), ("BF-FIXER", "bf-fixer"))
 
     def test_a_launch_seat_matching_agent_seat_is_no_conflict(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            seat = K.resolve_seat(
-                {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER",
-                 "AGENT_SEAT": "bf-fixer", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        seat = K.resolve_seat(
+            {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER",
+             "AGENT_SEAT": "bf-fixer"}, REGISTRY)
         self.assertEqual(seat.name, "BF-FIXER")
 
     def test_a_launcher_without_a_seat_assignment_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            with self.assertRaises(K.Refusal) as ctx:
-                K.resolve_seat({"AGENT_LAUNCHER": "botfleet", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_LAUNCHER": "botfleet"}, REGISTRY)
         self.assertIn("no seat assigned", str(ctx.exception))
 
     def test_a_launch_seat_can_name_an_ordinary_seat_row(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            seat = K.resolve_seat(
-                {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "CLAUDE",
-                 "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        seat = K.resolve_seat({"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "CLAUDE"}, REGISTRY)
         self.assertEqual(seat.suffix, "claude")
 
-
     def test_an_unknown_tag_keeps_the_old_refusal(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            apps = self._write_registry(Path(td), self._data())
-            with self.assertRaises(K.Refusal) as ctx:
-                K.resolve_seat({"AGENT_SEAT": "NOPE-1", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        with self.assertRaises(K.Refusal) as ctx:
+            K.resolve_seat({"AGENT_SEAT": "NOPE-1"}, REGISTRY)
         self.assertIn("not a seat tag", str(ctx.exception))
+
+
+class RoleLaneStandaloneTests(unittest.TestCase):
+    """The installed standalone lane copy ships no agent_sync (AFC-620):  role resolution reads
+    layout's parsed role_lanes, and the launcher contract is applied from the environment alone."""
+
+    def _no_agent_sync(self):
+        return mock.patch.dict(sys.modules, {"agent_sync": None, "agent_sync.identity": None})
+
+    def test_a_role_resolves_without_agent_sync(self) -> None:
+        with self._no_agent_sync():
+            seat = K.resolve_seat({"AGENT_SEAT": "BF-FIXER"}, REGISTRY)
+        self.assertEqual((seat.name, seat.suffix, seat.branch_prefixes), ("BF-FIXER", "bf-fixer", ("bf-fixer/",)))
+
+    def test_a_launch_conflict_is_refused_without_agent_sync(self) -> None:
+        env = {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER", "AGENT_SEAT": "BF-DEPLOYER"}
+        with self._no_agent_sync():
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat(env, REGISTRY)
+        self.assertIn("assigned BF-FIXER", str(ctx.exception))
+
+    def test_a_launch_seat_alone_resolves_without_agent_sync(self) -> None:
+        env = {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER"}
+        with self._no_agent_sync():
+            seat = K.resolve_seat(env, REGISTRY)
+        self.assertEqual((seat.name, seat.suffix), ("BF-FIXER", "bf-fixer"))
+
+    def test_a_matching_launch_and_agent_seat_resolve_without_agent_sync(self) -> None:
+        env = {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER", "AGENT_SEAT": "bf-fixer"}
+        with self._no_agent_sync():
+            seat = K.resolve_seat(env, REGISTRY)
+        self.assertEqual(seat.name, "BF-FIXER")
+
+    def test_a_launcher_without_a_seat_is_refused_without_agent_sync(self) -> None:
+        with self._no_agent_sync():
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat({"AGENT_LAUNCHER": "botfleet"}, REGISTRY)
+        self.assertIn("AGENT_LAUNCH_SEAT is not", str(ctx.exception))
+
+    def test_an_unlisted_role_is_refused_without_agent_sync(self) -> None:
+        with self._no_agent_sync():
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat({"AGENT_SEAT": "GB-KODY"}, REGISTRY)
+        self.assertIn("no known role", str(ctx.exception))
 
 
 class ResolveTests(unittest.TestCase):
@@ -871,8 +878,12 @@ class GrokBuildAliasLaneTests(WorldCase):
 
     def test_what_is_not_grok_build_is_refused_exactly_as_before_and_runs_no_git(self) -> None:
         w = self.w
-        cases = [(raw, "not a seat tag") for raw in GROK_BUILD_MUST_NOT]
-        cases += [("GROK-BOT", "belongs to CURSOR"), ("GROK-WEB", "no branch prefix")]
+        # AFC-620: GB-COMPILER is a role lane now (creates its lane; covered end-to-end in
+        # RoleLaneNewTests), and BF-BUILDER is refused as an unlisted role, not an unknown tag.
+        cases = [(raw, "not a seat tag") for raw in GROK_BUILD_MUST_NOT
+                 if raw not in ("GB-COMPILER", "BF-BUILDER")]
+        cases += [("BF-BUILDER", "no known role"), ("GROK-BOT", "belongs to CURSOR"),
+                  ("GROK-WEB", "no branch prefix")]
         for alias in (False, True):
             self.use_registry(alias=alias)
             before = w.everything_hash()

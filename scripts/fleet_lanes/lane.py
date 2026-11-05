@@ -474,41 +474,44 @@ def resolve_app(registry: L.Registry, query: str) -> L.App:
     raise Refusal(f"unknown app {q!r}; candidates:\n" + "\n".join(_app_line(a) for a in pool))
 
 
-def _role_lane_seat(raw: str, registry: L.Registry, env: Mapping[str, str]) -> L.Seat | None:
+def _role_lane_seat(raw: str, registry: L.Registry) -> L.Seat | None:
     """A role tag (BF-FIXER, GB-PLUMBER) becomes a lane seat from its seatApps.patterns `lane`
     block (AFC-620);  anything else stays None so the caller's unknown-tag refusal stands.
-    GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> personas are the lane form."""
-    try:
-        from agent_sync import identity as SI
-    except ImportError:
-        return None
-    try:
-        seat_registry = SI.load_seat_registry(env=dict(env))
-    except Exception:
-        return None
+    GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> personas are the lane form.
+    Reads only layout's parsed Registry.role_lanes, so the installed standalone lane copy
+    resolves roles without an agent_sync dependency."""
     tag = raw.strip().upper()
-    role = SI.role_lane_seat(tag, seat_registry)
+    role = next((rl for rl in registry.role_lanes if rl.tag.upper() == tag), None)
     if role is None:
-        roles = SI.role_lane_roles(tag, seat_registry)
-        if roles:
-            raise Refusal(
-                f"{ENV_SEAT}={tag!r} names no known role for its family.  Known roles: "
-                f"{', '.join(roles)}."
-            )
+        families: dict[str, list[str]] = {}
+        for rl in registry.role_lanes:
+            pre = rl.tag[: len(rl.tag) - len(rl.role)]
+            families.setdefault(pre.upper(), []).append(rl.tag)
+        for pre, tags in families.items():
+            if tag.startswith(pre):
+                raise Refusal(
+                    f"{ENV_SEAT}={tag!r} names no known role for its family.  Known roles: "
+                    f"{', '.join(sorted(tags))}."
+                )
         return None
+    if not L.is_valid_slug(role.folder):
+        raise Refusal(
+            f"role {role.tag}'s folder {role.folder!r} from fleet-apps.json is not a usable lane "
+            "folder name (lowercase kebab, 1..40 chars)."
+        )
     owner = registry.seat_by_suffix(role.folder)
     if owner is not None:
         raise Refusal(
-            f"role {tag}'s folder {role.folder!r} belongs to seat {owner.name} in fleet-apps.json, "
-            f"so a lane for {tag} would be {owner.name}'s lane."
+            f"role {role.tag}'s folder {role.folder!r} belongs to seat {owner.name} in fleet-apps.json, "
+            f"so a lane for {role.tag} would be {owner.name}'s lane."
         )
     for s in registry.seats:
         if not s.retired and role.branch_prefix in s.branch_prefixes:
             raise Refusal(
-                f"role {tag}'s branch prefix {role.branch_prefix!r} collides with seat {s.name} "
+                f"role {role.tag}'s branch prefix {role.branch_prefix!r} collides with seat {s.name} "
                 f"in fleet-apps.json."
             )
-    return L.Seat(name=tag, suffix=role.folder, branch_prefixes=(role.branch_prefix,))
+    return L.Seat(name=role.tag, suffix=role.folder, branch_prefixes=(role.branch_prefix,))
 
 
 def resolve_seat(env: Mapping[str, str], registry: L.Registry) -> L.Seat:
@@ -531,6 +534,24 @@ def resolve_seat(env: Mapping[str, str], registry: L.Registry) -> L.Seat:
         if res.problem:
             raise Refusal(res.problem)
         raw = res.seat or ""
+    elif SI is None:
+        # Installed standalone shape: agent_sync does not ship next to the lane package, so the
+        # same launcher contract is applied from the environment alone (AFC-620).  With agent_sync
+        # present the canonical identity.resolve_seat above decides (it also canonicalizes aliases).
+        launcher = (env.get("AGENT_LAUNCHER") or "").strip()
+        launch_seat = (env.get("AGENT_LAUNCH_SEAT") or "").strip()
+        if launcher or launch_seat:
+            if not launch_seat:
+                raise Refusal(
+                    "AGENT_LAUNCHER is set but AGENT_LAUNCH_SEAT is not: this launched session has "
+                    "no seat, so lane does nothing (no default applies under a launcher)."
+                )
+            if raw and raw.upper() != launch_seat.upper():
+                raise Refusal(
+                    f"launcher {launcher or '(unnamed)'} assigned {launch_seat}, but {ENV_SEAT} names "
+                    f"{raw}; a launched session keeps its launcher's seat, so nothing was done."
+                )
+            raw = launch_seat
     if not raw:
         raise Refusal(
             f"{ENV_SEAT} is not set.  Set it to your seat tag ({live}) and run lane again; "
@@ -538,7 +559,7 @@ def resolve_seat(env: Mapping[str, str], registry: L.Registry) -> L.Seat:
         )
     seat = registry.seat_by_name(raw)
     if seat is None:
-        role = _role_lane_seat(raw, registry, env)
+        role = _role_lane_seat(raw, registry)
         if role is not None:
             return role
         shown = raw if len(raw) <= 40 else raw[:40] + "..."
