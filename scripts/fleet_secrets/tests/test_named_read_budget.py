@@ -81,7 +81,9 @@ class NamedReadBudgetTests(unittest.TestCase):
 
         with mock.patch.object(core, "_api_json", mixed):
             with self.assertRaises(core.SecretsError):
-                core.fetch_project(PROJECT, "/", {}, token=TOKEN, names={"BAD", "GOOD"}, timeout=8.0)
+                core.fetch_project(
+                    PROJECT, "/", {}, token=TOKEN, names={"BAD", "GOOD"}, timeout=8.0
+                )
 
     def test_the_first_failure_stops_reads_that_have_not_started(self):
         calls = []
