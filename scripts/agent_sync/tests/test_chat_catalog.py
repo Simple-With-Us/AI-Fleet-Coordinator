@@ -925,12 +925,58 @@ class OpenCodeCatalogTests(unittest.TestCase):
         self.assertEqual(row["title"], "V2 chat")
         self.assertEqual(row["status"], "metadata-only")
 
-    def test_session_v2_without_content_tables_is_available(self):
+    def test_session_v2_without_content_tables_is_metadata_only(self):
+        # Registry rows only, nothing readable:  metadata-only, never available
+        # with an empty excerpt list (daemon.py already skips metadata-only).
         self._db_v2(with_content_tables=False)
         rows = self.catalog().discover()
         row = next(r for r in rows if r["platform"] == "opencode")
         self.assertEqual(row["session_id"], "ses_v2")
+        self.assertEqual(row["status"], "metadata-only")
+        self.assertFalse(row["capabilities"]["read"])
+
+    def test_registry_only_legacy_store_is_metadata_only(self):
+        # Legacy shape with no message/part tables at all:  same degradation.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("DROP TABLE message")
+            conn.execute("DROP TABLE part")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "metadata-only")
+        self.assertFalse(row["capabilities"]["read"])
+
+    def test_uri_significant_store_path_stays_read_only(self):
+        # A home path containing URI-significant characters must not change the
+        # SQLite URI:  without percent-encoding, "?" would drop mode=ro (opening
+        # the store read-write) and "#" would resolve a different file.
+        db = self._db()
+        tricky_home = Path(self.tmp.name + "?mode=rw")
+        tricky_db = tricky_home / ".local" / "share" / "opencode" / "opencode.db"
+        tricky_db.parent.mkdir(parents=True)
+        import shutil
+
+        shutil.copy(db, tricky_db)
+        catalog = ChatCatalog(home=tricky_home, host="test-host", clock=self.clock)
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["session_id"], "ses_1")
         self.assertEqual(row["status"], "available")
+        # Proof the handle is read-only:  a write through the catalog's own
+        # connection shape is rejected by SQLite.
+        import sqlite3 as s3
+        from urllib.parse import quote as q
+
+        ro = s3.connect(f"file:{q(str(tricky_db))}?mode=ro", uri=True)
+        try:
+            with self.assertRaises(s3.OperationalError):
+                ro.execute("CREATE TABLE nope (id TEXT)")
+        finally:
+            ro.close()
 
     def test_one_unreadable_project_does_not_abort_the_scan(self):
         base = self.home / ".local" / "share" / "opencode" / "storage" / "session"

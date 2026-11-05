@@ -1060,7 +1060,7 @@ class ChatCatalog:
             return 0
 
         try:
-            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2.0)
+            conn = sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True, timeout=2.0)
         except sqlite3.Error:
             raise _StoreOperational(str(db))
         try:
@@ -1174,7 +1174,16 @@ class ChatCatalog:
                     created / 1000.0 if isinstance(created, (int, float)) else 0.0
                 )
                 excerpts = excerpts_map.get(sid, [])
-                status = "available" if not newer_content and excerpts_ok else "metadata-only"
+                # Registry-only rows (no legacy content tables at all) can never
+                # be read, so they are metadata-only like the newer shape:  never
+                # "available" with an empty excerpt list and a read capability
+                # the store cannot deliver.
+                has_legacy_content = "message" in tables and "part" in tables
+                status = (
+                    "available"
+                    if not newer_content and has_legacy_content and excerpts_ok
+                    else "metadata-only"
+                )
                 rows.append(
                     self._row(
                         "opencode",
@@ -1357,7 +1366,7 @@ class ChatCatalog:
 
     def _find_opencode_db(self, db: Path, sid: str) -> dict[str, Any] | None:
         try:
-            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2.0)
+            conn = sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True, timeout=2.0)
         except sqlite3.Error:
             return None
         try:
@@ -1388,7 +1397,9 @@ class ChatCatalog:
             stamp = created / 1000.0 if isinstance(created, (int, float)) else 0.0
             excerpts: list[dict[str, str]] = []
             status = "available"
-            if newer_content:
+            if newer_content or "message" not in tables or "part" not in tables:
+                # Newer unqualified shape, or registry rows only:  nothing
+                # readable, so the row is metadata-only, never available.
                 status = "metadata-only"
             elif "message" in tables and "part" in tables:
                 activity = conn.execute(
