@@ -11,9 +11,11 @@ import time
 from typing import Any, Protocol
 
 from . import live as L
+from . import wake_capability as WC
 
 SUPPORTED_PLATFORM = "grok-leader"
-SUPPORTED_PLATFORMS = {"grok-leader", "cursor-cloud", "codex"}
+# The same table the registry derives from:  one source of truth for what this tree can deliver to.
+SUPPORTED_PLATFORMS = set(WC.implemented_platforms())
 TERMINAL_KEEP_SECONDS = 90 * 86400
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BINDING_FIELDS = ("channel", "topic", "platform", "host", "session_id", "cwd")
@@ -580,3 +582,4 @@ class ChatNudges:
                         "why": item["hold_reason"],
                     }
         return {"status": "busy" if saw_busy else "held" if saw_held else "idle"}
+

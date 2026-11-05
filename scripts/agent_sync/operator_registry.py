@@ -40,6 +40,7 @@ from typing import Any
 
 from . import secretscan
 from . import session_ids as SI
+from . import wake_capability as WC
 from .operator_registry_schema import DDL, SCHEMA_VERSION
 
 LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -699,6 +700,18 @@ class SessionRegistry:
                         "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
                         (now, record_id),
                     )
+                    # A stored "unknown" is the no-claim sentinel, never an explicit
+                    # claim, so the row takes the incoming value on its own resume:
+                    # the derivation's source-tree support, or a caller's fresher
+                    # claim.  Any other stored value is an explicit claim and wins.
+                    # This is not a batch migration:  rows change only when their own
+                    # session next registers, and closed rows keep their history.
+                    incoming_capability = str(identity.get("wake_capability") or "unknown")
+                    if row["wake_capability"] == "unknown" and incoming_capability != "unknown":
+                        conn.execute(
+                            "UPDATE sessions SET wake_capability = ? WHERE record_id = ?",
+                            (incoming_capability, record_id),
+                        )
                     # The exported sheet refreshes "Last Seen At" only from a
                     # session_upsert payload, so the row that just moved has to be
                     # enqueued in the same transaction.  Without it the database
@@ -1110,6 +1123,11 @@ def register_session(
     )
     native = SI.check(native_session_id, "the native session id")
     parent = _clean_parent(parent_session_id)
+    if str(wake_capability or "unknown").strip().lower() == "unknown":
+        # No caller claim:  derive the tree's own support level for the adapter
+        # platform, before the letter namespace folds it ("cursor-cloud" and
+        # "cursor-local" both become "cursor", and only one of them can deliver).
+        wake_capability = WC.for_platform(platform)
     platform = normalize_platform(platform)
     default_space, default_pick = PLATFORM_LETTER_DEFAULTS.get(platform, ("single", "lowest"))
     space = letter_space or default_space
@@ -2551,3 +2569,4 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
