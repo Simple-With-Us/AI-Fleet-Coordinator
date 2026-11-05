@@ -2905,7 +2905,7 @@ def bash_payload(
         "hook_event_name": "PreToolUse",
         "tool_name": tool,
         "tool_input": {"command": command, "description": "test"},
-        "cwd": "/Users/jay",
+        "cwd": "/Users/fixture-home",
     }
     doc.update(extra)
     return json.dumps(doc, ensure_ascii=ensure_ascii).encode("utf-8")
@@ -3186,7 +3186,7 @@ class PrefilterShimTests(World):
         # "clone" decodes to "clone"; a prefilter that only looked at the raw text would let it through
         command = "gh repo cl\\u006fne Simple-With-Us/HogHunter /tmp/hh-verify"
         raw = (
-            '{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/jay"}'
+            '{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/fixture-home"}'
         ).encode("ascii")
         self.assertNotIn(b"clone", raw)
         self.assertEqual(
@@ -3229,7 +3229,7 @@ class PrefilterShimTests(World):
 
     SJIS_REPRO = (
         '{"tool_name":"Bash","tool_input":{"command":"c=あclone; gh repo ${c#あ} '
-        'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/jay"}'
+        'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/fixture-home"}'
     ).encode()
 
     def test_a_multibyte_locale_cannot_hide_a_trigger_word(self) -> None:
@@ -4721,7 +4721,7 @@ ORDINARY_COMMANDS = (
     "git status",
     "ls -la ~/apps",
     "python3 -m unittest fleet_lanes.tests.test_x",
-    "cd /Users/jay/apps/lanes && ls",
+    "cd /Users/fixture-home/apps/lanes && ls",
     "echo hi && pwd",
     "cat README.md",
     "gh pr merge 5 --squash --auto",
@@ -4739,7 +4739,7 @@ def _payload(command: str, ascii_only: bool) -> bytes:
         {
             "tool_name": "Bash",
             "tool_input": {"command": command},
-            "cwd": "/Users/jay/apps/lanes/X/y",
+            "cwd": "/Users/fixture-home/apps/lanes/X/y",
             "session_id": "s1",
             "hook_event_name": "PreToolUse",
         },
