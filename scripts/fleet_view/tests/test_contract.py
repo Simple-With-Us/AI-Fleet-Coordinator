@@ -10,6 +10,7 @@ from fleet_view.types import ClaimRecord, FleetReport, LaneRecord, PullRequestRe
 
 PR_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/757"
 
+
 def ok_report() -> FleetReport:
     return FleetReport(
         generated_at="2026-10-20T12:00:00Z",
