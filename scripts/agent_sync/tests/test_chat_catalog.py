@@ -891,6 +891,123 @@ class OpenCodeCatalogTests(unittest.TestCase):
         self.assertEqual(row["capabilities"]["wake_status"], "unsupported")
         self.assertEqual(catalog.excerpt(row["id"]), [{"role": "user", "text": "hello fleet"}])
 
+    def _legacy_tree(self, session: dict) -> None:
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session" / "proj"
+        base.mkdir(parents=True)
+        (base / "ses_legacy.json").write_text(json.dumps(session), encoding="utf-8")
+
+    def test_db_path_present_but_unusable_never_falls_through_to_legacy(self):
+        # A db path that EXISTS but cannot be used (here: a directory) is an
+        # explicit "unusable", never a silent fallthrough to the legacy tree
+        # while a real store marker is present (Kody L944).
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.mkdir(parents=True)
+        self._legacy_tree({"id": "ses_legacy", "title": "Old", "time": {"created": 5000}})
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unusable", row["error"])
+        self.assertNotIn(
+            "ses_legacy", [r.get("session_id") for r in rows if r["platform"] == "opencode"]
+        )
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "no symlink support")
+    def test_db_symlink_escaping_home_reports_unusable(self):
+        outside = self.home.parent / (self.home.name + "-outside.db")
+        self.addCleanup(lambda: outside.unlink(missing_ok=True))
+        outside.write_bytes(b"not a database")
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(outside, db)
+        self._legacy_tree({"id": "ses_legacy", "title": "Old", "time": {"created": 5000}})
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unusable", row["error"])
+
+    def test_operational_database_error_is_not_reported_as_schema_drift(self):
+        # A corrupt file is an OPERATIONAL failure ("file is not a database"),
+        # not shape drift:  it must not be collapsed into "unrecognized"
+        # (Kody L1142).
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"this is not a sqlite database at all")
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("operational", row["error"])
+        self.assertNotIn("unrecognized", row["error"])
+
+    def test_locked_database_reports_operational_not_unrecognized(self):
+        db = self._db()
+        lock = sqlite3.connect(db)
+        self.addCleanup(lock.close)
+        lock.execute("BEGIN EXCLUSIVE")
+        lock.execute("INSERT INTO session VALUES ('ses_x', 'p', NULL, '/x', 'X', 1)")
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("operational", row["error"])
+
+    def test_legacy_empty_id_fails_closed(self):
+        # An empty-string id is malformed metadata:  fail the platform closed,
+        # never substitute path.stem or skip silently (Kody L1215).
+        self._legacy_tree({"id": "", "title": "Old", "time": {"created": 5000}})
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("malformed", row["error"])
+
+    def test_legacy_nonstring_id_fails_closed(self):
+        self._legacy_tree({"id": 123, "title": "Old", "time": {"created": 5000}})
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("malformed", row["error"])
+
+    def test_bulk_excerpts_cover_every_session_in_one_pass(self):
+        # The set-based excerpt query must return each session's own excerpts
+        # (Kody L1120):  two sessions, two texts, no cross-talk.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_a', '/a', 'A', 1000)")
+            conn.execute("INSERT INTO session VALUES ('ses_b', '/b', 'B', 2000)")
+            conn.execute(
+                "INSERT INTO message VALUES ('m_a', 'ses_a', 1500, '{\"role\": \"user\"}')"
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('m_b', 'ses_b', 2500, '{\"role\": \"assistant\"}')"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p_a', 'm_a', 'ses_a', 1500,"
+                " '{\"type\": \"text\", \"text\": \"alpha text\"}')"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p_b', 'm_b', 'ses_b', 2500,"
+                " '{\"type\": \"text\", \"text\": \"beta text\"}')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = {r["session_id"]: r for r in catalog.discover() if r["platform"] == "opencode"}
+        self.assertEqual(rows["ses_a"]["status"], "available")
+        self.assertEqual(rows["ses_b"]["status"], "available")
+        self.assertEqual(catalog.excerpt(rows["ses_a"]["id"]), [{"role": "user", "text": "alpha text"}])
+        self.assertEqual(catalog.excerpt(rows["ses_b"]["id"]), [{"role": "assistant", "text": "beta text"}])
+
     def test_missing_store_reports_unavailable(self):
         rows = self.catalog().discover()
         row = next(r for r in rows if r["platform"] == "opencode")

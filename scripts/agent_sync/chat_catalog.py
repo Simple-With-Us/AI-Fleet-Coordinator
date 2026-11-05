@@ -28,6 +28,11 @@ class _StoreHeavy(Exception):
     """The OpenCode store could not be read inside the work budget."""
 
 
+class _StoreOperational(Exception):
+    """The OpenCode store failed operationally (locked, corrupt, unreadable) -
+    distinct from schema drift, which returns None, and from a budget trip."""
+
+
 # Chats a by-id lookup found outside the discovery window, kept so the wake that found one can read it.
 MAX_FOUND_RECORDS = 64
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -941,12 +946,33 @@ class ChatCatalog:
     def _scan_opencode(self) -> list[dict[str, Any]]:
         root = self._opencode_root()
         db = root / "opencode.db"
-        if db.is_file() and _within(db, self.home):
+        # Gate on os.path.lexists, not is_file():  a db path that EXISTS
+        # (plain file, dangling or escaping symlink, unreadable file) but
+        # cannot be used is an explicit "unusable" result, never a silent
+        # fallthrough to the legacy tree while a real store is present.  The
+        # legacy scan runs only when the db path is ABSENT.
+        if os.path.lexists(db):
+            try:
+                usable = (
+                    db.is_file() and _within(db, self.home) and os.access(db, os.R_OK)
+                )
+            except OSError:
+                usable = False
+            if not usable:
+                return [
+                    self._unavailable("opencode", "OPENCODE", "unusable OpenCode database")
+                ]
             try:
                 rows = self._opencode_rows_db(db)
             except _StoreHeavy:
                 return [
                     self._unavailable("opencode", "OPENCODE", "OpenCode store exceeds read budget")
+                ]
+            except _StoreOperational:
+                return [
+                    self._unavailable(
+                        "opencode", "OPENCODE", "OpenCode database operational error"
+                    )
                 ]
             if rows is None:
                 return [self._unavailable("opencode", "OPENCODE", "unrecognized OpenCode database")]
@@ -987,7 +1013,16 @@ class ChatCatalog:
         files.sort()
         rows = []
         for path in files:
-            row = self._opencode_row_json(path)
+            try:
+                row = self._opencode_row_json(path)
+            except ValueError:
+                # Malformed session identity:  fail the platform closed, never
+                # substitute path.stem or skip silently.
+                return [
+                    self._unavailable(
+                        "opencode", "OPENCODE", "malformed OpenCode session metadata"
+                    )
+                ]
             if row is not None:
                 rows.append(row)
         return rows or [self._unavailable("opencode", "OPENCODE", "no OpenCode session store")]
@@ -1029,7 +1064,7 @@ class ChatCatalog:
         try:
             conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2.0)
         except sqlite3.Error:
-            return None
+            raise _StoreOperational(str(db))
         try:
             conn.set_progress_handler(_progress, OPENCODE_SQLITE_PROGRESS_STEPS)
             conn.execute("PRAGMA query_only = ON")
@@ -1106,6 +1141,26 @@ class ChatCatalog:
                     if isinstance(sid, str) and isinstance(stamp, (int, float)):
                         updated[sid] = max(updated.get(sid, 0.0), stamp / 1000.0)
             budget = [OPENCODE_EXCERPT_TOTAL_BYTES]
+            # One set-based excerpt pass for the whole discovery window:  the
+            # per-session JOIN form issued up to MAX_FILES_PER_SOURCE queries,
+            # each able to scan the whole part table without a usable index
+            # (O(sessions x parts) under one VM budget).  A single
+            # session_id IN (...) query scans part at most once.  An
+            # operational failure marks every session metadata-only (explicit),
+            # never "available" with content that was never read.
+            excerpts_map: dict[str, list[dict[str, str]]] = {}
+            excerpts_ok = True
+            if not newer_content and "message" in tables and "part" in tables:
+                try:
+                    excerpts_map = self._opencode_excerpts_db_bulk(
+                        conn,
+                        [sid for sid, _, _, _ in sessions if isinstance(sid, str) and sid],
+                        tables,
+                        budget,
+                        work,
+                    )
+                except _StoreOperational:
+                    excerpts_ok = False
             rows = []
             for sid, cwd, title, created in sessions:
                 if not isinstance(sid, str) or not sid:
@@ -1113,12 +1168,8 @@ class ChatCatalog:
                 stamp = updated.get(sid) or (
                     created / 1000.0 if isinstance(created, (int, float)) else 0.0
                 )
-                if newer_content:
-                    excerpts: list[dict[str, str]] = []
-                    status = "metadata-only"
-                else:
-                    excerpts = self._opencode_excerpts_db(conn, sid, tables, budget, work)
-                    status = "available"
+                excerpts = excerpts_map.get(sid, [])
+                status = "available" if not newer_content and excerpts_ok else "metadata-only"
                 rows.append(
                     self._row(
                         "opencode",
@@ -1139,80 +1190,102 @@ class ChatCatalog:
         except sqlite3.Error:
             if work["tripped"]:
                 raise _StoreHeavy(str(db))
-            return None
+            raise _StoreOperational(str(db))
         finally:
             conn.close()
 
-    def _opencode_excerpts_db(
+    def _opencode_excerpts_db_bulk(
         self,
         conn: sqlite3.Connection,
-        sid: str,
+        sids: list[str],
         tables: set[str],
         budget: list[int],
         work: dict[str, Any],
-    ) -> list[dict[str, str]]:
-        # Best-effort within explicit budgets.  The per-row cap counts UTF-8
-        # BYTES (length(CAST .. AS BLOB)), on m.data + p.data COMBINED, in SQL,
-        # before any parse.  Rows are consumed from the cursor one at a time:
-        # no fetchall, so at most one capped row (<= OPENCODE_EXCERPT_ROW_BYTES)
-        # is materialized on top of the per-session and scan-wide byte budgets
-        # (which therefore truly bound allocation, not just returned rows).
-        # Malformed or non-text payloads are skipped.  Empty excerpts on an
-        # available row therefore means "no qualifying text parts within
-        # budget", never a claim about the chat's content;  the fail-closed
-        # contract applies to store shape only.  A VM-work-budget trip
-        # propagates as _StoreHeavy, never as a silent empty excerpt.
-        if "message" not in tables or "part" not in tables:
-            return []
+    ) -> dict[str, list[dict[str, str]]]:
+        # One set-based pass for every session in the discovery window:  the
+        # per-session JOIN form issued up to MAX_FILES_PER_SOURCE queries,
+        # each of which could scan the whole part table without a usable
+        # index, so the VM budget alone had to absorb O(sessions x parts).
+        # A single session_id IN (...) query scans part at most once and the
+        # per-session grouping happens in Python.
+        # Best-effort within explicit budgets, unchanged from the per-session
+        # form:  the per-row cap counts UTF-8 BYTES (length(CAST .. AS BLOB)),
+        # on m.data + p.data COMBINED, in SQL, before any parse.  Rows stream
+        # from the cursor one at a time (no fetchall), so at most one capped
+        # row (<= OPENCODE_EXCERPT_ROW_BYTES) is materialized on top of the
+        # per-session and scan-wide byte budgets (which therefore truly bound
+        # allocation, not just returned rows).  Malformed or non-text payloads
+        # are skipped.  Empty excerpts on an available row therefore means "no
+        # qualifying text parts within budget", never a claim about the chat's
+        # content;  the fail-closed contract applies to store shape only.  A
+        # VM-work-budget trip propagates as _StoreHeavy, and an operational
+        # sqlite failure as _StoreOperational - never a silent empty excerpt
+        # that misreports an unread chat as read.
+        if "message" not in tables or "part" not in tables or not sids:
+            return {}
         if budget[0] <= 0:
-            return []
-        excerpts: list[dict[str, str]] = []
+            return {}
+        placeholders = ",".join("?" for _ in sids)
+        collected: dict[str, list[tuple[Any, Any]]] = {}
+        spent: dict[str, int] = {}
         try:
             cursor = conn.execute(
-                "SELECT m.data, p.data,"
+                "SELECT p.session_id, m.data, p.data,"
                 " length(CAST(m.data AS BLOB)) + length(CAST(p.data AS BLOB))"
                 " FROM part p JOIN message m ON m.id = p.message_id"
-                " WHERE p.session_id = ?"
+                " WHERE p.session_id IN (" + placeholders + ")"
                 " AND length(CAST(p.data AS BLOB)) + length(CAST(m.data AS BLOB)) <= ?"
-                " ORDER BY p.time_created DESC LIMIT ?",
-                (sid, OPENCODE_EXCERPT_ROW_BYTES, OPENCODE_EXCERPT_ROWS),
+                " ORDER BY p.session_id, p.time_created DESC",
+                (*sids, OPENCODE_EXCERPT_ROW_BYTES),
             )
-            collected: list[tuple[Any, Any]] = []
-            spent = 0
-            for mdata, pdata, nbytes in cursor:
+            for sid, mdata, pdata, nbytes in cursor:
                 nbytes = nbytes if isinstance(nbytes, int) else 0
-                if spent + nbytes > OPENCODE_EXCERPT_SESSION_BYTES or budget[0] - nbytes <= 0:
-                    break
-                spent += nbytes
+                got = spent.get(sid, 0)
+                keep = collected.setdefault(sid, [])
+                if (
+                    got + nbytes > OPENCODE_EXCERPT_SESSION_BYTES
+                    or budget[0] - nbytes <= 0
+                    or len(keep) >= OPENCODE_EXCERPT_ROWS
+                ):
+                    continue
+                spent[sid] = got + nbytes
                 budget[0] -= nbytes
-                collected.append((mdata, pdata))
+                keep.append((mdata, pdata))
+                if budget[0] <= 0:
+                    break
             cursor.close()
         except sqlite3.Error:
             if work["tripped"]:
-                raise _StoreHeavy(sid)
-            return []
-        for mdata, pdata in reversed(collected):
-            try:
-                msg = json.loads(mdata) if isinstance(mdata, str) else None
-                part = json.loads(pdata) if isinstance(pdata, str) else None
-            except ValueError:
-                continue
-            if not isinstance(msg, dict) or not isinstance(part, dict):
-                continue
-            role = msg.get("role")
-            if role not in {"user", "assistant"} or part.get("type") != "text":
-                continue
-            text = self.scrub(_safe_text(part.get("text")))
-            if text:
-                excerpts.append({"role": role, "text": text})
-        return excerpts[-8:]
+                raise _StoreHeavy("excerpts")
+            raise _StoreOperational("excerpts")
+        out: dict[str, list[dict[str, str]]] = {}
+        for sid, pairs in collected.items():
+            excerpts: list[dict[str, str]] = []
+            for mdata, pdata in reversed(pairs):
+                try:
+                    msg = json.loads(mdata) if isinstance(mdata, str) else None
+                    part = json.loads(pdata) if isinstance(pdata, str) else None
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict) or not isinstance(part, dict):
+                    continue
+                role = msg.get("role")
+                if role not in {"user", "assistant"} or part.get("type") != "text":
+                    continue
+                text = self.scrub(_safe_text(part.get("text")))
+                if text:
+                    excerpts.append({"role": role, "text": text})
+            out[sid] = excerpts[-8:]
+        return out
 
     def _opencode_row_json(self, path: Path) -> dict[str, Any] | None:
         # Legacy (pre-SQLite) tree:  storage/session/<project>/ses_*.json.
         info = self._read_json(path)
         if not info:
             return None
-        sid = info.get("id") if isinstance(info.get("id"), str) else path.stem
+        sid = info.get("id")
+        if not isinstance(sid, str) or not sid.strip():
+            raise ValueError("malformed OpenCode session metadata: missing id")
         time_info = info.get("time") if isinstance(info.get("time"), dict) else {}
         stamp = time_info.get("updated") or time_info.get("created") or info.get("time_created")
         stamp = stamp / 1000.0 if isinstance(stamp, (int, float)) else 0.0
