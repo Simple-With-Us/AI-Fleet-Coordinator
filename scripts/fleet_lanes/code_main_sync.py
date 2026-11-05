@@ -95,6 +95,7 @@ def relay_git_env(env: Mapping[str, str]) -> dict[str, str] | None:
     config = [
         (f"url.{url}/git/.insteadOf", "https://github.com/"),
         (f"url.{url}/git/.insteadOf", "git@github.com:"),
+        (f"url.{url}/git/.insteadOf", "ssh://git@github.com/"),
         (f"http.{url}/.extraHeader", f"Authorization: Bearer {bearer}"),
         ("http.followRedirects", "false"),
         ("http.postBuffer", str(8 * 1024 * 1024)),
@@ -374,9 +375,11 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         return 0
     try:
         counters = {"updated": 0, "current": 0, "would_update": 0, "skipped": 0, "failed": 0}
-        token_source = "" if args.dry_run else resolve_github_token(env, home)
+        # With the relay route set, this job acts as its seat's own App, so it never looks up an owner token.
+        relay_route = bool((env.get("FLEET_SYNC_RELAY_URL") or "").strip())
+        token_source = "" if args.dry_run or relay_route else resolve_github_token(env, home)
         log(f"start: {'dry-run local refs only' if args.dry_run else 'fetch and fast-forward'}")
-        log(f"github token: {token_source or 'none (public repos only)'}")
+        log(f"github token: {token_source or ('none (relay route)' if relay_route else 'none (public repos only)')}")
         for repo in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
             if repo.name.startswith(".") or not repo.is_dir():
                 continue

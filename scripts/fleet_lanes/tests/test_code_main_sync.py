@@ -232,6 +232,7 @@ class RelayRoute(SyncCase):
         config = [(out[f"GIT_CONFIG_KEY_{i}"], out[f"GIT_CONFIG_VALUE_{i}"]) for i in range(int(out["GIT_CONFIG_COUNT"]))]
         self.assertIn(("url.http://127.0.0.1:8471/git/.insteadOf", "https://github.com/"), config)
         self.assertIn(("url.http://127.0.0.1:8471/git/.insteadOf", "git@github.com:"), config)
+        self.assertIn(("url.http://127.0.0.1:8471/git/.insteadOf", "ssh://git@github.com/"), config)
         self.assertIn(("http.http://127.0.0.1:8471/.extraHeader", "Authorization: Bearer seat-bearer-value"), config)
         self.assertIn(("http.followRedirects", "false"), config)
         self.assertIn(("credential.helper", ""), config)
@@ -296,6 +297,20 @@ class RelayRoute(SyncCase):
         self.assertIn("GIT_CONFIG_COUNT", seen[2], "the merge takes the same route as the fetch")
         self.assertIn("relay route Example", out)
         self.assertNotIn("seat-bearer-value", out)
+
+    def test_the_relay_route_never_looks_up_an_owner_token(self) -> None:
+        self.vars.update({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(self.bearer_file())})
+        with mock.patch.object(S, "resolve_github_token", side_effect=AssertionError("owner token looked up")):
+            code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertIn("github token: none (relay route)", out)
+
+    def test_every_accepted_origin_form_is_rewritten_by_real_git(self) -> None:
+        env = S.relay_git_env({"FLEET_SYNC_RELAY_URL": "http://127.0.0.1:8471", "FLEET_SYNC_BEARER_FILE": str(self.bearer_file())})
+        for origin in ("https://github.com/a/b.git", "git@github.com:a/b.git", "ssh://git@github.com/a/b.git"):
+            result = subprocess.run([GIT, "ls-remote", "--get-url", origin], capture_output=True, text=True, check=True,
+                                    env={**os.environ, **env})
+            self.assertEqual(result.stdout.strip(), "http://127.0.0.1:8471/git/a/b.git", origin)
 
     def test_without_the_relay_a_failed_fetch_still_fails(self) -> None:
         real = S.git_full
