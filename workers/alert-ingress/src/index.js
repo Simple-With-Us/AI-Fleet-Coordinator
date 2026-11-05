@@ -1086,7 +1086,10 @@ async function handleEvent(source, payload, env, options = {}) {
   const channel = DEFAULT_CHANNEL;
   const perIncident = PER_INCIDENT_SOURCES.has(sourceName);
   let reopening = false;
-  if (perIncident && (await env.ALERT_STATE.get(closedKey(event.key)))) {
+  // Named before the rename below can change the key, so a reopen clears the
+  // tombstone it found rather than another incident's.
+  const tombstone = closedKey(event.key);
+  if (perIncident && (await env.ALERT_STATE.get(tombstone))) {
     // The incident closed and was pruned.  Only a reopen revives it;
     // anything else is a late or repeated delivery about a closed incident.
     if (!event.reopened) {
@@ -1157,7 +1160,7 @@ async function handleEvent(source, payload, env, options = {}) {
     // own.  A recovery of something never recorded has nothing to lose.  A new
     // incident keeps its retry, its raw copy is already on its way to
     // #Alerts-Raw, and the route logs and counts the refusal.
-    if (!prev && breaker?.spendNewKey && !(await breaker.spendNewKey())) {
+    if (!prev && breaker?.newKeyAllowed && !breaker.newKeyAllowed()) {
       if (result.state.phase === "ok") {
         return {
           action: "shed",
@@ -1196,8 +1199,10 @@ async function handleEvent(source, payload, env, options = {}) {
       );
       throw shedRefused(3600, "inventory");
     }
+    // Spent only now, so a vendor retrying an inventory refusal costs no allowance.
+    if (!prev) await breaker?.spendNewKey?.();
   }
-  if (reopening) await env.ALERT_STATE.delete(closedKey(event.key));
+  if (reopening) await env.ALERT_STATE.delete(tombstone);
   let posted = null;
   let rateLimited = false;
   const sev =
@@ -2028,6 +2033,7 @@ const handler = {
           breaker: breaker && {
             ...breaker,
             spendShedWrite: () => env.ALERT_BREAKER.spendShedWrite(),
+            newKeyAllowed: () => env.ALERT_BREAKER.newKeyAllowed(source),
             spendNewKey: () => env.ALERT_BREAKER.spendNewKey(source),
           },
         }).then((result) => {

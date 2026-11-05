@@ -1165,6 +1165,7 @@ test("a queued line survives a storage error, and only a refusal drops it", asyn
 test("a credential in alert text never reaches a state row or a queued line", async () => {
   const db = storage();
   const writer = new AlertWriter({ storage: db }, ENV);
+  // An obviously fake GitHub PAT shape, built at runtime for the scanner.  Never a credential.
   const secret = `ghp_${"a".repeat(36)}`;
   const posted = [];
   const fetchStub = async (url, opts) => {
@@ -1297,6 +1298,63 @@ test("a refused reopen keeps its tombstone until the retry is admitted", async (
       assert.equal(db.data.has("kv:closed:pagerduty:p1"), false);
     }),
   );
+});
+
+test("an inventory refusal spends no new-key allowance, and an admitted new incident spends one", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  for (let i = 0; i < 2001; i++) db.data.set(`kv:idx:generic:alerts:svc:generic:fill${i}`, "1");
+  await capturingLogs(() =>
+    withFetch(zulipStub().fetchStub, async () => {
+      assert.equal((await hook(writer, firing("over"))).status, 503);
+      assert.equal((await hook(writer, firing("over"))).status, 503);
+    }),
+  );
+  assert.equal(writer.breaker.newKeys, 0);
+  for (const key of [...db.data.keys()]) {
+    if (key.startsWith("kv:idx:")) db.data.delete(key);
+  }
+  await capturingLogs(() =>
+    withFetch(zulipStub().fetchStub, async () => {
+      assert.equal((await hook(writer, firing("over"))).status, 200);
+    }),
+  );
+  assert.equal(writer.breaker.newKeys, 1);
+});
+
+test("a reopen on a renamed key clears the tombstone it found, not the renamed key's", async () => {
+  const db = storage();
+  const env = {
+    ...ENV,
+    PAGERDUTY_WEBHOOK_SECRET: "fixture",
+    ZULIP_BOT_EMAIL_PAGERDUTY: "pd@example.invalid",
+    ZULIP_BOT_API_KEY_PAGERDUTY: "pd-key",
+  };
+  const writer = new AlertWriter({ storage: db }, env);
+  // The service label equals the incident id, so the rename path applies.
+  db.data.set("kv:closed:pagerduty:p1", "1");
+  db.data.set("kv:closed:pagerduty:p9", "1");
+  db.data.set("kv:svcname:pagerduty:p1", JSON.stringify("pagerduty:p9"));
+  await capturingLogs(() =>
+    withFetch(zulipStub().fetchStub, async () => {
+      const response = await writer.fetch(
+        new Request("https://test/webhook/pagerduty", {
+          method: "POST",
+          headers: { "x-pagerduty-token": "fixture" },
+          body: JSON.stringify({
+            event: {
+              event_type: "incident.reopened",
+              resource_type: "incident",
+              data: { type: "incident", id: "P1", status: "triggered", title: "t", service: { summary: "p1" } },
+            },
+          }),
+        }),
+      );
+      assert.equal(response.status, 200);
+    }),
+  );
+  assert.equal(db.data.has("kv:closed:pagerduty:p1"), false);
+  assert.equal(db.data.has("kv:closed:pagerduty:p9"), true);
 });
 
 test("a storm's refused and answered deliveries are all logged and counted, and /status shows them", async () => {

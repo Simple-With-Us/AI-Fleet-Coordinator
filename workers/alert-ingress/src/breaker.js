@@ -37,7 +37,8 @@ const DAY_MS = 86_400_000;
 const MAX_SAVED_COUNT = 1_000_000_000;
 const sound = (value) => Number.isSafeInteger(value) && value >= 0 && value <= MAX_SAVED_COUNT;
 const count = (value) => (sound(value) ? value : 0);
-const named = (value) => Object.entries(value && typeof value === "object" ? value : {});
+const named = (value) =>
+  Object.entries(value && typeof value === "object" && !Array.isArray(value) ? value : {});
 const counts = (value) => new Map(named(value).map(([name, n]) => [name, count(n)]));
 // A field a saved record does not have is not corruption, only a bad value is.
 const mapIsSound = (map) =>
@@ -160,14 +161,21 @@ export class DeliveryBreaker {
     return true;
   }
 
+  // Whether a new incident may still be recorded today.  It spends nothing, so a
+  // delivery refused later for another reason does not use up the allowance.
+  newKeyAllowed(source) {
+    this.roll(this.now());
+    const today = this.newBySource.get(source) || 0;
+    return this.newKeys < NEW_KEYS_PER_DAY || today < SOURCE_NEW_KEY_RESERVE;
+  }
+
   // Reserve one new incident.  False means the day's allowance is gone.  The
   // count is saved at once:  a new incident already writes many rows, and a burst
   // followed by an eviction must not be able to spend the same allowance twice.
   async spendNewKey(source) {
+    if (!this.newKeyAllowed(source)) return false;
     const at = this.now();
-    this.roll(at);
     const today = this.newBySource.get(source) || 0;
-    if (this.newKeys >= NEW_KEYS_PER_DAY && today >= SOURCE_NEW_KEY_RESERVE) return false;
     this.newKeys++;
     this.newBySource.set(source, today + 1);
     this.unsaved++;
