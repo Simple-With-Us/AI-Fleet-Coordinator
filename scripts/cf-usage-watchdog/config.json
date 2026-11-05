@@ -1,10 +1,9 @@
 {
   "schema": 1,
-  "account_id": "3a9368057468d0909cafaa85df12d1b7",
-  "account_name": "Usage.Jays.Services",
   "infisical": {
     "project": "ai-fleet-coordinator",
     "path": "/cf-usage-watchdog",
+    "account_id_key": "CF_USAGE_WATCHDOG_ACCOUNT_ID",
     "api_token_key": "CF_USAGE_WATCHDOG_API_TOKEN",
     "heartbeat_url_key": "CF_USAGE_WATCHDOG_HEARTBEAT_URL",
     "pushover_token_key": "PUSHOVER_APP_TOKEN",
