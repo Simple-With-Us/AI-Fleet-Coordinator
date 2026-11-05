@@ -224,6 +224,34 @@ class AuthTests(_ServiceCase):
         self.assertFalse(server.bearer_ok("Bearer " + TOKEN[:-1], TOKEN))
 
 
+class ServiceSettingAndIndexTests(unittest.TestCase):
+    def test_owner_token_environment_wins_and_infisical_is_the_fallback(self):
+        with mock.patch.dict(os.environ, {"RECALL_OWNER_TOKEN": "env-token"}, clear=True), \
+                mock.patch.object(server.infisical_settings, "get", return_value="infisical-token"):
+            self.assertEqual(server._setting_value("RECALL_OWNER_TOKEN"), "env-token")
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(server.infisical_settings, "get", return_value="infisical-token"):
+            self.assertEqual(server._setting_value("RECALL_OWNER_TOKEN"), "infisical-token")
+
+    def test_retracted_bool_index_is_created_once_for_a_real_backend(self):
+        calls = []
+
+        class Backend:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def create_payload_index(self, field_name, field_schema):
+                calls.append((field_name, field_schema))
+
+        with mock.patch.object(server, "_retracted_index_ready", False), \
+                mock.patch.object(recall_api, "fake_backend_installed", return_value=False), \
+                mock.patch.object(recall_api, "get_config", return_value={"cfg": True}), \
+                mock.patch.object(recall_api, "Qdrant", Backend):
+            server.ensure_retracted_index()
+            server.ensure_retracted_index()
+        self.assertEqual(calls, [("retracted", "bool")])
+
+
 def _read_pipelined(sock: socket.socket, timeout: float = 5.0) -> tuple[list[tuple[int, dict, bytes]], bool]:
     """Read until the server closes (or the timeout): ([(status, headers, body), ...], closed)."""
     sock.settimeout(timeout)
@@ -660,6 +688,16 @@ class RestTests(_ServiceCase):
         status, _, body = self.request("POST", "/recall/search", {"query": "update-env", "source": "agent-contribution",
                                                                    "include_retracted": True})
         self.assertEqual(body["hits"][0]["retraction_reason"], "obsolete for the service")
+
+    def test_mutation_doc_id_is_validated_at_the_service_boundary(self):
+        status, _, body = self.request(
+            "POST", "/recall/correct",
+            {"doc_id": "docs/not-a-contribution", "text": GOOD_TEXT,
+             "reason": "boundary validation", "seat": "CURSOR"},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("doc_id", body["error"])
+        self.assertEqual(FakeQdrant.upserts, [])
 
     def test_contribute_validation(self):
         status, _, body = self.request("POST", "/recall/contribute", {"text": "too short", "category": "lesson", "seat": "X"})

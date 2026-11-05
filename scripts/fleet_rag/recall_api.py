@@ -181,6 +181,10 @@ CONTRIB_MIN = 40
 CONTRIB_MAX = 4000
 REASON_MIN = 3
 REASON_MAX = 500
+# Keep every prior version, but refuse further corrections once the in-payload audit reaches
+# this bound instead of letting one point grow without limit.  Retract and re-contribute
+# when a lesson genuinely needs an eleventh correction.
+REVISION_HISTORY_LIMIT = 10
 DAY_MS = 86_400_000
 
 _APP_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,63}$")
@@ -620,10 +624,24 @@ def recall_contribute(
     point = build_point(clean, payload)
     q = Qdrant(cfg)
     existing = q.retrieve(point["id"], with_payload=True, with_vector=False)
+    if existing is None:
+        # A correction keeps the original point id while its payload's content_hash moves to
+        # the replacement.  The deterministic-id retrieve alone would miss that corrected
+        # point and let the same replacement be contributed a second time.
+        matches = list(
+            q.scroll(
+                {"must": [{"key": "content_hash", "match": {"value": point["payload"]["content_hash"]}}]},
+                limit=2,
+                with_payload=True,
+                with_vector=False,
+            )
+        )
+        if matches:
+            existing = matches[0]
     if existing is not None:
         old = existing.get("payload") or {}
         return {
-            "id": point["id"],
+            "id": str(existing.get("id") or point["id"]),
             "doc_id": str(old.get("doc_id") or doc_id),
             "scrubbed": reported,
             "status": "duplicate",
@@ -758,6 +776,97 @@ def _scrub_replacement(text: str) -> tuple[str, list[str]]:
     return clean, reported
 
 
+def _correction_plan(
+    old_point: dict,
+    doc_id: str,
+    clean: str,
+    reason: str,
+    actor: str,
+    title: str | None,
+    url: str | None,
+    expected: int | None,
+    ts: int,
+) -> dict[str, Any]:
+    """Validate one correction against the point just read and build its one-point write."""
+    old = old_point.get("payload") or {}
+    owner = _authorize_change(old, actor)
+    revision = _check_revision(old, expected)
+    if _is_retracted(old):
+        raise FleetRagError(
+            f"{doc_id} is retracted; correction would resurrect it, so it was refused"
+        )
+    old_text = str(old.get("text") or "")
+    old_hash = str(old.get("content_hash") or content_hash(old_text))
+    new_hash = content_hash(clean)
+    old_title = str(old.get("title") or "")
+    old_url = str(old.get("url") or "")
+    new_title = _opt_str("title", title)
+    new_url = _opt_str("url", url)
+    if new_title is not None:
+        new_title = _safe_audit_text("title", new_title, 200)
+    if new_url is not None:
+        new_url = _safe_audit_text("url", new_url, 500)
+        if not re.match(r"^https?://", new_url):
+            raise FleetRagError("url must start with http:// or https://")
+    new_title = new_title or old_title
+    new_url = new_url or old_url
+    metadata_changed = new_title != old_title or new_url != old_url
+    point_id = str(old_point.get("id") or "")
+    if new_hash == old_hash and not metadata_changed:
+        return {
+            "point_id": point_id,
+            "owner": owner,
+            "revision": revision,
+            "old_hash": old_hash,
+            "new_hash": new_hash,
+            "unchanged": True,
+        }
+    history = old.get("revisions", [])
+    if not isinstance(history, list) or any(not isinstance(r, dict) for r in history):
+        raise FleetRagError(
+            "the stored contribution has an invalid revision history; refusing to change it"
+        )
+    if len(history) >= REVISION_HISTORY_LIMIT:
+        raise FleetRagError(
+            f"the contribution already has {REVISION_HISTORY_LIMIT} preserved revisions; "
+            "retract and re-contribute it instead of growing one point without bound"
+        )
+    history = list(history)
+    history.append(
+        {
+            "revision": revision,
+            "text": old_text,
+            "content_hash": old_hash,
+            "title": old_title,
+            "url": old_url,
+            "replaced_at": ts,
+            "replaced_by": actor,
+            "reason": reason,
+        }
+    )
+    fields = {
+        "title": new_title,
+        "url": new_url,
+        "updated_at": ts,
+        "revision": revision + 1,
+        "corrected_at": ts,
+        "corrected_by": actor,
+        "correction_reason": reason,
+        "revisions": history,
+    }
+    return {
+        "point_id": point_id,
+        "owner": owner,
+        "revision": revision,
+        "old_hash": old_hash,
+        "new_hash": new_hash,
+        "old": old,
+        "fields": fields,
+        "unchanged": False,
+        "metadata_only": new_hash == old_hash,
+    }
+
+
 def recall_correct(
     doc_id: str,
     text: str,
@@ -782,104 +891,72 @@ def recall_correct(
     clean, reported = _scrub_replacement(text)
     cfg = get_config(need_write=True)
     ts = now_ms()
+    q = Qdrant(cfg)
     with _MUTATION_LOCK:
-        q = Qdrant(cfg)
         old_point = _contribution_point(q, doc_id)
-        old = old_point.get("payload") or {}
-        owner = _authorize_change(old, actor)
-        revision = _check_revision(old, expected)
-        if _is_retracted(old):
+        plan = _correction_plan(
+            old_point, doc_id, clean, reason, actor, title, url, expected, ts
+        )
+    vector = None
+    if not plan["unchanged"] and not plan["metadata_only"]:
+        # TEI is a network call.  Do not hold the fleet mutation lock through it:  re-read and
+        # re-check the same point under the lock before the one-point write below.
+        vector = embed(cfg, [clean])[0]
+    with _MUTATION_LOCK:
+        current_point = _contribution_point(q, doc_id)
+        current = current_point.get("payload") or {}
+        if _is_retracted(current):
             raise FleetRagError(
-                f"{doc_id} is retracted; correction would resurrect it, so it was refused"
+                f"{doc_id} was retracted while the correction was being prepared; refusing to resurrect it"
             )
-        old_text = str(old.get("text") or "")
-        old_hash = str(old.get("content_hash") or content_hash(old_text))
-        new_hash = content_hash(clean)
-        old_title = str(old.get("title") or "")
-        old_url = str(old.get("url") or "")
-        new_title = _opt_str("title", title)
-        new_url = _opt_str("url", url)
-        if new_title is not None:
-            new_title = _safe_audit_text("title", new_title, 200)
-        if new_url is not None:
-            new_url = _safe_audit_text("url", new_url, 500)
-            if not re.match(r"^https?://", new_url):
-                raise FleetRagError("url must start with http:// or https://")
-        new_title = new_title or old_title
-        new_url = new_url or old_url
-        metadata_changed = new_title != old_title or new_url != old_url
-        if new_hash == old_hash and not metadata_changed:
+        _authorize_change(current, actor)
+        current_revision = _check_revision(current, expected)
+        current_hash = str(
+            current.get("content_hash") or content_hash(str(current.get("text") or ""))
+        )
+        if current_revision != plan["revision"] or current_hash != plan["old_hash"]:
+            raise FleetRagError(
+                f"{doc_id} changed while the correction was being prepared; read it again before changing it"
+            )
+        if plan["unchanged"]:
             return {
-                "id": str(old_point.get("id") or ""),
+                "id": plan["point_id"],
                 "doc_id": doc_id,
-                "seat": owner,
+                "seat": plan["owner"],
                 "status": "unchanged",
-                "revision": revision,
-                "content_hash": old_hash,
-                "previous_content_hash": old_hash,
+                "revision": plan["revision"],
+                "content_hash": plan["old_hash"],
+                "previous_content_hash": plan["old_hash"],
                 "scrubbed": reported,
             }
-        history = old.get("revisions", [])
-        if not isinstance(history, list) or any(not isinstance(r, dict) for r in history):
-            raise FleetRagError(
-                "the stored contribution has an invalid revision history; refusing to change it"
-            )
-        history = list(history)
-        history.append(
-            {
-                "revision": revision,
-                "text": old_text,
-                "content_hash": old_hash,
-                "title": old_title,
-                "url": old_url,
-                "replaced_at": ts,
-                "replaced_by": actor,
-                "reason": reason,
-            }
-        )
-        fields = {
-            "title": new_title,
-            "url": new_url,
-            "updated_at": ts,
-            "revision": revision + 1,
-            "corrected_at": ts,
-            "corrected_by": actor,
-            "correction_reason": reason,
-            "revisions": history,
-        }
+        fields = dict(plan["fields"])
         if reported:
             fields["scrubbed"] = reported
-        elif "scrubbed" in old and new_hash != old_hash:
+        elif "scrubbed" in plan["old"] and not plan["metadata_only"]:
             # set_payload cannot delete a key; text-changing corrections carry the replacement's
             # scrub report, while metadata-only corrections preserve the stored one.
             fields["scrubbed"] = []
-        point_id = str(old_point.get("id") or "")
-        if new_hash == old_hash:
-            status = q.set_payload([point_id], fields)
+        if plan["metadata_only"]:
+            status = q.set_payload([plan["point_id"]], fields)
         else:
-            payload = dict(old)
-            payload.update({"text": clean, "content_hash": new_hash, **fields})
+            payload = dict(plan["old"])
+            payload.update({"text": clean, "content_hash": plan["new_hash"], **fields})
             if not reported:
                 payload.pop("scrubbed", None)
-            point = {
-                "id": point_id,
-                "payload": payload,
-                "vector": embed(cfg, [clean])[0],
-            }
+            point = {"id": plan["point_id"], "payload": payload, "vector": vector}
             status = q.upsert([point])
     return {
-        "id": point_id,
+        "id": plan["point_id"],
         "doc_id": doc_id,
-        "seat": owner,
+        "seat": plan["owner"],
         "status": status,
-        "revision": revision + 1,
+        "revision": plan["revision"] + 1,
         "corrected_at": ts,
         "corrected_by": actor,
-        "previous_content_hash": old_hash,
-        "content_hash": new_hash,
+        "previous_content_hash": plan["old_hash"],
+        "content_hash": plan["new_hash"],
         "scrubbed": reported,
     }
-
 
 def recall_retract(
     doc_id: str,

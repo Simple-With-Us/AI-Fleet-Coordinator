@@ -64,10 +64,10 @@ const defaultRespond = (req) => {
     return { json: { ok: true, id: "5f0c-uuid", doc_id: `contrib/${req.body.seat}/2026-10-09/abcd1234`, scrubbed: [], status: "completed" } };
   }
   if (req.url.endsWith("/recall/correct")) {
-    return { json: { ok: true, id: "5f0c-uuid", doc_id: req.body.doc_id, revision: 2, status: "completed", corrected_at: 1760000000000, corrected_by: req.body.seat, previous_content_hash: "a".repeat(64), content_hash: "b".repeat(64), scrubbed: [] } };
+    return { json: { ok: true, id: "5f0c-uuid", doc_id: req.body.doc_id, seat: req.body.seat, revision: 2, status: "completed", corrected_at: 1760000000000, corrected_by: req.body.seat, previous_content_hash: "a".repeat(64), content_hash: "b".repeat(64), scrubbed: [] } };
   }
   if (req.url.endsWith("/recall/retract")) {
-    return { json: { ok: true, id: "5f0c-uuid", doc_id: req.body.doc_id, revision: 2, retracted: true, retracted_at: 1760000000100, retracted_by: req.body.seat, retraction_reason: req.body.reason, status: "completed" } };
+    return { json: { ok: true, id: "5f0c-uuid", doc_id: req.body.doc_id, seat: req.body.seat, revision: 2, retracted: true, retracted_at: 1760000000100, retracted_by: req.body.seat, retraction_reason: req.body.reason, status: "completed" } };
   }
   return { status: 404, json: { ok: false, error: "not found" } };
 };
@@ -314,6 +314,23 @@ test("correct and retract are always the grant's seat:  a client seat is dropped
   });
 });
 
+test("a malformed hosted mutation response is invalid_response and is not cached", async () => {
+  const doc_id = "contrib/GROK-WEB/2026-11-05/abcd1234";
+  let malformed = true;
+  const { tools, upstream } = harness({
+    respond: (req) => malformed
+      ? { json: { ok: true, id: "5f0c-uuid", doc_id, seat: req.body.seat, revision: "2", retracted: true, retracted_at: 1, retracted_by: req.body.seat, retraction_reason: req.body.reason, status: "completed" } }
+      : defaultRespond(req),
+  });
+  const args = { doc_id, reason: "obsolete" };
+  toolError(await tools.call("recall_retract", args), "invalid_response");
+  assert.equal(upstream.requests.length, 1);
+  malformed = false;
+  const retried = ok(await tools.call("recall_retract", args), "recall_retract");
+  assert.equal(retried.retracted, true);
+  assert.equal(upstream.requests.length, 2);
+});
+
 test("a hosted mutation cut off mid-write stays unknown and is not resent", async () => {
   const { tools, upstream } = harness({ respond: () => ({ status: 502, json: { ok: false } }) });
   const args = { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete" };
@@ -373,6 +390,9 @@ test("argument checks run before any request", async () => {
     ["recall_contribute", { text: LESSON, category: "lesson", url: "ftp://x" }],
     ["recall_contribute", { text: LESSON, category: "lesson", app: "socratic trade" }],
     ["recall_contribute", { text: LESSON, category: "lesson", idempotency_key: "short" }],
+    ["recall_correct", { doc_id: "docs/not-a-contribution", text: LESSON, reason: "current" }],
+    ["recall_correct", { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", text: LESSON, reason: "x".repeat(501) }],
+    ["recall_retract", { doc_id: "contrib/GROK-WEB/2026-11-05/abcd1234", reason: "obsolete", expected_revision: 1.5 }],
   ];
   for (const [name, args] of cases) toolError(await tools.call(name, args), "invalid_argument");
   assert.equal(upstream.requests.length, 0);

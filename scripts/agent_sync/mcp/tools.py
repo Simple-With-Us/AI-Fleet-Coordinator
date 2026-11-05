@@ -2702,41 +2702,55 @@ class Tools:
     def _tool_recall_retract(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._recall_mutation("recall_retract", args)
 
-    def _correct_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
-        def integer(key: str) -> int:
-            value = result.get(key)
-            return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    def _recall_mutation_string(self, result: Mapping[str, Any], key: str, *, required: bool = True) -> str:
+        value = result.get(key)
+        if value is None and not required:
+            return ""
+        if not isinstance(value, str):
+            raise ToolError("invalid_response", "fleet recall returned an invalid response field: %s" % key)
+        return value
 
+    def _recall_mutation_int(self, result: Mapping[str, Any], key: str, *, required: bool = True) -> int:
+        value = result.get(key)
+        if value is None and not required:
+            return 0
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ToolError("invalid_response", "fleet recall returned an invalid response field: %s" % key)
+        return value
+
+    def _correct_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
+        scrubbed = result.get("scrubbed")
+        if not isinstance(scrubbed, list) or any(not isinstance(item, str) for item in scrubbed):
+            raise ToolError("invalid_response", "fleet recall returned an invalid response field: scrubbed")
         shown = {
-            "id": str(result.get("id") or ""),
-            "doc_id": str(result.get("doc_id") or ""),
+            "id": self._recall_mutation_string(result, "id"),
+            "doc_id": self._recall_mutation_string(result, "doc_id"),
             "seat": self.seat,
-            "status": str(result.get("status") or ""),
-            "revision": integer("revision"),
-            "corrected_at": integer("corrected_at"),
-            "corrected_by": str(result.get("corrected_by") or ""),
-            "previous_content_hash": str(result.get("previous_content_hash") or ""),
-            "content_hash": str(result.get("content_hash") or ""),
-            "scrubbed": list(result.get("scrubbed") or []),
+            "status": self._recall_mutation_string(result, "status"),
+            "revision": self._recall_mutation_int(result, "revision"),
+            "corrected_at": self._recall_mutation_int(result, "corrected_at", required=False),
+            "corrected_by": self._recall_mutation_string(result, "corrected_by", required=False),
+            "previous_content_hash": self._recall_mutation_string(result, "previous_content_hash"),
+            "content_hash": self._recall_mutation_string(result, "content_hash"),
+            "scrubbed": scrubbed,
             "duplicate": duplicate,
         }
         return self.ok(json.dumps(shown), shown)
 
     def _retract_result(self, result: Mapping[str, Any], *, duplicate: bool) -> dict[str, Any]:
-        def integer(key: str) -> int:
-            value = result.get(key)
-            return value if isinstance(value, int) and not isinstance(value, bool) else 0
-
+        retracted = result.get("retracted")
+        if not isinstance(retracted, bool):
+            raise ToolError("invalid_response", "fleet recall returned an invalid response field: retracted")
         shown = {
-            "id": str(result.get("id") or ""),
-            "doc_id": str(result.get("doc_id") or ""),
+            "id": self._recall_mutation_string(result, "id"),
+            "doc_id": self._recall_mutation_string(result, "doc_id"),
             "seat": self.seat,
-            "status": str(result.get("status") or ""),
-            "revision": integer("revision"),
-            "retracted": result.get("retracted") is True,
-            "retracted_at": integer("retracted_at"),
-            "retracted_by": str(result.get("retracted_by") or ""),
-            "retraction_reason": str(result.get("retraction_reason") or ""),
+            "status": self._recall_mutation_string(result, "status"),
+            "revision": self._recall_mutation_int(result, "revision"),
+            "retracted": retracted,
+            "retracted_at": self._recall_mutation_int(result, "retracted_at"),
+            "retracted_by": self._recall_mutation_string(result, "retracted_by"),
+            "retraction_reason": self._recall_mutation_string(result, "retraction_reason"),
             "duplicate": duplicate,
         }
         return self.ok(json.dumps(shown), shown)

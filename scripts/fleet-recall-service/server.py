@@ -352,6 +352,7 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
     if missing:
         raise FleetRagError("missing required argument(s): " + ", ".join(missing))
     if name == "recall_search":
+        ensure_retracted_index()
         _int(args, "limit")
         _int(args, "since_days")
         _int(args, "per_doc")
@@ -363,6 +364,7 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
         return recall_api.recall_stats()
     if name in ("recall_correct", "recall_retract"):
         _int(args, "expected_revision")
+        args["doc_id"] = recall_api._doc_id(args.get("doc_id"))
     seat = args.get("seat")
     if not isinstance(seat, str) or not seat.strip():
         # Never fall back to the service process's own AGENT_SEAT for a remote caller.
@@ -375,6 +377,30 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
     if name == "recall_retract":
         return recall_api.recall_retract(**args)
     return recall_api.recall_contribute(**args)
+
+
+# --------------------------------------------------------------------------- collection schema
+
+_retracted_index_lock = threading.Lock()
+_retracted_index_ready = False
+
+
+def ensure_retracted_index() -> None:
+    """The default search filter needs Qdrant's bool payload index; create it once per process.
+
+    This is collection schema setup, not a corpus-point write.  Tests using the in-process fake
+    skip it.  A real Qdrant failure refuses the search rather than running the new filter on an
+    unindexed field.
+    """
+    global _retracted_index_ready
+    if _retracted_index_ready or recall_api.fake_backend_installed():
+        return
+    with _retracted_index_lock:
+        if _retracted_index_ready:
+            return
+        cfg = recall_api.get_config(need_write=True)
+        recall_api.Qdrant(cfg).create_payload_index(recall_api.RETRACTED_FIELD, "bool")
+        _retracted_index_ready = True
 
 
 # --------------------------------------------------------------------------- health
@@ -508,7 +534,8 @@ def _dispatch_rpc(msg: JsonDict, rid: Any, *, owner_authorized: bool = False) ->
             if owner_requested(str(name), args) and not owner_authorized:
                 raise FleetRagError(
                     "OWNER recall mutations require the service's RECALL_OWNER_TOKEN bearer; "
-                    "the shared recall bearer does not prove the owner identity"
+                    "the shared recall bearer does not prove the owner identity "
+                    f"(authenticated_identity=RECALL_API_TOKEN; requested_seat={str(args.get('seat') or '')[:32]})"
                 )
             data = call_tool(str(name), args)
         except KeyError:
@@ -545,6 +572,16 @@ def owner_requested(name: str, args: JsonDict) -> bool:
 
 
 # --------------------------------------------------------------------------- auth / logging
+
+
+def _setting_value(name: str) -> str:
+    """Environment first; the Infisical-backed cache is the fallback."""
+    value = (os.environ.get(name) or "").strip()
+    return value or (infisical_settings.get(name) or "").strip()
+
+
+def _setting_present(name: str) -> bool:
+    return bool((os.environ.get(name) or "").strip() or infisical_settings.present(name))
 
 
 def bearer_ok(header: str | None, token: str) -> bool:
@@ -700,14 +737,14 @@ class RecallHandler(BaseHTTPRequestHandler):
         return self._auth_ok() or self._owner_auth_ok()
 
     def _owner_auth_ok(self) -> bool:
-        owner = (infisical_settings.get("RECALL_OWNER_TOKEN") or "").strip()
+        owner = _setting_value("RECALL_OWNER_TOKEN")
         return bool(owner) and bearer_ok(self.headers.get("Authorization"), owner)
 
     def _owner_auth(self, name: str, args: JsonDict) -> bool:
         """False when a requested OWNER mutation was already answered (403 unconfigured / 401)."""
         if not owner_requested(name, args):
             return True
-        if not infisical_settings.present("RECALL_OWNER_TOKEN"):
+        if not _setting_present("RECALL_OWNER_TOKEN"):
             self._discard_unread_body()
             self.close_connection = True
             self._send(
@@ -717,6 +754,8 @@ class RecallHandler(BaseHTTPRequestHandler):
                         "ok": False,
                         "error": "owner mutation token not configured; set RECALL_OWNER_TOKEN "
                         "in Infisical (see INFISICAL.md)",
+                        "authenticated_identity": "RECALL_API_TOKEN",
+                        "requested_seat": str(args.get("seat") or "")[:32],
                     }
                 ),
             )

@@ -56,6 +56,10 @@ import {
   RECALL_WRITE_TOOLS,
   RECALL_SECRETS,
   CONTRIBUTE_MIN,
+  CONTRIBUTE_MAX,
+  REASON_MIN,
+  REASON_MAX,
+  DOC_ID_PATTERN,
   mapRecallError,
   hitItem,
   recallClean,
@@ -237,6 +241,62 @@ export function hostedInstructions(seat) {
 }
 export const RECALL_SCRUBBED_LIMIT = 20;
 export const RECALL_STATS_KEYS_LIMIT = 50;
+
+const RECALL_DOC_ID = z.string().regex(new RegExp(DOC_ID_PATTERN));
+const RECALL_CORRECT_REQUEST = z
+  .object({
+    doc_id: RECALL_DOC_ID,
+    text: z.string().min(CONTRIBUTE_MIN).max(CONTRIBUTE_MAX),
+    reason: z.string().min(REASON_MIN).max(REASON_MAX),
+    seat: z.string().min(1).max(32),
+    title: z.string().max(200).optional(),
+    url: z.string().max(500).regex(/^https?:\/\/\S+$/).optional(),
+    expected_revision: z.number().int().min(1).optional(),
+  })
+  .strict();
+const RECALL_RETRACT_REQUEST = z
+  .object({
+    doc_id: RECALL_DOC_ID,
+    reason: z.string().min(REASON_MIN).max(REASON_MAX),
+    seat: z.string().min(1).max(32),
+    expected_revision: z.number().int().min(1).optional(),
+  })
+  .strict();
+const RECALL_CORRECT_RESPONSE = z
+  .object({
+    ok: z.literal(true),
+    id: z.string(),
+    doc_id: z.string(),
+    seat: z.string(),
+    status: z.string(),
+    revision: z.number().int().nonnegative(),
+    corrected_at: z.number().int().nonnegative().default(0),
+    corrected_by: z.string().default(""),
+    previous_content_hash: z.string(),
+    content_hash: z.string(),
+    scrubbed: z.array(z.string()),
+  })
+  .strict();
+const RECALL_RETRACT_RESPONSE = z
+  .object({
+    ok: z.literal(true),
+    id: z.string(),
+    doc_id: z.string(),
+    seat: z.string(),
+    status: z.string(),
+    revision: z.number().int().nonnegative(),
+    retracted: z.boolean(),
+    retracted_at: z.number().int().nonnegative(),
+    retracted_by: z.string(),
+    retraction_reason: z.string(),
+  })
+  .strict();
+
+function parseRecallMutationResponse(schema, data, name) {
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) throw new ToolError("invalid_response", `${name} returned an invalid response`);
+  return parsed.data;
+}
 
 // Linear, when this seat has it.  The seat is named by the grant, never by an
 // argument, so this text tells the seat which app it acts as.
@@ -1640,29 +1700,30 @@ export class HostedTools {
       await this.gate.idemDrop({ key });
       throw error;
     }
-    const body = { doc_id: args.doc_id, text, reason, seat: this.seat };
-    if (title) body.title = title;
-    if (url) body.url = url;
-    if (args.expected_revision !== undefined) body.expected_revision = args.expected_revision;
+    const request = { doc_id: args.doc_id, text, reason, seat: this.seat };
+    if (title) request.title = title;
+    if (url) request.url = url;
+    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
+    const body = parseArgs(RECALL_CORRECT_REQUEST, request);
     let data;
     try {
-      data = await this.recallCall(() => recall.correct(body), { write: true });
+      const raw = await this.recallCall(() => recall.correct(body), { write: true });
+      data = parseRecallMutationResponse(RECALL_CORRECT_RESPONSE, raw, "recall_correct");
     } catch (error) {
       if (error?.code === "outcome_unknown") await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
       else await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
     }
-    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
     const row = {
-      id: recallClean(String(data.id ?? ""), 80)[0],
-      doc_id: recallClean(String(data.doc_id ?? ""), 200)[0],
-      status: typeof data.status === "string" ? recallClean(data.status, 40)[0] : "",
-      revision: integer(data.revision),
-      corrected_at: integer(data.corrected_at),
-      corrected_by: recallClean(String(data.corrected_by ?? ""), 60)[0],
-      previous_content_hash: recallClean(String(data.previous_content_hash ?? ""), 80)[0],
-      content_hash: recallClean(String(data.content_hash ?? ""), 80)[0],
-      scrubbed: (Array.isArray(data.scrubbed) ? data.scrubbed : []).slice(0, RECALL_SCRUBBED_LIMIT).map((s) => recallClean(String(s), 60)[0]),
+      id: recallClean(data.id, 80)[0],
+      doc_id: recallClean(data.doc_id, 200)[0],
+      status: recallClean(data.status, 40)[0],
+      revision: data.revision,
+      corrected_at: data.corrected_at,
+      corrected_by: recallClean(data.corrected_by, 60)[0],
+      previous_content_hash: recallClean(data.previous_content_hash, 80)[0],
+      content_hash: recallClean(data.content_hash, 80)[0],
+      scrubbed: data.scrubbed.slice(0, RECALL_SCRUBBED_LIMIT).map((s) => recallClean(s, 60)[0]),
     };
     await this.safely(() => this.gate.idemSet({ key, changes: { state: "sent", ...row } }));
     return this.correctResult(row, false);
@@ -1701,26 +1762,27 @@ export class HostedTools {
       await this.gate.idemDrop({ key });
       throw error;
     }
-    const body = { doc_id: args.doc_id, reason, seat: this.seat };
-    if (args.expected_revision !== undefined) body.expected_revision = args.expected_revision;
+    const request = { doc_id: args.doc_id, reason, seat: this.seat };
+    if (args.expected_revision !== undefined) request.expected_revision = args.expected_revision;
+    const body = parseArgs(RECALL_RETRACT_REQUEST, request);
     let data;
     try {
-      data = await this.recallCall(() => recall.retract(body), { write: true });
+      const raw = await this.recallCall(() => recall.retract(body), { write: true });
+      data = parseRecallMutationResponse(RECALL_RETRACT_RESPONSE, raw, "recall_retract");
     } catch (error) {
       if (error?.code === "outcome_unknown") await this.safely(() => this.gate.idemSet({ key, changes: { state: "unknown" } }));
       else await this.safely(() => this.gate.idemDrop({ key }));
       throw error;
     }
-    const integer = (v) => Number.isSafeInteger(v) ? v : 0;
     const row = {
-      id: recallClean(String(data.id ?? ""), 80)[0],
-      doc_id: recallClean(String(data.doc_id ?? ""), 200)[0],
-      status: typeof data.status === "string" ? recallClean(data.status, 40)[0] : "",
-      revision: integer(data.revision),
-      retracted: data.retracted === true,
-      retracted_at: integer(data.retracted_at),
-      retracted_by: recallClean(String(data.retracted_by ?? ""), 60)[0],
-      retraction_reason: recallClean(String(data.retraction_reason ?? ""), 500)[0],
+      id: recallClean(data.id, 80)[0],
+      doc_id: recallClean(data.doc_id, 200)[0],
+      status: recallClean(data.status, 40)[0],
+      revision: data.revision,
+      retracted: data.retracted,
+      retracted_at: data.retracted_at,
+      retracted_by: recallClean(data.retracted_by, 60)[0],
+      retraction_reason: recallClean(data.retraction_reason, 500)[0],
     };
     await this.safely(() => this.gate.idemSet({ key, changes: { state: "sent", ...row } }));
     return this.retractResult(row, false);

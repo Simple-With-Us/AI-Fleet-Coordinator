@@ -407,6 +407,47 @@ class CorrectRetractTests(RecallBase):
             recall_api.recall_correct(original["doc_id"], "y" * 50, "stale read", seat="CLAUDE", expected_revision=2)
         self.assertEqual(len(FakeQdrant.upserts), 1)
 
+    def test_recontribute_of_corrected_replacement_is_a_duplicate(self):
+        original = self.contribute()
+        replacement = (
+            "pm2 restart needs --update-env before process env changes take effect; "
+            "check pm2 describe after the restart."
+        )
+        recall_api.recall_correct(original["doc_id"], replacement, "make current", seat="CLAUDE")
+        again = self.contribute(replacement)
+        self.assertEqual(again["status"], "duplicate")
+        self.assertEqual(again["id"], original["id"])
+        self.assertEqual(again["existing"]["doc_id"], original["doc_id"])
+        self.assertEqual(len(FakeQdrant.upserts), 2)
+
+    def test_revision_history_cap_preserves_history_and_refuses_further_correction(self):
+        original = self.contribute()
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        history = [{"revision": i + 1, "text": f"old {i}", "content_hash": f"hash-{i}"}
+                   for i in range(recall_api.REVISION_HISTORY_LIMIT)]
+        point["payload"]["revisions"] = history
+        before = [dict(item) for item in history]
+        with self.assertRaisesRegex(FleetRagError, "preserved revisions"):
+            recall_api.recall_correct(original["doc_id"], "z" * 50, "one correction too many", seat="CLAUDE")
+        self.assertEqual(point["payload"]["revisions"], before)
+        self.assertEqual(len(FakeQdrant.upserts), 1)
+
+    def test_retraction_during_correction_embedding_wins_and_correction_refuses(self):
+        original = self.contribute()
+        real_embed = recall_api.embed
+
+        def racing_embed(cfg, texts):
+            recall_api.recall_retract(original["doc_id"], "obsolete while replacement embedded", seat="CLAUDE")
+            return real_embed(cfg, texts)
+
+        with mock.patch.object(recall_api, "embed", racing_embed):
+            with self.assertRaisesRegex(FleetRagError, "retracted"):
+                recall_api.recall_correct(original["doc_id"], "z" * 50, "late replacement", seat="CLAUDE")
+        point = next(p for p in FakeQdrant.points if p["payload"].get("doc_id") == original["doc_id"])
+        self.assertTrue(point["payload"]["retracted"])
+        self.assertEqual(point["payload"]["retraction_reason"], "obsolete while replacement embedded")
+        self.assertEqual(point["payload"]["text"], GOOD)
+
     def test_metadata_only_correction_updates_the_same_point_with_audit(self):
         original = self.contribute()
         res = recall_api.recall_correct(

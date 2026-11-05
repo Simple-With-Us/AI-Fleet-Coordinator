@@ -86,6 +86,14 @@ class GatedServerTests(unittest.TestCase):
 
         def fallback(name, args, local):
             self.backend.append((name, dict(args)))
+            if name == "recall_correct":
+                return {"id": "uuid", "doc_id": args["doc_id"], "seat": args.get("seat") or "CLAUDE", "status": "completed",
+                        "revision": 2, "corrected_at": 1, "corrected_by": args.get("seat") or "CLAUDE",
+                        "previous_content_hash": "old", "content_hash": "new", "scrubbed": []}
+            if name == "recall_retract":
+                return {"id": "uuid", "doc_id": args["doc_id"], "seat": args.get("seat") or "CLAUDE", "status": "completed",
+                        "revision": 2, "retracted": True, "retracted_at": 1, "retracted_by": args.get("seat") or "CLAUDE",
+                        "retraction_reason": args["reason"]}
             return {"hits": [], "mode": "test", "status": "stored"} if name != "recall_stats" else {"points": 1}
 
         patcher = mock.patch.object(self.mod.public_fallback, "call_with_fallback", fallback)
@@ -118,6 +126,10 @@ class GatedServerTests(unittest.TestCase):
         self.assertEqual([a["seat"] for _, a in self.backend], ["CLAUDE", "CLAUDE"])
         self.backend.clear()
         refused = self.call("recall_retract", {"doc_id": doc_id, "reason": "obsolete", "seat": "GROK"})
+        self.assertIs(refused["isError"], True)
+        self.assertIn("own seat", refused["content"][0]["text"])
+        self.assertEqual(self.backend, [])
+        refused = self.call("recall_retract", {"doc_id": doc_id, "reason": "obsolete", "seat": "OWNER"})
         self.assertIs(refused["isError"], True)
         self.assertIn("own seat", refused["content"][0]["text"])
         self.assertEqual(self.backend, [])

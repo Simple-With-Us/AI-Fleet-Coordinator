@@ -62,12 +62,12 @@ def _stub_api() -> types.ModuleType:
     def recall_correct(doc_id, text, reason, seat=None, title=None, url=None, expected_revision=None):
         mod.calls.append(("correct", dict(doc_id=doc_id, text=text, reason=reason, seat=seat,
                                           title=title, url=url, expected_revision=expected_revision)))
-        return {"id": "uuid", "doc_id": doc_id, "revision": 2, "status": "completed"}
+        return {"id": "uuid", "doc_id": doc_id, "seat": seat, "revision": 2, "status": "completed", "corrected_at": 1, "corrected_by": seat, "previous_content_hash": "old", "content_hash": "new", "scrubbed": []}
 
     def recall_retract(doc_id, reason, seat=None, expected_revision=None):
         mod.calls.append(("retract", dict(doc_id=doc_id, reason=reason, seat=seat,
                                           expected_revision=expected_revision)))
-        return {"id": "uuid", "doc_id": doc_id, "retracted": True, "status": "completed"}
+        return {"id": "uuid", "doc_id": doc_id, "seat": seat, "revision": 2, "retracted": True, "status": "completed", "retracted_at": 1, "retracted_by": seat, "retraction_reason": reason}
 
     mod.recall_contribute = recall_contribute  # type: ignore[attr-defined]
     mod.recall_correct = recall_correct  # type: ignore[attr-defined]
@@ -193,6 +193,30 @@ class StubbedBridgeTests(unittest.TestCase):
         self.assertTrue(out["retracted"])
         self.assertEqual(self.api.calls[-1], ("retract", {"doc_id": doc, "reason": "obsolete",
                                                            "seat": "GROK", "expected_revision": None}))
+
+    def test_mutation_arguments_and_response_are_fail_closed(self) -> None:
+        doc = "contrib/GROK/2026-11-05/472fc36e"
+        with self.assertRaisesRegex(SeatError, "doc_id must"):
+            TOOL_IMPL["recall_retract"]({"doc_id": "docs/not-a-contribution", "reason": "obsolete",
+                                          "seat": "GROK"})
+        with self.assertRaisesRegex(SeatError, "reason must"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "x" * 501, "seat": "GROK"})
+
+        deep = {}
+        cursor = deep
+        for _ in range(17):
+            cursor["x"] = {}
+            cursor = cursor["x"]
+        with self.assertRaisesRegex(SeatError, "depth"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "obsolete", "seat": "GROK",
+                                          "extra": deep})
+        wide = {"expected_revision": {str(i): i for i in range(300)}}
+        with self.assertRaisesRegex(SeatError, "node"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "obsolete", "seat": "GROK", **wide})
+
+        self.api.recall_retract = lambda **kwargs: {"id": "uuid", "doc_id": doc}  # type: ignore[method-assign]
+        with self.assertRaisesRegex(SeatError, "invalid response field"):
+            TOOL_IMPL["recall_retract"]({"doc_id": doc, "reason": "obsolete", "seat": "GROK"})
 
     def test_api_value_error_becomes_seat_error(self) -> None:
         with self.assertRaises(SeatError) as ctx:

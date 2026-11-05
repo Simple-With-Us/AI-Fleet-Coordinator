@@ -23,6 +23,7 @@ contributions are excluded from normal search and visible only with include_retr
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -41,6 +42,11 @@ INSTALL_HINT = (
 
 CONTRIBUTE_CATEGORIES = ("lesson", "preference", "infrastructure", "decision", "runbook")
 MAX_LIMIT = 50
+MAX_ARGUMENT_DEPTH = 16
+MAX_ARGUMENT_NODES = 256
+REASON_MIN = 3
+REASON_MAX = 500
+DOC_ID_RE = re.compile(r"^contrib/[A-Z][A-Z0-9_\-]{0,31}/\d{4}-\d{2}-\d{2}/[0-9a-f]{8}$")
 
 _api: ModuleType | None = None
 
@@ -118,6 +124,46 @@ def _user_errors() -> tuple[type[BaseException], ...]:
     return tuple(kinds)
 
 
+def _response_string(out: JsonDict, field: str, *, required: bool = True) -> str:
+    value = out.get(field)
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise SeatError("recall returned an invalid response field: %s" % field)
+    return value
+
+
+def _response_int(out: JsonDict, field: str, *, required: bool = True) -> int:
+    value = out.get(field)
+    if value is None and not required:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SeatError("recall returned an invalid response field: %s" % field)
+    return value
+
+
+def _validate_mutation_response(fn_name: str, out: JsonDict) -> None:
+    _response_string(out, "id")
+    _response_string(out, "doc_id")
+    _response_string(out, "seat")
+    _response_string(out, "status")
+    _response_int(out, "revision")
+    if fn_name == "recall_correct":
+        _response_int(out, "corrected_at", required=False)
+        _response_string(out, "corrected_by", required=False)
+        _response_string(out, "previous_content_hash")
+        _response_string(out, "content_hash")
+        scrubbed = out.get("scrubbed")
+        if not isinstance(scrubbed, list) or any(not isinstance(item, str) for item in scrubbed):
+            raise SeatError("recall returned an invalid response field: scrubbed")
+        return
+    if not isinstance(out.get("retracted"), bool):
+        raise SeatError("recall returned an invalid response field: retracted")
+    _response_int(out, "retracted_at")
+    _response_string(out, "retracted_by")
+    _response_string(out, "retraction_reason")
+
+
 def _call(fn_name: str, **kwargs: Any) -> JsonDict:
     api = _load_api()
     fn = getattr(api, fn_name)
@@ -135,10 +181,29 @@ def _call(fn_name: str, **kwargs: Any) -> JsonDict:
         raise SeatError("%s:  %s" % (fn_name, exc)) from exc
     if not isinstance(out, dict):
         raise SeatError("%s returned %s, expected object" % (fn_name, type(out).__name__))
+    if fn_name in ("recall_correct", "recall_retract"):
+        _validate_mutation_response(fn_name, out)
     return out
 
 
 # --------------------------------------------------------------------------- argument helpers
+
+
+def _bounded_arguments(arguments: JsonDict) -> None:
+    """Depth/node bound for parsed MCP arguments; the HTTP body itself is byte-capped in server.py."""
+    stack = [(arguments, 1)]
+    nodes = 0
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_ARGUMENT_NODES:
+            raise SeatError("recall arguments exceed the %d-node structural limit" % MAX_ARGUMENT_NODES)
+        if depth > MAX_ARGUMENT_DEPTH:
+            raise SeatError("recall arguments exceed the %d-level depth limit" % MAX_ARGUMENT_DEPTH)
+        if isinstance(value, dict):
+            stack.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            stack.extend((item, depth + 1) for item in value)
 
 
 def _opt_str(arguments: JsonDict, *names: str) -> str | None:
@@ -258,12 +323,17 @@ def _expected_revision(arguments: JsonDict) -> int | None:
 
 
 def _mutation_base(arguments: JsonDict, operation: str) -> JsonDict:
+    _bounded_arguments(arguments)
     doc_id = _opt_str(arguments, "doc_id") or _opt_str(arguments, "docId")
     if not doc_id:
         raise SeatError("doc_id is required")
+    if not DOC_ID_RE.fullmatch(doc_id):
+        raise SeatError("doc_id must be an agent contribution id like contrib/CLAUDE/2026-11-05/472fc36e")
     reason = _opt_str(arguments, "reason")
     if not reason:
         raise SeatError("reason is required")
+    if len(reason) < REASON_MIN or len(reason) > REASON_MAX:
+        raise SeatError("reason must be %d..%d characters once trimmed" % (REASON_MIN, REASON_MAX))
     kwargs: JsonDict = {
         "doc_id": doc_id,
         "reason": reason,

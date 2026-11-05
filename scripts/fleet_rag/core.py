@@ -641,6 +641,15 @@ class Qdrant:
     def info(self) -> dict:
         return self._call(self._cpath())["result"]
 
+    def create_payload_index(self, field_name: str, field_schema: str) -> None:
+        """Create one payload index; Qdrant treats an identical existing index as a no-op."""
+        self._call(
+            self._cpath("/index"),
+            {"field_name": field_name, "field_schema": field_schema},
+            method="PUT",
+            write=True,
+        )
+
     def count(self, flt: dict | None = None, exact: bool = True) -> int:
         body: dict[str, Any] = {"exact": exact}
         if flt:

@@ -93,14 +93,14 @@ class RecallHttpTest(unittest.TestCase):
                 ):
                     recall_bridge.recall_retract(
                         {
-                            "doc_id": "d",
+                            "doc_id": "contrib/GROK/2026-11-05/472fc36e",
                             "reason": "obsolete",
                             "seat": "GROK",
                             "expected_revision": expected_revision,
                         }
                     )
             result = recall_bridge.recall_retract(
-                {"doc_id": "d", "reason": "obsolete", "seat": "GROK", "expected_revision": 2}
+                {"doc_id": "contrib/GROK/2026-11-05/472fc36e", "reason": "obsolete", "seat": "GROK", "expected_revision": 2}
             )
             self.assertEqual(result["expected_revision"], 2)
         finally:

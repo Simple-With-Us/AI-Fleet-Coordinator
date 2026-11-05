@@ -35,8 +35,9 @@ collections and is no longer ST-only.
 | `fleet-agents` | grows nightly | The shared agent memory.  Embedded by the **self-hosted** endpoint. |
 
 `fleet-agents` is 1024-dim cosine, vectors in RAM, with payload indexes on `source`, `app`,
-`category`, `seat`, `doc_id`, `content_hash`, `created_at`, and a full-text index on `text` so
-keyword and vector search are fused (see *Search*).
+`category`, `seat`, `doc_id`, `content_hash`, `created_at`, and `retracted` (bool), plus a
+full-text index on `text` so keyword and vector search are fused (see *Search*).  The recall
+service creates the `retracted` index idempotently before its first search after deploy.
 
 ### Payload schema (v2)
 

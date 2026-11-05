@@ -752,6 +752,45 @@ class RecallToolTests(FakePrograms):
             self.assert_tool_error(session.call("recall_retract", args), "invalid_argument")
         self.assertEqual(self.calls(self.recall_out), [])
 
+    def test_mutation_reason_max_is_checked_before_the_cli_runs(self):
+        session = self.session(self.env())
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {
+                    "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                    "reason": "x" * (RT.REASON_MAX + 1),
+                },
+            ),
+            "invalid_argument",
+        )
+        self.assertEqual(self.calls(self.recall_out), [])
+
+    def test_a_malformed_mutation_response_is_not_cached_as_success(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+            "idempotency_key": "aaaaaaaa-9",
+        }
+        malformed = json.dumps(
+            {"id": "point-1", "doc_id": args["doc_id"], "status": "completed",
+             "revision": "2", "retracted": True, "retracted_at": 1,
+             "retracted_by": "CLAUDE", "retraction_reason": "obsolete"}
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=malformed))
+        self.assert_tool_error(session.call("recall_retract", args), "invalid_response")
+        self.assertEqual(len(self.calls(self.recall_out)), 1)
+
+        good = json.dumps(
+            {"id": "point-1", "doc_id": args["doc_id"], "status": "completed",
+             "revision": 2, "retracted": True, "retracted_at": 1,
+             "retracted_by": "CLAUDE", "retraction_reason": "obsolete"}
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=good))
+        data = self.assert_structured("recall_retract", session.call("recall_retract", args))
+        self.assertTrue(data["retracted"])
+        self.assertEqual(len(self.calls(self.recall_out)), 2)
+
     def test_mutation_reason_is_scanned_before_the_cli_runs(self):
         session = self.session(self.env())
         leak = "token ghp_" + "EXAMPLE0" * 5

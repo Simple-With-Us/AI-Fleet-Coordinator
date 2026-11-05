@@ -41,6 +41,7 @@ SCRUBBED_LIMIT = 20
 STATS_KEYS_LIMIT = 50
 CONTRIBUTE_MIN = 40
 REASON_MIN = 3
+REASON_MAX = 500
 CHILD_ENV_KEYS = (
     "PATH",
     "HOME",
@@ -379,13 +380,52 @@ def _reason_field(args: Mapping[str, Any], scan: Callable[[str, str], None] | No
             "invalid_argument",
             "argument 'reason' must say why, in at least %d characters" % REASON_MIN,
         )
+    if len(reason) > REASON_MAX:
+        raise RecallUnavailable(
+            "invalid_argument",
+            "argument 'reason' must be at most %d characters" % REASON_MAX,
+        )
     if scan is not None:
         scan("reason", reason)
     return reason
 
 
-def _integer(value: Any) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+def _invalid_response(field: str) -> RecallUnavailable:
+    return RecallUnavailable(
+        "invalid_response", "fleet recall returned an invalid response field: %s" % field
+    )
+
+
+def _response_str(data: Mapping[str, Any], field: str, limit: int, *, required: bool = True) -> str:
+    value = data.get(field)
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise _invalid_response(field)
+    return clean(value, limit)[0]
+
+
+def _response_int(data: Mapping[str, Any], field: str, *, required: bool = True) -> int:
+    value = data.get(field)
+    if value is None and not required:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _invalid_response(field)
+    return value
+
+
+def _response_bool(data: Mapping[str, Any], field: str) -> bool:
+    value = data.get(field)
+    if not isinstance(value, bool):
+        raise _invalid_response(field)
+    return value
+
+
+def _response_strings(data: Mapping[str, Any], field: str, limit: int) -> list[str]:
+    value = data.get(field)
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise _invalid_response(field)
+    return [clean(item, 60)[0] for item in value[:limit]]
 
 
 def _doc_id_arg(value: Any) -> str:
@@ -438,18 +478,17 @@ def correct(
     code, data, err = run(argv, stdin=text.encode("utf-8"), env=env, runner=runner)
     if data is None or code != 0 or "doc_id" not in data:
         raise failure(code, err)
-    scrubbed = [clean(s, 60)[0] for s in (data.get("scrubbed") or [])[:SCRUBBED_LIMIT]]
     result = {
-        "id": clean(data.get("id"), 80)[0],
-        "doc_id": clean(data.get("doc_id"), 200)[0],
+        "id": _response_str(data, "id", 80),
+        "doc_id": _response_str(data, "doc_id", 200),
         "seat": identity,
-        "status": clean(data.get("status"), 40)[0] if isinstance(data.get("status"), str) else "",
-        "revision": _integer(data.get("revision")),
-        "corrected_at": _integer(data.get("corrected_at")),
-        "corrected_by": clean(data.get("corrected_by"), 60)[0],
-        "previous_content_hash": clean(data.get("previous_content_hash"), 80)[0],
-        "content_hash": clean(data.get("content_hash"), 80)[0],
-        "scrubbed": scrubbed,
+        "status": _response_str(data, "status", 40),
+        "revision": _response_int(data, "revision"),
+        "corrected_at": _response_int(data, "corrected_at", required=False),
+        "corrected_by": _response_str(data, "corrected_by", 60, required=False),
+        "previous_content_hash": _response_str(data, "previous_content_hash", 80),
+        "content_hash": _response_str(data, "content_hash", 80),
+        "scrubbed": _response_strings(data, "scrubbed", SCRUBBED_LIMIT),
         "duplicate": False,
     }
     return json.dumps(result), result
@@ -481,15 +520,15 @@ def retract(
     if data is None or code != 0 or "doc_id" not in data:
         raise failure(code, err)
     result = {
-        "id": clean(data.get("id"), 80)[0],
-        "doc_id": clean(data.get("doc_id"), 200)[0],
+        "id": _response_str(data, "id", 80),
+        "doc_id": _response_str(data, "doc_id", 200),
         "seat": identity,
-        "status": clean(data.get("status"), 40)[0] if isinstance(data.get("status"), str) else "",
-        "revision": _integer(data.get("revision")),
-        "retracted": data.get("retracted") is True or data.get("retracted") == 1,
-        "retracted_at": _integer(data.get("retracted_at")),
-        "retracted_by": clean(data.get("retracted_by"), 60)[0],
-        "retraction_reason": clean(data.get("retraction_reason"), 500)[0],
+        "status": _response_str(data, "status", 40),
+        "revision": _response_int(data, "revision"),
+        "retracted": _response_bool(data, "retracted"),
+        "retracted_at": _response_int(data, "retracted_at"),
+        "retracted_by": _response_str(data, "retracted_by", 60),
+        "retraction_reason": _response_str(data, "retraction_reason", 500),
         "duplicate": False,
     }
     return json.dumps(result), result

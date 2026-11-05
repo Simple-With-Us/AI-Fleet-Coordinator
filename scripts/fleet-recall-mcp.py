@@ -243,6 +243,46 @@ def _bool(args: dict, key: str) -> None:
         raise FleetRagError(f"{key} must be a boolean")
 
 
+def _validate_mutation_result(name: str, result: dict) -> dict:
+    """Fail closed before a local/public mutation result is returned as tool data."""
+    def string(field: str, *, required: bool = True) -> str:
+        value = result.get(field)
+        if value is None and not required:
+            return ""
+        if not isinstance(value, str):
+            raise FleetRagError("fleet recall returned an invalid response field: %s" % field)
+        return value
+
+    def integer(field: str, *, required: bool = True) -> int:
+        value = result.get(field)
+        if value is None and not required:
+            return 0
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise FleetRagError("fleet recall returned an invalid response field: %s" % field)
+        return value
+
+    string("id")
+    string("doc_id")
+    string("seat")
+    string("status")
+    integer("revision")
+    if name == "recall_correct":
+        integer("corrected_at", required=False)
+        string("corrected_by", required=False)
+        string("previous_content_hash")
+        string("content_hash")
+        scrubbed = result.get("scrubbed")
+        if not isinstance(scrubbed, list) or any(not isinstance(item, str) for item in scrubbed):
+            raise FleetRagError("fleet recall returned an invalid response field: scrubbed")
+    else:
+        if not isinstance(result.get("retracted"), bool):
+            raise FleetRagError("fleet recall returned an invalid response field: retracted")
+        integer("retracted_at")
+        string("retracted_by")
+        string("retraction_reason")
+    return result
+
+
 def call_tool(name: str, args: dict) -> dict:
     if name not in _ALLOWED_ARGS:
         raise KeyError(name)
@@ -305,7 +345,9 @@ def call_tool(name: str, args: dict) -> dict:
                 )
             work["seat"] = verified
         local = recall_api.recall_correct if name == "recall_correct" else recall_api.recall_retract
-        return public_fallback.call_mutation(name, work, lambda: local(**work))
+        return _validate_mutation_result(
+            name, public_fallback.call_mutation(name, work, lambda: local(**work))
+        )
     if verified:
         claimed = work.get("seat")
         if claimed and seat_auth.F.canonical_hint(claimed) != verified:
