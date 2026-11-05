@@ -865,9 +865,7 @@ class Watchdog:
                 value
                 for minute, value in series.items()
                 if start
-                <= dt.datetime.strptime(minute, "%Y-%m-%dT%H:%M:00Z").replace(
-                    tzinfo=dt.UTC
-                )
+                <= dt.datetime.strptime(minute, "%Y-%m-%dT%H:%M:00Z").replace(tzinfo=dt.UTC)
                 <= last
             )
             average = total / count
