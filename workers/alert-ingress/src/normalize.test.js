@@ -24,6 +24,17 @@ test("a private key with no END marker is redacted to the end of the value", () 
   assert.equal(redactCredentials(`${FAKE_BEGIN} ${FAKE_BODY} -----END EC PRIV`), "[redacted]");
 });
 
+test("the redactor and the key scan agree on case", () => {
+  for (const token of [FAKE_TOKEN.toUpperCase(), `G${FAKE_TOKEN.slice(1)}`]) {
+    const event = normalize("generic", { id: "one", service: "svc", status: "down", summary: `down ${token}` });
+    assert.equal(event.text, "down [redacted]");
+    assert.equal(event.identityRedacted, undefined);
+  }
+  const lowered = [FAKE_BEGIN, FAKE_BODY, FAKE_END].join("\n").toLowerCase();
+  assert.equal(redactCredentials(`before ${lowered} after`), "before [redacted] after");
+  assert.equal(redactCredentials("an ordinary line stays as it is"), "an ordinary line stays as it is");
+});
+
 test("no part of a private key reaches a normalized event", () => {
   const pem = [FAKE_BEGIN, FAKE_BODY, FAKE_BODY, FAKE_END].join("\n");
   const event = normalize("generic", { service: "svc", status: "down", summary: `down ${pem}`, link: `https://x.test/${pem}` });

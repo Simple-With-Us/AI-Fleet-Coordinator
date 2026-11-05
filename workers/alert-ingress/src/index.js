@@ -1090,7 +1090,14 @@ async function postRawCopy(env, source, payload) {
         await noteRateLimit(env, source, error.retryAfter);
       } catch {}
     }
-    console.error(JSON.stringify({ event: "alert.raw_copy_failed", source }));
+    console.error(
+      JSON.stringify({
+        event: "alert.raw_copy_failed",
+        source,
+        status: error?.status ?? null,
+        outcome: error?.outcome ?? null,
+      }),
+    );
   }
 }
 

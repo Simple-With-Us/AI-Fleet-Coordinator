@@ -233,7 +233,9 @@ const CREDENTIAL_SHAPES = [
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
 ];
 
-const CREDENTIAL_SHAPES_GLOBAL = CREDENTIAL_SHAPES.map((shape) => new RegExp(shape.source, "g"));
+// Both ignore case, so what the key scan calls a credential is never left in the text.
+// A false match blanks one word of a line whose alert still lands.
+const CREDENTIAL_SHAPES_GLOBAL = CREDENTIAL_SHAPES.map((shape) => new RegExp(shape.source, "gi"));
 const CREDENTIAL_SHAPES_ANY_CASE = CREDENTIAL_SHAPES.map((shape) => new RegExp(shape.source, "i"));
 
 /** `text` with every credential shape replaced, for the raw copy of a delivery. */

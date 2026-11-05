@@ -1319,6 +1319,17 @@ test("a notice Zulip did not confirm is tried again soon, not a whole interval l
   assert.equal(lost.outcome, null);
 });
 
+test("a raw copy that fails logs how Zulip answered", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  const refused = zulipStub((call) => (call.to === "Alerts-Raw" ? { status: 403 } : null));
+  const lines = await capturingLogs(() => withFetch(refused.fetchStub, () => hook(writer, firing())));
+  assert.deepEqual(
+    lines.filter((line) => line.event === "alert.raw_copy_failed"),
+    [{ event: "alert.raw_copy_failed", source: "generic", status: 403, outcome: "refused" }],
+  );
+});
+
 test("a raw copy Zulip did not confirm leaves a log line and changes nothing else", async () => {
   const db = storage();
   const writer = new AlertWriter({ storage: db }, ENV);
