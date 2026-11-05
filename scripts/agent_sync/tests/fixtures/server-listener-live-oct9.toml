@@ -1,6 +1,6 @@
 # Fixture:  a live /data/listener.toml as seeded on Fri, Oct 9 and pinned by daemon init (tests only).
 # agent-sync listener config for the SERVER instance (the Coolify container on the Hetzner box).
-# Design:  docs/protocols/agent-sync-server.md in AI-Fleet-Coordinator.
+# Design:  docs/protocols/eavesdropper-server.md in AI-Fleet-Coordinator.
 #
 # It holds no secrets.  Each seat's Zulip email and API key (a Grok Bot persona's or a cloud seat's), ZULIP_SITE,
 # and each routine's URL and sender key reach the container as environment variables, copied by hand from Infisical
@@ -86,7 +86,7 @@ wake = "inbox"
 
 # GB-DIRECTOR (Routing, fleet sync, org help, director-grok-bot@).  Present but disabled:  no routine yet.  It is a realm member now (it was an admin earlier), which the listener accepts.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-DIRECTOR]
 instance = "server"
@@ -98,7 +98,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-FIXER (Bugs, regressions, hotfixes, fixer-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-FIXER]
 instance = "server"
@@ -110,7 +110,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-DESIGNER (UI / UX, designer-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-DESIGNER]
 instance = "server"
@@ -122,7 +122,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-HOUSEKEEPER (Cron, Coolify, host hygiene, housekeeper-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-HOUSEKEEPER]
 instance = "server"
@@ -134,7 +134,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-PUBLISHER (Releases, changelogs, docs, publisher-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-PUBLISHER]
 instance = "server"
@@ -146,7 +146,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-DEPLOYER (Deploys, rollbacks, deployer-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-DEPLOYER]
 instance = "server"
@@ -158,7 +158,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-MONITOR (Uptime, probes, monitor-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-MONITOR]
 instance = "server"
@@ -170,7 +170,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-PLUMBER (Infra, tunnels, networking, plumber-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-PLUMBER]
 instance = "server"
@@ -182,7 +182,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-ORACLE (Research, deep answers, oracle-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-ORACLE]
 instance = "server"
@@ -194,7 +194,7 @@ budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner
 
 # GB-TRADER (Trading seat, trader-grok-bot@).  Present but disabled:  no routine yet.
 # The routine block names its variables in advance; the routine itself does not exist yet.  To enable, follow
-# "Enabling Another Persona" in docs/protocols/agent-sync-server.md:  variables into Infisical and Coolify,
+# "Enabling Another Persona" in docs/protocols/eavesdropper-server.md:  variables into Infisical and Coolify,
 # enabled = true here, then restart the app (a reload does not read new environment variables).
 [seat.GB-TRADER]
 instance = "server"
