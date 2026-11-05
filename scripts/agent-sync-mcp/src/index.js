@@ -83,7 +83,7 @@ import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { serveWa } from "./wa/index.js";
-import { WAKE_RATE_LIMIT, WAKE_RATE_WINDOW_MS } from "./seat-state.js";
+import { WAKE_RATE_WINDOW_MS } from "./seat-state.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 import {
@@ -95,7 +95,6 @@ import {
   webhookWakeReply,
   WEBHOOK_WAKE_SIGNATURE_HEADER,
   WEBHOOK_WAKE_MAX_BODY,
-  WEBHOOK_WAKE_RATE_LIMIT,
   WEBHOOK_WAKE_RATE_WINDOW_MS,
 } from "./webhook-wake.js";
 import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
@@ -689,7 +688,7 @@ async function serveWake(request, env, ctx, config) {
   // The seat's ONE hourly wake envelope, shared with the webhook wake path
   // and charged atomically inside eventClaimWake (the canonical entry), so
   // neither path can push the seat past it.
-  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id, name: EVENT_NAME, budget: { max: WAKE_RATE_LIMIT, windowMs: WAKE_RATE_WINDOW_MS } });
+  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id, name: EVENT_NAME, budget: { max: config.eventWakeRateLimit, windowMs: WAKE_RATE_WINDOW_MS } });
   let result = claim;
   if (claim.verdict === "go") {
     // The answer waits for the deliveries, and waitUntil keeps them (and the
@@ -802,7 +801,7 @@ async function serveWebhookWake(request, env, ctx, config) {
     return jsonResponse({ ok: true, disabled: true, subscribers: 0, delivered: 0 }, 202);
   }
   const seatGate = gate(env, seat);
-  const claim = await seatGate.webhookWakeClaim({ wakeId: wake.wake_id, max: WEBHOOK_WAKE_RATE_LIMIT, windowMs: WEBHOOK_WAKE_RATE_WINDOW_MS });
+  const claim = await seatGate.webhookWakeClaim({ wakeId: wake.wake_id, max: config.eventWakeRateLimit, windowMs: WEBHOOK_WAKE_RATE_WINDOW_MS });
   let result = claim;
   if (claim.verdict === "go") {
     // The answer waits for the delivery and its settle, like the listener's;

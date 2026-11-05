@@ -692,7 +692,16 @@ export async function deliverEvent(
     if (!(timeoutMs >= MIN_ATTEMPT_MS)) break;
     // A fresh timestamp and signature on every attempt, the same event id.
     const result = await signedPost(fetchFn, { url: sub.url, subId: sub.id, secrets: signingSecrets(sub, now()), webhookId: event.eventId, body, timeoutMs, now });
-    if (result.response) await result.response.body?.cancel().catch(() => {});
+    // Post-receipt cleanup can never change the outcome:  the response is
+    // already back.  body.cancel() throwing SYNCHRONOUSLY (rather than a
+    // rejected promise, which .catch already absorbs) must not escape either -
+    // an exception out of this function is classified by fanOut as UNKNOWN
+    // custody, never as a false zero-dispatch.
+    if (result.response) {
+      try {
+        await result.response.body?.cancel().catch(() => {});
+      } catch {}
+    }
     const status = result.status ?? null;
     if (status !== null && status >= 200 && status < 300) return { outcome: "delivered", status, attempts: attempt };
     if (status === 410) return { outcome: "gone", status, attempts: attempt };
@@ -730,7 +739,13 @@ export async function fanOut({ gate, wake, subs, allowed, fetchFn, now = Date.no
           // classification in wakeOutcome.
           result = await deliverEvent(fetchFn, sub, event, { now, deadline, backoff: [], isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
         } catch {
-          result = { outcome: "failed", status: null, attempts: 0 };
+          // An unexpected throw can follow a REAL dispatch (a sync throw in
+          // signing or post-receipt cleanup):  from inside a catch nothing
+          // proves the POST never happened, so attempts is conservatively
+          // non-zero.  wakeOutcome then reads this as dispatched with an
+          // unknown fate - "uncertain" custody, tombstoned - never a
+          // fabricated zero-dispatch "retry" that re-arms the same wake id.
+          result = { outcome: "failed", status: null, attempts: 1 };
         }
         try {
           await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, reason: result.reason, wakeRef: String(wake.wake_id).slice(0, 40), messageId: wake.message_id });

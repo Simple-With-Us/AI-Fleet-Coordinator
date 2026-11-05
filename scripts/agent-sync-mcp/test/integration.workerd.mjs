@@ -280,7 +280,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", EVENTS_ONLY_SEATS: "JET", SEATS: { ...wranglerConfig().vars.SEATS, "JET-CHAT": { redirect_uris: [JETCHAT_REDIRECT], cimd_client_ids: [JETCHAT_CLIENT] } }, ZULIP_KEY_JET_CHAT: JET_KEY, ZULIP_EMAIL_JET_CHAT: JET_EMAIL, ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, EVENT_WAKE_RATE_LIMIT: "1000", HOSTED_SEATS: "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", EVENTS_ONLY_SEATS: "JET", SEATS: { ...wranglerConfig().vars.SEATS, "JET-CHAT": { redirect_uris: [JETCHAT_REDIRECT], cimd_client_ids: [JETCHAT_CLIENT] } }, ZULIP_KEY_JET_CHAT: JET_KEY, ZULIP_EMAIL_JET_CHAT: JET_EMAIL, ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -783,31 +783,37 @@ try {
     assert.equal(callbackCalls.length, before, "nothing verified or delivered");
   });
 
-  await step("wake:  a failed delivery is 503 so the listener retries;  the retry delivers (202);  one more is a duplicate;  a copy mid-delivery is 503 in_flight", async () => {
+  await step("wake:  a failed delivery is uncertain custody - 202 uncertain, tombstoned, one attempt;  the listener's retry, a same-id copy mid-delivery and later copies are all duplicates", async () => {
     const before = callbackCalls.length;
     const bytes = wakeBytes();
-    callbackStatuses.push(503, 502);
+    callbackStatuses.push(503);
     let concurrent = null;
     onDelivery = async () => {
       const res = await wakePost("JET", bytes);
       concurrent = { status: res.status, retryAfter: res.headers.get("retry-after"), body: await res.json() };
     };
     let res = await wakePost("JET", bytes);
-    assert.equal(res.status, 503, await res.clone().text());
-    assert.deepEqual(await res.json(), { ok: false, retry: true, subscribers: 1, delivered: 0 });
-    assert.equal(callbackCalls.length, before + 2, "two attempts inside the request");
-    assert.deepEqual(concurrent, { status: 503, retryAfter: concurrent.retryAfter, body: { ok: false, in_flight: true } });
-    assert.match(concurrent.retryAfter, /^\d+$/);
-    // The listener's retry sends the identical bytes.
-    res = await wakePost("JET", bytes);
+    // Single attempt:  the 503's fate is unknown (the callback may have been
+    // accepted), so the wake is tombstoned, NOT released for an in-request
+    // retry - the daemon's retry must never re-fire the same event id.
     assert.equal(res.status, 202, await res.clone().text());
-    assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" });
-    assert.equal(callbackCalls.length, before + 3);
-    assert.equal(new Set(callbackCalls.slice(before).map((c) => c.headers["webhook-id"])).size, 1, "one event id across attempts and retries");
+    assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "uncertain" });
+    assert.equal(callbackCalls.length, before + 1, "one attempt inside the request");
+    // A same-id copy DURING the first delivery is told duplicate (200), not
+    // in_flight:  the pre-dispatch fence has already tombstone-marked the id,
+    // so it can never be claimed again - no retry, no re-fire, whatever the
+    // in-flight attempt's outcome.
+    assert.deepEqual(concurrent, { status: 200, retryAfter: null, body: { ok: true, duplicate: true } });
+    // The listener's retry sends the identical bytes:  duplicate, no re-fire.
+    res = await wakePost("JET", bytes);
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.deepEqual(await res.json(), { ok: true, duplicate: true });
+    assert.equal(callbackCalls.length, before + 1);
+    assert.equal(new Set(callbackCalls.slice(before).map((c) => c.headers["webhook-id"])).size, 1, "one event id, one attempt");
     res = await wakePost("JET", bytes);
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, duplicate: true });
-    assert.equal(callbackCalls.length, before + 3);
+    assert.equal(callbackCalls.length, before + 1);
   });
 
   await step("wake:  a mention in a stream off the allowlist, or with no stream id, is settled with no callback hit", async () => {
@@ -890,7 +896,7 @@ try {
     assert.deepEqual(Object.keys(unsub.json.result).filter((k) => k !== "_meta" && k !== "resultType"), []);
   });
 
-  await step("wake:  a pause or an unsubscribe while the first attempt is out stops the retry (202 not_live, one callback hit)", async () => {
+  await step("wake:  a pause or an unsubscribe during the single attempt tombstones the wake (202 uncertain, one callback hit);  the flip is honored on the NEXT wake", async () => {
     const params = { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET }, cursor: null };
     const sub = await mcpModern(tokens.access_token, "events/subscribe", params);
     assert.equal(sub.status, 200, summarize(sub.json));
@@ -905,10 +911,14 @@ try {
       const before = callbackCalls.length;
       callbackStatuses.push(503);
       onDelivery = flip;
+      // One attempt only:  the flip lands while that attempt is out, so the
+      // 503's fate is unknown and the wake tombstones as uncertain custody.
+      // The flip takes effect on the NEXT wake (the liveness check runs before
+      // every attempt, the first included).
       const res = await wakePost("JET", wakeBytes());
       assert.equal(res.status, 202, `${name}:  ${await res.clone().text()}`);
-      assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "not_live" }, name);
-      assert.equal(callbackCalls.length, before + 1, `${name}:  no attempt after it`);
+      assert.deepEqual(await res.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "uncertain" }, name);
+      assert.equal(callbackCalls.length, before + 1, `${name}:  one attempt, no internal retry`);
       if (name === "pause") assert.equal((await adminAction("unpause", { seat: "JET" })).status, 303);
     }
     const res = await wakePost("JET", wakeBytes());

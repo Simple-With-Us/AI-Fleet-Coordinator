@@ -72,6 +72,14 @@ export const GRANT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 // creates (2026-11-03 ruling:  pause and epoch are not the real kill path),
 // and src/identity-cache.js states the full trade.
 export const GATE_IDENTITY_CACHE_MS = 60 * 60 * 1000;
+
+// The seat's shared hourly wake envelope:  BOTH wake paths (listener and
+// webhook) draw on it atomically inside eventClaimWake/webhookWakeClaim.
+// A deploy-time reviewed change is the EVENT_WAKE_RATE_LIMIT var, never a
+// source edit;  the constant is the compiled default.  Defined here (not
+// seat-state.js) because loadConfig validates the var, and seat-state.js
+// re-exports it for the paths that import it from there.
+export const WAKE_RATE_LIMIT = 6;
 export const ACCESS_TOKEN_TTL_S = 60 * 60;
 export const REFRESH_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 
@@ -218,6 +226,15 @@ export function loadConfig(env) {
     if (!Number.isSafeInteger(gateIdentityCacheMs) || gateIdentityCacheMs < 0) throw new Error("config: GATE_IDENTITY_CACHE_MS must be a non-negative integer number of milliseconds");
   }
 
+  // Same shape for the shared wake envelope:  absent means the compiled
+  // default;  anything malformed fails closed like every other var.
+  const eventWakeRateLimitRaw = env.EVENT_WAKE_RATE_LIMIT;
+  let eventWakeRateLimit = WAKE_RATE_LIMIT;
+  if (eventWakeRateLimitRaw !== undefined && eventWakeRateLimitRaw !== null && String(eventWakeRateLimitRaw).trim() !== "") {
+    eventWakeRateLimit = Number(eventWakeRateLimitRaw);
+    if (!Number.isSafeInteger(eventWakeRateLimit) || eventWakeRateLimit < 1) throw new Error("config: EVENT_WAKE_RATE_LIMIT must be a positive integer number of wakes per hour");
+  }
+
   const seatsRaw = parseJsonVar(env, "SEATS");
   if (typeof seatsRaw !== "object" || Array.isArray(seatsRaw)) throw new Error("config: SEATS must be an object");
   const seats = {};
@@ -350,6 +367,7 @@ export function loadConfig(env) {
     hostedSeats: Object.freeze(hostedSeats),
     eventsOnlySeats: Object.freeze(eventsOnlySeats),
     gateIdentityCacheMs,
+    eventWakeRateLimit,
     seats: Object.freeze(seats),
     redirectSeats,
     redirectOwner,

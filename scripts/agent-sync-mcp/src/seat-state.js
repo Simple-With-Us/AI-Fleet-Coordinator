@@ -9,7 +9,11 @@
 // Spec:  docs/protocols/agent-sync-mcp.md sections 3.4, 3.5 and 3.10.
 
 import { WA_EVENT } from "./wa/contract.js";
-import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE } from "./config.js";
+import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE, WAKE_RATE_LIMIT } from "./config.js";
+export { WAKE_RATE_LIMIT };
+// WAKE_RATE_LIMIT (the compiled default hourly wake envelope) lives in
+// config.js:  loadConfig validates the EVENT_WAKE_RATE_LIMIT var override.
+// Re-exported here for the modules that import it from this storage module.
 import { scanSecret } from "./contract.js";
 import { EVENT_NAME, SPIKE_EVENT_NAME, WEBHOOK_EVENT_NAME, subEventName } from "./events.js";
 
@@ -844,7 +848,6 @@ export const WAKE_LEASE_MS = 15 * 1000;
 // One hourly wake envelope per seat, shared by BOTH wake paths (listener and
 // webhook):  it is charged inside eventClaimWake itself, so no path can push
 // the seat past it and the charge is atomic with the claim.
-export const WAKE_RATE_LIMIT = 6;
 export const WAKE_RATE_WINDOW_MS = 60 * MINUTE_MS;
 // Ordinary wake_seen entries must outlive the shared hourly budget window:
 // the old 15-minute GC erased the window's accounting (six claims at T, then
