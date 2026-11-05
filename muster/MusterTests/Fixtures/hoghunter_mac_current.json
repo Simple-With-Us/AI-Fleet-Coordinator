@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "tool": "hoghunter-mac-status",
+  "generatedAt": "2026-11-04T21:00:00Z",
+  "host": "mac-mini",
+  "appVersion": "1.0.9",
+  "hostMetrics": {
+    "loadAverage": [2.5, 2.0, 1.5],
+    "cpuCount": 10,
+    "uptimeSeconds": 90000,
+    "cpuPercent": 41.26,
+    "memory": {"totalBytes": 34359738368, "availableBytes": 12884901888},
+    "swap": {"totalBytes": 4294967296, "freeBytes": 3221225472},
+    "disks": [
+      {"mount": "/", "totalBytes": 536870912000, "usedBytes": 429496729600, "freeBytes": 107374182400},
+      {"mount": "/Volumes/External", "totalBytes": 1000000000000, "usedBytes": 960000000000, "freeBytes": 40000000000}
+    ]
+  },
+  "processes": [
+    {"pid": 411, "name": "Xcode", "cpuPercent": 180.5, "memoryBytes": 2147483648},
+    {"pid": 9, "name": "kernel_task", "cpuPercent": 20.0, "memoryBytes": 1048576}
+  ],
+  "maintain": {
+    "health": "healthy",
+    "lastRunEndedAt": "2026-11-04T20:55:00Z",
+    "lastRunOutcome": "ok",
+    "lastRunExitCode": 0,
+    "bytesFreed": 1073741824
+  },
+  "housekeeperLock": "held",
+  "regimen": {"enabled": true, "lastRunAt": "2026-11-04T18:00:00Z", "waiting": false},
+  "serverSnapshotAgeSeconds": 120
+}
