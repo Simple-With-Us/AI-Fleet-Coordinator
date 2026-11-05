@@ -20,6 +20,7 @@ import calendar
 import contextlib
 import ctypes
 import fcntl
+import http.client
 import json
 import math
 import os
@@ -304,6 +305,13 @@ def _infisical_get(name: str, folder: str, token: str) -> str:
     except urllib.error.HTTPError:
         return ""
     except (urllib.error.URLError, OSError):
+        return ""
+    except (http.client.HTTPException, ValueError):
+        #  A truncated or malformed response raises http.client's own
+        #  exceptions (IncompleteRead, BadStatusLine), and those are neither
+        #  OSError nor URLError.  They must fail closed like every other
+        #  transport error: a crashed run would skip save_state() and make
+        #  the next scheduled run repeat the cleanup it already did.
         return ""
     try:
         payload = json.loads(raw.decode("utf-8"))

@@ -919,6 +919,10 @@ VALUES = {
     "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET": SYNTHETIC_SECRET,
 }
 FAILED = {}
+#  A name in TRUNCATED gets a Content-Length that promises more than the
+#  server writes, so the client raises IncompleteRead:  a truncated
+#  response must fail closed like any other transport error.
+TRUNCATED = set()
 REQUESTS = []
 AUTHORIZATIONS = []
 
@@ -961,6 +965,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        if name in TRUNCATED:
+            self.send_header("Content-Length", str(len(body) + 64))
+            self.end_headers()
+            self.wfile.write(body[:8])
+            self.wfile.flush()
+            self.close_connection = True
+            return
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1079,6 +1090,21 @@ try:
             "a failed Infisical fetch must not fall back to another credential "
             "source, but it ran %r" % (SUBPROCESS_CALLS,))
     FAILED.clear()
+
+    # 5b. A truncated response fails closed too.  It raises http.client's own
+    #     exceptions, which are neither OSError nor URLError, and a run that
+    #     crashed there would skip save_state() and make the next scheduled
+    #     run repeat the cleanup it already did.
+    TRUNCATED.add("BOTFLEET_HOUSEKEEPER_WEBHOOK_URL")
+    TRUNCATED.add("BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET")
+    REQUESTS.clear()
+    SUBPROCESS_CALLS.clear()
+    hooks = mod.load_webhooks()
+    assert hooks == [], hooks
+    assert not SUBPROCESS_CALLS, (
+        "a truncated response must not fall back to another credential source, "
+        "but it ran %r" % (SUBPROCESS_CALLS,))
+    TRUNCATED.clear()
 
     # 6. The environment wins over the Infisical value.
     os.environ["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = "https://env.example.invalid/hook"
