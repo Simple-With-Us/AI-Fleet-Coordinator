@@ -1380,6 +1380,7 @@ def _transport_env(bearer: str) -> dict:
         (f"url.{base}/git/.insteadOf", "git@github.com:"),
         (f"http.{base}/.extraHeader", f"Authorization: Bearer {bearer}"),
         ("http.postBuffer", str(GIT_POST_BUFFER_BYTES)),
+        ("http.followRedirects", "false"),  # the bearer goes to the route and nowhere a redirect points
         ("credential.helper", ""),
     ]
     env = dict(os.environ)
