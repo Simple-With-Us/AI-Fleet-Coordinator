@@ -3,10 +3,12 @@
 import io
 import json
 import unittest
+import uuid
 
 import notary_report as report
 
-SUBMISSION = "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b"
+# Made at run time, so no identifier is committed.
+SUBMISSION = str(uuid.uuid4())
 
 
 class SubmissionTests(unittest.TestCase):
@@ -64,6 +66,32 @@ class LogTests(unittest.TestCase):
         self.assertEqual(
             report.summarize_log("<html>"), ["The notarization log could not be read."]
         )
+
+    def test_fields_of_the_wrong_type_are_named_not_printed(self):
+        log = {"status": 0, "statusSummary": False, "issues": [7, {"message": ["x"]}]}
+        self.assertEqual(
+            report.summarize_log(json.dumps(log)),
+            [
+                "status: not readable",
+                "summary: not readable",
+                "issue: not readable",
+                "issue: unknown no path: no message",
+            ],
+        )
+        self.assertEqual(
+            report.summarize_log(json.dumps({"status": "Invalid", "issues": "x"})),
+            ["status: Invalid", "issues: not readable"],
+        )
+
+    def test_oversized_or_deeply_nested_answers_are_not_read(self):
+        huge = json.dumps({"status": "Invalid", "statusSummary": "a" * (report.MAX_BYTES + 1)})
+        deep = "[" * 100000 + "]" * 100000
+        for text in (huge, deep):
+            with self.subTest(size=len(text)):
+                self.assertEqual(
+                    report.summarize_log(text), ["The notarization log could not be read."]
+                )
+                self.assertIsNone(report.parse_submission(text))
 
     def test_a_long_field_is_clipped(self):
         lines = report.summarize_log(json.dumps({"status": "Invalid", "statusSummary": "a" * 900}))

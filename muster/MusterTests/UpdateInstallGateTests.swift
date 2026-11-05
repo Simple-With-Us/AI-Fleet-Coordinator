@@ -96,6 +96,33 @@ final class UpdateInstallGateTests: XCTestCase {
         XCTAssertEqual(world.installs, 1)
     }
 
+    /// A relaunch that arrives while an automatic install waits keeps both:  each runs once
+    /// its own blockers clear,  and neither drops the other.
+    func testAnAutomaticInstallAndARelaunchKeepTheirOwnSlots() {
+        let world = World()
+        world.active = true
+        let gate = makeGate(world)
+        var automatic = 0
+        var relaunch = 0
+        gate.holdAutomaticInstall { automatic += 1 }
+        world.operating = true
+        XCTAssertTrue(gate.shouldPostponeRelaunch { relaunch += 1 })
+        XCTAssertEqual(gate.heldBy, [UpdateGateCopy.operationRunning])
+
+        world.operating = false
+        gate.reevaluate()
+        XCTAssertEqual(relaunch, 1)
+        XCTAssertEqual(automatic, 0, "Muster is still in front")
+        XCTAssertTrue(gate.hasPendingInstall)
+        XCTAssertEqual(gate.heldBy, [UpdateGateCopy.inUse])
+
+        world.active = false
+        gate.reevaluate()
+        XCTAssertEqual(automatic, 1)
+        XCTAssertEqual(relaunch, 1)
+        XCTAssertFalse(gate.hasPendingInstall)
+    }
+
     // MARK: - Muster's own owners of work
 
     /// An engine that holds every call until the test lets it go.

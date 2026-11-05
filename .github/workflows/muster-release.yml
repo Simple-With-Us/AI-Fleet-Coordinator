@@ -54,6 +54,9 @@ jobs:
       contents: write
     env:
       FEED_TAG: muster-feed
+      # Sparkle-2.10.1.tar.xz, as the digest on Sparkle's own 2.10.1 release lists it.
+      SPARKLE_TOOLS_VERSION: "2.10.1"
+      SPARKLE_TOOLS_SHA256: "1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
     steps:
       - uses: actions/checkout@v7
 
@@ -152,8 +155,16 @@ jobs:
           set -euo pipefail
           version="$(awk '/url: https:\/\/github.com\/sparkle-project\/Sparkle/ { found = 1 } found && /from:/ { gsub(/"/, "", $2); print $2; exit }' muster/project.yml)"
           [ -n "$version" ] || { echo "::error::Sparkle version not found in muster/project.yml"; exit 1; }
+          # The tool that signs every update runs only after its archive matches the digest
+          # pinned here, which is the one Sparkle's own release lists for this version.
+          # Bump both together when muster/project.yml moves to a new Sparkle.
+          if [ "$version" != "$SPARKLE_TOOLS_VERSION" ]; then
+            echo "::error::muster/project.yml asks for Sparkle $version, and the pinned tools digest is for $SPARKLE_TOOLS_VERSION."
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/sparkle-tools"
           curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${version}/Sparkle-${version}.tar.xz" -o "$RUNNER_TEMP/sparkle.tar.xz"
+          echo "$SPARKLE_TOOLS_SHA256  $RUNNER_TEMP/sparkle.tar.xz" | shasum -a 256 -c -
           tar -xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle-tools"
           tool="$(find "$RUNNER_TEMP/sparkle-tools" -path '*/bin/generate_appcast' -type f | head -n 1)"
           [ -x "$tool" ] || { echo "::error::generate_appcast not found in the Sparkle distribution"; exit 1; }
@@ -208,7 +219,7 @@ jobs:
           # The notes name the build and link its commit, and carry no free text from the
           # commit itself, so nothing a commit message held is copied into the feed.
           notes="$RUNNER_TEMP/release-notes.md"
-          echo "Build $BUILD, from commit [${GITHUB_SHA::7}](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)." > "$notes"
+          echo "Build $BUILD, from commit [${GITHUB_SHA:0:7}](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)." > "$notes"
           bash muster/script/make_appcast.sh muster/dist/Muster.zip "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" muster/dist "$notes"
           cp "$notes" muster/dist/release-notes.md
 

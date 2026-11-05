@@ -37,11 +37,11 @@ GENERATE_APPCAST="$SPARKLE_TOOLS_DIR/generate_appcast"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/muster-appcast.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
-cp "$ARCHIVE" "$work/"
-archive_name="$(basename "$ARCHIVE")"
+cp -- "$ARCHIVE" "$work/"
+archive_name="$(basename -- "$ARCHIVE")"
 # generate_appcast pairs release notes with an archive by file name.
 if [[ -n "$NOTES" ]]; then
-  cp "$NOTES" "$work/${archive_name%.*}.md"
+  cp -- "$NOTES" "$work/${archive_name%.*}.md"
 fi
 
 "$GENERATE_APPCAST" --ed-key-file "$MUSTER_SPARKLE_KEY_PATH" \
@@ -54,8 +54,8 @@ items="$(/usr/bin/grep -c '<item>' "$feed" || true)"
 /usr/bin/grep -q 'sparkle:edSignature=' "$feed" || { echo "error: the appcast item carries no EdDSA signature" >&2; exit 1; }
 /usr/bin/grep -q "url=\"$PREFIX$archive_name\"" "$feed" || { echo "error: the appcast does not point at $PREFIX$archive_name" >&2; exit 1; }
 
-mkdir -p "$OUT_DIR"
-cp "$feed" "$OUT_DIR/appcast.xml"
+mkdir -p -- "$OUT_DIR"
+cp -- "$feed" "$OUT_DIR/appcast.xml"
 version="$(/usr/bin/sed -n 's:.*<sparkle\:version>\(.*\)</sparkle\:version>.*:\1:p' "$feed" | /usr/bin/head -n 1)"
 echo "appcast: $OUT_DIR/appcast.xml"
 echo "  item:  build $version"

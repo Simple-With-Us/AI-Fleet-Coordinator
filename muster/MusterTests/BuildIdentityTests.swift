@@ -62,7 +62,7 @@ final class BuildIdentityTests: XCTestCase {
     // MARK: - The checkout beside the app
 
     private func reading(_ commit: String?, branch: String? = "main") -> CheckoutRevision.Reading {
-        let root = URL(fileURLWithPath: "/Users/jay/Code/AI-Fleet-Coordinator")
+        let root = URL(fileURLWithPath: "/tmp/muster-tests/checkout")
         guard let commit else { return CheckoutRevision.Reading(root: root, revision: nil, reason: "no .git") }
         return CheckoutRevision.Reading(root: root, revision: CheckoutRevision(commit: commit, branch: branch), reason: nil)
     }

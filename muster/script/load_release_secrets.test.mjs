@@ -5,9 +5,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { AFC_PROJECT_ID, load, run } from "./load_release_secrets.mjs";
 
-const FLEET_OPS = "11111111-2222-3333-4444-555555555555";
+// A stand-in made at run time, so no project id is committed for the test.
+const FLEET_OPS = randomUUID();
 // Deliberately low-entropy stand-ins, so no secret scanner mistakes them for real ones.
 const TOKENS = {
   INFISICAL_MAC_CERTS_READ_TOKEN: `st.${"a".repeat(24)}`,

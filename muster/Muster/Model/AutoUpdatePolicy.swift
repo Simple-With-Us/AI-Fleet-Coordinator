@@ -74,7 +74,9 @@ final class UpdateInstallGate {
 
     private let appIsActive: @MainActor () -> Bool
     private let probes: [Probe]
-    private var pending: (kind: Kind, install: () -> Void)?
+    /// One slot per kind, so a relaunch that arrives while an automatic install waits does
+    /// not drop it, and each runs once its own blockers clear.
+    private var pending: [Kind: () -> Void] = [:]
     /// What held the install back the last time it was looked at.
     private(set) var heldBy: [String] = []
 
@@ -84,7 +86,7 @@ final class UpdateInstallGate {
     }
 
     /// True while an update waits to be installed.
-    var hasPendingInstall: Bool { pending != nil }
+    var hasPendingInstall: Bool { !pending.isEmpty }
 
     /// Everything that stands in the way of an install of this kind,  in words.
     func blockers(for kind: Kind) -> [String] {
@@ -97,30 +99,41 @@ final class UpdateInstallGate {
 
     /// Sparkle's automatic install:  always taken over,  and run now or once idle.
     func holdAutomaticInstall(_ install: @escaping () -> Void) {
-        pending = (.automatic, install)
+        pending[.automatic] = install
         reevaluate()
     }
 
     /// Sparkle's relaunch:  true when it has to wait,  and then it runs once idle.
     func shouldPostponeRelaunch(_ install: @escaping () -> Void) -> Bool {
         let reasons = blockers(for: .relaunch)
+        guard !reasons.isEmpty else {
+            heldBy = pending.isEmpty ? [] : heldBy
+            return false
+        }
+        pending[.relaunch] = install
         heldBy = reasons
-        guard !reasons.isEmpty else { return false }
-        pending = (.relaunch, install)
         return true
     }
 
     /// Looks again,  after something that could have been holding the install changed.
+    ///
+    /// The relaunch the owner asked for goes first,  because it waits for less.  Each
+    /// handler runs once and leaves its slot before it runs.
     func reevaluate() {
-        guard let waiting = pending else {
-            heldBy = []
-            return
+        var stillHeldBy: [String] = []
+        for kind in [Kind.relaunch, .automatic] {
+            guard let install = pending[kind] else { continue }
+            let reasons = blockers(for: kind)
+            if reasons.isEmpty {
+                pending[kind] = nil
+                install()
+            } else {
+                for reason in reasons where !stillHeldBy.contains(reason) {
+                    stillHeldBy.append(reason)
+                }
+            }
         }
-        let reasons = blockers(for: waiting.kind)
-        heldBy = reasons
-        guard reasons.isEmpty else { return }
-        pending = nil
-        waiting.install()
+        heldBy = stillHeldBy
     }
 
     /// The probes for Muster's own app-lifetime owners of work.
