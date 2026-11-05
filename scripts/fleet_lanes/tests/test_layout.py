@@ -953,6 +953,43 @@ class SlugAndNameBuilderTests(HomeCase):
                     self.assertEqual(L.check_lane_name(path, self.reg, r), NV.CONFORMING, (mode, path))
 
 
+class RoleLaneConformanceTests(HomeCase):
+    """Lane-eligible roles (the real registry's seatApps.patterns lane blocks, AFC-620) are
+    CONFORMING lane names and branches;  unlisted roles keep the bot-role drift."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.reg = L.load_registry(L.default_registry_path({}))
+
+    def test_flat_role_lanes_are_conforming(self) -> None:
+        r = self.roots()
+        res = L.explain_lane_name(self.home / "apps" / "botfleet-bf-fixer-probe", self.reg, r)
+        self.assertEqual((res.verdict, res.seat, res.slug), (NV.CONFORMING, "bf-fixer", "probe"))
+        self.assertIn("role-token-ok:bf-fixer", res.reasons)
+        res = L.explain_lane_name(self.home / "apps" / "hoghunter-gb-deployer-fix", self.reg, r)
+        self.assertEqual((res.verdict, res.seat, res.slug), (NV.CONFORMING, "gb-deployer", "fix"))
+
+    def test_the_grounded_real_lane_name_is_conforming(self) -> None:
+        # ~/apps/lanes/BotFleet/bf-oracle-deepseek-wire exists on the Mac.
+        r = self.roots()
+        res = L.explain_lane_name(self.home / "apps" / "lanes" / "BotFleet" / "bf-oracle-deepseek-wire", self.reg, r)
+        self.assertEqual((res.verdict, res.seat, res.slug), (NV.CONFORMING, "bf-oracle", "deepseek-wire"))
+
+    def test_unlisted_roles_keep_the_drift(self) -> None:
+        r = self.roots()
+        res = L.explain_lane_name(self.home / "apps" / "botfleet-bf-builder-x", self.reg, r)
+        self.assertEqual(res.verdict, NV.NAME_DRIFT)
+        res = L.explain_lane_name(self.home / "apps" / "botfleet-bf-kody-x", self.reg, r)
+        self.assertEqual(res.verdict, NV.NAME_DRIFT)
+        self.assertIn("bot-role-not-seat:bf", res.reasons)
+
+    def test_role_branches_are_conforming(self) -> None:
+        self.assertEqual(L.check_branch_name("bf-fixer/probe", self.reg), L.BranchVerdict.CONFORMING)
+        self.assertEqual(L.check_branch_name("gb-deployer/fix", self.reg), L.BranchVerdict.CONFORMING)
+        self.assertEqual(L.check_branch_name("bf-builder/x", self.reg), L.BranchVerdict.NON_CONFORMING)
+        self.assertEqual(L.seat_from_branch("gb-deployer/fix", self.reg), "gb-deployer")
+
+
 class LaneNameTests(HomeCase):
     """Real directory names from the 2026-10-07 sweep, judged by the name alone."""
 

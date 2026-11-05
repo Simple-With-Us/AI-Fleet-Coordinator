@@ -364,6 +364,18 @@ EXTRA_APPS: tuple[App, ...] = (
 
 
 @dataclass(frozen=True)
+class RoleLane:
+    """A lane-eligible role from a seatApps.patterns `lane` block (AFC-620):  the role tag, its lane
+    folder and its branch prefix.  Parsed tolerantly here (a malformed block is skipped);
+    scripts/agent_sync/identity.py and check-fleet-registry.py own the strict validation."""
+
+    tag: str  # BF-FIXER
+    role: str  # FIXER
+    folder: str  # bf-fixer
+    branch_prefix: str  # bf-fixer/
+
+
+@dataclass(frozen=True)
 class Registry:
     """The parsed fleet-apps.json plus the EXTRA_APPS rows."""
 
@@ -373,6 +385,14 @@ class Registry:
     code_root: str = ""
     apps_root: str = ""
     source: str = ""
+    role_lanes: tuple[RoleLane, ...] = ()
+
+    def role_lane_by_folder(self, folder: str) -> RoleLane | None:
+        want = folder.strip().lower()
+        for rl in self.role_lanes:
+            if rl.folder == want:
+                return rl
+        return None
 
     @property
     def registered_apps(self) -> tuple[App, ...]:
@@ -525,7 +545,40 @@ def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, s
     return Registry(
         owner=owner, apps=tuple(apps), seats=tuple(seats),
         code_root=_as_str(data.get("codeRoot")), apps_root=_as_str(data.get("appsRoot")), source=source,
+        role_lanes=_parse_role_lanes(data),
     )
+
+
+def _parse_role_lanes(data: Mapping[str, object]) -> tuple[RoleLane, ...]:
+    """The seatApps.patterns `lane` blocks, read tolerantly:  anything malformed is skipped, so an
+    older or partial registry still parses (identity.parse_seat_registry is the strict reader)."""
+    apps = data.get("seatApps")
+    if not isinstance(apps, Mapping):
+        return ()
+    patterns = apps.get("patterns")
+    if not isinstance(patterns, list):
+        return ()
+    out: list[RoleLane] = []
+    for item in patterns:
+        if not isinstance(item, Mapping):
+            continue
+        match, lane = item.get("match"), item.get("lane")
+        if not isinstance(match, str) or match.count("*") != 1 or not isinstance(lane, Mapping):
+            continue
+        roles, folder_t, branch_t = lane.get("roles"), lane.get("folderTemplate"), lane.get("branchTemplate")
+        if not isinstance(roles, list) or not isinstance(folder_t, str) or not isinstance(branch_t, str):
+            continue
+        if folder_t.count("<role>") != 1 or branch_t.count("<role>") != 1 or not branch_t.replace("<role>", "x").endswith("/"):
+            continue
+        pre = match.split("*")[0]
+        for role in roles:
+            if not isinstance(role, str) or not role:
+                continue
+            low = role.lower()
+            out.append(RoleLane(tag=pre + role, role=role,
+                                folder=folder_t.replace("<role>", low),
+                                branch_prefix=branch_t.replace("<role>", low)))
+    return tuple(out)
 
 
 def default_registry_path(env: Mapping[str, str] | None = None) -> Path:
@@ -1289,10 +1342,12 @@ class _SeatHit:
     text: str       # the tokens as written, joined with dashes
 
 
-def _seat_at(tokens: Sequence[str], i: int, canon: frozenset[str], aliases: Mapping[str, str]) -> _SeatHit | None:
+def _seat_at(tokens: Sequence[str], i: int, canon: frozenset[str], aliases: Mapping[str, str],
+             roles: Mapping[str, RoleLane] = {}) -> _SeatHit | None:
     """Seat at token position i.  Two-token seats (grok-build, muse-code) win over one-token ones.
-    A `gb` followed by a role token is the GB-<ROLE> lane readback (AFC-620);  a bare `gb` stays
-    the historic cursor alias."""
+    A lane-eligible bf-<role>/gb-<role> (the registry's seatApps.patterns lane blocks, AFC-620)
+    classifies seat-like with its folder as the seat token;  other roles stay bot roles, and a
+    bare `gb` stays the historic cursor alias."""
     for n in (2, 1):
         if i + n <= len(tokens):
             cand = "-".join(tokens[i:i + n])
@@ -1302,6 +1357,10 @@ def _seat_at(tokens: Sequence[str], i: int, canon: frozenset[str], aliases: Mapp
                 return _SeatHit("alias", aliases[cand], n, cand)
     tok = tokens[i] if i < len(tokens) else ""
     nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+    if tok in ("bf", "gb") and nxt:
+        role_lane = roles.get(f"{tok}-{nxt}")
+        if role_lane is not None:
+            return _SeatHit("role-lane", role_lane.folder, 2, f"{tok}-{nxt}")
     if tok == "bf":
         if nxt in ROLE_TOKENS and nxt != "bf":
             return _SeatHit("role", "BF-" + nxt.upper(), 2, f"bf-{nxt}")
@@ -1315,9 +1374,10 @@ def _seat_at(tokens: Sequence[str], i: int, canon: frozenset[str], aliases: Mapp
     return None
 
 
-def _seat_anywhere(tokens: Sequence[str], canon: frozenset[str], aliases: Mapping[str, str]) -> tuple[int, _SeatHit] | None:
+def _seat_anywhere(tokens: Sequence[str], canon: frozenset[str], aliases: Mapping[str, str],
+                   roles: Mapping[str, RoleLane] = {}) -> tuple[int, _SeatHit] | None:
     for i in range(len(tokens)):
-        hit = _seat_at(tokens, i, canon, aliases)
+        hit = _seat_at(tokens, i, canon, aliases, roles)
         if hit is not None:
             return i, hit
     return None
@@ -1381,7 +1441,7 @@ def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) 
         m = _match_app(lname, registry)
         if m is None:
             toks = lname.split("-")
-            anywhere = _seat_anywhere(toks, canon, aliases)
+            anywhere = _seat_anywhere(toks, canon, aliases, {rl.folder: rl for rl in registry.role_lanes})
             reasons.append("no-app-prefix")
             if anywhere is not None:
                 return NameVerdict.NAME_DRIFT, reasons, None, anywhere[1], None
@@ -1416,14 +1476,15 @@ def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) 
         has_rest = bool(rest)
 
     toks = rest.split("-") if rest else []
-    first = _seat_at(toks, 0, canon, aliases) if toks else None
-    if first is not None and first.kind in ("canonical", "alias"):
+    roles = {rl.folder: rl for rl in registry.role_lanes}
+    first = _seat_at(toks, 0, canon, aliases, roles) if toks else None
+    if first is not None and first.kind in ("canonical", "alias", "role-lane"):
         slug = "-".join(toks[first.ntokens:]) or None
         if slug is not None and len(slug) > SLUG_MAX:
             reasons.append(f"slug-over-{SLUG_MAX}")
         if exact and kebab:
-            if first.kind == "canonical":
-                reasons.append("seat-token-ok:" + first.text)
+            if first.kind in ("canonical", "role-lane"):
+                reasons.append(("role-token-ok:" if first.kind == "role-lane" else "seat-token-ok:") + first.text)
                 return NameVerdict.CONFORMING, reasons, app, first, slug
             reasons.append("seat-alias:" + first.text)
             return NameVerdict.ALIAS_ONLY, reasons, app, first, slug
@@ -1431,7 +1492,7 @@ def _eval_name(name: str, registry: Registry, *, nested_prefix_dir: str | None) 
     if first is not None:
         reasons.append("bot-role-not-seat:" + toks[0])
         return NameVerdict.NAME_DRIFT, reasons, app, first, None
-    anywhere = _seat_anywhere(toks, canon, aliases)
+    anywhere = _seat_anywhere(toks, canon, aliases, roles)
     if anywhere is not None:
         reasons.append("seat-not-adjacent-to-prefix:" + toks[anywhere[0]])
         return NameVerdict.NAME_DRIFT, reasons, app, anywhere[1], None
@@ -1598,6 +1659,8 @@ def _branch_prefixes(registry: Registry) -> tuple[list[str], list[str]]:
     for seat in registry.seats:
         for bp in seat.branch_prefixes:
             (current if bp.endswith("/") else legacy).append(bp)
+    for rl in registry.role_lanes:
+        current.append(rl.branch_prefix)
     return current, legacy
 
 
@@ -1640,6 +1703,9 @@ def seat_from_branch(branch: str | None, registry: Registry) -> str | None:
         for bp in seat.branch_prefixes:
             if b.startswith(bp) and len(b) > len(bp):
                 return seat.suffix.lower()
+    for rl in registry.role_lanes:
+        if b.startswith(rl.branch_prefix) and len(b) > len(rl.branch_prefix):
+            return rl.folder
     if b.startswith("agent/"):
         tail = b[len("agent/"):].split("/", 1)[0].split("-", 1)[0]
         return normalize_seat(tail, registry) if is_known_seat(tail, registry) else None

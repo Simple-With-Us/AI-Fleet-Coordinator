@@ -518,6 +518,19 @@ def resolve_seat(env: Mapping[str, str], registry: L.Registry) -> L.Seat:
     that role's lane from the family's seatApps.patterns `lane` block (AFC-620)."""
     live = ", ".join(s.name for s in registry.seats if not s.retired)
     raw = (env.get(ENV_SEAT) or "").strip()
+    # The launcher contract is allocator-enforced (AFC-620):  a launcher's AGENT_LAUNCH_SEAT wins
+    # over AGENT_SEAT, an AGENT_SEAT naming another seat is a refusal, and a launch seat alone is
+    # enough - the same precedence identity.resolve_seat gives every caller.  Without a launcher
+    # the registry alone reads AGENT_SEAT, exactly as before.
+    try:
+        from agent_sync import identity as SI
+    except ImportError:
+        SI = None
+    if SI is not None and SI.launched(env):
+        res = SI.resolve_seat(env, use_tag=False)
+        if res.problem:
+            raise Refusal(res.problem)
+        raw = res.seat or ""
     if not raw:
         raise Refusal(
             f"{ENV_SEAT} is not set.  Set it to your seat tag ({live}) and run lane again; "

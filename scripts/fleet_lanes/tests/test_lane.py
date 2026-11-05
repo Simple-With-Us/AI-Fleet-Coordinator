@@ -544,6 +544,48 @@ class RoleLaneResolveTests(unittest.TestCase):
                 K.resolve_seat({"AGENT_SEAT": "BF-FIXER", "FLEET_APPS_JSON": str(apps)}, registry)
         self.assertIn("branch prefix", str(ctx.exception))
 
+    def test_a_launchers_seat_wins_and_a_conflict_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            env = {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER",
+                   "AGENT_SEAT": "BF-DEPLOYER", "FLEET_APPS_JSON": str(apps)}
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat(env, REGISTRY)
+        self.assertIn("botfleet", str(ctx.exception))
+        self.assertIn("BF-FIXER", str(ctx.exception))
+
+    def test_a_launch_seat_alone_is_enough(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            seat = K.resolve_seat(
+                {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER",
+                 "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        self.assertEqual((seat.name, seat.suffix), ("BF-FIXER", "bf-fixer"))
+
+    def test_a_launch_seat_matching_agent_seat_is_no_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            seat = K.resolve_seat(
+                {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER",
+                 "AGENT_SEAT": "bf-fixer", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        self.assertEqual(seat.name, "BF-FIXER")
+
+    def test_a_launcher_without_a_seat_assignment_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat({"AGENT_LAUNCHER": "botfleet", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        self.assertIn("no seat assigned", str(ctx.exception))
+
+    def test_a_launch_seat_can_name_an_ordinary_seat_row(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            seat = K.resolve_seat(
+                {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "CLAUDE",
+                 "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        self.assertEqual(seat.suffix, "claude")
+
+
     def test_an_unknown_tag_keeps_the_old_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             apps = self._write_registry(Path(td), self._data())
@@ -868,6 +910,74 @@ class GrokBuildAliasLaneTests(WorldCase):
 
 
 # --------------------------------------------------------------------------- lane new
+
+class RoleLaneNewTests(WorldCase):
+    """`lane new` end to end for lane-eligible roles (AFC-620), in the throwaway world:  the planned
+    path and branch must be CONFORMING all the way through _plan_path, not merely resolve."""
+
+    def use_role_registry(self) -> dict:
+        data = copy.deepcopy(REGISTRY_DATA)
+        data["seatApps"] = {
+            "bySeat": {"CLAUDE": "claude-code"},
+            "extraSeats": {},
+            "patterns": [
+                {"match": "BF-*", "app": "botfleet",
+                 "lane": {"roles": ["COMPILER", "FIXER"], "folderTemplate": "bf-<role>",
+                          "branchTemplate": "bf-<role>/"}},
+                {"match": "GB-*", "app": "grok-bot",
+                 "lane": {"roles": ["PLUMBER"], "folderTemplate": "gb-<role>",
+                          "branchTemplate": "gb-<role>/"}},
+            ],
+        }
+        self.w.registry_path.write_text(json.dumps(data), encoding="utf-8")
+        return data
+
+    def test_a_bf_role_plans_and_creates_a_conforming_lane(self) -> None:
+        w = self.w
+        data = self.use_role_registry()
+        res = w.lane("new", "DealDex", "probe", "--dry-run", "--json", env={"AGENT_SEAT": "BF-FIXER"})
+        self.assertEqual(res.rc, 0, res.err)
+        want = w.roots.lanes_root / "DealDex" / "bf-fixer-probe"
+        self.assertEqual((res.json()["seat"], res.json()["tag"], res.json()["branch"], res.json()["path"]),
+                         ("bf-fixer", "BF-FIXER", "bf-fixer/probe", str(want)))
+        res = w.lane("new", "DealDex", "probe", env={"AGENT_SEAT": "BF-FIXER"})
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertTrue(want.is_dir())
+        reg = L.parse_registry(data)
+        self.assertEqual(L.check_branch_name("bf-fixer/probe", reg), L.BranchVerdict.CONFORMING)
+        self.assertEqual(L.seat_from_branch("bf-fixer/probe", reg), "bf-fixer")
+
+    def test_a_gb_role_plans_a_conforming_lane(self) -> None:
+        w = self.w
+        self.use_role_registry()
+        res = w.lane("new", "DealDex", "probe", "--dry-run", "--json", env={"AGENT_SEAT": "GB-PLUMBER"})
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertEqual((res.json()["seat"], res.json()["tag"], res.json()["branch"]),
+                         ("gb-plumber", "GB-PLUMBER", "gb-plumber/probe"))
+
+    def test_an_unlisted_role_is_refused_end_to_end(self) -> None:
+        w = self.w
+        self.use_role_registry()
+        res = w.lane("new", "DealDex", "probe", env={"AGENT_SEAT": "BF-ORACLE"})
+        self.assertNotEqual(res.rc, 0)
+        self.assertIn("no known role", res.err)
+
+    def test_a_launch_seat_alone_plans_the_role_lane(self) -> None:
+        w = self.w
+        self.use_role_registry()
+        res = w.lane("new", "DealDex", "probe", "--dry-run", "--json",
+                     env={"AGENT_SEAT": None, "AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "GB-PLUMBER"})
+        self.assertEqual(res.rc, 0, res.err)
+        self.assertEqual(res.json()["tag"], "GB-PLUMBER")
+
+    def test_a_launcher_conflict_is_refused_end_to_end(self) -> None:
+        w = self.w
+        self.use_role_registry()
+        res = w.lane("new", "DealDex", "probe",
+                     env={"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-FIXER", "AGENT_SEAT": "BF-DEPLOYER"})
+        self.assertNotEqual(res.rc, 0)
+        self.assertIn("BF-FIXER", res.err)
+
 
 class LaneNewTests(WorldCase):
     def test_happy_path(self) -> None:
