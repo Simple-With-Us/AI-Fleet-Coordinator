@@ -47,8 +47,23 @@ private func exampleBuilder(socket: String? = nil) -> OpsCommandBuilder {
 final class OpsCommandBuilderTests: XCTestCase {
     private let sshPrefix = [
         "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes",
+        "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
         "fleet-ops-ctl", "--",
     ]
+
+    /// A connection that dies after it opened is noticed within a minute,  and a server run
+    /// waits minutes and not a quarter hour.  A run on the Mac keeps the longer wait.
+    func test_a_server_run_waits_minutes_and_a_dead_link_is_noticed() throws {
+        XCTAssertTrue(OpsControlRoute.sshOptions.contains("ServerAliveInterval=15"))
+        XCTAssertTrue(OpsControlRoute.sshOptions.contains("ServerAliveCountMax=3"))
+        for tag in OpsActionCase.allCases where tag != .resourceStatus {
+            let action = tag.sample
+            let run = try exampleBuilder().invocation(for: action, mode: .yes)
+            XCTAssertEqual(run.timeout, action.runsOnServer ? 180 : 900, "\(tag)")
+            XCTAssertEqual(OpsControlRoute.runWait(for: action), run.timeout, "\(tag)")
+            XCTAssertEqual(try exampleBuilder().invocation(for: action, mode: .plan).timeout, 90, "\(tag)")
+        }
+    }
 
     func test_a_mac_verb_runs_the_helper_with_the_pinned_interpreter() throws {
         let invocation = try exampleBuilder().invocation(
@@ -133,7 +148,7 @@ final class OpsCommandBuilderTests: XCTestCase {
             invocation.arguments,
             sshPrefix + ["server", "start", "fleet-server-status.timer", "--yes", "--json"]
         )
-        XCTAssertEqual(invocation.timeout, OpsControlRoute.runTimeout)
+        XCTAssertEqual(invocation.timeout, OpsControlRoute.serverRunTimeout)
         XCTAssertEqual(Set(invocation.environment.keys), ["PATH", "HOME", "LANG"])
         XCTAssertEqual(invocation.environment["HOME"], "/Users/example")
     }
@@ -468,25 +483,31 @@ final class OpsResultParserTests: XCTestCase {
         func outcome(_ kind: OpsResultKind, notKnown: Bool = false) -> OpsOutcome {
             OpsOutcome(kind: kind, ok: false, commands: commands, detail: "", exitCode: 0, runNotKnown: notKnown)
         }
-        XCTAssertEqual(outcome(.planned).commandsHeading, "The plan")
-        XCTAssertEqual(outcome(.refused).commandsHeading, "The plan")
-        XCTAssertEqual(outcome(.unknown, notKnown: true).commandsHeading, "What the helper named")
-        XCTAssertEqual(outcome(.done).commandsHeading, "What ran")
-        XCTAssertEqual(outcome(.failed).commandsHeading, "What ran")
+        XCTAssertEqual(outcome(.planned).commandsHeading, "The Plan")
+        // A refusal ran nothing,  and a failure stopped part way:  neither is "what ran".
+        XCTAssertEqual(outcome(.refused).commandsHeading, "Not Run")
+        XCTAssertEqual(outcome(.unknown, notKnown: true).commandsHeading, "What Was Asked To Run")
+        XCTAssertEqual(outcome(.done).commandsHeading, "What Ran")
+        XCTAssertEqual(outcome(.submitted).commandsHeading, "What Ran")
+        XCTAssertEqual(outcome(.failed).commandsHeading, "What Was Tried")
         // A wrong-machine answer,  as the parser makes it,  on a plan and on a run.
         let json = #"{"ok":true,"result":"planned","commands":[["x"]],"host":"mac"}"#
         XCTAssertEqual(OpsResultParser.parse(result(json), mode: .plan, action: unit, timeout: 90).commandsHeading,
-                       "The plan")
+                       "The Plan")
         let done = #"{"ok":true,"result":"done","commands":[["x"]],"host":"mac"}"#
         XCTAssertEqual(OpsResultParser.parse(result(done), mode: .yes, action: unit, timeout: 900).commandsHeading,
-                       "What the helper named")
+                       "What Was Asked To Run")
         // A plan ran nothing,  however it came out.
         let wordless = #"{"ok":true,"result":"maybe","commands":[["x"]]}"#
         for answer in [done.replacingOccurrences(of: #","host":"mac""#, with: ""), wordless] {
             let plan = OpsResultParser.parse(result(answer), mode: .plan, action: unit, timeout: 90)
             XCTAssertFalse(plan.isSuccess(for: .plan))
-            XCTAssertEqual(plan.commandsHeading, "The plan", answer)
+            XCTAssertEqual(plan.commandsHeading, "The Plan", answer)
         }
+        // A run the helper refused after it planned again lists its commands and ran none.
+        let refusedRun = #"{"ok":false,"result":"refused","commands":[["x"]],"errorCode":"update_busy"}"#
+        XCTAssertEqual(OpsResultParser.parse(result(refusedRun, exit: 2), mode: .yes, action: unit, timeout: 180)
+            .commandsHeading, "Not Run")
         XCTAssertEqual(OpsResultParser.parse(result("", exit: 1), mode: .plan, action: unit, timeout: 90).isPlan, true)
         XCTAssertEqual(OpsResultParser.parse(result("", exit: 15, timedOut: true), mode: .plan, action: unit, timeout: 90).isPlan,
                        true)
@@ -614,6 +635,233 @@ final class OpsResultParserTests: XCTestCase {
         XCTAssertTrue(refused.detail.contains("refused the fleet-ops-ctl key"))
         // The server's address in ssh's own message never reaches the screen.
         XCTAssertFalse(refused.detail.contains("server.example"))
+    }
+
+    /// ssh ends with the same line for a key it has never seen and for one that changed.
+    /// Only a changed one is a warning,  and neither tells the owner to accept a key.
+    func test_a_changed_host_key_is_told_apart_from_an_unknown_one() {
+        let unknown = OpsResultParser.parse(
+            result("", exit: 255, stderr: "Host key verification failed."),
+            mode: .yes, action: unit, timeout: 180
+        )
+        XCTAssertEqual(unknown.kind, .failed)
+        XCTAssertFalse(unknown.runNotKnown)
+        XCTAssertEqual(unknown.detail, "This Mac has no record of the server's identity, so Muster sent nothing.")
+        let banner = [
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@",
+            "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @",
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@",
+            "Host key for server.example has changed and you have requested strict checking.",
+            "Host key verification failed.",
+        ].joined(separator: "\n")
+        let changed = OpsResultParser.parse(result("", exit: 255, stderr: banner), mode: .plan, action: unit, timeout: 90)
+        XCTAssertEqual(changed.kind, .failed)
+        XCTAssertTrue(changed.detail.hasPrefix("The server's identity does not match what this Mac has on record"))
+        XCTAssertTrue(changed.detail.contains("Do not accept a new key"))
+        XCTAssertFalse(changed.detail.contains("server.example"))
+        XCTAssertTrue(changed.detail.contains("\u{00A0} This can mean"))
+    }
+
+    /// The helper's code,  row id,  row target and progress are read,  each only in its own
+    /// fixed shape.
+    func test_the_helpers_code_row_and_progress_are_read_in_their_own_shape() {
+        let json = #"{"ok":false,"result":"failed","commands":[["a"],["b"],["c"]],"detail":"b exited 5","errorCode":"update_busy","auditID":"0123456789ab","auditTarget":"fleet\u0007-recall","completedCommands":1}"#
+        let failed = OpsResultParser.parse(result(json, exit: 1), mode: .yes, action: unit, timeout: 180)
+        XCTAssertEqual(failed.kind, .failed)
+        XCTAssertEqual(failed.errorCode, "update_busy")
+        XCTAssertEqual(failed.serverAuditID, "0123456789ab")
+        XCTAssertEqual(failed.serverAuditTarget, "fleet-recall")
+        XCTAssertEqual(failed.completedCommands, 1)
+        XCTAssertEqual(failed.progressNote, "1 of 3 commands succeeded, the next one did not, and none after it ran.")
+        let bad = #"{"ok":false,"result":"failed","commands":[["a"]],"errorCode":"Not A Code","auditID":"--yes","completedCommands":4}"#
+        let refusedShape = OpsResultParser.parse(result(bad, exit: 1), mode: .yes, action: unit, timeout: 180)
+        XCTAssertNil(refusedShape.errorCode)
+        XCTAssertNil(refusedShape.serverAuditID)
+        XCTAssertNil(refusedShape.completedCommands)
+        XCTAssertNil(refusedShape.progressNote)
+        // A plan names no row:  it wrote none.
+        let plan = OpsResultParser.parse(result(json, exit: 1), mode: .plan, action: unit, timeout: 90)
+        XCTAssertNil(plan.serverAuditID)
+        XCTAssertNil(plan.progressNote)
+    }
+
+    func test_how_far_a_chain_got_is_said_plainly() {
+        func failed(_ commands: Int, finished: Int?) -> OpsOutcome {
+            OpsOutcome(kind: .failed, ok: false, commands: Array(repeating: ["x"], count: commands),
+                       detail: "", exitCode: 1, completedCommands: finished)
+        }
+        XCTAssertEqual(failed(1, finished: 0).progressNote, "The command ran and did not succeed.")
+        XCTAssertEqual(failed(2, finished: 0).progressNote, "The first command did not succeed, so none after it ran.")
+        XCTAssertNil(failed(2, finished: nil).progressNote)
+        XCTAssertNil(failed(2, finished: 2).progressNote)
+    }
+
+    /// The first line of a result says whether anything ran,  in the owner's words,  and
+    /// names the machine that answered.
+    func test_the_result_title_says_whether_anything_ran() {
+        let mac = OpsAction.macAgent(verb: .restart, label: "com.jay.x")
+        func titled(_ json: String, exit: Int32 = 0, mode: OpsMode, action: OpsAction) -> String {
+            OpsResultParser.parse(result(json, exit: exit), mode: mode, action: action, timeout: 90).resultTitle(for: action)
+        }
+        let refused = #"{"ok":false,"result":"refused","detail":"no"}"#
+        XCTAssertEqual(titled(refused, exit: 2, mode: .plan, action: unit), "The server refused this, so nothing ran.")
+        XCTAssertEqual(titled(refused, exit: 2, mode: .yes, action: mac), "This Mac refused this, so nothing ran.")
+        XCTAssertEqual(titled("", exit: 255, mode: .plan, action: unit), "The plan could not be read, so nothing ran.")
+        XCTAssertEqual(titled(#"{"ok":true,"result":"done","commands":[]}"#, mode: .yes, action: unit), "Done.")
+        XCTAssertEqual(titled(#"{"ok":false,"result":"failed"}"#, exit: 1, mode: .yes, action: unit), "This did not work.")
+        XCTAssertEqual(titled(#"{"ok":true,"result":"submitted"}"#, mode: .yes, action: .serverUpdate(name: "fleet-cli")),
+                       "Sent.\u{00A0} Muster has not seen it finish yet.")
+        // A run that lost its answer is never called a failure.
+        let lost = OpsResultParser.parse(result("", exit: 255), mode: .yes, action: unit, timeout: 180)
+        XCTAssertEqual(lost.resultTitle(for: unit),
+                       "This may or may not have run on the server.\u{00A0} Check its state before you run it again.")
+    }
+
+    func test_a_known_error_code_gets_plain_advice() {
+        func advice(_ code: String?, _ action: OpsAction) -> String? {
+            OpsOutcome(kind: .refused, ok: false, commands: [], detail: "", exitCode: 2, errorCode: code).advice(for: action)
+        }
+        let update = OpsAction.serverUpdate(name: "fleet-cli")
+        XCTAssertEqual(advice("update_busy", update), "An update is already running on the server.\u{00A0} Check again in a minute.")
+        XCTAssertEqual(advice("action_busy", .macAgent(verb: .start, label: "com.jay.x")),
+                       "Another action is still running on the Mac.\u{00A0} Wait for it to end, then try again.")
+        XCTAssertNil(advice("something_new", update))
+        XCTAssertNil(advice(nil, update))
+    }
+
+    func test_a_bare_done_is_not_repeated_under_the_title() {
+        func shows(_ detail: String) -> Bool {
+            OpsOutcome(kind: .done, ok: true, commands: [], detail: detail, exitCode: 0).showsDetailUnderTitle
+        }
+        XCTAssertFalse(shows("Done."))
+        XCTAssertFalse(shows("done"))
+        XCTAssertFalse(shows(""))
+        XCTAssertTrue(shows("nothing to do"))
+    }
+}
+
+// MARK: - The contract with the server
+
+/// `Fixtures/ops_wire_golden.json` is shared with `scripts/test_fleet_ops_control.py`,
+/// which feeds the same lines through the server's forced-command gate and checks the same
+/// answers.  Either side changing its shape breaks one of the two suites.
+final class OpsWireContractTests: XCTestCase {
+    private func golden() throws -> [String: Any] {
+        let text = try fixture("ops_wire_golden", "json")
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+    }
+
+    private func action(_ entry: [String: String]) -> OpsAction? {
+        guard let target = entry["target"] else { return nil }
+        switch entry["action"] {
+        case "serverUnit":
+            guard let verb = entry["verb"].flatMap(OpsVerb.init(rawValue:)) else { return nil }
+            return .serverUnit(verb: verb, unit: target)
+        case "logs": return .logs(unit: target)
+        case "serverUpdate": return .serverUpdate(name: target)
+        case "coolifyRedeploy": return .coolifyRedeploy(uuid: target, name: "example-app")
+        case "resourceStatus": return .resourceStatus
+        default: return nil
+        }
+    }
+
+    func test_muster_sends_each_line_the_server_accepts() throws {
+        let accepted = try XCTUnwrap(golden()["accepted"] as? [[String: String]])
+        XCTAssertFalse(accepted.isEmpty)
+        for entry in accepted {
+            let line = entry["line"] ?? ""
+            let made = try XCTUnwrap(action(entry), line)
+            let invocation = try exampleBuilder().invocation(for: made, mode: entry["mode"] == "yes" ? .yes : .plan)
+            let arguments = invocation.arguments
+            let end = try XCTUnwrap(arguments.firstIndex(of: "--"), line)
+            XCTAssertEqual(arguments[end - 1], OpsControlRoute.serverAlias, line)
+            XCTAssertEqual(arguments[(end + 1)...].joined(separator: " "), line)
+        }
+    }
+
+    func test_muster_reads_the_answers_the_server_gives() throws {
+        let answers = try XCTUnwrap(golden()["answers"] as? [String: Any])
+        func parse(_ key: String, exit: Int32, mode: OpsMode, action: OpsAction) throws -> OpsOutcome {
+            let object = try XCTUnwrap(answers[key], key)
+            let text = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+            return OpsResultParser.parse(OpsProcessResult(exitCode: exit, stdout: text, stderr: ""),
+                                         mode: mode, action: action, timeout: 90)
+        }
+        let restart = OpsAction.serverUnit(verb: .restart, unit: "fleet-server-status.timer")
+        let stop = OpsAction.serverUnit(verb: .stop, unit: "fleet-server-status.timer")
+        let planned = try parse("planned", exit: 0, mode: .plan, action: restart)
+        XCTAssertTrue(planned.isSuccess(for: .plan))
+        XCTAssertEqual(planned.commandLines, ["/usr/bin/systemctl --user restart fleet-server-status.timer"])
+        let notListed = try parse("notListed", exit: 2, mode: .plan, action: .serverUnit(verb: .restart, unit: "sshd.service"))
+        XCTAssertEqual(notListed.kind, .refused)
+        XCTAssertEqual(notListed.detail, "the unit is not in the allowlist")
+        let busy = try parse("busy", exit: 2, mode: .yes, action: stop)
+        XCTAssertEqual(busy.kind, .refused)
+        XCTAssertEqual(busy.errorCode, "action_busy")
+        XCTAssertNotNil(busy.advice(for: stop))
+        XCTAssertEqual(busy.serverAuditID, "0123456789ab")
+        let done = try parse("done", exit: 0, mode: .yes, action: stop)
+        XCTAssertTrue(done.isSuccess(for: .yes))
+        XCTAssertEqual(done.completedCommands, 1)
+        XCTAssertEqual(done.serverAuditTarget, "fleet-server-status.timer")
+        XCTAssertEqual(done.resultTitle(for: stop), "Done.")
+    }
+}
+
+// MARK: - The words around a run
+
+final class OpsSheetWordsTests: XCTestCase {
+    /// Every action leads its plan with a plain sentence that names where it runs or what it
+    /// changes,  and a read says it changes nothing.
+    func test_every_action_has_a_plain_sentence_for_its_plan() {
+        for tag in OpsActionCase.allCases {
+            let action = tag.sample
+            let sentence = action.effectSentence
+            XCTAssertFalse(sentence.isEmpty, "\(tag)")
+            XCTAssertTrue(sentence.hasSuffix("."), "\(tag)")
+            if action.changes == .acrossFleet {
+                XCTAssertTrue(sentence.contains("every machine"), "\(tag)")
+            } else {
+                XCTAssertTrue(sentence.contains(action.runsOn.inProse), "\(tag)")
+            }
+            XCTAssertEqual(sentence.contains("Nothing changes."), action.changesNothing, "\(tag)")
+            XCTAssertFalse(sentence.contains("  "), "\(tag)")
+        }
+        XCTAssertEqual(OpsAction.serverUnit(verb: .restart, unit: OpsNames.reportTimerUnit).effectSentence,
+                       "Stops Server Report Timer on the server and starts it again.")
+    }
+
+    /// The button names the approval,  which may be Touch ID or the login password.
+    func test_the_run_button_names_the_approval_and_the_place() {
+        for tag in OpsActionCase.allCases {
+            let title = tag.sample.runButtonTitle
+            XCTAssertTrue(title.hasPrefix("Approve And "), "\(tag)")
+            XCTAssertFalse(title.contains("Touch ID"), "\(tag)")
+        }
+    }
+
+    func test_a_length_of_time_reads_in_words() {
+        XCTAssertEqual(OpsController.durationText(0), "0 seconds")
+        XCTAssertEqual(OpsController.durationText(1.9), "1 second")
+        XCTAssertEqual(OpsController.durationText(45), "45 seconds")
+        XCTAssertEqual(OpsController.durationText(60), "1 minute")
+        XCTAssertEqual(OpsController.durationText(65), "1 minute 5 seconds")
+        XCTAssertEqual(OpsController.durationText(180), "3 minutes")
+        XCTAssertEqual(OpsController.durationText(-4), "0 seconds")
+    }
+
+    /// While it runs,  the sheet says where,  for how long,  how long Muster waits,  and that
+    /// closing it does not stop the run.  Before that,  it says nothing has run yet.
+    func test_the_running_words_say_where_how_long_and_what_closing_does() {
+        let unit = OpsAction.serverUnit(verb: .restart, unit: OpsNames.reportTimerUnit)
+        XCTAssertEqual(OpsRunStage.checkingPlan.sentence(for: unit, elapsed: 3),
+                       "Checking the plan again on the server, 3 seconds so far.\u{00A0} Nothing has run yet.")
+        let running = OpsRunStage.running.sentence(for: unit, elapsed: 12)
+        XCTAssertTrue(running.hasPrefix("Running on the server, 12 seconds so far."))
+        XCTAssertTrue(running.contains("Muster waits up to 3 minutes for the answer."))
+        XCTAssertTrue(running.contains("Closing this sheet does not stop the run"))
+        let mac = OpsRunStage.running.sentence(for: .macAgent(verb: .start, label: "com.jay.x"), elapsed: 0)
+        XCTAssertTrue(mac.contains("up to 15 minutes"))
     }
 }
 
@@ -864,6 +1112,59 @@ private func isReview(_ phase: OpsController.Phase) -> Bool {
     return false
 }
 
+extension OpsController {
+    /// What the sheet does after the owner approved:  confirm the plan on screen,  by its
+    /// action and its exact outcome.  Outside a review it confirms a stand-in,  which the
+    /// controller must refuse.
+    func confirm() {
+        if case .review(let action, let reviewed) = phase {
+            confirm(action: action, reviewed: reviewed)
+        } else {
+            confirm(action: phase.action ?? .resourceStatus,
+                    reviewed: OpsOutcome(kind: .planned, ok: true, commands: [], detail: "", exitCode: 0))
+        }
+    }
+}
+
+/// Holds every `--yes` call until released,  and answers it with `answer`.
+private actor RunGate {
+    var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        started = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+/// Holds every call,  plan or run,  until released.
+private struct GatedPlanRunner: OpsRunning {
+    let gate: RunGate
+    let answer: String
+    func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult {
+        await gate.wait()
+        return OpsProcessResult(exitCode: 0, stdout: answer, stderr: "")
+    }
+}
+
+private struct GatedRunRunner: OpsRunning {
+    let base: FakeOpsRunner
+    let gate: RunGate
+    let answer: String
+    var exitCode: Int32 = 0
+    func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult {
+        if invocation.arguments.contains("--yes") {
+            _ = try await base.run(invocation)
+            await gate.wait()
+            return OpsProcessResult(exitCode: exitCode, stdout: answer, stderr: "")
+        }
+        return try await base.run(invocation)
+    }
+}
+
 private func isFinished(_ phase: OpsController.Phase) -> Bool {
     if case .finished = phase { return true }
     return false
@@ -1073,7 +1374,9 @@ final class OpsControllerFlowTests: XCTestCase {
         XCTAssertNotNil(ops.notice)
     }
 
-    func test_a_run_that_could_not_start_leaves_no_audit_row() async throws {
+    /// The started row goes in before the helper is launched,  so a helper that could not be
+    /// launched closes it with a row that says nothing ran.
+    func test_a_run_that_could_not_start_closes_its_row_as_not_run() async throws {
         let planned = try fixture("ops_result_planned", "json")
         let fake = ThrowingOpsRunner(planned: planned, throwFrom: 3, error: .launchFailed("no such file"))
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -1088,7 +1391,9 @@ final class OpsControllerFlowTests: XCTestCase {
             if case .failed = phase { return true }
             return false
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        let rows = OpsAuditLog.read(at: url).entries
+        XCTAssertEqual(rows.map(\.result), ["not-run", "started"])
+        XCTAssertEqual(rows.first?.state, .drift)
         XCTAssertEqual(ops.completedRuns, 0)
     }
 
@@ -1206,9 +1511,9 @@ final class OpsControllerFlowTests: XCTestCase {
         ops.confirm()
         try await waitFor(ops, until: isFinished)
         let reading = OpsAuditLog.read(at: url)
-        XCTAssertEqual(reading.entries.count, 1)
+        // One row before the run is sent and one after,  newest first.
+        XCTAssertEqual(reading.entries.map(\.result), ["done", "started"])
         XCTAssertEqual(reading.entries.first?.target, "fleet-server-status.timer")
-        XCTAssertEqual(reading.entries.first?.result, "done")
     }
 
     func test_a_local_action_leaves_its_row_to_the_helper() async throws {
@@ -1233,6 +1538,276 @@ final class OpsControllerFlowTests: XCTestCase {
             return false
         }
         XCTAssertTrue(fake.recorded.isEmpty)
+    }
+
+    // MARK: The approval is tied to the plan it was asked about
+
+    func test_an_approval_runs_only_the_plan_it_was_asked_about() async throws {
+        let fake = try runner()
+        let ops = controller(fake)
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        guard case .review(let shown, let reviewed) = ops.phase else { return XCTFail("\(ops.phase)") }
+        // Another action,  or another outcome for the same action,  is refused.
+        XCTAssertFalse(ops.confirm(action: .serverUpdate(name: "fleet-cli"), reviewed: reviewed))
+        var other = reviewed
+        other.commands = [["systemctl", "--user", "restart", "something-else.timer"]]
+        XCTAssertFalse(ops.confirm(action: shown, reviewed: other))
+        XCTAssertTrue(isReview(ops.phase))
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+        XCTAssertTrue(ops.confirm(action: shown, reviewed: reviewed))
+        try await waitFor(ops, until: isFinished)
+    }
+
+    func test_a_stale_approval_never_runs_the_plan_now_on_screen() async throws {
+        let changed = #"{"ok": true, "commands": [["systemctl", "--user", "restart", "something-else.timer"]], "result": "planned"}"#
+        let fake = try runner(planAfterReview: changed)
+        let ops = controller(fake)
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        let first = try XCTUnwrap(ops.beginApproval())
+        // A second window cannot ask while the first is asking.
+        XCTAssertNil(ops.beginApproval())
+        XCTAssertTrue(ops.isAsking)
+        ops.finishApproval(first, answer: .approved)
+        XCTAssertFalse(ops.isAsking)
+        // The plan changed after the approval,  so the new plan comes back for review.
+        try await waitFor(ops) { phase in
+            if case .review(_, let outcome) = phase { return outcome.commandLines.first?.contains("something-else") == true }
+            return false
+        }
+        // The first approval,  answered late,  does not run the new plan.
+        ops.finishApproval(first, answer: .approved)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(isReview(ops.phase))
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+        XCTAssertTrue(ops.notice?.contains("changed while you were approving") == true)
+    }
+
+    /// A cancel is not an error:  the plan stays up,  says nothing ran,  and can be approved.
+    func test_a_cancelled_approval_keeps_the_plan_and_can_be_approved_after_all() async throws {
+        let fake = try runner()
+        let ops = controller(fake)
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        let asked = try XCTUnwrap(ops.beginApproval())
+        ops.finishApproval(asked, answer: .notApproved("You canceled the approval, so nothing ran."))
+        XCTAssertTrue(isReview(ops.phase))
+        XCTAssertEqual(ops.notice, "You canceled the approval, so nothing ran.")
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+        let again = try XCTUnwrap(ops.beginApproval())
+        XCTAssertNil(ops.notice)
+        ops.finishApproval(again, answer: .approved)
+        try await waitFor(ops, until: isFinished)
+        XCTAssertEqual(fake.recorded.filter { $0.contains("--yes") }.count, 1)
+    }
+
+    func test_a_mac_that_cannot_ask_ends_the_sheet() async throws {
+        let fake = try runner()
+        let ops = controller(fake)
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        let asked = try XCTUnwrap(ops.beginApproval())
+        ops.finishApproval(asked, answer: .unavailable("This Mac cannot ask for approval, so nothing ran."))
+        guard case .failed(_, let reason) = ops.phase else { return XCTFail("\(ops.phase)") }
+        XCTAssertEqual(reason, "This Mac cannot ask for approval, so nothing ran.")
+        XCTAssertFalse(ops.isAsking)
+    }
+
+    /// The sheet cannot be closed out from under the question.
+    func test_the_sheet_stays_while_the_approval_is_asked() async throws {
+        let ops = controller(try runner())
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        _ = try XCTUnwrap(ops.beginApproval())
+        ops.dismiss()
+        XCTAssertTrue(isReview(ops.phase))
+    }
+
+    // MARK: A run can be left to finish behind a closed sheet
+
+    func test_closing_the_sheet_while_it_runs_hides_it_and_the_result_brings_it_back() async throws {
+        let base = try runner()
+        let gate = RunGate()
+        let done = try fixture("ops_result_done", "json")
+        let ops = OpsController(runner: GatedRunRunner(base: base, gate: gate, answer: done),
+                                makeBuilder: { exampleBuilder() }, auditURL: nil, checksInstall: false)
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        XCTAssertNil(ops.quitWarning, "nothing is sent while the plan is reviewed")
+        ops.confirm()
+        for _ in 0..<400 {
+            if await gate.started { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(ops.runStage, .running)
+        XCTAssertNotNil(ops.stageStartedAt)
+        XCTAssertNotNil(ops.quitWarning)
+        ops.dismiss()
+        XCTAssertTrue(ops.isSheetHidden)
+        XCTAssertFalse(ops.isSheetShown)
+        XCTAssertEqual(ops.hiddenRun, action)
+        XCTAssertTrue(ops.isPresenting, "the run still holds the one action slot")
+        // Another action is refused,  and the run's sheet comes back to say why.
+        XCTAssertFalse(ops.plan(.serverUpdate(name: "fleet-cli")))
+        XCTAssertTrue(ops.isSheetShown)
+        ops.dismiss()
+        XCTAssertEqual(ops.hiddenRun, action)
+        await gate.release()
+        try await waitFor(ops, until: isFinished)
+        XCTAssertFalse(ops.isSheetHidden)
+        XCTAssertTrue(ops.isSheetShown)
+        XCTAssertNil(ops.runStage)
+        XCTAssertNil(ops.quitWarning)
+        XCTAssertEqual(ops.completedRuns, 1)
+    }
+
+    func test_closing_the_sheet_while_it_plans_gives_the_plan_up() async throws {
+        let gate = RunGate()
+        let planned = try fixture("ops_result_planned", "json")
+        let ops = OpsController(runner: GatedPlanRunner(gate: gate, answer: planned),
+                                makeBuilder: { exampleBuilder() }, auditURL: nil, checksInstall: false)
+        ops.plan(action)
+        for _ in 0..<400 {
+            if await gate.started { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        ops.dismiss()
+        XCTAssertFalse(ops.isSheetShown)
+        XCTAssertNil(ops.hiddenRun, "a plan is not a run")
+        await gate.release()
+        try await waitFor(ops) { $0 == .idle }
+        XCTAssertFalse(ops.isSheetHidden)
+        XCTAssertTrue(ops.plan(action), "a new plan is allowed once the old one is given up")
+    }
+
+    // MARK: What a run leaves behind
+
+    private func rawRows(_ url: URL) throws -> [[String: String]] {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        return try text.split(separator: "\n").map { line in
+            try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: String])
+        }
+    }
+
+    func test_the_macs_rows_name_the_run_and_the_servers_own_row() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-ops-flow-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("ops-audit.jsonl")
+        let planned = try fixture("ops_result_planned", "json")
+        let done = #"{"ok": true, "commands": [["systemctl", "--user", "restart", "fleet-server-status.timer"]], "result": "done", "detail": "done", "auditID": "0a1b2c3d4e5f", "auditTarget": "fleet-server-status.timer", "completedCommands": 1}"#
+        let fake = FakeOpsRunner { invocation, _ in
+            OpsProcessResult(exitCode: 0, stdout: invocation.arguments.contains("--plan") ? planned : done, stderr: "")
+        }
+        let ops = controller(fake, auditURL: url)
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        let rows = try rawRows(url)
+        XCTAssertEqual(rows.map { $0["result"] }, ["started", "done"])
+        XCTAssertEqual(rows[0]["runID"], rows[1]["runID"])
+        XCTAssertEqual(rows[0]["runID"]?.count, 12)
+        XCTAssertNil(rows[0]["serverAuditID"])
+        XCTAssertEqual(rows[1]["serverAuditID"], "0a1b2c3d4e5f")
+        XCTAssertEqual(rows[1]["serverTarget"], "fleet-server-status.timer")
+    }
+
+    /// The helper plans again before it runs,  so the commands it reports can differ from the
+    /// ones the owner approved.  That is flagged,  never passed off as the approved plan.
+    func test_a_run_that_reports_other_commands_than_the_approved_plan_is_flagged() async throws {
+        let planned = try fixture("ops_result_planned", "json")
+        let other = #"{"ok": true, "commands": [["systemctl", "--user", "start", "fleet-server-status.timer"]], "result": "done"}"#
+        let fake = FakeOpsRunner { invocation, _ in
+            OpsProcessResult(exitCode: 0, stdout: invocation.arguments.contains("--plan") ? planned : other, stderr: "")
+        }
+        let ops = controller(fake)
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        guard case .finished(_, let outcome) = ops.phase else { return XCTFail("\(ops.phase)") }
+        XCTAssertTrue(outcome.differsFromReview)
+        // The same commands are not flagged.
+        let same = controller(try runner())
+        same.plan(action)
+        try await waitFor(same, until: isReview)
+        same.confirm()
+        try await waitFor(same, until: isFinished)
+        guard case .finished(_, let sameOutcome) = same.phase else { return XCTFail("\(same.phase)") }
+        XCTAssertFalse(sameOutcome.differsFromReview)
+    }
+
+    /// A run that lost its answer may have landed,  so planning it again says so first.
+    func test_planning_again_after_a_lost_answer_warns_before_the_approval() async throws {
+        let planned = try fixture("ops_result_planned", "json")
+        let fake = FakeOpsRunner { invocation, _ in
+            if invocation.arguments.contains("--plan") {
+                return OpsProcessResult(exitCode: 0, stdout: planned, stderr: "")
+            }
+            return OpsProcessResult(exitCode: 255, stdout: "", stderr: "Connection to server closed by remote host.")
+        }
+        var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        let ops = OpsController(runner: fake, makeBuilder: { exampleBuilder() }, auditURL: nil,
+                                checksInstall: false, now: { clock })
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        guard case .finished(_, let lost) = ops.phase else { return XCTFail("\(ops.phase)") }
+        XCTAssertTrue(lost.runNotKnown)
+        ops.dismiss()
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        XCTAssertTrue(ops.notice?.contains("may already have run") == true)
+        // Another action is not warned about.
+        ops.dismiss()
+        ops.plan(.serverUnit(verb: .stop, unit: OpsNames.reportTimerUnit))
+        try await waitFor(ops, until: isReview)
+        XCTAssertNil(ops.notice)
+        // After an hour the warning is gone.
+        ops.dismiss()
+        clock = clock.addingTimeInterval(OpsController.unresolvedMemory + 1)
+        ops.plan(action)
+        try await waitFor(ops, until: isReview)
+        XCTAssertNil(ops.notice)
+    }
+
+    func test_a_recheck_that_settles_an_update_adds_a_row_and_counts_as_a_run() async throws {
+        let receipt = String(repeating: "a", count: 32)
+        let planned = #"{"ok":true,"commands":[["systemctl","start","--no-block","fleet-cli-git-update.service"]],"result":"planned"}"#
+        let submitted = #"{"ok":true,"commands":[["systemctl","start","--no-block","fleet-cli-git-update.service"]],"result":"submitted","invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let completed = #"{"ok":true,"commands":[],"result":"done","executionState":"completed","verified":true,"invocationID":"\#(receipt)","baselineStartMonotonic":100}"#
+        let fake = FakeOpsRunner { invocation, _ in
+            if invocation.arguments.contains("update-status") {
+                return OpsProcessResult(exitCode: 0, stdout: completed, stderr: "")
+            }
+            return OpsProcessResult(exitCode: 0, stdout: invocation.arguments.contains("--plan") ? planned : submitted, stderr: "")
+        }
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-ops-flow-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("ops-audit.jsonl")
+        let ops = controller(fake, auditURL: url)
+        ops.plan(.serverUpdate(name: "fleet-cli"))
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        XCTAssertEqual(ops.completedRuns, 1)
+        ops.recheckSubmittedUpdate()
+        for _ in 0..<400 {
+            if !ops.isRechecking { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(ops.completedRuns, 2)
+        let rows = try rawRows(url)
+        XCTAssertEqual(rows.map { $0["result"] }, ["started", "submitted", "done"])
+        XCTAssertEqual(rows[1]["invocationID"], receipt)
+        XCTAssertEqual(rows[1]["baselineStartMonotonic"], "100")
+        XCTAssertEqual(rows[2]["invocationID"], receipt)
+        XCTAssertEqual(rows[2]["recheck"], "true")
+        XCTAssertEqual(fake.recorded.filter { $0.contains("--yes") }.count, 1)
     }
 }
 

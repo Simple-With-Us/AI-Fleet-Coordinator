@@ -36,7 +36,7 @@ final class OpsActionPlaceTests: XCTestCase {
         XCTAssertEqual(knob.changes, .acrossFleet)
         XCTAssertEqual(knob.title, "Set FLEET_X to \"1\" for the whole fleet")
         XCTAssertEqual(knob.placeSentence, "Runs on the Mac.\u{00A0} Changes a value every machine reads.")
-        XCTAssertEqual(knob.runButtonTitle, "Change For The Whole Fleet With Touch ID")
+        XCTAssertEqual(knob.runButtonTitle, "Approve And Change For The Whole Fleet")
         XCTAssertEqual(OpsActionCase.knobUnset.sample.changes, .acrossFleet)
     }
 
@@ -44,11 +44,11 @@ final class OpsActionPlaceTests: XCTestCase {
         let server = OpsAction.serverUnit(verb: .restart, unit: OpsNames.reportTimerUnit)
         XCTAssertEqual(server.title, "Restart Server Report Timer on the server")
         XCTAssertEqual(server.placeSentence, "Runs on the server.")
-        XCTAssertEqual(server.runButtonTitle, "Run On The Server With Touch ID")
+        XCTAssertEqual(server.runButtonTitle, "Approve And Run On The Server")
         let mac = OpsAction.pm2App(verb: .restart, name: "shellular")
         XCTAssertEqual(mac.title, "Restart Shellular on the Mac")
         XCTAssertEqual(mac.placeSentence, "Runs on the Mac.")
-        XCTAssertEqual(mac.runButtonTitle, "Run On The Mac With Touch ID")
+        XCTAssertEqual(mac.runButtonTitle, "Approve And Run On The Mac")
         XCTAssertEqual(OpsAction.coolifyRedeploy(uuid: "abc123def456", name: "muster-web").title,
                        "Redeploy muster-web on the server")
     }

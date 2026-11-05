@@ -975,6 +975,184 @@ class MacVerbTests(Base):
         self.assertEqual(code, 2)
 
 
+class OneActionAndAuditLinkTests(Base):
+    """One `--yes` at a time on a machine, the row id the caller can store, and how far a
+    chain got before it stopped."""
+
+    def hold_lock(self):
+        fd = os.open(self.state / "ops-control.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        foc.fcntl.flock(fd, foc.fcntl.LOCK_EX | foc.fcntl.LOCK_NB)
+        self.addCleanup(os.close, fd)
+
+    def test_a_second_run_while_one_holds_the_lock_is_refused_and_runs_nothing(self):
+        self.hold_lock()
+        code, ans = self.run_main(
+            ["server", "restart", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"], ans["errorCode"]), (2, "refused", "action_busy"))
+        self.assertEqual(ans["detail"], "another action is still running on this machine")
+        self.assertEqual(ans["commands"], [])
+        self.assertEqual(self.runner.calls, [])
+        self.assertEqual(self.audit_rows()[0]["result"], "refused")
+
+    def test_a_plan_takes_no_lock(self):
+        self.hold_lock()
+        code, ans = self.run_main(
+            ["server", "restart", "fleet-server-status.timer", "--plan", "--json"], self.ctx()
+        )
+        self.assertEqual((code, ans["result"]), (0, "planned"))
+
+    def test_the_lock_is_released_after_a_run(self):
+        for _ in range(2):
+            code, ans = self.run_main(
+                ["server", "restart", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+            )
+            self.assertEqual((code, ans["result"]), (0, "done"))
+
+    def test_a_shared_lock_directory_is_refused(self):
+        self.state.chmod(0o777)
+        try:
+            code, ans = self.run_main(
+                ["server", "restart", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+            )
+        finally:
+            self.state.chmod(0o700)
+        self.assertEqual((code, ans["errorCode"]), (2, "action_lock_unavailable"))
+        self.assertEqual(self.runner.calls, [])
+
+    def test_a_run_names_the_row_it_wrote(self):
+        code, ans = self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        self.assertEqual(code, 0)
+        row = self.audit_rows()[0]
+        self.assertRegex(ans["auditID"], r"^[0-9a-f]{12}$")
+        self.assertEqual(row["id"], ans["auditID"])
+        self.assertEqual(ans["auditTarget"], row["target"])
+        self.assertEqual(ans["completedCommands"], 1)
+
+    def test_a_refused_redeploy_names_the_target_the_row_holds(self):
+        code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx())
+        self.assertEqual(code, 2)
+        self.assertEqual(ans["auditTarget"], "coolify resource")
+        self.assertEqual(self.audit_rows()[0]["id"], ans["auditID"])
+
+    def test_a_plan_writes_no_row_and_names_none(self):
+        _, ans = self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--plan", "--json"], self.ctx()
+        )
+        self.assertNotIn("auditID", ans)
+        self.assertNotIn("completedCommands", ans)
+
+    def test_a_row_that_could_not_be_written_is_not_named(self):
+        with mock.patch.object(foc, "audit", return_value=False):
+            _, ans = self.run_main(
+                ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+            )
+        self.assertNotIn("auditID", ans)
+        self.assertNotIn("auditTarget", ans)
+
+    def test_a_chain_that_stops_says_how_many_commands_finished(self):
+        folder = self.home / "Library" / "LaunchAgents"
+        folder.mkdir(parents=True, exist_ok=True)
+        plist = folder / "com.jay.fleet-tools-doctor.plist"
+        plist.write_text("<plist/>")
+        os.chmod(plist, 0o600)
+
+        class KickstartFails(FakeRunner):
+            def __call__(self, argv, **kwargs):
+                if argv[1:2] == ["kickstart"]:
+                    self.calls.append((list(argv), dict(kwargs.get("env") or {})))
+                    return 5, b""
+                return super().__call__(argv, **kwargs)
+
+        code, ans = self.run_main(
+            ["mac", "start", "com.jay.fleet-tools-doctor", "--yes", "--json"],
+            self.ctx("darwin", KickstartFails(loaded=False)),
+        )
+        self.assertEqual((code, ans["result"]), (1, "failed"))
+        self.assertEqual(len(ans["commands"]), 2)
+        self.assertEqual(ans["completedCommands"], 1)
+
+
+GOLDEN = Path(HERE).parent / "muster" / "MusterTests" / "Fixtures" / "ops_wire_golden.json"
+GOLDEN_ACTIONS = {
+    "serverUnit": None,
+    "logs": "logs",
+    "serverUpdate": "update",
+    "coolifyRedeploy": "redeploy",
+    "resourceStatus": "resource-status",
+}
+
+
+class WireContractTests(Base):
+    """The lines Muster sends and the answers it reads, from the file its own tests read."""
+
+    def setUp(self):
+        super().setUp()
+        self.golden = json.loads(GOLDEN.read_text())
+
+    def from_ssh(self, line):
+        ctx = self.ctx(environ={"PATH": "/usr/bin:/bin", "SSH_ORIGINAL_COMMAND": line})
+        return self.run_main(["--from-ssh"], ctx)
+
+    @staticmethod
+    def normalized(answer):
+        """The answer with what differs by machine or by run put in the golden file's form."""
+        answer = json.loads(json.dumps(answer))
+        for argv in answer.get("commands", []):
+            if argv and os.path.basename(argv[0]) == "systemctl":
+                argv[0] = "/usr/bin/systemctl"
+        if "auditID" in answer:
+            answer["auditID"] = "0123456789ab"
+        return answer
+
+    def test_every_line_muster_sends_passes_the_gate_as_the_verb_it_names(self):
+        self.assertTrue(self.golden["accepted"])
+        for entry in self.golden["accepted"]:
+            line = entry["line"]
+            words = foc.parse_ssh_command(line)
+            self.assertEqual(words, line.split(), line)
+            scope, action, target, mode, as_json = foc.parse_request(words)
+            expected = GOLDEN_ACTIONS[entry["action"]] or entry["verb"]
+            self.assertEqual(
+                (scope, action, target, mode, as_json),
+                ("server", expected, entry["target"], entry["mode"], True),
+                line,
+            )
+
+    def test_every_line_the_gate_refuses_runs_nothing(self):
+        for line in self.golden["refusedAtGate"]:
+            with self.assertRaises(foc.Refused, msg=line):
+                foc.parse_ssh_command(line)
+            code, ans = self.from_ssh(line)
+            self.assertEqual((code, ans["result"]), (2, "refused"), line)
+            self.assertEqual(self.runner.calls, [], line)
+
+    def test_every_line_the_helper_refuses_passes_the_gate_and_runs_nothing(self):
+        for line in self.golden["refusedByHelper"]:
+            foc.parse_ssh_command(line)
+            code, ans = self.from_ssh(line)
+            self.assertEqual((code, ans["result"]), (2, "refused"), line)
+            self.assertEqual(self.runner.calls, [], line)
+
+    def test_the_server_still_gives_the_answers_muster_reads(self):
+        answers = self.golden["answers"]
+        _, planned = self.from_ssh("server restart fleet-server-status.timer --plan --json")
+        self.assertEqual(self.normalized(planned), answers["planned"])
+        _, not_listed = self.from_ssh("server restart sshd.service --plan --json")
+        self.assertEqual(not_listed, answers["notListed"])
+        _, done = self.from_ssh("server stop fleet-server-status.timer --yes --json")
+        self.assertEqual(self.normalized(done), answers["done"])
+        fd = os.open(self.state / "ops-control.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            foc.fcntl.flock(fd, foc.fcntl.LOCK_EX | foc.fcntl.LOCK_NB)
+            _, busy = self.from_ssh("server stop fleet-server-status.timer --yes --json")
+        finally:
+            os.close(fd)
+        self.assertEqual(self.normalized(busy), answers["busy"])
+
+
 class RedeployTests(Base):
     ROWS = [
         {"uuid": UUID, "name": "fleet-recall", "type": "application", "status": "running"},
