@@ -1,15 +1,15 @@
 import Foundation
 
-// Reading the wake settings:  the configuration file,  the listener's own status,  the pins
+// Reading the wake settings:  the configuration file,  the eavesdropper's own status,  the pins
 // that prove a binary works,  and the ledger that says how much of the budget is used.
 //
 // Nothing here decides anything.  It reads,  and hands what it read to the builder.
 
 // MARK: - Where the state lives
 
-/// Where the listener keeps its state on this Mac.
+/// Where the eavesdropper keeps its state on this Mac.
 struct ListenerStateLocation: Equatable {
-    /// The listener's state directory:  `~/.agent-sync`.
+    /// The eavesdropper's state directory:  `~/.agent-sync`.
     var root: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -21,7 +21,7 @@ struct ListenerStateLocation: Equatable {
         root.appendingPathComponent("listener.toml")
     }
 
-    /// The listener's own published state.
+    /// The eavesdropper's own published state.
     var statusURL: URL {
         root.appendingPathComponent("listener/status.json")
     }
@@ -54,10 +54,12 @@ struct ListenerStateLocation: Equatable {
 struct WakeSettingsReader {
     /// Where the state lives.
     var location: ListenerStateLocation
-    /// The command line,  for the listener's own account of itself.
+    /// The command line,  for the eavesdropper's own account of itself.
     var runner: AgentSyncRunning
     /// The seats to show.
     var roster: [String]
+    /// Where the seat partition is,  or nil when the checkout could not be found.
+    var partitionURL: URL?
     /// The clock.
     var now: () -> Date
 
@@ -65,11 +67,13 @@ struct WakeSettingsReader {
         location: ListenerStateLocation = ListenerStateLocation(),
         runner: AgentSyncRunning = AgentSyncCLI(),
         roster: [String] = [],
+        partitionURL: URL? = ListenerPartition.defaultURL(),
         now: @escaping () -> Date = { Date() }
     ) {
         self.location = location
         self.runner = runner
         self.roster = roster
+        self.partitionURL = partitionURL
         self.now = now
     }
 
@@ -81,6 +85,11 @@ struct WakeSettingsReader {
         var sources = WakeSettingsSources()
         var problems: [String] = []
 
+        // Who holds each seat.  The eavesdropper refuses a section it is not given,  so this comes
+        // first:  every seat's row depends on it.
+        sources.partition = ListenerPartition.load(from: partitionURL)
+        sources.partitionURL = partitionURL
+
         // The configuration file.
         let configText = readText(location.configURL)
         guard let configText else {
@@ -91,30 +100,39 @@ struct WakeSettingsReader {
             return sources
         }
         sources.config = ListenerConfigDocument(text: configText)
+        sources.configReadable = true
         sources.configPath = location.configURL.path
 
-        // The listener's own account of itself.
+        // The eavesdropper's own account of itself.
         var status: ListenerStatus?
         do {
             let result = try await runner.run(AgentSyncInvocation.status())
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {
-                    problems.append("The listener's status could not be read,  so nothing is known about the running listener.")
+                    problems.append("The eavesdropper's status could not be read,  so nothing is known about the running eavesdropper.")
                 }
             } else {
-                problems.append("The listener's status command failed:  \(result.stderrTail)")
+                problems.append("The eavesdropper's status command failed:  \(result.stderrTail)")
             }
         } catch {
-            problems.append("The listener's status could not be run:  \(error.localizedDescription)")
+            problems.append("The eavesdropper's status could not be run:  \(error.localizedDescription)")
         }
         sources.status = status
 
-        // The seats to show:  the roster,  then every seat the file or the listener knows.
+        // The eavesdropper says which partition it reads,  and that copy is the one that can stop it,
+        // so it decides over the copy in Muster's own checkout.  If it cannot be read,  no seat is
+        // held here.
+        if let path = status?.status?.partition_file, !path.isEmpty {
+            let url = URL(fileURLWithPath: path)
+            sources.partition = ListenerPartition.load(from: url)
+            sources.partitionURL = url
+        }
+
+        // The seats to show:  the roster,  then every seat the file or the eavesdropper knows.
         var tags = roster
-        for section in sources.config.sections where section.name.hasPrefix("seat.") {
-            let tag = String(section.name.dropFirst("seat.".count))
-            if !tag.isEmpty, !tags.contains(tag) { tags.append(tag) }
+        for tag in sources.config.seatTags where !tags.contains(tag) {
+            tags.append(tag)
         }
         for tag in status?.seatTags ?? [] where !tags.contains(tag) {
             tags.append(tag)
@@ -125,15 +143,19 @@ struct WakeSettingsReader {
         var pins: [String: [String: PinEvidence]] = [:]
         var usage: [String: WakeUsage] = [:]
         var recent: [String: [WakeLedger.Outcome]] = [:]
-        for tag in tags {
+        // The builder's own answer decides which seats have them,  so a seat it shows live data for
+        // never shows zero usage or no pins for want of a read.
+        for tag in tags where !WakeSettingsBuilder.host(of: tag, sources: sources).isElsewhere {
+            // The eavesdropper keeps a seat's files under its upper-cased name.
+            let directoryName = tag.uppercased()
             var seatPins: [String: PinEvidence] = [:]
             for runtime in ["claude", "muse", "mcode"] {
-                if let evidence = readPin(seat: tag, runtime: runtime) {
+                if let evidence = readPin(seat: directoryName, runtime: runtime) {
                     seatPins[runtime] = evidence
                 }
             }
             pins[tag] = seatPins
-            if let ledger = readText(location.ledgerURL(seat: tag)) {
+            if let ledger = readText(location.ledgerURL(seat: directoryName)) {
                 // One read and one parse for both views:  the ledger was not decoded once
                 // per question.
                 let parsed = WakeLedger.parse(ledger)

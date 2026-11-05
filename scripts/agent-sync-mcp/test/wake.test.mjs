@@ -1,4 +1,4 @@
-// The listener's signed wake (src/wake.js):  HMAC over the raw bytes, the
+// The eavesdropper's signed wake (src/wake.js):  HMAC over the raw bytes, the
 // freshness window, the contract shape, and the path parser.
 
 import { test } from "node:test";
@@ -10,7 +10,7 @@ import { classifyPath } from "../src/policy.js";
 const KEY = "k".repeat(64);
 const NOW = Date.UTC(2026, 9, 9, 15, 0, 0);
 
-/** The listener's body (adapters.py routine_body) serialized like routine_bytes. */
+/** The eavesdropper's body (adapters.py routine_body) serialized like routine_bytes. */
 export function wakeBody(overrides = {}) {
   const body = {
     contract: "agent-sync-wake/1",
@@ -41,7 +41,7 @@ export function wakeBody(overrides = {}) {
 /** Python's hmac.new(key.encode(), body, sha256).hexdigest(). */
 const pySig = (key, bytes) => createHmac("sha256", Buffer.from(key, "utf8")).update(bytes).digest("hex");
 
-test("the signature matches the listener's hex HMAC-SHA256 over the raw bytes", async () => {
+test("the signature matches the eavesdropper's hex HMAC-SHA256 over the raw bytes", async () => {
   const bytes = wakeBody();
   assert.equal(await wakeSignature(KEY, bytes), pySig(KEY, bytes));
 });
@@ -84,7 +84,7 @@ test("the body's seat must be the path's seat, and the contract must match", asy
   assert.equal((await verifyWake({ bytes: badReply, signature: pySig(KEY, badReply), key: KEY, seat: "JET", now: NOW })).reason, "bad_reply_to");
 });
 
-test("stream_id is a positive safe integer or null, and may be absent (an older listener)", async () => {
+test("stream_id is a positive safe integer or null, and may be absent (an older eavesdropper)", async () => {
   const check = async (overrides) => {
     const bytes = wakeBody(overrides);
     return verifyWake({ bytes, signature: pySig(KEY, bytes), key: KEY, seat: "JET", now: NOW });
@@ -111,7 +111,7 @@ test("dm and reply_to must agree on whether a wake is a DM", async () => {
   assert.equal(await check({ reply_to: { type: "direct", to: [1211974] } }), "bad_reply_to", "a channel wake with a direct reply_to");
 });
 
-/** One held-back item as the listener sends it. */
+/** One held-back item as the eavesdropper sends it. */
 function heldItem(overrides = {}) {
   return {
     message_id: 4100,
@@ -146,7 +146,7 @@ test("held_back is optional, and a well-formed one is accepted", async () => {
     { count: 3, items: [] },
     { count: 20, items: Array.from({ length: 20 }, (_, i) => heldItem({ message_id: 5000 + i })) },
     { count: 1, items: [heldItem({ channel: "c".repeat(200), topic: "t".repeat(200), sender_full_name: "s".repeat(200), zulip_link: "", reason: "overflow", at: 0 })] },
-    // Keys an item does not know are ignored (events.js never copies them), so a newer listener is not refused.
+    // Keys an item does not know are ignored (events.js never copies them), so a newer eavesdropper is not refused.
     { count: 1, items: [heldItem({ trigger_ids: [4100], owner: true })] },
   ]) {
     assert.equal(await heldBackVerdict(good), "ok", JSON.stringify(good)?.slice(0, 120));
@@ -200,7 +200,7 @@ test("a malformed held_back is 400 bad_held_back", async () => {
   for (const field of ["channel", "topic", "sender_full_name", "zulip_link"]) {
     assert.equal(await heldBackVerdict({ count: 1, items: [heldItem({ [field]: "x".repeat(201) })] }), "bad_held_back", field);
   }
-  // Signed by the listener's key, so it is the shape, not the signature, that is refused.
+  // Signed by the eavesdropper's key, so it is the shape, not the signature, that is refused.
   const bytes = wakeBody({ held_back: { count: -1, items: [] } });
   assert.deepEqual(await verifyWake({ bytes, signature: pySig(KEY, bytes), key: KEY, seat: "JET", now: NOW }), { ok: false, status: 400, reason: "bad_held_back" });
 });

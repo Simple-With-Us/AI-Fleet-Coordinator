@@ -2,6 +2,20 @@ name: Deploy mapped Workers
 on:
   push:
     branches: [main]
+    # A merge touching none of these does not run the job.  The schedule and
+    # workflow_dispatch triggers cannot filter by path, so worker_changed() in
+    # scripts/deploy-mapped-worker.py applies each target's own "paths" from
+    # scripts/worker-targets.json on every trigger; a test keeps those inside this
+    # list.  The deploy files are here only so a change to them runs their tests.
+    paths:
+      - 'scripts/agent-sync-mcp/**'
+      - 'scripts/agent_sync/mcp/*.json'
+      - 'fleet-apps.json'
+      - 'scripts/deploy-mapped-worker.py'
+      - 'scripts/test-deploy-mapped-worker.py'
+      - 'scripts/worker-targets.json'
+      - 'scripts/infisical-fetch.mjs'
+      - '.github/workflows/worker-deploy.yml'
   schedule:
     - cron: '11,41 * * * *'
   workflow_dispatch:
@@ -12,19 +26,24 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    if: vars.WORKER_DEPLOY_ENABLED == 'true'
+    # Two gates, both off until the owner arms them.  SIMPLE_TOOLS_MCP_DEPLOY_ENABLED
+    # is this Worker's own: DEPLOY.md still says it is deployed by hand, never from CI.
+    if: vars.WORKER_DEPLOY_ENABLED == 'true' && vars.SIMPLE_TOOLS_MCP_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       max-parallel: 1
       fail-fast: false
       matrix:
-        worker: ["simple-tools-mcp", "alert-ingress"]
+        # alert-ingress and pr-conflict-watch are released by alert-workers-deploy.yml.
+        worker: ["simple-tools-mcp"]
     steps:
       - uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: false
+          # worker_changed() diffs the deployed tag against main.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -33,12 +52,6 @@ jobs:
       - run: echo "$GITHUB_WORKSPACE/scripts/agent-sync-mcp/node_modules/.bin" >> "$GITHUB_PATH"
       - run: npm test
         working-directory: scripts/agent-sync-mcp
-      # The pr-conflict-watch unit tests.  The test files are named explicitly:
-      # the directory form (`node --test workers/pr-conflict-watch/`) resolves
-      # index.js as a single module and reports one passing test without
-      # running any test file, which would leave this gate vacuous.
-      - run: node --test workers/pr-conflict-watch/*.test.js
-      - run: node --test workers/alert-ingress/src/*.test.js
       - run: python3 scripts/test-deploy-mapped-worker.py
       - name: Load scoped deploy credential from Fleet-OPS
         env:
@@ -47,8 +60,7 @@ jobs:
           INFISICAL_SECRET_PATH: /
           INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
           INFISICAL_REQUIRED: CLOUDFLARE_FLEET_API_TOKEN
-          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_AUTOMATION_CLIENT_ID }}
-          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_AUTOMATION_CLIENT_SECRET }}
+          INFISICAL_TOKEN: ${{ secrets.AFC_WORKER_DEPLOY_INFISICAL_TOKEN }}
         run: node scripts/infisical-fetch.mjs
       - name: Deploy exact main and verify receipt
         env:
@@ -56,6 +68,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
           WORKER_HEALTH_ACCESS_CLIENT_ID: ${{ secrets.WORKER_HEALTH_ACCESS_CLIENT_ID }}
           WORKER_HEALTH_ACCESS_CLIENT_SECRET: ${{ secrets.WORKER_HEALTH_ACCESS_CLIENT_SECRET }}
+          MCP_CANARY_BEARER: ${{ secrets.MCP_CANARY_BEARER }}
+          SIMPLE_TOOLS_MCP_DEPLOY_ENABLED: ${{ vars.SIMPLE_TOOLS_MCP_DEPLOY_ENABLED }}
           CLOUDFLARE_ACCOUNT_ID: 3a9368057468d0909cafaa85df12d1b7
           TARGET: ${{ matrix.worker }}
         run: python3 scripts/deploy-mapped-worker.py "$TARGET"

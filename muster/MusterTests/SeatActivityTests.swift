@@ -2,13 +2,13 @@ import XCTest
 
 /// The Seat Activity panel:  what it reads,  how it fails,  and how many calls it makes.
 ///
-/// Every test here runs against a fake fleet chat CLI and a listener state file in a
+/// Every test here runs against a fake fleet chat CLI and an eavesdropper state file in a
 /// temporary directory.  Nothing here touches the network,  Jay's home directory or a
 /// real Zulip account.
 final class SeatActivityTests: XCTestCase {
     // MARK: The fixtures
 
-    /// The listener's own published state,  with one seat that has one live lease and
+    /// The eavesdropper's own published state,  with one seat that has one live lease and
     /// one dead one.
     private let listenerJSON = """
     {
@@ -120,7 +120,7 @@ final class SeatActivityTests: XCTestCase {
 
     // MARK: The reading
 
-    /// A listener state location in a temporary directory.
+    /// An eavesdropper state location in a temporary directory.
     private func listenerLocation(
         state: String?,
         fileManager: FileManager = .default
@@ -218,7 +218,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertFalse(row.lastPost.isKnown)
         XCTAssertNotNil(row.presence.reason)
         XCTAssertNotNil(row.lastPost.reason)
-        // The known part stays known:  the listener's own file was read fine.
+        // The known part stays known:  the eavesdropper's own file was read fine.
         XCTAssertEqual(row.openSessions, .known(1))
     }
 
@@ -268,7 +268,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertNotEqual(row.presence, .known(.offline))
     }
 
-    /// A listener state file that cannot be read leaves the listener columns unknown.
+    /// An eavesdropper state file that cannot be read leaves the eavesdropper columns unknown.
     func test_an_unreadable_listener_state_leaves_the_listener_columns_unknown() async throws {
         let model = try await read(runner: healthyRunner(), listener: nil)
         let row = try XCTUnwrap(model.rows.first)
@@ -279,7 +279,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertEqual(model.problems.count, 1)
     }
 
-    /// A seat the listener publishes nothing about has unknown sessions,  and not zero.
+    /// A seat the eavesdropper publishes nothing about has unknown sessions,  and not zero.
     func test_a_seat_the_listener_does_not_publish_has_unknown_sessions_and_not_zero() async throws {
         let model = try await read(
             roster: ["OPENCODE"],
@@ -341,13 +341,13 @@ final class SeatActivityTests: XCTestCase {
         let row = try XCTUnwrap(model.rows.first)
         let columns = row.unknowns.map { $0.column }
         XCTAssertTrue(columns.contains("open sessions"))
-        XCTAssertTrue(columns.contains("listener"))
+        XCTAssertTrue(columns.contains("eavesdropper"))
         XCTAssertFalse(columns.contains("presence"))
     }
 
-    // MARK: The listener's own states
+    // MARK: The eavesdropper's own states
 
-    /// A paused seat reads as paused,  whatever else the listener says.
+    /// A paused seat reads as paused,  whatever else the eavesdropper says.
     func test_a_paused_seat_reads_as_paused() async throws {
         let paused = listenerJSON.replacingOccurrences(
             of: "\"pause\": {}",
@@ -358,7 +358,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertEqual(row.listener, .known(.paused))
     }
 
-    /// A seat the listener's configuration turned off reads as off,  and not unknown.
+    /// A seat the eavesdropper's configuration turned off reads as off,  and not unknown.
     func test_a_disabled_seat_reads_as_off() async throws {
         let disabled = listenerJSON.replacingOccurrences(
             of: "\"disabled\": []",
@@ -373,7 +373,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertEqual(row.listener, .known(.off))
     }
 
-    /// A seat the listener could not start reads as skipped,  with the listener's reason.
+    /// A seat the eavesdropper could not start reads as skipped,  with the eavesdropper's reason.
     func test_a_skipped_seat_reads_as_skipped_with_the_listeners_reason() async throws {
         let skipped = listenerJSON.replacingOccurrences(
             of: "\"skipped_seats\": {}",
@@ -538,7 +538,7 @@ final class SeatActivityTests: XCTestCase {
 
     // MARK: Review fixes (Kody and Sentry on #926)
 
-    /// A listener state file the listener stopped writing is not believed.
+    /// An eavesdropper state file the eavesdropper stopped writing is not believed.
     func test_a_stale_listener_state_leaves_the_listener_columns_unknown() async throws {
         let model = try await read(
             runner: healthyRunner(),
@@ -553,7 +553,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertTrue(model.problems[0].contains("3 hours ago"))
     }
 
-    /// A listener state file that names no time is not believed either.
+    /// An eavesdropper state file that names no time is not believed either.
     func test_a_listener_state_with_no_time_is_unknown() async throws {
         let undated = listenerJSON.replacingOccurrences(of: "\"updated\": 1792821067.0,", with: "")
         let model = try await read(runner: healthyRunner(), listener: undated)

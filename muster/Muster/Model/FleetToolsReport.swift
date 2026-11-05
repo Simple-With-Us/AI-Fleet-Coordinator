@@ -358,6 +358,9 @@ struct FleetToolsReading {
     var isCurrent: Bool = false
     /// Why the report could not be read at all,  when it could not be.
     var problem: String?
+    /// True when this app refused the report because of its version or its tool,  rather
+    /// than because the file was missing,  old or broken.
+    var refusal: ReportRefusal?
     /// The hosts,  in the report's own order.
     var hosts: [FleetToolsHostVerdict] = []
     /// The verdict for the whole report.
@@ -408,10 +411,13 @@ enum FleetToolsReportReader {
 
         guard report.schemaVersion == FleetToolsContract.supportedSchemaVersion else {
             reading.problem = "The report is version \(report.schemaVersion);  this app reads version \(FleetToolsContract.supportedSchemaVersion)."
+            reading.refusal = ReportRefusal(reportVersion: report.schemaVersion,
+                                            supported: FleetToolsContract.supportedSchemaVersion)
             return reading
         }
         guard report.tool == FleetToolsContract.expectedTool else {
             reading.problem = "The report came from \"\(report.tool)\";  this app reads \"\(FleetToolsContract.expectedTool)\"."
+            reading.refusal = .appOutOfDate
             return reading
         }
         guard let generated = report.generatedAt.flatMap(FleetTime.parse) else {

@@ -195,7 +195,7 @@ final class FleetServicesTests: XCTestCase {
         let services = FleetServices(serverState: .running, states: [:])
         XCTAssertEqual(services.menuItems.count, 12)
         XCTAssertEqual(services.menuItems.first?.id, "botfleet-mcp")
-        XCTAssertEqual(services.menuTitle, "Fleet Services (12)")
+        XCTAssertEqual(services.menuTitle, "Services On The Mac (12)")
     }
 
     func testEachMenuRowShowsTheStateAndTheActions() {
@@ -559,6 +559,16 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertLessThan(elapsed, 3.0)
     }
 
+    func testATimedSettleDoesNotSleepPastItsBudget() async {
+        // A step longer than what is left must not carry the wait past its budget.
+        let start = Date()
+        let observed = await ManagedServices.settle(to: .running, within: 0.2, interval: 30) {
+            .stopped
+        }
+        XCTAssertEqual(observed, .stopped)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5.0)
+    }
+
     // MARK: - A stop the owner asked for
 
     func testAStopIsRemembered() {
@@ -696,6 +706,28 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertEqual(state, .running)
     }
 
+    func testTheServersStopGivesUpWithinItsBudgetWhenALookIsSlow() async throws {
+        // A look can cost a whole request timeout, so the budget is time and
+        // not a number of looks.  A count of eight would run nine looks here.
+        let home = try makeHome(serverInstalled: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let looks = Counter()
+        let control = FleetServiceControl(
+            pm2: pm2(FleetServiceCommands()),
+            startup: StartupPolicy(home: home, commands: LaunchAgentCommands(), uid: 501, environment: [:]),
+            mcpServer: nil,
+            stopServer: { },
+            observeServer: {
+                looks.increment()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                return .running
+            },
+            agentSettleInterval: 0.05)
+        let state = try await control.perform(.stop, serviceID: FleetServiceRegistry.server.id, attempts: 8)
+        XCTAssertEqual(state, .running)
+        XCTAssertLessThan(looks.value, 9)
+    }
+
     func testStoppingTheBotFleetServerIsRefusedWhenTheServerCannotBeAsked() async throws {
         let home = try makeHome(serverInstalled: true)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -774,7 +806,7 @@ final class FleetServicesTests: XCTestCase {
     func testARefusedRestartDoesNotPutTheMarkerBackWhenTheStateIsUnknown() async throws {
         // launchctl could not be asked, so nothing is known about the
         // server.  The marker must not be re-created on that, and the
-        // refusal must not claim the server was not replaced.
+        // answer is not a refusal that claims the server was not replaced.
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
@@ -795,8 +827,8 @@ final class FleetServicesTests: XCTestCase {
             _ = try await control.perform(.restart, serviceID: FleetServiceRegistry.server.id, attempts: 2)
             XCTFail("a restart that could not be checked should not be reported as a success")
         } catch {
-            XCTAssertTrue("\(error)".contains("could not be checked"))
-            XCTAssertFalse("\(error)".contains("not replaced"))
+            XCTAssertEqual(error as? FleetServiceError,
+                           .notKnown("launchctl could not be asked after the restart"))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
@@ -809,7 +841,7 @@ final class FleetServicesTests: XCTestCase {
                                     startupPolicySupported: false)
         let row = services.menuItems.first { $0.id == "app.botfleet.server" }
         let body = FleetServices.stopBody(for: row!, startupPolicySupported: false)
-        XCTAssertFalse(body.contains("Restart clears the marker"))
+        XCTAssertFalse(body.contains("Restart brings it back"))
         XCTAssertTrue(body.contains("stopped.marker"))
     }
 
@@ -819,7 +851,25 @@ final class FleetServicesTests: XCTestCase {
                                     startupPolicySupported: true)
         let row = services.menuItems.first { $0.id == "app.botfleet.server" }
         let body = FleetServices.stopBody(for: row!, startupPolicySupported: true)
-        XCTAssertTrue(body.contains("Restart clears the marker"))
+        XCTAssertTrue(body.contains("Restart brings it back"))
+        XCTAssertFalse(body.contains("marker"))
+    }
+
+    func testTheStopCopyNamesTheMacInEveryBranch() {
+        for supported in [true, false] {
+            for id in [FleetServiceRegistry.server.id, "app.botfleet.companion", "shellular"] {
+                let body = FleetServices.stopBody(forServiceID: id, startupPolicySupported: supported)
+                XCTAssertTrue(body.contains("on the Mac"), body)
+                XCTAssertFalse(body.contains("this Mac"), body)
+            }
+        }
+    }
+
+    func testPM2AnsweredIsDecidedByItsOwnApplications() {
+        XCTAssertFalse(FleetServices(serverState: .running, states: ["shellular": .unknown]).pm2Answered)
+        XCTAssertTrue(FleetServices(serverState: .running, states: ["shellular": .stopped]).pm2Answered)
+        // The MCP server is read through its own health endpoint,  so it says nothing about pm2.
+        XCTAssertFalse(FleetServices(serverState: .running, states: ["botfleet-mcp": .running]).pm2Answered)
     }
 
     func testAServerRestartWaitsNoLongerThanTheCallerAskedFor() async throws {

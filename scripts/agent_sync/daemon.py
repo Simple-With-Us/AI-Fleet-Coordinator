@@ -713,6 +713,7 @@ class Daemon:
         if self.refusal:
             self.config.seats = {}
         self.reload_refused: list[str] = []
+        self.reload_at: float | None = None  # when the last reload ran, accepted or refused
         self.seats: dict[str, SeatRunner] = {}
         self.chat_nudges = CN.ChatNudges(self.root, "GROK", recover=False)
         self._chat_queues = {"GROK": self.chat_nudges}
@@ -1391,6 +1392,7 @@ class Daemon:
                 )
 
     def reload(self) -> None:
+        self.reload_at = self.clock.time()
         new = C.load(self.root, self.config_path)
         refused = self.partition_check(new)
         if refused:
@@ -7337,6 +7339,8 @@ class Daemon:
         if self.reload_requested:
             self.reload_requested = False
             self.reload()
+            # Publish this tick, so a tool that asked for the reload reads the answer straight away.
+            self.last_tick["status"] = 0.0
         self._drain_broadcast_wakes()
         self._start_due_inbox_retries(now)
         self._start_due_broadcast_audits(now)
@@ -7797,6 +7801,13 @@ class Daemon:
             "config_errors": [
                 self.scrub(e) for e in self.config.errors + self.refusal + self.reload_refused
             ],
+            # The same refusal on its own, with when the last reload ran, so a tool that sent the
+            # SIGHUP can tell a refused reload from an accepted one with soft config errors.
+            "reload_refused": [self.scrub(e) for e in self.reload_refused],
+            "reload_at": self.reload_at,
+            # Which partition this listener goes by, so a tool that decides who holds a seat reads
+            # this copy and not whichever one its own checkout has.
+            "partition_file": self.partition_file,
             "owner_user_id": self.config.owner_user_id,
             "chat_nudges": all_nudges,
             "wake_loop_prevention": self.loopguard.enabled,

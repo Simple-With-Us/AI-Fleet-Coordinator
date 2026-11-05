@@ -1463,13 +1463,17 @@ class TestFleetSecretsSourceAgainstTheRealCli(unittest.TestCase):
         finally:
             sys.path.remove(scripts)
 
-        def fake_export(path, env, project_name=None, token=None):
+        def fake_export(path, env, project_name=None, token=None, *, allow_session=False):
+            self.assertIs(allow_session, False)
             return dict(self.FOLDER)
 
         def runner(argv, capture_output, timeout):
             calls.append(argv)
             out, err = io.StringIO(), io.StringIO()
-            with unittest.mock.patch.object(core, "fetch_all", fake_export):
+            with (
+                unittest.mock.patch.object(core, "fetch_all", fake_export),
+                unittest.mock.patch.object(cli.sys, "stdin", io.StringIO()),
+            ):
                 code = cli.main(argv[1:], env={}, out=out, err=err)
             return subprocess.CompletedProcess(
                 argv, code, stdout=out.getvalue().encode(), stderr=err.getvalue().encode()

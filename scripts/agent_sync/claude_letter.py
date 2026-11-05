@@ -48,6 +48,9 @@ id alone).  A server chat's lookup rides the ssh call that already goes to the M
 record, a user fork is not a sub-thread, and anything unreadable (no record, a deleted parent, a changed file layout)
 means no parent is known:  the chat is picked like a main chat.  Only a chat that is being placed is looked up.
 
+A chat another chat started.  The app keeps the title `start_session` gave it in its own record and does not take this
+hook's sessionTitle over that one, so the hook's context tells such a chat's model to check its title and rename itself.
+
 Renames.  A chat that is renamed keeps its pair in front of its title, and the Operator's title follows the thread.  On
 its next prompt the hook puts the pair back if the new name dropped it (the owner's words are kept whole), and sends
 words that differ from the registry's to the Operator;  a registry that does not answer is asked again about the same
@@ -979,6 +982,22 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
     return out
 
 
+def _title_check(answer: Mapping[str, Any], label: str) -> str:
+    """The context line for a chat another chat started, or "".  The desktop app keeps the title `start_session` gave such
+    a chat in its own record and does not take this hook's sessionTitle over it, so the letter never shows in the
+    sidebar.  A hook cannot reach that record;  the chat's own model can, so it is told to.  The registry names why it
+    found no parent on every placement that has none, so a placement with no reason is one that followed a parent."""
+    if answer.get("outcome") not in ("registered", "reopened") or answer.get("parent_lookup"):
+        return ""
+    return (
+        "  Another chat started this one, and the app shows the title that chat gave it over the one this hook sets.\u00a0 "
+        'As your first step, unprompted, call mcp__ccd_session_mgmt__get_session with session_id "self" (load it with '
+        'ToolSearch if it is deferred).\u00a0 If the title does not start with "%s: ", call '
+        'mcp__ccd_session_mgmt__set_session_title with session_id "self" and the title "%s: <that title>".'
+        % (label, label)
+    )
+
+
 def _reissued(answer: Mapping[str, Any]) -> str:
     """The context line for a reopened chat whose letter changed, or ""."""
     previous, label = str(answer.get("previous") or ""), str(answer.get("label") or "")
@@ -1048,7 +1067,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
     _hook_out(
         stdout,
         "SessionStart",
-        context=_join_context(_reissued(answer) + reminder(note), fix),
+        context=_reissued(answer) + reminder(note) + _title_check(answer, label),
         title=title if settable else None,
     )
     return 0
@@ -1103,7 +1122,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             chat.write(note)
             return 0
         # The model was told at the start that this chat had no letter yet:  it is told the one it holds now.
-        context = _reissued(recovered) + reminder(note)
+        context = _reissued(recovered) + reminder(note) + _title_check(recovered, note["label"])
     title = None
     answer: dict[str, Any] = {}
     sent = False  # a registry call this prompt (a title or a touch) also marks the chat seen
@@ -1219,7 +1238,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             if note["label"] != held or int(note.get("generation") or 1) != held_generation:
                 # A different pair, or the same one as a later generation:  the model was told how this chat is
                 # addressed at the start, so it is told how now.
-                context = _reissued(registered) + reminder(note)
+                context = (
+                    _reissued(registered) + reminder(note) + _title_check(registered, note["label"])
+                )
         else:
             title = bare(current, held) if held and current.startswith("%s: " % held) else None
             if held:

@@ -822,6 +822,27 @@ class HookTests(Base):
         self.assertIn("Claude AB", child["additionalContext"])
         self.assertIn("--host-session-id=" + self.CHILD, ssh.calls[0][8])
 
+    def test_a_chat_the_app_started_is_told_to_put_its_letter_on_the_apps_title(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+        parent = self.begin("p-0001", host=self.PARENT)
+        child = self.begin("c-0001", host=self.CHILD)
+        self.assertIn("mcp__ccd_session_mgmt__set_session_title", child["additionalContext"])
+        self.assertIn('"AB: <that title>"', child["additionalContext"])
+        self.assertNotIn("set_session_title", parent["additionalContext"])
+
+    def test_a_resumed_chat_the_app_started_is_not_told_again(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+        self.begin("p-0001", host=self.PARENT)
+        self.begin("c-0001", host=self.CHILD)
+        again = self.hook(
+            {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "resume", "session_title": "AB: Fix It"},
+            env=self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD), runner=FakeSsh(self),
+        )
+        self.assertIn("Claude AB", again["additionalContext"])
+        self.assertNotIn("set_session_title", again["additionalContext"])
+
     def test_a_chat_with_no_app_id_in_its_environment_is_still_placed_by_its_session_uuid(self) -> None:
         self.app_record(self.PARENT, "p-0001")
         self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)

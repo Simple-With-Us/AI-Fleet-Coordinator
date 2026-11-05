@@ -18,7 +18,7 @@ enum OwnerCheck {
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            let detail = error?.localizedDescription ?? "this Mac cannot ask"
+            let detail = error?.localizedDescription ?? "the Mac cannot ask"
             return .declined("Touch ID could not ask, so nothing ran:\(ServerStatusCopy.sentenceGap)\(detail)")
         }
         do {

@@ -521,28 +521,12 @@ export function buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames,
   const f = facts || {};
   const platforms = f.seatPlatforms || {};
   const hosted = f.hostedSeats || {};
-  const macWake = f.macWake || {};
-  const unheld = f.unheldWake || {};
   const keysMissing = f.linearKeysMissing || {};
-  const rows = [["Seat", "Display Name", "Group", "Platform", "Status", "Branch Prefix", "Zulip Bot",
-                 "Zulip Credential (name only)", "Listener", "Wake Path", "Linear App", "Notes"]];
+  const rows = [["Seat", "Display Name", "Platform", "Status", "Branch Prefix", "Zulip Bot",
+                 "Zulip Credential (name only)", "Linear App", "Notes"]];
   const zulipEnvNames = (tag) => {
     const code = tag.replace(/-/g, "_");
     return `ZULIP_${code}_EMAIL, ZULIP_${code}_API_KEY`;
-  };
-  const wakeFor = (tag, instance) => {
-    if (instance === "mac") return macWake[tag] || macWake["*"] || "Mac listener";
-    if (instance === "server") {
-      const s = serverSeats[tag] || {};
-      const off = s.enabled === false ? "  (disabled in the server config)" : "";
-      if (s.wake === "http") {
-        const auth = s.routineAuth === "hmac-sha256" ? "HMAC-signed" : s.routineAuth === "bearer" ? "bearer" : s.routineAuth || "";
-        return `Server listener:  ${auth} POST to ${s.routineUrlEnv || "?"} (key ${s.routineKeyEnv || "?"})${off}`;
-      }
-      return `Server listener:  ${s.wake === "inbox" ? "inbox capture, no wake adapter yet" : s.wake || "not configured"}${off}`;
-    }
-    if (instance === "none") return tag.startsWith("BF-") ? "BotFleet handles it natively (no listener)" : "No listener";
-    return unheld[tag] || "No listener";
   };
   const credFor = (tag, instance, fileCode) => {
     const parts = [];
@@ -556,42 +540,45 @@ export function buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames,
     return keysMissing[tag] ? `${app}  (${keysMissing[tag]})` : app;
   };
 
+  const viewNotes = (tag, notes) => {
+    if (tag === "GROK") return "Terminal Grok and Grok Build are one identity, signed GROK.";
+    return notes || "";
+  };
   const seen = new Set();
   const active = [], retired = [];
   for (const s of fleetApps.seats || []) {
     seen.add(s.tag);
+    if (s.tag === "GROK-BOT" || s.tag === "GROK-BUILD") continue;
     const instance = partition[s.tag];
     if (s.retired) {
-      // KIMI predates retiredDate and carries its date in its Notes name.
       const date = s.retiredDate || (String(s.notesName || "").match(/retired (\d{4}-\d{2}-\d{2})/) || [])[1];
-      retired.push([s.tag, s.notesName || s.tag, "Retired seat", platforms[s.tag] || "",
-        `Retired${date ? ` ${date}` : ""}`, (s.branchPrefixes || []).join(", "), "", "", "—", "—", "—",
+      retired.push([s.tag, s.notesName || s.tag, platforms[s.tag] || "",
+        `Retired${date ? ` ${date}` : ""}`, (s.branchPrefixes || []).join(", "), "", "", "—",
         s.retiredReason || (s.aliasOf ? `Alias of ${s.aliasOf}.` : "")]);
       continue;
     }
-    active.push([s.tag, s.notesName || s.tag, instance === "server" ? "Cloud seat" : "Coding seat", platforms[s.tag] || "",
-      "active", (s.branchPrefixes || []).join(", ") || "none (no lanes)", s.zulipBotEmail || "",
-      credFor(s.tag, instance, s.zulipFileCode), instance || "not in partition", wakeFor(s.tag, instance),
-      linearFor(s.tag), s.notes || ""]);
+    active.push([s.tag, s.notesName || s.tag, platforms[s.tag] || "",
+      "active", (s.branchPrefixes || []).join(", ") || "Not configured", s.zulipBotEmail || "",
+      credFor(s.tag, instance, s.zulipFileCode), linearFor(s.tag), viewNotes(s.tag, s.notes)]);
   }
   // Seats the listener partition knows that fleet-apps.json does not:  the hosted seats, Grok Bot personas
   // and BotFleet role bots.
-  const extra = Object.keys(partition).filter(t => !seen.has(t) && t !== "GROK-BUILD");
+  const extra = Object.keys(partition).filter(t => !seen.has(t) && t !== "GROK-BUILD" && t !== "GROK-BOT");
   const order = (t) => t.startsWith("GB-") ? 2 : t.startsWith("BF-") ? 3 : 1;
   extra.sort((a, b) => order(a) - order(b) || a.localeCompare(b));
   for (const tag of extra) {
     const instance = partition[tag];
     const h = hosted[tag] || {};
-    let group = "Cloud seat", name = h.notesName || tag, email = h.zulipBotEmail || "", file = "";
+    let name = h.notesName || tag, email = h.zulipBotEmail || "", file = "";
     let platform = platforms[tag] || "";
     if (tag.startsWith("GB-")) {
       const role = tag.slice(3).toLowerCase();
-      group = "Grok Bot persona"; platform = "Grok Bot routine";
+      platform = "Grok Bot routine";
       name = `GB-${role[0].toUpperCase()}${role.slice(1)}`;
       email = `${role}-grok-bot@${ZULIP_DOMAIN}`;
     } else if (tag.startsWith("BF-")) {
       const role = tag.slice(3).toLowerCase();
-      group = "BotFleet bot"; platform = "BotFleet";
+      platform = "BotFleet";
       name = `BF-${role[0].toUpperCase()}${role.slice(1)}`;
       email = `bf-${role}-bot@${ZULIP_DOMAIN}`;
       file = zulipFileCode(tag);
@@ -602,13 +589,13 @@ export function buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames,
     const linearCell = seatAppNames[tag]
       ? linearFor(tag)
       : (tag.startsWith("BF-") || tag.startsWith("GB-") ? "—" : linearFor(tag));
-    active.push([tag, name, group, platform, "active", "none (no lanes)", email, credFor(tag, instance, file),
-      instance, wakeFor(tag, instance), linearCell, h.notes || ""]);
+    active.push([tag, name, platform, "active", "Not configured", email, credFor(tag, instance, file),
+      linearCell, h.notes || ""]);
   }
   rows.push(...active, ...retired);
   rows.push([]);
-  rows.push(["GROK followed by BUILD in any spelling (GROK-BUILD, Grok (Build), grok_build) is an alias of GROK, and everything is signed GROK.  The display name is plain Grok (owner Oct 10, AFC #457)."]);
-  rows.push([`Generated by fleet-apps-sheet-sync.mjs from AI-Fleet-Coordinator fleet-apps.json (seats), docs/protocols/agent-sync-partition.toml, scripts/agent_sync/server/listener.toml, scripts/linear-board/board (Linear seat apps) and scripts/fleet-apps-sheet-facts.json.  Credential names and paths only, never values.  Last synced: ${nowIso}`]);
+  rows.push(["Terminal Grok and Grok Build are one identity (seat GROK, display name Grok).  Legacy grok-build/ branches remain readable as the same identity, not a second seat.  grok-web is reserved for GROK-WEB; GROK lane slugs must not start with web-.  Local or remote location does not determine PR or lane eligibility.  Eavesdropper responsibilities are separate from BotFleet; this view does not assign wake behavior.  Not configured means no branch prefix is registered here, not a policy forbidding lanes."]);
+  rows.push([`Generated by fleet-apps-sheet-sync.mjs from AI-Fleet-Coordinator fleet-apps.json (seats), docs/protocols/agent-sync-partition.toml, scripts/linear-board/board (Linear seat apps) and scripts/fleet-apps-sheet-facts.json.  Credential names and paths only, never values.  Last synced: ${nowIso}`]);
   return rows;
 }
 
@@ -652,7 +639,7 @@ const TAB_COLUMN_WIDTHS = {
   [TAB_TESTFLIGHT]: [100, 200, 108, 100, 108, 72, 240, 108, 220],
   [TAB_ICONS]: [100, 88, 200, 88, 140, 120, 120, 88, 300],
   [TAB_FLEET_APPS]: [72, 160, 240, 80, 200, 260, 240, 80, 320],
-  [TAB_SEATS]: [120, 140, 120, 180, 110, 120, 260, 300, 80, 300, 160, 320]
+  [TAB_SEATS]: [120, 140, 180, 110, 120, 260, 300, 160, 320]
 };
 
 function columnWidthPx(columnWidths, index) {
@@ -1015,7 +1002,7 @@ async function main() {
     ["testflight", TAB_TESTFLIGHT, [0], 9],
     ["icons", TAB_ICONS, [3], 9],
     ["fleetApps", TAB_FLEET_APPS, [0], 9],
-    ["seats", TAB_SEATS, [0], 12],
+    ["seats", TAB_SEATS, [0], 9],
   ].filter(([key]) => tabs[key] !== null);
   const appCount = Object.keys(appsData.apps || {}).length;
   if (tabs.registry && tabs.registry.length < appCount + 1) throw new Error("registry tab built short; refusing to write");

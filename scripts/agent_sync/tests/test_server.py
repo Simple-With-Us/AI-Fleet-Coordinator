@@ -1825,6 +1825,8 @@ class ContainerTests(unittest.TestCase):
         self.assertTrue((REPO / "scripts" / "simple-chat").stat().st_mode & stat.S_IXUSR)
 
     def test_the_entrypoint_seeds_the_config_once_and_runs_agent_sync(self) -> None:
+        from agent_sync.tests.test_server_rollout import FakeInfisical, INFISICAL_PROJECT_ID
+
         data = self.tmp / "data"
         env = {
             "HOME": str(self.tmp),
@@ -1832,33 +1834,49 @@ class ContainerTests(unittest.TestCase):
             "AGENT_SYNC_INSTANCE": "server",
             "PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable),
         }
-        run = subprocess.run(
-            ["sh", str(SERVER_DIR / "entrypoint.sh"), "status", "--json"],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("seeded", run.stderr)
-        self.assertFalse(json.loads(run.stdout)["running"])
-        seeded = data / "listener.toml"
-        self.assertEqual(seeded.read_text(), (SERVER_DIR / "listener.toml").read_text())
-        self.assertEqual(stat.S_IMODE(os.stat(seeded).st_mode), 0o600)
-        seeded.write_text(seeded.read_text() + "# pinned by init\n")
-        again = subprocess.run(
-            ["sh", str(SERVER_DIR / "entrypoint.sh"), "status", "--json"],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertNotIn("seeded", again.stderr)
-        self.assertTrue(
-            seeded.read_text().endswith("# pinned by init\n"),
-            "an existing config is never overwritten",
-        )
+        with FakeInfisical("unused-fixture-id", "unused-fixture-secret", {}) as fake:
+            env.update({
+                "INFISICAL_TOKEN": fake.token,
+                "INFISICAL_PROJECT_ID": INFISICAL_PROJECT_ID,
+                "INFISICAL_API_URL": fake.url,
+            })
+            run = subprocess.run(
+                ["sh", str(SERVER_DIR / "entrypoint.sh"), "status", "--json"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("seeded", run.stderr)
+            self.assertFalse(json.loads(run.stdout)["running"])
+            seeded = data / "listener.toml"
+            self.assertEqual(seeded.read_text(), (SERVER_DIR / "listener.toml").read_text())
+            self.assertEqual(stat.S_IMODE(os.stat(seeded).st_mode), 0o600)
+            seeded.write_text(seeded.read_text() + "# pinned by init\n")
+            again = subprocess.run(
+                ["sh", str(SERVER_DIR / "entrypoint.sh"), "status", "--json"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertNotIn("seeded", again.stderr)
+            self.assertTrue(
+                seeded.read_text().endswith("# pinned by init\n"),
+                "an existing config is never overwritten",
+            )
+            self.assertEqual(len(fake.requests), 8)
+            self.assertTrue(all(method == "GET" for method, _ in fake.requests))
+            self.assertTrue(all(
+                path == "/api/v2/service-token"
+                or (path.startswith("/api/v3/secrets/raw?") and (
+                    "secretPath=%2Fzulip" in path or "secretPath=%2Foperator" in path
+                ))
+                for _, path in fake.requests
+            ))
+            self.assertNotIn(fake.token, run.stdout + run.stderr + again.stdout + again.stderr)
 
     def test_the_healthcheck_follows_the_status_file_age(self) -> None:
         health = _load_healthcheck()

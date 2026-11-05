@@ -8,6 +8,9 @@ import { verifyGrRequest, serveGrBearerVerify, GR_VERIFY_CONTRACT, GR_VERIFY_KEY
 import { wakeSignature, WAKE_SIGNATURE_HEADER } from "../src/wake.js";
 import { newGbBearer, sha256Hex, GB_BEARER_TTL_MS } from "../src/gb-bearer.js";
 import * as S from "../src/seat-state.js";
+import { IdentityCache } from "../src/identity-cache.js";
+import { loadConfig } from "../src/config.js";
+import { testEnv } from "./helpers.mjs";
 
 globalThis.crypto ??= webcrypto;
 
@@ -197,4 +200,104 @@ test("the route fails closed when the verify key resolves empty (Infisical-only,
   const resp = await serveGrBearerVerify(req, { [GR_VERIFY_KEY_VAR]: KEY }, fakeGates(memStore()), { resolveKey: async () => "" });
   assert.equal(resp.status, 404);
   assert.equal((await resp.json()).reason, "not_configured");
+});
+
+async function verifyCall(identity, hash, gates, options) {
+  const { bytes, signature } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity, hash, sent_at: Math.floor(Date.now() / 1000) });
+  const req = new Request("https://x.test/internal/gr-bearer-verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", [WAKE_SIGNATURE_HEADER]: signature },
+    body: bytes,
+  });
+  const resp = await serveGrBearerVerify(req, {}, gates, { resolveKey: async () => KEY, ...options });
+  return { status: resp.status, retryAfter: resp.headers.get("retry-after"), body: await resp.json() };
+}
+
+function countingGates(store) {
+  const rpc = { check: 0, status: 0 };
+  const base = fakeGates(store, {});
+  return { rpc, gates: (env, seat) => {
+    const gate = base(env, seat);
+    return { ...gate, gbBearerCheck: (hash) => { rpc.check += 1; return gate.gbBearerCheck(hash); }, gbBearerStatus: () => { rpc.status += 1; return gate.gbBearerStatus(); } };
+  } };
+}
+
+test("a live bearer costs one RPC, and its answer carries the bearer's own expiry", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  const expiresAt = Date.now() + GB_BEARER_TTL_MS;
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt });
+  const { rpc, gates } = countingGates(store);
+  const live = await verifyCall(ID, hash, gates);
+  assert.equal(live.body.expires_at, expiresAt);
+  assert.deepEqual(rpc, { check: 1, status: 0 });
+});
+
+test("with the default window of 0 every verify asks the gate, so a pause bites on the next call", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: loadConfig(testEnv()).grVerifyCacheMs };
+  const state = { paused: false };
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.ok, true);
+  assert.equal(identityCache.get(`gr-verify:${hash}`), null, "nothing is stored");
+  state.paused = true;
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.reason, "paused");
+});
+
+test("the identity cache answers a repeat verify with no RPC, under its own key", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  const expiresAt = Date.now() + GB_BEARER_TTL_MS;
+  // mcp_accept false:  a GR-only bearer, which /mcp must keep refusing.
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt });
+  const { rpc, gates } = countingGates(store);
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: 60_000 };
+  assert.equal((await verifyCall(ID, hash, gates, options)).body.ok, true);
+  const again = await verifyCall(ID, hash, gates, options);
+  assert.deepEqual(again.body, { ok: true, identity: ID, expires_at: expiresAt });
+  assert.equal(rpc.check, 1);
+  assert.equal(identityCache.get(hash), null, "the /mcp key stays empty:  a GR-only bearer earns no /mcp pass");
+  // An admin eviction of the seat reaches it.
+  identityCache.evictSeat(ID);
+  assert.equal((await verifyCall(ID, hash, gates, options)).body.ok, true);
+  assert.equal(rpc.check, 2);
+});
+
+test("a cached verify never outlives the bearer, another identity misses, and a window of 0 turns it off", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const { rpc, gates } = countingGates(store);
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: 60_000 };
+  await verifyCall(ID, hash, gates, options);
+  identityCache.entries.get(`gr-verify:${hash}`).expires_at = Date.now() - 1;
+  await verifyCall(ID, hash, gates, options);
+  assert.equal(rpc.check, 2, "past the bearer's expiry the entry is no answer");
+  const off = countingGates(store);
+  await verifyCall(ID, hash, off.gates, { identityCache: new IdentityCache(), cacheMs: 0 });
+  await verifyCall(ID, hash, off.gates, { identityCache: new IdentityCache(), cacheMs: 0 });
+  assert.equal(off.rpc.check, 2);
+});
+
+test("a refused bearer and a paused seat are not cached, and a pause evicts", async () => {
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  const state = { paused: true };
+  const identityCache = new IdentityCache();
+  const options = { identityCache, cacheMs: 60_000 };
+  assert.equal((await verifyCall(ID, hash, fakeGates(store, state), options)).body.reason, "paused");
+  assert.equal(identityCache.get(`gr-verify:${hash}`), null);
+  assert.equal((await verifyCall(ID, "0".repeat(64), fakeGates(store, { paused: false }), options)).body.reason, "mismatch");
+  assert.equal(identityCache.get(`gr-verify:${"0".repeat(64)}`), null);
+});
+
+test("a gate that cannot answer is a 503 with Retry-After, never a 200 refusal", async () => {
+  const gates = () => ({ gbBearerCheck: async () => { throw new Error("Exceeded allowed volume of requests in Durable Objects free tier"); } });
+  const answer = await verifyCall(ID, "a".repeat(64), gates);
+  assert.deepEqual([answer.status, answer.retryAfter, answer.body], [503, "30", { ok: false, reason: "unavailable" }]);
 });

@@ -87,6 +87,9 @@ targets:
       - path: Muster/Model/OpsAuditLog.swift
       - path: Muster/Model/OpsControl.swift
       - path: Muster/Model/KnobRegistry.swift
+      - path: Muster/Model/MachineStatus.swift
+      - path: Muster/Model/PlaceWatch.swift
+      - path: Muster/Model/ServiceActionRouter.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift
       - path: Muster/Model/ThemeChoice.swift
@@ -102,6 +105,7 @@ targets:
       - path: Muster/Model/WakeSettingsWriter.swift
       - path: Muster/FleetServices/ControlAPI.swift
       - path: Muster/FleetServices/FleetServiceControl.swift
+      - path: Muster/FleetServices/FleetHost.swift
       - path: Muster/FleetServices/FleetServices.swift
       - path: Muster/FleetServices/FleetSecrets.swift
       - path: Muster/FleetServices/FleetSnapshotSequencer.swift
