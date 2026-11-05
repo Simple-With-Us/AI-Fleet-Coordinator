@@ -1,6 +1,6 @@
 // The live Google drain for the Operator's chat-thread registry:
 // thread-registry.json (written by thread_registry.py as the daemon routes messages)
-// -> the "Operator Thread Registry" sheet's Threads tab.
+// -> the "Operator Thread Registry" sheet's "Zulip Threads" tab.
 //
 // This file is the ONLY Google writer for the thread registry, mirroring
 // operator_sheets_export.mjs's discipline:  validate the header before any write, upsert

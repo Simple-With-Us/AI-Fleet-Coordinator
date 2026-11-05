@@ -14,7 +14,7 @@ backfilled.  States are kept distinct throughout:  built and tested in the lane 
 - Title:  **Operator Thread Registry**
 - ID:  `1JEY34a5Gd2GYazbpGZZqq2ZZ80Fp0nenCpeH8AT4wPE`
 - URL:  https://docs.google.com/spreadsheets/d/1JEY34a5Gd2GYazbpGZZqq2ZZ80Fp0nenCpeH8AT4wPE/edit
-- Tab:  `Threads` (sheetId 1290118782), header row frozen, header row written and read back
+- Tab:  `Zulip Threads` (sheetId 1290118782), header row frozen, header row written and read back
   verified at creation, column widths set for reading (Topic and Participants widest).
 - The workbook was created through the owner's Google Sheets connection so the owner can
   see it immediately.  The Operator's own writes do NOT use that connection — see
@@ -86,23 +86,24 @@ faked here.
 
 ## Credential Seam — The One Blocker for a Live Drain
 
-The drain authenticates as a **dedicated service account for this registry**, never as an
-agent's Google identity:
+The drain authenticates as a **service account**, never as an agent's Google identity.
+Owner ruling (Nov 3, 2026):  the **existing fleet Sheets service account is reused** for
+the Operator registries;  no dedicated SA is created for this registry.
 
 - Env:  `OPERATOR_GOOGLE_SHEETS_SA` (the service-account JSON), or
 - Infisical Fleet-OPS prod, path `/operator-thread-registry`, key
   `OPERATOR_GOOGLE_SHEETS_SA`, resolved through `fleet-secrets` at runtime — the same
   resolution shape as the existing `/google-sheets-sa` secret, a separate purpose-scoped
-  one.  The key is never written to disk or printed.
+  path that holds a copy of that fleet credential.  The key is never written to disk or
+  printed.
 
-**What is needed (owner/admin action):**  create that service account (or approve reusing
-an existing one under this dedicated key name), put its JSON in Infisical at the path
-above, and share the "Operator Thread Registry" sheet with the service account's
-`client_email` as Editor.  Until then the drain refuses with a clear error and writes
-nothing;  everything up to that seam — observation, store, projection, plan, sheet
-creation — is built and tested.  Reusing the existing fleet Sheets service account
-(`/google-sheets-sa`) under the dedicated key name is a one-line owner decision if a
-second service account is unwanted;  the code does not silently fall back to it.
+**What is needed (owner/admin action):**  place the fleet Sheets service account's JSON
+in Infisical Fleet-OPS prod at `/operator-thread-registry` under
+`OPERATOR_GOOGLE_SHEETS_SA`, and share the "Operator Thread Registry" sheet with that
+service account's `client_email` as Editor.  Until then the drain refuses with a clear
+error and writes nothing;  everything up to that seam — observation, store, projection,
+plan, sheet creation — is built and tested.  The code reads only the purpose-scoped key
+above and never falls back to another credential silently.
 
 ## Gated Follow-Ups (Not Done Here)
 

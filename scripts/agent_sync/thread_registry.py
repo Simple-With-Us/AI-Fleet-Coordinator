@@ -317,7 +317,8 @@ class ThreadRegistryStore:
         """The sheet rows for every known thread, in Thread Key order.  `now` is the sync
         run's clock:  Status and the Registry Updated At stamp are computed from it, so a
         caller that passes one fixed `now` gets a self-consistent sheet."""
-        stamp = _iso(now if now is not None else time.time())
+        moment = now if now is not None else time.time()
+        stamp = _iso(moment)
         out: list[list[str]] = []
         for record in self.records():
             stream_id = int(record.get("stream_id") or 0)
@@ -329,7 +330,7 @@ class ThreadRegistryStore:
                     str(record.get("stream") or ""),
                     str(stream_id),
                     topic,
-                    status_for(topic, float(record.get("last_activity") or 0), float(now or 0)),
+                    status_for(topic, float(record.get("last_activity") or 0), moment),
                     ", ".join(participants),
                     str(len(participants)),
                     str(int(record.get("message_count") or 0)),

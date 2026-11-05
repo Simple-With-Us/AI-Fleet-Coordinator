@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -24,7 +25,7 @@ T0 = 1_763_000_000.0  # a fixed clock so statuses and stamps are deterministic
 
 
 def message(mid, *, stream_id=10, stream="Work-In-Progress", topic="AFC-412 letters",
-            sender_email="muse-assist-bot@simplewithus.zulipchat.com",
+            sender_email="muse-assist-bot@example.com",
             sender_name="Muse Assist", ts=T0, content="hello", is_bot=True):
     return {
         "id": mid,
@@ -99,16 +100,16 @@ class StoreTest(unittest.TestCase):
 
     def test_participants_use_seat_tags_and_human_names(self):
         self.store.observe(message(1))
-        self.store.observe(message(2, sender_email="kimi-bot@simplewithus.zulipchat.com",
+        self.store.observe(message(2, sender_email="kimi-bot@example.com",
                                    sender_name="Kimi"))
-        self.store.observe(message(3, sender_email="jay@simplewithus.zulipchat.com",
+        self.store.observe(message(3, sender_email="jay@example.com",
                                    sender_name="Jay Wedgeworth", is_bot=False))
         row = self.store.rows(now=T0 + 60)[0]
         self.assertEqual(row[5], "JAY, KIMI, MA")  # sorted tags;  KIMI per the owner's ruling
         self.assertEqual(row[6], "3")
 
     def test_zcode_bot_yields_zc_tag(self):
-        self.store.observe(message(1, sender_email="zc-bot@simplewithus.zulipchat.com",
+        self.store.observe(message(1, sender_email="zc-bot@example.com",
                                    sender_name="Zcode"))
         row = self.store.rows(now=T0 + 60)[0]
         self.assertEqual(row[5], "ZC")
@@ -123,14 +124,14 @@ class StoreTest(unittest.TestCase):
 
     def test_extraction_is_deterministic(self):
         content = ("see AFC-412 and CT-2442, PR #1258, "
-                   "https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1268 "
-                   "and Simple-With-Us/BotFleet#1317 plus AFC-412 again")
+                   "https://github.com/Fixture-Org/Fixture-Repo/pull/1268 "
+                   "and Fixture-Org/Other-Repo#1317 plus AFC-412 again")
         self.store.observe(message(1, content=content))
         row = self.store.rows(now=T0 + 60)[0]
         self.assertEqual(row[11], "AFC-412, CT-2442")
         self.assertEqual(
             row[12],
-            "PR #1258, Simple-With-Us/AI-Fleet-Coordinator#1268, Simple-With-Us/BotFleet#1317",
+            "Fixture-Org/Fixture-Repo#1268, Fixture-Org/Other-Repo#1317, PR #1258",
         )
 
     def test_non_stream_and_malformed_messages_are_ignored(self):
@@ -144,6 +145,15 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(TR.status_for(" anything", T0, T0 + 2 * 24 * 3600), "idle")
         self.assertEqual(TR.status_for(" anything", T0, T0 + 40 * 24 * 3600), "dormant")
         self.assertEqual(TR.status_for("✔ done topic", T0, T0 + 60), "closed")
+
+    def test_rows_without_a_clock_still_age_the_status(self):
+        # A caller that omits `now` gets the wall clock.  The status must be derived from
+        # that clock and not from a zero clock, which would clamp every age to zero and
+        # report every thread as active (the status and the stamp share one clock).
+        old = time.time() - 40 * 24 * 3600
+        self.store.observe(message(1, ts=old))
+        row = self.store.rows()[0]
+        self.assertEqual(row[4], "dormant")
 
     def test_store_survives_reopen(self):
         self.store.observe(message(1))
@@ -161,7 +171,7 @@ class SyncTest(unittest.TestCase):
         self.store = TR.ThreadRegistryStore(os.path.join(self.tmp.name, "t.json"))
         self.store.observe(message(1, content="AFC-412 work"))
         self.store.observe(message(2, topic="release notes", ts=T0 + 10,
-                                   sender_email="kimi-bot@simplewithus.zulipchat.com",
+                                   sender_email="kimi-bot@example.com",
                                    sender_name="Kimi"))
 
     def test_first_sync_appends_then_second_is_a_noop(self):

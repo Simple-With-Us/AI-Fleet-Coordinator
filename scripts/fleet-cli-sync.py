@@ -25,7 +25,7 @@ from pathlib import Path
 
 DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-# The reviewed allowlisted runtime contains 150 files. Keep the exact minimum
+# The reviewed allowlisted runtime contains 152 files. Keep the exact minimum
 # ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -40,7 +40,10 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # (the operator-registry CLI, the platform-letter registry side) use to reach that API.
 # The 149th is fleet_lanes/placement.py, which guard.py imports for the placement mode and exceptions (AFC-618).
 # The 150th is placement-exceptions.json beside it, without which every excused checkout reads as misplaced.
-MAX_FILES = 150
+# The 151st and 152nd are agent_sync/thread_registry.py (the Operator chat-thread registry the listener
+# keeps) and agent_sync/thread_registry_export.mjs (its Google drain, a data file beside the Python
+# modules), added for that review.
+MAX_FILES = 152
 MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
