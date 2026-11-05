@@ -1,15 +1,15 @@
 import Foundation
 
-// Reading the wake settings:  the configuration file,  the listener's own status,  the pins
+// Reading the wake settings:  the configuration file,  the eavesdropper's own status,  the pins
 // that prove a binary works,  and the ledger that says how much of the budget is used.
 //
 // Nothing here decides anything.  It reads,  and hands what it read to the builder.
 
 // MARK: - Where the state lives
 
-/// Where the listener keeps its state on this Mac.
+/// Where the eavesdropper keeps its state on this Mac.
 struct ListenerStateLocation: Equatable {
-    /// The listener's state directory:  `~/.agent-sync`.
+    /// The eavesdropper's state directory:  `~/.agent-sync`.
     var root: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -21,7 +21,7 @@ struct ListenerStateLocation: Equatable {
         root.appendingPathComponent("listener.toml")
     }
 
-    /// The listener's own published state.
+    /// The eavesdropper's own published state.
     var statusURL: URL {
         root.appendingPathComponent("listener/status.json")
     }
@@ -54,7 +54,7 @@ struct ListenerStateLocation: Equatable {
 struct WakeSettingsReader {
     /// Where the state lives.
     var location: ListenerStateLocation
-    /// The command line,  for the listener's own account of itself.
+    /// The command line,  for the eavesdropper's own account of itself.
     var runner: AgentSyncRunning
     /// The seats to show.
     var roster: [String]
@@ -85,7 +85,7 @@ struct WakeSettingsReader {
         var sources = WakeSettingsSources()
         var problems: [String] = []
 
-        // Who holds each seat.  The listener refuses a section it is not given,  so this comes
+        // Who holds each seat.  The eavesdropper refuses a section it is not given,  so this comes
         // first:  every seat's row depends on it.
         sources.partition = ListenerPartition.load(from: partitionURL)
         sources.partitionURL = partitionURL
@@ -103,24 +103,24 @@ struct WakeSettingsReader {
         sources.configReadable = true
         sources.configPath = location.configURL.path
 
-        // The listener's own account of itself.
+        // The eavesdropper's own account of itself.
         var status: ListenerStatus?
         do {
             let result = try await runner.run(AgentSyncInvocation.status())
             if result.exitCode == 0, let data = result.stdout.data(using: .utf8) {
                 status = try? JSONDecoder().decode(ListenerStatus.self, from: data)
                 if status == nil {
-                    problems.append("The listener's status could not be read,  so nothing is known about the running listener.")
+                    problems.append("The eavesdropper's status could not be read,  so nothing is known about the running eavesdropper.")
                 }
             } else {
-                problems.append("The listener's status command failed:  \(result.stderrTail)")
+                problems.append("The eavesdropper's status command failed:  \(result.stderrTail)")
             }
         } catch {
-            problems.append("The listener's status could not be run:  \(error.localizedDescription)")
+            problems.append("The eavesdropper's status could not be run:  \(error.localizedDescription)")
         }
         sources.status = status
 
-        // The listener says which partition it reads,  and that copy is the one that can stop it,
+        // The eavesdropper says which partition it reads,  and that copy is the one that can stop it,
         // so it decides over the copy in Muster's own checkout.  If it cannot be read,  no seat is
         // held here.
         if let path = status?.status?.partition_file, !path.isEmpty {
@@ -129,7 +129,7 @@ struct WakeSettingsReader {
             sources.partitionURL = url
         }
 
-        // The seats to show:  the roster,  then every seat the file or the listener knows.
+        // The seats to show:  the roster,  then every seat the file or the eavesdropper knows.
         var tags = roster
         for tag in sources.config.seatTags where !tags.contains(tag) {
             tags.append(tag)
@@ -144,7 +144,7 @@ struct WakeSettingsReader {
         var usage: [String: WakeUsage] = [:]
         var recent: [String: [WakeLedger.Outcome]] = [:]
         for tag in tags where !sources.partition.host(of: tag, in: sources.config).isElsewhere {
-            // The listener keeps a seat's files under its upper-cased name.
+            // The eavesdropper keeps a seat's files under its upper-cased name.
             let directoryName = tag.uppercased()
             var seatPins: [String: PinEvidence] = [:]
             for runtime in ["claude", "muse", "mcode"] {

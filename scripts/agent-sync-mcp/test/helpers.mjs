@@ -111,3 +111,6 @@ export function browserPostOrigin({ policy, document = ISSUER, target = ISSUER }
       return docOrigin;
   }
 }
+
+/** A gbBearerCheck answer without its expires_at, for pins on the other fields. */
+export const withoutExpiry = ({ expires_at: _expiresAt, ...rest }) => rest;

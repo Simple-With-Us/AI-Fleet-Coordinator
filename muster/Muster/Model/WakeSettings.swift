@@ -3,13 +3,13 @@ import Foundation
 // The seat wake settings,  as the panel shows them.
 //
 // The panel has two sources and never mixes them:  the configuration file
-// (`~/.agent-sync/listener.toml`) holds what the operator wrote,  and the running listener
+// (`~/.agent-sync/listener.toml`) holds what the operator wrote,  and the running eavesdropper
 // holds what is actually in effect.  A setting where the two disagree is DRIFT,  and it is
 // never shown as a quiet green.
 //
 // MARK: - The wake types
 
-/// The wake types the listener knows.
+/// The wake types the eavesdropper knows.
 enum WakeType: String, CaseIterable {
     case inbox
     case claude
@@ -31,15 +31,15 @@ enum WakeType: String, CaseIterable {
     var runsWorker: Bool { self != .inbox }
 }
 
-// MARK: - Which listener holds a seat
+// MARK: - Which eavesdropper holds a seat
 
 /// Who holds a seat, according to the seat partition.
 ///
-/// The partition (`docs/protocols/agent-sync-partition.toml`) gives each seat to one listener.  A
-/// listener refuses to run with a `[seat.X]` section the partition does not give to it, enabled or
+/// The partition (`docs/protocols/agent-sync-partition.toml`) gives each seat to one eavesdropper.  A
+/// eavesdropper refuses to run with a `[seat.X]` section the partition does not give to it, enabled or
 /// not, and it fails closed:  a seat it does not list is refused, and a file it cannot read
 /// refuses every seat (`agent_sync/config.py` `partition_errors`).  Muster runs on the Mac and
-/// reaches only the Mac's listener, so only `.mac` seats can be changed here.
+/// reaches only the Mac's eavesdropper, so only `.mac` seats can be changed here.
 enum ListenerSeatHost: Equatable {
     case mac
     case server
@@ -48,16 +48,16 @@ enum ListenerSeatHost: Equatable {
     /// The partition does not list the seat.
     case unlisted
     /// The partition gives the seat to the Mac, but the seat's own section in the Mac's file says
-    /// `instance = "server"`.  The listener tests that key first and refuses the section.
+    /// `instance = "server"`.  The eavesdropper tests that key first and refuses the section.
     case markedForTheServer
     /// Muster cannot say:  the partition could not be read, or it disagrees with the running
-    /// listener.  The text says which.
+    /// eavesdropper.  The text says which.
     case unknown(String)
 
-    /// Whether the Mac's listener holds this seat.
+    /// Whether the Mac's eavesdropper holds this seat.
     var isTheMac: Bool { self == .mac }
 
-    /// Whether the partition was read and the Mac's listener will not run this seat.
+    /// Whether the partition was read and the Mac's eavesdropper will not run this seat.
     var isElsewhere: Bool {
         switch self {
         case .server, .noListener, .unlisted, .markedForTheServer: return true
@@ -71,13 +71,13 @@ enum ListenerSeatHost: Equatable {
         case .mac:
             return nil
         case .server:
-            return "Held by the server listener.\u{00A0} Change it there."
+            return "Held by the server eavesdropper.\u{00A0} Change it there."
         case .noListener:
-            return "No listener holds this seat."
+            return "No eavesdropper holds this seat."
         case .unlisted:
-            return "No listener holds this seat.\u{00A0} The seat partition does not list it."
+            return "No eavesdropper holds this seat.\u{00A0} The seat partition does not list it."
         case .markedForTheServer:
-            return "The seat's section in the Mac's file says instance = \"server\", so the Mac's listener refuses it."
+            return "The seat's section in the Mac's file says instance = \"server\", so the Mac's eavesdropper refuses it."
         case .unknown(let why):
             return "Muster cannot say who holds this seat, so it will not change it.\u{00A0} \(why)"
         }
@@ -88,7 +88,7 @@ enum ListenerSeatHost: Equatable {
         switch self {
         case .mac: return "On The Mac"
         case .server: return "On The Server"
-        case .noListener, .unlisted: return "No Listener"
+        case .noListener, .unlisted: return "No Eavesdropper"
         case .markedForTheServer: return "Marked For The Server"
         case .unknown: return "Not Known"
         }
@@ -106,9 +106,9 @@ enum ListenerSeatHost: Equatable {
     }
 }
 
-/// The seat partition, read the way the listener reads it.
+/// The seat partition, read the way the eavesdropper reads it.
 struct ListenerPartition: Equatable {
-    /// Where the file sits in a checkout.  The Mac's listener reads its own checkout's copy, and
+    /// Where the file sits in a checkout.  The Mac's eavesdropper reads its own checkout's copy, and
     /// says which one in its status (`partition_file`), so that copy decides once it has said.
     static let relativePath = "docs/protocols/agent-sync-partition.toml"
     /// The instance name Muster's own machine has in the partition.
@@ -131,7 +131,7 @@ struct ListenerPartition: Equatable {
         self.problem = problem
     }
 
-    /// The copy in the checkout Muster runs the listener's command line from.
+    /// The copy in the checkout Muster runs the eavesdropper's command line from.
     static func defaultURL() -> URL? {
         EngineLocator.locate()?.root.appendingPathComponent(relativePath)
     }
@@ -173,7 +173,7 @@ struct ListenerPartition: Equatable {
         return ListenerPartition(seats: found)
     }
 
-    /// Who holds a seat.  The listener upper-cases a section's name before it looks it up.
+    /// Who holds a seat.  The eavesdropper upper-cases a section's name before it looks it up.
     func host(of seat: String) -> ListenerSeatHost {
         guard let seats else {
             return .unknown("The seat partition could not be read.\u{00A0} \(problem ?? "")")
@@ -189,7 +189,7 @@ struct ListenerPartition: Equatable {
 
     /// Who holds a seat, given the Mac's file.  `partition_errors` tests a section's own `instance`
     /// key before the partition and refuses one that names the other instance, so a seat the
-    /// partition gives to the Mac can still be one the Mac's listener will not run.  Its `INSTANCES`
+    /// partition gives to the Mac can still be one the Mac's eavesdropper will not run.  Its `INSTANCES`
     /// are "mac" and "server", and any other value is a seat problem, not a refusal.
     func host(of seat: String, in config: ListenerConfigDocument) -> ListenerSeatHost {
         let host = self.host(of: seat)
@@ -200,7 +200,7 @@ struct ListenerPartition: Equatable {
         return .markedForTheServer
     }
 
-    /// Whether a tag is one the listener accepts:  `_SEAT_RE` in `agent_sync/config.py`.
+    /// Whether a tag is one the eavesdropper accepts:  `_SEAT_RE` in `agent_sync/config.py`.
     static func isSeatName(_ value: String) -> Bool {
         let scalars = Array(value.unicodeScalars)
         guard (1...32).contains(scalars.count), let first = scalars.first else { return false }
@@ -308,9 +308,9 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Whether the listener's own configuration enforces this setting.
+    /// Whether the eavesdropper's own configuration enforces this setting.
     ///
-    /// The dollar cap is read but never acted on:  the listener counts wakes and not
+    /// The dollar cap is read but never acted on:  the eavesdropper counts wakes and not
     /// dollars,  by the owner's ruling of Oct 13, 2026.  A setting the engine does not
     /// enforce is refused with a reason,  rather than written as a number that would never
     /// bind.
@@ -322,7 +322,7 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
     var refusalReason: String? {
         switch self {
         case .usdPerDay:
-            return "The listener counts wakes and not dollars,  so this cap is never enforced and Muster will not write it."
+            return "The eavesdropper counts wakes and not dollars,  so this cap is never enforced and Muster will not write it."
         case .hostLoadGate:
             return "The owner ruled the host load gate stays off,  so Muster will not turn it on."
         default:
@@ -335,15 +335,15 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
 
 /// What the panel knows about one setting.
 enum WakeSettingState: String, Equatable {
-    /// The listener is using the value the configuration file holds.
+    /// The eavesdropper is using the value the configuration file holds.
     case match
-    /// The listener is using something else.
+    /// The eavesdropper is using something else.
     case drift
     /// The setting is configured,  but nobody ever proved it works.
     case unproven
-    /// The listener does not report this setting,  so the panel can only show the file.
+    /// The eavesdropper does not report this setting,  so the panel can only show the file.
     case notOwned
-    /// The engine owns this setting,  but the listener does not publish it:  Muster can
+    /// The engine owns this setting,  but the eavesdropper does not publish it:  Muster can
     /// write it,  and cannot say whether it is in effect.
     case unpublished
     /// The file does not hold this setting,  so the live value is the default.
@@ -352,7 +352,7 @@ enum WakeSettingState: String, Equatable {
     case off
     /// Something could not be read.
     case unknown
-    /// The Mac's listener does not hold this seat,  so there is nothing to compare here.
+    /// The Mac's eavesdropper does not hold this seat,  so there is nothing to compare here.
     case heldElsewhere
 
     var label: String {
@@ -389,7 +389,7 @@ struct WakeSetting: Identifiable, Equatable {
     let key: WakeSettingKey
     /// What the configuration file holds.
     let configured: ListenerConfigValue?
-    /// What the running listener is using.
+    /// What the running eavesdropper is using.
     let live: ListenerConfigValue?
     let state: WakeSettingState
     /// A line about the setting,  in words.
@@ -411,9 +411,9 @@ struct PinEvidence: Equatable {
     let model: String?
     /// When the pin was made.
     let verifiedAt: Date?
-    /// Whether the listener holds the pin.
+    /// Whether the eavesdropper holds the pin.
     let pinned: Bool
-    /// The listener's own reason,  when it says the pin is stale.
+    /// The eavesdropper's own reason,  when it says the pin is stale.
     let why: String?
 
     /// How old the pin is,  in words.
@@ -508,7 +508,7 @@ struct WakeSeat: Identifiable, Equatable {
     var quotaExhausted: Bool = false
     /// Source of the quota reading (e.g. "codecaps").
     var quotaSource: String? = nil
-    /// Why the listener would not run this seat,  when it would not.
+    /// Why the eavesdropper would not run this seat,  when it would not.
     var skippedReasons: [String] = []
     /// Whether the file turns this seat off.
     var disabledInFile: Bool = false
@@ -520,7 +520,7 @@ struct WakeSeat: Identifiable, Equatable {
         settings.filter { $0.state.isProblem }
     }
 
-    /// Whether the Mac's file holds a section the listener refuses to run with.
+    /// Whether the Mac's file holds a section the eavesdropper refuses to run with.
     var hasRefusedSection: Bool {
         host.isElsewhere && hasSection
     }
@@ -531,7 +531,7 @@ struct WakeSeat: Identifiable, Equatable {
         let why = host == .markedForTheServer
             ? "The section says instance = \"server\""
             : "The seat partition does not give \(seat) to the Mac"
-        return "The Mac's configuration file holds a [seat.\(seat)] section.\u{00A0} \(why), so the listener refuses every reload and will refuse its next start until the section is gone."
+        return "The Mac's configuration file holds a [seat.\(seat)] section.\u{00A0} \(why), so the eavesdropper refuses every reload and will refuse its next start until the section is gone."
     }
 
     /// Whether the seat belongs under the Problems Only filter.
@@ -543,11 +543,11 @@ struct WakeSeat: Identifiable, Equatable {
 
 /// Everything the panel shows.
 struct WakeSettingsModel: Equatable {
-    /// Whether the listener is running.
+    /// Whether the eavesdropper is running.
     var running: Bool = false
-    /// The pid of the running listener.
+    /// The pid of the running eavesdropper.
     var pid: Int?
-    /// When the listener last published its state.
+    /// When the eavesdropper last published its state.
     var updated: Date?
     /// The seats,  in roster order.
     var seats: [WakeSeat] = []
@@ -559,7 +559,7 @@ struct WakeSettingsModel: Equatable {
     var problems: [String] = []
     /// Where the configuration file is.
     var configPath: String = ""
-    /// What the Mac's listener itself reports is wrong with its configuration.
+    /// What the Mac's eavesdropper itself reports is wrong with its configuration.
     var listenerErrors: [String] = []
 
     /// Every seat that has something wrong.
@@ -580,9 +580,9 @@ struct WakeSettingsSources {
     var configPath: String = ""
     /// The seat partition.  Until it has been read,  it holds no seat.
     var partition = ListenerPartition(unreadable: "It has not been read.")
-    /// Where that partition was read from:  the listener's own copy once it has named one.
+    /// Where that partition was read from:  the eavesdropper's own copy once it has named one.
     var partitionURL: URL?
-    /// The listener's own published state,  when it could be read.
+    /// The eavesdropper's own published state,  when it could be read.
     var status: ListenerStatus?
     /// The pins that prove a seat's binaries work:  seat -> runtime -> evidence.
     var pins: [String: [String: PinEvidence]] = [:]
@@ -617,7 +617,7 @@ enum WakeSettingsBuilder {
         }
         model.problems.append(contentsOf: model.seats.compactMap(\.refusedSectionProblem))
         if let instance = sources.status?.status?.instance, instance != ListenerPartition.thisInstance {
-            model.problems.append("The listener on this machine says it is the \(instance) instance, not the Mac's.")
+            model.problems.append("The eavesdropper on this machine says it is the \(instance) instance, not the Mac's.")
         }
         model.daemonSettings = daemonSettings(sources)
         return model
@@ -626,10 +626,10 @@ enum WakeSettingsBuilder {
     /// One seat's rows.
     private static func seat(for tag: String, sources: WakeSettingsSources) -> WakeSeat {
         let host = host(of: tag, sources: sources)
-        // The listener upper-cases a section's name, and publishes every seat under that name, so
+        // The eavesdropper upper-cases a section's name, and publishes every seat under that name, so
         // a `[seat.mm]` section is looked up as MM.
         let published = tag.uppercased()
-        // The Mac's listener and the Mac's ledgers say nothing about a seat another listener holds,
+        // The Mac's eavesdropper and the Mac's ledgers say nothing about a seat another eavesdropper holds,
         // so nothing from them is shown for it:  no zero, no default and no pause.
         let live = host.isElsewhere ? nil : sources.status?.seat(published)
         let pins: [String: PinEvidence] = host.isElsewhere ? [:] : (sources.pins[tag] ?? [:])
@@ -682,8 +682,8 @@ enum WakeSettingsBuilder {
 
     /// Who holds a seat, as far as Muster can say.
     ///
-    /// A listener from before `partition_file` does not say which partition it reads, so the copy
-    /// Muster read may not be its copy.  If that listener is running a seat this copy gives away,
+    /// An eavesdropper from before `partition_file` does not say which partition it reads, so the copy
+    /// Muster read may not be its copy.  If that eavesdropper is running a seat this copy gives away,
     /// the two differ, and calling the seat elsewhere would offer to delete a live seat's section.
     /// A seat it skipped or that the file turns off counts too:  its partition check took those.
     private static func host(of tag: String, sources: WakeSettingsSources) -> ListenerSeatHost {
@@ -698,7 +698,7 @@ enum WakeSettingsBuilder {
                 || state.skipped_seats?[published] != nil else {
             return host
         }
-        return .unknown("The running listener holds this seat, and the copy Muster read gives it elsewhere.")
+        return .unknown("The running eavesdropper holds this seat, and the copy Muster read gives it elsewhere.")
     }
 
     /// One row,  with its state decided.
@@ -732,7 +732,7 @@ enum WakeSettingsBuilder {
         )
     }
 
-    /// The value the running listener is using.
+    /// The value the running eavesdropper is using.
     private static func liveValue(
         for key: WakeSettingKey,
         section: String,
@@ -756,7 +756,7 @@ enum WakeSettingsBuilder {
             guard let fallback = fallbackRuntime(section: section, config: config) else { return nil }
             return pins[fallback] == nil ? nil : .text("verified")
         case .fallbackUncontained:
-            // The listener does not publish this,  so the panel has nothing live to compare.
+            // The eavesdropper does not publish this,  so the panel has nothing live to compare.
             return nil
         case .wakesPerHour:
             return live?.budget?["wakes_per_hour"]?.configValue
@@ -790,9 +790,9 @@ enum WakeSettingsBuilder {
     /// The rule,  in order:
     ///
     ///   * the file holds nothing:  the live value is the default
-    ///   * the listener reported nothing for this seat:  what it is using is unknown,  and that is
+    ///   * the eavesdropper reported nothing for this seat:  what it is using is unknown,  and that is
     ///     a problem,  because its status could not be read or it is not running the seat
-    ///   * the listener reported the seat and not this setting:  it does not publish it
+    ///   * the eavesdropper reported the seat and not this setting:  it does not publish it
     ///   * the two agree:  a pass
     ///   * the two differ:  DRIFT
     ///
@@ -826,13 +826,13 @@ enum WakeSettingsBuilder {
             guard configured != nil else { return .unset }
             guard live != nil else { return .unproven }
         case .fallbackUncontained:
-            // The engine reads this one,  but the listener does not publish it.
+            // The engine reads this one,  but the eavesdropper does not publish it.
             return configured == nil ? .unset : .unpublished
         default:
             break
         }
-        // The file first:  a setting nobody holds is the listener's default,  and a
-        // setting only the file holds is one the listener does not publish.
+        // The file first:  a setting nobody holds is the eavesdropper's default,  and a
+        // setting only the file holds is one the eavesdropper does not publish.
         guard let configured else { return .unset }
         guard let live else { return seatReported ? .notOwned : .unknown }
         if configured.matches(live) { return .match }
@@ -866,7 +866,7 @@ enum WakeSettingsBuilder {
         switch state {
         case .drift:
             let stale = pins["muse"]?.why ?? pins["mcode"]?.why
-            let reason = "The listener is using \(live?.displayText ?? "something else"),  and the file holds \(configured?.displayText ?? "nothing")."
+            let reason = "The eavesdropper is using \(live?.displayText ?? "something else"),  and the file holds \(configured?.displayText ?? "nothing")."
             if let stale { return reason + "\u{00A0} The pin says \(stale)." }
             return reason
         case .unproven:
@@ -876,17 +876,17 @@ enum WakeSettingsBuilder {
             return "This is configured,  but no pin has ever proved it works."
         case .notOwned:
             if let reason = key.refusalReason { return reason }
-            return "The listener does not publish this setting."
+            return "The eavesdropper does not publish this setting."
         case .unpublished:
-            return "The listener reads this one,  but does not publish it,  so only the file can be shown."
+            return "The eavesdropper reads this one,  but does not publish it,  so only the file can be shown."
         case .unset:
-            return "The file holds nothing,  so the listener's default is in effect."
+            return "The file holds nothing,  so the eavesdropper's default is in effect."
         case .off:
-            return "Off:  the listener never holds a wake for load."
+            return "Off:  the eavesdropper never holds a wake for load."
         case .unknown:
-            return "The listener did not report this seat, so what it is using is not known."
+            return "The eavesdropper did not report this seat, so what it is using is not known."
         case .heldElsewhere:
-            return "The Mac's listener does not hold this seat."
+            return "The Mac's eavesdropper does not hold this seat."
         case .match:
             if key == .model, let pin = pins["muse"] ?? pins["mcode"], let age = pin.age {
                 return "Proved by the pin,  \(age)."
@@ -921,7 +921,7 @@ enum WakeSettingsBuilder {
 
     /// The daemon-wide settings.
     ///
-    /// The host load gate stays off,  by the owner's ruling:  `0` means the listener never
+    /// The host load gate stays off,  by the owner's ruling:  `0` means the eavesdropper never
     /// holds a wake for load.  It is shown as off,  and never as a setting nobody looked at.
     private static func daemonSettings(_ sources: WakeSettingsSources) -> [WakeSetting] {
         let configured = sources.config.value(section: "daemon", key: "host_wake_load_per_core")
@@ -934,7 +934,7 @@ enum WakeSettingsBuilder {
                 live: nil,
                 state: isOff ? .off : .drift,
                 note: isOff
-                    ? "Off:  the listener never holds a wake for load."
+                    ? "Off:  the eavesdropper never holds a wake for load."
                     : "The owner ruled this gate stays off."
             ),
         ]

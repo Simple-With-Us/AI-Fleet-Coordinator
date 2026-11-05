@@ -3,18 +3,18 @@ import Foundation
 
 /// The wake settings panel's store.
 ///
-/// It reads the listener's own status and the configuration file, and it writes the configuration
-/// file and then asks the listener to act on the change.
+/// It reads the eavesdropper's own status and the configuration file, and it writes the configuration
+/// file and then asks the eavesdropper to act on the change.
 ///
 /// These rules hold throughout:
 ///
 ///   * a seat the seat partition does not give to the Mac is never changed from here:  the file
 ///     is not written for it, and its pause, test wake and pin are not run, because they could
-///     only reach the Mac's listener, which does not hold it
+///     only reach the Mac's eavesdropper, which does not hold it
 ///   * a seat whose holder is not known keeps only the pause, which stops something and touches
 ///     only the Mac's own pause file.  Nothing that starts or changes a seat runs on it.
-///   * a candidate file the listener's own rules refuse never reaches the disk
-///   * a change is reported as in effect only when the listener's own status says it took the
+///   * a candidate file the eavesdropper's own rules refuse never reaches the disk
+///   * a change is reported as in effect only when the eavesdropper's own status says it took the
 ///     file.  `daemon reload` exits 0 whether it did or not.
 ///   * a setting the engine does not enforce is refused with a reason, rather than written as a
 ///     number that would never bind
@@ -31,16 +31,16 @@ final class WakeSettingsStore: ObservableObject {
     /// The edited values, by seat and setting.
     @Published var draft: [String: [WakeSettingKey: String]] = [:]
 
-    /// Where the listener's state lives.
+    /// Where the eavesdropper's state lives.
     private let location: ListenerStateLocation
-    /// The listener's own command line.
+    /// The eavesdropper's own command line.
     private let runner: AgentSyncRunning
     /// Where the seat partition is.
     private let partitionURL: URL?
-    /// The writer, when the panel may write.  Each read points it at the partition the listener
+    /// The writer, when the panel may write.  Each read points it at the partition the eavesdropper
     /// says it reads, so its gates and the panel go by the same copy.
     private var writer: WakeSettingsWriter?
-    /// How long to wait between looks at the listener's status after a reload.
+    /// How long to wait between looks at the eavesdropper's status after a reload.
     private let reloadPollInterval: TimeInterval
     /// How many times to look.
     private let reloadPollAttempts: Int
@@ -52,7 +52,7 @@ final class WakeSettingsStore: ObservableObject {
     private var configTextAtRead: String?
     /// The roster the last full read was given.  The refreshes that follow an apply, a pause or a
     /// pin are parameterless, and a parameterless refresh would read with an empty roster:  a seat
-    /// that is on the roster but has no `[seat.X]` section and is not in the listener's status
+    /// that is on the roster but has no `[seat.X]` section and is not in the eavesdropper's status
     /// would drop out of the panel until the next manual refresh.  Keeping the last roster makes
     /// those refreshes read the same seats.
     private var roster: [String] = []
@@ -162,7 +162,7 @@ final class WakeSettingsStore: ObservableObject {
             }
             if key == .wakeType, WakeType(rawValue: trimmed) == nil {
                 let known = WakeType.allCases.map(\.rawValue).joined(separator: ", ")
-                reading.refusals.append("\(key.title): the listener knows \(known), and not \(trimmed).")
+                reading.refusals.append("\(key.title): the eavesdropper knows \(known), and not \(trimmed).")
                 continue
             }
             guard let value = key.value(from: trimmed) else {
@@ -192,8 +192,8 @@ final class WakeSettingsStore: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
-    /// Applies a seat's edited settings, then asks the listener to read the file and says what the
-    /// listener did.
+    /// Applies a seat's edited settings, then asks the eavesdropper to read the file and says what the
+    /// eavesdropper did.
     func apply(seat: String) async {
         guard let writer else {
             say("Muster was not allowed to write the configuration file.", failure: true)
@@ -239,11 +239,11 @@ final class WakeSettingsStore: ObservableObject {
             return
         }
 
-        // The file is written;  now the listener has to read it.
+        // The file is written;  now the eavesdropper has to read it.
         let outcome = await reload()
         var report = ["The configuration file was written.", outcome.report]
         if reading.edits.contains(where: { $0.key.isBudget || $0.key.isLiveCap }) {
-            report.append("A reload does not re-read a seat's budget, so the listener must be restarted before the new cap takes effect.")
+            report.append("A reload does not re-read a seat's budget, so the eavesdropper must be restarted before the new cap takes effect.")
         }
         if !reading.refusals.isEmpty {
             report.append(reading.refusals.joined(separator: "\n"))
@@ -252,14 +252,14 @@ final class WakeSettingsStore: ObservableObject {
         await refresh()
     }
 
-    /// Takes out a section the listener refuses to run with.  It is the one write allowed for a
-    /// seat the Mac does not hold, because the section is what stops the Mac's listener.
+    /// Takes out a section the eavesdropper refuses to run with.  It is the one write allowed for a
+    /// seat the Mac does not hold, because the section is what stops the Mac's eavesdropper.
     func removeRefusedSection(seat: String) async {
         guard let writer else {
             say("Muster was not allowed to write the configuration file.", failure: true)
             return
         }
-        // The model knows what the writer's gate cannot:  a running listener that holds the seat.
+        // The model knows what the writer's gate cannot:  a running eavesdropper that holds the seat.
         let host = self.host(of: seat)
         guard host.isElsewhere else {
             say("Nothing was removed for \(seat).\u{00A0} \(host.readOnlyReason ?? "The seat partition gives it to the Mac.")", failure: true)
@@ -294,7 +294,7 @@ final class WakeSettingsStore: ObservableObject {
         await refresh()
     }
 
-    /// Runs the listener's own rules on the candidate.  False, with the reason shown, stops the
+    /// Runs the eavesdropper's own rules on the candidate.  False, with the reason shown, stops the
     /// write.  A check that cannot run stops it too, because the point is not to guess.
     private func passesTheListenersCheck(
         _ prepared: WakeSettingsWriter.PreparedWrite,
@@ -315,7 +315,7 @@ final class WakeSettingsStore: ObservableObject {
             guard let data = result.stdout.data(using: .utf8),
                   let decoded = try? JSONDecoder().decode(ListenerConfigCheck.self, from: data) else {
                 say(
-                    "The configuration file was not changed, because the listener's own check did not answer: \(result.stderrTail)",
+                    "The configuration file was not changed, because the eavesdropper's own check did not answer: \(result.stderrTail)",
                     failure: true
                 )
                 return false
@@ -323,7 +323,7 @@ final class WakeSettingsStore: ObservableObject {
             check = decoded
         } catch {
             say(
-                "The configuration file was not changed, because the listener's own check could not run: \(error.localizedDescription)",
+                "The configuration file was not changed, because the eavesdropper's own check could not run: \(error.localizedDescription)",
                 failure: true
             )
             return false
@@ -331,7 +331,7 @@ final class WakeSettingsStore: ObservableObject {
         let problems = isRepair ? check.problemsForARepair : check.problems
         guard problems.isEmpty else {
             say(
-                "The configuration file was not changed, because the listener would not take it:\n"
+                "The configuration file was not changed, because the eavesdropper would not take it:\n"
                     + problems.joined(separator: "\n"),
                 failure: true
             )
@@ -340,7 +340,7 @@ final class WakeSettingsStore: ObservableObject {
         return true
     }
 
-    /// Asks the listener to re-read the file, and waits for its own status to say what it did.
+    /// Asks the eavesdropper to re-read the file, and waits for its own status to say what it did.
     func reload() async -> ListenerReloadOutcome {
         let sentAt = Date().timeIntervalSince1970
         do {
@@ -368,10 +368,10 @@ final class WakeSettingsStore: ObservableObject {
 
     // MARK: The kill switch
 
-    /// Stops a seat's wakes on the Mac's listener.
+    /// Stops a seat's wakes on the Mac's eavesdropper.
     ///
     /// A seat whose holder is not known can still be paused:  the pause only writes the Mac's own
-    /// pause file, so it cannot reach another listener, and taking away the stop on a seat the Mac
+    /// pause file, so it cannot reach another eavesdropper, and taking away the stop on a seat the Mac
     /// may well hold is the worse failure.  The report says what Muster cannot know.
     func pause(seat: String) async {
         let host = self.host(of: seat)
@@ -383,14 +383,14 @@ final class WakeSettingsStore: ObservableObject {
             say("The seat tag is not a plain token, so nothing was paused.", failure: true)
             return
         }
-        var report = "Wakes paused on the Mac's listener."
+        var report = "Wakes paused on the Mac's eavesdropper."
         if !host.isTheMac {
-            report += "\u{00A0} Muster cannot say the Mac holds this seat, so it may not be the listener that wakes it."
+            report += "\u{00A0} Muster cannot say the Mac holds this seat, so it may not be the eavesdropper that wakes it."
         }
         await run(invocation, success: report)
     }
 
-    /// Lifts the kill switch on the Mac's listener.  This lets wakes run again, so unlike the pause
+    /// Lifts the kill switch on the Mac's eavesdropper.  This lets wakes run again, so unlike the pause
     /// it needs a seat the Mac is known to hold.
     func resume(seat: String) async {
         let host = self.host(of: seat)
@@ -402,7 +402,7 @@ final class WakeSettingsStore: ObservableObject {
             say("The seat tag is not a plain token, so nothing was resumed.", failure: true)
             return
         }
-        await run(invocation, success: "The pause was lifted on the Mac's listener.")
+        await run(invocation, success: "The pause was lifted on the Mac's eavesdropper.")
     }
 
     // MARK: The pin
@@ -459,10 +459,10 @@ final class WakeSettingsStore: ObservableObject {
             if result.exitCode == 0 {
                 say(success)
             } else {
-                say("The listener refused the run: \(result.stderrTail)", failure: true)
+                say("The eavesdropper refused the run: \(result.stderrTail)", failure: true)
             }
         } catch {
-            say("The listener could not be asked: \(error.localizedDescription)", failure: true)
+            say("The eavesdropper could not be asked: \(error.localizedDescription)", failure: true)
         }
         await refresh()
     }

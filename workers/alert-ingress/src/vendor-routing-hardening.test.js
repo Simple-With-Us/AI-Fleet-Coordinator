@@ -11,7 +11,7 @@ import test from "node:test";
 import { createHmac } from "node:crypto";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
-import { fromSentry } from "./normalize.js";
+import { fromSentry, normalize } from "./normalize.js";
 
 const sentrySig = (body, secret = "fixture") =>
   createHmac("sha256", secret).update(body).digest("hex");
@@ -1935,60 +1935,41 @@ test("F10 a message missing a consumed field is not proof of anything", async ()
   }
 });
 
-test("F11 an identity carrying a credential is refused before it becomes a key", async () => {
-  // The identity becomes a durable storage key and is relayed into the standing
-  // block, so a body that puts a token where an identity belongs must not be
-  // filed:  persisting it would copy the secret into this worker's storage.
-  assert.throws(
-    () =>
-      fromSentry({
-        ...SENTRY_ISSUE_PAYLOAD,
-        data: {
-          ...SENTRY_ISSUE_PAYLOAD.data,
-          issue: {
-            ...SENTRY_ISSUE_PAYLOAD.data.issue,
-            shortId: "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
-          },
-        },
-      }),
-    /sentry issue identity looks like a credential/,
-  );
-  // The same guard covers a metric alert's identity, which is the field the
-  // finding named.
-  assert.throws(
-    () =>
-      fromSentry({
-        ...SENTRY_METRIC_PAYLOAD,
-        data: {
-          ...SENTRY_METRIC_PAYLOAD.data,
-          metric_alert: {
-            ...SENTRY_METRIC_PAYLOAD.data.metric_alert,
-            id: "AKIAIOSFODNN7EXAMPLE",
-          },
-        },
-      }),
-    /sentry metric identity looks like a credential/,
-  );
-  // The refusal names the field and never the value, so a log of the message
-  // cannot leak the secret it refused.
-  try {
-    fromSentry({
-      ...SENTRY_ISSUE_PAYLOAD,
-      data: {
-        ...SENTRY_ISSUE_PAYLOAD.data,
-        issue: {
-          ...SENTRY_ISSUE_PAYLOAD.data.issue,
-          shortId: "sk-ant-0123456789abcdefghijkl",
-        },
+// An obviously fake token, assembled at runtime for the scanner.  Never a credential.
+const FAKE_GITHUB_TOKEN = "ghp" + "_0123456789abcdefghijklmnopqrstuvwxyz";
+
+test("F11 an identity carrying a credential is filed under a digest, not refused", async () => {
+  // The identity becomes a durable storage key, so a token where an identity
+  // belongs must not name a row.  A refusal would lose a real alert, and the
+  // digest keeps it:  one incident stays one key and two stay two.
+  const issueWith = (shortId) => ({
+    ...SENTRY_ISSUE_PAYLOAD,
+    data: {
+      ...SENTRY_ISSUE_PAYLOAD.data,
+      issue: { ...SENTRY_ISSUE_PAYLOAD.data.issue, shortId },
+    },
+  });
+  const issue = normalize("sentry", issueWith(FAKE_GITHUB_TOKEN));
+  assert.match(issue.key, /^sentry:redacted-[0-9a-z]+$/);
+  assert.equal(issue.identityRedacted, true);
+  assert.equal(normalize("sentry", issueWith(FAKE_GITHUB_TOKEN)).key, issue.key);
+  assert.notEqual(normalize("sentry", issueWith(`${FAKE_GITHUB_TOKEN}y`)).key, issue.key);
+  // The same rule covers a metric alert's identity, whose key is lower-cased.
+  const metric = normalize("sentry", {
+    ...SENTRY_METRIC_PAYLOAD,
+    data: {
+      ...SENTRY_METRIC_PAYLOAD.data,
+      metric_alert: {
+        ...SENTRY_METRIC_PAYLOAD.data.metric_alert,
+        id: "AKIA" + "IOSFODNN7EXAMPLE",
       },
-    });
-    assert.fail("expected the identity to be refused");
-  } catch (error) {
-    assert.doesNotMatch(String(error.message), /sk-ant-/);
-  }
-  // An ordinary identity is unaffected: the guard must not refuse real alerts.
-  assert.equal(fromSentry(SENTRY_ISSUE_PAYLOAD).key, "sentry:proj-1");
-  assert.equal(fromSentry(SENTRY_METRIC_PAYLOAD).key, "sentry:metric:5678");
+    },
+  });
+  assert.match(metric.key, /^sentry:redacted-[0-9a-z]+$/);
+  // An ordinary identity keeps its readable key.
+  assert.equal(normalize("sentry", SENTRY_ISSUE_PAYLOAD).key, "sentry:proj-1");
+  assert.equal(normalize("sentry", SENTRY_ISSUE_PAYLOAD).identityRedacted, undefined);
+  assert.equal(normalize("sentry", SENTRY_METRIC_PAYLOAD).key, "sentry:metric:5678");
 });
 
 test("F12 a message id Zulip refuses is refused, not reported as a writer outage", async () => {
@@ -2038,12 +2019,11 @@ test("F12 a message id Zulip refuses is refused, not reported as a writer outage
   }
 });
 
-test("F13 an identity carrying a credential is a 400 at the webhook route", async () => {
-  // The refusal is the sender's bad request.  It must answer 400 naming the
-  // field, not escape the handler as a writer outage a vendor would retry, and
-  // the response must never carry the value it refused.
+test("F13 an identity carrying a credential is recorded at the webhook route, with no copy of it", async () => {
+  // A refused alert is the worst outcome here, so the delivery is recorded.  The
+  // token must reach no row name, no row value, no post and no response.
   const kv = fakeKV();
-  const env = envFor(kv);
+  const env = envFor(kv, { WRITER_STORAGE: fakeStorage() });
   const zulip = stubZulip();
   const body = JSON.stringify({
     ...SENTRY_ISSUE_PAYLOAD,
@@ -2051,7 +2031,7 @@ test("F13 an identity carrying a credential is a 400 at the webhook route", asyn
       ...SENTRY_ISSUE_PAYLOAD.data,
       issue: {
         ...SENTRY_ISSUE_PAYLOAD.data.issue,
-        shortId: "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        shortId: FAKE_GITHUB_TOKEN,
       },
     },
   });
@@ -2065,15 +2045,16 @@ test("F13 an identity carrying a credential is a 400 at the webhook route", asyn
       env,
       {},
     );
-    assert.equal(response.status, 400);
-    const text = await response.text();
-    assert.match(text, /sentry issue identity/);
-    assert.doesNotMatch(text, /ghp_/);
-    assert.equal(kv.store.size, 0);
-    // Only the raw record is posted, and the credential shape is redacted in it.
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(await response.text(), /ghp_/);
+    const rows = [...kv.store.entries()].map(([name, value]) => `${name}=${value}`);
+    assert.ok(rows.some((row) => row.startsWith("state:sentry:redacted-")));
+    assert.doesNotMatch(rows.join("\n"), /ghp_/i);
+    assert.doesNotMatch(JSON.stringify([...env.WRITER_STORAGE.data]), /ghp_/i);
+    // The raw record is still posted, and the credential shape is redacted in it.
+    assert.ok(zulip.calls.some((call) => call.form?.get("to") === "Alerts-Raw"));
     for (const call of zulip.calls) {
-      assert.equal(call.form?.get("to"), "Alerts-Raw");
-      assert.doesNotMatch(call.form.toString(), /ghp_/);
+      assert.doesNotMatch(call.form?.toString() ?? "", /ghp_/);
     }
   } finally {
     zulip.restore();

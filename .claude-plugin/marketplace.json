@@ -8,8 +8,8 @@
     {
       "name": "simple-chat",
       "source": "./plugins/simple-chat",
-      "description": "Zulip listener hooks for Claude Code sessions (leases, passive headlines, rewake for interrupts).",
-      "version": "1.0.0"
+      "description": "Zulip eavesdropper hooks for Claude Code sessions (leases, passive headlines, rewake for interrupts).",
+      "version": "1.0.1"
     }
   ]
 }

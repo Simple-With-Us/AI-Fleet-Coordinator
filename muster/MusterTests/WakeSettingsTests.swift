@@ -3,7 +3,7 @@ import XCTest
 /// The wake settings panel:  what it shows,  when it says DRIFT,  and what it refuses to
 /// write.
 final class WakeSettingsTests: XCTestCase {
-    /// A file like the listener's own.
+    /// A file like the eavesdropper's own.
     private let sample = """
     [daemon]
     host_wake_load_per_core = 0
@@ -20,7 +20,7 @@ final class WakeSettingsTests: XCTestCase {
     live = { per_hour = 6, per_day = 30, per_topic_minutes = 5, owner_per_day = 20, loop_turns = 3 }
     """
 
-    /// The listener's own account of itself.
+    /// The eavesdropper's own account of itself.
     private let statusJSON = """
     {
       "running": true,
@@ -80,7 +80,7 @@ final class WakeSettingsTests: XCTestCase {
         return sources
     }
 
-    /// A partition like the listener's own.
+    /// A partition like the eavesdropper's own.
     private let partitionText = """
     version = 1
 
@@ -111,7 +111,7 @@ final class WakeSettingsTests: XCTestCase {
 
     // MARK: The seat partition
 
-    /// The partition reads the way the listener reads it,  and every kind of seat has its host.
+    /// The partition reads the way the eavesdropper reads it,  and every kind of seat has its host.
     func test_the_partition_gives_each_seat_a_host() {
         let partition = ListenerPartition.parse(partitionText, path: "/p")
         XCTAssertNil(partition.problem)
@@ -119,7 +119,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(partition.host(of: "MA"), .server)
         XCTAssertEqual(partition.host(of: "BF-BUILDER"), .noListener)
         XCTAssertEqual(partition.host(of: "KIMI"), .unlisted)
-        // The listener upper-cases a section's name before it looks the seat up.
+        // The eavesdropper upper-cases a section's name before it looks the seat up.
         XCTAssertEqual(partition.host(of: "ma"), .server)
         XCTAssertTrue(partition.host(of: "MM").isTheMac)
         for seat in ["MA", "BF-BUILDER", "KIMI"] {
@@ -155,7 +155,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertNotNil(ListenerPartition.load(from: missing).problem)
     }
 
-    /// The repository's own partition parses here,  and says what the listener's tests say.
+    /// The repository's own partition parses here,  and says what the eavesdropper's tests say.
     func test_the_repository_partition_reads_as_documented() {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -175,7 +175,7 @@ final class WakeSettingsTests: XCTestCase {
         }
     }
 
-    /// A tag is one the listener accepts,  or it never reaches a `[seat.X]` header.
+    /// A tag is one the eavesdropper accepts,  or it never reaches a `[seat.X]` header.
     func test_only_a_real_seat_name_counts() {
         for good in ["MM", "GROK-WEB", "BF_X", "A1"] {
             XCTAssertTrue(ListenerPartition.isSeatName(good), good)
@@ -187,7 +187,7 @@ final class WakeSettingsTests: XCTestCase {
 
     // MARK: A seat the Mac does not hold
 
-    /// A seat another listener holds is shown as elsewhere,  with nothing from the Mac's listener.
+    /// A seat another eavesdropper holds is shown as elsewhere,  with nothing from the Mac's eavesdropper.
     func test_a_server_seat_shows_nothing_from_the_macs_listener() {
         var input = sources(status: """
         {"running": true, "status": {"seats": {}, "pause": {"MA": {"wakes_only": true}, "*": {}}}}
@@ -207,7 +207,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertFalse(WakeSettingState.heldElsewhere.isProblem)
     }
 
-    /// A section for such a seat in the Mac's file is the thing that stops the listener,  so the
+    /// A section for such a seat in the Mac's file is the thing that stops the eavesdropper,  so the
     /// panel says so,  and the seat counts as a problem.
     func test_a_section_for_a_server_seat_is_named_as_the_problem() {
         var input = sources(config: sample + "\n[seat.MA]\nbudget = { wakes_per_hour = 9 }\n")
@@ -221,7 +221,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(seat.refusedSectionProblem?.contains("refuse its next start") == true)
     }
 
-    /// The listener tests a section's own `instance` key first,  so a seat the partition gives to
+    /// The eavesdropper tests a section's own `instance` key first,  so a seat the partition gives to
     /// the Mac can still be one it refuses.  The panel says so,  and offers the repair.
     func test_a_section_marked_for_the_server_is_refused() throws {
         var input = sources(config: sample + "\ninstance = \"server\"\n")
@@ -237,7 +237,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(seat.settings.allSatisfy { $0.state == .heldElsewhere })
     }
 
-    /// A section that names this instance,  or a value the listener does not take as an instance,
+    /// A section that names this instance,  or a value the eavesdropper does not take as an instance,
     /// is not that refusal,  so the partition still decides.
     func test_an_instance_key_that_is_not_the_other_instance_changes_nothing() {
         let partition = ListenerPartition(seats: ["MM": "mac", "MA": "server"])
@@ -254,8 +254,8 @@ final class WakeSettingsTests: XCTestCase {
         }
     }
 
-    /// The listener publishes every seat under its upper-cased name,  so a `[seat.mm]` section
-    /// finds what the listener says about MM.
+    /// The eavesdropper publishes every seat under its upper-cased name,  so a `[seat.mm]` section
+    /// finds what the eavesdropper says about MM.
     func test_a_lower_case_section_finds_what_the_listener_says() throws {
         let status = """
         {
@@ -277,7 +277,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(seat.pauseScope, "MM")
     }
 
-    /// A running listener from before `partition_file` holds a seat the copy Muster read gives
+    /// A running eavesdropper from before `partition_file` holds a seat the copy Muster read gives
     /// away,  so the two copies differ.  That seat is not called elsewhere,  so it cannot be removed.
     func test_a_seat_an_older_running_listener_holds_is_not_called_elsewhere() throws {
         let status = #"{"running": true, "status": {"seats": {"MA": {"bot": "MA"}}}}"#
@@ -296,14 +296,14 @@ final class WakeSettingsTests: XCTestCase {
         disabled.seats = ["MA"]
         XCTAssertEqual(WakeSettingsBuilder.build(disabled).seats.first?.hasRefusedSection, false)
 
-        // Once the listener names its partition,  that copy is the one Muster read,  so a seat it
+        // Once the eavesdropper names its partition,  that copy is the one Muster read,  so a seat it
         // still runs from before the partition moved is a section the next start will refuse.
         let named = #"{"running": true, "status": {"partition_file": "/p", "seats": {"MA": {"bot": "MA"}}}}"#
         var current = sources(config: sample + "\n[seat.MA]\nwake = \"inbox\"\n", status: named)
         current.seats = ["MA"]
         XCTAssertEqual(WakeSettingsBuilder.build(current).seats.first?.hasRefusedSection, true)
 
-        // A listener that is not running holds nothing.
+        // An eavesdropper that is not running holds nothing.
         let stopped = #"{"running": false, "status": {"seats": {"MA": {"bot": "MA"}}}}"#
         var down = sources(config: sample + "\n[seat.MA]\nwake = \"inbox\"\n", status: stopped)
         down.seats = ["MA"]
@@ -325,9 +325,9 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(seat.settings.first(where: { $0.key == .wakesPerHour })?.state, .match)
     }
 
-    // MARK: What the listener itself reports
+    // MARK: What the eavesdropper itself reports
 
-    /// The listener's refusals and skipped seats reach the panel.
+    /// The eavesdropper's refusals and skipped seats reach the panel.
     func test_the_listeners_own_problems_are_decoded_and_shown() throws {
         let status = """
         {
@@ -356,14 +356,14 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(seat.needsAttention)
     }
 
-    /// A listener that says it is not the Mac's is called out.
+    /// An eavesdropper that says it is not the Mac's is called out.
     func test_a_listener_that_is_not_the_macs_is_called_out() {
         let status = #"{"running": true, "status": {"instance": "server", "seats": {}}}"#
         let model = WakeSettingsBuilder.build(sources(status: status))
         XCTAssertTrue(model.problems.contains { $0.contains("server instance") })
     }
 
-    /// A listener from before these fields still decodes.
+    /// An eavesdropper from before these fields still decodes.
     func test_a_status_without_the_new_fields_still_decodes() {
         let model = WakeSettingsBuilder.build(sources(status: statusJSON))
         XCTAssertEqual(model.listenerErrors, [])
@@ -389,16 +389,16 @@ final class WakeSettingsTests: XCTestCase {
         return status
     }
 
-    /// A status written before the listener acted says nothing yet.
+    /// A status written before the eavesdropper acted says nothing yet.
     func test_a_status_older_than_the_signal_is_no_answer() {
         XCTAssertNil(ListenerReloadOutcome.answer(toReloadSentAt: 100, in: status(updated: 99)))
         XCTAssertNil(ListenerReloadOutcome.answer(toReloadSentAt: 100, in: status(updated: 200, reloadAt: 99, refused: [])))
-        // A publish after the signal is not proof when the listener has its own reload time.
+        // A publish after the signal is not proof when the eavesdropper has its own reload time.
         XCTAssertNil(ListenerReloadOutcome.answer(toReloadSentAt: 100, in: status(updated: 200, refused: [])))
         XCTAssertNil(ListenerReloadOutcome.answer(toReloadSentAt: 100, in: ListenerStatus()))
     }
 
-    /// The listener's own answer decides it.
+    /// The eavesdropper's own answer decides it.
     func test_a_refused_reload_is_a_failure_and_an_accepted_one_is_not() {
         let refused = ListenerReloadOutcome.answer(
             toReloadSentAt: 100,
@@ -424,7 +424,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(soft?.isFailure, false)
     }
 
-    /// A listener too old to separate a refusal is never called accepted:  it publishes on every
+    /// An eavesdropper too old to separate a refusal is never called accepted:  it publishes on every
     /// tick, so a status newer than the signal does not show it took the file.
     func test_an_older_listener_is_never_called_accepted() {
         XCTAssertEqual(
@@ -530,7 +530,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(try bytes(space.config), before)
     }
 
-    /// The listener folds `[seat.mm]` and `[seat.MM]` to one seat,  and one silently replaces the
+    /// The eavesdropper folds `[seat.mm]` and `[seat.MM]` to one seat,  and one silently replaces the
     /// other,  so a second spelling is never added.
     func test_a_seat_the_file_spells_differently_is_not_written() throws {
         let config = "[seat.mm]\nbot = \"MM\"\nwake = \"muse\"\n"
@@ -846,7 +846,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(try bytes(space.config), before)
         XCTAssertEqual(listener.actions, [])
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("Held by the server listener") == true)
+        XCTAssertTrue(store.message?.contains("Held by the server eavesdropper") == true)
     }
 
     /// The kill switch does not claim a result it cannot have on a seat the Mac does not hold.
@@ -865,7 +865,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.messageIsFailure)
         await store.pin(seat: "MA", runtime: nil)
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("Held by the server listener") == true)
+        XCTAssertTrue(store.message?.contains("Held by the server eavesdropper") == true)
         XCTAssertEqual(listener.actions, [])
     }
 
@@ -878,10 +878,10 @@ final class WakeSettingsTests: XCTestCase {
         await store.pause(seat: "MM")
         XCTAssertEqual(listener.actions, ["pause"])
         XCTAssertFalse(store.messageIsFailure)
-        XCTAssertEqual(store.message, "Wakes paused on the Mac's listener.")
+        XCTAssertEqual(store.message, "Wakes paused on the Mac's eavesdropper.")
         await store.resume(seat: "MM")
         XCTAssertEqual(listener.actions, ["pause", "resume"])
-        XCTAssertEqual(store.message, "The pause was lifted on the Mac's listener.")
+        XCTAssertEqual(store.message, "The pause was lifted on the Mac's eavesdropper.")
     }
 
     /// With no partition the pause stays,  because the seat may be the Mac's,  and it says what it
@@ -912,7 +912,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.message?.contains("cannot say the Mac holds this seat") == true)
     }
 
-    /// The listener's own check runs on the candidate before the real file changes.
+    /// The eavesdropper's own check runs on the candidate before the real file changes.
     @MainActor
     func test_apply_checks_the_candidate_writes_and_reports_acceptance() async throws {
         let space = try makeWorkspace()
@@ -929,13 +929,13 @@ final class WakeSettingsTests: XCTestCase {
         let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
         XCTAssertEqual(document.value(section: "seat.MM", key: "model"), .text("another-model"))
         XCTAssertFalse(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("The listener accepted it.") == true)
+        XCTAssertTrue(store.message?.contains("The eavesdropper accepted it.") == true)
         // The candidate is gone.
         let left = try FileManager.default.contentsOfDirectory(atPath: space.config.deletingLastPathComponent().path)
         XCTAssertFalse(left.contains { $0.contains("muster-check") })
     }
 
-    /// A candidate the listener's rules refuse never reaches the file.
+    /// A candidate the eavesdropper's rules refuse never reaches the file.
     @MainActor
     func test_a_candidate_the_listener_refuses_is_not_written() async throws {
         let space = try makeWorkspace()
@@ -1003,7 +1003,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertFalse(store.message?.contains("asked to re-read") == true)
     }
 
-    /// A listener that never answers is reported as exactly that.
+    /// An eavesdropper that never answers is reported as exactly that.
     @MainActor
     func test_a_listener_that_does_not_answer_is_reported() async throws {
         let space = try makeWorkspace()
@@ -1012,7 +1012,7 @@ final class WakeSettingsTests: XCTestCase {
         store.draft["MM", default: [:]][.model] = "another-model"
         await store.apply(seat: "MM")
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("No answer from the listener") == true)
+        XCTAssertTrue(store.message?.contains("No answer from the eavesdropper") == true)
     }
 
     /// A signal that could not be sent is reported,  and the file is said to be written.
@@ -1046,7 +1046,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.message?.contains("changed after Muster read it") == true)
     }
 
-    /// The repair takes out a section the listener refuses,  through the same check and report.
+    /// The repair takes out a section the eavesdropper refuses,  through the same check and report.
     @MainActor
     func test_the_repair_removes_a_refused_section() async throws {
         let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbudget = { wakes_per_hour = 9 }\n")
@@ -1066,9 +1066,9 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MA" })?.hasRefusedSection, false)
     }
 
-    /// The partition the listener says it reads decides,  over the copy in Muster's own checkout:
+    /// The partition the eavesdropper says it reads decides,  over the copy in Muster's own checkout:
     /// the panel,  the repair and the writer's gate all go by it,  so a stale checkout cannot take
-    /// out a seat the listener holds.
+    /// out a seat the eavesdropper holds.
     @MainActor
     func test_the_listeners_own_partition_decides_who_holds_a_seat() async throws {
         let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\n")
@@ -1090,7 +1090,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.message?.contains("Nothing was removed for MA") == true)
     }
 
-    /// A partition the listener names and Muster cannot read holds no seat here,  the Mac's included.
+    /// A partition the eavesdropper names and Muster cannot read holds no seat here,  the Mac's included.
     @MainActor
     func test_a_listeners_partition_that_cannot_be_read_holds_no_seat() async throws {
         let space = try makeWorkspace()
@@ -1107,7 +1107,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.message?.contains("Muster cannot say who holds this seat") == true)
     }
 
-    /// The repair of a seat an older running listener holds is refused before anything is written.
+    /// The repair of a seat an older running eavesdropper holds is refused before anything is written.
     @MainActor
     func test_the_repair_stops_on_a_seat_an_older_running_listener_holds() async throws {
         let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\n")
@@ -1119,7 +1119,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(try bytes(space.config), before)
         XCTAssertEqual(listener.actions, [])
         XCTAssertTrue(store.messageIsFailure)
-        XCTAssertTrue(store.message?.contains("running listener holds this seat") == true)
+        XCTAssertTrue(store.message?.contains("running eavesdropper holds this seat") == true)
     }
 
     // MARK: What a draft asks for
@@ -1153,7 +1153,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertFalse(store.applySummary(seat: "MM").contains("will stop waking"))
     }
 
-    /// Every wake the listener knows is accepted,  and another is refused by name.
+    /// Every wake the eavesdropper knows is accepted,  and another is refused by name.
     func test_a_wake_the_listener_does_not_know_is_refused() async {
         let good = await WakeSettingsStore.readDraft(seat: "MM", values: [.wakeType: "openrouter"], before: [.wakeType: "muse"])
         XCTAssertEqual(good.edits.count, 1)
@@ -1184,7 +1184,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertNil(WakeSettingKey.model.pickerOptions(current: "x"))
     }
 
-    /// A live cap is a whole number,  because the listener ignores anything else.
+    /// A live cap is a whole number,  because the eavesdropper ignores anything else.
     func test_a_live_cap_must_be_whole_and_a_budget_need_not_be() {
         XCTAssertNil(WakeSettingKey.livePerHour.value(from: "2.5"))
         XCTAssertEqual(WakeSettingKey.livePerHour.value(from: "2"), .number(2))
@@ -1210,7 +1210,7 @@ final class WakeSettingsTests: XCTestCase {
 
     // MARK: The two sources
 
-    /// A setting the file and the listener agree on is a pass.
+    /// A setting the file and the eavesdropper agree on is a pass.
     func test_a_setting_the_listener_matches_is_a_pass() {
         let setting = row(.wakesPerHour, status: statusJSON)
         XCTAssertEqual(setting.state, .match)
@@ -1218,7 +1218,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(setting.live, .number(5))
     }
 
-    /// A setting the listener does not match is DRIFT,  and never a quiet green.
+    /// A setting the eavesdropper does not match is DRIFT,  and never a quiet green.
     func test_a_setting_the_listener_does_not_match_is_drift() {
         let drifted = statusJSON.replacingOccurrences(
             of: "\"wakes_per_hour\": 5",
@@ -1239,7 +1239,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(budget.state, .match)
     }
 
-    /// A setting the file does not hold is the listener's default,  and says so.
+    /// A setting the file does not hold is the eavesdropper's default,  and says so.
     func test_a_setting_the_file_does_not_hold_is_the_default() {
         let without = """
         [seat.MM]
@@ -1251,7 +1251,7 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(setting.note.contains("default"))
     }
 
-    /// The listener does not publish the fallback's container rule,  so the panel says so
+    /// The eavesdropper does not publish the fallback's container rule,  so the panel says so
     /// instead of claiming it is in effect.
     func test_a_setting_the_listener_does_not_publish_is_not_reported() {
         let setting = row(.fallbackUncontained, status: statusJSON)
@@ -1351,8 +1351,8 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(model.problems, ["The listener's status could not be read."])
     }
 
-    /// Without the listener's status,  every live value is unknown,  and that is a problem:  it
-    /// never reads as the listener not publishing the setting.
+    /// Without the eavesdropper's status,  every live value is unknown,  and that is a problem:  it
+    /// never reads as the eavesdropper not publishing the setting.
     func test_without_the_status_the_panel_shows_no_live_value() {
         let setting = row(.wakesPerHour)
         XCTAssertNil(setting.live)

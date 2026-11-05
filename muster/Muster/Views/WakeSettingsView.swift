@@ -4,11 +4,11 @@ import SwiftUI
 /// it should be,  and a way to change it.
 ///
 /// The panel has two columns of truth and never mixes them.  The left column is the file,
-/// and it is editable.  The middle column is the running listener's own account of itself.
+/// and it is editable.  The middle column is the running eavesdropper's own account of itself.
 /// When the two disagree the row says DRIFT,  and it is never a quiet green.
 ///
 /// A setting the engine does not enforce is shown as NOT OWNED and is not editable:  the
-/// listener counts wakes and not dollars,  so a dollar cap in the file would never bind.
+/// eavesdropper counts wakes and not dollars,  so a dollar cap in the file would never bind.
 struct WakeSettingsView: View {
     enum SeatFilter: String, CaseIterable, Identifiable {
         case all = "All Seats"
@@ -52,7 +52,7 @@ struct WakeSettingsView: View {
                 listenerLine
                 if !store.model.listenerErrors.isEmpty {
                     failureBox(
-                        title: "The Mac's Listener Reports Problems",
+                        title: "The Mac's Eavesdropper Reports Problems",
                         text: store.model.listenerErrors.joined(separator: "\n")
                     )
                 }
@@ -145,7 +145,7 @@ struct WakeSettingsView: View {
         }
     }
 
-    /// The listener's own account of itself.
+    /// The eavesdropper's own account of itself.
     private var listenerLine: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -237,9 +237,9 @@ struct WakeSettingsView: View {
     /// The daemon-wide settings,  like the host load gate.
     private var daemonSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("The Listener")
+            Text("The Eavesdropper")
                 .font(.headline)
-            GridRowHeader(labels: ["Setting", "The file", "The listener", "State"])
+            GridRowHeader(labels: ["Setting", "The file", "The eavesdropper", "State"])
             ForEach(store.model.daemonSettings) { setting in
                 WakeSettingRow(
                     setting: setting,
@@ -310,8 +310,8 @@ struct WakeSettingsView: View {
 
     // MARK: One seat
 
-    /// One seat.  A seat another listener holds gets no fields and no buttons:  a section for it
-    /// would stop the Mac's listener, and its pause, test wake and pin could not reach it.
+    /// One seat.  A seat another eavesdropper holds gets no fields and no buttons:  a section for it
+    /// would stop the Mac's eavesdropper, and its pause, test wake and pin could not reach it.
     @ViewBuilder
     private func seatSection(_ seat: WakeSeat) -> some View {
         if seat.host.isElsewhere {
@@ -328,7 +328,7 @@ struct WakeSettingsView: View {
             .foregroundStyle(.secondary)
     }
 
-    /// A seat the Mac's listener does not hold.
+    /// A seat the Mac's eavesdropper does not hold.
     private func elsewhereSeatSection(_ seat: WakeSeat) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -349,7 +349,7 @@ struct WakeSettingsView: View {
             }
             if seat.hasRefusedSection {
                 if let problem = seat.refusedSectionProblem {
-                    failureBox(title: "This Section Stops The Mac's Listener", text: problem)
+                    failureBox(title: "This Section Stops The Mac's Eavesdropper", text: problem)
                 }
                 Button {
                     pendingWakeAction = PendingWakeAction(kind: .removeSection, seat: seat.seat, runtime: nil)
@@ -362,7 +362,7 @@ struct WakeSettingsView: View {
         .padding(.vertical, 6)
     }
 
-    /// What the listener says about a seat it holds, or could hold.
+    /// What the eavesdropper says about a seat it holds, or could hold.
     @ViewBuilder
     private func seatNotices(_ seat: WakeSeat) -> some View {
         if let reason = seat.host.readOnlyReason {
@@ -370,16 +370,16 @@ struct WakeSettingsView: View {
         }
         if !seat.skippedReasons.isEmpty {
             failureBox(
-                title: "The Listener Will Not Run This Seat",
+                title: "The Eavesdropper Will Not Run This Seat",
                 text: seat.skippedReasons.joined(separator: "\n")
             )
         }
         if seat.disabledInFile {
-            Text("The file turns this seat off, so the Mac's listener holds no queue for it.")
+            Text("The file turns this seat off, so the Mac's eavesdropper holds no queue for it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else if !seat.hasSection {
-            Text("The file has no section for this seat, so the Mac's listener holds no queue for it.")
+            Text("The file has no section for this seat, so the Mac's eavesdropper holds no queue for it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -430,14 +430,14 @@ struct WakeSettingsView: View {
                     Label("Pause Wakes", systemImage: "pause.circle")
                 }
                 .disabled(store.isBusy)
-                .help("Pauses this seat's wakes on the Mac's listener.")
+                .help("Pauses this seat's wakes on the Mac's eavesdropper.")
                 Button {
                     Task { await store.resume(seat: seat.seat) }
                 } label: {
                     Label("Resume", systemImage: "play.circle")
                 }
                 .disabled(store.isBusy || !seat.host.isTheMac)
-                .help(seat.host.readOnlyReason ?? "Lifts the pause on the Mac's listener.")
+                .help(seat.host.readOnlyReason ?? "Lifts the pause on the Mac's eavesdropper.")
             }
             seatNotices(seat)
             GridRowHeader(labels: ["Setting", "The file", "The Operator", "State"])
@@ -617,7 +617,7 @@ struct WakeSettingsView: View {
 
 // MARK: - One row
 
-/// One setting of one seat,  with the file's value and the listener's value side by side.
+/// One setting of one seat,  with the file's value and the eavesdropper's value side by side.
 private struct WakeSettingRow: View {
     let setting: WakeSetting
     /// False when Muster will not write this setting.
@@ -713,15 +713,15 @@ private extension WakeSettingState {
     /// The badge's tooltip.
     var note: String {
         switch self {
-        case .match: return "The listener is using the value the file holds."
-        case .drift: return "The listener is using something other than the file's value."
+        case .match: return "The eavesdropper is using the value the file holds."
+        case .drift: return "The eavesdropper is using something other than the file's value."
         case .unproven: return "Configured,  but no pin has ever proved it works."
         case .notOwned: return "The engine does not enforce this setting,  so Muster will not write it."
         case .unpublished: return "The engine reads this one,  but does not publish it."
-        case .unset: return "The file holds nothing,  so the listener's default is in effect."
+        case .unset: return "The file holds nothing,  so the eavesdropper's default is in effect."
         case .off: return "Off,  by the owner's ruling."
-        case .unknown: return "The listener did not report this seat, so what it is using is not known."
-        case .heldElsewhere: return "The Mac's listener does not hold this seat."
+        case .unknown: return "The eavesdropper did not report this seat, so what it is using is not known."
+        case .heldElsewhere: return "The Mac's eavesdropper does not hold this seat."
         }
     }
 }
@@ -759,14 +759,14 @@ private struct PendingWakeAction: Identifiable {
     var message: String {
         switch kind {
         case .apply:
-            let opening = "This checks \(seat)'s edited settings with the listener's own rules, writes them to the Mac's listener configuration file, and asks the listener to re-read it.\u{00A0} Muster then says whether the listener took the change."
+            let opening = "This checks \(seat)'s edited settings with the eavesdropper's own rules, writes them to the Mac's eavesdropper configuration file, and asks the eavesdropper to re-read it.\u{00A0} Muster then says whether the eavesdropper took the change."
             return detail.isEmpty ? opening : opening + "\n\n" + detail
         case .testWake:
             return "This runs \(seat)'s wake for real, exactly as a live wake would run.\u{00A0} It can spend wake budget and start a worker session."
         case .pin:
             return "This pins the binary whose test wake passed for \(seat) as the proved binary.\u{00A0} A failed run never pins."
         case .removeSection:
-            return "This takes the [seat.\(seat)] section out of the Mac's listener configuration file and keeps a backup of the old file.\u{00A0} The Mac's listener refuses this section, so it can only stop the listener."
+            return "This takes the [seat.\(seat)] section out of the Mac's eavesdropper configuration file and keeps a backup of the old file.\u{00A0} The Mac's eavesdropper refuses this section, so it can only stop the eavesdropper."
         }
     }
 }

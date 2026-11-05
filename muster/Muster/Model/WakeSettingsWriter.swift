@@ -2,12 +2,12 @@ import Foundation
 
 // Writing the wake settings.
 //
-// The listener's configuration file is the one the runtime reads, so the panel writes that file
-// and then asks the listener to act on it.  These rules hold:
+// The eavesdropper's configuration file is the one the runtime reads, so the panel writes that file
+// and then asks the eavesdropper to act on it.  These rules hold:
 //
 //   * only a seat the seat partition gives to the Mac is ever written, and a partition that cannot
-//     be read refuses every seat.  The listener refuses to run with a section for any other seat,
-//     enabled or not, so one such section stops the whole Mac listener at its next start
+//     be read refuses every seat.  The eavesdropper refuses to run with a section for any other seat,
+//     enabled or not, so one such section stops the whole Mac eavesdropper at its next start
 //     (`agent_sync/config.py` `partition_errors`, `daemon.py` `refuse_start`).
 //   * only the value that changed is rewritten, so a comment or a key this app does not know about
 //     survives
@@ -15,18 +15,18 @@ import Foundation
 //     define the key, and TOML refuses a duplicate
 //   * a file that changed since the panel read it is not written, so another writer's change is
 //     not overwritten
-//   * a seat the file spells differently is not written:  the listener folds both spellings to one
+//   * a seat the file spells differently is not written:  the eavesdropper folds both spellings to one
 //     seat, and one section would silently replace the other
 //   * the old file is kept as a timestamped backup
 //   * the new file reaches the disk under a unique name at mode 0600, and is then swapped with the
 //     original.  0600 is the mode the runtime's own writer uses (`listener_cli.py` `cmd_init`).
 //
-// `prepare` and `commit` are separate so the store can run the listener's own check on the
+// `prepare` and `commit` are separate so the store can run the eavesdropper's own check on the
 // candidate between them.  The runtime takes no lock on this file, and a person's editor could not
 // take one, so there is no lock to share.  The swap is the compare-and-swap instead:  it hands back
 // what the file held at that instant, and anything but the text Muster read goes straight back.
 
-/// Writes a seat's wake settings into the listener's configuration file.
+/// Writes a seat's wake settings into the eavesdropper's configuration file.
 struct WakeSettingsWriter {
     /// One change to one setting.
     struct Edit: Equatable {
@@ -81,7 +81,7 @@ struct WakeSettingsWriter {
             case .notHeldByTheMac(let seat, let reason):
                 return "Nothing was written for \(seat).\u{00A0} \(reason)"
             case .notASeatName(let value):
-                return "\(value) is not a seat tag the listener accepts, so nothing was written."
+                return "\(value) is not a seat tag the eavesdropper accepts, so nothing was written."
             case .changedSinceRead(let path):
                 return "The configuration file at \(path) changed after Muster read it, so nothing was written.\u{00A0} Refresh, then apply again."
             case .unreadableLines(let seat, let problems):
@@ -90,7 +90,7 @@ struct WakeSettingsWriter {
             case .noSectionToRemove(let seat):
                 return "The file holds no section for \(seat), or the seat partition gives it to the Mac, so nothing was removed."
             case .spelledDifferently(let seat, let inFile):
-                return "The file spells this seat [seat.\(inFile)], and the listener reads that as \(seat), so a [seat.\(seat)] section would replace it.\u{00A0} Nothing was written."
+                return "The file spells this seat [seat.\(inFile)], and the eavesdropper reads that as \(seat), so a [seat.\(seat)] section would replace it.\u{00A0} Nothing was written."
             case .anotherWritersTextMoved(let path, let keptAt):
                 return "Another writer changed the configuration file at \(path) during the write, and Muster could not put its text back.\u{00A0} That text is at \(keptAt), and the file now holds Muster's edit."
             }
@@ -111,7 +111,7 @@ struct WakeSettingsWriter {
 
     /// Applies the edits to the file with no further check, and returns the file's new text.
     ///
-    /// The store runs the listener's own check between `prepare` and `commit`.  This is the same
+    /// The store runs the eavesdropper's own check between `prepare` and `commit`.  This is the same
     /// two steps with nothing between them.
     @discardableResult
     func apply(_ edits: [Edit]) throws -> String {
@@ -169,8 +169,8 @@ struct WakeSettingsWriter {
     ///
     /// This is the one write allowed for a seat the Mac does not hold, and it is allowed only for
     /// such a seat:  the partition has to be readable, and it or the section itself has to say the
-    /// Mac's listener will not run it.  The store points this writer at the partition the listener
-    /// says it reads, so this does not rest on a copy the listener does not use.
+    /// Mac's eavesdropper will not run it.  The store points this writer at the partition the eavesdropper
+    /// says it reads, so this does not rest on a copy the eavesdropper does not use.
     func prepareRemoval(ofSeat seat: String, expecting expected: String? = nil) throws -> PreparedWrite {
         let text = try readFile()
         try requireUnchanged(text, expected: expected)
@@ -187,7 +187,7 @@ struct WakeSettingsWriter {
         )
     }
 
-    /// Writes a prepared write's text beside the file, for the listener's own check to read.
+    /// Writes a prepared write's text beside the file, for the eavesdropper's own check to read.
     func writeCandidate(_ prepared: PreparedWrite) throws -> URL {
         let target = configURL.resolvingSymlinksInPath()
         let candidate = target.deletingLastPathComponent()
@@ -224,7 +224,7 @@ struct WakeSettingsWriter {
         guard !seats.isEmpty else { return }
         let partition = ListenerPartition.load(from: partitionURL)
         for seat in seats {
-            // A tag goes into a `[seat.X]` header, so it has to be one the listener accepts.
+            // A tag goes into a `[seat.X]` header, so it has to be one the eavesdropper accepts.
             guard ListenerPartition.isSeatName(seat) else {
                 throw WriteError.notASeatName(seat)
             }
@@ -358,7 +358,7 @@ extension WakeSettingKey {
         self == .fallbackUncontained
     }
 
-    /// The values a setting may take, when it is a short fixed list.  These come from the listener:
+    /// The values a setting may take, when it is a short fixed list.  These come from the eavesdropper:
     /// `KNOWN_WAKES` and `KNOWN_FALLBACKS` in `agent_sync/config.py`.
     var choices: [String]? {
         switch self {
