@@ -1466,7 +1466,17 @@ export class HostedTools {
     // relay's deliberate verdicts (allowlist, replay refusals, terminal
     // GitHub refusals) - definite, no hidden side effect.
     if (status === 429 && body?.retryable === true) throw new ToolError("rate_limited", "git-relay quota is exhausted.  Retry after the quota window.", {retryable:true});
-    if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
+    if (status >= 400) {
+      // The relay's refusal reasons are fixed public strings that never wrap
+      // upstream text.  Map the exact credential-scan verdict to the dedicated
+      // safe code:  CLI callers print codes, not messages, and "relay_refused"
+      // alone hid why the write was refused.  Anything else keeps the generic
+      // code;  only this exact string is vouched for.
+      if (body?.error === "credential-shaped content refused") {
+        throw new ToolError("refused_secret", "git-relay refused the write:  a file's content or the commit message looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
+      }
+      throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
+    }
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.
     if (!body || typeof body !== "object" || Array.isArray(body)) {
