@@ -38,15 +38,16 @@ import { loadConfig } from "../src/config.js";
 import { classifyPath } from "../src/policy.js";
 import { testEnv } from "./helpers.mjs";
 
-const KEY = "c".repeat(64);
+// Synthetic test fixtures, never credentials:  built in-test, used nowhere else.
+const TEST_KEY = "c".repeat(64);
 const NOW_S = 1792000000;
 const NOW_MS = NOW_S * 1000;
 const CALLBACK = "https://chatgpt.com/backend-api/mcp-events/callback_webhook";
-const SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
+const TEST_SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;  // synthetic shape, never a credential
 
 const wakeBody = (extra = {}) => JSON.stringify({ contract: WEBHOOK_WAKE_CONTRACT, seat: "JET", wake_id: randomUUID(), sent_at: NOW_S, ...extra });
-const sign = async (body, key = KEY) => wakeSignature(key, new TextEncoder().encode(body));
-const check = (body, signature, extra = {}) => verifyWebhookWake({ bytes: new TextEncoder().encode(body), signature, key: KEY, seat: "JET", now: NOW_MS, ...extra });
+const sign = async (body, key = TEST_KEY) => wakeSignature(key, new TextEncoder().encode(body));
+const check = (body, signature, extra = {}) => verifyWebhookWake({ bytes: new TextEncoder().encode(body), signature, key: TEST_KEY, seat: "JET", now: NOW_MS, ...extra });
 
 /** A gate over one memory store at a fixed clock, backed by the real state module. */
 function memoryGate(store, { subLive } = {}) {
@@ -70,7 +71,7 @@ async function upsertSub(store, sub = SUB(), max = 1) {
   return sub;
 }
 
-const SUB = (name = WEBHOOK_EVENT_NAME, url = CALLBACK) => ({ id: "sub_" + randomUUID().replaceAll("-", ""), name, url, host: "chatgpt.com", secret: SECRET });
+const SUB = (name = WEBHOOK_EVENT_NAME, url = CALLBACK) => ({ id: "sub_" + randomUUID().replaceAll("-", ""), name, url, host: "chatgpt.com", secret: TEST_SECRET });
 const okResponse = (status) => ({ status, body: { cancel: async () => {} } });
 const fetchWith = (status, posts = []) => async (url, init) => {
   posts.push({ url, body: JSON.parse(init.body), headers: init.headers });
@@ -114,7 +115,7 @@ test("webhookWakePathSeat and webhookWakeKey", () => {
   assert.equal(webhookWakePathSeat("/internal/webhook-wake/jet"), null);
   assert.equal(webhookWakePathSeat("/internal/wake/JET"), null);
   assert.equal(webhookWakePathSeat("/internal/webhook-wake/"), null);
-  assert.equal(webhookWakeKey("  " + KEY + "  "), KEY);
+  assert.equal(webhookWakeKey("  " + TEST_KEY + "  "), TEST_KEY);
   assert.equal(webhookWakeKey("short"), "");
   assert.equal(webhookWakeKey(undefined), "");
 });
@@ -160,12 +161,16 @@ test("a correctly signed wake verifies; every tamper is refused", async () => {
   }
   const clean = wakeBody({ wake_id: "wake-sk-short" });
   assert.equal((await check(clean, await sign(clean))).ok, true);
+  for (const proto of ["__proto__", "constructor", "toString"]) {
+    const pid = wakeBody({ wake_id: proto });
+    assert.equal((await check(pid, await sign(pid))).reason, "bad_wake_id", proto);
+  }
   const future = wakeBody({ sent_at: NOW_S + 61 });
   assert.equal((await check(future, await sign(future))).reason, "future");
 
   const noKey = await verifyWebhookWake({ bytes: new TextEncoder().encode(body), signature: await sign(body), key: "short", seat: "JET", now: NOW_MS });
   assert.deepEqual([noKey.status, noKey.reason], [404, "not_configured"]);
-  const big = await verifyWebhookWake({ bytes: new Uint8Array(WEBHOOK_WAKE_MAX_BODY + 1), signature: "0".repeat(64), key: KEY, seat: "JET", now: NOW_MS });
+  const big = await verifyWebhookWake({ bytes: new Uint8Array(WEBHOOK_WAKE_MAX_BODY + 1), signature: "0".repeat(64), key: TEST_KEY, seat: "JET", now: NOW_MS });
   assert.equal(big.reason, "too_large", "size is refused before the signature is compared");
 });
 
@@ -336,7 +341,7 @@ test("no fleet.webhook subscription:  no_subscriber, settled, id spent", async (
 
 test("route admission:  flag, JET-only, bindings and the key domain", () => {
   const WAKE_KEY2 = "b".repeat(64);
-  const base = { enabled: true, seat: "JET", hostedSeats: ["JET", "GROK-WEB"], bound: true, wakeKey: WAKE_KEY2, key: KEY, wakeKeys: [WAKE_KEY2] };
+  const base = { enabled: true, seat: "JET", hostedSeats: ["JET", "GROK-WEB"], bound: true, wakeKey: WAKE_KEY2, key: TEST_KEY, wakeKeys: [WAKE_KEY2] };
   assert.equal(webhookWakeAdmission(base), null, "admitted:  flag on, JET, both keys, distinct domains");
   assert.equal(webhookWakeAdmission({ ...base, enabled: false }), "not_admitted", "flag off is a 404");
   assert.equal(webhookWakeAdmission({ ...base, seat: "JET-CHAT", bound: false }), "not_admitted", "no webhook binding for JET-CHAT:  JET-only matches the offer");

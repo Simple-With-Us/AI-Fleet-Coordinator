@@ -132,6 +132,10 @@ export async function verifyWebhookWake({ bytes, signature, key, seat, now = Dat
   if (wake.contract !== WEBHOOK_WAKE_CONTRACT) return { ok: false, status: 400, reason: "bad_contract" };
   if (wake.seat !== seat) return { ok: false, status: 400, reason: "seat_mismatch" };
   if (typeof wake.wake_id !== "string" || !WAKE_ID_RE.test(wake.wake_id)) return { ok: false, status: 400, reason: "bad_wake_id" };
+  // "__proto__" matches WAKE_ID_RE but is an inherited member:  as a plain
+  // ledger key it would hit the prototype instead of an own entry and the
+  // claim would vanish.  Refuse every Object.prototype member as a wake id.
+  if (wake.wake_id in Object.prototype) return { ok: false, status: 400, reason: "bad_wake_id" };
   if (!Number.isSafeInteger(wake.sent_at)) return { ok: false, status: 400, reason: "bad_sent_at" };
   const nowS = Math.floor(now / 1000);
   if (nowS - wake.sent_at > WEBHOOK_WAKE_MAX_AGE_S) return { ok: false, status: 401, reason: "stale" };
