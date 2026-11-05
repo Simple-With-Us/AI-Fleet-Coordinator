@@ -768,7 +768,10 @@ class SessionRegistry:
                     # session next registers, and closed rows keep their history.
                     stored_capability = str(row["wake_capability"] or "unknown").strip().lower()
                     incoming_capability = str(identity.get("wake_capability") or "unknown")
-                    if stored_capability == "unknown" and incoming_capability.strip().lower() != "unknown":
+                    if (
+                        stored_capability == "unknown"
+                        and incoming_capability.strip().lower() != "unknown"
+                    ):
                         conn.execute(
                             "UPDATE sessions SET wake_capability = ? WHERE record_id = ?",
                             (incoming_capability, record_id),
