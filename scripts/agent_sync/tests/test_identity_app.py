@@ -126,7 +126,13 @@ class RoleLaneBlockTests(unittest.TestCase):
         self.assertEqual((bf.folder, bf.branch_prefix), ("bf-oracle", "bf-oracle/"))
         gb = I.role_lane_seat("GB-PUBLISHER", reg)
         self.assertEqual((gb.folder, gb.branch_prefix), ("gb-publisher", "gb-publisher/"))
-        self.assertIsNone(I.role_lane_seat("BF-BUILDER", reg), "BF-BUILDER stays retired")
+        self.assertIsNone(I.role_lane_seat("BF-BUILDER", reg), "BF-BUILDER was renamed to BF-ENGINEER (#1390)")
+        # The reconciled roster (BotFleet #1390:  BF-BUILDER renamed to BF-ENGINEER, BF-TRADER added):
+        # both families carry the same current twelve roles.
+        twelve = ("COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "FIXER",
+                  "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER", "TRADER")
+        self.assertEqual(I.role_lane_roles("BF-ORACLE", reg), twelve)
+        self.assertEqual(I.role_lane_roles("GB-ORACLE", reg), twelve)
         self.assertEqual(load_check().seat_apps_errors(data), [])
 
 

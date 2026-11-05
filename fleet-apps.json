@@ -489,7 +489,7 @@
         "app": "botfleet",
         "zulipEmail": "bf-<role>-bot@simplewithus.zulipchat.com",
         "lane": {
-          "roles": ["COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "FIXER", "HOUSEKEEPER", "ORACLE", "TRADER"],
+          "roles": ["COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "FIXER", "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER", "TRADER"],
           "folderTemplate": "bf-<role>",
           "branchTemplate": "bf-<role>/"
         }
