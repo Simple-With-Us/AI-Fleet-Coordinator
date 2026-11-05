@@ -137,6 +137,35 @@ class BuildIdentityTests(unittest.TestCase):
         self.assertEqual(keys, ["BUILD_NUMBER", "COMMIT", "COMMIT_TIME", "CHANNEL"])
 
 
+class GitFailureTests(unittest.TestCase):
+    """A git that is missing or does not answer names its own exit status, like security."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.saved = (support.GIT, support.GIT_TIMEOUT)
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        support.GIT, support.GIT_TIMEOUT = self.saved
+
+    def test_a_missing_git_is_127(self):
+        support.GIT = str(Path(self.tmp.name) / "not-git")
+        with self.assertRaises(support.BuildFailure) as raised:
+            support.build_identity(self.tmp.name, "Release")
+        self.assertEqual(raised.exception.status, 127)
+        self.assertIn("git is missing", str(raised.exception))
+
+    def test_a_git_that_does_not_answer_is_124(self):
+        slow = Path(self.tmp.name) / "slow-git"
+        slow.write_text("#!/bin/sh\nexec sleep 30\n")
+        slow.chmod(0o755)
+        support.GIT, support.GIT_TIMEOUT = str(slow), 0.5
+        with self.assertRaises(support.BuildFailure) as raised:
+            support.build_identity(self.tmp.name, "Release")
+        self.assertEqual(raised.exception.status, 124)
+
+
 class RefuseOlderTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

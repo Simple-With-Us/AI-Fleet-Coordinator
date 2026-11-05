@@ -233,11 +233,19 @@ notarize_file() {
     echo "error: notarization could not be submitted for $(basename "$file")." >&2
     exit 1
   fi
-  submission="$(printf '%s' "$response" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
-  status="$(printf '%s' "$response" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
+  # The id goes back to notarytool, so only a UUID is accepted;  anything else stops here.
+  local parsed
+  if ! parsed="$(printf '%s' "$response" | /usr/bin/python3 "$MUSTER_DIR/script/notary_report.py" submission)"; then
+    echo "error: Apple's answer for $(basename "$file") did not carry a submission id and a status." >&2
+    exit 1
+  fi
+  read -r submission status <<< "$parsed"
   echo "notarization status: $status ($submission)"
   if [[ "$status" != "Accepted" ]]; then
-    /usr/bin/xcrun notarytool log "$submission" "${NOTARY_AUTH[@]}" >&2 || true
+    # Only the status, its summary and each issue's severity, path and message are shown.
+    local log
+    log="$(/usr/bin/xcrun notarytool log "$submission" "${NOTARY_AUTH[@]}" 2>/dev/null || true)"
+    printf '%s' "$log" | /usr/bin/python3 "$MUSTER_DIR/script/notary_report.py" log >&2 || true
     exit 1
   fi
 }

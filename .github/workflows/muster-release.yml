@@ -205,12 +205,10 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           BUILD: ${{ steps.version.outputs.build }}
         run: |
+          # The notes name the build and link its commit, and carry no free text from the
+          # commit itself, so nothing a commit message held is copied into the feed.
           notes="$RUNNER_TEMP/release-notes.md"
-          {
-            echo "Build $BUILD, from commit [${GITHUB_SHA::7}](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)."
-            echo
-            git log -1 --format='%s'
-          } > "$notes"
+          echo "Build $BUILD, from commit [${GITHUB_SHA::7}](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)." > "$notes"
           bash muster/script/make_appcast.sh muster/dist/Muster.zip "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" muster/dist "$notes"
           cp "$notes" muster/dist/release-notes.md
 

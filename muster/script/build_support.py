@@ -291,7 +291,19 @@ def run_git(directory, arguments):
             text=True,
             timeout=GIT_TIMEOUT,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        raise BuildFailure(
+            "git did not answer within %s seconds, so the commit this build is made from is "
+            "unknown and the build refuses to continue." % GIT_TIMEOUT,
+            124,
+        ) from None
+    except FileNotFoundError:
+        raise BuildFailure(
+            "git is missing, so the commit this build is made from is unknown and the build "
+            "refuses to continue.",
+            127,
+        ) from None
+    except OSError:
         raise BuildFailure(
             "git could not be run to read the commit this build is made from, so the build "
             "number and the commit stamp are unknown and the build refuses to continue.",
