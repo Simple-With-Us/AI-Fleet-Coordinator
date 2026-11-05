@@ -702,7 +702,10 @@ class InventoryAgeTests(Base):
     def rows(self, script="brand-new-worker"):
         return {
             "wd": [
-                {"sum": {"requests": 9_000_000, "cpuTimeUs": 0}, "dimensions": {"scriptName": script}}
+                {
+                    "sum": {"requests": 9_000_000, "cpuTimeUs": 0},
+                    "dimensions": {"scriptName": script},
+                }
             ]
         }
 

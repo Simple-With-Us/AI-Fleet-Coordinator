@@ -860,7 +860,7 @@ class Watchdog:
             else:
                 domain_id = step.split(":", 1)[1]
                 name = f"detach_domain {hostnames.get(domain_id)}"
-                call = lambda d=domain_id: self.conn.api(  # noqa: E731
+                call = lambda d=domain_id: self.conn.api(
                     "DELETE", f"{self.base}/workers/domains/{d}"
                 )
             if self._step(worker, name, trip.get("previous_version", "unknown"), call) is False:
@@ -1204,7 +1204,10 @@ class Watchdog:
         ):
             return inventory
         # A read that keeps failing, or a daily check that cannot post, must not repeat it each minute.
-        if inventory and self.epoch - self.state.get("inventory_tried", 0) < INVENTORY_RETRY_SECONDS:
+        if (
+            inventory
+            and self.epoch - self.state.get("inventory_tried", 0) < INVENTORY_RETRY_SECONDS
+        ):
             return inventory
         return self.refresh_inventory()
 
