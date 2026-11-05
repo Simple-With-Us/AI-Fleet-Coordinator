@@ -342,12 +342,14 @@ def _pattern_lane(where: str, item: Mapping[str, Any]) -> tuple[tuple[str, ...],
         folder = folder_t.replace("<role>", role.lower())
         if not _FOLDER_SLUG_RE.fullmatch(folder):
             raise SeatRegistryError(
-                "%s lane.folderTemplate renders invalid folder %r for role %s" % (where, folder, role)
+                "%s lane.folderTemplate renders invalid folder %r for role %s"
+                % (where, folder, role)
             )
         branch = branch_t.replace("<role>", role.lower())
         if not branch.endswith("/") or not _FOLDER_SLUG_RE.fullmatch(branch[:-1]):
             raise SeatRegistryError(
-                "%s lane.branchTemplate renders invalid prefix %r for role %s" % (where, branch, role)
+                "%s lane.branchTemplate renders invalid prefix %r for role %s"
+                % (where, branch, role)
             )
     return tuple(roles), folder_t, branch_t
 

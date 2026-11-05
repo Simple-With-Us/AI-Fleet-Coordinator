@@ -474,7 +474,7 @@ def resolve_app(registry: L.Registry, query: str) -> L.App:
     raise Refusal(f"unknown app {q!r}; candidates:\n" + "\n".join(_app_line(a) for a in pool))
 
 
-def _role_lane_seat(raw: str, registry: L.Registry, env: Mapping[str, str]) -> "L.Seat | None":
+def _role_lane_seat(raw: str, registry: L.Registry, env: Mapping[str, str]) -> L.Seat | None:
     """A role tag (BF-FIXER, GB-PLUMBER) becomes a lane seat from its seatApps.patterns `lane`
     block (AFC-620);  anything else stays None so the caller's unknown-tag refusal stands.
     GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> personas are the lane form."""
