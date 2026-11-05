@@ -49,6 +49,10 @@ BINARY_REQUEST_ACTIONS = frozenset({"wf_release_asset_upload_binary"})
 # permission, scan budget or workflow verb is widened.
 MAX_FILE_REQUEST_BYTES = 6 * 1024 * 1024
 FILE_REQUEST_ACTIONS = frozenset({"wf_file_put", "wf_files_put"})
+# The opt-in large-text git creates carry up to 100,000 bytes of text; the
+# envelope allowance stays narrow and the verb owns the exact text bound.
+MAX_LARGE_TEXT_REQUEST_BYTES = 256 * 1024
+LARGE_TEXT_REQUEST_ACTIONS = frozenset({"wf_git_blob_create", "wf_git_tree_create"})
 
 
 def _positive_int(raw: str, default: int) -> int:
@@ -335,6 +339,8 @@ class Relay:
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_BINARY_REQUEST_BYTES])
                 elif action in FILE_REQUEST_ACTIONS:
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_FILE_REQUEST_BYTES])
+                elif action in LARGE_TEXT_REQUEST_ACTIONS:
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_LARGE_TEXT_REQUEST_BYTES])
                 else:
                     scan_args(args)
                 if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
@@ -618,7 +624,9 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_issue_unlock",
         "wf_workflow_enable",
         "wf_workflow_disable",
+        "wf_pr_close",
         "wf_pr_draft",
+        "wf_pr_edit",
         "wf_pr_ready",
         "wf_pr_close",
         "wf_pr_reopen",
@@ -936,6 +944,8 @@ def make_handler(relay: Relay):
                 if action in BINARY_REQUEST_ACTIONS
                 else MAX_FILE_REQUEST_BYTES
                 if action in FILE_REQUEST_ACTIONS
+                else MAX_LARGE_TEXT_REQUEST_BYTES
+                if action in LARGE_TEXT_REQUEST_ACTIONS
                 else MAX_REQUEST_BYTES
             )
             if length < 1 or length > cap:
