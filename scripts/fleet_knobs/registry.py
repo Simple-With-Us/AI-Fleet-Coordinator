@@ -341,6 +341,26 @@ REGISTRY: tuple[Spec, ...] = (
         "reads the value only once it is set in Infisical,  so the default is the value to set rather "
         "than one the rule may use",
     ),
+    # W1 Cloudflare account usage watchdog (scripts/cf-usage-watchdog, AFC-617).  Its thresholds
+    # are in that folder's config.json so the design stays in git;  these two choose how it acts.
+    _S(
+        "CF_USAGE_WATCHDOG_MODE",
+        "enum",
+        "W1",
+        default="observe",
+        choices=("observe", "enforce"),
+        note="observe only alerts;  enforce also stops the Worker behind a breach.  "
+        "A STOP file in the watchdog's state directory forces observe",
+    ),
+    _S(
+        "CF_USAGE_WATCHDOG_PROFILE",
+        "enum",
+        "W1",
+        default="paid",
+        choices=("paid", "free"),
+        local="deny",
+        note="which threshold profile in config.json applies:  paid catches runaways, free is 80% of the Free caps",
+    ),
 )
 
 BY_NAME: dict[str, Spec] = {s.name: s for s in REGISTRY}
