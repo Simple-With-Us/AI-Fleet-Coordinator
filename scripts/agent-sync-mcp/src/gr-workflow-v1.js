@@ -67,7 +67,7 @@ const SPECS = {
  wf_pr_requested_reviewers:['Read requested reviewer identity metadata, not completed reviews or approval. Head observed before/after; not atomic.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA})],
  wf_repo_tags:['Read bounded tag name/commit SHA metadata, not annotated tag contents or a complete ref history.  Pagination required.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_repo_languages:['Read bounded repository language-byte counts; not file counts, contributors, or a live code audit.',obj(['repo'],{repo:REPO})],
- wf_git_tree_create:['Create unattached tree from base tree and up to20 text files (cumulative 40000 utf-8 bytes default; 100000 ONLY with allow_large_text exactly true); no workflow paths/ref changes.',obj(['repo','base_tree','files'],{repo:REPO,base_tree:SHA,allow_large_text:{type:'boolean'},files:{type:'array',minItems:1,maxItems:20,items:obj(['path','text','mode'],{path:PATH,text:{type:'string',maxLength:100000},mode:{type:'string',enum:['100644','100755']}})}})],
+ wf_git_tree_create:['Create unattached tree from base tree and up to20 entries, each inline text (cumulative 40000 utf-8 bytes default; 100000 ONLY with allow_large_text exactly true) or a sha reference to a blob already in the repository (fetched and identity/content-verified, scanned at destination path); no workflow paths/ref changes.',obj(['repo','base_tree','files'],{repo:REPO,base_tree:SHA,allow_large_text:{type:'boolean'},files:{type:'array',minItems:1,maxItems:20,items:{oneOf:[obj(['path','text','mode'],{path:PATH,text:{type:'string',maxLength:100000},mode:{type:'string',enum:['100644','100755']}}),obj(['path','sha','mode'],{path:PATH,sha:SHA,mode:{type:'string',enum:['100644','100755']}})]}}})],
  wf_git_commit_create:['Create unattached commit with exact tree and one/two parents. No arbitrary author/signature/ref changes.',obj(['repo','tree_sha','parents','message'],{repo:REPO,tree_sha:SHA,parents:{type:'array',minItems:1,maxItems:2,items:SHA},message:{type:'string',minLength:1,maxLength:32768}})],
  wf_pr_list_page:['Read bounded created-ascending PR metadata page. Mutable list, not snapshot/full inventory; head means same-owner branch only.',obj(['repo'],{repo:REPO,state:{type:'string',enum:['open','closed','all']},head:REF,base:REF,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
  wf_compare_commits_page:['Read exact-SHA compare graph metadata page, not patches/files or complete diff. Merge-base/counts/commit-parent SHAs only; conservative full-page has_more.',obj(['repo','base_sha','head_sha'],{repo:REPO,base_sha:SHA,head_sha:SHA,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
@@ -220,7 +220,8 @@ export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.free
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
 })));
-const typeOk = (schema, v) => schema.type === 'integer' ? Number.isInteger(v) && v >= schema.minimum && v <= schema.maximum
+const typeOk = (schema, v) => schema.oneOf ? schema.oneOf.some(b => b.type === 'object' ? validWfV1Args2(b, v) : typeOk(b, v))
+  : schema.type === 'integer' ? Number.isInteger(v) && v >= schema.minimum && v <= schema.maximum
   : schema.type === 'boolean' ? typeof v === 'boolean'
   : schema.type === 'array' ? Array.isArray(v) && v.length >= schema.minItems && v.length <= schema.maxItems && v.every(x => schema.items.type === "object" ? validWfV1Args2(schema.items, x) : typeOk(schema.items, x))
   : typeof v === 'string' && (!schema.pattern || new RegExp(schema.pattern).test(v)) && (!schema.enum || schema.enum.includes(v)) &&
@@ -276,6 +277,7 @@ const gitSha=z.string().regex(/^[0-9a-f]{40}$/);
 const utfBytes=(limit,nonblank=false)=>z.string().refine(v=>(!nonblank||v.trim()!=='')&&new TextEncoder().encode(v).length<=limit);
 
 function gitSchema(schema){
+ if(schema.oneOf)return z.union(schema.oneOf.map(gitSchema));
  if(schema.type==='object')return z.object(Object.fromEntries(Object.entries(schema.properties).map(([k,v])=>[k,schema.required.includes(k)?gitSchema(v):gitSchema(v).optional()]))).strict();
  if(schema.type==='array')return z.array(gitSchema(schema.items)).min(schema.minItems).max(schema.maxItems);
  if(schema.type==='integer')return z.number().int().min(schema.minimum).max(schema.maximum);
@@ -288,7 +290,7 @@ const gitArgsOk=(action,args)=>{
  if(!gitSchema(SPECS[action][1]).safeParse(args).success)return false;
  if(action==='wf_git_blob_create'){const cap=args.allow_large_text===true?100000:40000;return utfBytes(cap).safeParse(args.text).success && !gitCredential.test(args.text);}
  if(action==='wf_git_commit_create')return utfBytes(32768,true).safeParse(args.message).success&&new Set(args.parents).size===args.parents.length;
- if(action==='wf_git_tree_create'){const cap=args.allow_large_text===true?100000:40000;return args.files.reduce((n,x)=>n+new TextEncoder().encode(x.text).length,0)<=cap;}
+ if(action==='wf_git_tree_create'){const cap=args.allow_large_text===true?100000:40000;return args.files.reduce((n,x)=>n+(x.text===undefined?0:new TextEncoder().encode(x.text).length),0)<=cap;}
  return true;
 };
 const fileContentBudget = (action,args) => {

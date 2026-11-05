@@ -5453,6 +5453,49 @@ class WorkflowVerbs:
         for value in files:
             if not isinstance(value, dict):
                 raise Refused("invalid file")
+            if "sha" in value:
+                # An entry referencing a blob already in the repository:  the blob is
+                # fetched, its identity verified against the requested sha, and its decoded
+                # content scanned at the destination path before the reference is used.
+                _only(value, ("path", "sha", "mode"))
+                path = _path(value)
+                if find_secret(path) or self._provider_token_text(path):
+                    raise Refused("credential-shaped file path refused")
+                mode = _enum(value, "mode", ("100644", "100755"))
+                blob_sha = _sha(value, "sha")
+                if (
+                    _workflow_path(path)
+                    or path in seen
+                    or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
+                ):
+                    raise Refused("invalid file content or path")
+                blob = _obj(self._get(f"/repos/{repo}/git/blobs/{blob_sha}"))
+                if (
+                    blob.get("sha") != blob_sha
+                    or blob.get("encoding") != "base64"
+                    or type(blob.get("size")) is not int
+                    or not 0 <= blob["size"] <= MAX_WORKFLOW_TEXT_LARGE
+                    or not isinstance(blob.get("content"), str)
+                    or len(blob["content"]) > MAX_WORKFLOW_TEXT_LARGE_B64
+                ):
+                    raise RelayGitHubError(502, "blob receipt unsupported or unverifiable")
+                try:
+                    raw = base64.b64decode("".join(blob["content"].split()), validate=True)
+                except (ValueError, binascii.Error):
+                    raise RelayGitHubError(502, "blob encoding unverifiable") from None
+                if (
+                    len(raw) != blob["size"]
+                    or hashlib.sha1(
+                        b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+                    ).hexdigest()
+                    != blob_sha
+                ):
+                    raise RelayGitHubError(502, "blob identity unverifiable")
+                if unreviewed_file_secret(repo, path, raw):
+                    raise Refused("credential-shaped content refused")
+                seen.add(path)
+                entries.append({"path": path, "mode": mode, "type": "blob", "sha": blob_sha})
+                continue
             _only(value, ("path", "text", "mode"))
             path = _path(value)
             if find_secret(path) or self._provider_token_text(path):
