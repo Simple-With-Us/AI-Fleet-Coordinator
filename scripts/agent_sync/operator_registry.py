@@ -700,10 +700,11 @@ class SessionRegistry:
                         "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
                         (now, record_id),
                     )
-                    # A stored "unknown" is the no-claim sentinel, never an explicit
+                    # A stored "unknown" is the no-claim sentinel, never a stored
                     # claim, so the row takes the incoming value on its own resume:
                     # the derivation's source-tree support, or a caller's fresher
-                    # claim.  Any other stored value is an explicit claim and wins.
+                    # claim.  Any other stored value is a stored claim, explicit
+                    # or derived, and wins.
                     # This is not a batch migration:  rows change only when their own
                     # session next registers, and closed rows keep their history.
                     incoming_capability = str(identity.get("wake_capability") or "unknown")

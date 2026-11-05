@@ -16,8 +16,10 @@ Keys are adapter platforms as the chat catalog emits them ("cursor-cloud" and
 Claim lifecycle:  derivation only ever fills a gap; it never rewrites a stored
 claim.  A new row with no caller claim takes the derived value; a caller claim
 is stored verbatim.  On resume, the only stored value ever rewritten is the
-pre-derivation "unknown" sentinel, and only when the resumed session's own
-adapter platform resolves in the table; closed rows keep their history.  Once
+pre-derivation "unknown" sentinel:  the row then takes the incoming value, the
+derived table value when the session's own adapter platform resolves in the
+table or a caller's explicit claim (a caller claim is also the only way a chat
+on an unlisted platform leaves "unknown").  Closed rows keep their history.  Once
 stored, a claim - explicit or derived - is immutable:  a later registration of
 the same chat with a different claim (for example a platform letter freshly
 installed and now claiming "live-verified") does not overwrite it, and the row
