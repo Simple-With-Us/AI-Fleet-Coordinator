@@ -56,6 +56,7 @@ function memoryGate(store, { subLive } = {}) {
     eventClaimWake: (opts) => state.eventClaimWake(store, opts, now),
     webhookWakeClaim: (opts) => state.webhookWakeClaim(store, opts, now),
     eventSettleWake: (opts) => state.eventSettleWake(store, opts, now),
+    eventMarkDispatched: (opts) => state.eventMarkDispatched(store, opts, now),
     setPaused: (opts) => state.setPaused(store, opts, now),
     eventSubLive: subLive ?? ((opts) => state.eventSubLive(store, opts, now)),
     eventDeliveryResult: (opts) => state.eventDeliveryResult(store, opts, now),
@@ -179,7 +180,9 @@ test("delivery goes to fleet.webhook subscriptions only, with the listener's eve
   await upsertSub(store, other);
   const body = wakeBody();
   const { wake } = await check(body, await sign(body));
-  const claim = { token: "t", subs: [mine, other] };
+  const claim = await gate.webhookWakeClaim({ wakeId: wake.wake_id });
+  assert.equal(claim.verdict, "go");
+  assert.equal(claim.subs.length, 1, "only the fleet.webhook subscription is even claimed");
   const result = await deliverWebhookWake({ gate, wake, claim, fetchFn: fetchWith(200, posts), sleep: async () => {} });
   assert.deepEqual(result, { outcome: "delivered", subscribers: 1, delivered: 1 });
   assert.equal(posts.length, 1, "the zulip.mention subscription never receives it");
@@ -351,3 +354,115 @@ test("webhookWakeReply:  counts only, custody-honest, no secrets or URLs", () =>
   assert.equal(uncertain.body.outcome, "uncertain", "tombstone is named, never hidden");
   assert.deepEqual(webhookWakeReply({ verdict: "go", outcome: "delivered", subscribers: 1, delivered: 1 }), { status: 202, body: { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" } });
 });
+
+// ---------------------------------------------------------------- reviewer blockers (2026-11-05)
+
+test("the shared envelope binds the LISTENER path too: eventClaimWake with budget", async () => {
+  const store = state.memoryStore();
+  // Six webhook wakes claim the hour...
+  for (let i = 0; i < WEBHOOK_WAKE_RATE_LIMIT; i++) {
+    const c = await state.webhookWakeClaim(store, { wakeId: `wh-${i}` }, NOW_MS);
+    assert.equal(c.verdict, "go");
+  }
+  // ...and the seventh LISTENER wake is rate_limited at the canonical entry.
+  const limited = await state.eventClaimWake(store, { wakeId: "listener-7", messageId: null, name: EVENT_NAME, budget: { max: WEBHOOK_WAKE_RATE_LIMIT, windowMs: WEBHOOK_WAKE_RATE_WINDOW_MS } }, NOW_MS);
+  assert.equal(limited.verdict, "rate_limited");
+  assert.ok(limited.retryAfterS >= 1);
+  // Without the budget argument the listener claim path is unchanged.
+  const store2 = state.memoryStore();
+  const plain = await state.eventClaimWake(store2, { wakeId: "listener-plain", messageId: null, name: EVENT_NAME }, NOW_MS);
+  assert.equal(plain.verdict, "go");
+});
+
+test("dedupe before budget: a settled duplicate at the cap is a duplicate, never 429", async () => {
+  const store = state.memoryStore();
+  for (let i = 0; i < WEBHOOK_WAKE_RATE_LIMIT; i++) {
+    const c = await state.webhookWakeClaim(store, { wakeId: `wh-${i}` }, NOW_MS);
+    assert.equal(c.verdict, "go");
+    await state.eventSettleWake(store, { wakeId: `wh-${i}`, token: c.token, outcome: "delivered", delivered: 1 }, NOW_MS);
+  }
+  // The window is full, but this id is already settled:  duplicate wins.
+  const dup = await state.webhookWakeClaim(store, { wakeId: "wh-0" }, NOW_MS + 1000);
+  assert.equal(dup.verdict, "duplicate");
+  // An in-flight id is in_flight, not a budget charge either.
+  const store2 = state.memoryStore();
+  const live = await state.webhookWakeClaim(store2, { wakeId: "wh-live" }, NOW_MS);
+  assert.equal(live.verdict, "go");
+  for (let i = 0; i < WEBHOOK_WAKE_RATE_LIMIT - 1; i++) {
+    assert.equal((await state.webhookWakeClaim(store2, { wakeId: `wh-x${i}` }, NOW_MS)).verdict, "go");
+  }
+  const inflight = await state.webhookWakeClaim(store2, { wakeId: "wh-live" }, NOW_MS + 1000);
+  assert.equal(inflight.verdict, "in_flight");
+  // A genuinely new wake IS rate_limited.
+  const limited = await state.webhookWakeClaim(store2, { wakeId: "wh-new" }, NOW_MS + 1000);
+  assert.equal(limited.verdict, "rate_limited");
+});
+
+test("UNKNOWN fence: a claim marked dispatched is never re-armed after a crash", async () => {
+  const store = state.memoryStore();
+  const gate = memoryGate(store);
+  await upsertSub(store);
+  const wake = { wake_id: "w-crash", sent_at: NOW_S };
+  const claim = await gate.webhookWakeClaim({ wakeId: wake.wake_id });
+  assert.equal(claim.verdict, "go");
+  // The fence lands, then the Worker "crashes":  no settle ever happens.
+  assert.equal((await gate.eventMarkDispatched({ wakeId: wake.wake_id, token: claim.token })).ok, true);
+  // The lease expires; a retry of the SAME wake must NOT claim again.
+  const later = NOW_MS + 60 * 1000;
+  const reclaim = await state.webhookWakeClaim(store, { wakeId: wake.wake_id }, later);
+  assert.equal(reclaim.verdict, "duplicate", "a dispatched-but-unsettled wake stays spent");
+  // The listener path agrees:  same ledger, same fence.
+  const reclaim2 = await state.eventClaimWake(store, { wakeId: wake.wake_id, messageId: null, name: EVENT_NAME, budget: { max: 6, windowMs: 60 * 60 * 1000 } }, later);
+  assert.equal(reclaim2.verdict, "duplicate");
+  // Without the mark (crash BEFORE dispatch) the claim still re-arms:  no
+  // remote effect exists, so retrying the same id is safe.
+  const store2 = state.memoryStore();
+  const c2 = await state.webhookWakeClaim(store2, { wakeId: "w-pre" }, NOW_MS);
+  assert.equal(c2.verdict, "go");
+  const reclaim3 = await state.webhookWakeClaim(store2, { wakeId: "w-pre" }, later);
+  assert.equal(reclaim3.verdict, "go", "crash before dispatch re-arms");
+  // A wrong token cannot mark.
+  const store3 = state.memoryStore();
+  const c3 = await state.webhookWakeClaim(store3, { wakeId: "w-tok" }, NOW_MS);
+  assert.equal(c3.verdict, "go");
+  assert.equal((await state.eventMarkDispatched(store3, { wakeId: "w-tok", token: "wrong" }, NOW_MS)).ok, false);
+  assert.equal((await state.eventMarkDispatched(store3, { wakeId: "w-tok", token: c3.token }, NOW_MS)).ok, true, "the right token marks");
+});
+
+test("delivery makes exactly ONE attempt: an uncertain 5xx is never retried inside delivery", async () => {
+  const store = state.memoryStore();
+  const gate = memoryGate(store);
+  await upsertSub(store);
+  const wake = { wake_id: "w-once", sent_at: NOW_S };
+  const claim = await gate.webhookWakeClaim({ wakeId: wake.wake_id });
+  const posts = [];
+  const result = await deliverWebhookWake({ gate, wake, claim, fetchFn: fetchWith(500, posts), sleep: async () => {} });
+  assert.equal(posts.length, 1, "backoff []: no internal uncertain retry");
+  assert.equal(result.outcome, "uncertain");
+  // Tombstoned:  the same id stays spent.
+  assert.equal((await gate.webhookWakeClaim({ wakeId: wake.wake_id })).verdict, "duplicate");
+});
+
+test("a failed dispatch fence dispatches nothing and releases the claim", async () => {
+  const store = state.memoryStore();
+  const gate = memoryGate(store);
+  await upsertSub(store);
+  gate.eventMarkDispatched = async () => ({ ok: false }); // store lost the claim
+  const wake = { wake_id: "w-markfail", sent_at: NOW_S };
+  const claim = await gate.webhookWakeClaim({ wakeId: wake.wake_id });
+  const posts = [];
+  const result = await deliverWebhookWake({ gate, wake, claim, fetchFn: fetchWith(200, posts), sleep: async () => {} });
+  assert.equal(posts.length, 0, "no fence, no dispatch");
+  assert.equal(result.outcome, "retry");
+  // The claim was released:  the SAME wake may be sent again.
+  assert.equal((await gate.webhookWakeClaim({ wakeId: wake.wake_id })).verdict, "go");
+});
+
+test("listener wakeReply maps rate_limited to 429", async () => {
+  const { wakeReply } = await import("../src/events.js");
+  const reply = wakeReply({ verdict: "rate_limited", retryAfterS: 42 });
+  assert.equal(reply.status, 429);
+  assert.equal(reply.body.rate_limited, true);
+  assert.equal(reply.retryAfterS, 42);
+});
+

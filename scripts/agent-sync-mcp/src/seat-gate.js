@@ -336,4 +336,9 @@ export class SeatGate extends DurableObject {
   webhookWakeClaim(options) {
     return state.webhookWakeClaim(this.store, options);
   }
+
+  // The webhook path's pre-dispatch UNKNOWN fence (src/webhook-wake.js).
+  eventMarkDispatched(options) {
+    return state.eventMarkDispatched(this.store, options);
+  }
 }

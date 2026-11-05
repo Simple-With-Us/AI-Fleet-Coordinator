@@ -83,6 +83,7 @@ import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { serveWa } from "./wa/index.js";
+import { WAKE_RATE_LIMIT, WAKE_RATE_WINDOW_MS } from "./seat-state.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 import {
@@ -685,7 +686,10 @@ async function serveWake(request, env, ctx, config) {
     return jsonResponse({ ok: true, disabled: true, subscribers: 0 }, 202);
   }
   const seatGate = gate(env, seat);
-  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id, name: EVENT_NAME });
+  // The seat's ONE hourly wake envelope, shared with the webhook wake path
+  // and charged atomically inside eventClaimWake (the canonical entry), so
+  // neither path can push the seat past it.
+  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id, name: EVENT_NAME, budget: { max: WAKE_RATE_LIMIT, windowMs: WAKE_RATE_WINDOW_MS } });
   let result = claim;
   if (claim.verdict === "go") {
     // The answer waits for the deliveries, and waitUntil keeps them (and the

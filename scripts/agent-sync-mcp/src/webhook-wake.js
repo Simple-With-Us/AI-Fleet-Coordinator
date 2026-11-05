@@ -49,6 +49,7 @@
 import { safeEqual } from "./policy.js";
 import { wakeSignature } from "./wake.js";
 import { WEBHOOK_EVENT_NAME, subEventName, deliverEvent, eventIdFor } from "./events.js";
+import { WAKE_RATE_LIMIT, WAKE_RATE_WINDOW_MS } from "./seat-state.js";
 
 export const WEBHOOK_WAKE_CONTRACT = "agent-sync-webhook-wake/1";
 export const WEBHOOK_WAKE_SIGNATURE_HEADER = "x-agent-sync-webhook-signature";
@@ -58,10 +59,10 @@ export const WEBHOOK_WAKE_MAX_SKEW_S = 60;
 // The shortest key the Worker accepts.  `openssl rand -hex 32` gives 64.
 export const WEBHOOK_WAKE_MIN_KEY_LEN = 32;
 // The webhook path draws on the seat's ONE hourly wake envelope, shared with
-// the listener wake (seat-state webhookWakeClaim):  at most this many wakes an
-// hour across both paths.
-export const WEBHOOK_WAKE_RATE_LIMIT = 6;
-export const WEBHOOK_WAKE_RATE_WINDOW_MS = 60 * 60 * 1000;
+// the listener wake and charged inside seat-state's canonical eventClaimWake
+// for BOTH paths:  at most this many wakes an hour across both paths.
+export const WEBHOOK_WAKE_RATE_LIMIT = WAKE_RATE_LIMIT;
+export const WEBHOOK_WAKE_RATE_WINDOW_MS = WAKE_RATE_WINDOW_MS;
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 const WAKE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -144,13 +145,37 @@ export function webhookWakeData(wake) {
  * zulip.mention or whatsapp.message subscription can never receive it), then
  * end the claim with SeatGate.eventSettleWake by the custody contract in the
  * header:  uncertain NEVER re-arms.  Same delivery as a wake (events.js
- * deliverEvent):  Standard Webhooks signed, the access re-check before every
- * attempt, at most two attempts inside `deadline`.  Never throws:  anything
- * unexpected settles "uncertain" (a dispatch may have happened).  Returns
+ * deliverEvent):  Standard Webhooks signed, the access re-check before the
+ * attempt, exactly ONE attempt (backoff: []) - an internal retry could repeat
+ * an uncertain POST the tombstone cannot undo.  The claim is marked
+ * dispatched before the first POST, so a crash after dispatch fences the id
+ * against a blind lease-expiry reclaim.  Never throws:  anything unexpected
+ * settles "uncertain" (a dispatch may have happened).  Returns
  * {outcome, subscribers, delivered}.
  */
 export async function deliverWebhookWake({ gate, wake, claim, fetchFn, now = Date.now, sleep, deadline = Infinity }) {
   const mine = claim.subs.filter((sub) => subEventName(sub) === WEBHOOK_EVENT_NAME);
+  // The UNKNOWN fence BEFORE the first dispatch:  the claim is marked
+  // dispatched, so if the Worker dies after a POST but before the settle, the
+  // expired lease is never blindly reclaimed (seat-state eventClaimWake).  If
+  // the mark did not land, nothing is dispatched and the claim is released -
+  // provably no remote effect, so the SAME wake may be sent again.
+  if (mine.length > 0) {
+    let marked;
+    try {
+      marked = await gate.eventMarkDispatched({ wakeId: wake.wake_id, token: claim.token });
+    } catch {
+      marked = { ok: false };
+    }
+    if (!marked.ok) {
+      try {
+        await gate.eventSettleWake({ wakeId: wake.wake_id, token: claim.token, outcome: "retry" });
+      } catch {
+        console.log(JSON.stringify({ event: "webhook_wake_settle_failed" }));
+      }
+      return { outcome: "retry", subscribers: mine.length, delivered: 0 };
+    }
+  }
   const data = webhookWakeData(wake);
   let results;
   try {
@@ -160,7 +185,11 @@ export async function deliverWebhookWake({ gate, wake, claim, fetchFn, now = Dat
         const event = { eventId: await eventIdFor(wake.wake_id, sub.id), name: WEBHOOK_EVENT_NAME, timestamp: data.fired_at, data, cursor: null };
         let result;
         try {
-          result = await deliverEvent(fetchFn, sub, event, { now, deadline, isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
+          // backoff: [] - exactly ONE attempt.  deliverEvent's internal retry
+          // could repeat an uncertain POST (timeout, 5xx) that the tombstone
+          // cannot undo, so this path never retries inside delivery:  one
+          // attempt, then custody classification.
+          result = await deliverEvent(fetchFn, sub, event, { now, deadline, backoff: [], isLive: () => gate.eventSubLive({ subId: sub.id }), ...(sleep ? { sleep } : {}) });
         } catch {
           result = { outcome: "failed", status: null, attempts: 1 };
         }

@@ -817,6 +817,7 @@ export async function deliverWake({ gate, wake, claim, channels = async () => nu
 export function wakeReply(result) {
   if (result.verdict === "duplicate") return { status: 200, body: { ok: true, duplicate: true } };
   if (result.verdict === "in_flight") return { status: 503, body: { ok: false, in_flight: true }, retryAfterS: Math.max(1, result.retryAfterS ?? 1) };
+  if (result.verdict === "rate_limited") return { status: 429, body: { ok: false, rate_limited: true }, retryAfterS: Math.max(1, result.retryAfterS ?? 1) };
   if (result.verdict === "paused") return { status: 202, body: { ok: true, paused: true, subscribers: 0 } };
   if (result.outcome === "retry") return { status: 503, body: { ok: false, retry: true, subscribers: result.subscribers, delivered: 0 } };
   return { status: 202, body: { ok: true, subscribers: result.subscribers, delivered: result.delivered, outcome: result.outcome } };

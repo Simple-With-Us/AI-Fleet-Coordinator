@@ -841,6 +841,11 @@ export const WAKE_SEEN_MS = 15 * MINUTE_MS; // > the wake's 5-minute sent_at win
 // failure), so the listener's last retry claims again a wake whose isolate died
 // mid-delivery.
 export const WAKE_LEASE_MS = 15 * 1000;
+// One hourly wake envelope per seat, shared by BOTH wake paths (listener and
+// webhook):  it is charged inside eventClaimWake itself, so no path can push
+// the seat past it and the charge is atomic with the claim.
+export const WAKE_RATE_LIMIT = 6;
+export const WAKE_RATE_WINDOW_MS = 60 * MINUTE_MS;
 const WAKE_SEEN_CAP = 500;
 // Every way a claim can end (eventSettleWake).  "retry" forgets the wake;  the rest settle it.
 // "uncertain" is the webhook wake's tombstone (src/webhook-wake.js):  a
@@ -1029,15 +1034,39 @@ async function putWakeSeen(store, seen) {
  * (liveSubs), and eventSubLive checks each one again before every attempt.
  * Only subscriptions to `name` (zulip.mention) are returned and counted, so a
  * spike subscription (AFC-477) never changes a wake's answer.
+ * With `budget` ({max, windowMs}) the seat's shared hourly envelope is
+ * charged here, after dedupe:  {verdict: "rate_limited", retryAfterS}.
  * Returns {verdict: "go", subs, token}, {verdict: "duplicate"},
  * {verdict: "in_flight", retryAfterS} or {verdict: "paused"}.
  */
-export async function eventClaimWake(store, { wakeId, messageId = null, name = EVENT_NAME }, now = Date.now()) {
+export async function eventClaimWake(store, { wakeId, messageId = null, name = EVENT_NAME, budget = null }, now = Date.now()) {
   const seen = await wakeSeen(store, now);
   const prior = wakeEntry(seen[wakeId]);
   if (prior?.s === "settled") return { verdict: "duplicate" };
   if (prior && Number.isFinite(prior.until) && prior.until > now) {
     return { verdict: "in_flight", retryAfterS: Math.max(1, Math.ceil((prior.until - now) / 1000)) };
+  }
+  // UNKNOWN fence:  an expired claim already marked dispatched (the webhook
+  // path marks before its first POST) may have caused a remote effect - the
+  // request died between dispatch and settle.  It is never re-armed:  the id
+  // stays spent.  Claims without the mark reclaim as before (no dispatch, no
+  // remote effect), so the listener's behavior is unchanged.
+  if (prior?.s === "claimed" && prior.dispatched === true) {
+    await audit(store, { event: "event_wake_reclaim_fenced", wake_ref: wakeRefOf(wakeId) }, now);
+    return { verdict: "duplicate" };
+  }
+  // The seat's shared hourly envelope, charged here at the canonical entry so
+  // BOTH wake paths draw on it atomically.  Dedupe first:  a settled or
+  // in-flight id is a duplicate, never a budget charge.
+  if (budget) {
+    const inWindow = Object.values(seen)
+      .map(wakeEntry)
+      .filter((entry) => entry && Number.isFinite(entry.at) && now - entry.at < budget.windowMs && entry.at <= now + MINUTE_MS);
+    if (inWindow.length >= budget.max) {
+      const oldest = Math.min(...inWindow.map((entry) => entry.at));
+      await audit(store, { event: "event_wake_rate_limited", wake_ref: wakeRefOf(wakeId) }, now);
+      return { verdict: "rate_limited", retryAfterS: Math.max(1, Math.ceil((oldest + budget.windowMs - now) / 1000)) };
+    }
   }
   delete seen[wakeId]; // written again last, so the cap trims older wakes first
   const wakeRef = wakeRefOf(wakeId);
@@ -1056,6 +1085,22 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
   await putWakeSeen(store, seen);
   await audit(store, { event: "event_wake_captured", wake_ref: wakeRef, message_id: messageId ?? null, subscribers: mine.length, ...(prior ? { reclaimed: true } : {}) }, now);
   return { verdict: "go", token, subs: mine.map((sub) => ({ ...sub })) };
+}
+
+/**
+ * Fence a claim before its first dispatch (the webhook wake path):  once a
+ * claim is marked dispatched, its expired lease is never blindly reclaimed -
+ * a crash after dispatch may have caused a remote effect, so eventClaimWake
+ * keeps the id spent.  Only the claim's `token` may mark.  Returns {ok: true},
+ * or {ok: false} when the claim is no longer this one's.
+ */
+export async function eventMarkDispatched(store, { wakeId, token }, now = Date.now()) {
+  const seen = await wakeSeen(store, now);
+  const entry = wakeEntry(seen[wakeId]);
+  if (!entry || entry.s !== "claimed" || typeof token !== "string" || entry.token !== token) return { ok: false };
+  seen[wakeId] = { ...entry, dispatched: true };
+  await putWakeSeen(store, seen);
+  return { ok: true };
 }
 
 /**
@@ -1181,18 +1226,11 @@ export async function spikeClaim(store, { spikeId, max = 3, windowMs = 60 * MINU
 // contract (uncertain tombstones, never re-arms).  Budget first:  a
 // rate-limited wake was never claimed and never dispatched, so the same id
 // may come back inside a later window.
-export async function webhookWakeClaim(store, { wakeId, max = 6, windowMs = 60 * MINUTE_MS }, now = Date.now()) {
+export async function webhookWakeClaim(store, { wakeId, max = WAKE_RATE_LIMIT, windowMs = WAKE_RATE_WINDOW_MS }, now = Date.now()) {
   if (typeof wakeId !== "string" || wakeId.length === 0 || wakeId.length > 128) throw new Error("bad wake id");
-  const seen = await wakeSeen(store, now);
-  const inWindow = Object.values(seen)
-    .map(wakeEntry)
-    .filter((entry) => entry && Number.isFinite(entry.at) && now - entry.at < windowMs && entry.at <= now + MINUTE_MS);
-  if (inWindow.length >= max) {
-    const oldest = Math.min(...inWindow.map((entry) => entry.at));
-    await audit(store, { event: "webhook_wake_rate_limited", wake_ref: wakeRefOf(wakeId) }, now);
-    return { verdict: "rate_limited", retryAfterS: Math.max(1, Math.ceil((oldest + windowMs - now) / 1000)) };
-  }
-  return eventClaimWake(store, { wakeId, messageId: null, name: WEBHOOK_EVENT_NAME }, now);
+  // Dedupe (before any charge), the shared envelope and the crash fence all
+  // live in the canonical claim now:  this path only names its event.
+  return eventClaimWake(store, { wakeId, messageId: null, name: WEBHOOK_EVENT_NAME, budget: { max, windowMs } }, now);
 }
 
 /** Live subscriptions for /admin:  never the URL path or the secret. */
