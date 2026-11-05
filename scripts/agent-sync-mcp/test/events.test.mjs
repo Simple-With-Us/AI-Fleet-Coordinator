@@ -644,21 +644,39 @@ async function listenerPost(gate, w, fetchFn, sleep = async () => {}, resolve = 
   return { result, reply: wakeReply(result) };
 }
 
-test("finding 1:  a wholly failed delivery is forgotten and answered 503;  the retry delivers;  a further retry is a duplicate", async () => {
+test("finding 1:  a wholly failed delivery is UNCERTAIN:  one attempt, tombstoned, never re-armed", async () => {
+  // Custody closure:  a 5xx after a real dispatch has an unknown fate (the
+  // callback may have been accepted), so the wake is NOT forgotten for the
+  // daemon's retry - it is tombstoned, on this path and the webhook path.
   const { gate, deliveries, fetchFn } = await wakeSetup({ statuses: [503, 500] });
   const w = wake({ wake_id: "w-retry" });
   const first = await listenerPost(gate, w, fetchFn);
-  assert.equal(deliveries.length, 2, "two attempts inside the request");
-  assert.deepEqual(first.reply, { status: 503, body: { ok: false, retry: true, subscribers: 1, delivered: 0 } });
+  assert.equal(deliveries.length, 1, "one attempt:  an uncertain POST is never retried inside delivery");
+  assert.deepEqual(first.reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 0, outcome: "uncertain" } });
   const second = await listenerPost(gate, w, fetchFn);
-  assert.equal(deliveries.length, 3);
-  assert.deepEqual(second.reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" } });
-  assert.equal(new Set(deliveries.map((d) => d.body.eventId)).size, 1, "every attempt and retry carries the same event id");
-  const third = await listenerPost(gate, w, fetchFn);
-  assert.deepEqual(third.reply, { status: 200, body: { ok: true, duplicate: true } });
-  assert.equal(deliveries.length, 3);
+  assert.deepEqual(second.reply, { status: 200, body: { ok: true, duplicate: true } }, "tombstoned:  the daemon's retry does not re-fire");
+  assert.equal(deliveries.length, 1);
+  // The tombstone is terminal:  time passing does not make the id claimable.
+  assert.equal((await state.eventClaimWake(gate.store, { wakeId: w.wake_id }, Date.now() + 7 * 24 * 60 * 60 * 1000)).verdict, "duplicate");
+  // And the webhook path can never claim it either (cross-path custody).
+  assert.equal((await state.webhookWakeClaim(gate.store, { wakeId: w.wake_id }, Date.now() + 1000)).verdict, "duplicate");
   const events = (await gate.tail(20)).map((r) => r.event);
-  for (const name of ["event_wake_captured", "event_delivery", "event_wake_released", "event_wake_settled"]) assert.ok(events.includes(name), name);
+  for (const name of ["event_wake_captured", "event_delivery", "event_wake_settled"]) assert.ok(events.includes(name), name);
+});
+
+test("finding 1:  a provable zero-dispatch still releases the SAME wake", async () => {
+  // The liveness check throws before anything is sent:  no remote effect
+  // exists, so "retry" forgets the claim and the daemon's retry delivers.
+  const { gate, deliveries, fetchFn } = await wakeSetup({ statuses: [200] });
+  gate.eventSubLive = async () => { throw new Error("store down"); };
+  const w = wake({ wake_id: "w-zerodispatch" });
+  const first = await listenerPost(gate, w, fetchFn);
+  assert.equal(deliveries.length, 0, "nothing was sent");
+  assert.deepEqual(first.reply, { status: 503, body: { ok: false, retry: true, subscribers: 1, delivered: 0 } });
+  gate.eventSubLive = (opts) => state.eventSubLive(gate.store, opts, Date.now());
+  const second = await listenerPost(gate, w, fetchFn);
+  assert.deepEqual(second.reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" } });
+  assert.equal(deliveries.length, 1);
 });
 
 test("the listener fences a claim before dispatch: a crash after dispatch never re-arms", async () => {
@@ -801,24 +819,26 @@ test("a wake that carries held_back delivers it reduced to the allowlist, and no
   for (const leak of ["secret-plans", "launch", "budget"]) assert.ok(!audit.includes(leak), `${leak} is not in the audit`);
 });
 
-test("finding 3:  an unsubscribe, a revoke or a pause during the backoff stops the next attempt", async () => {
+test("finding 3:  one attempt only - a flip during what was the backoff can never be hit", async () => {
   const flips = {
     unsubscribe: ({ ev }) => ev.unsubscribe({ name: EVENT_NAME, arguments: {}, delivery: { mode: "webhook", url: CALLBACK } }),
     revoke: ({ gate }) => gate.bumpEpoch({ by: "jay", reason: "revoke" }),
     pause: ({ gate }) => gate.setPaused({ by: "jay", paused: true }),
   };
+  // One attempt only (backoff: []):  there is no "next attempt" after a flip
+  // during a backoff.  A failed single attempt is uncertain custody, and the
+  // flip is still honored on the NEXT wake (the liveness check runs before
+  // every attempt, the first included - pinned by the sibling test).
   for (const [name, flip] of Object.entries(flips)) {
     const setup = await wakeSetup({ statuses: [503, 200] });
     const w = wake({ wake_id: `w-${name}` });
     const { result, reply } = await listenerPost(setup.gate, w, setup.fetchFn, async () => {
       await flip(setup);
     });
-    assert.equal(setup.deliveries.length, 1, `${name}:  no attempt after the flip`);
-    assert.equal(result.outcome, "not_live", name);
-    assert.deepEqual(reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 0, outcome: "not_live" } }, `${name}:  settled, not released`);
-    const delivery = (await setup.gate.tail(5)).find((r) => r.event === "event_delivery");
-    assert.equal(delivery.outcome, "not_live", name);
-    assert.equal(delivery.reason, { unsubscribe: "removed", revoke: "stale_epoch", pause: "paused" }[name]);
+    assert.equal(setup.deliveries.length, 1, `${name}:  exactly one attempt, no internal retry`);
+    assert.equal(result.outcome, "uncertain", name);
+    assert.deepEqual(reply, { status: 202, body: { ok: true, subscribers: 1, delivered: 0, outcome: "uncertain" } }, `${name}:  tombstoned, not released`);
+    assert.equal((await setup.gate.eventClaimWake({ wakeId: w.wake_id })).verdict, "duplicate", `${name}:  never re-armed`);
   }
 });
 
@@ -867,9 +887,12 @@ test("the answer to the listener:  every verdict and outcome", () => {
   for (const outcome of ["delivered", "no_subscriber", "rejected", "gone", "not_live", "channel_refused"]) {
     assert.equal(wakeReply({ verdict: "go", outcome, subscribers: 1, delivered: outcome === "delivered" ? 1 : 0 }).status, 202, outcome);
   }
+  assert.deepEqual(wakeReply({ verdict: "go", outcome: "uncertain", subscribers: 1, delivered: 0 }), { status: 202, body: { ok: true, subscribers: 1, delivered: 0, outcome: "uncertain" } });
   assert.equal(wakeOutcome([]), "no_subscriber");
-  assert.equal(wakeOutcome([{ outcome: "failed" }, { outcome: "delivered" }]), "delivered");
-  assert.equal(wakeOutcome([{ outcome: "failed" }, { outcome: "rejected" }]), "retry");
-  assert.equal(wakeOutcome([{ outcome: "gone" }, { outcome: "not_live" }]), "gone");
-  assert.equal(wakeOutcome([{ outcome: "not_live" }]), "not_live");
+  assert.equal(wakeOutcome([{ outcome: "failed", attempts: 1 }, { outcome: "delivered", attempts: 1 }]), "delivered");
+  assert.equal(wakeOutcome([{ outcome: "failed", attempts: 0 }, { outcome: "rejected", attempts: 1 }]), "rejected", "a zero-attempt failure is custody-neutral beside an authoritative answer");
+  assert.equal(wakeOutcome([{ outcome: "failed", attempts: 1 }]), "uncertain", "a dispatch with an unknown fate tombstones");
+  assert.equal(wakeOutcome([{ outcome: "failed", attempts: 0 }]), "retry", "provable zero-dispatch releases");
+  assert.equal(wakeOutcome([{ outcome: "gone", attempts: 1 }, { outcome: "not_live", attempts: 0 }]), "gone");
+  assert.equal(wakeOutcome([{ outcome: "not_live", attempts: 0 }]), "not_live");
 });

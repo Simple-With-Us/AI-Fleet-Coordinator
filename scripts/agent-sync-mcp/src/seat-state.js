@@ -848,15 +848,22 @@ export const WAKE_RATE_LIMIT = 6;
 export const WAKE_RATE_WINDOW_MS = 60 * MINUTE_MS;
 // Ordinary wake_seen entries must outlive the shared hourly budget window:
 // the old 15-minute GC erased the window's accounting (six claims at T, then
-// a 7th admitted at T+16m against an empty-looking ledger).  UNKNOWN custody
-// - a claimed entry marked dispatched (crash fence) or a settled "uncertain"
-// tombstone - is retained far longer and is never the first cap eviction, so
-// a replayed wake_id after a GC or a cap trim can never silently re-arm.
+// a 7th admitted at T+16m against an empty-looking ledger).
 export const WAKE_SEEN_WINDOW_MS = WAKE_RATE_WINDOW_MS + MINUTE_MS;
-export const WAKE_UNKNOWN_RETENTION_MS = 24 * 60 * MINUTE_MS;
-function wakeRetentionMs(entry) {
-  if (entry && ((entry.s === "claimed" && entry.dispatched === true) || (entry.s === "settled" && entry.outcome === "uncertain"))) return WAKE_UNKNOWN_RETENTION_MS;
-  return WAKE_SEEN_WINDOW_MS;
+// UNKNOWN custody is TERMINAL and lives in the separate `wake_tomb` ledger,
+// never in wake_seen:  a claim is tombstoned the moment it is marked
+// dispatched (a crash after that may have caused a remote effect) and a
+// settled "uncertain" id stays tombstoned.  Elapsed time is not proof that
+// no remote effect happened, so neither a GC horizon nor a cap trim may ever
+// make such an id claimable again.  Only a token-valid settle that RESOLVES
+// custody (delivered / an authoritative refusal / provable zero-dispatch
+// "retry") removes the id.  The ledger is bounded by FAIL-CLOSED admission:
+// once WAKE_CUSTODY_CAP unknown ids are held, NEW wakes are refused
+// (rate_limited) until an operator reconciles custody;  unknowns are never
+// evicted to make room.
+export const WAKE_CUSTODY_CAP = 1024;
+async function wakeTomb(store) {
+  return (await store.get("wake_tomb")) ?? {};
 }
 const WAKE_SEEN_CAP = 500;
 // Every way a claim can end (eventSettleWake).  "retry" forgets the wake;  the rest settle it.
@@ -1016,24 +1023,21 @@ function wakeEntry(value) {
   return value.s === "claimed" || value.s === "settled" ? value : null;
 }
 
-/** The claims still inside their retention class, oldest first. */
+/** The claims still inside the retention window, oldest first. */
 async function wakeSeen(store, now) {
   const seen = (await store.get("wake_seen")) ?? {};
   for (const [k, value] of Object.entries(seen)) {
     const entry = wakeEntry(value);
-    if (!entry || !(entry.at > now - wakeRetentionMs(entry) && entry.at <= now + MINUTE_MS)) delete seen[k];
+    if (!entry || !(entry.at > now - WAKE_SEEN_WINDOW_MS && entry.at <= now + MINUTE_MS)) delete seen[k];
   }
   return seen;
 }
 
 async function putWakeSeen(store, seen) {
+  // Oldest-first trim.  UNKNOWN custody is unaffected:  it lives in
+  // wake_tomb, not here.
   const keys = Object.keys(seen).sort((a, b) => (wakeEntry(seen[a])?.at ?? 0) - (wakeEntry(seen[b])?.at ?? 0));
-  while (keys.length > WAKE_SEEN_CAP) {
-    // UNKNOWN custody is never the first evicted:  ordinary entries go first.
-    const i = keys.findIndex((k) => wakeRetentionMs(wakeEntry(seen[k])) < WAKE_UNKNOWN_RETENTION_MS);
-    if (i === -1) delete seen[keys.shift()];
-    else delete seen[keys.splice(i, 1)[0]];
-  }
+  while (keys.length > WAKE_SEEN_CAP) delete seen[keys.shift()];
   await store.put("wake_seen", seen);
 }
 
@@ -1058,6 +1062,13 @@ async function putWakeSeen(store, seen) {
  */
 export async function eventClaimWake(store, { wakeId, messageId = null, name = EVENT_NAME, budget = null }, now = Date.now()) {
   const seen = await wakeSeen(store, now);
+  const tomb = await wakeTomb(store);
+  // Terminal UNKNOWN custody:  an id tombstoned after an uncertain dispatch
+  // is spent forever;  only operator reconciliation clears it.
+  if (Object.hasOwn(tomb, wakeId)) {
+    await audit(store, { event: "event_wake_tombstoned_replay", wake_ref: wakeRefOf(wakeId) }, now);
+    return { verdict: "duplicate" };
+  }
   const prior = wakeEntry(seen[wakeId]);
   if (prior?.s === "settled") return { verdict: "duplicate" };
   if (prior && Number.isFinite(prior.until) && prior.until > now) {
@@ -1068,6 +1079,13 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
   // request died between dispatch and settle.  It is never re-armed:  the id
   // stays spent.  Claims without the mark reclaim as before (no dispatch, no
   // remote effect), so the listener's behavior is unchanged.
+  // Fail-closed bound:  when the held UNKNOWN custody reaches the cap, refuse
+  // NEW admissions instead of evicting unknowns.
+  const custody = Object.keys(tomb).length;
+  if (custody >= WAKE_CUSTODY_CAP) {
+    await audit(store, { event: "event_wake_custody_full", wake_ref: wakeRefOf(wakeId), custody }, now);
+    return { verdict: "rate_limited", retryAfterS: 3600 };
+  }
   if (prior?.s === "claimed" && prior.dispatched === true) {
     await audit(store, { event: "event_wake_reclaim_fenced", wake_ref: wakeRefOf(wakeId) }, now);
     return { verdict: "duplicate" };
@@ -1115,6 +1133,11 @@ export async function eventMarkDispatched(store, { wakeId, token }, now = Date.n
   const seen = await wakeSeen(store, now);
   const entry = wakeEntry(seen[wakeId]);
   if (!entry || entry.s !== "claimed" || typeof token !== "string" || entry.token !== token) return { ok: false };
+  // Tombstone FIRST:  from here on a crash leaves the id spent forever, and
+  // only a token-valid settle that resolves custody can release it.
+  const tomb = await wakeTomb(store);
+  tomb[wakeId] = now;
+  await store.put("wake_tomb", tomb);
   seen[wakeId] = { ...entry, dispatched: true };
   await putWakeSeen(store, seen);
   return { ok: true };
@@ -1135,18 +1158,33 @@ export async function eventSettleWake(store, { wakeId, token, outcome, delivered
   const entry = wakeEntry(seen[wakeId]);
   const wakeRef = wakeRefOf(wakeId);
   if (!entry || entry.s !== "claimed" || typeof token !== "string" || entry.token !== token) {
+    // A settle that cannot prove ownership changes nothing:  any tombstone
+    // from the dispatch mark stays (fail closed).
     await audit(store, { event: "event_wake_settle_stale", wake_ref: wakeRef, outcome }, now);
     return { ok: false };
   }
+  const tomb = await wakeTomb(store);
   if (outcome === "retry") {
+    // Provable zero-dispatch:  custody is moot, release the id entirely.
     delete seen[wakeId];
+    delete tomb[wakeId];
     await putWakeSeen(store, seen);
+    await store.put("wake_tomb", tomb);
     await audit(store, { event: "event_wake_released", wake_ref: wakeRef }, now);
     return { ok: true };
   }
   delete seen[wakeId];
   seen[wakeId] = { s: "settled", at: now, outcome };
   await putWakeSeen(store, seen);
+  if (outcome === "uncertain") {
+    // Terminal custody:  the id is spent forever.
+    tomb[wakeId] = now;
+  } else {
+    // Custody resolved (delivered or an authoritative answer):  the
+    // pre-dispatch tombstone goes;  the settled entry dedupes the window.
+    delete tomb[wakeId];
+  }
+  await store.put("wake_tomb", tomb);
   if (outcome === "channel_refused") {
     await audit(store, { event: "event_wake_channel_refused", wake_ref: wakeRef, stream_id: Number.isSafeInteger(streamId) ? streamId : null }, now);
   } else {

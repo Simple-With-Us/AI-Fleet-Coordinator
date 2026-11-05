@@ -184,7 +184,7 @@ test("wake claims outlive the shared budget window and stay capped at 500", asyn
   assert.ok(Object.hasOwn(seen, "w-cap-519"));
 });
 
-test("UNKNOWN custody is retained past the window and never cap-evicted first", async () => {
+test("UNKNOWN custody is terminal:  no GC horizon, no cap eviction, fail-closed when full", async () => {
   const store = S.memoryStore();
   // An uncertain tombstone and a dispatched (crash-fenced) claim at T0.
   const tomb = await S.eventClaimWake(store, { wakeId: "w-tomb" }, T0);
@@ -200,10 +200,30 @@ test("UNKNOWN custody is retained past the window and never cap-evicted first", 
   assert.equal((await S.eventClaimWake(store, { wakeId: "w-tomb" }, t + 600)).verdict, "duplicate", "tombstone survives the cap");
   assert.equal((await S.eventClaimWake(store, { wakeId: "w-crash" }, t + 600)).verdict, "duplicate", "fence survives the cap");
   const seen = await store.get("wake_seen");
-  assert.ok(Object.keys(seen).length <= 500);
-  // ...until the custody retention itself expires.
-  const t2 = T0 + S.WAKE_UNKNOWN_RETENTION_MS + 1;
-  assert.equal((await S.eventClaimWake(store, { wakeId: "w-tomb" }, t2)).verdict, "go", "custody retention is bounded too");
+  assert.ok(Object.keys(seen).length <= 502, "ordinary entries trim to the cap; custody stays");
+  // Elapsed time is not proof of no remote effect:  even a week later the id
+  // is spent.  Only operator reconciliation clears custody.
+  const t2 = T0 + 7 * 24 * 60 * 60 * 1000;
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-tomb" }, t2)).verdict, "duplicate", "tombstones never expire into a re-arm");
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-crash" }, t2)).verdict, "duplicate", "fenced claims never expire into a re-arm");
+});
+
+test("fail-closed:  a full custody ledger refuses NEW admissions instead of evicting unknowns", async () => {
+  const store = S.memoryStore();
+  // Fill the custody ledger to the cap with tombstones.
+  const tomb = {};
+  for (let i = 0; i < S.WAKE_CUSTODY_CAP; i++) tomb[`old-${i}`] = T0;
+  await store.put("wake_tomb", tomb);
+  // A tombstoned id is still a duplicate (custody check first)...
+  assert.equal((await S.eventClaimWake(store, { wakeId: "old-0" }, T0 + 1)).verdict, "duplicate");
+  // ...and a NEW wake is refused, fail-closed:  nothing is evicted for it.
+  const refused = await S.eventClaimWake(store, { wakeId: "w-new" }, T0 + 1);
+  assert.equal(refused.verdict, "rate_limited");
+  assert.equal((await store.get("wake_tomb"))[`old-${S.WAKE_CUSTODY_CAP - 1}`], T0, "no unknown was evicted");
+  // Under the cap again, admission resumes.
+  const tomb2 = { "old-0": T0 };
+  await store.put("wake_tomb", tomb2);
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-new" }, T0 + 2)).verdict, "go");
 });
 
 test("eventSubLive says why a subscription may no longer receive an event", async () => {
