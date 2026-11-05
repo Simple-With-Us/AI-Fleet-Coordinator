@@ -68,6 +68,7 @@ ROW_FIELDS = {
         "absentSince",
         "health",
         "restartCount",
+        "restartPolicy",
         "exitCode",
         "oomKilled",
         "cpuPercent",

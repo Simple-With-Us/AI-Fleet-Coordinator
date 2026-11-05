@@ -210,6 +210,10 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
         }
     }
 
+    /// False for a row the server refuses to redeploy because of its state:  one that is gone,
+    /// or one whose state nobody could read.
+    var isOnHost: Bool { resourceStatus != .absent && resourceStatus != .unknown }
+
     /// True when the server would agree to redeploy this row.
     ///
     /// This mirrors `coolify_resource` and `uuid_from_label` in
@@ -250,6 +254,7 @@ struct CoolifyResource: Decodable, Identifiable, Equatable {
         switch reason {
         case "no_uuid_label": return "No Redeploy: the container does not say which application it is."
         case "not_seen": return "No Redeploy: it is not on the server now."
+        case "state_unknown": return "No Redeploy: the collector could not read its state."
         case "not_allowed": return "No Redeploy: the server's allowlist does not allow it."
         case "first_row_refused": return "No Redeploy: the server would refuse it, because a row that is not an application holds the same id."
         default: return "No Redeploy."
@@ -1036,10 +1041,10 @@ struct ServerStatusReading {
     /// is gone is never offered,  and a row that lists its actions is offered only what it
     /// lists,  because the collector asked the helper.
     func offersRedeploy(_ resource: CoolifyResource) -> Bool {
-        guard resource.isRedeployable, resource.resourceStatus != .absent,
-              resource.resourceStatus != .unknown else { return false }
+        guard resource.isRedeployable, resource.isOnHost else { return false }
         if let actions = resource.actions, !actions.contains("redeploy") { return false }
-        return coolify.first(where: { $0.uuid == resource.uuid })?.isRedeployable == true
+        guard let first = coolify.first(where: { $0.uuid == resource.uuid }) else { return false }
+        return first.isRedeployable && first.isOnHost
     }
 
     /// The application a row belongs to,  when the report lists it.

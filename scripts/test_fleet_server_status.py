@@ -1436,6 +1436,29 @@ class LeftoverResourceTests(unittest.TestCase):
             report = collector.build_report([], [], [], previous_map([row]), now=NOW)
             self.assertEqual(report["coolify"], [], name)
 
+    def test_a_container_someone_asked_to_keep_is_reported_whatever_its_name_looks_like(self):
+        for policy in ("always", "unless-stopped", "on-failure"):
+            row = {
+                "uuid": "kept_service",
+                "name": "kept_service",
+                "type": "standalone",
+                "uuidSource": "name",
+                "status": "running",
+                "container": "kept_service",
+                "restartPolicy": policy,
+            }
+            report = collector.build_report([], [], [], previous_map([row]), now=NOW)
+            self.assertEqual(report["coolify"][0]["status"], "absent", policy)
+            self.assertEqual(report["coolify"][0]["restartPolicy"], policy)
+            # It stays reported on the next run, which reads this run's row as its previous row.
+            again = collector.build_report(
+                [], [], [], previous_map(report["coolify"]), now=NOW + 60
+            )
+            self.assertEqual(again["coolify"][0]["status"], "absent", policy)
+        row["restartPolicy"] = "no"
+        report = collector.build_report([], [], [], previous_map([row]), now=NOW)
+        self.assertEqual(report["coolify"], [])
+
     def test_a_named_container_that_vanished_is_still_reported(self):
         row = {
             "uuid": "example-shared-box",
@@ -1600,6 +1623,23 @@ class RealActionsTests(unittest.TestCase):
         self.assertEqual(rows["Shared (web)"]["actions"], [])
         self.assertEqual(rows["Shared (web)"]["redeployBlockedReason"], "first_row_refused")
 
+    def test_a_row_whose_state_could_not_be_read_claims_no_redeploy(self):
+        unknown = {
+            "uuid": "uuid1",
+            "uuidSource": "label",
+            "name": "Shared (web)",
+            "type": "application",
+            "status": "unknown",
+        }
+        running = dict(unknown, name="Shared (worker)", status="running")
+        report = collector.build_report([unknown, running], [], [], {}, now=NOW, can_redeploy=True)
+        rows = {row["name"]: row for row in report["coolify"]}
+        self.assertEqual(rows["Shared (web)"]["actions"], [])
+        self.assertEqual(rows["Shared (web)"]["redeployBlockedReason"], "state_unknown")
+        # The helper reads the first row with a uuid, so the running row behind it cannot claim one.
+        self.assertEqual(rows["Shared (worker)"]["actions"], [])
+        self.assertEqual(rows["Shared (worker)"]["redeployBlockedReason"], "first_row_refused")
+
     def test_a_refused_first_row_agrees_with_the_real_helper(self):
         # Every row the collector calls redeployable passes the helper's own first-row check.
         rows = self.rows()
@@ -1611,7 +1651,11 @@ class RealActionsTests(unittest.TestCase):
         spec.loader.exec_module(helper)
         for row in report["coolify"]:
             first = next(r for r in report["coolify"] if r["uuid"] == row["uuid"])
-            accepted = first["type"] in helper.REDEPLOYABLE_TYPES and helper.uuid_from_label(first)
+            accepted = (
+                first["type"] in helper.REDEPLOYABLE_TYPES
+                and helper.uuid_from_label(first)
+                and first["status"] not in ("absent", "unknown")
+            )
             self.assertEqual("redeploy" in row["actions"], accepted, row["name"])
 
     def test_one_application_says_how_many_containers_a_redeploy_restarts(self):
@@ -1680,6 +1724,9 @@ class ContainerSignalTests(unittest.TestCase):
         self.assertEqual(self.row(health="starting")["health"], "starting")
         self.assertEqual(self.row(health="")["health"], "none")
         self.assertNotIn("exitCode", self.row(health="healthy"))
+
+    def test_a_row_says_its_restart_policy(self):
+        self.assertEqual(self.row(restart_policy="always")["restartPolicy"], "always")
 
     def test_a_docker_answer_without_the_new_fields_reads_as_not_measured(self):
         row = collector.collect_coolify(

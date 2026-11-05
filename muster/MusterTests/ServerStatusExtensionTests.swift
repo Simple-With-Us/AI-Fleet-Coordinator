@@ -527,6 +527,7 @@ final class ServerStatusExtensionTests: XCTestCase {
         for (code, words) in [
             ("no_uuid_label", "No Redeploy: the container does not say which application it is."),
             ("not_seen", "No Redeploy: it is not on the server now."),
+            ("state_unknown", "No Redeploy: the collector could not read its state."),
             ("not_allowed", "No Redeploy: the server's allowlist does not allow it."),
             ("wobble", "No Redeploy."),
         ] {
@@ -546,6 +547,17 @@ final class ServerStatusExtensionTests: XCTestCase {
         let row = try XCTUnwrap(reading.coolify.first)
         XCTAssertTrue(row.isRedeployable)
         XCTAssertFalse(reading.offersRedeploy(row))
+    }
+
+    func test_a_first_row_nobody_could_read_decides_like_the_server() throws {
+        // The server reads the first row with a uuid and refuses it,  so the row behind it
+        // must not be offered either,  and a row with a different uuid is not affected.
+        let json = """
+        {"schemaVersion": 1, "tool": "fleet-server-status", "generatedAt": "2026-10-28T15:00:00Z", "coolify": [{"uuid": "u1", "name": "a (web)", "type": "application", "uuidSource": "label", "status": "unknown"}, {"uuid": "u1", "name": "a (worker)", "type": "application", "uuidSource": "label", "status": "running"}, {"uuid": "u2", "name": "b", "type": "application", "uuidSource": "label", "status": "running"}], "processes": [{"pid": 1}], "files": []}
+        """
+        let reading = try readText(json)
+        XCTAssertFalse(reading.offersRedeploy(reading.coolify[1]))
+        XCTAssertTrue(reading.offersRedeploy(reading.coolify[2]))
     }
 
     func test_a_redeploy_names_the_application_and_what_it_restarts() throws {

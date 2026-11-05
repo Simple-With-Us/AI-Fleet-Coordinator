@@ -588,6 +588,8 @@ def collect_coolify(run_command=run):
         if fields["state"] == "running":
             # `none` says no check exists,  so a row with no check cannot look proven.
             row["health"] = fields["health"] or "none"
+        if fields["restart_policy"]:
+            row["restartPolicy"] = fields["restart_policy"]
         if fields["restart_count"].isdigit():
             row["restartCount"] = int(fields["restart_count"])
         if fields["state"] in ("exited", "dead"):
@@ -1695,7 +1697,14 @@ def leftover_resource(key, before, live, complete, moment):
         return None
     kind = before.get("type", "standalone")
     is_labelled = before.get("uuidSource") == UUID_SOURCE_LABEL
-    if kind == "standalone" and not is_labelled and THROWAWAY_NAME_RE.fullmatch(str(uuid)):
+    # A restart policy says someone wants this container kept,  whatever its name looks like.
+    is_kept = before.get("restartPolicy") not in (None, "", "no")
+    if (
+        kind == "standalone"
+        and not is_labelled
+        and not is_kept
+        and THROWAWAY_NAME_RE.fullmatch(str(uuid))
+    ):
         return None
     since = None
     if "absentSince" in before:
@@ -1717,15 +1726,20 @@ def leftover_resource(key, before, live, complete, moment):
     # from a report written before `uuidSource` existed is left without one.
     if before.get("uuidSource") in UUID_SOURCES:
         gone["uuidSource"] = before["uuidSource"]
-    for field in ("service", "container"):
+    for field in ("service", "container", "restartPolicy"):
         if isinstance(before.get(field), str) and before[field]:
             gone[field] = before[field]
     return gone
 
 
 def helper_would_take(row):
-    """Whether the helper's checks of the row it picks pass:  a labelled Coolify application."""
-    return row.get("type") == "application" and row.get("uuidSource") == UUID_SOURCE_LABEL
+    """Whether the helper's checks of the row it picks pass:  a labelled Coolify application
+    that is on the host and whose state could be read."""
+    return (
+        row.get("type") == "application"
+        and row.get("uuidSource") == UUID_SOURCE_LABEL
+        and row.get("status") not in ("absent", "unknown")
+    )
 
 
 def add_redeploy_action(row, allowed, seen_now, first_row=None):
@@ -1745,6 +1759,8 @@ def add_redeploy_action(row, allowed, seen_now, first_row=None):
         reason = "not_seen"
     elif row.get("uuidSource") != UUID_SOURCE_LABEL:
         reason = "no_uuid_label"
+    elif row.get("status") == "unknown":
+        reason = "state_unknown"
     elif first_row is not None and not helper_would_take(first_row):
         reason = "first_row_refused"
     elif not allowed:
