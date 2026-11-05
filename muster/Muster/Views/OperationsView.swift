@@ -19,6 +19,7 @@ struct OperationsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                HogHunterMacPanel()
                 if loading && services == nil {
                     Text("Reading the Mac's agents…")
                         .font(.callout)

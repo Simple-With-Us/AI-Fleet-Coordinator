@@ -436,9 +436,12 @@ struct HostMetrics: Decodable, Equatable {
     let swap: HostSwap?
     let uptimeSeconds: Int?
     let disks: [HostDisk]
+    /// Whole-machine CPU use,  0 to 100.  Only a collector with a tick baseline writes it
+    /// (Hog Hunter's Mac report does;  the server's does not).
+    let cpuPercent: Double?
 
     enum CodingKeys: String, CodingKey {
-        case loadAverage, cpuCount, memory, swap, uptimeSeconds, disks
+        case loadAverage, cpuCount, memory, swap, uptimeSeconds, disks, cpuPercent
     }
 
     init(from decoder: Decoder) throws {
@@ -449,6 +452,13 @@ struct HostMetrics: Decodable, Equatable {
         swap = try? container.decodeIfPresent(HostSwap.self, forKey: .swap)
         uptimeSeconds = try? container.decodeIfPresent(Int.self, forKey: .uptimeSeconds)
         disks = (try? container.decodeIfPresent([HostDisk].self, forKey: .disks)) ?? []
+        cpuPercent = try? container.decodeIfPresent(Double.self, forKey: .cpuPercent)
+    }
+
+    /// The machine's CPU use,  when the collector measured it.
+    var cpuText: String? {
+        guard let cpuPercent, cpuPercent >= 0, cpuPercent.isFinite else { return nil }
+        return String(format: "%.0f%%", cpuPercent)
     }
 
     /// The one-minute load over the cpu count, from 0 up.
