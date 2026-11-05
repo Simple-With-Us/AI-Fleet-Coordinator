@@ -354,6 +354,8 @@ enum WakeSettingState: String, Equatable {
     case unknown
     /// The Mac's eavesdropper does not hold this seat,  so there is nothing to compare here.
     case heldElsewhere
+    /// The eavesdropper says the file turns this seat off,  so it is not using this setting.
+    case seatOff
 
     var label: String {
         switch self {
@@ -366,6 +368,7 @@ enum WakeSettingState: String, Equatable {
         case .off: return "OFF"
         case .unknown: return "UNKNOWN"
         case .heldElsewhere: return "NOT ON MAC"
+        case .seatOff: return "SEAT OFF"
         }
     }
 
@@ -373,7 +376,7 @@ enum WakeSettingState: String, Equatable {
     var isProblem: Bool {
         switch self {
         case .drift, .unproven, .unknown: return true
-        case .match, .notOwned, .unpublished, .unset, .off, .heldElsewhere: return false
+        case .match, .notOwned, .unpublished, .unset, .off, .heldElsewhere, .seatOff: return false
         }
     }
 }
@@ -633,6 +636,10 @@ enum WakeSettingsBuilder {
         // so nothing from them is shown for it:  no zero, no default and no pause.
         let live = host.isElsewhere ? nil : sources.status?.seat(published)
         let pins: [String: PinEvidence] = host.isElsewhere ? [:] : (sources.pins[tag] ?? [:])
+        // A seat the file turns off is reported under `disabled` and not under `seats`, so a running
+        // eavesdropper has told Muster about it.  An old status from a stopped one has not.
+        let seatOff = sources.status?.running == true
+            && sources.status?.status?.disabled?.contains(published) == true
         let section = "seat.\(tag)"
         let settings = WakeSettingKey.seatKeys.map { key -> WakeSetting in
             if host.isElsewhere {
@@ -646,7 +653,7 @@ enum WakeSettingsBuilder {
                     note: host.readOnlyReason ?? ""
                 )
             }
-            return setting(for: key, seat: tag, section: section, live: live, pins: pins, config: sources.config)
+            return setting(for: key, seat: tag, section: section, live: live, seatOff: seatOff, pins: pins, config: sources.config)
         }
         return WakeSeat(
             seat: tag,
@@ -707,6 +714,7 @@ enum WakeSettingsBuilder {
         seat: String,
         section: String,
         live: ListenerStatus.Seat?,
+        seatOff: Bool,
         pins: [String: PinEvidence],
         config: ListenerConfigDocument
     ) -> WakeSetting {
@@ -719,6 +727,7 @@ enum WakeSettingsBuilder {
             configured: configured,
             live: liveValue,
             seatReported: live != nil,
+            seatOff: seatOff,
             pins: pins,
             config: config
         )
@@ -790,6 +799,8 @@ enum WakeSettingsBuilder {
     /// The rule,  in order:
     ///
     ///   * the file holds nothing:  the live value is the default
+    ///   * the eavesdropper says the file turns this seat off:  it is using nothing,  and that is the
+    ///     file's own choice,  not a problem
     ///   * the eavesdropper reported nothing for this seat:  what it is using is unknown,  and that is
     ///     a problem,  because its status could not be read or it is not running the seat
     ///   * the eavesdropper reported the seat and not this setting:  it does not publish it
@@ -804,6 +815,7 @@ enum WakeSettingsBuilder {
         configured: ListenerConfigValue?,
         live: ListenerConfigValue?,
         seatReported: Bool,
+        seatOff: Bool,
         pins: [String: PinEvidence],
         config: ListenerConfigDocument
     ) -> WakeSettingState {
@@ -834,7 +846,10 @@ enum WakeSettingsBuilder {
         // The file first:  a setting nobody holds is the eavesdropper's default,  and a
         // setting only the file holds is one the eavesdropper does not publish.
         guard let configured else { return .unset }
-        guard let live else { return seatReported ? .notOwned : .unknown }
+        guard let live else {
+            if seatOff { return .seatOff }
+            return seatReported ? .notOwned : .unknown
+        }
         if configured.matches(live) { return .match }
         if key == .musePath || key == .mcodePath {
             if pathsMatch(configured: configured, live: live) { return .match }
@@ -887,6 +902,8 @@ enum WakeSettingsBuilder {
             return "The eavesdropper did not report this seat, so what it is using is not known."
         case .heldElsewhere:
             return "The Mac's eavesdropper does not hold this seat."
+        case .seatOff:
+            return "The file turns this seat off, so the eavesdropper is not using this setting."
         case .match:
             if key == .model, let pin = pins["muse"] ?? pins["mcode"], let age = pin.age {
                 return "Proved by the pin,  \(age)."

@@ -1375,6 +1375,25 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertFalse(setting.state.isProblem)
     }
 
+    /// A running eavesdropper lists a seat the file turns off under `disabled` and not under
+    /// `seats`,  so its settings are neither unknown nor a problem.  A stopped one has said nothing.
+    func test_a_seat_the_file_turns_off_is_not_a_problem() throws {
+        let config = "[seat.MM]\nbot = \"MM\"\nenabled = false\nbudget = { wakes_per_hour = 5 }\n"
+        let running = #"{"running": true, "status": {"disabled": ["MM"], "seats": {}}}"#
+        let setting = row(.wakesPerHour, config: config, status: running)
+        XCTAssertEqual(setting.state, .seatOff)
+        XCTAssertFalse(setting.state.isProblem)
+        XCTAssertFalse(setting.note.contains("not known"))
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: running)).seats.first)
+        XCTAssertTrue(seat.disabledInFile)
+        XCTAssertFalse(seat.needsAttention)
+        // A setting the file does not hold is still the default.
+        XCTAssertEqual(row(.wakesPerDay, config: config, status: running).state, .unset)
+
+        let stopped = #"{"running": false, "status": {"disabled": ["MM"], "seats": {}}}"#
+        XCTAssertEqual(row(.wakesPerHour, config: config, status: stopped).state, .unknown)
+    }
+
     /// With no status,  the dollar cap is still the setting the engine does not enforce.
     func test_without_the_status_the_dollar_cap_is_still_not_owned() {
         XCTAssertEqual(row(.usdPerDay).state, .notOwned)

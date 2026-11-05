@@ -705,7 +705,7 @@ private extension WakeSettingState {
         case .drift: return .orange
         case .unproven: return .indigo
         case .notOwned, .unpublished: return .gray
-        case .unset, .off, .heldElsewhere: return .secondary
+        case .unset, .off, .heldElsewhere, .seatOff: return .secondary
         case .unknown: return .red
         }
     }
@@ -722,6 +722,7 @@ private extension WakeSettingState {
         case .off: return "Off,  by the owner's ruling."
         case .unknown: return "The eavesdropper did not report this seat, so what it is using is not known."
         case .heldElsewhere: return "The Mac's eavesdropper does not hold this seat."
+        case .seatOff: return "The file turns this seat off, so the eavesdropper is not using this setting."
         }
     }
 }
