@@ -506,6 +506,9 @@ export class HostedTools {
       const mapped = mapException(error, { write: HOSTED_WRITE_TOOLS.has(publicName) });
       if (mapped.code === "rate_limited" && error instanceof ApiError) {
         await this.safely(() => this.gate.noteRateLimited({ retryAfterS: mapped.retryAfterS }));
+        // A cached identity takes no read slot, and only a slot reads the
+        // cooldown just stored:  back to live checks until the cooldown passes.
+        this._evictIdentity();
       }
       if (!(error instanceof ToolError) && mapped.code === "internal") {
         this.log({ event: "tool_internal_error", seat: this.seat, tool: publicName, name: String(error?.name ?? "Error").slice(0, 40) });

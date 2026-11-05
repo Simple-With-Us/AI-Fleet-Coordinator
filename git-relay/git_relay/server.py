@@ -32,6 +32,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import git_read
 from .app_tokens import AppTokenError
 from .audit import AuditLog, UnauthorizedAuditor
 from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
@@ -111,6 +112,8 @@ def _number(value, field: str) -> int:
 def _validate_args(action: str, args: dict) -> dict:
     """Full shape validation for one action;  returns the canonical arguments.
 
+    git_read is a policy name for the /git/ route (git_read.py), so a JSON call to it is refused here.
+
     Runs before any durable state or side effect:  every field the action
     accepts is checked here, and any field it does NOT accept is rejected, so
     ignored envelope fields cannot defeat the idempotency key and malformed
@@ -122,6 +125,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"action {action!r} is registered but not implemented yet")
     if action in SeatPolicy.WORKFLOW_ACTIONS:
         raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
+    if action == git_read.ACTION:
+        raise ValueError("git_read has no JSON call;  it is served on the /git/ route")
     specs: dict = {"repo": ("text", True)}
     if action == "open_pr":
         specs.update(
@@ -240,6 +245,7 @@ class ServerUnavailable(Exception):
 # Minimum installation permissions each App action needs;  a seat whose
 # mint_permissions ceiling does not cover these gets a policy denial.
 ACTION_REQUIRED_PERMISSIONS = {
+    "git_read": dict(git_read.READ_PERMISSIONS),
     "merge_pr": {"contents": "write", "pull_requests": "write"},
     "workflow_dispatch": {"actions": "write"},
     # GitHub gates resolveReviewThread at merge level for App tokens: pull_requests
@@ -904,10 +910,15 @@ def make_handler(relay: Relay):
         def do_GET(self) -> None:
             if self.path == "/healthz":
                 self._send(200, {"ok": True})
+            elif git_read.is_git_path(self.path):
+                git_read.handle(relay, self, "GET")
             else:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if git_read.is_git_path(self.path):
+                git_read.handle(relay, self, "POST")
+                return
             parts = self.path.strip("/").split("/")
             if len(parts) != 2 or parts[0] != "v1":
                 self._send(404, {"error": "not found"})

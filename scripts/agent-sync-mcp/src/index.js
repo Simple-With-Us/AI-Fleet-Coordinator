@@ -6,14 +6,18 @@
 // tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
 // Request order, outermost first:
+//   0. GUARD_MODE=off answers 503 before anything else (src/budget-guard.mjs),
+//      and every request runs under a per-invocation budget (src/invocation.js).
 //   1. Host check (404 for anything but agents.simplewithus.com) and a path
 //      allowlist (404 for everything else).  GET /health is a static 200.
 //   2. /oauth/token:  rate limit, Content-Type and Authorization checked the
 //      way the library reads them, client_id allowlist before any fetch, blank
 //      client_secret dropped, and the re-serialized form is what gets forwarded.
 //   3. The OAuth library:  metadata, token endpoint, bearer check on /mcp.
-//   4. /mcp:  seat, phase, epoch and grant age re-checked in the seat's
-//      SeatGate, then the tools run with that seat's key only.
+//   4. /mcp:  per-credential and failed-auth limits before any Durable Object,
+//      secret or SDK work;  seat, phase, epoch and grant age re-checked in the
+//      seat's SeatGate;  lifecycle frames answered there (src/mcp-lifecycle.js);
+//      then the tools run with that seat's key only.
 //      /authorize and /admin:  Access JWT re-verified, then our gates.
 //   5. /internal/wake/<SEAT>:  the server eavesdropper's signed wake (src/wake.js),
 //      handled before the OAuth library and outside Cloudflare Access.  It
@@ -63,7 +67,7 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } from "./bearer-identities.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
-import { serveGrAssertVerify, grantSummaryIsLive } from "./gr-assert-verify.js";
+import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { serveMcpRequest } from "./mcp.js";
@@ -85,10 +89,28 @@ import { serveWa } from "./wa/index.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
-import { AuditBatcher } from "./audit-batch.js";
+import { AuditBatcher, AUDIT_FLUSH_MS } from "./audit-batch.js";
 import { IdentityCache } from "./identity-cache.js";
+import { answerLifecycle } from "./mcp-lifecycle.js";
+import { BudgetExceeded, guardOff, guardOffResponse } from "./budget-guard.mjs";
+import { countedFetch, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "./invocation.js";
 
 export { SeatGate };
+
+// Every outbound fetch spends this request's budget (src/invocation.js).
+globalThis.fetch = countedFetch(globalThis.fetch);
+
+// One validated config per env object:  Workers hand every request in an isolate
+// the same env (see providerFor), and building it costs real CPU on each POST.
+const CONFIGS = new WeakMap();
+function configFor(env) {
+  let config = CONFIGS.get(env);
+  if (!config) {
+    config = loadConfig(env);
+    CONFIGS.set(env, config);
+  }
+  return config;
+}
 
 // The isolate's per-call audit buffer (R2, DO burn reduction):  one
 // AuditBatcher per isolate, shared by every HostedTools this Worker
@@ -96,8 +118,12 @@ export { SeatGate };
 // instead of one Durable Object RPC per call.  The trade is stated in
 // src/audit-batch.js:  rows land seconds late, and an isolate evicted
 // mid-buffer loses its unflushed tail - audit only, never a control.
-const AUDIT_BATCHER = new AuditBatcher();
-const auditSink = (key, gate, row) => AUDIT_BATCHER.append(key, gate, row);
+const AUDIT_BATCHER = new AuditBatcher({ retryBackoffMs: AUDIT_FLUSH_MS });
+// One sink per request, so each flush uses that request's stub and waitUntil.
+function auditSinkFor(ctx) {
+  const scope = { waitUntil: (promise) => ctx?.waitUntil?.(promise) };
+  return (key, gate, row) => AUDIT_BATCHER.append(key, gate, row, scope);
+}
 
 // The isolate's verified-identity cache (R4, DO burn reduction):  one
 // IdentityCache per isolate, shared by every /mcp route, so a credential
@@ -105,6 +131,80 @@ const auditSink = (key, gate, row) => AUDIT_BATCHER.append(key, gate, row);
 // on every POST inside the window (GATE_IDENTITY_CACHE_MS).  What the
 // window does and does not enforce is stated in src/identity-cache.js.
 const IDENTITY_CACHE = new IdentityCache();
+
+// The OAuth Git callback's live-grant window (AFC-617, stated in
+// src/identity-cache.js).  The bearer verify window is config.grVerifyCacheMs.
+const GRANT_EXISTS_CACHE_MS = 5 * 60_000;
+
+// Request guards (AFC-617).  Both limits are per Cloudflare location and
+// eventually consistent, so they stop a runaway rather than meter exactly.
+const LIMIT_RETRY_AFTER_S = 60;
+// Refusals that spend nothing:  a bearer hash the gate just called wrong, and an
+// IP over the failed-auth limit.  They never apply to a credential this isolate
+// holds a live verification for.
+const REFUSALS = new IdentityCache({ max: 2048 });
+const REFUSAL_WINDOW_MS = 60_000;
+
+function mcpRateLimited() {
+  return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Too many requests for this credential.  Retry after the Retry-After seconds." }, id: null }), {
+    status: 429,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Retry-After": String(LIMIT_RETRY_AFTER_S) },
+  });
+}
+
+/** The presented credential's hash:  the same key the identity cache uses. */
+async function credentialHash(request) {
+  const header = (request.headers.get("authorization") ?? "").trim();
+  if (!header) return null;
+  return sha256Hex(/^Bearer\s+(\S+)$/i.exec(header)?.[1] ?? header);
+}
+
+/**
+ * The /mcp request guard, before any Durable Object, secret or SDK work:  every
+ * authenticated request counts, handshakes and notifications too.
+ */
+async function guardMcpRequest(request, env, credential) {
+  if (!credential) return null;
+  if (!(await withinLimit(env, "MCP_RATE_LIMITER", `mcp:${credential}`))) {
+    logLimited("mcp_rate_limited");
+    return mcpRateLimited();
+  }
+  if (IDENTITY_CACHE.get(credential)) return null;
+  if (REFUSALS.get(`bad:${credential}`)) return invalidToken("This token is not valid.");
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  if (REFUSALS.get(`ip:${ip}`)) {
+    logLimited("mcp_auth_blocked");
+    return mcpRateLimited();
+  }
+  return null;
+}
+
+/**
+ * Count one failed authentication.  False means write nothing for it:  either this
+ * IP is over the limit, or this credential already failed inside the window.  The
+ * limit counts distinct credentials, because that is what guessing looks like:  one
+ * client retrying one expired token must not lock out other seats sharing its IP.
+ * The per-credential limiter already bounds that retry loop.
+ */
+async function noteAuthFailure(request, env, credential) {
+  if (REFUSALS.get(`failed:${credential}`)) return false;
+  REFUSALS.set(`failed:${credential}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  if (await withinLimit(env, "AUTH_FAIL_RATE_LIMITER", `authfail:${ip}`)) return true;
+  REFUSALS.set(`ip:${ip}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
+  logLimited("mcp_auth_blocked");
+  return false;
+}
+
+/**
+ * A credential the gate refused for good stays refused:  wrong, expired or from a
+ * stale grant.  None of those heals, because a fix is always a new token.  So a client
+ * looping on one costs one gate check and one refusal row a minute per isolate, not
+ * one per request.  A pause heals on its own and is never remembered.
+ */
+function rememberBadBearer(hash) {
+  if (hash) REFUSALS.set(`bad:${hash}`, { seat: "refused" }, REFUSAL_WINDOW_MS);
+}
 
 const MAX_TOKEN_BODY = 16 * 1024;
 const CSRF_COOKIE = "__Host-agent-sync-csrf";
@@ -141,6 +241,7 @@ function invalidToken(description) {
 async function logRefusal(env, { where, reason, clientId, redirectUri, resource, by }) {
   const row = { where, reason: logSafe(reason, 80), client_id: logSafe(clientId), redirect_uri: logSafe(redirectUri), ...(resource ? { resource: logSafe(resource, 200) } : {}), ...(by ? { by: logSafe(by, 120) } : {}) };
   console.log(JSON.stringify({ event: "refused", ...row }));
+  if (!diagnosticRowAllowed()) return;
   try {
     await gate(env, GATE_LOG_NAME).logRefusal(row);
   } catch {
@@ -202,7 +303,7 @@ function providerFor(env) {
 
 /** Spec 3.5 step 2:  every code exchange and refresh re-checks the seat. */
 async function checkTokenExchange(env, { grantType, props, userId, grantId }) {
-  const config = loadConfig(env);
+  const config = configFor(env);
   const seat = props?.seat;
   if (typeof seat !== "string" || seat !== userId || !config.hostedSeats.includes(seat)) {
     throw new OAuthError("invalid_grant", { description: "This grant is not for a hosted seat." });
@@ -223,6 +324,7 @@ async function checkTokenExchange(env, { grantType, props, userId, grantId }) {
 // Persist only fixed reason codes for pre-tool failures.  This must never
 // change the response if diagnostics storage itself is unavailable.
 async function recordDiagnostic(env, entry) {
+  if (!diagnosticRowAllowed()) return;
   try { await gate(env, GATE_LOG_NAME).recordDiagnostic(entry); }
   catch { console.log(JSON.stringify({ event: "diagnostic_unavailable", kind: entry.kind })); }
 }
@@ -230,10 +332,7 @@ async function recordDiagnostic(env, entry) {
 // ---------------------------------------------------------------- /mcp
 
 async function serveMcp(request, env, ctx) {
-  const config = loadConfig(env);
-  // One listing per folder beats a cold per-name burst (sentry 4364275308);
-  // the listings also make later optional misses subrequest-free.
-  await Promise.all(["/zulip", "/linear", "/fleetlink", "/wake", "/tools", "/gr-front"].map((path) => prefetchFolder(env, path)));
+  const config = configFor(env);
   const props = ctx.props ?? {};
   const auth = ctx.auth ?? {};
   const seat = props.seat;
@@ -268,6 +367,7 @@ async function serveMcp(request, env, ctx) {
     }
   }
   if (result.code !== "ok" && result.code !== "paused") {
+    rememberBadBearer(identityKey);
     const refused = invalidToken("This grant is no longer valid.");
     try {
       await seatGate.audit({ event: "mcp_refused", reason: result.code, status: 401 });
@@ -277,6 +377,17 @@ async function serveMcp(request, env, ctx) {
     }
     return refused;
   }
+
+  // Lifecycle frames need no secret.  A seat that can offer MCP Events stays on
+  // the SDK path:  its advertised capabilities depend on its wake key.
+  if (!Object.hasOwn(WAKE_SECRETS, seat)) {
+    const lifecycle = await answerLifecycle(request, { seat, config });
+    if (lifecycle.response) return lifecycle.response;
+    request = lifecycle.request;
+  }
+  // One listing per folder beats a cold per-name burst (sentry 4364275308);
+  // the listings also make later optional misses subrequest-free.
+  await Promise.all(["/zulip", "/linear", "/fleetlink", "/wake", "/tools", "/gr-front"].map((path) => prefetchFolder(env, path)));
 
   const scopes = Array.isArray(auth.scope) ? auth.scope.map(String) : [];
   // The key comes from the seat in the verified props, through SEAT_SECRETS only.
@@ -338,7 +449,7 @@ async function serveMcp(request, env, ctx) {
     zulip: key ? new ZulipClient({ email, key, ownerUserId: config.ownerUserId }) : null,
     key,
     gate: seatGate,
-    audit: auditSink,
+    audit: auditSinkFor(ctx),
     identityCache: IDENTITY_CACHE,
     identityKey,
     identityEntry,
@@ -421,8 +532,8 @@ function safeHost(origin) {
  * only as that persona (allowedIdentities for a non-shared seat is just itself).  Every refusal is the same
  * generic 401.  Paused personas, an unset credential bundle and an expired bearer all refuse.
  */
-async function serveGbBearerMcp(request, env, token) {
-  const config = loadConfig(env);
+async function serveGbBearerMcp(request, env, token, ctx) {
+  const config = configFor(env);
   const refuse = () => invalidToken("This token is not valid.");
   const parsed = parseGbBearer(token);
   if (!parsed) return refuse();
@@ -451,26 +562,30 @@ async function serveGbBearerMcp(request, env, token) {
       // incomplete - an attacker's guesses do not pause for our outage.
       try { await identityGate.gbBearerMismatch(identity, new Set(GB_IDENTITIES)); } catch { /* A counter is observability, never the security path. */ }
     }
+    rememberBadBearer(bearerHash);
     IDENTITY_CACHE.evict(bearerHash);
     return refuse();
   }
   // A valid hash is not consent for hosted tool access.  Legacy missing rows
   // and explicit GR-only rows both refuse before loading any persona bundle.
   if (checked.mcp_accept !== true) { IDENTITY_CACHE.evict(bearerHash); return refuse(); }
-  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
-  const roles = (await resolveDelegatedCredentials(env)).roles;
-  const credentials = roles.get(identity);
-  if (!credentials) return refuse();
   // The pause flag rides the bearer check's own answer (R1):  no second
-  // gate RPC for the one boolean, and the refusal stays in this position.
+  // gate RPC for the one boolean.
   if (checked.paused) { IDENTITY_CACHE.evict(bearerHash); return invalidToken("This identity is paused."); }
   // The gate's verification is fully positive at this point (the bundle
   // resolution below is isolate config, re-run on every request either
   // way):  remember it for this isolate's window (R4).
   if (!identityEntry) IDENTITY_CACHE.set(bearerHash, { seat: identity, via: "gb-bearer", mcp_accept: true }, config.gateIdentityCacheMs);
+  const lifecycle = await answerLifecycle(request, { seat: identity, config });
+  if (lifecycle.response) return lifecycle.response;
+  request = lifecycle.request;
+  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  const roles = (await resolveDelegatedCredentials(env)).roles;
+  const credentials = roles.get(identity);
+  if (!credentials) return refuse();
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
-  await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
+  await Promise.all(["/fleetlink", "/tools", "/gr-front"].map((path) => prefetchFolder(env, path)));
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [identity]);
   const recallSecrets = await resolveRecallSecrets(env);
@@ -485,7 +600,7 @@ async function serveGbBearerMcp(request, env, token) {
     grantRef,
     paused: false,
     gate: identityGate,
-    audit: auditSink,
+    audit: auditSinkFor(ctx),
     identityCache: IDENTITY_CACHE,
     identityKey: bearerHash,
     identityEntry,
@@ -523,18 +638,16 @@ async function serveGbBearerMcp(request, env, token) {
  * choice (mcp_accept, shown with its disclosure in /admin):  a bearer that
  * bypasses the consent flow is never inferred.  The connection acts only as
  * that seat (no createIdentity, whatever shared group it is in).  Every refusal
- * is the same generic 401.  A paused seat, an unhosted seat, a missing key and
- * an expired bearer all refuse.
+ * is the same generic 401.  A paused seat and an expired bearer refuse at once.
+ * An unhosted seat or a missing key can still answer lifecycle frames, which use
+ * no credential, and refuses at its first tool call.
  */
-async function serveSbtBearerMcp(request, env, token) {
-  const config = loadConfig(env);
+async function serveSbtBearerMcp(request, env, token, ctx) {
+  const config = configFor(env);
   const refuse = () => invalidToken("This token is not valid.");
   const parsed = parseSbtBearer(token);
   if (!parsed) return refuse();
   const { identity: seat } = parsed;
-  try {
-    await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
-  } catch { return refuse(); }
   const seatGate = gate(env, seat);
   // R4:  a fresh cached verification for this exact bearer stands in for
   // gbBearerCheck (src/identity-cache.js states the window's terms).  The
@@ -557,26 +670,34 @@ async function serveSbtBearerMcp(request, env, token) {
       // Static seat set for the same outage reason as the persona path.
       try { await seatGate.gbBearerMismatch(seat, new Set(BEARER_SEATS)); } catch { /* A counter is observability, never the security path. */ }
     }
+    rememberBadBearer(bearerHash);
     IDENTITY_CACHE.evict(bearerHash);
     return refuse();
   }
-  let credentials;
-  try { credentials = await resolveBearerSeatCredentials(env, config, seat); }
-  catch { return refuse(); }
-  if (!credentials) return refuse();
-  const { key, email } = credentials;
   if (checked.mcp_accept !== true) { IDENTITY_CACHE.evict(bearerHash); return refuse(); }
   // The pause flag rides the bearer check's own answer (R1):  no second
-  // gate RPC for the one boolean, and the refusal stays in this position.
+  // gate RPC for the one boolean.
   if (checked.paused) { IDENTITY_CACHE.evict(bearerHash); return invalidToken("This identity is paused."); }
   // The gate's verification is fully positive at this point:  remember it
   // for this isolate's window (R4) - unless the seat is events-only, whose
   // calls are refused downstream regardless and are never cached (serveMcp
   // states the reasoning in full).
   if (!identityEntry && !config.eventsOnlySeats.includes(seat)) IDENTITY_CACHE.set(bearerHash, { seat, via: "sbt-bearer", mcp_accept: true }, config.gateIdentityCacheMs);
+  // This route passes no events, so lifecycle frames need no secret on any seat.
+  const lifecycle = await answerLifecycle(request, { seat, config });
+  if (lifecycle.response) return lifecycle.response;
+  request = lifecycle.request;
+  try {
+    await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  } catch { return refuse(); }
+  let credentials;
+  try { credentials = await resolveBearerSeatCredentials(env, config, seat); }
+  catch { return refuse(); }
+  if (!credentials) return refuse();
+  const { key, email } = credentials;
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`sbt-bearer:${seat}`);
-  await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
+  await Promise.all(["/fleetlink", "/tools", "/gr-front"].map((path) => prefetchFolder(env, path)));
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [seat]);
   const recallSecrets = await resolveRecallSecrets(env);
@@ -602,7 +723,7 @@ async function serveSbtBearerMcp(request, env, token) {
     zulip: new ZulipClient({ email, key, ownerUserId: config.ownerUserId }),
     key,
     gate: seatGate,
-    audit: auditSink,
+    audit: auditSinkFor(ctx),
     identityCache: IDENTITY_CACHE,
     identityKey: bearerHash,
     identityEntry,
@@ -822,7 +943,7 @@ async function wakeChannels(env, config, seat, seatGate) {
 // ---------------------------------------------------------------- /authorize and /admin
 
 async function serveApp(request, env, _ctx) {
-  const config = loadConfig(env);
+  const config = configFor(env);
   const route = classifyPath(new URL(request.url).pathname);
   // The provider initializes OAUTH_PROVIDER before invoking this handler.
   if (route === "gr_assert_verify") return serveGrAssertVerify(request, env, gate, {
@@ -833,12 +954,22 @@ async function serveApp(request, env, _ctx) {
     // admin revoke and consent replacement paths maintain), filtered to
     // live rows - the library lists expired KV rows until their TTL sweeps
     // them (grantSummaryIsLive, src/gr-assert-verify.js).
-    grantExists: async (seat, grantRef) => {
-      for (const g of await listAllGrants(env.OAUTH_PROVIDER, seat)) {
-        if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return true;
-      }
-      return false;
-    },
+    // A positive answer holds for GRANT_EXISTS_CACHE_MS in this isolate (AFC-617:
+    // one KV list per OAuth Git call was 921 of the Free 1,000 a day).  A deleted
+    // grant can lag that long;  the epoch and pause check in claimGrAssert stays
+    // live on every call, and an admin action on the seat evicts this entry.
+    grantExists: (seat, grantRef) => cachedGrantExists(IDENTITY_CACHE, {
+      seat,
+      grantRef,
+      ttlMs: Math.min(GRANT_EXISTS_CACHE_MS, config.gateIdentityCacheMs),
+      lookup: async () => {
+        spend("kvList");
+        for (const g of await listAllGrants(env.OAUTH_PROVIDER, seat)) {
+          if (grantSummaryIsLive(g) && (await sha256Ref(g.id) === grantRef)) return true;
+        }
+        return false;
+      },
+    }),
   });
 
   if (route !== "authorize" && route !== "admin") return notFound();
@@ -1411,7 +1542,7 @@ async function gateToken(request, env, config) {
     const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
     const { success } = await env.TOKEN_RATE_LIMITER.limit({ key: `token:${ip}` });
     if (!success) {
-      await recordDiagnostic(env, { kind: "token", reason: "token_rate_limited", status: 429 });
+      logLimited("token_rate_limited");
       return oauthJsonError("temporarily_unavailable", "Too many token requests.", 429, { "Retry-After": "60" });
     }
   }
@@ -1482,11 +1613,10 @@ async function fetchProvider(request, env, ctx) {
 
 // ---------------------------------------------------------------- entry
 
-export default {
-  async fetch(request, env, ctx) {
+async function serveRequest(request, env, ctx) {
     let config;
     try {
-      config = loadConfig(env);
+      config = configFor(env);
     } catch (error) {
       console.log(JSON.stringify({ event: "config_error", message: logSafe(error?.message, 200) }));
       return textResponse("Server misconfigured", 500);
@@ -1538,19 +1668,28 @@ export default {
       await pauseOnRefreshMismatch(env, config, gated.form, response);
       return response;
     }
-    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats });
+    // Neither verify route is rate limited:  the relay reads any non-200 as a refusal.
+    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate, { eventsOnlySeats: config.eventsOnlySeats, identityCache: IDENTITY_CACHE, cacheMs: config.grVerifyCacheMs });
     // Enter through the provider so its request-local OAuth helpers exist.
     if (route === "gr_assert_verify") return fetchProvider(request, env, ctx);
+    const credential = route === "mcp" ? await credentialHash(request) : null;
+    if (route === "mcp") {
+      const refused = await guardMcpRequest(request, env, credential);
+      if (refused) return refused;
+    }
     const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
     const sbtBearer = route === "mcp" && !gbBearer ? sbtBearerFromRequest(request) : null;
+    const hasAuthorization = request.headers.has("authorization");
     const response = gbBearer
-      ? await serveGbBearerMcp(request, env, gbBearer)
+      ? await serveGbBearerMcp(request, env, gbBearer, ctx)
       : sbtBearer
-        ? await serveSbtBearerMcp(request, env, sbtBearer)
+        ? await serveSbtBearerMcp(request, env, sbtBearer, ctx)
         : await fetchProvider(request, env, ctx);
+    // A failed authentication counts against its IP, and past the limit it writes nothing.
+    const writeRow = !(route === "mcp" && response.status === 401 && hasAuthorization) || await noteAuthFailure(request, env, credential);
     // An unauthenticated MCP discovery 401 is normal OAuth negotiation.
     // Count only failed requests that actually supplied authorization.
-    if (route === "mcp" && response.status >= 400 && request.headers.has("authorization") && response.headers.get("X-Agent-Sync-Diagnostic") !== "recorded") {
+    if (writeRow && route === "mcp" && response.status >= 400 && hasAuthorization && response.headers.get("X-Agent-Sync-Diagnostic") !== "recorded") {
       let knownToolFailure = false;
       if (response.status === 400) {
         // Unknown tool calls already have a fixed, safe per-seat error row.
@@ -1565,6 +1704,20 @@ export default {
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
     }
     return response;
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    // GUARD_MODE=off is what the account watchdog sets to stop this Worker.
+    if (guardOff(env)) return guardOffResponse();
+    return runInvocation(async () => {
+      try {
+        return await serveRequest(request, env, ctx);
+      } catch (error) {
+        if (!(error instanceof BudgetExceeded)) throw error;
+        return textResponse("This request went over its usage budget.", 503, { "Retry-After": "60" });
+      }
+    });
   },
 };
 

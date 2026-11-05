@@ -7,6 +7,7 @@
         "edit_pr",
         "merge_pr",
         "open_pr",
+        "git_read",
         "reply_thread",
         "resolve_thread",
         "wf_artifact_delete",
@@ -214,6 +215,7 @@
       "//": "AMP's live rollout kept the legacy action order with the workflow verbs appended:  this pin preserves the host's exact ordered live policy (host render/live compare 2026-11-01).  Same action set, ceiling and repositories as fleet.",
       "actions": [
         "open_pr",
+        "git_read",
         "edit_pr",
         "reply_thread",
         "comment_pr",
@@ -401,6 +403,7 @@
         "edit_pr",
         "merge_pr",
         "open_pr",
+        "git_read",
         "reply_thread",
         "resolve_thread",
         "wf_artifact_delete",
