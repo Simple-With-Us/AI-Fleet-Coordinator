@@ -237,19 +237,53 @@ final class MusterNavigationTests: XCTestCase {
         let healthy = FleetServices(serverState: .running, states: [
             "botfleet-mcp": .running, "app.botfleet.server": .running,
         ])
-        XCTAssertEqual(SidebarBadges.services(healthy.entries, readAt: nil, now: now), "?")
+        XCTAssertEqual(SidebarBadges.services(healthy.entries, pm2Answered: true, readAt: nil, now: now), "?")
         let old = now.addingTimeInterval(-(MachineMenuCopy.macReadWindow + 1))
-        XCTAssertEqual(SidebarBadges.services(healthy.entries, readAt: old, now: now), "?")
+        XCTAssertEqual(SidebarBadges.services(healthy.entries, pm2Answered: true, readAt: old, now: now), "?")
 
-        let failing = FleetServices(serverState: .running, states: [
-            "botfleet-mcp": .failed, "app.botfleet.server": .running,
-        ])
-        let unknownCount = failing.entries.filter { $0.state == .unknown }.count
-        XCTAssertEqual(SidebarBadges.services(failing.entries, readAt: now, now: now), "\(1 + unknownCount)")
+        var failingStates = Dictionary(uniqueKeysWithValues: FleetServiceRegistry.all.map { ($0.id, ManagedServiceState.running) })
+        failingStates["botfleet-mcp"] = .failed
+        failingStates["shellular"] = .unknown
+        let failing = FleetServices(serverState: .running, states: failingStates)
+        XCTAssertTrue(failing.pm2Answered)
+        XCTAssertEqual(SidebarBadges.services(failing.entries, pm2Answered: failing.pm2Answered, readAt: now, now: now), "2")
 
         let allRead = Dictionary(uniqueKeysWithValues: FleetServiceRegistry.all.map { ($0.id, ManagedServiceState.running) })
         let clean = FleetServices(serverState: .running, states: allRead)
-        XCTAssertNil(SidebarBadges.services(clean.entries, readAt: now, now: now))
+        XCTAssertNil(SidebarBadges.services(clean.entries, pm2Answered: clean.pm2Answered, readAt: now, now: now))
+    }
+
+    /// When pm2 does not answer, its rows are not known and are not counted, as the menu
+    /// says:  the badge is `?` with nothing else wrong, and the count with a plus beside a
+    /// real problem, the same as the Mac's card and the menu bar for the same read.
+    func test_services_badge_does_not_count_rows_pm2_did_not_answer_for() {
+        var states: [String: ManagedServiceState] = [:]
+        for descriptor in FleetServiceRegistry.all {
+            if case .pm2 = descriptor.kind, descriptor.policy == .alwaysOn {
+                states[descriptor.id] = .unknown
+            } else {
+                states[descriptor.id] = .running
+            }
+        }
+        let silent = FleetServices(serverState: .running, states: states)
+        XCTAssertFalse(silent.pm2Answered)
+        XCTAssertEqual(SidebarBadges.services(silent.entries, pm2Answered: silent.pm2Answered, readAt: now, now: now), "?")
+
+        let agent = FleetServiceRegistry.all.first { descriptor in
+            if case .launchAgent = descriptor.kind { return true }
+            return false
+        }
+        guard let agent else { return XCTFail("the registry names no LaunchAgent") }
+        states[agent.id] = .failed
+        let oneFailed = FleetServices(serverState: .running, states: states)
+        XCTAssertFalse(oneFailed.pm2Answered)
+        XCTAssertEqual(SidebarBadges.services(oneFailed.entries, pm2Answered: oneFailed.pm2Answered, readAt: now, now: now), "1+")
+
+        // The menu says the same thing about the same read.
+        let menu = MachineMenu(MachineMenuInputs(services: oneFailed, lastReadAt: now, redCells: [],
+                                                 status: nil, tools: nil, now: now))
+        XCTAssertEqual(menu.mac.health, .attention(1, someUnread: true))
+        XCTAssertEqual(PlaceHealthWords.badge(menu.mac.health), "1+")
     }
 
     // MARK: Action history
@@ -299,21 +333,31 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertFalse(includes(.attention, [.passed, .covered, .unsupported]))
     }
 
-    /// Checked Earlier opens on the same cells the card counts, by the same rule.
-    func test_checked_earlier_filter_matches_the_count() {
+    /// Checked At Another Time opens on the same cells the card counts, by the same rule.
+    func test_checked_at_another_time_filter_matches_the_count() {
         let common = FleetTime.parse("2026-10-21T09:00:00Z")
         let earlier = checkedCell("2026-10-21T08:58:59Z")
+        let later = checkedCell("2026-10-21T09:01:01Z")
         let same = checkedCell("2026-10-21T08:59:30Z")
-        XCTAssertTrue(GridStateFilter.checkedEarlier.includes([same, earlier], commonCheckedAt: common))
-        XCTAssertFalse(GridStateFilter.checkedEarlier.includes([same], commonCheckedAt: common))
+        XCTAssertTrue(GridStateFilter.checkedAtAnotherTime.includes([same, earlier], commonCheckedAt: common))
+        XCTAssertTrue(GridStateFilter.checkedAtAnotherTime.includes([same, later], commonCheckedAt: common))
+        XCTAssertFalse(GridStateFilter.checkedAtAnotherTime.includes([same], commonCheckedAt: common))
         // With no shared time the count is unknown, so the grid keeps every seat and says
         // why, never an empty grid that reads as zero.
-        XCTAssertTrue(GridStateFilter.checkedEarlier.includes([same], commonCheckedAt: nil))
-        XCTAssertNotNil(GridStateFilter.checkedEarlier.cannotNarrowNote(commonCheckedAt: nil))
-        XCTAssertNil(GridStateFilter.checkedEarlier.cannotNarrowNote(commonCheckedAt: common))
+        XCTAssertTrue(GridStateFilter.checkedAtAnotherTime.includes([same], commonCheckedAt: nil))
+        let note = GridStateFilter.checkedAtAnotherTime.cannotNarrowNote(commonCheckedAt: nil)
+        XCTAssertNotNil(note)
+        XCTAssertFalse(note?.contains(".  ") ?? true)
+        XCTAssertNil(GridStateFilter.checkedAtAnotherTime.cannotNarrowNote(commonCheckedAt: common))
         XCTAssertNil(GridStateFilter.red.cannotNarrowNote(commonCheckedAt: nil))
-        let counts = OverviewCounts.make(cells: [same, earlier], trusted: true, commonCheckedAt: common)
-        XCTAssertEqual(counts.stale, 1)
+        let counts = OverviewCounts.make(cells: [same, earlier, later], trusted: true, commonCheckedAt: common)
+        XCTAssertEqual(counts.stale, 2)
+    }
+
+    /// The rule is two-sided like the grid's, so the name says another time, not earlier.
+    func test_the_filter_is_named_for_its_two_sided_rule() {
+        XCTAssertEqual(GridStateFilter.checkedAtAnotherTime.rawValue, "Checked At Another Time")
+        XCTAssertFalse(GridStateFilter.allCases.map(\.rawValue).contains("Checked Earlier"))
     }
 
     // MARK: Server Status when the report is not current
@@ -324,12 +368,25 @@ final class MusterNavigationTests: XCTestCase {
 
     func test_last_known_lists_the_report_timer_even_when_the_report_did_not() throws {
         let services = [try service("fleet-cli-git-update.timer", "active")]
-        let rows = ServerLastKnown.rows(services)
+        let rows = ServerLastKnown.rows(services, offersRepairs: true)
         XCTAssertEqual(rows.map(\.unit), ["fleet-cli-git-update.timer", OpsNames.reportTimerUnit])
         XCTAssertEqual(rows.map(\.lastState), ["last known active", "not in the last report"])
         XCTAssertNil(rows.last?.scope)
         let withTimer = [try service(OpsNames.reportTimerUnit, "active", scope: "user")]
-        XCTAssertEqual(ServerLastKnown.rows(withTimer).map(\.unit), [OpsNames.reportTimerUnit])
+        XCTAssertEqual(ServerLastKnown.rows(withTimer, offersRepairs: true).map(\.unit), [OpsNames.reportTimerUnit])
+    }
+
+    /// With no repairs to offer, the unlisted timer row would say nothing the report said,
+    /// so only the report's own rows are listed, and no row has a button.
+    func test_last_known_without_repairs_lists_only_the_reports_rows_and_offers_nothing() throws {
+        let services = [try service("fleet-cli-git-update.timer", "active")]
+        XCTAssertEqual(ServerLastKnown.rows(services, offersRepairs: false).map(\.unit), ["fleet-cli-git-update.timer"])
+        let unit = OpsNames.reportTimerUnit
+        let full = OpsAllowlist(serverUnits: [
+            OpsAllowlist.Entry(name: unit, actions: ["start", "stop", "restart"], scope: "user"),
+        ])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: full, offersRepairs: false), [])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: nil, allowlist: full, offersRepairs: false), [])
     }
 
     /// One unit in two scopes is two rows, each with its own state and its own identity.
@@ -338,7 +395,7 @@ final class MusterNavigationTests: XCTestCase {
             try service("same.timer", "active", scope: "user"),
             try service("same.timer", "failed", scope: "system"),
         ]
-        let rows = ServerLastKnown.rows(services).filter { $0.unit == "same.timer" }
+        let rows = ServerLastKnown.rows(services, offersRepairs: true).filter { $0.unit == "same.timer" }
         XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(Set(rows.map(\.id)).count, 2)
         XCTAssertEqual(rows.map(\.scope), ["user", "system"])
@@ -351,13 +408,14 @@ final class MusterNavigationTests: XCTestCase {
         let full = OpsAllowlist(serverUnits: [
             OpsAllowlist.Entry(name: unit, actions: ["start", "stop", "restart"], scope: "user"),
         ])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: full),
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: full, offersRepairs: true),
                        [.serverUnit(verb: .restart, unit: unit), .logs(unit: unit)])
         let startOnly = OpsAllowlist(serverUnits: [OpsAllowlist.Entry(name: unit, actions: ["start"], scope: "user")])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: startOnly), [.logs(unit: unit)])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: OpsAllowlist()), [])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: nil), [])
-        for action in ServerLastKnown.actions(unit: unit, scope: "user", allowlist: full) {
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: startOnly, offersRepairs: true),
+                       [.logs(unit: unit)])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: OpsAllowlist(), offersRepairs: true), [])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: nil, offersRepairs: true), [])
+        for action in ServerLastKnown.actions(unit: unit, scope: "user", allowlist: full, offersRepairs: true) {
             XCTAssertEqual(action.runsOn, .server)
         }
     }
@@ -370,11 +428,81 @@ final class MusterNavigationTests: XCTestCase {
         let allowlist = OpsAllowlist(serverUnits: [
             OpsAllowlist.Entry(name: unit, actions: ["restart"], scope: "user"),
         ])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "system", allowlist: allowlist), [])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: nil, allowlist: allowlist),
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "system", allowlist: allowlist, offersRepairs: true), [])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: nil, allowlist: allowlist, offersRepairs: true),
                        [.serverUnit(verb: .restart, unit: unit), .logs(unit: unit)])
         let noScope = OpsAllowlist(serverUnits: [OpsAllowlist.Entry(name: unit, actions: ["restart"])])
-        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: noScope), [])
+        XCTAssertEqual(ServerLastKnown.actions(unit: unit, scope: "user", allowlist: noScope, offersRepairs: true), [])
+    }
+
+    // MARK: Server Status follows the menu's reach
+
+    /// The doctor's report on disk, read back through the app's own reader.
+    private func toolsReading(generatedAt: String = "2026-11-04T20:45:00Z",
+                              serverReachable: Bool = true) throws -> FleetToolsReading {
+        let json = #"{"schemaVersion":1,"tool":"fleet-tools-doctor","generatedAt":"\#(generatedAt)","hosts":[{"host":"mac","reachable":true,"checks":[]},{"host":"server","reachable":\#(serverReachable),"checks":[]}]}"#
+        let url = directory.appendingPathComponent("report-\(UUID().uuidString).json")
+        try Data(json.utf8).write(to: url)
+        return FleetToolsReportReader.read(at: url, now: now)
+    }
+
+    private func panelMode(status: ServerStatusReading?, tools: FleetToolsReading?) -> (ServerPanelMode, MachineMenu) {
+        let menu = MachineMenu(MachineMenuInputs(services: nil, lastReadAt: nil, redCells: nil,
+                                                 status: status, tools: tools, now: now))
+        return (ServerPanelMode.make(reach: menu.server.reach, reading: status), menu)
+    }
+
+    /// A report still inside its window is not current when the doctor could not reach the
+    /// server:  the panel follows the menu, so it shows no current sections and no repairs.
+    func test_panel_is_not_current_when_the_server_could_not_be_reached() throws {
+        let status = try statusReading(generatedAt: "2026-11-04T20:45:00Z", copiedAt: "2026-11-04T20:46:00Z")
+        XCTAssertTrue(status.isCurrent)
+        let (mode, menu) = panelMode(status: status, tools: try toolsReading(serverReachable: false))
+        XCTAssertNotEqual(mode, .current)
+        XCTAssertEqual(mode, .lastKnown(offersRepairs: false))
+        XCTAssertEqual(menu.serverCard.stateWords, "Not known")
+        let note = try XCTUnwrap(mode.lastKnownNote)
+        XCTAssertTrue(note.contains("with no repairs"))
+        XCTAssertTrue(note.contains(".\u{00A0} "))
+        XCTAssertFalse(note.contains(".  "))
+    }
+
+    /// When the Mac's own fetch stopped, the menu offers a fetch and no restart, so the
+    /// panel offers no restart either.
+    func test_panel_offers_no_repair_when_the_macs_fetch_stopped() throws {
+        let status = try statusReading(generatedAt: "2026-11-04T20:45:00Z", copiedAt: "2026-11-04T20:46:00Z")
+        let (mode, menu) = panelMode(status: status, tools: try toolsReading(generatedAt: "2026-11-04T17:02:00Z"))
+        XCTAssertTrue(menu.server.fetchStopped)
+        XCTAssertEqual(mode, .lastKnown(offersRepairs: false))
+    }
+
+    /// The server was reached and its report stopped:  the one case where the menu offers
+    /// the report timer's restart, and so the one case the panel does.
+    func test_panel_offers_the_repairs_when_the_report_stopped() throws {
+        let status = try statusReading(generatedAt: "2026-11-04T19:02:00Z", copiedAt: "2026-11-04T20:46:00Z")
+        let (mode, menu) = panelMode(status: status, tools: try toolsReading())
+        if case .reportStopped = menu.server.reach {} else { XCTFail("\(menu.server.reach)") }
+        XCTAssertEqual(mode, .lastKnown(offersRepairs: true))
+        XCTAssertTrue(mode.lastKnownNote?.contains("the repairs the allowlist names") ?? false)
+    }
+
+    /// Only a current reach shows the report's sections.
+    func test_panel_shows_the_report_only_when_the_menu_calls_it_current() throws {
+        let status = try statusReading(generatedAt: "2026-11-04T20:45:00Z", copiedAt: "2026-11-04T20:46:00Z")
+        let (mode, menu) = panelMode(status: status, tools: try toolsReading())
+        if case .current = menu.server.reach {} else { XCTFail("\(menu.server.reach)") }
+        XCTAssertEqual(mode, .current)
+        XCTAssertNil(mode.lastKnownNote)
+    }
+
+    /// A report that is not on the Mac shows its reason, and before the first read nothing
+    /// is shown beyond the state line.
+    func test_panel_shows_the_problem_or_nothing_before_a_read() throws {
+        let missing = ServerStatusReportReader.read(at: directory.appendingPathComponent("absent.json"), now: now)
+        let (mode, _) = panelMode(status: missing, tools: try toolsReading())
+        guard case .problem(let text) = mode else { return XCTFail("\(mode)") }
+        XCTAssertFalse(text.isEmpty)
+        XCTAssertEqual(panelMode(status: nil, tools: nil).0, .reading)
     }
 
     /// The allowlist's scope for a unit comes from the file the helper reads.

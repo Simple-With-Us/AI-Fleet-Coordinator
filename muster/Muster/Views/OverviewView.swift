@@ -72,12 +72,12 @@ struct OverviewView: View {
                     // A result checked at another time is not a fault,  so this card has no
                     // warning colour:  the engine's own rules say whether a result is too old.
                     countCard(
-                        title: "Checked Earlier",
+                        title: GridStateFilter.checkedAtAnotherTime.rawValue,
                         systemImage: "clock",
                         count: counts.stale,
                         tint: .secondary,
                         lines: ["Results from another time than the rest of this check"],
-                        filter: .checkedEarlier
+                        filter: .checkedAtAnotherTime
                     )
                     OverviewCardButton(hint: "Opens \(MusterDestination.driftHistory.title)") {
                         selection = .driftHistory

@@ -290,9 +290,18 @@ enum SidebarBadges {
     ///
     /// Before the first read, or once the read is older than the menu's own window, it is
     /// `?`:  an old or absent read is never a clean list.
-    static func services(_ entries: [FleetServiceEntry], readAt: Date?, now: Date) -> String? {
+    ///
+    /// It counts by the menu's own rule.  When pm2 did not answer, its rows are not known
+    /// and are not counted as problems:  the badge is then `?` with nothing else wrong, or
+    /// the count with a plus beside a real problem, as the Mac's card and the menu bar say.
+    static func services(_ entries: [FleetServiceEntry], pm2Answered: Bool, readAt: Date?, now: Date) -> String? {
         guard let readAt, now.timeIntervalSince(readAt) <= MachineMenuCopy.macReadWindow else { return "?" }
-        let problems = entries.filter { $0.state == .failed || $0.state == .unknown }.count
+        let problems = entries.filter { entry in
+            MachineMenuCopy.isProblem(entry) && !(MachineMenuCopy.isPM2Row(entry) && !pm2Answered)
+        }.count
+        if !pm2Answered {
+            return problems == 0 ? "?" : "\(problems)+"
+        }
         return problems == 0 ? nil : "\(problems)"
     }
 }
@@ -318,13 +327,14 @@ enum ServerLastKnown {
     }
 
     /// The rows to list:  the last report's, one per scope and unit, then the report timer
-    /// when the report named it in no scope.
-    static func rows(_ services: [ServerService]) -> [Row] {
+    /// when the report named it in no scope and its repair is offered.  With no repairs the
+    /// unlisted timer row would say nothing the report said, so it is left out.
+    static func rows(_ services: [ServerService], offersRepairs: Bool) -> [Row] {
         var rows = services.map { service in
             Row(id: service.id, unit: service.unit, scope: service.scope ?? "system",
                 lastState: "last known \(service.activeState ?? "not known")")
         }
-        if !services.contains(where: { $0.unit == OpsNames.reportTimerUnit }) {
+        if offersRepairs, !services.contains(where: { $0.unit == OpsNames.reportTimerUnit }) {
             rows.append(Row(id: "unlisted/\(OpsNames.reportTimerUnit)", unit: OpsNames.reportTimerUnit,
                             scope: nil, lastState: "not in the last report"))
         }
@@ -340,8 +350,12 @@ enum ServerLastKnown {
     /// is that one:  a same-named unit in the other scope gets none, because the button
     /// would act on a unit the row does not show.  A row the report did not name has no
     /// scope of its own, and its actions run in the allowlist's.
-    static func actions(unit: String, scope: String?, allowlist: OpsAllowlist?) -> [OpsAction] {
-        guard let allowlist else { return [] }
+    ///
+    /// The repairs are offered only when the menu offers its own:  when the server was
+    /// reached and its report stopped.  When the Mac's fetch stopped or could not reach the
+    /// server, the menu offers a fetch instead, and so the panel offers nothing.
+    static func actions(unit: String, scope: String?, allowlist: OpsAllowlist?, offersRepairs: Bool) -> [OpsAction] {
+        guard offersRepairs, let allowlist else { return [] }
         if let scope, allowlist.scope(forServerUnit: unit) != scope { return [] }
         let verbs = allowlist.verbs(forServerUnit: unit)
         guard !verbs.isEmpty else { return [] }
@@ -349,6 +363,49 @@ enum ServerLastKnown {
         if verbs.contains(.restart) { actions.append(.serverUnit(verb: .restart, unit: unit)) }
         actions.append(.logs(unit: unit))
         return actions
+    }
+}
+
+/// What the Server Status panel shows under its state line.
+///
+/// It is chosen from the menu's own reach, the same value the state line's words come
+/// from, so the body can never show a verdict the line above it does not.  Only a current
+/// reach shows the report's sections and their buttons.
+enum ServerPanelMode: Equatable {
+    /// Nothing has been read yet:  the state line says so, and nothing else is shown.
+    case reading
+    /// The report on the Mac could not be read, and here is why.
+    case problem(String)
+    /// The last report's units, said to be not current.  The allowlist's repairs are
+    /// offered only when the server was reached and its report stopped.
+    case lastKnown(offersRepairs: Bool)
+    /// The report is inside its window and the server was reached.
+    case current
+
+    static func make(reach: ServerReach, reading: ServerStatusReading?) -> ServerPanelMode {
+        switch reach {
+        case .current:
+            return .current
+        case .notReadYet:
+            return .reading
+        case .reportStopped:
+            if let problem = reading?.problem { return .problem(problem) }
+            return .lastKnown(offersRepairs: true)
+        case .fetchStopped, .unreachable, .futureDated, .noReport, .cannotRead:
+            if let problem = reading?.problem { return .problem(problem) }
+            return .lastKnown(offersRepairs: false)
+        }
+    }
+
+    /// The note above the last-known rows.
+    var lastKnownNote: String? {
+        guard case .lastKnown(let offersRepairs) = self else { return nil }
+        let gap = ServerStatusCopy.sentenceGap
+        let opening = "This report is not current, so its rows are not current health."
+        if offersRepairs {
+            return "\(opening)\(gap)The last known units are below, with the repairs the allowlist names."
+        }
+        return "\(opening)\(gap)The last known units are below, with no repairs, because the Mac has no current word from the server."
     }
 }
 
@@ -419,23 +476,24 @@ enum GridStateFilter: String, CaseIterable, Identifiable {
     case red = "Red"
     case drift = "Drifted"
     case unproven = "Unproven"
-
-    case checkedEarlier = "Checked Earlier"
+    /// Results checked more than a minute before or after the rest of the check, by the
+    /// grid's own two-sided rule, so the name says another time and not earlier.
+    case checkedAtAnotherTime = "Checked At Another Time"
 
     var id: String { rawValue }
 
     /// What the grid says when the filter cannot narrow anything, or nil when it can.
     func cannotNarrowNote(commonCheckedAt: Date?) -> String? {
-        guard self == .checkedEarlier, commonCheckedAt == nil else { return nil }
-        return "This check has no shared time, so which results are earlier is not known.\(ServerStatusCopy.sentenceGap)Every seat is shown."
+        guard self == .checkedAtAnotherTime, commonCheckedAt == nil else { return nil }
+        return "This check has no shared time, so which results were checked at another time is not known.\(ServerStatusCopy.sentenceGap)Every seat is shown."
     }
 
     /// True when a seat with these cells belongs under the filter.
     ///
-    /// Checked Earlier uses the Overview's own rule, so the card's count and the seats it
-    /// opens on are the same cells.  With no shared check time which results are earlier is
-    /// not known, as the card's count is then unknown, so every seat stays in view:  an
-    /// empty grid would be a zero the Overview does not claim.
+    /// Checked At Another Time uses the Overview's own rule, so the card's count and the
+    /// seats it opens on are the same cells.  With no shared check time which results were
+    /// checked at another time is not known, as the card's count is then unknown, so every
+    /// seat stays in view:  an empty grid would be a zero the Overview does not claim.
     func includes(_ cells: [GridCell], commonCheckedAt: Date?) -> Bool {
         let states = cells.map(\.state)
         switch self {
@@ -445,9 +503,9 @@ enum GridStateFilter: String, CaseIterable, Identifiable {
         case .red: return states.contains(where: \.isRed)
         case .drift: return states.contains(.drift)
         case .unproven: return states.contains(.unproven)
-        case .checkedEarlier:
+        case .checkedAtAnotherTime:
             guard let commonCheckedAt else { return true }
-            return cells.contains { OverviewCounts.isCheckedEarlier($0, commonCheckedAt: commonCheckedAt) }
+            return cells.contains { OverviewCounts.isCheckedAtAnotherTime($0, commonCheckedAt: commonCheckedAt) }
         }
     }
 }
@@ -481,15 +539,16 @@ struct OverviewCounts: Equatable {
         counts.drift = cells.filter { $0.state == .drift }.count
         counts.unproven = cells.filter { $0.state == .unproven }.count
         if let commonCheckedAt {
-            counts.stale = cells.filter { isCheckedEarlier($0, commonCheckedAt: commonCheckedAt) }.count
+            counts.stale = cells.filter { isCheckedAtAnotherTime($0, commonCheckedAt: commonCheckedAt) }.count
         }
         return counts
     }
 
     /// True when a cell was checked at another time than the run's shared check time,
     /// beyond the grid's own sixty-second tolerance.  The count and the grid's filter both
-    /// use this, so they cannot disagree.
-    static func isCheckedEarlier(_ cell: GridCell, commonCheckedAt: Date) -> Bool {
+    /// use this, so they cannot disagree.  Like the grid's own rule it is two-sided:  a cell
+    /// checked well after the shared time counts as well as one checked well before it.
+    static func isCheckedAtAnotherTime(_ cell: GridCell, commonCheckedAt: Date) -> Bool {
         guard let checkedAt = cell.checkedAt else { return false }
         return abs(commonCheckedAt.timeIntervalSince(checkedAt)) > 60
     }

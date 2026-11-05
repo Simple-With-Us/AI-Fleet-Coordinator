@@ -38,12 +38,20 @@ struct ServerStatusPanel: View {
                 stateLine(menu.serverCard)
                 if let reading = watch.status {
                     pathLine(reading)
-                    if let problem = reading.problem {
+                    // The body follows the menu's reach,  the same value the state line
+                    // says,  so the two never give different verdicts for one reading.
+                    let mode = ServerPanelMode.make(reach: menu.server.reach, reading: reading)
+                    switch mode {
+                    case .reading:
+                        EmptyView()
+                    case .problem(let problem):
                         problemBox(problem)
-                    } else if !reading.isCurrent {
-                        problemBox("This report is not current, so its rows are not current health.\u{00A0} The last known units are below, with the repairs the allowlist names.")
-                        lastKnownSection(reading)
-                    } else {
+                    case .lastKnown(let offersRepairs):
+                        if let note = mode.lastKnownNote {
+                            problemBox(note)
+                        }
+                        lastKnownSection(reading, offersRepairs: offersRepairs)
+                    case .current:
                         if reading.hostMetrics != nil {
                             hostSection(reading)
                         }
@@ -114,12 +122,19 @@ struct ServerStatusPanel: View {
     }
 
     /// The last report's units,  said to be not current,  with the repairs the allowlist
-    /// names.  Each one plans first and asks Touch ID before it runs on the server.
-    private func lastKnownSection(_ reading: ServerStatusReading) -> some View {
+    /// names when the menu offers them too.  Each one plans first and asks Touch ID before
+    /// it runs on the server.
+    private func lastKnownSection(_ reading: ServerStatusReading, offersRepairs: Bool) -> some View {
         let from = reading.generatedAt.map { "from the report at \(FleetTime.clock($0))" } ?? ""
+        let rows = ServerLastKnown.rows(reading.services, offersRepairs: offersRepairs)
         return VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Last Known, Not Current", nil, from)
-            ForEach(ServerLastKnown.rows(reading.services)) { row in
+            if rows.isEmpty {
+                Text("The last report names no units.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(rows) { row in
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(OpsNames.unitTitle(row.unit))
@@ -132,7 +147,8 @@ struct ServerStatusPanel: View {
                     Text(row.lastState)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    ForEach(ServerLastKnown.actions(unit: row.unit, scope: row.scope, allowlist: allowlist), id: \.title) { action in
+                    ForEach(ServerLastKnown.actions(unit: row.unit, scope: row.scope, allowlist: allowlist,
+                                                    offersRepairs: offersRepairs), id: \.title) { action in
                         Button(Self.verbWord(action)) {
                             controller.plan(action)
                         }

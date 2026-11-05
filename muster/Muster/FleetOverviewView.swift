@@ -154,7 +154,8 @@ struct FleetOverviewView: View {
             // Measured against the watch's tick,  the clock the Mac card and the menu use,  so
             // the window and the menu never disagree about one read.  The tick is a minute at
             // most behind,  and the menu's own window allows for it.
-            return SidebarBadges.services(admin.entries, readAt: admin.lastReadAt, now: watch.now)
+            return SidebarBadges.services(admin.entries, pm2Answered: admin.pm2Answered ?? true,
+                                          readAt: admin.lastReadAt, now: watch.now)
         case .serverStatus:
             return PlaceHealthWords.badge(menu.server.health)
         case .overview, .macAgents, .driftHistory, .wakeAndListener, .seatDetail,
