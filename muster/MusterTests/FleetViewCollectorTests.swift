@@ -203,7 +203,7 @@ final class FleetViewCollectorTests: XCTestCase {
         // Fake values, assembled here so the source carries nothing credential shaped.
         let fakeGitHubToken = "ghp_" + String(repeating: "a1", count: 18)
         let fakeGitHubPat = "github_pat_" + String(repeating: "b2", count: 11)
-        let fakeCloudKey = "wJalrXUtnFEMI/" + "K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
+        let fakeCloudBlob = "wJalrXUtnFEMI/" + "K7MDENG/" + "bPxRfiCYEXAMPLEKEY"
         let fakePemLine = "MIIEvQIBADANBgkq/" + "hkiG9w0BAQEFAASC/" + "BKcwggSjAgEAAoIBAQC7"
         let cases: [(input: String, leaked: String)] = [
             ("fatal: could not read from https://x-access-token:abc123secret@github.com/a/b.git", "abc123secret"),
@@ -279,10 +279,10 @@ final class FleetViewCollectorTests: XCTestCase {
             ("https://x.example/cb#access_token=hunter2", "hunter2"),
             ("https://x.example/a;token=hunter2", "hunter2"),
             // No scheme, so only the shape of each path segment says it is a token, and long
-            // base64 that holds slashes.  The cloud key is the one in the vendor's own docs.
+            // base64 that holds slashes.  The cloud value is the example in the vendor's own docs.
             ("POST hooks.example.com/services/\(fakeGitHubToken) failed", fakeGitHubToken),
-            (fakeCloudKey, "bPxRfiCYEXAMPLEKEY"),
-            ("key=\(fakeCloudKey)", "bPxRfiCYEXAMPLEKEY"),
+            (fakeCloudBlob, "bPxRfiCYEXAMPLEKEY"),
+            ("key=\(fakeCloudBlob)", "bPxRfiCYEXAMPLEKEY"),
             (fakePemLine, "hkiG9w0BAQEFAASC"),
         ]
         for (input, leaked) in cases {
