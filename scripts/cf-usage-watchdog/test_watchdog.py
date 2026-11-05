@@ -1326,6 +1326,26 @@ class HttpSafetyTests(Base):
         self.assertEqual(self.state["trips"][WORKER]["stage"], 2)
         self.assertFalse([c for c in self.fake.writes() if c[1].endswith("/schedules")])
 
+    def test_a_failed_page_credential_read_logs_why_and_stays_false(self):
+        def run(command, **kwargs):
+            return SimpleNamespace(returncode=4, stdout="")
+
+        conn = wd.Connections(self.cfg, runner=run, env={})
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertFalse(conn.page("title", "text"))
+        self.assertIn("credential-fetch-exit-4", out.getvalue())
+
+    def test_only_machine_codes_survive_from_an_error_body(self):
+        errors = [
+            {"code": 10000},
+            {"code": "budget"},
+            {"code": "free text here"},
+            {"code": True},
+            "x",
+        ]
+        self.assertEqual(wd.error_codes(errors), [10000, "budget"])
+        self.assertEqual(wd.error_codes("not-a-list"), [])
+
     def test_a_failed_zulip_post_logs_why_and_stays_false(self):
         conn = wd.Connections(
             self.cfg, runner=lambda command, **kwargs: SimpleNamespace(returncode=2), env={}
@@ -1484,6 +1504,25 @@ class CorruptStateTests(Base):
     def test_a_missing_file_is_a_first_run(self):
         self.assertFalse(self.store.state_path.exists())
         self.assertEqual(self.store.load()["trips"], {})
+
+    def test_a_copy_that_could_not_be_moved_is_not_named_as_kept(self):
+        self.store.state_path.write_text("{nope")
+        real = os.replace
+        failures = [OSError()]
+
+        def replace(source, target):
+            if failures:
+                raise failures.pop()
+            real(source, target)
+
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            mock.patch.object(wd.os, "replace", replace),
+        ):
+            state = wd.load_or_quarantine(self.store, NOW)
+        self.assertEqual(state["state_lost_kept"], "no copy, it could not be moved")
+        self.assertFalse(list(self.store.directory.glob("state.corrupt-*")))
+        self.assertTrue(self.store.load()["state_lost_at"])
 
     def test_the_bad_file_is_kept_and_the_loss_survives_the_next_load(self):
         self.corrupt("{torn")
@@ -1801,6 +1840,25 @@ class KnobTests(unittest.TestCase):
                 sys.modules["fleet_knobs"] = real
         self.assertEqual(rows[0]["event"], "knobs")
         self.assertTrue(rows[0]["report"]["stale"])
+
+    def test_a_failed_report_does_not_turn_enforce_into_observe(self):
+        def report():
+            raise RuntimeError("log failure")
+
+        answers = {"CF_USAGE_WATCHDOG_MODE": "enforce", "CF_USAGE_WATCHDOG_PROFILE": "paid"}
+        knobs = SimpleNamespace(get=lambda name, **kwargs: answers[name], report=report)
+        real = sys.modules.get("fleet_knobs")
+        sys.modules["fleet_knobs"] = SimpleNamespace(knobs=knobs)
+        try:
+            with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    wd.read_knobs(Path(tmp) / "STOP", wd.Store(Path(tmp))), ("enforce", "paid")
+                )
+        finally:
+            if real is None:
+                del sys.modules["fleet_knobs"]
+            else:
+                sys.modules["fleet_knobs"] = real
 
     def test_registry_defaults_are_the_safe_ones(self):
         from fleet_knobs.registry import BY_NAME

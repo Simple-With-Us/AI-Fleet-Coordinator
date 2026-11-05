@@ -81,6 +81,19 @@ class ApiError(Exception):
         super().__init__(f"HTTP {status} codes {self.codes}")
 
 
+def error_codes(errors: Any) -> list:
+    """Machine codes only:  an int or an identifier.  Anything else in an error body is dropped."""
+    if not isinstance(errors, list):
+        return []
+    codes = [item.get("code") for item in errors if isinstance(item, dict)]
+    return [
+        code
+        for code in codes
+        if (isinstance(code, int) and not isinstance(code, bool))
+        or (isinstance(code, str) and code.isidentifier())
+    ]
+
+
 def is_transient(status: int) -> bool:
     """A failure that may pass:  a network fault (0), a timeout, a rate limit or a server error."""
     return status == 0 or status in (408, 429) or status >= 500
@@ -519,17 +532,19 @@ class Store:
         """Call under the lock.  Keeps the bad file and starts a state that remembers the loss, so
         the next run cannot read a missing file as a first run.  Enforcement stays off until
         `watchdog.py state-ack`."""
-        kept = self.directory / f"state.corrupt-{int(epoch)}.json"
-        with contextlib.suppress(OSError):
-            os.replace(self.state_path, kept)
-        self.event("state_quarantined", reason=reason, kept=kept.name)
+        kept = f"state.corrupt-{int(epoch)}.json"
+        try:
+            os.replace(self.state_path, self.directory / kept)
+        except OSError:
+            kept = "no copy, it could not be moved"
+        self.event("state_quarantined", reason=reason, kept=kept)
         state = {
             "alerted": {},
             "trips": {},
             "inventory": {},
             "trips_by_day": {},
             "state_lost_at": epoch,
-            "state_lost_kept": kept.name,
+            "state_lost_kept": kept,
         }
         self.save(state)
         return state
@@ -657,7 +672,7 @@ class Connections:
             codes = []
             try:
                 body = json.loads(exc.read(MAX_ERROR_BYTES))
-                codes = [item.get("code") for item in body.get("errors", [])]
+                codes = error_codes(body.get("errors"))
             except (ValueError, AttributeError, OSError, RecursionError):
                 pass
             finally:
@@ -697,7 +712,7 @@ class Connections:
     def api(self, method: str, path: str, body: Any = None) -> Any:
         answer = self._cloudflare(method, path, body)
         if answer.get("success") is False:
-            raise ApiError(200, [item.get("code") for item in answer.get("errors", [])])
+            raise ApiError(200, error_codes(answer.get("errors")))
         return answer.get("result")
 
     def zulip(self, text: str) -> bool:
@@ -739,7 +754,9 @@ class Connections:
         try:
             token = self._secret(conf["pushover_token_key"])
             user = self._secret(conf["pushover_user_key"])
-        except PollError:
+        except PollError as exc:
+            # A PollError carries a type name, an exit code or a key name, never a value.
+            print(json.dumps({"event": "page_failed", "error": str(exc)}), flush=True)
             return False
         if not token or not user:
             return None
@@ -1812,12 +1829,18 @@ def read_knobs(stop_file: Path, store: Store | None = None) -> tuple:
             knobs.get("CF_USAGE_WATCHDOG_MODE", stop=stop_file.exists()),
             knobs.get("CF_USAGE_WATCHDOG_PROFILE"),
         )
-        if store is not None:
-            store.event("knobs", report=knobs.report())  # Names, sources, stale;  never a value.
-        return answer
     except Exception as exc:  # noqa: BLE001 - A broken knob read must never turn into enforcement or a crash.
         print(json.dumps({"event": "knobs_failed", "error": type(exc).__name__}), flush=True)
         return "observe", "paid"
+    if store is not None:
+        try:
+            store.event("knobs", report=knobs.report())  # Names, sources, stale;  never a value.
+        except Exception as exc:  # noqa: BLE001 - A failed log line must not change the mode.
+            print(
+                json.dumps({"event": "knobs_report_failed", "error": type(exc).__name__}),
+                flush=True,
+            )
+    return answer
 
 
 def print_thresholds(cfg: dict) -> None:
@@ -1883,7 +1906,11 @@ def main(argv: list | None = None) -> int:
     if args.command == "thresholds":
         print_thresholds(cfg)
         return 0
-    store = Store(default_state_dir(dict(os.environ)))
+    try:
+        store = Store(default_state_dir(dict(os.environ)))
+    except ValueError as exc:
+        print(json.dumps({"event": "state_dir_refused", "error": str(exc)}), flush=True)
+        return 1
     if args.command == "status":
         try:
             state = store.load()
