@@ -224,6 +224,10 @@ class VerifierTest(unittest.TestCase):
             (429, b""),
             (429, b"error code: 1027"),
             (403, b"<title>Error 1027</title>"),
+            (403, b'{"error":1027}'),
+            (403, b'{"error": "1027"}'),
+            (403, b'{"error_code":1027,"title":"limit"}'),
+            (401, b'{"errors":[{"code":1027}]}'),
             (408, b""),
             (404, b'{"ok":false,"reason":"not_configured"}'),  # The verify key is unreadable.
             (302, b""),
@@ -246,6 +250,8 @@ class VerifierTest(unittest.TestCase):
             (400, b'{"ok":false,"reason":"bad_identity"}'),
             (401, b'{"ok":false,"reason":"bad_signature"}'),
             (403, b"forbidden"),
+            (403, b'{"error":"forbidden","retry_after":1027}'),  # 1027 alone is not the limit.
+            (403, b'{"error":"10270"}'),
             (200, json.dumps({"ok": False, "reason": "mismatch"}).encode()),
         ):
             with self.subTest(refusal=refusal):

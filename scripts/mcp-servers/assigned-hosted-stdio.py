@@ -23,6 +23,9 @@ CACHE_TTL_S = 600
 # Sent when this process has no negotiated version, as simple-chat-remote does.
 DEFAULT_PROTOCOL = "2025-06-18"
 PROTOCOL_RE = re.compile(r"[!-~]{1,128}")
+# A modern request names its own version here and needs no handshake.  The server refuses
+# a header that disagrees with it, so it outranks both of the versions above.
+META_VERSION = "io.modelcontextprotocol/protocolVersion"
 BEARER_REFUSED_MESSAGE = (
     "The hosted server refused this connection's assigned bearer: it is invalid, expired, "
     "revoked, paused or not accepted for MCP, or the server could not load its credentials. "
@@ -158,9 +161,21 @@ def usable_initialize(result):
     )
 
 
+def tools_key(version):
+    """A modern answer has a different shape, and its decoder refuses a legacy one."""
+    return "tools-" + hashlib.sha256(version.encode()).hexdigest()[:16]
+
+
 def first_page_of_tools(message):
+    """Only a request with no cursor at all.  The server answers a malformed one."""
+    params = message.get("params", {})
+    return isinstance(params, dict) and "cursor" not in params
+
+
+def names_envelope(message):
     params = message.get("params")
-    return not (isinstance(params, dict) and params.get("cursor"))
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    return isinstance(meta, dict) and META_VERSION in meta
 
 
 def is_bearer_refusal(error):
@@ -236,18 +251,25 @@ class Adapter:
         self.protocol = None
         self.cache = DiskCache(cache_dir, token) if cache_dir else None
 
+    def request_version(self, message):
+        """The version this request speaks, or None for an envelope only the server can refuse."""
+        if names_envelope(message):
+            version = message["params"]["_meta"][META_VERSION]
+            return version if isinstance(version, str) and PROTOCOL_RE.fullmatch(version) else None
+        return self.protocol or DEFAULT_PROTOCOL
+
     def answer_from_cache(self, message):
-        if self.cache is None or "id" not in message:
+        if self.cache is None or "id" not in message or self.session:
             return None
         method = message.get("method")
-        if method == "initialize":
+        if method == "initialize" and not names_envelope(message):
             result = self.cache.load(initialize_key(message))
             if not usable_initialize(result):
                 return None
             self.protocol = result["protocolVersion"]
-            self.session = None
         elif method == "tools/list" and first_page_of_tools(message):
-            result = self.cache.load("tools")
+            version = self.request_version(message)
+            result = self.cache.load(tools_key(version)) if version else None
             if result is None or not isinstance(result.get("tools"), list):
                 return None
         else:
@@ -257,18 +279,23 @@ class Adapter:
     def remember(self, message, reply, session):
         if self.cache is None or not isinstance(reply.get("result"), dict):
             return
+        # A server that issues sessions is stateful, so nothing it said may be replayed:
+        # it must see every initialize again, and its catalog is per session.
+        if session is not None or self.session is not None:
+            self.cache.clear()
+            return
         result = reply["result"]
         method = message.get("method")
-        # A server that starts issuing sessions must see its initialize again.
-        if method == "initialize" and session is None and usable_initialize(result):
+        if method == "initialize" and usable_initialize(result):
             self.cache.store(initialize_key(message), result)
         elif (
             method == "tools/list"
             and first_page_of_tools(message)
             and isinstance(result.get("tools"), list)
             and not result.get("nextCursor")
+            and self.request_version(message)
         ):
-            self.cache.store("tools", result)
+            self.cache.store(tools_key(self.request_version(message)), result)
 
     def call(self, message):
         if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
@@ -303,8 +330,10 @@ class Adapter:
         }
         if self.session:
             headers["Mcp-Session-Id"] = self.session
-        if self.protocol or method != "initialize":
-            headers["MCP-Protocol-Version"] = self.protocol or DEFAULT_PROTOCOL
+        # An initialize is what negotiates the version, so it never names one.
+        version = self.request_version(message)
+        if method != "initialize" and version:
+            headers["MCP-Protocol-Version"] = version
         encoded = json.dumps(message).encode()
         if not file_frame_allowed(message, len(encoded)):
             raise TransportFailure("Input frame too large.")

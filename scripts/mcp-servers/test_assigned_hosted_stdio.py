@@ -448,6 +448,114 @@ class DiskCacheTests(unittest.TestCase):
         self.adapter(upstream=upstream).call(INITIALIZE)
         self.assertEqual(upstream.methods, ["initialize", "initialize"])
 
+    def test_a_session_issuing_server_never_has_its_catalog_cached(self):
+        upstream = Upstream(session="stateful")
+        for frame_id in (1, 2):
+            self.adapter(upstream=upstream).call(frame("tools/list", frame_id))
+        self.assertEqual(upstream.methods, ["tools/list", "tools/list"])
+        self.assertFalse(os.path.exists(self.dir) and os.listdir(self.dir))
+
+    def test_a_server_that_starts_issuing_sessions_drops_what_was_cached(self):
+        self.adapter().call(frame("tools/list"))
+        self.assertEqual(len(os.listdir(self.dir)), 1)
+        upstream = Upstream(session="stateful")
+        adapter = self.adapter(upstream=upstream)
+        adapter.call(INITIALIZE)
+        self.assertEqual(os.listdir(self.dir), [])
+        adapter.call(frame("tools/list", 2))
+        self.assertEqual(upstream.methods, ["initialize", "tools/list"])
+
+    def test_a_live_session_is_never_answered_from_disk(self):
+        upstream = Upstream(session="stateful")
+        adapter = self.adapter(upstream=upstream)
+        adapter.call(INITIALIZE)
+        cache = mod.DiskCache(self.dir, TOKEN)  # Another process's entry, written after the clear.
+        cache.store(mod.tools_key("2025-06-18"), TOOLS_RESULT)
+        cache.store(mod.initialize_key(INITIALIZE), INIT_RESULT)
+        adapter.call(frame("tools/list", 2))
+        adapter.call(frame("initialize", 3, protocolVersion="2025-06-18"))
+        self.assertEqual(upstream.methods, ["initialize", "tools/list", "initialize"])
+
+    def test_a_catalog_is_only_replayed_to_the_version_that_received_it(self):
+        modern = frame("tools/list", 2, _meta={mod.META_VERSION: "2026-07-28"})
+        self.adapter().call(frame("tools/list"))
+        self.upstream.tools = {**TOOLS_RESULT, "resultType": "complete"}
+        self.adapter().call(modern)  # A legacy answer on disk must not satisfy this.
+        self.assertEqual(self.upstream.methods, ["tools/list", "tools/list"])
+        replay = self.adapter().call(modern)
+        self.assertEqual(replay["result"]["resultType"], "complete")
+        self.assertNotIn("resultType", self.adapter().call(frame("tools/list", 3))["result"])
+        self.assertEqual(len(self.upstream.methods), 2)
+        negotiated = self.adapter()
+        negotiated.protocol = "2025-03-26"
+        negotiated.call(frame("tools/list", 5))
+        self.assertEqual(len(self.upstream.methods), 3)
+
+    def test_a_malformed_envelope_is_left_for_the_server_to_refuse(self):
+        for bad in (7, "", "two words", None):
+            malformed = frame("tools/list", _meta={mod.META_VERSION: bad})
+            self.adapter().call(frame("tools/list"))
+            self.upstream.methods.clear()
+            self.upstream.requests.clear()
+            self.adapter().call(malformed)
+            self.assertEqual(self.upstream.methods, ["tools/list"])
+            self.assertNotIn("Mcp-protocol-version", self.upstream.requests[0].headers)
+        self.assertEqual(len(os.listdir(self.dir)), 1)
+
+    def test_an_initialize_in_the_modern_form_is_not_answered_from_disk(self):
+        self.adapter().call(INITIALIZE)
+        modern = frame(
+            "initialize", 2, protocolVersion="2025-06-18", _meta={mod.META_VERSION: "2026-07-28"}
+        )
+        self.upstream.methods.clear()
+        self.adapter().call(modern)
+        self.assertEqual(self.upstream.methods, ["initialize"])
+
+    def test_only_a_request_with_no_cursor_is_a_first_page(self):
+        self.adapter().call(frame("tools/list"))
+        self.upstream.methods.clear()
+        for bad in ("", 0, None, False, []):
+            self.assertIn("result", self.adapter().call(frame("tools/list", 2, cursor=bad)))
+        self.adapter().call({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": []})
+        self.assertEqual(self.upstream.methods, ["tools/list"] * 6)
+        no_params = {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}
+        self.assertIn("result", self.adapter().call(no_params))
+        self.assertEqual(len(self.upstream.methods), 6)  # No params at all is the first page.
+
+    def test_a_cursor_answer_never_becomes_the_first_page(self):
+        self.upstream.tools = {"tools": [{"name": "second_page"}]}
+        self.adapter().call(frame("tools/list", cursor="page-2"))
+        self.assertFalse(os.path.exists(self.dir) and os.listdir(self.dir))
+
+    def test_a_real_initialize_after_a_cached_one_names_no_protocol_version(self):
+        self.adapter().call(INITIALIZE)
+        adapter = self.adapter()
+        adapter.call(frame("initialize", 2, protocolVersion="2025-06-18"))  # From disk.
+        self.assertEqual(adapter.protocol, "2025-06-18")
+        self.upstream.requests.clear()
+        adapter.call(frame("initialize", 3, protocolVersion="2025-03-26"))  # A miss.
+        self.assertEqual(self.upstream.methods[-1], "initialize")
+        self.assertNotIn("Mcp-protocol-version", self.upstream.requests[0].headers)
+
+    def test_a_repeat_real_initialize_names_no_protocol_version(self):
+        adapter = mod.Adapter(TOKEN, self.upstream)  # Uncached, so both reach the server.
+        adapter.call(INITIALIZE)
+        adapter.call(frame("initialize", 2, protocolVersion="2025-03-26"))
+        self.assertEqual(self.upstream.methods, ["initialize", "initialize"])
+        for request in self.upstream.requests:
+            self.assertNotIn("Mcp-protocol-version", request.headers)
+
+    def test_a_requests_own_envelope_names_its_version(self):
+        modern = frame("tools/call", 2, name="w", _meta={mod.META_VERSION: "2026-07-28"})
+        adapter = self.adapter()
+        adapter.call(modern)  # Nothing negotiated: the default must not contradict it.
+        self.assertEqual(self.upstream.requests[-1].headers["Mcp-protocol-version"], "2026-07-28")
+        adapter.call(INITIALIZE)
+        adapter.call(modern)  # Negotiated legacy: still the request's own version.
+        self.assertEqual(self.upstream.requests[-1].headers["Mcp-protocol-version"], "2026-07-28")
+        adapter.call(TOOL_CALL)  # A legacy request keeps the negotiated one.
+        self.assertEqual(self.upstream.requests[-1].headers["Mcp-protocol-version"], "2025-06-18")
+
     def test_cache_is_private_and_holds_no_bearer(self):
         self.adapter().call(INITIALIZE)
         self.adapter().call(frame("tools/list"))

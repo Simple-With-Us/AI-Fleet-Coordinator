@@ -34,10 +34,18 @@ initialize.
 - `notifications/*` are dropped locally and never sent.
 - `initialize` is answered from disk for 10 minutes after a real hosted answer, one copy
 per bearer and requested protocol version, so seat instructions and capabilities stay
-the hosted ones.  A server that issues a session is never cached.
-- A first-page `tools/list` is served from disk for 10 minutes, per bearer, then fetched
-again.  A new hosted tool can take that long to appear.
-- With no negotiated version, a call sends `MCP-Protocol-Version: 2025-06-18`.
+the hosted ones.
+- A first-page `tools/list` (one with no `cursor`, so a malformed cursor reaches the server)
+is served from disk for 10 minutes, per bearer and protocol version, then fetched again.  A
+new hosted tool can take that long to appear.
+- A server that issues a session gets none of this: that seat's cache is cleared, nothing is
+stored, and a connection with a live session is never answered from disk.
+- `MCP-Protocol-Version` is the version in the request's own `_meta` when it names one, or
+else the negotiated version, or else `2025-06-18`.  An `initialize` never sends it.
+
+A request in the modern `_meta` form also needs `Mcp-Method` and `Mcp-Name` headers, which
+this adapter does not send, so the hosted server refuses it and the client gets an ordinary
+transport failure, as it did before this cache existed.  The legacy handshake is unaffected.
 
 The cache is `$XDG_CACHE_HOME/assigned-hosted-stdio`, or `~/.cache/assigned-hosted-stdio`.
 It holds hosted discovery answers and no bearer, and file names derive from a one-way

@@ -53,9 +53,12 @@ NEGATIVE_CACHE_S = 30  # a wrong guess must not hammer the Worker
 # remembered as refusals are its own 400 (an identity it does not know) and 401, and a
 # 403.  Anything else says nothing about the bearer:  a 404 is the route's not_configured,
 # which is how a missing or unreadable verify key looks, and 5xx, 429 and redirects are
-# about the Worker.  Error 1027, the daily limit, is sent as a 429 or names itself.
+# about the Worker.  Error 1027, the daily limit, is sent as a 429 or names itself, in
+# prose ("Error 1027", "error code: 1027") or JSON ("error":1027, "error_code":1027).
 REFUSAL_STATUSES = frozenset({400, 401, 403})
-WORKER_LIMIT_RE = re.compile(rb"error(?: code:)?\s*1027\b", re.IGNORECASE)
+WORKER_LIMIT_RE = re.compile(
+    rb"""(?:error[\s_-]*(?:code)?|\bcode)["']?\s*:?\s*["']?1027\b""", re.IGNORECASE
+)
 # The cache key is attacker-controlled (any string hashes), so the map is
 # bounded:  oldest entries are evicted past the cap.
 CACHE_MAX_ENTRIES = 1024
