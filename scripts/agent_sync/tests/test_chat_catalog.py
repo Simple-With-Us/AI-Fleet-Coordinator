@@ -950,6 +950,40 @@ class OpenCodeCatalogTests(unittest.TestCase):
         self.assertEqual(row["status"], "metadata-only")
         self.assertFalse(row["capabilities"]["read"])
 
+    def test_message_only_store_lookup_fails_closed(self):
+        # Exactly one legacy content table is shape drift:  the by-id lookup
+        # fails closed like discovery, never a degraded metadata-only row.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("DROP TABLE part")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertIsNone(self.catalog()._find_opencode("ses_1"))
+
+    def test_oversized_directory_is_not_materialized_in_lookup(self):
+        # Identity and workspace path guards live in SQL:  an oversized or
+        # non-TEXT directory must not load before the row is classified; the
+        # lookup finds no row.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "UPDATE session SET directory = ? WHERE id = 'ses_1'",
+                (sqlite3.Binary(b"d" * (20 * 1024 * 1024)),),
+            )
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_big', 'p1', NULL, ?, 'Big', 1000)",
+                ("d" * 2000,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        self.assertIsNone(catalog._find_opencode("ses_1"))
+        self.assertIsNone(catalog._find_opencode("ses_big"))
+
     def test_uri_significant_store_path_stays_read_only(self):
         # A home path containing URI-significant characters must not change the
         # SQLite URI:  without percent-encoding, "?" would drop mode=ro (opening

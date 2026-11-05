@@ -1384,10 +1384,15 @@ class ChatCatalog:
             archived_clause = (
                 " AND time_archived IS NULL" if "time_archived" in session_cols else ""
             )
+            # Same allocation guards as discovery:  identity and workspace path
+            # are bounded in SQL, never materialized oversized (a 20 MB directory
+            # BLOB must not load before the row is classified).
             found = conn.execute(
                 "SELECT id, directory, substr(title, 1, 4096), time_created FROM "
                 + session_table
-                + " WHERE id = ? AND typeof(id) = 'text'"
+                + " WHERE id = ? AND typeof(id) = 'text' AND length(id) <= 128"
+                + " AND (directory IS NULL OR (typeof(directory) = 'text'"
+                + " AND length(directory) <= 1024))"
                 + archived_clause,
                 (sid,),
             ).fetchone()
@@ -1397,11 +1402,17 @@ class ChatCatalog:
             stamp = created / 1000.0 if isinstance(created, (int, float)) else 0.0
             excerpts: list[dict[str, str]] = []
             status = "available"
-            if newer_content or "message" not in tables or "part" not in tables:
-                # Newer unqualified shape, or registry rows only:  nothing
-                # readable, so the row is metadata-only, never available.
+            if newer_content:
                 status = "metadata-only"
-            elif "message" in tables and "part" in tables:
+            elif ("message" in tables) != ("part" in tables):
+                # Exactly one legacy content table:  shape drift, fail closed
+                # with discovery, never a degraded row.
+                return None
+            elif "message" not in tables:
+                # Registry rows only:  nothing readable, so the row is
+                # metadata-only, never available.
+                status = "metadata-only"
+            else:
                 activity = conn.execute(
                     "SELECT MAX(time_created) FROM message WHERE session_id = ?"
                     " AND typeof(session_id) = 'text'",
