@@ -18,6 +18,8 @@ export const RECALL_HOST = "recall.jays.services";
 export const RECALL_TIMEOUT_MS = 10_000;
 export const RECALL_USER_AGENT = "agent-sync-mcp/2.0";
 export const RECALL_RESPONSE_LIMIT = 1_000_000; // bytes
+export const RECALL_JSON_DEPTH_LIMIT = 64;
+export const RECALL_JSON_NODE_LIMIT = 20_000;
 export const RECALL_SECRETS = Object.freeze({
   token: "RECALL_API_TOKEN",
   accessId: "RECALL_ACCESS_CLIENT_ID",
@@ -343,11 +345,12 @@ export class RecallClient {
     if (status >= 300 && status < 400) throw new RecallError("redirect", { status });
     let text = "";
     try {
-      text = await response.text();
-    } catch {
+      text = await responseTextLimited(response, RECALL_RESPONSE_LIMIT);
+    } catch (error) {
+      if (error instanceof RecallError) throw error;
       throw new RecallError("network", { status });
     }
-    if (text.length > RECALL_RESPONSE_LIMIT) throw new RecallError("too_large", { status });
+    if (!jsonTextWithinLimits(text, RECALL_JSON_DEPTH_LIMIT, RECALL_JSON_NODE_LIMIT)) throw new RecallError("too_large", { status });
     let data = null;
     try {
       data = JSON.parse(text);
@@ -379,6 +382,79 @@ export class RecallError extends Error {
     this.upstreamMessage = message;
     this.retryAfterS = retryAfterS;
   }
+}
+
+async function responseTextLimited(response, limit) {
+  if (!response.body?.getReader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > limit) throw new RecallError("too_large", { status: response.status });
+    return new TextDecoder().decode(bytes);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel().catch(() => {});
+        throw new RecallError("too_large", { status: response.status });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/** Cheap pre-parse JSON shape gate: no parser recursion, no materializing an oversized object. */
+function jsonTextWithinLimits(text, maxDepth, maxNodes) {
+  let depth = 0;
+  let nodes = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      nodes++;
+    } else if (ch === "{" || ch === "[") {
+      depth++;
+      nodes++;
+      if (depth > maxDepth) return false;
+    } else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth < 0) return false;
+    } else if (ch === "," || ch === ":") {
+      nodes++;
+    } else if (/[\d-]/.test(ch)) {
+      nodes++;
+      while (i + 1 < text.length && /[\d.eE+-]/.test(text[i + 1])) i++;
+    } else if (text.startsWith("true", i) || text.startsWith("null", i)) {
+      nodes++;
+      i += 3;
+    } else if (text.startsWith("false", i)) {
+      nodes++;
+      i += 4;
+    }
+    if (nodes > maxNodes) return false;
+  }
+  return !inString && depth === 0;
 }
 
 /** A RecallError as the ToolError the caller sees.  Never echoes a response body but a 400's own message. */

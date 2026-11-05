@@ -234,6 +234,20 @@ test("search sends the three auth headers, a real User-Agent, no redirects and o
   assert.deepEqual(upstream.requests[1].body, { query: "old lesson", limit: 5, include_retracted: true });
 });
 
+test("recall responses are byte, depth and node bounded before parsing", async () => {
+  const client = new RecallClient({ baseUrl: "https://recall.jays.services", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response('{"ok":true,"text":"' + "é".repeat(500_001) + '"}') });
+  await assert.rejects(() => client.stats(), (error) => error.kind === "too_large");
+
+  let text = '{"ok":true';
+  for (let i = 0; i < 70; i++) text += ',"a":{"b":[';
+  text += "1" + "]}".repeat(70) + "}";
+  const deep = new RecallClient({ baseUrl: "https://recall.jays.services", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response(text) });
+  await assert.rejects(() => deep.stats(), (error) => error.kind === "too_large");
+
+  const wide = new RecallClient({ baseUrl: "https://recall.jays.services", token: TOKEN, accessId: ACCESS_ID, accessSecret: ACCESS_SECRET, fetch: async () => new Response(JSON.stringify({ ok: true, values: Array.from({ length: 20_001 }, (_, i) => i) })) });
+  await assert.rejects(() => wide.stats(), (error) => error.kind === "too_large");
+});
+
 test("stats is a GET to /recall/stats and passes back only counts", async () => {
   const { tools, upstream } = harness();
   const stats = ok(await tools.call("recall_stats", {}), "recall_stats");
