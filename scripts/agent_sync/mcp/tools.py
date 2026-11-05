@@ -2699,7 +2699,8 @@ class Tools:
                     "outcome_unknown",
                     "fleet recall failed or answered the %s in a shape this server could not verify, so "
                     "the write may or may not have landed.  Search recall before retrying; a retry "
-                    "with the same key is refused." % ("correction" if correcting else "retraction"),
+                    "with the same key is refused."
+                    % ("correction" if correcting else "retraction"),
                 ) from None
             self._idem_drop(key)
             raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None

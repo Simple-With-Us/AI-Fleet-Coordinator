@@ -140,7 +140,9 @@ def run(
     return proc.returncode, data, err
 
 
-UNKNOWN_WRITE = re.compile(r"(?:\bHTTP (?:5\d\d|408|429)\b|\b(?:timed out|timeout)\b)", re.IGNORECASE)
+UNKNOWN_WRITE = re.compile(
+    r"(?:\bHTTP (?:5\d\d|408|429)\b|\b(?:timed out|timeout)\b)", re.IGNORECASE
+)
 
 
 def failure(code: int, err: str) -> RecallUnavailable:
