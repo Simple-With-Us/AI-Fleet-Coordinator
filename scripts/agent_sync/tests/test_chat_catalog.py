@@ -6,9 +6,10 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agent_sync import chat_transport as CT
-from agent_sync.chat_catalog import ChatCatalog, _stable_id
+from agent_sync.chat_catalog import MAX_FILES_PER_SOURCE, ChatCatalog, _stable_id
 
 
 class FakeClock:
@@ -921,3 +922,179 @@ class OpenCodeCatalogTests(unittest.TestCase):
         self.assertEqual(row["session_id"], "ses_9")
         self.assertEqual(row["title"], "Old chat")
         self.assertEqual(row["updated_at"], 9.0)
+
+    def test_newer_content_shape_is_registry_only(self):
+        # session_message/session_input are defined at the same pinned owning
+        # revision (sql.ts @411eff73); their content layout is unqualified, so a
+        # store carrying them must degrade to registry-only rows: metadata-only,
+        # no content read, no excerpt claims.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT,"
+                " seq INTEGER, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO session_message VALUES ('sm_1', 'ses_1', 'user', 1, 3000, '{}')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "metadata-only")
+        self.assertFalse(row["capabilities"]["read"])
+        self.assertFalse(row["capabilities"]["wake"])
+        # Activity stamp still comes from the window-bounded newer table.
+        self.assertEqual(row["updated_at"], 3.0)
+        self.assertEqual(catalog.excerpt(row["id"]), [])
+
+    def test_archived_session_is_excluded(self):
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT,"
+                " time_created INTEGER, time_archived INTEGER)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_live', '/a', 'Live', 1000, NULL)")
+            conn.execute("INSERT INTO session VALUES ('ses_arch', '/b', 'Archived', 2000, 1234)")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog().discover()
+        ids = [r["session_id"] for r in rows if r["platform"] == "opencode"]
+        self.assertIn("ses_live", ids)
+        self.assertNotIn("ses_arch", ids)
+
+    def test_window_bounded_by_creation_ordered_by_activity(self):
+        # The discovery window is the MAX_FILES_PER_SOURCE most recently created
+        # sessions.  An old but recently active chat outside the window stays
+        # omitted (bounded-subset contract); inside the window, rows are
+        # activity-ordered and outside-window messages never leak stamps in.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            total = MAX_FILES_PER_SOURCE + 5
+            for i in range(total):
+                conn.execute(
+                    "INSERT INTO session VALUES (?, '/w', ?, ?)",
+                    ("ses_%03d" % i, "Chat %d" % i, (i + 1) * 1000),
+                )
+            conn.execute(
+                "INSERT INTO message VALUES ('m_out', 'ses_000', 999999000, '{}')"
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('m_in', 'ses_100', 500000000, '{}')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog(max_records=1000)
+        rows = [
+            r
+            for r in catalog.discover()
+            if r["platform"] == "opencode" and r["status"] == "available"
+        ]
+        ids = [r["session_id"] for r in rows]
+        self.assertEqual(len(ids), MAX_FILES_PER_SOURCE)
+        for omitted in ("ses_000", "ses_001", "ses_002", "ses_003", "ses_004"):
+            self.assertNotIn(omitted, ids)
+        self.assertEqual(ids[0], "ses_100")
+        self.assertEqual(rows[0]["updated_at"], 500000.0)
+        self.assertEqual(ids[1], "ses_164")
+        self.assertEqual(rows[1]["updated_at"], 165.0)
+
+    def test_malformed_part_yields_empty_excerpt_not_unavailable(self):
+        # Row-level malformed content is best-effort: skipped, empty excerpt.
+        # Fail-closed applies to store shape only, never to row content.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_1', '/a', 'Chat', 1000)")
+            conn.execute("INSERT INTO message VALUES ('msg_1', 'ses_1', 2000, 'broken {')")
+            conn.execute("INSERT INTO part VALUES ('prt_1', 'msg_1', 'ses_1', 2000, 'also broken [')")
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "available")
+        self.assertEqual(catalog.excerpt(row["id"]), [])
+
+    def test_oversized_part_is_skipped_before_parse(self):
+        # Payloads beyond the row byte guard are filtered in SQL, before any
+        # JSON parse; the session stays available with an empty excerpt.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            conn.execute("INSERT INTO session VALUES ('ses_1', '/a', 'Chat', 1000)")
+            conn.execute(
+                "INSERT INTO message VALUES ('msg_1', 'ses_1', 2000,"
+                ' \'{"role": "user"}\')'
+            )
+            big = '{"type": "text", "text": "' + "x" * 200000 + '"}'
+            conn.execute("INSERT INTO part VALUES ('prt_1', 'msg_1', 'ses_1', 2000, ?)", (big,))
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "available")
+        self.assertEqual(catalog.excerpt(row["id"]), [])
+
+    def test_legacy_tree_read_error_reports_unavailable(self):
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session"
+        base.mkdir(parents=True)
+        with mock.patch.object(Path, "iterdir", side_effect=OSError("denied")):
+            rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("unreadable", row["error"])
+
+    def test_one_platform_scan_error_is_isolated(self):
+        # A raising scanner degrades only its own platform; every other platform
+        # is still scanned fresh.
+        self._db()
+        catalog = self.catalog()
+        with mock.patch.object(catalog, "_scan_muse", side_effect=RuntimeError("boom")):
+            rows = catalog.discover()
+        opencode = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(opencode["status"], "available")
+        muse = next(r for r in rows if r["platform"] == "muse")
+        self.assertEqual(muse["status"], "unavailable")
+        self.assertIn("scan error", muse["error"])

@@ -8,6 +8,7 @@ never returned by the public projection.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -26,6 +27,14 @@ MAX_FOUND_RECORDS = 64
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_TAIL_BYTES = 192 * 1024
 MAX_EXCERPT_CHARS = 2400
+# OpenCode SQLite excerpt budgets:  bounded rows and bytes before any JSON
+# parse, per session and across one whole scan.
+OPENCODE_EXCERPT_ROWS = 40
+OPENCODE_EXCERPT_ROW_BYTES = 64 * 1024
+OPENCODE_EXCERPT_SESSION_BYTES = 256 * 1024
+OPENCODE_EXCERPT_TOTAL_BYTES = 4 * 1024 * 1024
+# Legacy tree enumeration is bounded too:  at most this many project dirs.
+OPENCODE_LEGACY_PROJECTS = 40
 DEFAULT_TTL = 30.0
 STALE_TTL = 300.0
 
@@ -920,17 +929,29 @@ class ChatCatalog:
         base = root / "storage" / "session"
         files: list[Path] = []
         if base.is_dir() and _within(base, self.home):
-            # storage/session/<project>/ses_*.json; bounded like _list_files.
-            for project in sorted(base.iterdir()):
-                if not project.is_dir() or project.is_symlink():
-                    continue
-                for path in sorted(project.glob("ses_*.json")):
-                    if path.is_file() and not path.is_symlink() and _within(path, base):
-                        files.append(path)
-                        if len(files) >= MAX_FILES_PER_SOURCE:
-                            break
-                if len(files) >= MAX_FILES_PER_SOURCE:
-                    break
+            # storage/session/<project>/ses_*.json.  Enumeration is bounded before
+            # any sort:  sorted() over an unbounded directory would materialize the
+            # whole tree, and an OSError here must degrade this platform, not the
+            # whole scan.
+            try:
+                projects = [
+                    p
+                    for p in itertools.islice(base.iterdir(), OPENCODE_LEGACY_PROJECTS + 1)
+                    if p.is_dir() and not p.is_symlink()
+                ][:OPENCODE_LEGACY_PROJECTS]
+                for project in sorted(projects):
+                    for path in itertools.islice(project.glob("ses_*.json"), MAX_FILES_PER_SOURCE):
+                        if path.is_file() and not path.is_symlink() and _within(path, base):
+                            files.append(path)
+                            if len(files) >= MAX_FILES_PER_SOURCE:
+                                break
+                    if len(files) >= MAX_FILES_PER_SOURCE:
+                        break
+            except OSError:
+                return [
+                    self._unavailable("opencode", "OPENCODE", "unreadable OpenCode session store")
+                ]
+        files.sort()
         rows = []
         for path in files:
             row = self._opencode_row_json(path)
@@ -940,13 +961,24 @@ class ChatCatalog:
 
     def _opencode_rows_db(self, db: Path) -> list[dict[str, Any]] | None:
         # Current opencode keeps one SQLite store (WAL, possibly held open by the
-        # CLI):  open strictly read-only.  Column shape qualified against the owning
-        # source (anomalyco/opencode packages/core/src/session/sql.ts:  session.id /
-        # directory / title / time_created, message.session_id / time_created / data,
-        # part.message_id / session_id / time_created / data).  Returns None when the
-        # actual database does not match the shape this reader knows, so the catalog
-        # says "unrecognized" instead of guessing:  the installed version's schema is
-        # the final contract, and drift must never become wrong rows.
+        # CLI):  open strictly read-only.  Contracts, all tested, none claiming
+        # installed compatibility:
+        # - Source authority:  session rows come from the session table only
+        #   (qualified columns id / directory / title / time_created, optional
+        #   time_archived, against anomalyco/opencode packages/core/src/session/
+        #   sql.ts @411eff73).  The same pinned revision also defines the newer
+        #   session_message / session_input content tables;  when either is
+        #   present the authoritative content layout is unqualified, so rows
+        #   become metadata-only (registry facts, no content) and no message,
+        #   part, or newer-table payload is read.
+        # - Selection:  a bounded discovery window of the MAX_FILES_PER_SOURCE
+        #   most recently created non-archived sessions, activity-ordered inside
+        #   the window.  An old but recently active chat outside the window is
+        #   omitted by design of the bound, never silently misfiled.
+        # - Archive:  when time_archived exists, archived sessions are excluded;
+        #   "available" never describes an archived chat.
+        # - Fail-closed:  a store whose session shape does not match returns
+        #   None so the catalog says "unrecognized", never guessed rows.
         try:
             conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
         except sqlite3.Error:
@@ -958,18 +990,43 @@ class ChatCatalog:
             }
             if "session" not in tables:
                 return None
+            session_cols = {r[1] for r in conn.execute("PRAGMA table_info(session)")}
+            if not {"id", "directory", "title", "time_created"} <= session_cols:
+                return None
+            newer_content = bool({"session_message", "session_input"} & tables)
+            where = " WHERE time_archived IS NULL" if "time_archived" in session_cols else ""
             sessions = conn.execute(
                 "SELECT id, directory, title, time_created FROM session"
-                " ORDER BY time_created DESC LIMIT ?",
+                + where
+                + " ORDER BY time_created DESC LIMIT ?",
                 (MAX_FILES_PER_SOURCE,),
             ).fetchall()
+            # Activity stamps, bounded to the same discovery window:  no
+            # all-store aggregation.  Every candidate table is whitelisted from
+            # sqlite_master and re-qualified for the columns the query needs.
             updated: dict[str, float] = {}
-            if "message" in tables:
+            activity_tables = (
+                [t for t in ("session_message", "message") if t in tables]
+                if newer_content
+                else ["message"]
+                if "message" in tables
+                else []
+            )
+            for table in activity_tables:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(" + table + ")")}
+                if not {"session_id", "time_created"} <= cols:
+                    continue
                 for sid, stamp in conn.execute(
-                    "SELECT session_id, MAX(time_created) FROM message GROUP BY session_id"
+                    "SELECT session_id, MAX(time_created) FROM "
+                    + table
+                    + " WHERE session_id IN (SELECT id FROM session"
+                    + where
+                    + " ORDER BY time_created DESC LIMIT ?) GROUP BY session_id",
+                    (MAX_FILES_PER_SOURCE,),
                 ):
                     if isinstance(sid, str) and isinstance(stamp, (int, float)):
-                        updated[sid] = stamp / 1000.0
+                        updated[sid] = max(updated.get(sid, 0.0), stamp / 1000.0)
+            budget = [OPENCODE_EXCERPT_TOTAL_BYTES]
             rows = []
             for sid, cwd, title, created in sessions:
                 if not isinstance(sid, str) or not sid:
@@ -977,6 +1034,12 @@ class ChatCatalog:
                 stamp = updated.get(sid) or (
                     created / 1000.0 if isinstance(created, (int, float)) else 0.0
                 )
+                if newer_content:
+                    excerpts: list[dict[str, str]] = []
+                    status = "metadata-only"
+                else:
+                    excerpts = self._opencode_excerpts_db(conn, sid, tables, budget)
+                    status = "available"
                 rows.append(
                     self._row(
                         "opencode",
@@ -987,10 +1050,12 @@ class ChatCatalog:
                         if isinstance(title, str) and title.strip()
                         else "OpenCode chat " + sid[:12],
                         updated_at=stamp,
+                        status=status,
                         source=str(db),
-                        excerpts=self._opencode_excerpts_db(conn, sid, tables),
+                        excerpts=excerpts,
                     )
                 )
+            rows.sort(key=lambda row: (row.get("updated_at") or 0, row["id"]), reverse=True)
             return rows
         except sqlite3.Error:
             return None
@@ -998,20 +1063,48 @@ class ChatCatalog:
             conn.close()
 
     def _opencode_excerpts_db(
-        self, conn: sqlite3.Connection, sid: str, tables: set[str]
+        self,
+        conn: sqlite3.Connection,
+        sid: str,
+        tables: set[str],
+        budget: list[int],
     ) -> list[dict[str, str]]:
+        # Best-effort within explicit budgets:  at most OPENCODE_EXCERPT_ROWS
+        # candidate rows, each pre-filtered in SQL to OPENCODE_EXCERPT_ROW_BYTES
+        # so a giant payload is skipped before any parse, capped at
+        # OPENCODE_EXCERPT_SESSION_BYTES per session and at the shared scan-wide
+        # `budget` across sessions.  Malformed or non-text payloads are skipped.
+        # Empty excerpts on an available row therefore means "no qualifying text
+        # parts within budget", never a claim about the chat's content;  the
+        # fail-closed contract applies to store shape only.
         if "message" not in tables or "part" not in tables:
+            return []
+        if budget[0] <= 0:
             return []
         excerpts: list[dict[str, str]] = []
         try:
             rows = conn.execute(
-                "SELECT m.data, p.data FROM part p JOIN message m ON m.id = p.message_id"
-                " WHERE p.session_id = ? ORDER BY p.time_created DESC LIMIT ?",
-                (sid, 400),
+                "SELECT m.data, p.data,"
+                " COALESCE(length(m.data), 0) + COALESCE(length(p.data), 0)"
+                " FROM part p JOIN message m ON m.id = p.message_id"
+                " WHERE p.session_id = ? AND length(p.data) <= ? AND length(m.data) <= ?"
+                " ORDER BY p.time_created DESC LIMIT ?",
+                (
+                    sid,
+                    OPENCODE_EXCERPT_ROW_BYTES,
+                    OPENCODE_EXCERPT_ROW_BYTES,
+                    OPENCODE_EXCERPT_ROWS,
+                ),
             ).fetchall()
         except sqlite3.Error:
             return []
-        for mdata, pdata in reversed(rows):
+        spent = 0
+        for mdata, pdata, nbytes in reversed(rows):
+            nbytes = nbytes if isinstance(nbytes, int) else 0
+            if spent + nbytes > OPENCODE_EXCERPT_SESSION_BYTES or budget[0] - nbytes <= 0:
+                break
+            spent += nbytes
+            budget[0] -= nbytes
             try:
                 msg = json.loads(mdata) if isinstance(mdata, str) else None
                 part = json.loads(pdata) if isinstance(pdata, str) else None
@@ -1056,18 +1149,30 @@ class ChatCatalog:
         grok_timeout: float | None = None,
     ) -> None:
         self._availability = {}
-        groups = [
-            self._scan_claude(),
-            self._scan_codex(),
-            self._scan_grok(wait=wait_grok, force=force_grok, timeout=grok_timeout),
-            self._scan_cursor(),
-            self._scan_muse(),
-            self._scan_minimax(),
-            self._scan_fx(),
-            self._scan_opencode(),
+        scanners: list[tuple[Callable[[], list[dict[str, Any]]], str, str]] = [
+            (self._scan_claude, "claude", "CLAUDE"),
+            (self._scan_codex, "codex", "CODEX"),
+            (
+                lambda: self._scan_grok(wait=wait_grok, force=force_grok, timeout=grok_timeout),
+                "grok-leader",
+                "GROK",
+            ),
+            (self._scan_cursor, "cursor-cloud", "CURSOR"),
+            (self._scan_muse, "muse", "MC"),
+            (self._scan_minimax, "minimax", "MM"),
+            (self._scan_fx, "fx", "FX"),
+            (self._scan_opencode, "opencode", "OPENCODE"),
+            (self._scan_cursor_local, "cursor-local", "CURSOR"),
         ]
-        # Explicit availability rows ensure unsupported/empty stores remain visible.
-        groups.append(self._scan_cursor_local())
+        # Failure isolation:  one platform's scanner raising must degrade that
+        # platform to an unavailable row, never take down the whole scan (or die
+        # holding the scan lock with every other platform unread).
+        groups = []
+        for scan, platform, seat in scanners:
+            try:
+                groups.append(scan())
+            except Exception:
+                groups.append([self._unavailable(platform, seat, "scan error")])
         rows = [row for group in groups for row in group]
         for platform, seat in (("antigravity", "AG"),):
             rows.append(self._unavailable(platform, seat, "adapter not available"))
