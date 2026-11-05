@@ -100,6 +100,8 @@ final class FleetAdmin: ObservableObject {
     /// The menu bar item has to be there when the owner logs in,  so the app carries the
     /// login item the way the BotFleet Control app did.
     @Published private(set) var launchesAtLogin = false
+    /// Why the login item did not change,  which the menu's own toggle has to be able to say.
+    @Published private(set) var loginItemProblem: String?
     /// The work in flight that would block a stop,  as the server's last status
     /// said it,  or nil when nothing is in flight or the server did not answer.
     @Published private(set) var blockingWorkSummary: String?
@@ -420,6 +422,17 @@ final class FleetAdmin: ObservableObject {
         }
     }
 
+    /// What the owner is told before a restart,  or nil when it runs at once.
+    ///
+    /// A restart replaces the process and does not ask BotFleet Server first,  so it can end
+    /// work the server would have refused a stop for.  Only an answer that names work asks:
+    /// a server that does not answer is one a restart is there to repair.
+    func restartWarning(for serviceID: String) async -> String? {
+        guard serviceID == FleetServiceRegistry.server.id else { return nil }
+        guard case .answered(.some(let work)) = await readServerAPI() else { return nil }
+        return FleetServices.restartBody(work: work)
+    }
+
     /// The entries,  as the menu and the panel show them.
     var entries: [FleetServiceEntry] {
         services?.entries ?? []
@@ -432,6 +445,7 @@ final class FleetAdmin: ObservableObject {
     /// the login item brings it back.
     func setLaunchesAtLogin(_ enabled: Bool) {
         problem = nil
+        loginItemProblem = nil
         do {
             if enabled {
                 if SMAppService.mainApp.status != .enabled {
@@ -444,6 +458,7 @@ final class FleetAdmin: ObservableObject {
             }
         } catch {
             problem = "The login item did not change:  \(error.localizedDescription)"
+            loginItemProblem = problem
         }
         launchesAtLogin = SMAppService.mainApp.status == .enabled
     }

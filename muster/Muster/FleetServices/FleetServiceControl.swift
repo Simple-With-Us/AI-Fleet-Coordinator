@@ -8,7 +8,7 @@ public enum FleetServiceError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .managerMissing:
-            return "The process manager for this service is not installed on this Mac."
+            return "The process manager for this service is not installed on the Mac."
         case .refused(let message):
             return message
         }

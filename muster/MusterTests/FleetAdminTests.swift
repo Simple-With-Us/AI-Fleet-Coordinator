@@ -278,6 +278,21 @@ final class FleetAdminServer {
     private let state = NSLock()
     private var stoppedNow = false
     private var looks = 0
+    private var work: String?
+
+    /// The `blockingWork` value the server's status carries,  as JSON,  or nil for none.
+    var blockingWorkJSON: String? {
+        get {
+            state.lock()
+            defer { state.unlock() }
+            return work
+        }
+        set {
+            state.lock()
+            work = newValue
+            state.unlock()
+        }
+    }
 
     /// True once the server has been asked to stop.
     var stopped: Bool {
@@ -355,7 +370,8 @@ final class FleetAdminURLProtocol: URLProtocol {
                 body = #"{"app":"botfleet","pid":4242,"ready":true}"#
             }
         case "/api/system/control":
-            body = #"{"activeBotCount":0,"localVms":[],"persistOnExit":true}"#
+            let work = server?.blockingWorkJSON.map { #","blockingWork":\#($0)"# } ?? ""
+            body = #"{"activeBotCount":0,"localVms":[],"persistOnExit":true\#(work)}"#
         case "/api/system/control/stop":
             server?.requestStop()
             body = #"{"ok":true}"#

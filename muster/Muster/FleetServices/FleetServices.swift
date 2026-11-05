@@ -360,13 +360,18 @@ public struct FleetServices: Equatable {
             guard startupPolicySupported else {
                 return common + ".\u{00A0} This version of BotFleet cannot restart it from here, so remove ~/.botfleet/stopped.marker on the Mac yourself to bring it back."
             }
-            return common + "; Restart clears the marker."
+            return common + "; Restart brings it back."
         }
         if let descriptor = FleetServiceRegistry.descriptor(for: id),
            case .launchAgent = descriptor.kind {
             return launchAgentStopBody
         }
         return pm2StopBody
+    }
+
+    /// What restarting BotFleet Server does to the work it found in flight.
+    public static func restartBody(work: String) -> String {
+        "A restart of BotFleet Server on the Mac does not wait the way a stop does, so it can end this work.\u{00A0} Checked just now:  \(work) in flight."
     }
 
     /// What stopping a LaunchAgent does.

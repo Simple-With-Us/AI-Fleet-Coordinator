@@ -161,6 +161,7 @@ final class ServiceActionRouterTests: XCTestCase {
     ])
 
     private struct Rig {
+        let server: FleetAdminServer
         let admin: FleetAdmin
         let controller: OpsController
         let router: ServiceActionRouter
@@ -170,7 +171,7 @@ final class ServiceActionRouterTests: XCTestCase {
     }
 
     private final class ConfirmationLog {
-        var requests: [ServiceActionRouter.StopRequest] = []
+        var requests: [ServiceActionRouter.ConfirmRequest] = []
         var answer = true
     }
 
@@ -214,7 +215,7 @@ final class ServiceActionRouterTests: XCTestCase {
             admin: admin,
             controller: controller,
             readAllowlist: { ServiceActionRouterTests.allowlist },
-            confirmStop: { request in
+            confirm: { request in
                 confirmations.requests.append(request)
                 return confirmations.answer
             },
@@ -225,7 +226,7 @@ final class ServiceActionRouterTests: XCTestCase {
         while admin.services == nil, Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        return Rig(admin: admin, controller: controller, router: router,
+        return Rig(server: server, admin: admin, controller: controller, router: router,
                    confirmations: confirmations, notices: notices, runner: runner)
     }
 
@@ -392,6 +393,7 @@ final class ServiceActionRouterTests: XCTestCase {
         XCTAssertTrue(rig.router.isBusy, "busy from the click,  before the alert")
         try await waitUntil { !rig.router.isBusy }
         let request = try XCTUnwrap(rig.confirmations.requests.first)
+        XCTAssertEqual(request.word, "Stop")
         XCTAssertEqual(request.title, "BotFleet Server")
         XCTAssertEqual(request.host, .mac)
         XCTAssertTrue(request.message.contains("Checked just now:  nothing is in flight."), request.message)
@@ -418,6 +420,31 @@ final class ServiceActionRouterTests: XCTestCase {
         rig.router.start(try action(.restart, "app.botfleet.companion", on: rig))
         try await waitUntil { !rig.router.isBusy }
         XCTAssertTrue(rig.confirmations.requests.isEmpty)
+    }
+
+    func testRestartingBotFleetServerWithWorkInFlightAsksFirst() async throws {
+        let rig = await makeRig()
+        rig.server.blockingWorkJSON = #"[{"count":2,"label":"bot turn"}]"#
+        rig.confirmations.answer = false
+        rig.router.start(try action(.restart, FleetServiceRegistry.server.id, on: rig))
+        try await waitUntil { !rig.router.isBusy }
+        let request = try XCTUnwrap(rig.confirmations.requests.first)
+        XCTAssertEqual(request.word, "Restart")
+        XCTAssertEqual(request.host, .mac)
+        XCTAssertTrue(request.message.contains("Checked just now:  2 bot turns in flight."), request.message)
+        XCTAssertTrue(request.message.contains("on the Mac"), request.message)
+        XCTAssertNil(rig.router.actionState, "a declined restart runs nothing")
+    }
+
+    func testARestartWarnsOnlyForBotFleetServerWithWorkNamed() async throws {
+        let rig = await makeRig()
+        let idle = await rig.admin.restartWarning(for: FleetServiceRegistry.server.id)
+        XCTAssertNil(idle, "nothing in flight runs at once")
+        rig.server.blockingWorkJSON = #"[{"count":1,"label":"bot turn"}]"#
+        let other = await rig.admin.restartWarning(for: "app.botfleet.companion")
+        XCTAssertNil(other, "only BotFleet Server holds work a restart can end")
+        let busy = await rig.admin.restartWarning(for: FleetServiceRegistry.server.id)
+        XCTAssertEqual(busy, FleetServices.restartBody(work: "1 bot turn"))
     }
 
     func testAskingTheServerIsARunnerCallAndNeverAPlan() async throws {

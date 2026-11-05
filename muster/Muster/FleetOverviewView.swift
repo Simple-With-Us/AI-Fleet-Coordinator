@@ -114,7 +114,7 @@ struct FleetOverviewView: View {
             if let redCount = monitor.redCount, redCount > 0 {
                 label.badge(redCount)
             } else if monitor.redCount == nil {
-                label.badge(Text("—"))
+                label.badge(Text("?"))
             } else {
                 label
             }

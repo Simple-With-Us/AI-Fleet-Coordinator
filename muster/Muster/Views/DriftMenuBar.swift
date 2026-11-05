@@ -50,6 +50,10 @@ struct DriftMenuBarContent: View {
                 get: { admin.launchesAtLogin },
                 set: { admin.setLaunchesAtLogin($0) }
             ))
+            // The toggle goes back on its own when this fails,  so the reason has to be said.
+            if let problem = admin.loginItemProblem {
+                Button(MachineMenuCopy.oneRow(problem)) { perform(.openServices) }
+            }
         }
     }
 
@@ -125,7 +129,9 @@ private struct MachineMenuItemView: View {
                 }
             }
         case .command(let title, let command):
+            // A fetch is an action on the Mac through the sheet,  so it waits like the rest.
             Button(title) { perform(command) }
+                .disabled(disabled && command == .fetchFromServer)
         case .action(let action):
             Button(action.title) { start(action) }
                 .disabled(disabled)

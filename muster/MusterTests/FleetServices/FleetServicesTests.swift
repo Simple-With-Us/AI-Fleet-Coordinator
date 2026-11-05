@@ -809,7 +809,7 @@ final class FleetServicesTests: XCTestCase {
                                     startupPolicySupported: false)
         let row = services.menuItems.first { $0.id == "app.botfleet.server" }
         let body = FleetServices.stopBody(for: row!, startupPolicySupported: false)
-        XCTAssertFalse(body.contains("Restart clears the marker"))
+        XCTAssertFalse(body.contains("Restart brings it back"))
         XCTAssertTrue(body.contains("stopped.marker"))
     }
 
@@ -819,7 +819,8 @@ final class FleetServicesTests: XCTestCase {
                                     startupPolicySupported: true)
         let row = services.menuItems.first { $0.id == "app.botfleet.server" }
         let body = FleetServices.stopBody(for: row!, startupPolicySupported: true)
-        XCTAssertTrue(body.contains("Restart clears the marker"))
+        XCTAssertTrue(body.contains("Restart brings it back"))
+        XCTAssertFalse(body.contains("marker"))
     }
 
     func testTheStopCopyNamesTheMacInEveryBranch() {

@@ -8,7 +8,7 @@ The menu bar item names both places:  `Mac OK · Server OK`, `Mac 2 · Server OK
 
 The menu has a The Mac section and a The Server section, and everything sits under the place it runs on.  Opening it reads memory and never contacts the server.  Ask The Server Now is the one thing that does, only on a click, and an answer never turns the bar to OK, because only a current report does that.
 
-An action that ends in … opens a sheet or an alert first.  pm2 rows, allowlisted LaunchAgents and everything on the server go through the plan and Touch ID, from the menu and the window alike.  BotFleet Server and any LaunchAgent the allowlist does not name stay on the direct route, with no plan, no Touch ID and no audit row;  only their Stop asks first.
+An action that ends in … opens a sheet or an alert first.  pm2 rows, allowlisted LaunchAgents and everything on the server go through the plan and Touch ID, from the menu and the window alike.  BotFleet Server and any LaunchAgent the allowlist does not name stay on the direct route, with no plan, no Touch ID and no audit row.  Their Stop asks first, and BotFleet Server's Restart asks first only when a fresh read finds work in flight.
 
 ## Scope
 

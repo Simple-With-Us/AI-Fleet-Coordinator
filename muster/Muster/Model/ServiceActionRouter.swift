@@ -13,7 +13,8 @@ import Foundation
 //     LaunchAgent the allowlist names,  and everything on the server
 //   * `.admin`:  `FleetAdmin` directly,  for BotFleet Server and for a LaunchAgent the
 //     allowlist does not name.  Their start and stop are not something an allowlist argv
-//     can say,  so they have no plan,  no Touch ID and no audit row.  Stop still asks
+//     can say,  so they have no plan,  no Touch ID and no audit row.  Stop still asks,  and
+//     BotFleet Server's Restart asks when a fresh read finds work in flight
 
 // MARK: - The route
 
@@ -254,8 +255,10 @@ final class ServiceActionRouter: ObservableObject {
         case refused
     }
 
-    /// What the stop alert has to say.
-    struct StopRequest: Equatable {
+    /// What the alert on the direct route has to say.
+    struct ConfirmRequest: Equatable {
+        /// `Stop` or `Restart`,  for the alert's title and its button.
+        let word: String
         let title: String
         let host: FleetHost
         let message: String
@@ -269,7 +272,7 @@ final class ServiceActionRouter: ObservableObject {
     private let admin: FleetAdmin
     private let controller: OpsController
     private let readAllowlist: () -> OpsAllowlist?
-    private let confirmStop: @MainActor (StopRequest) -> Bool
+    private let confirm: @MainActor (ConfirmRequest) -> Bool
     private let notifier: ApplyNotifying
     private let settleDelay: TimeInterval
     private var cancellables: Set<AnyCancellable> = []
@@ -286,13 +289,13 @@ final class ServiceActionRouter: ObservableObject {
          readAllowlist: @escaping () -> OpsAllowlist? = {
              OpsAllowlist.read(at: OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot))
          },
-         confirmStop: @escaping @MainActor (StopRequest) -> Bool,
+         confirm: @escaping @MainActor (ConfirmRequest) -> Bool,
          notifier: ApplyNotifying = SystemApplyNotifier(),
          settleDelay: TimeInterval = 2) {
         self.admin = admin
         self.controller = controller ?? OpsController.shared
         self.readAllowlist = readAllowlist
-        self.confirmStop = confirmStop
+        self.confirm = confirm
         self.notifier = notifier
         self.settleDelay = settleDelay
         self.allowlist = readAllowlist()
@@ -358,10 +361,21 @@ final class ServiceActionRouter: ObservableObject {
             objectWillChange.send()
             directInFlight = false
         }
+        // A stop always asks.  A restart runs at once unless a fresh read says it could end
+        // work in flight:  BotFleet Server refuses a stop for that work,  and a restart does
+        // not ask it.
+        var message: String?
+        var word = "Stop"
         if managed == .stop {
-            let message = await admin.stopConfirmation(for: serviceID)
-            let request = StopRequest(title: action.subject.title, host: action.subject.host, message: message)
-            guard confirmStop(request) else { return }
+            message = await admin.stopConfirmation(for: serviceID)
+        } else if managed == .restart {
+            message = await admin.restartWarning(for: serviceID)
+            word = "Restart"
+        }
+        if let message {
+            let request = ConfirmRequest(word: word, title: action.subject.title,
+                                         host: action.subject.host, message: message)
+            guard confirm(request) else { return }
         }
         actionState = .running(action.subject)
         await admin.perform(managed, serviceID: serviceID)

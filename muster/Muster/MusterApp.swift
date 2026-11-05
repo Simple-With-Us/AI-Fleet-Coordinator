@@ -25,8 +25,8 @@ struct MusterApp: App {
         _store = StateObject(wrappedValue: store)
         _monitor = StateObject(wrappedValue: monitor)
         _admin = StateObject(wrappedValue: admin)
-        _router = StateObject(wrappedValue: ServiceActionRouter(admin: admin, confirmStop: { request in
-            confirmFleetStop(title: request.title, host: request.host, message: request.message)
+        _router = StateObject(wrappedValue: ServiceActionRouter(admin: admin, confirm: { request in
+            confirmFleetAction(request)
         }))
         _watch = StateObject(wrappedValue: PlaceWatch(onWake: {
             Task { await admin.refresh() }

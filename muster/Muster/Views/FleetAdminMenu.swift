@@ -31,21 +31,21 @@ func fleetAdminActions(for entry: FleetServiceEntry) -> [FleetAdminAction] {
         .map { FleetAdminAction(action: $0) }
 }
 
-/// Asks the owner to confirm a stop on the direct route,  with the service's own warning.
+/// Asks the owner to confirm an action on the direct route,  with the service's own warning.
 ///
 /// A stop takes a service down at once,  and for BotFleet Server its Local VMs with it,  so
-/// the warning is shown before the stop and not after.  The alert names the machine,  and
+/// the warning is shown before the action and not after.  The alert names the machine,  and
 /// Return means Cancel:  it activates the app and could otherwise catch a Return meant for
 /// whatever the owner was typing in.
 @MainActor
-func confirmFleetStop(title: String, host: FleetHost, message: String) -> Bool {
+func confirmFleetAction(_ request: ServiceActionRouter.ConfirmRequest) -> Bool {
     let alert = NSAlert()
     alert.alertStyle = .warning
-    alert.messageText = "Stop \(title) \(host.onTitle)?"
-    alert.informativeText = message
-    let stop = alert.addButton(withTitle: "Stop \(host.onTitle)")
-    stop.keyEquivalent = ""
-    stop.hasDestructiveAction = true
+    alert.messageText = "\(request.word) \(request.title) \(request.host.onTitle)?"
+    alert.informativeText = request.message
+    let run = alert.addButton(withTitle: "\(request.word) \(request.host.onTitle)")
+    run.keyEquivalent = ""
+    run.hasDestructiveAction = true
     let cancel = alert.addButton(withTitle: "Cancel")
     cancel.keyEquivalent = "\r"
     NSApp.activate(ignoringOtherApps: true)
