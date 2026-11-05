@@ -374,7 +374,7 @@ class VerifyRow:
 
 _FAIL_ROW = re.compile(r"^FAIL\s+(\S+)\s+(.*)$")
 _NAME_THEN_DETAIL = re.compile(r"^(.{1,24}?)\s{2,}(.*)$")
-_HOOK_MISSING = re.compile(r"\bno \S*\s?hook\b|does not exist|is missing|no usable hook", re.I)
+_HOOK_MISSING = re.compile(r"\bno \S*\s?hook\b|does not exist|is missing|no usable hook", re.IGNORECASE)
 
 
 def _verify_row(line: str) -> VerifyRow | None:

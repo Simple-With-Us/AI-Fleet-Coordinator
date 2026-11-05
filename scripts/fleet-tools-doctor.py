@@ -2084,7 +2084,9 @@ def check_placement_watch(
     if age > PLACEMENT_WATCH_MAX_AGE_S:
         why = f"last ran {int(age / 3600)} hours ago"
         report.add("placement-watch", "FAIL", why, state="stale", category="fleet-tool", reason=why)
-    elif data.get("errors") or (not data.get("ok") and data.get("coverage") != "external-unreadable"):
+    elif data.get("errors") or (
+        not data.get("ok") and data.get("coverage") != "external-unreadable"
+    ):
         why = "; ".join(str(e) for e in data.get("errors", ()))[:200] or "its inputs were stale"
         report.add(
             "placement-watch", "FAIL", why, state="failing", category="fleet-tool", reason=why

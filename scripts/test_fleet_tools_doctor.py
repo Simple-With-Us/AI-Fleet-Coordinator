@@ -2161,13 +2161,31 @@ class PlacementWatchTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "FAIL")
 
     def test_an_unreadable_external_root_is_partial_not_clean_and_not_a_failure(self) -> None:
-        rows = self.run_check(json.dumps({"ok": False, "coverage": "external-unreadable", "errors": [], "findings": 9, "held": True}))
+        rows = self.run_check(
+            json.dumps(
+                {
+                    "ok": False,
+                    "coverage": "external-unreadable",
+                    "errors": [],
+                    "findings": 9,
+                    "held": True,
+                }
+            )
+        )
         self.assertEqual(rows[0]["status"], "WARN")
         self.assertIn("partial", rows[0]["detail"])
         self.assertIn("held in dry run", rows[0]["detail"])
 
     def test_a_filing_error_outranks_an_unreadable_root(self) -> None:
-        rows = self.run_check(json.dumps({"ok": False, "coverage": "external-unreadable", "errors": ["simple-board file: exit 1"]}))
+        rows = self.run_check(
+            json.dumps(
+                {
+                    "ok": False,
+                    "coverage": "external-unreadable",
+                    "errors": ["simple-board file: exit 1"],
+                }
+            )
+        )
         self.assertEqual(rows[0]["status"], "FAIL")
 
 
