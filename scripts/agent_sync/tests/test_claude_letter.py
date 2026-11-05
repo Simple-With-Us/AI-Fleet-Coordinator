@@ -778,12 +778,39 @@ class HookTests(Base):
                 out = self.begin(sid, host=self.CHILD)
                 self.assertNotIn("set_session_title", out["additionalContext"])
 
-    def test_a_secret_shaped_word_in_an_agents_title_does_not_reach_the_model(self) -> None:
+    def test_a_secret_in_an_agents_title_stops_the_rename_and_never_reaches_the_model(self) -> None:
         word = "ghp" + "_" + "a1B2" * 9
-        self.app_record(self.CHILD, "c-0001", title="Rotate %s now" % word, source="tool")
+        assigned = "pass" + "word=" + "Xk29dmQ7vLp3Zt8w"
+        for sid, title in (("c-0001", "Rotate %s now" % word), ("c-0002", "Set %s today" % assigned)):
+            with self.subTest(sid=sid):
+                self.app_record(self.CHILD, sid, title=title, source="tool")
+                out = self.begin(sid, host=self.CHILD)
+                self.assertNotIn("set_session_title", out["additionalContext"])
+                self.assertNotIn(title, json.dumps(out))
+
+    def test_a_long_agent_title_is_cut_at_a_word(self) -> None:
+        self.app_record(self.CHILD, "c-0001", title="word " * 100, source="tool")
         out = self.begin("c-0001", host=self.CHILD)
-        self.assertIn('"AA: Rotate now"', out["additionalContext"])
-        self.assertNotIn(word, out["additionalContext"])
+        asked = out["additionalContext"].split('title "', 1)[1].split('"', 1)[0]
+        self.assertTrue(asked.endswith(" word"), asked[-12:])
+        self.assertLessEqual(len(asked), len("AA: ") + CL.AGENT_TITLE_CHARS)
+
+    def test_an_agent_title_of_new_chat_is_not_a_title(self) -> None:
+        self.app_record(self.CHILD, "c-0001", title=CL.PLACEHOLDER, source="tool")
+        out = self.begin("c-0001", host=self.CHILD)
+        self.assertNotIn("set_session_title", out["additionalContext"])
+
+    def test_an_earlier_letter_does_not_stack_and_a_parents_acronym_stays(self) -> None:
+        self.app_record(self.CHILD, "c-0001", title="PR: Review", source="tool")
+        out = self.begin("c-0001", host=self.CHILD)
+        self.assertIn('title "AA: PR: Review"', out["additionalContext"])
+        chat = CL.Chat(
+            self.server_env(CLAUDE_CODE_HOST_SESSION_ID=self.CHILD), "CLAUDE", "server", "c-0001",
+            runner=FakeSsh(self), now=time.time(),
+        )
+        self.app_record(self.CHILD, "c-0001", title="AA: Review", source="tool")
+        fix = CL._agent_title_fix(chat, {"state": "open", "label": "AB", "held_labels": ["AA"]})
+        self.assertIn('title "AB: Review"', fix)
 
     def test_a_chat_the_app_started_is_titled_with_the_pair_after_its_parents(self) -> None:
         self.app_record(self.PARENT, "p-0001")

@@ -142,6 +142,7 @@ PLACEHOLDER = "New Chat"
 TITLE_WORDS = 7
 TITLE_CHARS = 60
 AGENT_TITLE_CHARS = 200  # the most of an agent's title handed back to the model for a rename
+HELD_LABELS = 8  # the most earlier letters a note remembers for taking them off an agent's title
 # The most prompt text a title is looked for in, and the most words scanned for secrets:  a pasted wall of text
 # costs a bounded amount of work inside the hook's 15-second budget.
 PROMPT_SCAN_CHARS = 4096
@@ -894,12 +895,25 @@ def _agent_title_fix(chat: Chat, note: dict[str, Any]) -> str:
         )
     except Exception:  # noqa: BLE001 - the app's private file;  a surprise must never stop a chat's hook
         return ""
+    # Every letter this chat has held, because a title the model set under an earlier letter must not stack a second
+    # letter in front of it, and "PR: Review" from a parent must keep its acronym.
+    held = [str(x) for x in note.get("held_labels") or [] if x != label][-(HELD_LABELS - 1) :] + [label]
+    note["held_labels"] = held
     line = one_line(named)
     prefix = "%s: " % label
     if not line or line.startswith(prefix):
         return ""
-    words = _without_secrets(own_words(line, note))[:AGENT_TITLE_CHARS].rstrip()
-    if not words:
+    if _reads_secret(line) or _without_secrets(line) != line:
+        # Nothing of the title goes on:  the model would copy it into the app, and the registry would receive it.
+        note["title_fix_refused"] = "secret"
+        return ""
+    words = line
+    for old in held:
+        words = words.removeprefix("%s: " % old)
+    if len(words) > AGENT_TITLE_CHARS:
+        cut = words[:AGENT_TITLE_CHARS].rsplit(" ", 1)[0]
+        words = (cut or words[:AGENT_TITLE_CHARS]).rstrip(" ,;:-")
+    if not words or words == PLACEHOLDER:
         return ""
     title = prefix + words
     asked = note.get("title_fix_for") == title and (
