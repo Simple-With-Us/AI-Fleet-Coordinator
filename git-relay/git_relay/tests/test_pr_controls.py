@@ -149,6 +149,22 @@ class PrControls(unittest.TestCase):
         with self.assertRaises(Refused):
             WorkflowVerbs.check_shape("wf_pr_close", {"repo": REPO, "number": 1}, REPO)
 
+    def test_no_table_holds_a_second_close_entry(self):
+        """A dict, a set or a JS object keeps one entry silently, so the source text is what can show a repeat."""
+        root = Path(__file__).resolve().parents[3]
+        relay = root / "git-relay" / "git_relay"
+        for path, needle, wanted in (
+            (relay / "workflow_verbs.py", '"wf_pr_close":', 1),
+            (relay / "policy.py", '"wf_pr_close"', 1),
+            (relay / "server.py", '"wf_pr_close"', 1),
+            # One entry in the tool specs and one in the response keys.
+            (root / "scripts" / "agent-sync-mcp" / "src" / "gr-workflow-v1.js", "wf_pr_close:", 2),
+        ):
+            with self.subTest(path=path.name):
+                if not path.exists():
+                    self.skipTest("this copy has no such file")
+                self.assertEqual(path.read_text().count(needle), wanted)
+
     def test_graphql_errors_are_unknown_not_definitely_unsent(self):
         c = Client({"node_id": "PR_abc"}, {"data": {}, "errors": [{"message": "private"}]})
         h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_ready", REPO)
