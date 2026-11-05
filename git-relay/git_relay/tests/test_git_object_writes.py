@@ -89,16 +89,29 @@ class Writes(unittest.TestCase):
                     "files": [{"path": "s.py", "sha": secret_sha, "mode": "100644"}],
                 },
             )
-        # An unverifiable blob identity is a 502 unknown-outcome, never a write.
+        # An unverifiable blob identity is a definite refusal BEFORE any write
+        # is dispatched:  no tree POST happens, the idempotency key is released,
+        # and the caller may correct the reference and retry.
         bad = dict(blob)
         bad["content"] = b64m.b64encode(b"different bytes").decode()
-        with self.assertRaises(RelayGitHubError):
+        with self.assertRaises(Refused):
             self.handle(Client(bad), a).run(
                 a,
                 {
                     "repo": REPO,
                     "base_tree": SHA,
                     "files": [{"path": "big.py", "sha": blob_sha, "mode": "100644"}],
+                },
+            )
+        # Binary (non-UTF-8) blob content is refused:  parity with inline text.
+        bin_sha, bin_blob = blob_of(b"\xff\xfe\x00\x01binary")
+        with self.assertRaises(Refused):
+            self.handle(Client(bin_blob), a).run(
+                a,
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "bin.dat", "sha": bin_sha, "mode": "100644"}],
                 },
             )
         # Shape refusals before any upstream call:  mixed keys, workflow path, bad mode.
@@ -108,6 +121,7 @@ class Writes(unittest.TestCase):
             [{"path": "x", "sha": blob_sha, "mode": "120000"}],
             [{"path": "x", "sha": "z" * 40, "mode": "100644"}],
         ]:
+
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(a, {"repo": REPO, "base_tree": SHA, "files": files}, REPO)
 

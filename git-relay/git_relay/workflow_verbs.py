@@ -5470,6 +5470,9 @@ class WorkflowVerbs:
                 ):
                     raise Refused("invalid file content or path")
                 blob = _obj(self._get(f"/repos/{repo}/git/blobs/{blob_sha}"))
+                # Every check below runs BEFORE any write is dispatched, so each
+                # failure is a definite refusal (key released, caller may correct
+                # the reference and retry), never an unknown write outcome.
                 if (
                     blob.get("sha") != blob_sha
                     or blob.get("encoding") != "base64"
@@ -5478,11 +5481,11 @@ class WorkflowVerbs:
                     or not isinstance(blob.get("content"), str)
                     or len(blob["content"]) > MAX_WORKFLOW_TEXT_LARGE_B64
                 ):
-                    raise RelayGitHubError(502, "blob receipt unsupported or unverifiable")
+                    raise Refused("unverifiable blob reference")
                 try:
                     raw = base64.b64decode("".join(blob["content"].split()), validate=True)
                 except (ValueError, binascii.Error):
-                    raise RelayGitHubError(502, "blob encoding unverifiable") from None
+                    raise Refused("unverifiable blob reference") from None
                 if (
                     len(raw) != blob["size"]
                     or hashlib.sha1(
@@ -5490,7 +5493,13 @@ class WorkflowVerbs:
                     ).hexdigest()
                     != blob_sha
                 ):
-                    raise RelayGitHubError(502, "blob identity unverifiable")
+                    raise Refused("unverifiable blob reference")
+                try:
+                    raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    # Parity with inline text entries:  only UTF-8 content can
+                    # enter a tree through this verb, referenced or not.
+                    raise Refused("unverifiable blob reference") from None
                 if unreviewed_file_secret(repo, path, raw):
                     raise Refused("credential-shaped content refused")
                 seen.add(path)
