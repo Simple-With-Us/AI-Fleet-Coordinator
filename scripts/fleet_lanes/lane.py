@@ -474,9 +474,48 @@ def resolve_app(registry: L.Registry, query: str) -> L.App:
     raise Refusal(f"unknown app {q!r}; candidates:\n" + "\n".join(_app_line(a) for a in pool))
 
 
+def _role_lane_seat(raw: str, registry: L.Registry, env: Mapping[str, str]) -> "L.Seat | None":
+    """A role tag (BF-FIXER, GB-PLUMBER) becomes a lane seat from its seatApps.patterns `lane`
+    block (AFC-620);  anything else stays None so the caller's unknown-tag refusal stands.
+    GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> personas are the lane form."""
+    try:
+        from agent_sync import identity as SI
+    except ImportError:
+        return None
+    try:
+        seat_registry = SI.load_seat_registry(env=dict(env))
+    except Exception:
+        return None
+    tag = raw.strip().upper()
+    role = SI.role_lane_seat(tag, seat_registry)
+    if role is None:
+        roles = SI.role_lane_roles(tag, seat_registry)
+        if roles:
+            raise Refusal(
+                f"{ENV_SEAT}={tag!r} names no known role for its family.  Known roles: "
+                f"{', '.join(roles)}."
+            )
+        return None
+    owner = registry.seat_by_suffix(role.folder)
+    if owner is not None:
+        raise Refusal(
+            f"role {tag}'s folder {role.folder!r} belongs to seat {owner.name} in fleet-apps.json, "
+            f"so a lane for {tag} would be {owner.name}'s lane."
+        )
+    for s in registry.seats:
+        if not s.retired and role.branch_prefix in s.branch_prefixes:
+            raise Refusal(
+                f"role {tag}'s branch prefix {role.branch_prefix!r} collides with seat {s.name} "
+                f"in fleet-apps.json."
+            )
+    return L.Seat(name=tag, suffix=role.folder, branch_prefixes=(role.branch_prefix,))
+
+
 def resolve_seat(env: Mapping[str, str], registry: L.Registry) -> L.Seat:
     """The seat from AGENT_SEAT, and nothing else.  Unset, unknown or retired raises Refusal, and
-    so does a seat whose folder name belongs to another seat (GROK-BOT shares CURSOR's `cursor`)."""
+    so does a seat whose folder name belongs to another seat (GROK-BOT shares CURSOR's `cursor`).
+    A tag that is no seat row but names a listed family role (BF-FIXER, GB-PLUMBER) resolves to
+    that role's lane from the family's seatApps.patterns `lane` block (AFC-620)."""
     live = ", ".join(s.name for s in registry.seats if not s.retired)
     raw = (env.get(ENV_SEAT) or "").strip()
     if not raw:
@@ -486,9 +525,13 @@ def resolve_seat(env: Mapping[str, str], registry: L.Registry) -> L.Seat:
         )
     seat = registry.seat_by_name(raw)
     if seat is None:
+        role = _role_lane_seat(raw, registry, env)
+        if role is not None:
+            return role
         shown = raw if len(raw) <= 40 else raw[:40] + "..."
         raise Refusal(
-            f"{ENV_SEAT}={shown!r} is not a seat tag in fleet-apps.json.  Known tags: {live}."
+            f"{ENV_SEAT}={shown!r} is not a seat tag in fleet-apps.json.  Known tags: {live}.  "
+            "A BotFleet or grok-bot agent can also set its role tag (BF-<ROLE> or GB-<ROLE>)."
         )
     if seat.retired:
         raise Refusal(

@@ -51,6 +51,85 @@ def load_check():
     return mod
 
 
+class RoleLaneBlockTests(unittest.TestCase):
+    """AFC-620:  a pattern's `lane` block makes BF-<ROLE>/GB-<ROLE> lane-eligible;  the schema is
+    strict and the rendered folders and prefixes collide with no seat row and no other pattern."""
+
+    def _data(self, lane: object, match: str = "BF-*") -> dict:
+        row = {"match": match, "app": "botfleet"}
+        if lane is not None:
+            row["lane"] = lane
+        return {"seats": [], "seatApps": {"bySeat": {}, "extraSeats": {}, "patterns": [row]}}
+
+    def test_a_lane_block_parses_and_roles_resolve(self) -> None:
+        lane = {"roles": ["FIXER", "COMPILER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}
+        reg = I.parse_seat_registry(self._data(lane))
+        rl = I.role_lane_seat("BF-FIXER", reg)
+        self.assertIsNotNone(rl)
+        self.assertEqual((rl.seat, rl.role, rl.app, rl.folder, rl.branch_prefix),
+                         ("BF-FIXER", "FIXER", "botfleet", "bf-fixer", "bf-fixer/"))
+        self.assertEqual(I.role_lane_roles("BF-FIXER", reg), ("FIXER", "COMPILER"))
+
+    def test_an_unlisted_role_and_an_unmatched_tag_resolve_to_none(self) -> None:
+        lane = {"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}
+        reg = I.parse_seat_registry(self._data(lane))
+        self.assertIsNone(I.role_lane_seat("BF-BUILDER", reg))
+        self.assertEqual(I.role_lane_roles("BF-BUILDER", reg), ("FIXER",))
+        self.assertIsNone(I.role_lane_seat("NOPE-1", reg))
+        self.assertEqual(I.role_lane_roles("NOPE-1", reg), ())
+
+    def test_a_pattern_without_a_lane_block_grants_no_role_lanes(self) -> None:
+        reg = I.parse_seat_registry(self._data(None))
+        self.assertIsNone(I.role_lane_seat("BF-FIXER", reg))
+
+    def test_bad_lane_blocks_are_refused(self) -> None:
+        good = {"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"}
+        bad = (
+            {"roles": []},
+            {"roles": ["fixer"]},
+            {"roles": ["FIXER", "FIXER"]},
+            {**good, "folderTemplate": "bf"},
+            {**good, "branchTemplate": "bf-<role>"},
+            {**good, "folderTemplate": "BF-<role>"},
+            "not-a-mapping",
+        )
+        for lane in bad:
+            with self.subTest(lane=lane):
+                with self.assertRaises(I.SeatRegistryError):
+                    I.parse_seat_registry(self._data(lane))
+        with self.assertRaises(I.SeatRegistryError):
+            I.parse_seat_registry(self._data(good, match="BOTH-*-SIDES-*"))
+
+    def test_the_check_reports_seat_and_pattern_collisions(self) -> None:
+        check = load_check()
+        data = self._data({"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"})
+        data["seats"] = [{"tag": "SQUATTER", "worktreeSuffix": "bf-fixer", "branchPrefixes": ["squatter/"]}]
+        data["seatApps"]["bySeat"] = {"SQUATTER": "claude-code"}
+        errors = check.seat_apps_errors(data)
+        self.assertTrue(any("worktreeSuffix" in e for e in errors), errors)
+        data2 = self._data({"roles": ["FIXER"], "folderTemplate": "bf-<role>", "branchTemplate": "bf-<role>/"})
+        data2["seats"] = [{"tag": "SQUATTER", "worktreeSuffix": "squatter", "branchPrefixes": ["bf-fixer/"]}]
+        data2["seatApps"]["bySeat"] = {"SQUATTER": "claude-code"}
+        errors = check.seat_apps_errors(data2)
+        self.assertTrue(any("branchPrefix" in e for e in errors), errors)
+        data3 = self._data({"roles": ["FIXER"], "folderTemplate": "dup-<role>", "branchTemplate": "bf-<role>/"})
+        data3["seatApps"]["patterns"].append(
+            {"match": "GB-*", "app": "grok-bot",
+             "lane": {"roles": ["FIXER"], "folderTemplate": "dup-<role>", "branchTemplate": "gb-<role>/"}})
+        errors = check.seat_apps_errors(data3)
+        self.assertTrue(any("rendered by both" in e for e in errors), errors)
+
+    def test_the_committed_registry_lane_blocks_are_consistent(self) -> None:
+        data = registry_data()
+        reg = I.parse_seat_registry(data)
+        bf = I.role_lane_seat("BF-ORACLE", reg)
+        self.assertEqual((bf.folder, bf.branch_prefix), ("bf-oracle", "bf-oracle/"))
+        gb = I.role_lane_seat("GB-PUBLISHER", reg)
+        self.assertEqual((gb.folder, gb.branch_prefix), ("gb-publisher", "gb-publisher/"))
+        self.assertIsNone(I.role_lane_seat("BF-BUILDER", reg), "BF-BUILDER stays retired")
+        self.assertEqual(load_check().seat_apps_errors(data), [])
+
+
 class RealRegistryCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

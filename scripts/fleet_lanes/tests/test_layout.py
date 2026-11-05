@@ -1079,6 +1079,15 @@ class LaneNameTests(HomeCase):
         res = L.explain_lane_name(self.home / "apps" / "botfleet-bf-compiler", self.reg, r)
         self.assertEqual(res.seat, "BF-COMPILER")
 
+    def test_gb_role_readback(self) -> None:
+        # AFC-620:  gb-<role> reads back as the GB-<ROLE> lane role;  a bare gb stays the cursor alias
+        # (test_seat_and_slug_are_split_correctly) and the roles the old table missed now read back.
+        r = self.roots()
+        res = L.explain_lane_name(self.home / "apps" / "hoghunter-gb-deployer", self.reg, r)
+        self.assertEqual(res.seat, "GB-DEPLOYER")
+        res = L.explain_lane_name(self.home / "apps" / "botfleet-bf-engineer", self.reg, r)
+        self.assertEqual(res.seat, "BF-ENGINEER")
+
     def test_ambiguous_names_land_where_intended(self) -> None:
         r = self.roots()
         # `harness` is both a seat suffix and an alias of the Clutch app: the app reading wins at token 0

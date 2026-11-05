@@ -470,6 +470,88 @@ class RunnerTests(unittest.TestCase):
 
 # --------------------------------------------------------------------------- inputs
 
+class RoleLaneResolveTests(unittest.TestCase):
+    """AFC-620:  a BF-<ROLE> or GB-<ROLE> AGENT_SEAT resolves from the family's seatApps.patterns
+    `lane` block - folder bf-/gb-<role>, branch prefix bf-/gb-<role>/ - without a seats row."""
+
+    def _write_registry(self, tmp: Path, data: dict) -> Path:
+        path = tmp / "fleet-apps.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def _data(self) -> dict:
+        return {
+            "seats": REGISTRY_DATA["seats"],
+            "seatApps": {
+                "bySeat": {"CLAUDE": "claude-code"},
+                "extraSeats": {},
+                "patterns": [
+                    {"match": "BF-*", "app": "botfleet",
+                     "lane": {"roles": ["COMPILER", "FIXER"], "folderTemplate": "bf-<role>",
+                              "branchTemplate": "bf-<role>/"}},
+                    {"match": "GB-*", "app": "grok-bot",
+                     "lane": {"roles": ["PLUMBER"], "folderTemplate": "gb-<role>",
+                              "branchTemplate": "gb-<role>/"}},
+                ],
+            },
+        }
+
+    def test_a_listed_role_resolves_to_its_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            seat = K.resolve_seat({"AGENT_SEAT": "BF-FIXER", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        self.assertEqual((seat.name, seat.suffix, seat.branch_prefixes), ("BF-FIXER", "bf-fixer", ("bf-fixer/",)))
+
+    def test_the_role_tag_is_case_insensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            seat = K.resolve_seat({"AGENT_SEAT": "gb-plumber", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        self.assertEqual((seat.name, seat.suffix), ("GB-PLUMBER", "gb-plumber"))
+
+    def test_an_unlisted_role_is_refused_with_the_known_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat({"AGENT_SEAT": "BF-ORACLE", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        msg = str(ctx.exception)
+        self.assertIn("no known role", msg)
+        self.assertIn("COMPILER", msg)
+        self.assertIn("FIXER", msg)
+
+    def test_a_seat_row_still_wins_over_a_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            seat = K.resolve_seat({"AGENT_SEAT": "CLAUDE", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        self.assertEqual(seat.suffix, "claude")
+
+    def test_a_role_folder_owned_by_a_seat_is_refused(self) -> None:
+        data = copy.deepcopy(REGISTRY_DATA)
+        data["seats"].append({"tag": "SQUATTER", "worktreeSuffix": "bf-fixer", "branchPrefixes": ["squatter/"]})
+        registry = L.parse_registry(data)
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat({"AGENT_SEAT": "BF-FIXER", "FLEET_APPS_JSON": str(apps)}, registry)
+        self.assertIn("SQUATTER", str(ctx.exception))
+
+    def test_a_role_branch_prefix_colliding_with_a_seat_is_refused(self) -> None:
+        data = copy.deepcopy(REGISTRY_DATA)
+        data["seats"].append({"tag": "SQUATTER", "worktreeSuffix": "squatter", "branchPrefixes": ["bf-fixer/"]})
+        registry = L.parse_registry(data)
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat({"AGENT_SEAT": "BF-FIXER", "FLEET_APPS_JSON": str(apps)}, registry)
+        self.assertIn("branch prefix", str(ctx.exception))
+
+    def test_an_unknown_tag_keeps_the_old_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            apps = self._write_registry(Path(td), self._data())
+            with self.assertRaises(K.Refusal) as ctx:
+                K.resolve_seat({"AGENT_SEAT": "NOPE-1", "FLEET_APPS_JSON": str(apps)}, REGISTRY)
+        self.assertIn("not a seat tag", str(ctx.exception))
+
+
 class ResolveTests(unittest.TestCase):
     def test_app_by_each_field_and_any_case(self) -> None:
         for query in ("DealDex", "dealdex", "DEALDEX", "dd", "DD", "Dd"):
@@ -615,9 +697,15 @@ class ResolveTests(unittest.TestCase):
                 self.assertEqual(K.branch_for(seat, "x"), "grok/x")
         for raw in GROK_BUILD_MUST_NOT + ("GROK-BOT",):
             with self.subTest(raw=raw):
+                # AFC-620:  GB-COMPILER is a real role now and BF-BUILDER a refused one;  neither is GROK.
+                if raw == "GB-COMPILER":
+                    seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                    self.assertEqual((seat.name, seat.suffix), ("GB-COMPILER", "gb-compiler"))
+                    continue
                 with self.assertRaises(K.Refusal) as cm:
                     K.resolve_seat({"AGENT_SEAT": raw}, registry)
-                self.assertIn("belongs to CURSOR" if raw == "GROK-BOT" else "not a seat tag", str(cm.exception))
+                needle = {"GROK-BOT": "belongs to CURSOR", "BF-BUILDER": "no known role"}.get(raw, "not a seat tag")
+                self.assertIn(needle, str(cm.exception))
         with self.subTest(raw="GROK-WEB"):
             with self.assertRaises(K.Refusal) as cm:       # a cloud seat: no branch prefix, so no lane
                 K.branch_for(K.resolve_seat({"AGENT_SEAT": "GROK-WEB"}, registry), "x")
@@ -649,10 +737,18 @@ class GrokBuildAliasResolveTests(unittest.TestCase):
         both = (L.parse_registry(_grok_registry_data(alias=False)), L.parse_registry(_grok_registry_data(alias=True)))
         for registry in both:
             for raw in GROK_BUILD_MUST_NOT:
+                # AFC-620:  GB-COMPILER resolves as a role lane and BF-BUILDER is refused as an unlisted
+                # role;  both outcomes come from the lane blocks, never from the GROK alias.
+                if raw == "GB-COMPILER":
+                    with self.subTest(raw=raw, alias=bool(registry.seat_by_name("GROK").alias_pattern)):
+                        seat = K.resolve_seat({"AGENT_SEAT": raw}, registry)
+                        self.assertEqual((seat.name, seat.suffix), ("GB-COMPILER", "gb-compiler"))
+                    continue
                 with self.subTest(raw=raw, alias=bool(registry.seat_by_name("GROK").alias_pattern)):
                     with self.assertRaises(K.Refusal) as cm:
                         K.resolve_seat({"AGENT_SEAT": raw}, registry)
-                    self.assertIn("not a seat tag", str(cm.exception))
+                    needle = "no known role" if raw == "BF-BUILDER" else "not a seat tag"
+                    self.assertIn(needle, str(cm.exception))
             with self.assertRaises(K.Refusal) as cm:
                 K.resolve_seat({"AGENT_SEAT": "GROK-BOT"}, registry)
             self.assertIn("belongs to CURSOR", str(cm.exception))

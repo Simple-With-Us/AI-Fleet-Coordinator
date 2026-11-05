@@ -261,11 +261,28 @@ class SeatRegistryError(RuntimeError):
 
 
 class SeatPattern(NamedTuple):
-    """One `seatApps.patterns` row:  `match` (BF-*) compiled to `regex`, and the app it gives."""
+    """One `seatApps.patterns` row:  `match` (BF-*) compiled to `regex`, and the app it gives.  An
+    optional `lane` block (AFC-620) makes the family's roles lane-eligible:  `roles` lists the role
+    tokens, and the templates render each role's lane folder and branch prefix (BF-FIXER plans lanes
+    under folder bf-fixer and branch prefix bf-fixer/)."""
 
     regex: re.Pattern[str]
     app: str
     match: str
+    roles: tuple[str, ...] = ()
+    folder_template: str = ""
+    branch_template: str = ""
+
+
+class RoleLane(NamedTuple):
+    """A role tag's lane identity, resolved from a seatApps.patterns lane block."""
+
+    seat: str  # canonical tag (BF-FIXER)
+    role: str  # the role token (FIXER)
+    app: str  # the pattern's app (botfleet)
+    folder: str  # rendered folderTemplate (bf-fixer)
+    branch_prefix: str  # rendered branchTemplate (bf-fixer/)
+    match: str  # the pattern row that named it (BF-*)
 
 
 class SeatRegistry(NamedTuple):
@@ -286,6 +303,53 @@ def _pattern_regex(match: str) -> re.Pattern[str]:
             "seatApps.patterns match %r may hold only A-Z, 0-9, _, - and *" % match
         )
     return re.compile("".join(_ROLE_CHARS if ch == "*" else re.escape(ch) for ch in match))
+
+
+_ROLE_TOKEN_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]*")
+_FOLDER_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def _pattern_lane(where: str, item: Mapping[str, Any]) -> tuple[tuple[str, ...], str, str]:
+    """Validate a pattern row's optional `lane` block:  role tokens plus the folder and branch
+    templates that make BF-<ROLE>/GB-<ROLE> tags lane-eligible (AFC-620)."""
+    lane = item.get("lane")
+    if lane is None:
+        return (), "", ""
+    if not isinstance(lane, Mapping):
+        raise SeatRegistryError("%s lane must be an object" % where)
+    if item["match"].count("*") != 1:
+        raise SeatRegistryError("%s lane requires a match with exactly one *" % where)
+    roles = lane.get("roles")
+    if (
+        not isinstance(roles, list)
+        or not roles
+        or any(
+            not isinstance(r, str) or not _ROLE_TOKEN_RE.fullmatch(r) or r != r.upper()
+            for r in roles
+        )
+        or len(set(roles)) != len(roles)
+    ):
+        raise SeatRegistryError(
+            "%s lane.roles must be a non-empty list of distinct upper-case role tokens" % where
+        )
+    folder_t, branch_t = lane.get("folderTemplate"), lane.get("branchTemplate")
+    for name, tpl in (("folderTemplate", folder_t), ("branchTemplate", branch_t)):
+        if not isinstance(tpl, str) or tpl.count("<role>") != 1:
+            raise SeatRegistryError(
+                "%s lane.%s must be a string containing exactly one <role>" % (where, name)
+            )
+    for role in roles:
+        folder = folder_t.replace("<role>", role.lower())
+        if not _FOLDER_SLUG_RE.fullmatch(folder):
+            raise SeatRegistryError(
+                "%s lane.folderTemplate renders invalid folder %r for role %s" % (where, folder, role)
+            )
+        branch = branch_t.replace("<role>", role.lower())
+        if not branch.endswith("/") or not _FOLDER_SLUG_RE.fullmatch(branch[:-1]):
+            raise SeatRegistryError(
+                "%s lane.branchTemplate renders invalid prefix %r for role %s" % (where, branch, role)
+            )
+    return tuple(roles), folder_t, branch_t
 
 
 def _app_name(where: str, value: Any) -> str:
@@ -333,11 +397,16 @@ def parse_seat_registry(data: Any, source: str = "") -> SeatRegistry:
     for item in raw_patterns:
         if not isinstance(item, Mapping) or not isinstance(item.get("match"), str):
             raise SeatRegistryError("every seatApps.patterns entry needs a match string and an app")
+        where = "seatApps.patterns %s" % item["match"]
+        roles, folder_template, branch_template = _pattern_lane(where, item)
         patterns.append(
             SeatPattern(
                 _pattern_regex(item["match"]),
-                _app_name("seatApps.patterns %s" % item["match"], item.get("app")),
+                _app_name(where, item.get("app")),
                 item["match"],
+                roles,
+                folder_template,
+                branch_template,
             )
         )
     return SeatRegistry(
@@ -387,6 +456,52 @@ def load_seat_registry(
     registry = parse_seat_registry(data, target)
     _registry_cache[target] = (stamp, registry)
     return registry
+
+
+def pattern_role(pattern: SeatPattern, seat: str) -> str | None:
+    """The role token a canonical tag takes under a one-star pattern (BF-FIXER -> FIXER)."""
+    if pattern.match.count("*") != 1:
+        return None
+    pre, post = pattern.match.split("*")
+    if not (seat.startswith(pre) and seat.endswith(post) and len(seat) >= len(pre) + len(post) + 1):
+        return None
+    return seat[len(pre) : len(seat) - len(post) if post else len(seat)]
+
+
+def role_lane_seat(seat: str, registry: SeatRegistry) -> RoleLane | None:
+    """The lane identity for a canonical role tag, or None:  the tag matches a pattern whose lane
+    block lists its role (AFC-620).  A tag that matches a pattern but names no listed role is not
+    lane-eligible.  As with app resolution the first matching pattern decides."""
+    if not _SEAT_RE.fullmatch(seat):
+        return None
+    for pattern in registry.patterns:
+        if not pattern.regex.fullmatch(seat):
+            continue
+        role = pattern_role(pattern, seat)
+        if role is None or not pattern.folder_template:
+            return None
+        if pattern.roles and role not in pattern.roles:
+            return None
+        low = role.lower()
+        return RoleLane(
+            seat=seat,
+            role=role,
+            app=pattern.app,
+            folder=pattern.folder_template.replace("<role>", low),
+            branch_prefix=pattern.branch_template.replace("<role>", low),
+            match=pattern.match,
+        )
+    return None
+
+
+def role_lane_roles(seat: str, registry: SeatRegistry) -> tuple[str, ...]:
+    """The roles the first matching pattern's lane block lists, for refusal messages."""
+    if not _SEAT_RE.fullmatch(seat):
+        return ()
+    for pattern in registry.patterns:
+        if pattern.regex.fullmatch(seat):
+            return pattern.roles
+    return ()
 
 
 def _pattern_app(seat: str, registry: SeatRegistry) -> str | None:

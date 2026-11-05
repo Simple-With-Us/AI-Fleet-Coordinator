@@ -577,10 +577,12 @@ SEAT_ALIASES: dict[str, str] = {
     "zc": "zcode",
 }
 
-# BotFleet bot roles show up in lane names and branch prefixes.  They are not seats.
+# BotFleet bot roles show up in lane names and branch prefixes.  They are not seats.  The
+# engineer, trader and monitor roles complete the current roster (fleet-apps.json lane blocks).
 ROLE_TOKENS = frozenset({
     "kody", "fixer", "designer", "compiler", "plumber", "publisher", "deployer", "director",
-    "housekeeper", "oracle", "nurse", "accountant", "conductor", "bf",
+    "housekeeper", "oracle", "nurse", "accountant", "conductor", "engineer", "trader", "monitor",
+    "bf",
 })
 
 
@@ -1288,22 +1290,28 @@ class _SeatHit:
 
 
 def _seat_at(tokens: Sequence[str], i: int, canon: frozenset[str], aliases: Mapping[str, str]) -> _SeatHit | None:
-    """Seat at token position i.  Two-token seats (grok-build, muse-code) win over one-token ones."""
+    """Seat at token position i.  Two-token seats (grok-build, muse-code) win over one-token ones.
+    A `gb` followed by a role token is the GB-<ROLE> lane readback (AFC-620);  a bare `gb` stays
+    the historic cursor alias."""
     for n in (2, 1):
         if i + n <= len(tokens):
             cand = "-".join(tokens[i:i + n])
             if cand in canon:
                 return _SeatHit("canonical", cand, n, cand)
-            if cand in aliases:
+            if cand in aliases and cand != "gb":
                 return _SeatHit("alias", aliases[cand], n, cand)
     tok = tokens[i] if i < len(tokens) else ""
+    nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
     if tok == "bf":
-        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
         if nxt in ROLE_TOKENS and nxt != "bf":
             return _SeatHit("role", "BF-" + nxt.upper(), 2, f"bf-{nxt}")
         return _SeatHit("role", "BF-BOT", 1, "bf")
+    if tok == "gb" and nxt in ROLE_TOKENS:
+        return _SeatHit("role", "GB-" + nxt.upper(), 2, f"gb-{nxt}")
     if tok in ROLE_TOKENS:
         return _SeatHit("role", "BF-" + tok.upper(), 1, tok)
+    if tok == "gb":
+        return _SeatHit("alias", aliases.get("gb", "cursor"), 1, "gb")
     return None
 
 
