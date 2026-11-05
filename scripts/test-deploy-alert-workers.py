@@ -17,7 +17,9 @@ class Tests(unittest.TestCase):
         import re
 
         workflow = m.pathlib.Path(".github/workflows/worker-deploy.yml").read_text()
-        matrix = json.loads(re.search(r"^\s*worker:\s*(\[.*\])\s*$", workflow, re.MULTILINE).group(1))
+        matrix = json.loads(
+            re.search(r"^\s*worker:\s*(\[.*\])\s*$", workflow, re.MULTILINE).group(1)
+        )
         self.assertFalse(set(matrix) & set(m.TARGETS))
 
     def test_tripped_target_is_refused_and_the_other_still_runs(self):

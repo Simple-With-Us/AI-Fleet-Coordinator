@@ -473,7 +473,8 @@ class Checks(unittest.TestCase):
             patch.dict(os.environ, {"X_BEARER": "super-secret"}),
             patch.object(
                 m, "mcp_post", side_effect=self.canary_replies(self.UNAUTH, (500, {}, b"boom"))
-            ),self.assertRaises(RuntimeError) as caught
+            ),
+            self.assertRaises(RuntimeError) as caught,
         ):
             m.mcp_canary(self.mcp_target())
         self.assertNotIn("super-secret", str(caught.exception))
