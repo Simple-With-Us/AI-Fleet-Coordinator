@@ -47,16 +47,20 @@ enum ListenerSeatHost: Equatable {
     case noListener
     /// The partition does not list the seat.
     case unlisted
-    /// The partition could not be read.
+    /// The partition gives the seat to the Mac, but the seat's own section in the Mac's file says
+    /// `instance = "server"`.  The listener tests that key first and refuses the section.
+    case markedForTheServer
+    /// Muster cannot say:  the partition could not be read, or it disagrees with the running
+    /// listener.  The text says which.
     case unknown(String)
 
     /// Whether the Mac's listener holds this seat.
     var isTheMac: Bool { self == .mac }
 
-    /// Whether the partition was read and gives this seat to something other than the Mac.
+    /// Whether the partition was read and the Mac's listener will not run this seat.
     var isElsewhere: Bool {
         switch self {
-        case .server, .noListener, .unlisted: return true
+        case .server, .noListener, .unlisted, .markedForTheServer: return true
         case .mac, .unknown: return false
         }
     }
@@ -72,8 +76,10 @@ enum ListenerSeatHost: Equatable {
             return "No listener holds this seat."
         case .unlisted:
             return "No listener holds this seat.\u{00A0} The seat partition does not list it."
+        case .markedForTheServer:
+            return "The seat's section in the Mac's file says instance = \"server\", so the Mac's listener refuses it."
         case .unknown(let why):
-            return "The seat partition could not be read, so Muster will not change this seat.\u{00A0} \(why)"
+            return "Muster cannot say who holds this seat, so it will not change it.\u{00A0} \(why)"
         }
     }
 
@@ -83,6 +89,7 @@ enum ListenerSeatHost: Equatable {
         case .mac: return "On The Mac"
         case .server: return "On The Server"
         case .noListener, .unlisted: return "No Listener"
+        case .markedForTheServer: return "Marked For The Server"
         case .unknown: return "Not Known"
         }
     }
@@ -93,6 +100,7 @@ enum ListenerSeatHost: Equatable {
         case .mac: return "desktopcomputer"
         case .server: return "server.rack"
         case .noListener, .unlisted: return "minus.circle"
+        case .markedForTheServer: return "exclamationmark.triangle"
         case .unknown: return "questionmark.circle"
         }
     }
@@ -100,7 +108,8 @@ enum ListenerSeatHost: Equatable {
 
 /// The seat partition, read the way the listener reads it.
 struct ListenerPartition: Equatable {
-    /// Where the file sits in a checkout.  The Mac's listener reads its own checkout's copy.
+    /// Where the file sits in a checkout.  The Mac's listener reads its own checkout's copy, and
+    /// says which one in its status (`partition_file`), so that copy decides once it has said.
     static let relativePath = "docs/protocols/agent-sync-partition.toml"
     /// The instance name Muster's own machine has in the partition.
     static let thisInstance = "mac"
@@ -166,7 +175,9 @@ struct ListenerPartition: Equatable {
 
     /// Who holds a seat.  The listener upper-cases a section's name before it looks it up.
     func host(of seat: String) -> ListenerSeatHost {
-        guard let seats else { return .unknown(problem ?? "") }
+        guard let seats else {
+            return .unknown("The seat partition could not be read.\u{00A0} \(problem ?? "")")
+        }
         let instance = seats[seat.uppercased()] ?? ""
         switch instance {
         case "mac": return .mac
@@ -174,6 +185,19 @@ struct ListenerPartition: Equatable {
         case "none": return .noListener
         default: return .unlisted
         }
+    }
+
+    /// Who holds a seat, given the Mac's file.  `partition_errors` tests a section's own `instance`
+    /// key before the partition and refuses one that names the other instance, so a seat the
+    /// partition gives to the Mac can still be one the Mac's listener will not run.  Its `INSTANCES`
+    /// are "mac" and "server", and any other value is a seat problem, not a refusal.
+    func host(of seat: String, in config: ListenerConfigDocument) -> ListenerSeatHost {
+        let host = self.host(of: seat)
+        guard host.isTheMac,
+              case .text("server")? = config.value(section: "seat.\(seat)", key: "instance") else {
+            return host
+        }
+        return .markedForTheServer
     }
 
     /// Whether a tag is one the listener accepts:  `_SEAT_RE` in `agent_sync/config.py`.
@@ -504,7 +528,10 @@ struct WakeSeat: Identifiable, Equatable {
     /// What the panel says about such a section.
     var refusedSectionProblem: String? {
         guard hasRefusedSection else { return nil }
-        return "The Mac's configuration file holds a [seat.\(seat)] section.\u{00A0} The seat partition does not give \(seat) to the Mac, so the listener refuses every reload and will refuse its next start until the section is gone."
+        let why = host == .markedForTheServer
+            ? "The section says instance = \"server\""
+            : "The seat partition does not give \(seat) to the Mac"
+        return "The Mac's configuration file holds a [seat.\(seat)] section.\u{00A0} \(why), so the listener refuses every reload and will refuse its next start until the section is gone."
     }
 
     /// Whether the seat belongs under the Problems Only filter.
@@ -553,6 +580,8 @@ struct WakeSettingsSources {
     var configPath: String = ""
     /// The seat partition.  Until it has been read,  it holds no seat.
     var partition = ListenerPartition(unreadable: "It has not been read.")
+    /// Where that partition was read from:  the listener's own copy once it has named one.
+    var partitionURL: URL?
     /// The listener's own published state,  when it could be read.
     var status: ListenerStatus?
     /// The pins that prove a seat's binaries work:  seat -> runtime -> evidence.
@@ -596,10 +625,13 @@ enum WakeSettingsBuilder {
 
     /// One seat's rows.
     private static func seat(for tag: String, sources: WakeSettingsSources) -> WakeSeat {
-        let host = sources.partition.host(of: tag)
+        let host = host(of: tag, sources: sources)
+        // The listener upper-cases a section's name, and publishes every seat under that name, so
+        // a `[seat.mm]` section is looked up as MM.
+        let published = tag.uppercased()
         // The Mac's listener and the Mac's ledgers say nothing about a seat another listener holds,
         // so nothing from them is shown for it:  no zero, no default and no pause.
-        let live = host.isElsewhere ? nil : sources.status?.seat(tag)
+        let live = host.isElsewhere ? nil : sources.status?.seat(published)
         let pins: [String: PinEvidence] = host.isElsewhere ? [:] : (sources.pins[tag] ?? [:])
         let section = "seat.\(tag)"
         let settings = WakeSettingKey.seatKeys.map { key -> WakeSetting in
@@ -631,7 +663,7 @@ enum WakeSettingsBuilder {
             fallbackPin: fallbackPin(for: tag, config: sources.config, pins: pins),
             paused: live?.paused ?? false,
             wakesPaused: live?.wakesPaused ?? false,
-            pauseScope: host.isElsewhere ? nil : pauseScope(seat: tag, status: sources.status),
+            pauseScope: host.isElsewhere ? nil : pauseScope(seat: published, status: sources.status),
             connected: live?.connected,
             redWarnings: live?.red ?? [],
             heldBackQueueCount: live?.heldBack?.count ?? 0,
@@ -643,9 +675,25 @@ enum WakeSettingsBuilder {
             quotaRemaining: (live?.quota?.known == true) ? live?.quota?.remaining : nil,
             quotaExhausted: live?.quota?.exhausted ?? false,
             quotaSource: live?.quota?.source,
-            skippedReasons: host.isElsewhere ? [] : (sources.status?.status?.skipped_seats?[tag] ?? []),
-            disabledInFile: !host.isElsewhere && (sources.status?.status?.disabled?.contains(tag) ?? false)
+            skippedReasons: host.isElsewhere ? [] : (sources.status?.status?.skipped_seats?[published] ?? []),
+            disabledInFile: !host.isElsewhere && (sources.status?.status?.disabled?.contains(published) ?? false)
         )
+    }
+
+    /// Who holds a seat, as far as Muster can say.
+    ///
+    /// A listener from before `partition_file` does not say which partition it reads, so the copy
+    /// Muster read may not be its copy.  If that listener is running a seat this copy gives away,
+    /// the two differ, and calling the seat elsewhere would offer to delete a live seat's section.
+    private static func host(of tag: String, sources: WakeSettingsSources) -> ListenerSeatHost {
+        let host = sources.partition.host(of: tag, in: sources.config)
+        guard host.isElsewhere,
+              sources.status?.running == true,
+              sources.status?.status?.partition_file == nil,
+              sources.status?.seat(tag.uppercased()) != nil else {
+            return host
+        }
+        return .unknown("The running listener holds this seat, and the copy Muster read gives it elsewhere.")
     }
 
     /// One row,  with its state decided.

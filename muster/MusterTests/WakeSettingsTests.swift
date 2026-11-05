@@ -221,6 +221,89 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(seat.refusedSectionProblem?.contains("refuse its next start") == true)
     }
 
+    /// The listener tests a section's own `instance` key first,  so a seat the partition gives to
+    /// the Mac can still be one it refuses.  The panel says so,  and offers the repair.
+    func test_a_section_marked_for_the_server_is_refused() throws {
+        var input = sources(config: sample + "\ninstance = \"server\"\n")
+        input.seats = ["MM"]
+        let model = WakeSettingsBuilder.build(input)
+        let seat = try XCTUnwrap(model.seats.first)
+        XCTAssertEqual(seat.host, .markedForTheServer)
+        XCTAssertTrue(seat.host.isElsewhere)
+        XCTAssertTrue(seat.hasRefusedSection)
+        XCTAssertTrue(seat.needsAttention)
+        XCTAssertTrue(seat.refusedSectionProblem?.contains("instance = \"server\"") == true)
+        XCTAssertTrue(seat.refusedSectionProblem?.contains("refuse its next start") == true)
+        XCTAssertTrue(seat.settings.allSatisfy { $0.state == .heldElsewhere })
+    }
+
+    /// A section that names this instance,  or a value the listener does not take as an instance,
+    /// is not that refusal,  so the partition still decides.
+    func test_an_instance_key_that_is_not_the_other_instance_changes_nothing() {
+        let partition = ListenerPartition(seats: ["MM": "mac", "MA": "server"])
+        let mine = ListenerConfigDocument(text: "[seat.MM]\ninstance = \"mac\"\n")
+        XCTAssertEqual(partition.host(of: "MM", in: mine), .mac)
+        let odd = ListenerConfigDocument(text: "[seat.MM]\ninstance = \"laptop\"\n")
+        XCTAssertEqual(partition.host(of: "MM", in: odd), .mac)
+        let server = ListenerConfigDocument(text: "[seat.MA]\ninstance = \"server\"\n")
+        XCTAssertEqual(partition.host(of: "MA", in: server), .server)
+        let unread = ListenerPartition(unreadable: "It is missing.")
+        guard case .unknown = unread.host(of: "MM", in: ListenerConfigDocument(text: "[seat.MM]\ninstance = \"server\"\n")) else {
+            XCTFail("a partition that cannot be read still holds no seat")
+            return
+        }
+    }
+
+    /// The listener publishes every seat under its upper-cased name,  so a `[seat.mm]` section
+    /// finds what the listener says about MM.
+    func test_a_lower_case_section_finds_what_the_listener_says() throws {
+        let status = """
+        {
+          "running": true,
+          "status": {
+            "disabled": ["MM"],
+            "skipped_seats": {"MM": ["seat.MM.bot must be the credential file code"]},
+            "pause": {"MM": {"wakes_only": true}},
+            "seats": {"MM": {"bot": "MM", "wake": "muse"}}
+          }
+        }
+        """
+        var input = sources(config: "[seat.mm]\nbot = \"MM\"\n", status: status)
+        input.seats = ["mm"]
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(input).seats.first)
+        XCTAssertEqual(seat.skippedReasons, ["seat.MM.bot must be the credential file code"])
+        XCTAssertTrue(seat.disabledInFile)
+        XCTAssertEqual(seat.liveWake, .muse)
+        XCTAssertEqual(seat.pauseScope, "MM")
+    }
+
+    /// A running listener from before `partition_file` holds a seat the copy Muster read gives
+    /// away,  so the two copies differ.  That seat is not called elsewhere,  so it cannot be removed.
+    func test_a_seat_an_older_running_listener_holds_is_not_called_elsewhere() throws {
+        let status = #"{"running": true, "status": {"seats": {"MA": {"bot": "MA"}}}}"#
+        var input = sources(config: sample + "\n[seat.MA]\nwake = \"inbox\"\n", status: status)
+        input.seats = ["MA"]
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(input).seats.first)
+        guard case .unknown = seat.host else {
+            XCTFail("expected an unknown host, got \(seat.host)")
+            return
+        }
+        XCTAssertFalse(seat.hasRefusedSection)
+
+        // Once the listener names its partition,  that copy is the one Muster read,  so a seat it
+        // still runs from before the partition moved is a section the next start will refuse.
+        let named = #"{"running": true, "status": {"partition_file": "/p", "seats": {"MA": {"bot": "MA"}}}}"#
+        var current = sources(config: sample + "\n[seat.MA]\nwake = \"inbox\"\n", status: named)
+        current.seats = ["MA"]
+        XCTAssertEqual(WakeSettingsBuilder.build(current).seats.first?.hasRefusedSection, true)
+
+        // A listener that is not running holds nothing.
+        let stopped = #"{"running": false, "status": {"seats": {"MA": {"bot": "MA"}}}}"#
+        var down = sources(config: sample + "\n[seat.MA]\nwake = \"inbox\"\n", status: stopped)
+        down.seats = ["MA"]
+        XCTAssertEqual(WakeSettingsBuilder.build(down).seats.first?.host, .server)
+    }
+
     /// With no readable partition,  a seat's holder is unknown and the panel says so.
     func test_without_the_partition_every_seat_is_unknown() {
         var input = sources(status: statusJSON)
@@ -335,16 +418,18 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(soft?.isFailure, false)
     }
 
-    /// A listener too old to separate a refusal is never called accepted while it reports errors.
-    func test_an_older_listener_with_errors_is_not_called_accepted() {
+    /// A listener too old to separate a refusal is never called accepted:  it publishes on every
+    /// tick, so a status newer than the signal does not show it took the file.
+    func test_an_older_listener_is_never_called_accepted() {
         XCTAssertEqual(
             ListenerReloadOutcome.answer(toReloadSentAt: 100, in: status(updated: 101, errors: ["seat MA is configured here"])),
             .reportsProblems(["seat MA is configured here"])
         )
-        XCTAssertEqual(
-            ListenerReloadOutcome.answer(toReloadSentAt: 100, in: status(updated: 101)),
-            .accepted(otherProblems: [])
-        )
+        let quiet = ListenerReloadOutcome.answer(toReloadSentAt: 100, in: status(updated: 101))
+        XCTAssertEqual(quiet, .cannotTell)
+        XCTAssertEqual(quiet?.isFailure, true)
+        XCTAssertFalse(quiet?.report.contains("accepted") == true)
+        XCTAssertTrue(quiet?.report.contains("cannot say") == true)
     }
 
     /// No answer and a signal that could not be sent are failures,  and say so.
@@ -420,6 +505,37 @@ final class WakeSettingsTests: XCTestCase {
                 XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .notASeatName(seat))
             }
         }
+    }
+
+    /// A seat whose own section names the server is not written,  whatever the partition says.
+    func test_a_write_for_a_section_marked_for_the_server_writes_nothing() throws {
+        let space = try makeWorkspace(config: sample + "\ninstance = \"server\"\n")
+        let before = try bytes(space.config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        XCTAssertThrowsError(try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
+        ])) { error in
+            guard case WakeSettingsWriter.WriteError.notHeldByTheMac(let named, _) = error else {
+                XCTFail("the wrong refusal: \(error)")
+                return
+            }
+            XCTAssertEqual(named, "MM")
+        }
+        XCTAssertEqual(try bytes(space.config), before)
+    }
+
+    /// The listener folds `[seat.mm]` and `[seat.MM]` to one seat,  and one silently replaces the
+    /// other,  so a second spelling is never added.
+    func test_a_seat_the_file_spells_differently_is_not_written() throws {
+        let config = "[seat.mm]\nbot = \"MM\"\nwake = \"muse\"\n"
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        XCTAssertThrowsError(try writer.apply([
+            WakeSettingsWriter.Edit(seat: "MM", key: .wakesPerHour, value: .number(9)),
+        ])) { error in
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .spelledDifferently(seat: "MM", inFile: "mm"))
+        }
+        XCTAssertEqual(try String(contentsOf: space.config, encoding: .utf8), config)
     }
 
     /// The gate runs again at the commit,  because the partition can change during the check.
@@ -528,6 +644,21 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(left.sorted(), ["listener", "listener.toml"])
     }
 
+    /// A writer that got in after the last comparison is caught by the swap itself:  its text goes
+    /// straight back,  and no temporary file is left behind.
+    func test_the_swap_puts_back_another_writers_text() throws {
+        let space = try makeWorkspace()
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        XCTAssertThrowsError(try writer.replaceFile(with: "muster's edit", expecting: "what Muster read")) { error in
+            XCTAssertEqual(error as? WakeSettingsWriter.WriteError, .changedSinceRead(space.config.path))
+        }
+        XCTAssertEqual(try String(contentsOf: space.config, encoding: .utf8), sample)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: space.config.deletingLastPathComponent().path),
+            ["listener.toml"]
+        )
+    }
+
     /// Old copies past the newest few go.
     func test_old_backups_are_dropped() throws {
         let space = try makeWorkspace()
@@ -587,6 +718,17 @@ final class WakeSettingsTests: XCTestCase {
         let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
         XCTAssertEqual(document.seatTags, ["MM"])
         XCTAssertEqual(document.value(section: "seat.MM", key: "wake"), .text("muse"))
+    }
+
+    /// A section that marks itself for the server can be taken out too,  and the rest stays.
+    func test_a_section_marked_for_the_server_can_be_removed() throws {
+        let config = "[daemon]\ninstance = \"mac\"\n\n[seat.MM]\nbot = \"MM\"\ninstance = \"server\"\n"
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        try writer.commit(try writer.prepareRemoval(ofSeat: "MM"))
+        let document = ListenerConfigDocument(text: try String(contentsOf: space.config, encoding: .utf8))
+        XCTAssertEqual(document.seatTags, [])
+        XCTAssertEqual(document.value(section: "daemon", key: "instance"), .text("mac"))
     }
 
     /// With no readable partition,  nothing can be called refused,  so nothing is removed.
@@ -736,10 +878,10 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(store.message, "The pause was lifted on the Mac's listener.")
     }
 
-    /// With no partition the kill switch stays,  because the seat may be the Mac's,  and it says
-    /// what it cannot know.  Nothing that changes a setting runs.
+    /// With no partition the pause stays,  because the seat may be the Mac's,  and it says what it
+    /// cannot know.  Nothing that starts or changes a seat runs,  and that includes the resume.
     @MainActor
-    func test_with_no_partition_only_the_kill_switch_runs() async throws {
+    func test_with_no_partition_only_the_pause_runs() async throws {
         let space = try makeWorkspace()
         let before = try bytes(space.config)
         let listener = FakeListener()
@@ -752,6 +894,9 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertTrue(store.messageIsFailure)
         await store.pin(seat: "MM", runtime: nil)
         XCTAssertTrue(store.messageIsFailure)
+        await store.resume(seat: "MM")
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("Nothing was resumed") == true)
         XCTAssertEqual(listener.actions, [])
         XCTAssertEqual(try bytes(space.config), before)
 
@@ -913,6 +1058,62 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(listener.actions, ["check-config", "reload"])
         XCTAssertFalse(store.messageIsFailure)
         XCTAssertEqual(store.model.seats.first(where: { $0.seat == "MA" })?.hasRefusedSection, false)
+    }
+
+    /// The partition the listener says it reads decides,  over the copy in Muster's own checkout:
+    /// the panel,  the repair and the writer's gate all go by it,  so a stale checkout cannot take
+    /// out a seat the listener holds.
+    @MainActor
+    func test_the_listeners_own_partition_decides_who_holds_a_seat() async throws {
+        let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\n")
+        let before = try bytes(space.config)
+        let listeners = space.home.appendingPathComponent("listeners-partition.toml")
+        try "[seats]\nMM = \"mac\"\nMA = \"mac\"\n".write(to: listeners, atomically: true, encoding: .utf8)
+        let listener = FakeListener()
+        listener.status = #"{"running": true, "status": {"seats": {}, "pause": {}, "partition_file": "\#(listeners.path)"}}"#
+        let store = await makeStore(listener, space: space)
+
+        let seat = try XCTUnwrap(store.model.seats.first(where: { $0.seat == "MA" }))
+        XCTAssertEqual(seat.host, .mac)
+        XCTAssertFalse(seat.hasRefusedSection)
+
+        await store.removeRefusedSection(seat: "MA")
+        XCTAssertEqual(try bytes(space.config), before)
+        XCTAssertEqual(listener.actions, [])
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("Nothing was removed for MA") == true)
+    }
+
+    /// A partition the listener names and Muster cannot read holds no seat here,  the Mac's included.
+    @MainActor
+    func test_a_listeners_partition_that_cannot_be_read_holds_no_seat() async throws {
+        let space = try makeWorkspace()
+        let before = try bytes(space.config)
+        let listener = FakeListener()
+        let missing = space.home.appendingPathComponent("gone.toml").path
+        listener.status = #"{"running": true, "status": {"seats": {}, "pause": {}, "partition_file": "\#(missing)"}}"#
+        let store = await makeStore(listener, space: space)
+        store.draft["MM", default: [:]][.model] = "another-model"
+        await store.apply(seat: "MM")
+        XCTAssertEqual(try bytes(space.config), before)
+        XCTAssertEqual(listener.actions, [])
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("Muster cannot say who holds this seat") == true)
+    }
+
+    /// The repair of a seat an older running listener holds is refused before anything is written.
+    @MainActor
+    func test_the_repair_stops_on_a_seat_an_older_running_listener_holds() async throws {
+        let space = try makeWorkspace(config: sample + "\n\n[seat.MA]\nbot = \"MA\"\n")
+        let before = try bytes(space.config)
+        let listener = FakeListener()
+        listener.status = #"{"running": true, "status": {"seats": {"MA": {"bot": "MA"}}, "pause": {}}}"#
+        let store = await makeStore(listener, space: space)
+        await store.removeRefusedSection(seat: "MA")
+        XCTAssertEqual(try bytes(space.config), before)
+        XCTAssertEqual(listener.actions, [])
+        XCTAssertTrue(store.messageIsFailure)
+        XCTAssertTrue(store.message?.contains("running listener holds this seat") == true)
     }
 
     // MARK: What a draft asks for

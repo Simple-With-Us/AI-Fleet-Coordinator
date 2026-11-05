@@ -11,6 +11,8 @@ import Foundation
 ///   * a seat the seat partition does not give to the Mac is never changed from here:  the file
 ///     is not written for it, and its pause, test wake and pin are not run, because they could
 ///     only reach the Mac's listener, which does not hold it
+///   * a seat whose holder is not known keeps only the pause, which stops something and touches
+///     only the Mac's own pause file.  Nothing that starts or changes a seat runs on it.
 ///   * a candidate file the listener's own rules refuse never reaches the disk
 ///   * a change is reported as in effect only when the listener's own status says it took the
 ///     file.  `daemon reload` exits 0 whether it did or not.
@@ -35,8 +37,9 @@ final class WakeSettingsStore: ObservableObject {
     private let runner: AgentSyncRunning
     /// Where the seat partition is.
     private let partitionURL: URL?
-    /// The writer, when the panel may write.
-    private let writer: WakeSettingsWriter?
+    /// The writer, when the panel may write.  Each read points it at the partition the listener
+    /// says it reads, so its gates and the panel go by the same copy.
+    private var writer: WakeSettingsWriter?
     /// How long to wait between looks at the listener's status after a reload.
     private let reloadPollInterval: TimeInterval
     /// How many times to look.
@@ -94,6 +97,7 @@ final class WakeSettingsStore: ObservableObject {
             await reader.read()
         }.value
         model = WakeSettingsBuilder.build(sources)
+        writer?.partitionURL = sources.partitionURL
         configTextAtRead = sources.configReadable ? sources.config.text : nil
         seedDrafts()
     }
@@ -255,6 +259,12 @@ final class WakeSettingsStore: ObservableObject {
             say("Muster was not allowed to write the configuration file.", failure: true)
             return
         }
+        // The model knows what the writer's gate cannot:  a running listener that holds the seat.
+        let host = self.host(of: seat)
+        guard host.isElsewhere else {
+            say("Nothing was removed for \(seat).\u{00A0} \(host.readOnlyReason ?? "The seat partition gives it to the Mac.")", failure: true)
+            return
+        }
         guard let expected = configTextAtRead else {
             say("The configuration file could not be read, so nothing was changed.", failure: true)
             return
@@ -358,46 +368,41 @@ final class WakeSettingsStore: ObservableObject {
 
     // MARK: The kill switch
 
-    /// Whether a seat's kill switch can do anything here, and the refusal when it cannot.
-    ///
-    /// A seat whose holder is not known keeps the kill switch:  the pause only writes the Mac's own
-    /// pause file, and taking away the stop on a seat the Mac may well hold is the worse failure.
-    private func killSwitchRefusal(seat: String, doing: String) -> String? {
-        let host = self.host(of: seat)
-        guard host.isElsewhere else { return nil }
-        return "Nothing was \(doing) for \(seat).\u{00A0} \(host.readOnlyReason ?? "")"
-    }
-
     /// Stops a seat's wakes on the Mac's listener.
+    ///
+    /// A seat whose holder is not known can still be paused:  the pause only writes the Mac's own
+    /// pause file, so it cannot reach another listener, and taking away the stop on a seat the Mac
+    /// may well hold is the worse failure.  The report says what Muster cannot know.
     func pause(seat: String) async {
-        if let refusal = killSwitchRefusal(seat: seat, doing: "paused") {
-            say(refusal, failure: true)
+        let host = self.host(of: seat)
+        if host.isElsewhere {
+            say("Nothing was paused for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
             return
         }
         guard let invocation = try? AgentSyncInvocation.pause(seat: seat) else {
             say("The seat tag is not a plain token, so nothing was paused.", failure: true)
             return
         }
-        await run(invocation, success: killSwitchReport("Wakes paused on the Mac's listener.", seat: seat))
+        var report = "Wakes paused on the Mac's listener."
+        if !host.isTheMac {
+            report += "\u{00A0} Muster cannot say the Mac holds this seat, so it may not be the listener that wakes it."
+        }
+        await run(invocation, success: report)
     }
 
-    /// Lifts the kill switch on the Mac's listener.
+    /// Lifts the kill switch on the Mac's listener.  This lets wakes run again, so unlike the pause
+    /// it needs a seat the Mac is known to hold.
     func resume(seat: String) async {
-        if let refusal = killSwitchRefusal(seat: seat, doing: "resumed") {
-            say(refusal, failure: true)
+        let host = self.host(of: seat)
+        guard host.isTheMac else {
+            say("Nothing was resumed for \(seat).\u{00A0} \(host.readOnlyReason ?? "")", failure: true)
             return
         }
         guard let invocation = try? AgentSyncInvocation.resume(seat: seat) else {
             say("The seat tag is not a plain token, so nothing was resumed.", failure: true)
             return
         }
-        await run(invocation, success: killSwitchReport("The pause was lifted on the Mac's listener.", seat: seat))
-    }
-
-    /// The report for a kill switch that ran, saying so when the holder of the seat is not known.
-    private func killSwitchReport(_ text: String, seat: String) -> String {
-        guard !host(of: seat).isTheMac else { return text }
-        return text + "\u{00A0} The seat partition could not be read, so Muster cannot say the Mac holds this seat."
+        await run(invocation, success: "The pause was lifted on the Mac's listener.")
     }
 
     // MARK: The pin

@@ -88,6 +88,7 @@ struct WakeSettingsReader {
         // Who holds each seat.  The listener refuses a section it is not given,  so this comes
         // first:  every seat's row depends on it.
         sources.partition = ListenerPartition.load(from: partitionURL)
+        sources.partitionURL = partitionURL
 
         // The configuration file.
         let configText = readText(location.configURL)
@@ -119,6 +120,15 @@ struct WakeSettingsReader {
         }
         sources.status = status
 
+        // The listener says which partition it reads,  and that copy is the one that can stop it,
+        // so it decides over the copy in Muster's own checkout.  If it cannot be read,  no seat is
+        // held here.
+        if let path = status?.status?.partition_file, !path.isEmpty {
+            let url = URL(fileURLWithPath: path)
+            sources.partition = ListenerPartition.load(from: url)
+            sources.partitionURL = url
+        }
+
         // The seats to show:  the roster,  then every seat the file or the listener knows.
         var tags = roster
         for tag in sources.config.seatTags where !tags.contains(tag) {
@@ -133,15 +143,17 @@ struct WakeSettingsReader {
         var pins: [String: [String: PinEvidence]] = [:]
         var usage: [String: WakeUsage] = [:]
         var recent: [String: [WakeLedger.Outcome]] = [:]
-        for tag in tags where !sources.partition.host(of: tag).isElsewhere {
+        for tag in tags where !sources.partition.host(of: tag, in: sources.config).isElsewhere {
+            // The listener keeps a seat's files under its upper-cased name.
+            let directoryName = tag.uppercased()
             var seatPins: [String: PinEvidence] = [:]
             for runtime in ["claude", "muse", "mcode"] {
-                if let evidence = readPin(seat: tag, runtime: runtime) {
+                if let evidence = readPin(seat: directoryName, runtime: runtime) {
                     seatPins[runtime] = evidence
                 }
             }
             pins[tag] = seatPins
-            if let ledger = readText(location.ledgerURL(seat: tag)) {
+            if let ledger = readText(location.ledgerURL(seat: directoryName)) {
                 // One read and one parse for both views:  the ledger was not decoded once
                 // per question.
                 let parsed = WakeLedger.parse(ledger)

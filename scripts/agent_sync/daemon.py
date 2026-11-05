@@ -7805,6 +7805,9 @@ class Daemon:
             # SIGHUP can tell a refused reload from an accepted one with soft config errors.
             "reload_refused": [self.scrub(e) for e in self.reload_refused],
             "reload_at": self.reload_at,
+            # Which partition this listener goes by, so a tool that decides who holds a seat reads
+            # this copy and not whichever one its own checkout has.
+            "partition_file": self.partition_file,
             "owner_user_id": self.config.owner_user_id,
             "chat_nudges": all_nudges,
             "wake_loop_prevention": self.loopguard.enabled,

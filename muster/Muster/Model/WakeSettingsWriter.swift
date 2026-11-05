@@ -15,13 +15,16 @@ import Foundation
 //     define the key, and TOML refuses a duplicate
 //   * a file that changed since the panel read it is not written, so another writer's change is
 //     not overwritten
+//   * a seat the file spells differently is not written:  the listener folds both spellings to one
+//     seat, and one section would silently replace the other
 //   * the old file is kept as a timestamped backup
-//   * the new file reaches the disk under a unique name at mode 0600, and is then renamed over the
+//   * the new file reaches the disk under a unique name at mode 0600, and is then swapped with the
 //     original.  0600 is the mode the runtime's own writer uses (`listener_cli.py` `cmd_init`).
 //
 // `prepare` and `commit` are separate so the store can run the listener's own check on the
-// candidate between them.  The runtime takes no lock on this file, so there is no lock to share:
-// the comparison just before the rename is what narrows the window.
+// candidate between them.  The runtime takes no lock on this file, and a person's editor could not
+// take one, so there is no lock to share.  The swap is the compare-and-swap instead:  it hands back
+// what the file held at that instant, and anything but the text Muster read goes straight back.
 
 /// Writes a seat's wake settings into the listener's configuration file.
 struct WakeSettingsWriter {
@@ -64,6 +67,8 @@ struct WakeSettingsWriter {
         case changedSinceRead(String)
         case unreadableLines(seat: String, problems: [String])
         case noSectionToRemove(String)
+        case spelledDifferently(seat: String, inFile: String)
+        case anotherWritersTextMoved(path: String, keptAt: String)
 
         var errorDescription: String? {
             switch self {
@@ -84,6 +89,10 @@ struct WakeSettingsWriter {
                 return "The \(seat) section holds a line Muster cannot read, so nothing was written.\u{00A0} \(lines)"
             case .noSectionToRemove(let seat):
                 return "The file holds no section for \(seat), or the seat partition gives it to the Mac, so nothing was removed."
+            case .spelledDifferently(let seat, let inFile):
+                return "The file spells this seat [seat.\(inFile)], and the listener reads that as \(seat), so a [seat.\(seat)] section would replace it.\u{00A0} Nothing was written."
+            case .anotherWritersTextMoved(let path, let keptAt):
+                return "Another writer changed the configuration file at \(path) during the write, and Muster could not put its text back.\u{00A0} That text is at \(keptAt), and the file now holds Muster's edit."
             }
         }
     }
@@ -124,7 +133,11 @@ struct WakeSettingsWriter {
         let text = try readFile()
         try requireUnchanged(text, expected: expected)
         let base = ListenerConfigDocument(text: text)
+        try requireHeldByTheMac(seats, in: base)
         for seat in seats {
+            if let other = base.seatTags.first(where: { $0 != seat && $0.uppercased() == seat.uppercased() }) {
+                throw WriteError.spelledDifferently(seat: seat, inFile: other)
+            }
             let problems = base.sections(ofSeat: seat).flatMap(\.problems)
             guard problems.isEmpty else {
                 throw WriteError.unreadableLines(seat: seat, problems: problems)
@@ -155,14 +168,15 @@ struct WakeSettingsWriter {
     /// Works out the text with a refused section taken out, without touching the file.
     ///
     /// This is the one write allowed for a seat the Mac does not hold, and it is allowed only for
-    /// such a seat:  the partition has to be readable and has to say the Mac does not hold it.
+    /// such a seat:  the partition has to be readable, and it or the section itself has to say the
+    /// Mac's listener will not run it.  The store points this writer at the partition the listener
+    /// says it reads, so this does not rest on a copy the listener does not use.
     func prepareRemoval(ofSeat seat: String, expecting expected: String? = nil) throws -> PreparedWrite {
-        let host = ListenerPartition.load(from: partitionURL).host(of: seat)
-        guard host.isElsewhere else { throw WriteError.noSectionToRemove(seat) }
         let text = try readFile()
         try requireUnchanged(text, expected: expected)
         let document = ListenerConfigDocument(text: text)
-        guard !document.sections(ofSeat: seat).isEmpty else {
+        let host = ListenerPartition.load(from: partitionURL).host(of: seat, in: document)
+        guard host.isElsewhere, !document.sections(ofSeat: seat).isEmpty else {
             throw WriteError.noSectionToRemove(seat)
         }
         return PreparedWrite(
@@ -187,24 +201,26 @@ struct WakeSettingsWriter {
     /// The gate and the comparison run again, because the check between `prepare` and here takes
     /// time and the partition or the file can change in it.
     func commit(_ prepared: PreparedWrite) throws {
-        try requireHeldByTheMac(prepared.seats)
+        let original = ListenerConfigDocument(text: prepared.original)
+        try requireHeldByTheMac(prepared.seats, in: original)
         if let seat = prepared.repairedSeat {
-            guard ListenerPartition.load(from: partitionURL).host(of: seat).isElsewhere else {
+            guard ListenerPartition.load(from: partitionURL).host(of: seat, in: original).isElsewhere else {
                 throw WriteError.noSectionToRemove(seat)
             }
         }
         let text = try readFile()
         try requireUnchanged(text, expected: prepared.original)
         try backUp(prepared.original)
-        try replaceFile(with: prepared.candidate)
+        try replaceFile(with: prepared.candidate, expecting: prepared.original)
     }
 
     // MARK: The gates
 
     /// Refuses any seat the partition does not give to the Mac, and every seat when the partition
-    /// cannot be read.  The partition is read again each time, so this does not rest on what the
+    /// cannot be read.  With the file's text, it also refuses a seat whose own section names the
+    /// other instance.  The partition is read again each time, so this does not rest on what the
     /// panel last showed.
-    private func requireHeldByTheMac(_ seats: [String]) throws {
+    private func requireHeldByTheMac(_ seats: [String], in document: ListenerConfigDocument? = nil) throws {
         guard !seats.isEmpty else { return }
         let partition = ListenerPartition.load(from: partitionURL)
         for seat in seats {
@@ -212,7 +228,7 @@ struct WakeSettingsWriter {
             guard ListenerPartition.isSeatName(seat) else {
                 throw WriteError.notASeatName(seat)
             }
-            let host = partition.host(of: seat)
+            let host = document.map { partition.host(of: seat, in: $0) } ?? partition.host(of: seat)
             guard host.isTheMac else {
                 throw WriteError.notHeldByTheMac(seat: seat, reason: host.readOnlyReason ?? "")
             }
@@ -265,20 +281,39 @@ struct WakeSettingsWriter {
         }
     }
 
-    /// Replaces the file by writing a unique temporary file and renaming it over the original.
+    /// Replaces the file by writing a unique temporary file and swapping it with the original, and
+    /// puts the original back if it is not the text this write was worked out from.
+    ///
+    /// The swap is atomic and hands back what the file held at that instant, so a writer that got
+    /// in after the last comparison is caught here and its change survives.  A volume that cannot
+    /// swap falls back to a plain rename, with only that last comparison in front of it.
     ///
     /// A symlink is followed first, so the link stays a link and the file it names is what changes.
-    private func replaceFile(with text: String) throws {
+    func replaceFile(with text: String, expecting original: String) throws {
         let target = configURL.resolvingSymlinksInPath()
         let directory = target.deletingLastPathComponent()
         let temporary = directory
             .appendingPathComponent(".\(target.lastPathComponent).muster-\(UUID().uuidString).tmp")
         try writeExclusive(Data(text.utf8), to: temporary)
-        guard rename(temporary.path, target.path) == 0 else {
+        let swap = UInt32(RENAME_SWAP)
+        if renamex_np(temporary.path, target.path, swap) == 0 {
+            guard (try? Data(contentsOf: temporary)) == Data(original.utf8) else {
+                guard renamex_np(temporary.path, target.path, swap) == 0 else {
+                    // The other writer's text is at the temporary name, so it stays there.
+                    throw WriteError.anotherWritersTextMoved(path: configURL.path, keptAt: temporary.path)
+                }
+                try? FileManager.default.removeItem(at: temporary)
+                throw WriteError.changedSinceRead(configURL.path)
+            }
             try? FileManager.default.removeItem(at: temporary)
-            throw WriteError.couldNotWrite(configURL.path)
+        } else {
+            let reason = errno
+            guard reason == ENOTSUP || reason == EINVAL, rename(temporary.path, target.path) == 0 else {
+                try? FileManager.default.removeItem(at: temporary)
+                throw WriteError.couldNotWrite(configURL.path)
+            }
         }
-        // The rename is only durable once the directory is on disk too.
+        // The change is only durable once the directory is on disk too.
         let descriptor = open(directory.path, O_RDONLY)
         if descriptor >= 0 {
             fsync(descriptor)

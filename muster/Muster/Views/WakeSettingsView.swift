@@ -386,7 +386,7 @@ struct WakeSettingsView: View {
     }
 
     /// A seat on the Mac, or one whose holder is not known.  The second shows what it can and
-    /// offers only the kill switch.
+    /// offers only the pause.
     private func localSeatSection(_ seat: WakeSeat) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -436,8 +436,8 @@ struct WakeSettingsView: View {
                 } label: {
                     Label("Resume", systemImage: "play.circle")
                 }
-                .disabled(store.isBusy)
-                .help("Lifts the pause on the Mac's listener.")
+                .disabled(store.isBusy || !seat.host.isTheMac)
+                .help(seat.host.readOnlyReason ?? "Lifts the pause on the Mac's listener.")
             }
             seatNotices(seat)
             GridRowHeader(labels: ["Setting", "The file", "The Operator", "State"])
@@ -766,7 +766,7 @@ private struct PendingWakeAction: Identifiable {
         case .pin:
             return "This pins the binary whose test wake passed for \(seat) as the proved binary.\u{00A0} A failed run never pins."
         case .removeSection:
-            return "This takes the [seat.\(seat)] section out of the Mac's listener configuration file and keeps a backup of the old file.\u{00A0} The Mac's listener does not hold \(seat), so the section can only stop it."
+            return "This takes the [seat.\(seat)] section out of the Mac's listener configuration file and keeps a backup of the old file.\u{00A0} The Mac's listener refuses this section, so it can only stop the listener."
         }
     }
 }

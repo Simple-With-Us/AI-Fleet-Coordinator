@@ -148,6 +148,9 @@ struct ListenerStatus: Decodable, Equatable {
         var reload_refused: [String]?
         /// When the listener last ran a reload, accepted or refused.
         var reload_at: Double?
+        /// The seat partition file this listener reads.  A listener from before this field does
+        /// not say.
+        var partition_file: String?
     }
 
     /// Whether the listener is running.
@@ -197,6 +200,9 @@ enum ListenerReloadOutcome: Equatable {
     /// A listener too old to say which:  it re-read the file and reports these errors, which may
     /// include a refusal, so Muster cannot call it accepted.
     case reportsProblems([String])
+    /// A listener too old to say which, reporting nothing wrong.  It publishes on every tick, so a
+    /// status newer than the signal does not show it has read the file, or that it took it.
+    case cannotTell
     /// The listener published nothing newer in time.
     case noAnswer(seconds: Int)
     /// The signal could not be sent.
@@ -220,6 +226,8 @@ enum ListenerReloadOutcome: Equatable {
         case .reportsProblems(let problems):
             return "The listener re-read it and reports these problems, so Muster cannot say it accepted the change:\n"
                 + problems.joined(separator: "\n")
+        case .cannotTell:
+            return "This listener is too old to say whether it took the change, so Muster cannot say it is in effect.\u{00A0} A listener restart loads the current settings and gives Muster an answer next time."
         case .noAnswer(let seconds):
             return "No answer from the listener after \(seconds) seconds, so Muster cannot say the change is in effect."
         case .notAsked(let reason):
@@ -239,7 +247,7 @@ enum ListenerReloadOutcome: Equatable {
         }
         guard let updated = state.updated, updated >= sentAt else { return nil }
         let problems = state.config_errors ?? []
-        return problems.isEmpty ? .accepted(otherProblems: []) : .reportsProblems(problems)
+        return problems.isEmpty ? .cannotTell : .reportsProblems(problems)
     }
 }
 

@@ -161,6 +161,14 @@ class ReloadAnswer(ListenerHarness):
         self.assertEqual(status["reload_at"], self.clock.time())
         self.assertEqual(status["reload_refused"], [])
 
+    def test_the_partition_it_reads_is_published(self) -> None:
+        """Muster goes by this copy when it decides which seat's section it may remove."""
+        self.write_config()
+        daemon = self.daemon()
+        daemon.write_status()
+        self.assertTrue(self.status()["partition_file"])
+        self.assertEqual(self.status()["partition_file"], daemon.partition_file)
+
     def test_a_requested_reload_publishes_in_the_same_tick(self) -> None:
         self.write_config()
         daemon = self.daemon()
