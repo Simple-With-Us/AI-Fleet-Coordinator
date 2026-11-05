@@ -127,7 +127,7 @@ struct FleetView: View {
             HStack {
                 Label("Fleet View", systemImage: "list.bullet.rectangle")
                     .font(.headline)
-                Text("Zulip #\(registrySummary.zulipChannel)")
+                Text("Zulip #\(registrySummary.zulipChannelDisplayName)")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
