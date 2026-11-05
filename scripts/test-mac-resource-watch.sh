@@ -874,4 +874,172 @@ assert "cleaned = rc in CLEANUP_EXIT_CLEANED" in source, (
     "so the rule lives in one place")
 print("cleanup exit code behaviour ok")
 PY
+
+# AFC-609: the webhook secret fetch.  The watcher's own 30s subprocess timeout
+# used to race the helper's own 30s login timeout, so a slow Infisical login
+# was killed mid-export and the empty answer read as "the key is absent" --
+# which the log then reported as "no valid urls/secrets found" about two
+# perfectly good secrets.  The fetch is now ONE call per folder, above the
+# helper's own worst case, and it says WHAT happened.
+python3 - "$ROOT/mac-resource-watch.py" <<'PY' || fail "webhook secret fetch behaviour"
+import importlib.util, json, os, pathlib, subprocess, sys, types
+
+spec = importlib.util.spec_from_file_location("watch", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+real_run = mod.subprocess.run
+
+
+class Fake:
+    """One scripted answer from `fleet-secrets`."""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def install(answers):
+    """Answer each helper call with the next scripted Fake, and count the calls."""
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        answer = answers.pop(0) if answers else Fake(0, "")
+        if isinstance(answer, Exception):
+            raise answer
+        if isinstance(answer.returncode, Exception):
+            # An exception can be scripted as the exit code, which is how
+            # subprocess.run reports a timeout.
+            raise answer.returncode
+        return answer
+
+    mod.subprocess.run = fake_run
+    return calls
+
+
+def restore():
+    mod.subprocess.run = real_run
+
+
+# 1. One call for the pair, and the JSON answer is read.
+url = "http://127.0.0.1:8800/hooks/wh_example"
+secret = "example-secret"
+calls = install(
+    [Fake(0, json.dumps({"A_URL": url, "A_SECRET": secret}))]
+)
+result = mod._fleet_secrets_batch(["A_URL", "A_SECRET"], "/folder")
+restore()
+status, values = result["status"], result["values"]
+assert status == "ok", f"a good answer must read as ok, not {status}"
+assert values == {"A_URL": url, "A_SECRET": secret}, values
+assert len(calls) == 1, f"a pair must cost ONE call, cost {len(calls)}"
+assert calls[0][1:3] == ["get", "A_URL"], calls[0]
+assert calls[0][3] == "A_SECRET", calls[0]
+
+# 2. One name prints the BARE value, not JSON.
+calls = install([Fake(0, "bare-value")])
+result = mod._fleet_secrets_batch(["A_URL"], "/folder")
+restore()
+status, values = result["status"], result["values"]
+assert status == "ok", status
+assert values == {"A_URL": "bare-value"}, values
+assert len(calls) == 1, calls
+
+# 3. A timeout is a timeout, and it is not "absent".
+calls = install([Fake(subprocess.TimeoutExpired(cmd="fleet-secrets", timeout=90))])
+result = mod._fleet_secrets_batch(["A_URL", "A_SECRET"], "/folder")
+restore()
+status, values = result["status"], result["values"]
+assert status == "timeout", f"a timeout must not read as {status}"
+assert values == {}, values
+
+# 4. The helper's own exit codes are told apart: 3 is a missing key, 4 is a
+# folder or a network that refused.
+calls = install([Fake(3, "", "key X is not in Infisical at /folder")])
+result = mod._fleet_secrets_batch(["A_URL"], "/folder")
+restore()
+status = result["status"]
+assert status == "absent", status
+calls = install([Fake(4, "", "fetch-failed:  exit-1")])
+result = mod._fleet_secrets_batch(["A_URL"], "/folder")
+restore()
+status = result["status"]
+assert status == "unreachable", status
+
+# 5. Output that is not the shape we asked for is not silently accepted.
+calls = install([Fake(0, "not json at all")])
+result = mod._fleet_secrets_batch(["A_URL", "A_SECRET"], "/folder")
+restore()
+status, values = result["status"], result["values"]
+assert status == "bad-output", status
+assert values == {}, values
+
+# 6. The environment wins, and only the MISSING name goes to Infisical.
+os.environ.pop("BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", None)
+os.environ.pop("BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET", None)
+os.environ["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = url
+
+calls = install([Fake(0, "env-secret")])
+got_url, got_secret, status = mod._read_webhook(
+    "/folder", "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
+)
+restore()
+assert got_url == url, got_url
+assert got_secret == "env-secret", got_secret
+assert status.startswith("env"), status
+assert len(calls) == 1, f"one missing name must cost one call, cost {len(calls)}"
+assert calls[0][2] == "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET", calls[0]
+assert "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL" not in calls[0], "the environment value must not be re-fetched"
+
+# 7. With both names in the environment there is NO helper call at all.
+os.environ["BOTFLEET_HOUSEKEEPER_WEBHOOK_URL"] = url
+os.environ["BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"] = secret
+calls = install([])
+got_url, got_secret, status = mod._read_webhook(
+    "/folder", "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
+)
+restore()
+assert len(calls) == 0, f"the environment must cost no call, cost {len(calls)}"
+assert status == "env", status
+os.environ.pop("BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", None)
+os.environ.pop("BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET", None)
+
+# 8. The watcher waits longer than the helper can take, so the helper's own
+# error is the one that comes back.  The helper spends up to 10s on the
+# keychain, 30s on the login and 30s on the export.
+assert mod.SECRET_FETCH_TIMEOUT_SEC > 30 + 30 + 10, (
+    "the watcher timeout must sit above the helper's own worst case, or it "
+    "races the helper and turns a real answer into an empty one")
+assert mod.SECRET_FETCH_RETRY_SEC >= 0
+
+# 9. The notes say WHERE the credentials came from, so a skipped delivery is
+# never reported as the one vague line that said "no valid urls/secrets
+# found" about every different failure.
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+assert "webhooks skipped: no valid urls/secrets found" not in source, (
+    "the old line reported every failure as missing credentials")
+assert "webhook credentials:" in source, (
+    "the watcher must log where the credentials came from")
+
+# 10. The webhook url carries a token in its path, so neither a url nor a
+# secret may reach a log line, and the helper's own error text has to be
+# scrubbed before it does.
+assert "_redact" in source, "the helper's error text must be scrubbed before it is logged"
+assert "re.sub" in source, "the scrub must remove urls and long tokens"
+for line in source.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("#"):
+        continue
+    if "log(" not in stripped and "print(" not in stripped:
+        # Not a logging line.  The Authorization header carries the secret on
+        # purpose, and that is a request, not a log.
+        continue
+    for banned in ("{url}", "{secret}", "{bf_url}", "{gb_url}", "{bf_secret}", "{gb_secret}"):
+        assert banned not in stripped, f"a log line interpolates {banned}"
+assert "secret_len={len(secret)}" in source, (
+    "a failed webhook call must log the secret LENGTH, never the secret")
+print("webhook secret fetch behaviour ok")
+PY
 echo OK

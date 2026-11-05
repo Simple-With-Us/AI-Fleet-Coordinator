@@ -552,6 +552,12 @@ jobs:
       run: bash scripts/test-mac-auto-cleanup.sh
     - name: Mac resource watch tests
       run: bash scripts/test-mac-resource-watch.sh
+    # The coding-priority launcher (AFC-609):  the allowlist, the refusals, the
+    # receipt, and the live canary that MEASURES the nice value and the QoS
+    # clamp on a job this test launches.  That canary needs macOS, so this
+    # job is where it actually runs.
+    - name: Mac coding priority tests
+      run: python3 scripts/test_mac_coding_priority.py
 
   muster-macos-build:
     name: Muster macOS build

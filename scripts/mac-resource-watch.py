@@ -39,6 +39,25 @@ LOG_FILE = HOME / "Library" / "Logs" / "mac-resource-watch.log"
 FLEET_SECRETS = Path(os.environ.get("FLEET_SECRETS") or HOME / ".local" / "bin" / "fleet-secrets")
 BF_SECRET_FOLDER = "/botfleet-housekeeper-webhook"
 GB_SECRET_FOLDER = "/grok-bot-housekeeper-webhook"
+# How long the watcher waits for `fleet-secrets` to answer.  The helper has its
+# OWN timeouts and they add up: a keychain read (10s), a machine login (30s)
+# and a folder export (30s).  A watcher timeout at or below the helper's own
+# login timeout races it, and the loser is the watcher: the helper is killed
+# mid-export, the empty answer is indistinguishable from "the key is absent",
+# and the run reports "no valid urls/secrets found" about two perfectly good
+# secrets.  That race is what made the 2026-11-04 run skip its delivery and
+# exit 1.  So the watcher waits longer than the helper can take and lets the
+# helper's own error come back as a real exit code.  90s clears the helper's
+# 10 + 30 + 30 worst case with room for process start-up.
+SECRET_FETCH_TIMEOUT_SEC = 90
+# One retry, and only for a timeout: that is the one failure that is the
+# machine being slow rather than the credentials being wrong.
+SECRET_FETCH_RETRY_SEC = 5
+# The helper's own exit codes for "the key is not in that folder" and "the
+# folder, the auth or the network refused".  They are different problems, and
+# the log has to say which.
+SECRET_EXIT_ABSENT = 3
+SECRET_EXIT_UNREACHABLE = 4
 CLEANUP = HOME / "apps" / "mac-auto-cleanup.sh"
 JANITOR = HOME / ".claude-disk-janitor" / "janitor.sh"
 # The exit codes that mean the cleanup itself ran.  75 is the cleanup
@@ -230,46 +249,146 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_FILE)
 
 
-def _fleet_secret(name: str, folder: str) -> str:
-    """One Infisical value via `fleet-secrets get`, or "" when absent or unreachable.  Never logs it."""
+def _redact(text: str) -> str:
+    """Keep a helper reason token; drop anything that could be a value.
+
+    The helper promises that its errors name keys and reason tokens and never a
+    value, but that text is still third-party output, so a URL or a long token
+    is removed before the line can reach the log.  The webhook URL itself
+    carries a token in its path, so this is not a formality.
+    """
+    text = " ".join(text.split())[:200]
+    text = re.sub(r"[A-Za-z][A-Za-z0-9+.-]*://\S+", "<redacted-url>", text)
+    text = re.sub(r"[A-Za-z0-9_\-]{16,}", "<redacted>", text)
+    return text
+
+
+def _fleet_secrets_batch(names: list[str], folder: str) -> dict:
+    """Fetch several names from ONE Infisical folder in one `fleet-secrets get` call.
+
+    `fleet-secrets get A B --path FOLDER` prints a JSON object of name to value,
+    so a pair of webhook names costs ONE folder export instead of two, and one
+    timeout instead of two.  One name prints the bare value instead, which is
+    the other shape this has to read.
+
+    Returns {"values": {...}, "status": ..., "detail": ...}.  The status says
+    WHAT happened -- "ok", "absent" (a named key is not in that folder),
+    "unreachable" (the folder, the auth or the network refused), "timeout",
+    "helper-missing" or "bad-output" -- so a skipped delivery is never
+    reported as the one vague line that said "no valid urls/secrets found"
+    about every different failure.  Never logs a value.
+    """
+    if not names:
+        return {"values": {}, "status": "env", "detail": ""}
     if not FLEET_SECRETS.is_file():
-        return ""
+        return {"values": {}, "status": "helper-missing", "detail": ""}
+    argv = [str(FLEET_SECRETS), "get", *names, "--path", folder]
     try:
         proc = subprocess.run(
-            [str(FLEET_SECRETS), "get", name, "--path", folder],
+            argv,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=SECRET_FETCH_TIMEOUT_SEC,
             stdin=subprocess.DEVNULL,
         )
+    except subprocess.TimeoutExpired:
+        return {
+            "values": {},
+            "status": "timeout",
+            "detail": f"no answer in {SECRET_FETCH_TIMEOUT_SEC}s",
+        }
     except (OSError, subprocess.SubprocessError):
-        return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+        return {"values": {}, "status": "helper-missing", "detail": ""}
+    detail = _redact(proc.stderr or "")
+    if proc.returncode == SECRET_EXIT_ABSENT:
+        return {"values": {}, "status": "absent", "detail": detail}
+    if proc.returncode != 0:
+        return {"values": {}, "status": "unreachable", "detail": detail}
+    out = proc.stdout.strip()
+    if len(names) == 1:
+        if not out:
+            return {"values": {}, "status": "absent", "detail": ""}
+        return {"values": {names[0]: out}, "status": "ok", "detail": ""}
+    try:
+        parsed = json.loads(out) if out else {}
+    except json.JSONDecodeError:
+        return {"values": {}, "status": "bad-output", "detail": ""}
+    if not isinstance(parsed, dict):
+        return {"values": {}, "status": "bad-output", "detail": ""}
+    values = {k: v for k, v in parsed.items() if isinstance(v, str) and v}
+    if any(name not in values for name in names):
+        return {"values": {}, "status": "absent", "detail": detail}
+    return {"values": values, "status": "ok", "detail": ""}
 
 
-def _read_webhook(folder: str, url_key: str, secret_key: str) -> tuple[str, str]:
-    """Environment first, then Infisical `fleet-secrets get` (folder)."""
-    url = os.environ.get(url_key, "").strip() or _fleet_secret(url_key, folder)
-    secret = os.environ.get(secret_key, "").strip() or _fleet_secret(secret_key, folder)
-    return url, secret
+def _read_webhook(folder: str, url_key: str, secret_key: str) -> tuple[str, str, str]:
+    """Environment first, then Infisical `fleet-secrets get` (folder).
+
+    Only the names the environment does NOT supply go to Infisical, and they
+    go in ONE call, so a pair of webhook names costs one folder export and one
+    timeout instead of two of each.
+
+    Returns (url, secret, status).  The status names where the values came
+    from, or why they are missing.
+    """
+    env = {
+        url_key: os.environ.get(url_key, "").strip(),
+        secret_key: os.environ.get(secret_key, "").strip(),
+    }
+    missing = [name for name, value in env.items() if not value]
+    if not missing:
+        return env[url_key], env[secret_key], "env"
+    result = _fleet_secrets_batch(missing, folder)
+    values = result["values"]
+    url = env[url_key] or values.get(url_key, "")
+    secret = env[secret_key] or values.get(secret_key, "")
+    status = result["status"]
+    detail = result.get("detail") or ""
+    if status == "timeout":
+        # The one transient failure worth a second try: the helper was killed
+        # before it could answer.  A timeout here means it took longer than
+        # SECRET_FETCH_TIMEOUT_SEC, which is well past its own worst case, so
+        # the machine really is that slow right now -- one more try, then give
+        # up and say so.
+        log(f"webhook secrets: {folder} timed out, retrying once")
+        time.sleep(SECRET_FETCH_RETRY_SEC)
+        result = _fleet_secrets_batch(missing, folder)
+        values = result["values"]
+        url = env[url_key] or values.get(url_key, "")
+        secret = env[secret_key] or values.get(secret_key, "")
+        status = result["status"]
+        detail = result.get("detail") or ""
+    if status == "ok" and (env[url_key] or env[secret_key]):
+        status = "env+infisical"
+    return url, secret, f"{status}:{detail}" if detail else status
 
 
-def load_webhooks() -> list[tuple[str, str, str]]:
-    """Return list of (name, url, secret).  Never print url/secret."""
+def load_webhooks() -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Return (hooks, notes).  Never print url/secret.
+
+    `notes` says, per wake, where its credentials came from and -- when they
+    are missing -- WHY, so a skipped delivery can be told apart from a
+    delivery that was refused.
+    """
     hooks: list[tuple[str, str, str]] = []
-    bf_url, bf_secret = _read_webhook(
+    notes: list[str] = []
+    bf_url, bf_secret, bf_status = _read_webhook(
         BF_SECRET_FOLDER, "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if bf_url and bf_secret:
         hooks.append(("BotFleet", bf_url, bf_secret))
+    notes.append(f"BotFleet={bf_status}")
     # Optional second wake;  no Infisical folder exists for it yet, so this is skipped unless the
-    # environment or a future /grok-bot-housekeeper-webhook folder supplies both names.
-    gb_url, gb_secret = _read_webhook(
+    # environment or a future /grok-bot-housekeeper-webhook folder supplies both names.  Its
+    # "unreachable" status is that missing folder, not a broken one, so it never blocks the
+    # BotFleet wake.
+    gb_url, gb_secret, gb_status = _read_webhook(
         GB_SECRET_FOLDER, "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if gb_url and gb_secret:
         hooks.append(("GrokBot", gb_url, gb_secret))
-    return hooks
+    notes.append(f"GrokBot={gb_status}")
+    return hooks, notes
 
 
 def _housekeeper_owner_path() -> Path:
@@ -1191,9 +1310,10 @@ def _webhook_started(raw: str, status: int) -> tuple[bool, str]:
 
 
 def fire_webhook(hits: list[dict], sample_data: dict, cleaned: bool) -> bool:
-    hooks = load_webhooks()
+    hooks, notes = load_webhooks()
+    log("webhook credentials: " + " ".join(notes))
     if not hooks:
-        log("webhooks skipped: no valid urls/secrets found")
+        log("webhooks skipped: no complete url+secret pair (see the credential line above)")
         return False
     event_name = _event_name(hits)
     payload = {
