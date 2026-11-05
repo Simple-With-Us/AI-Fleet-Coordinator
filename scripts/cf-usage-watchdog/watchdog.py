@@ -59,11 +59,11 @@ class ApiError(Exception):
 
 
 def minute_key(moment: dt.datetime) -> str:
-    return moment.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z")
+    return moment.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:00Z")
 
 
 def floor_minute(moment: dt.datetime) -> dt.datetime:
-    return moment.astimezone(dt.timezone.utc).replace(second=0, microsecond=0)
+    return moment.astimezone(dt.UTC).replace(second=0, microsecond=0)
 
 
 def local_clock(moment: dt.datetime) -> str:
@@ -75,23 +75,69 @@ def local_clock(moment: dt.datetime) -> str:
 
 DATASETS = (
     ("wd", "workersInvocationsAdaptive", "day", "sum{requests cpuTimeUs}", "scriptName"),
-    ("wm", "workersInvocationsAdaptive", "rate", "sum{requests cpuTimeUs}", "scriptName datetimeMinute"),
+    (
+        "wm",
+        "workersInvocationsAdaptive",
+        "rate",
+        "sum{requests cpuTimeUs}",
+        "scriptName datetimeMinute",
+    ),
     ("dd", "durableObjectsInvocationsAdaptiveGroups", "day", "sum{requests}", "scriptName"),
-    ("dm", "durableObjectsInvocationsAdaptiveGroups", "rate", "sum{requests}", "scriptName datetimeMinute"),
-    ("pd", "durableObjectsPeriodicGroups", "day", "sum{activeTime rowsRead rowsWritten}", "namespaceId"),
-    ("pm", "durableObjectsPeriodicGroups", "rate", "sum{activeTime rowsRead rowsWritten}", "namespaceId datetimeMinute"),
+    (
+        "dm",
+        "durableObjectsInvocationsAdaptiveGroups",
+        "rate",
+        "sum{requests}",
+        "scriptName datetimeMinute",
+    ),
+    (
+        "pd",
+        "durableObjectsPeriodicGroups",
+        "day",
+        "sum{activeTime rowsRead rowsWritten}",
+        "namespaceId",
+    ),
+    (
+        "pm",
+        "durableObjectsPeriodicGroups",
+        "rate",
+        "sum{activeTime rowsRead rowsWritten}",
+        "namespaceId datetimeMinute",
+    ),
     ("d1d", "d1AnalyticsAdaptiveGroups", "day", "sum{rowsRead rowsWritten}", "databaseId"),
-    ("d1m", "d1AnalyticsAdaptiveGroups", "rate", "sum{rowsRead rowsWritten}", "databaseId datetimeMinute"),
+    (
+        "d1m",
+        "d1AnalyticsAdaptiveGroups",
+        "rate",
+        "sum{rowsRead rowsWritten}",
+        "databaseId datetimeMinute",
+    ),
     ("kvd", "kvOperationsAdaptiveGroups", "day", "sum{requests}", "namespaceId actionType"),
-    ("kvm", "kvOperationsAdaptiveGroups", "rate", "sum{requests}", "namespaceId actionType datetimeMinute"),
+    (
+        "kvm",
+        "kvOperationsAdaptiveGroups",
+        "rate",
+        "sum{requests}",
+        "namespaceId actionType datetimeMinute",
+    ),
     ("r2d", "r2OperationsAdaptiveGroups", "day", "sum{requests}", "bucketName actionType"),
-    ("r2m", "r2OperationsAdaptiveGroups", "rate", "sum{requests}", "bucketName actionType datetimeMinute"),
+    (
+        "r2m",
+        "r2OperationsAdaptiveGroups",
+        "rate",
+        "sum{requests}",
+        "bucketName actionType datetimeMinute",
+    ),
     ("r2o", "r2OperationsAdaptiveGroups", "month", "sum{requests}", "bucketName actionType"),
 )
 
 
 def build_query() -> str:
-    window_vars = {"day": ("$dayStart", "$now"), "month": ("$monthStart", "$now"), "rate": ("$rateStart", "$rateEnd")}
+    window_vars = {
+        "day": ("$dayStart", "$now"),
+        "month": ("$monthStart", "$now"),
+        "rate": ("$rateStart", "$rateEnd"),
+    }
     parts = []
     for alias, dataset, window, fields, dims in DATASETS:
         start, end = window_vars[window]
@@ -116,10 +162,10 @@ def query_variables(cfg: dict, now: dt.datetime) -> dict:
     lag = cfg["limits"]["lag_minutes"]
     window = cfg["limits"]["rate_window_minutes"]
     rate_end = floor - dt.timedelta(minutes=lag)
-    iso = lambda moment: moment.strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+    iso = lambda moment: moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "account": cfg["account_id"],
-        "now": iso(now.astimezone(dt.timezone.utc)),
+        "now": iso(now.astimezone(dt.UTC)),
         "dayStart": iso(floor.replace(hour=0, minute=0)),
         "monthStart": iso(floor.replace(day=1, hour=0, minute=0)),
         "rateStart": iso(rate_end - dt.timedelta(minutes=window)),
@@ -141,7 +187,9 @@ def empty_usage() -> dict:
     return {"day": {}, "month": {}, "level": {}, "minutes": {}}
 
 
-def _bump(usage: dict, window: str, metric: str, resource: str, value: float, minute: str | None = None) -> None:
+def _bump(
+    usage: dict, window: str, metric: str, resource: str, value: float, minute: str | None = None
+) -> None:
     if not value:
         return
     if window == "rate":
@@ -159,7 +207,9 @@ def parse_usage(account: dict, ns_to_script: dict) -> dict:
         for row in account.get(alias) or []:
             total, dims = row.get("sum") or {}, row.get("dimensions") or {}
             minute = dims.get("datetimeMinute")
-            add = lambda metric, resource, value: _bump(usage, window, metric, resource, value, minute)  # noqa: B023,E731
+            add = lambda metric, resource, value: _bump(
+                usage, window, metric, resource, value, minute
+            )
             if alias.startswith("w"):
                 add("workers.requests", dims.get("scriptName", ""), total.get("requests", 0))
                 add("workers.cpu_ms", dims.get("scriptName", ""), total.get("cpuTimeUs", 0) / 1000)
@@ -183,7 +233,9 @@ def parse_usage(account: dict, ns_to_script: dict) -> dict:
                 if metric:
                     add(metric, dims.get("bucketName") or "(account)", total.get("requests", 0))
     seen = set()
-    for row in account.get("r2s") or []:  # Newest first:  the first row for a bucket is its current size.
+    for row in (
+        account.get("r2s") or []
+    ):  # Newest first:  the first row for a bucket is its current size.
         bucket = (row.get("dimensions") or {}).get("bucketName", "")
         if bucket in seen:
             continue
@@ -208,7 +260,16 @@ def rate_total(usage: dict, metric: str, resource: str) -> float:
     return sum(usage["minutes"].get(metric, {}).get(resource, {}).values())
 
 
-def _breach(cfg: dict, metric: str, resource: str, window: str, value: float, threshold: float, scope: str, top: str) -> dict:
+def _breach(
+    cfg: dict,
+    metric: str,
+    resource: str,
+    window: str,
+    value: float,
+    threshold: float,
+    scope: str,
+    top: str,
+) -> dict:
     return {
         "key": f"{metric}|{resource}|{window}",
         "metric": metric,
@@ -233,22 +294,52 @@ def evaluate(cfg: dict, profile_name: str, usage: dict) -> list:
             for window in ("day", "month", "level"):
                 value = usage[window].get(metric, {}).get(resource, 0)
                 if window in limits and value >= limits[window]:
-                    breaches.append(_breach(cfg, metric, resource, window, value, limits[window], "resource", resource))
+                    breaches.append(
+                        _breach(
+                            cfg,
+                            metric,
+                            resource,
+                            window,
+                            value,
+                            limits[window],
+                            "resource",
+                            resource,
+                        )
+                    )
             value = rate_total(usage, metric, resource)
             if "rate_5m" in limits and value >= limits["rate_5m"]:
-                breaches.append(_breach(cfg, metric, resource, "rate_5m", value, limits["rate_5m"], "resource", resource))
+                breaches.append(
+                    _breach(
+                        cfg,
+                        metric,
+                        resource,
+                        "rate_5m",
+                        value,
+                        limits["rate_5m"],
+                        "resource",
+                        resource,
+                    )
+                )
     for metric, limits in profile.get("account", {}).items():
         for window in ("day", "month", "level"):
             per = usage[window].get(metric, {})
             value = sum(per.values())
             if window in limits and value >= limits[window]:
                 top = max(per, key=per.get) if per else ""
-                breaches.append(_breach(cfg, metric, "(account)", window, value, limits[window], "account", top))
-        per_rate = {res: sum(mins.values()) for res, mins in usage["minutes"].get(metric, {}).items()}
+                breaches.append(
+                    _breach(cfg, metric, "(account)", window, value, limits[window], "account", top)
+                )
+        per_rate = {
+            res: sum(mins.values()) for res, mins in usage["minutes"].get(metric, {}).items()
+        }
         value = sum(per_rate.values())
         if "rate_5m" in limits and value >= limits["rate_5m"]:
             top = max(per_rate, key=per_rate.get) if per_rate else ""
-            breaches.append(_breach(cfg, metric, "(account)", "rate_5m", value, limits["rate_5m"], "account", top))
+            breaches.append(
+                _breach(
+                    cfg, metric, "(account)", "rate_5m", value, limits["rate_5m"], "account", top
+                )
+            )
     return breaches
 
 
@@ -269,7 +360,9 @@ def owners_for(metric: str, resource: str, inventory: dict) -> list:
 def trip_targets(cfg: dict, profile_name: str, breach: dict, inventory: dict) -> list:
     if cfg["metrics"][breach["metric"]].get("alert_only"):
         return []
-    if breach["scope"] == "account" and not cfg["profiles"][profile_name].get("trip_top_contributor"):
+    if breach["scope"] == "account" and not cfg["profiles"][profile_name].get(
+        "trip_top_contributor"
+    ):
         return []
     return owners_for(breach["metric"], breach["top"], inventory)
 
@@ -294,7 +387,12 @@ class Store:
             pass
         except (OSError, ValueError):
             self.event("state_unreadable")
-        for key, default in (("alerted", {}), ("trips", {}), ("inventory", {}), ("trips_by_day", {})):
+        for key, default in (
+            ("alerted", {}),
+            ("trips", {}),
+            ("inventory", {}),
+            ("trips_by_day", {}),
+        ):
             state.setdefault(key, default)
         return state
 
@@ -310,7 +408,10 @@ class Store:
             raise
 
     def event(self, name: str, **fields: Any) -> None:
-        line = json.dumps({"at": dt.datetime.now(CHICAGO).isoformat(timespec="seconds"), "event": name, **fields}, sort_keys=True)
+        line = json.dumps(
+            {"at": dt.datetime.now(CHICAGO).isoformat(timespec="seconds"), "event": name, **fields},
+            sort_keys=True,
+        )
         print(line, flush=True)
         try:
             if self.events_path.exists() and self.events_path.stat().st_size > EVENTS_MAX_BYTES:
@@ -319,7 +420,9 @@ class Store:
             with os.fdopen(fd, "a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
         except OSError as exc:
-            print(json.dumps({"event": "event_log_failed", "error": type(exc).__name__}), flush=True)
+            print(
+                json.dumps({"event": "event_log_failed", "error": type(exc).__name__}), flush=True
+            )
 
 
 # ---------------------------------------------------------------- real connections
@@ -328,7 +431,13 @@ class Store:
 class Connections:
     """Everything that leaves this process.  Tests replace the whole object."""
 
-    def __init__(self, cfg: dict, runner: Callable = subprocess.run, opener: Callable = urllib.request.urlopen, env: dict | None = None) -> None:
+    def __init__(
+        self,
+        cfg: dict,
+        runner: Callable = subprocess.run,
+        opener: Callable = urllib.request.urlopen,
+        env: dict | None = None,
+    ) -> None:
         self.cfg = cfg
         self.runner = runner
         self.opener = opener
@@ -340,9 +449,19 @@ class Connections:
     def _secret(self, name: str) -> str | None:
         """One value from fleet-secrets, or None when it is absent.  Raises PollError on any other failure."""
         conf = self.cfg["infisical"]
-        command = ["fleet-secrets", "get", name, "--path", conf["path"], "--project", conf["project"]]
+        command = [
+            "fleet-secrets",
+            "get",
+            name,
+            "--path",
+            conf["path"],
+            "--project",
+            conf["project"],
+        ]
         try:
-            done = self.runner(command, capture_output=True, text=True, timeout=30, check=False, env=self.env)
+            done = self.runner(
+                command, capture_output=True, text=True, timeout=30, check=False, env=self.env
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             raise PollError(f"credential-fetch-{type(exc).__name__}") from None
         if done.returncode == 3:
@@ -358,13 +477,19 @@ class Connections:
                 raise PollError("credential-absent")
         return self._token
 
-    def _request(self, method: str, url: str, body: bytes | None = None, headers: dict | None = None) -> tuple:
+    def _request(
+        self, method: str, url: str, body: bytes | None = None, headers: dict | None = None
+    ) -> tuple:
         request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
         with self.opener(request, timeout=self.timeout) as response:
             return response.status, response.read()
 
     def _cloudflare(self, method: str, path: str, body: Any = None) -> dict:
-        headers = {"Authorization": f"Bearer {self.token()}", "Content-Type": "application/json", "User-Agent": "cf-usage-watchdog"}
+        headers = {
+            "Authorization": f"Bearer {self.token()}",
+            "Content-Type": "application/json",
+            "User-Agent": "cf-usage-watchdog",
+        }
         data = None if body is None else json.dumps(body).encode("utf-8")
         try:
             _, raw = self._request(method, API_BASE + path, data, headers)
@@ -408,9 +533,25 @@ class Connections:
         conf = self.cfg["zulip"]
         env = {key: value for key, value in self.env.items() if not key.startswith("INFISICAL_")}
         env["AGENT_SEAT"] = conf["seat"]
-        command = ["simple-chat", "post", "--channel", conf["channel"], "--topic", conf["topic"], "-"]
+        command = [
+            "simple-chat",
+            "post",
+            "--channel",
+            conf["channel"],
+            "--topic",
+            conf["topic"],
+            "-",
+        ]
         try:
-            done = self.runner(command, input=text, capture_output=True, text=True, timeout=30, check=False, env=env)
+            done = self.runner(
+                command,
+                input=text,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
         except (OSError, subprocess.SubprocessError):
             return False
         return done.returncode == 0
@@ -426,7 +567,9 @@ class Connections:
             return False
         if not token or not user:
             return None
-        form = urllib.parse.urlencode({"token": token, "user": user, "title": title, "message": text[:1000], "priority": 1})
+        form = urllib.parse.urlencode(
+            {"token": token, "user": user, "title": title, "message": text[:1000], "priority": 1}
+        )
         try:
             status, _ = self._request("POST", PUSHOVER_URL, form.encode("utf-8"))
         except (urllib.error.URLError, OSError):
@@ -437,7 +580,9 @@ class Connections:
         """Whether a page could go out, without sending one.  None when the read itself failed."""
         conf = self.cfg["infisical"]
         try:
-            return bool(self._secret(conf["pushover_token_key"]) and self._secret(conf["pushover_user_key"]))
+            return bool(
+                self._secret(conf["pushover_token_key"]) and self._secret(conf["pushover_user_key"])
+            )
         except PollError:
             return None
 
@@ -461,7 +606,16 @@ class Connections:
 
 
 class Watchdog:
-    def __init__(self, cfg: dict, conn: Any, store: Store, state: dict, now: dt.datetime, mode: str, profile: str) -> None:
+    def __init__(
+        self,
+        cfg: dict,
+        conn: Any,
+        store: Store,
+        state: dict,
+        now: dt.datetime,
+        mode: str,
+        profile: str,
+    ) -> None:
         self.cfg = cfg
         self.conn = conn
         self.store = store
@@ -482,7 +636,12 @@ class Watchdog:
         shown = lines[:ALERT_LINES_MAX]
         if len(lines) > ALERT_LINES_MAX:
             shown.append(f"And {len(lines) - ALERT_LINES_MAX} more in the watchdog log.")
-        text = "\n".join([f"**{title}** ({local_clock(self.now)}, {self.mode} mode, {self.profile} profile)", *shown])
+        text = "\n".join(
+            [
+                f"**{title}** ({local_clock(self.now)}, {self.mode} mode, {self.profile} profile)",
+                *shown,
+            ]
+        )
         zulip_ok = self.conn.zulip(text)
         paged = self.conn.page(title, "\n".join(shown)) if page else None
         self.store.event("notify", title=title, zulip=zulip_ok, page=paged)
@@ -493,7 +652,9 @@ class Watchdog:
 
     def describe(self, breach: dict, previous: dict) -> str:
         spec = self.cfg["metrics"][breach["metric"]]
-        window = {"day": "today", "month": "this month", "level": "now", "rate_5m": "in 5 minutes"}[breach["window"]]
+        window = {"day": "today", "month": "this month", "level": "now", "rate_5m": "in 5 minutes"}[
+            breach["window"]
+        ]
         parts = [
             f"{spec['label']} on {breach['resource']}:  {breach['value']:,.0f} {window}, over {breach['threshold']:,.0f}, about ${breach['usd']:,.2f}."
         ]
@@ -520,14 +681,24 @@ class Watchdog:
         try:
             result = call()
         except ApiError as exc:
-            self.store.event("action_failed", worker=worker, action=action, previous_version=previous_version, status=exc.status, codes=exc.codes)
+            self.store.event(
+                "action_failed",
+                worker=worker,
+                action=action,
+                previous_version=previous_version,
+                status=exc.status,
+                codes=exc.codes,
+            )
             return False
         self.store.event("action", worker=worker, action=action, previous_version=previous_version)
         return True if result is None else result
 
     def trip(self, worker: str, breach: dict, previous_version: str) -> None:
         minute = floor_minute(self.now)
-        pre_rate = rate_total(self._usage, breach["metric"], breach["top"]) / self.limits["rate_window_minutes"]
+        pre_rate = (
+            rate_total(self._usage, breach["metric"], breach["top"])
+            / self.limits["rate_window_minutes"]
+        )
         if breach["window"] == "rate_5m":
             target = breach["threshold"] / self.limits["rate_window_minutes"]
         else:
@@ -558,13 +729,20 @@ class Watchdog:
             ),
         )
         if set_off is False:
-            self.notify(f"Could not set {GUARD_SECRET} on {worker}", [f"Moving straight to the fallback stop.{GAP}Previous version:  {previous_version}."])
+            self.notify(
+                f"Could not set {GUARD_SECRET} on {worker}",
+                [
+                    f"Moving straight to the fallback stop.{GAP}Previous version:  {previous_version}."
+                ],
+            )
             self.harden(worker)
             return
         self._mark_tripped(worker, breach, previous_version)
         self.notify(
             f"Tripped {worker}",
-            [f"{GUARD_SECRET}=off is set.{GAP}Previous version:  {previous_version}.{GAP}A Worker that has not bundled the budget guard ignores it, and the fallback stop follows if the rate does not fall."],
+            [
+                f"{GUARD_SECRET}=off is set.{GAP}Previous version:  {previous_version}.{GAP}A Worker that has not bundled the budget guard ignores it, and the fallback stop follows if the rate does not fall."
+            ],
         )
         self.store.save(self.state)
 
@@ -581,7 +759,11 @@ class Watchdog:
             lambda: self.conn.api(
                 "POST",
                 f"{self.base}/workers/scripts/{worker}/deployments",
-                {"strategy": "percentage", "versions": [{"version_id": version, "percentage": 100}], "annotations": {"workers/message": message[:1000]}},
+                {
+                    "strategy": "percentage",
+                    "versions": [{"version_id": version, "percentage": 100}],
+                    "annotations": {"workers/message": message[:1000]},
+                },
             ),
         )
 
@@ -593,15 +775,29 @@ class Watchdog:
         previous: dict = {}
         path = f"{self.base}/workers/scripts/{worker}"
         try:
-            previous["schedules"] = (self.conn.api("GET", f"{path}/schedules") or {}).get("schedules", [])
+            previous["schedules"] = (self.conn.api("GET", f"{path}/schedules") or {}).get(
+                "schedules", []
+            )
             previous["subdomain"] = self.conn.api("GET", f"{path}/subdomain")
             domains = self.conn.api("GET", f"{self.base}/workers/domains") or []
             previous["domains"] = [d for d in domains if d.get("service") == worker]
         except ApiError as exc:
-            self.store.event("action_failed", worker=worker, action="read_previous", previous_version=previous_version, status=exc.status, codes=exc.codes)
+            self.store.event(
+                "action_failed",
+                worker=worker,
+                action="read_previous",
+                previous_version=previous_version,
+                status=exc.status,
+                codes=exc.codes,
+            )
             # The trip stays at stage 2, so the next poll tries again.  One message an hour, not one a minute.
             if self.epoch - trip.get("last_stuck_alert", 0) >= self.limits["realert_minutes"] * 60:
-                if self.notify(f"Fallback stop failed on {worker}", [f"Could not read what it would change (HTTP {exc.status}).{GAP}It tries again each minute.{GAP}Stop it by hand if this does not clear."]):
+                if self.notify(
+                    f"Fallback stop failed on {worker}",
+                    [
+                        f"Could not read what it would change (HTTP {exc.status}).{GAP}It tries again each minute.{GAP}Stop it by hand if this does not clear."
+                    ],
+                ):
                     trip["last_stuck_alert"] = self.epoch
             self.store.save(self.state)
             return
@@ -609,8 +805,20 @@ class Watchdog:
         trip["previous"] = previous
         self.store.save(self.state)  # What re-arm needs, before anything is changed.
         results = [
-            self._step(worker, "empty_schedules", previous_version, lambda: self.conn.api("PUT", f"{path}/schedules", [])),
-            self._step(worker, "disable_subdomain", previous_version, lambda: self.conn.api("POST", f"{path}/subdomain", {"enabled": False, "previews_enabled": False})),
+            self._step(
+                worker,
+                "empty_schedules",
+                previous_version,
+                lambda: self.conn.api("PUT", f"{path}/schedules", []),
+            ),
+            self._step(
+                worker,
+                "disable_subdomain",
+                previous_version,
+                lambda: self.conn.api(
+                    "POST", f"{path}/subdomain", {"enabled": False, "previews_enabled": False}
+                ),
+            ),
         ]
         for domain in previous["domains"]:
             results.append(
@@ -618,7 +826,9 @@ class Watchdog:
                     worker,
                     f"detach_domain {domain.get('hostname')}",
                     previous_version,
-                    lambda d=domain: self.conn.api("DELETE", f"{self.base}/workers/domains/{d['id']}"),
+                    lambda d=domain: self.conn.api(
+                        "DELETE", f"{self.base}/workers/domains/{d['id']}"
+                    ),
                 )
             )
         failed = sum(1 for result in results if result is False)
@@ -638,31 +848,64 @@ class Watchdog:
         trip count:  the analytics lag means earlier polls still read minutes from before it."""
         floor = floor_minute(self.now)
         last = floor - dt.timedelta(minutes=self.limits["lag_minutes"] + 1)
-        first = floor - dt.timedelta(minutes=self.limits["lag_minutes"] + self.limits["rate_window_minutes"])
+        first = floor - dt.timedelta(
+            minutes=self.limits["lag_minutes"] + self.limits["rate_window_minutes"]
+        )
         for worker, trip in list(self.state["trips"].items()):
             trip["polls"] = trip.get("polls", 0) + 1
-            after = dt.datetime.strptime(trip["trip_minute"], "%Y-%m-%dT%H:%M:00Z").replace(tzinfo=dt.timezone.utc) + dt.timedelta(minutes=1)
+            after = dt.datetime.strptime(trip["trip_minute"], "%Y-%m-%dT%H:%M:00Z").replace(
+                tzinfo=dt.UTC
+            ) + dt.timedelta(minutes=1)
             start = max(after, first)
             if start > last:
                 continue
             count = int((last - start).total_seconds() // 60) + 1
             series = usage["minutes"].get(trip["metric"], {}).get(trip["resource"], {})
-            total = sum(value for minute, value in series.items() if start <= dt.datetime.strptime(minute, "%Y-%m-%dT%H:%M:00Z").replace(tzinfo=dt.timezone.utc) <= last)
+            total = sum(
+                value
+                for minute, value in series.items()
+                if start
+                <= dt.datetime.strptime(minute, "%Y-%m-%dT%H:%M:00Z").replace(
+                    tzinfo=dt.UTC
+                )
+                <= last
+            )
             average = total / count
             over = average > trip["target_per_minute"]
-            self.store.event("trip_check", worker=worker, stage=trip.get("stage"), polls=trip["polls"], per_minute=round(average, 2), target=round(trip["target_per_minute"], 2))
+            self.store.event(
+                "trip_check",
+                worker=worker,
+                stage=trip.get("stage"),
+                polls=trip["polls"],
+                per_minute=round(average, 2),
+                target=round(trip["target_per_minute"], 2),
+            )
             if not over:
                 continue
             if trip.get("stage") == 2 and trip["polls"] >= self.limits["escalate_after_polls"]:
                 self.harden(worker)
-            elif trip.get("stage") == 3 and self.epoch - trip.get("last_stuck_alert", 0) >= self.limits["realert_minutes"] * 60:
-                if self.notify(f"{worker} is still over after the fallback stop", [f"{average:,.0f} per minute of {trip['metric']}, target {trip['target_per_minute']:,.0f}.{GAP}Stop it by hand."]):
+            elif (
+                trip.get("stage") == 3
+                and self.epoch - trip.get("last_stuck_alert", 0)
+                >= self.limits["realert_minutes"] * 60
+            ):
+                if self.notify(
+                    f"{worker} is still over after the fallback stop",
+                    [
+                        f"{average:,.0f} per minute of {trip['metric']}, target {trip['target_per_minute']:,.0f}.{GAP}Stop it by hand."
+                    ],
+                ):
                     trip["last_stuck_alert"] = self.epoch
 
     # ---- the run
 
     def apply_breaches(self, breaches: list, inventory: dict) -> None:
-        due = [b for b in breaches if self.epoch - self.state["alerted"].get(b["key"], 0) >= self.limits["realert_minutes"] * 60]
+        due = [
+            b
+            for b in breaches
+            if self.epoch - self.state["alerted"].get(b["key"], 0)
+            >= self.limits["realert_minutes"] * 60
+        ]
         wanted: dict = {}
         # Observe mode only reports, so it reads each Worker's version when it has something new to say.
         for breach in breaches if self.mode == "enforce" else due:
@@ -670,7 +913,9 @@ class Watchdog:
                 if worker not in self.state["trips"] and worker not in wanted:
                     wanted[worker] = breach
         versions: dict = {}
-        for worker in {w for b in due for w in trip_targets(self.cfg, self.profile, b, inventory)} | set(wanted):
+        for worker in {
+            w for b in due for w in trip_targets(self.cfg, self.profile, b, inventory)
+        } | set(wanted):
             versions[worker] = self.current_version(worker)
         if due:
             lines = []
@@ -678,23 +923,50 @@ class Watchdog:
                 targets = trip_targets(self.cfg, self.profile, breach, inventory)
                 previous = {worker: versions[worker] for worker in targets}
                 lines.append(self.describe(breach, previous))
-                self.store.event("breach", key=breach["key"], value=breach["value"], threshold=breach["threshold"], usd=breach["usd"], mode=self.mode, targets=targets, previous_versions=previous)
+                self.store.event(
+                    "breach",
+                    key=breach["key"],
+                    value=breach["value"],
+                    threshold=breach["threshold"],
+                    usd=breach["usd"],
+                    mode=self.mode,
+                    targets=targets,
+                    previous_versions=previous,
+                )
             if self.notify(f"Cloudflare usage over a limit on {self.cfg['account_name']}", lines):
                 for breach in due:
                     self.state["alerted"][breach["key"]] = self.epoch
                 self.store.save(self.state)
         if self.mode != "enforce":
             for worker, breach in wanted.items():
-                self.store.event("would_trip", worker=worker, key=breach["key"], previous_version=versions[worker])
+                self.store.event(
+                    "would_trip",
+                    worker=worker,
+                    key=breach["key"],
+                    previous_version=versions[worker],
+                )
             return
         day = floor_minute(self.now).strftime("%Y-%m-%d")
         tripped_this_run = 0
         for worker, breach in wanted.items():
-            over_day = self.state["trips_by_day"].get(day, 0) >= self.limits["max_trips_per_utc_day"]
+            over_day = (
+                self.state["trips_by_day"].get(day, 0) >= self.limits["max_trips_per_utc_day"]
+            )
             if tripped_this_run >= self.limits["max_trips_per_run"] or over_day:
-                self.store.event("trip_suppressed", worker=worker, key=breach["key"], reason="daily cap" if over_day else "run cap", previous_version=versions[worker])
+                self.store.event(
+                    "trip_suppressed",
+                    worker=worker,
+                    key=breach["key"],
+                    reason="daily cap" if over_day else "run cap",
+                    previous_version=versions[worker],
+                )
                 if over_day and f"capped|{day}" not in self.state["alerted"]:
-                    if self.notify("Trip cap reached", [f"{worker} would trip on {breach['metric']}, but {self.limits['max_trips_per_utc_day']} Workers have already tripped today.{GAP}Look at it by hand."]):
+                    if self.notify(
+                        "Trip cap reached",
+                        [
+                            f"{worker} would trip on {breach['metric']}, but {self.limits['max_trips_per_utc_day']} Workers have already tripped today.{GAP}Look at it by hand."
+                        ],
+                    ):
                         self.state["alerted"][f"capped|{day}"] = self.epoch
                 continue
             self.trip(worker, breach, versions[worker])
@@ -705,10 +977,18 @@ class Watchdog:
         self.store.event("poll_failed", reason=reason, minutes=round((self.epoch - since) / 60, 1))
         if self.epoch - since < self.limits["poll_fail_alert_minutes"] * 60:
             return
-        if self.epoch - self.state.get("poll_fail_alerted", 0) < self.limits["realert_minutes"] * 60:
+        if (
+            self.epoch - self.state.get("poll_fail_alerted", 0)
+            < self.limits["realert_minutes"] * 60
+        ):
             return
         minutes = round((self.epoch - since) / 60)
-        if self.notify("Cloudflare usage watchdog is blind", [f"No usage read for {minutes} minutes ({reason}).{GAP}Nothing trips while it is blind."]):
+        if self.notify(
+            "Cloudflare usage watchdog is blind",
+            [
+                f"No usage read for {minutes} minutes ({reason}).{GAP}Nothing trips while it is blind."
+            ],
+        ):
             self.state["poll_fail_alerted"] = self.epoch
 
     def run(self) -> int:
@@ -718,8 +998,13 @@ class Watchdog:
             self.handle_poll_failure(str(exc))
             self.store.save(self.state)
             return 1
-        if self.state.pop("poll_failed_since", None) is not None and self.state.pop("poll_fail_alerted", None) is not None:
-            self.notify("Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False)
+        if (
+            self.state.pop("poll_failed_since", None) is not None
+            and self.state.pop("poll_fail_alerted", None) is not None
+        ):
+            self.notify(
+                "Cloudflare usage watchdog can read again", ["Usage reads are working."], page=False
+            )
         self.state.pop("poll_fail_alerted", None)
         inventory = self.refresh_inventory_if_stale()
         usage = parse_usage(account, inventory.get("ns_to_script", {}))
@@ -736,9 +1021,13 @@ class Watchdog:
 
     def prune(self) -> None:
         cutoff = self.epoch - 2 * 86400
-        self.state["alerted"] = {key: at for key, at in self.state["alerted"].items() if at >= cutoff}
+        self.state["alerted"] = {
+            key: at for key, at in self.state["alerted"].items() if at >= cutoff
+        }
         today = floor_minute(self.now).strftime("%Y-%m-%d")
-        self.state["trips_by_day"] = {day: count for day, count in self.state["trips_by_day"].items() if day == today}
+        self.state["trips_by_day"] = {
+            day: count for day, count in self.state["trips_by_day"].items() if day == today
+        }
 
     # ---- the daily read:  who owns what, and does the account still match git
 
@@ -800,9 +1089,13 @@ class Watchdog:
         if self.beat is None:
             lines.append("No dead-man heartbeat is configured.")
         if self.conn.page_configured() is False:
-            lines.append("No direct page path is configured, so an alert sent while simple-tools-mcp is tripped or capped reaches nobody.")
+            lines.append(
+                "No direct page path is configured, so an alert sent while simple-tools-mcp is tripped or capped reaches nobody."
+            )
         if lines and lines != self.state.get("last_drift"):
-            if not self.notify("Cloudflare account does not match what the watchdog expects", lines, page=False):
+            if not self.notify(
+                "Cloudflare account does not match what the watchdog expects", lines, page=False
+            ):
                 return
         self.state["last_drift"] = lines
         self.state["daily_check_day"] = today
@@ -836,7 +1129,9 @@ def compare_registry(inventory: dict, registry: dict | None) -> list | None:
         entry, live = registry[name], details[name]
         for key, wanted in (entry.get("limits") or {}).items():
             if (live.get("limits") or {}).get(key) != wanted:
-                drift.append(f"{name} limits.{key} is {(live.get('limits') or {}).get(key)}, the registry says {wanted}.")
+                drift.append(
+                    f"{name} limits.{key} is {(live.get('limits') or {}).get(key)}, the registry says {wanted}."
+                )
         if entry.get("preview_urls") is False and live.get("previews_enabled"):
             drift.append(f"{name} has preview URLs on, the registry says off.")
         if entry.get("workers_dev") is False and live.get("workers_dev"):
@@ -858,11 +1153,32 @@ def rearm(cfg: dict, conn: Any, store: Store, state: dict, worker: str, apply: b
     previous = trip.get("previous") or {}
     plan: list = [("DELETE", f"{path}/secrets/{GUARD_SECRET}", None)]
     if "schedules" in previous:
-        plan.append(("PUT", f"{path}/schedules", [{"cron": item["cron"]} for item in previous["schedules"]]))
+        plan.append(
+            ("PUT", f"{path}/schedules", [{"cron": item["cron"]} for item in previous["schedules"]])
+        )
     if "subdomain" in previous and previous["subdomain"] is not None:
-        plan.append(("POST", f"{path}/subdomain", {"enabled": bool(previous["subdomain"].get("enabled")), "previews_enabled": bool(previous["subdomain"].get("previews_enabled"))}))
+        plan.append(
+            (
+                "POST",
+                f"{path}/subdomain",
+                {
+                    "enabled": bool(previous["subdomain"].get("enabled")),
+                    "previews_enabled": bool(previous["subdomain"].get("previews_enabled")),
+                },
+            )
+        )
     for domain in previous.get("domains", []):
-        plan.append(("PUT", f"{base}/workers/domains", {key: domain[key] for key in ("hostname", "service", "zone_id", "environment") if key in domain}))
+        plan.append(
+            (
+                "PUT",
+                f"{base}/workers/domains",
+                {
+                    key: domain[key]
+                    for key in ("hostname", "service", "zone_id", "environment")
+                    if key in domain
+                },
+            )
+        )
     for method, url, body in plan:
         print(method, url, json.dumps(body) if body is not None else "")
     if not apply:
@@ -875,13 +1191,22 @@ def rearm(cfg: dict, conn: Any, store: Store, state: dict, worker: str, apply: b
             store.event("rearm_step", worker=worker, method=method, path=url.replace(base, ""))
         except ApiError as exc:
             failed += 1
-            store.event("rearm_failed", worker=worker, method=method, path=url.replace(base, ""), status=exc.status, codes=exc.codes)
+            store.event(
+                "rearm_failed",
+                worker=worker,
+                method=method,
+                path=url.replace(base, ""),
+                status=exc.status,
+                codes=exc.codes,
+            )
     if failed:
         print(f"{failed} step(s) failed;  the trip stays recorded.  Fix them and run this again.")
         return 1
     del state["trips"][worker]
     store.save(state)
-    print(f"{worker} re-armed.  It stays on the version the trip left live;  previous version {trip.get('previous_version')}.")
+    print(
+        f"{worker} re-armed.  It stays on the version the trip left live;  previous version {trip.get('previous_version')}."
+    )
     return 0
 
 
@@ -929,18 +1254,31 @@ def print_thresholds(cfg: dict) -> None:
         for section in ("per_resource", "account"):
             for metric, rule in profile.get(section, {}).items():
                 spec = cfg["metrics"][metric]
-                bits = [f"{key} {rule[key]:,}" for key in ("day", "month", "level", "rate_5m") if key in rule]
-                dollars = " ".join(f"{key} ${rule[key]:,.2f}" for key in ("usd_day", "usd_rate_hour", "usd_month") if key in rule)
+                bits = [
+                    f"{key} {rule[key]:,}"
+                    for key in ("day", "month", "level", "rate_5m")
+                    if key in rule
+                ]
+                dollars = " ".join(
+                    f"{key} ${rule[key]:,.2f}"
+                    for key in ("usd_day", "usd_rate_hour", "usd_month")
+                    if key in rule
+                )
                 print(f"  {section:<12} {spec['label']:<28} {'; '.join(bits):<36} {dollars}")
 
 
 def default_state_dir(env: dict) -> Path:
-    return Path(env.get("CF_USAGE_WATCHDOG_STATE_DIR") or Path(env.get("HOME", "~")).expanduser() / ".local/state/cf-usage-watchdog")
+    return Path(
+        env.get("CF_USAGE_WATCHDOG_STATE_DIR")
+        or Path(env.get("HOME", "~")).expanduser() / ".local/state/cf-usage-watchdog"
+    )
 
 
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("command", nargs="?", default="run", choices=("run", "thresholds", "status", "rearm"))
+    parser.add_argument(
+        "command", nargs="?", default="run", choices=("run", "thresholds", "status", "rearm")
+    )
     parser.add_argument("worker", nargs="?")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
@@ -951,7 +1289,13 @@ def main(argv: list | None = None) -> int:
     store = Store(default_state_dir(dict(os.environ)))
     state = store.load()
     if args.command == "status":
-        print(json.dumps({"trips": state["trips"], "poll_failed_since": state.get("poll_failed_since")}, indent=1, sort_keys=True))
+        print(
+            json.dumps(
+                {"trips": state["trips"], "poll_failed_since": state.get("poll_failed_since")},
+                indent=1,
+                sort_keys=True,
+            )
+        )
         return 0
     conn = Connections(cfg)
     if args.command == "rearm":
@@ -962,7 +1306,7 @@ def main(argv: list | None = None) -> int:
     if profile not in cfg["profiles"]:
         store.event("profile_unknown")
         profile = "paid"
-    now = dt.datetime.fromtimestamp(time.time(), dt.timezone.utc)
+    now = dt.datetime.fromtimestamp(time.time(), dt.UTC)
     return Watchdog(cfg, conn, store, state, now, mode, profile).run()
 
 

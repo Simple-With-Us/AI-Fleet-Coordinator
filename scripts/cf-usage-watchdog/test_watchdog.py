@@ -21,9 +21,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
-import watchdog as wd  # noqa: E402
+import watchdog as wd
 
-UTC = dt.timezone.utc
+UTC = dt.UTC
 NOW = dt.datetime(2026, 11, 5, 12, 30, 20, tzinfo=UTC)
 BASE = "/accounts/3a9368057468d0909cafaa85df12d1b7"
 WORKER = "expenses-jays-services"
@@ -48,10 +48,15 @@ def minute(offset: int, base: dt.datetime = NOW) -> str:
 def d1_rows(day: int = 0, per_minute: dict | None = None) -> dict:
     account: dict = {}
     if day:
-        account["d1d"] = [{"sum": {"rowsWritten": day, "rowsRead": 0}, "dimensions": {"databaseId": DB}}]
+        account["d1d"] = [
+            {"sum": {"rowsWritten": day, "rowsRead": 0}, "dimensions": {"databaseId": DB}}
+        ]
     if per_minute:
         account["d1m"] = [
-            {"sum": {"rowsWritten": value, "rowsRead": 0}, "dimensions": {"databaseId": DB, "datetimeMinute": key}}
+            {
+                "sum": {"rowsWritten": value, "rowsRead": 0},
+                "dimensions": {"databaseId": DB, "datetimeMinute": key},
+            }
             for key, value in per_minute.items()
         ]
     return account
@@ -85,7 +90,9 @@ class Fake:
             if re.search(pattern, f"{method} {path}"):
                 raise error
         if path.endswith("/deployments") and method == "GET":
-            return {"deployments": [{"versions": [{"version_id": "old-version", "percentage": 100}]}]}
+            return {
+                "deployments": [{"versions": [{"version_id": "old-version", "percentage": 100}]}]
+            }
         if path.endswith("/schedules") and method == "GET":
             return {"schedules": [{"cron": "*/5 * * * *", "created_on": "x"}]}
         if path.endswith("/subdomain") and method == "GET":
@@ -179,13 +186,36 @@ class QueryTests(Base):
     def test_parse_units(self):
         usage = wd.parse_usage(
             {
-                "wd": [{"sum": {"requests": 5, "cpuTimeUs": 2000}, "dimensions": {"scriptName": "w"}}],
-                "pd": [{"sum": {"activeTime": 1_000_000, "rowsRead": 3, "rowsWritten": 4}, "dimensions": {"namespaceId": "ns-1"}}],
-                "kvd": [{"sum": {"requests": 7}, "dimensions": {"namespaceId": "k", "actionType": "list"}}],
-                "r2d": [{"sum": {"requests": 2}, "dimensions": {"bucketName": "", "actionType": "ListBuckets"}}],
+                "wd": [
+                    {"sum": {"requests": 5, "cpuTimeUs": 2000}, "dimensions": {"scriptName": "w"}}
+                ],
+                "pd": [
+                    {
+                        "sum": {"activeTime": 1_000_000, "rowsRead": 3, "rowsWritten": 4},
+                        "dimensions": {"namespaceId": "ns-1"},
+                    }
+                ],
+                "kvd": [
+                    {
+                        "sum": {"requests": 7},
+                        "dimensions": {"namespaceId": "k", "actionType": "list"},
+                    }
+                ],
+                "r2d": [
+                    {
+                        "sum": {"requests": 2},
+                        "dimensions": {"bucketName": "", "actionType": "ListBuckets"},
+                    }
+                ],
                 "r2s": [
-                    {"max": {"payloadSize": 2e9, "metadataSize": 0}, "dimensions": {"bucketName": "b", "datetime": "new"}},
-                    {"max": {"payloadSize": 9e9, "metadataSize": 0}, "dimensions": {"bucketName": "b", "datetime": "old"}},
+                    {
+                        "max": {"payloadSize": 2e9, "metadataSize": 0},
+                        "dimensions": {"bucketName": "b", "datetime": "new"},
+                    },
+                    {
+                        "max": {"payloadSize": 9e9, "metadataSize": 0},
+                        "dimensions": {"bucketName": "b", "datetime": "old"},
+                    },
                 ],
             },
             {"ns-1": "script"},
@@ -214,8 +244,18 @@ class ConfigTests(Base):
         for metric, rule in self.cfg["profiles"]["paid"]["per_resource"].items():
             self.assertGreaterEqual(rule["day"], 5 * rule["measured_peak_day"], metric)
             self.assertGreaterEqual(rule["rate_5m"], 5 * rule["measured_peak_5m"], metric)
-            self.assertAlmostEqual(rule["usd_day"], wd.usd_estimate(self.cfg, metric, rule["day"]), places=2, msg=metric)
-            self.assertAlmostEqual(rule["usd_rate_hour"], wd.usd_estimate(self.cfg, metric, rule["rate_5m"] * 12), places=3, msg=metric)
+            self.assertAlmostEqual(
+                rule["usd_day"],
+                wd.usd_estimate(self.cfg, metric, rule["day"]),
+                places=2,
+                msg=metric,
+            )
+            self.assertAlmostEqual(
+                rule["usd_rate_hour"],
+                wd.usd_estimate(self.cfg, metric, rule["rate_5m"] * 12),
+                places=3,
+                msg=metric,
+            )
 
     def test_paid_covers_every_metric(self):
         paid = self.cfg["profiles"]["paid"]
@@ -294,24 +334,49 @@ class EnforceTests(Base):
 
     def test_live_version_is_labelled_for_the_deployers(self):
         self.poll(d1_rows(day=2_000_000))
-        post = next(call for call in self.fake.calls if call[0] == "POST" and call[1].endswith("/deployments"))
+        post = next(
+            call
+            for call in self.fake.calls
+            if call[0] == "POST" and call[1].endswith("/deployments")
+        )
         self.assertTrue(post[2]["annotations"]["workers/message"].startswith("GUARD-TRIPPED"))
         self.assertEqual(post[2]["versions"], [{"version_id": "old-version", "percentage": 100}])
 
     def test_a_breach_with_no_owner_only_alerts(self):
-        account = {"r2d": [{"sum": {"requests": 900_000}, "dimensions": {"bucketName": "s3-client-bucket", "actionType": "PutObject"}}]}
+        account = {
+            "r2d": [
+                {
+                    "sum": {"requests": 900_000},
+                    "dimensions": {"bucketName": "s3-client-bucket", "actionType": "PutObject"},
+                }
+            ]
+        }
         self.poll(account)
         self.assertEqual(len(self.fake.posts), 1)
         self.assertEqual(self.fake.writes(), [])
 
     def test_storage_never_trips(self):
-        account = {"r2s": [{"max": {"payloadSize": 20e9, "metadataSize": 0}, "dimensions": {"bucketName": "receipts", "datetime": "x"}}]}
+        account = {
+            "r2s": [
+                {
+                    "max": {"payloadSize": 20e9, "metadataSize": 0},
+                    "dimensions": {"bucketName": "receipts", "datetime": "x"},
+                }
+            ]
+        }
         self.poll(account)
         self.assertIn("R2 storage GB", self.fake.posts[0])
         self.assertEqual(self.fake.writes(), [])
 
     def test_unknown_script_never_trips(self):
-        account = {"wd": [{"sum": {"requests": 9_000_000, "cpuTimeUs": 0}, "dimensions": {"scriptName": "__unknown__"}}]}
+        account = {
+            "wd": [
+                {
+                    "sum": {"requests": 9_000_000, "cpuTimeUs": 0},
+                    "dimensions": {"scriptName": "__unknown__"},
+                }
+            ]
+        }
         self.poll(account)
         self.assertEqual(self.fake.writes(), [])
 
@@ -340,8 +405,14 @@ class EnforceTests(Base):
     def test_account_breach_on_free_trips_the_top_contributor(self):
         account = {
             "wd": [
-                {"sum": {"requests": 70_000, "cpuTimeUs": 0}, "dimensions": {"scriptName": "simple-tools-mcp"}},
-                {"sum": {"requests": 15_000, "cpuTimeUs": 0}, "dimensions": {"scriptName": "alert-ingress"}},
+                {
+                    "sum": {"requests": 70_000, "cpuTimeUs": 0},
+                    "dimensions": {"scriptName": "simple-tools-mcp"},
+                },
+                {
+                    "sum": {"requests": 15_000, "cpuTimeUs": 0},
+                    "dimensions": {"scriptName": "alert-ingress"},
+                },
             ]
         }
         self.poll(account, profile="free")
@@ -350,7 +421,14 @@ class EnforceTests(Base):
         self.assertEqual(list(self.state["trips"]), ["simple-tools-mcp"])
 
     def test_free_profile_uses_month_to_date_for_r2(self):
-        account = {"r2o": [{"sum": {"requests": 850_000}, "dimensions": {"bucketName": "receipts", "actionType": "PutObject"}}]}
+        account = {
+            "r2o": [
+                {
+                    "sum": {"requests": 850_000},
+                    "dimensions": {"bucketName": "receipts", "actionType": "PutObject"},
+                }
+            ]
+        }
         self.poll(account, profile="free", mode="observe")
         self.assertIn("this month", self.fake.posts[0])
 
@@ -379,12 +457,21 @@ class EscalationTests(Base):
         self.assertEqual(trip["stage"], 3)
         writes = self.fake.writes()
         self.assertIn(("PUT", f"/workers/scripts/{WORKER}/schedules", []), writes)
-        self.assertIn(("POST", f"/workers/scripts/{WORKER}/subdomain", {"enabled": False, "previews_enabled": False}), writes)
+        self.assertIn(
+            (
+                "POST",
+                f"/workers/scripts/{WORKER}/subdomain",
+                {"enabled": False, "previews_enabled": False},
+            ),
+            writes,
+        )
         self.assertIn(("DELETE", "/workers/domains/dom-1", None), writes)
         self.assertNotIn(("DELETE", "/workers/domains/dom-2", None), writes)
         self.assertEqual(trip["previous"]["schedules"][0]["cron"], "*/5 * * * *")
         self.assertEqual([d["id"] for d in trip["previous"]["domains"]], ["dom-1"])
-        self.assertTrue(all(row["previous_version"] == "old-version" for row in self.events("action")))
+        self.assertTrue(
+            all(row["previous_version"] == "old-version" for row in self.events("action"))
+        )
         self.assertTrue(any("Fallback stop on" in post for post in self.fake.posts))
 
     def test_minutes_from_before_the_trip_never_escalate(self):
@@ -392,7 +479,16 @@ class EscalationTests(Base):
         self.poll(d1_rows(per_minute={minute(-3 - i): 5000 for i in range(5)}))
         for count in (1, 2, 3):
             at = NOW + dt.timedelta(minutes=count)
-            self.poll(d1_rows(per_minute={minute(-back, at): 5000 for back in range(3, 8) if minute(-back, at) <= minute(0)}), at=at)
+            self.poll(
+                d1_rows(
+                    per_minute={
+                        minute(-back, at): 5000
+                        for back in range(3, 8)
+                        if minute(-back, at) <= minute(0)
+                    }
+                ),
+                at=at,
+            )
         self.assertEqual(self.state["trips"][WORKER]["stage"], 2)
 
     def test_day_trip_measures_against_half_the_pre_trip_rate(self):
@@ -405,13 +501,17 @@ class EscalationTests(Base):
         self.fake.fail[r"PUT .*/secrets"] = wd.ApiError(400, [10215])
         self.poll(d1_rows(day=2_000_000))
         self.assertEqual(self.state["trips"][WORKER]["stage"], 3)
-        self.assertTrue(any(row["action"] == "guard_mode_off" for row in self.events("action_failed")))
+        self.assertTrue(
+            any(row["action"] == "guard_mode_off" for row in self.events("action_failed"))
+        )
 
     def test_partial_fallback_failure_is_reported(self):
         self.fake.fail[r"PUT .*/schedules"] = wd.ApiError(500, [1])
         self.trip_then(per_minute_after=5000)
         self.assertTrue(any("1 step(s) failed" in post for post in self.fake.posts))
-        self.assertTrue(any(call[0] == "DELETE" for call in self.fake.calls), "other steps still ran")
+        self.assertTrue(
+            any(call[0] == "DELETE" for call in self.fake.calls), "other steps still ran"
+        )
 
     def test_unreadable_previous_state_retries_without_changing_anything(self):
         self.fake.fail[r"GET .*/schedules"] = wd.ApiError(500, [1])
@@ -424,7 +524,11 @@ class EscalationTests(Base):
     def test_observe_after_a_trip_does_not_escalate(self):
         self.poll(d1_rows(per_minute={minute(-3 - i): 5000 for i in range(5)}))
         at = NOW + dt.timedelta(minutes=6)
-        self.poll(d1_rows(per_minute={minute(-back, at): 5000 for back in range(3, 8)}), at=at, mode="observe")
+        self.poll(
+            d1_rows(per_minute={minute(-back, at): 5000 for back in range(3, 8)}),
+            at=at,
+            mode="observe",
+        )
         self.assertEqual(self.state["trips"][WORKER]["stage"], 2)
 
 
@@ -538,12 +642,15 @@ class DailyCheckTests(Base):
 
         def api(method, path, body=None):
             if path.endswith(f"{WORKER}/settings"):
-                return {"limits": {"cpu_ms": 100}, "bindings": [
-                    {"type": "d1", "name": "DB", "id": DB},
-                    {"type": "kv_namespace", "name": "K", "namespace_id": "kv-1"},
-                    {"type": "r2_bucket", "name": "B", "bucket_name": "receipts"},
-                    {"type": "secret_text", "name": "S"},
-                ]}
+                return {
+                    "limits": {"cpu_ms": 100},
+                    "bindings": [
+                        {"type": "d1", "name": "DB", "id": DB},
+                        {"type": "kv_namespace", "name": "K", "namespace_id": "kv-1"},
+                        {"type": "r2_bucket", "name": "B", "bucket_name": "receipts"},
+                        {"type": "secret_text", "name": "S"},
+                    ],
+                }
             if path.endswith("/durable_objects/namespaces"):
                 return [{"id": "ns-1", "script": "simple-tools-mcp"}]
             return original(method, path, body)
@@ -575,7 +682,15 @@ class RearmTests(Base):
             "previous": {
                 "schedules": [{"cron": "*/15 * * * *", "created_on": "x"}],
                 "subdomain": {"enabled": True, "previews_enabled": False},
-                "domains": [{"id": "dom-1", "hostname": "h", "service": WORKER, "zone_id": "z", "zone_name": "n"}],
+                "domains": [
+                    {
+                        "id": "dom-1",
+                        "hostname": "h",
+                        "service": WORKER,
+                        "zone_id": "z",
+                        "zone_name": "n",
+                    }
+                ],
             },
         }
 
@@ -588,10 +703,25 @@ class RearmTests(Base):
     def test_apply_restores_what_was_recorded(self):
         self.tripped()
         self.assertEqual(self.rearm(True), 0)
-        self.assertIn(("DELETE", f"/workers/scripts/{WORKER}/secrets/GUARD_MODE", None), self.fake.calls)
-        self.assertIn(("PUT", f"/workers/scripts/{WORKER}/schedules", [{"cron": "*/15 * * * *"}]), self.fake.calls)
-        self.assertIn(("POST", f"/workers/scripts/{WORKER}/subdomain", {"enabled": True, "previews_enabled": False}), self.fake.calls)
-        self.assertIn(("PUT", "/workers/domains", {"hostname": "h", "service": WORKER, "zone_id": "z"}), self.fake.calls)
+        self.assertIn(
+            ("DELETE", f"/workers/scripts/{WORKER}/secrets/GUARD_MODE", None), self.fake.calls
+        )
+        self.assertIn(
+            ("PUT", f"/workers/scripts/{WORKER}/schedules", [{"cron": "*/15 * * * *"}]),
+            self.fake.calls,
+        )
+        self.assertIn(
+            (
+                "POST",
+                f"/workers/scripts/{WORKER}/subdomain",
+                {"enabled": True, "previews_enabled": False},
+            ),
+            self.fake.calls,
+        )
+        self.assertIn(
+            ("PUT", "/workers/domains", {"hostname": "h", "service": WORKER, "zone_id": "z"}),
+            self.fake.calls,
+        )
         self.assertNotIn(WORKER, self.state["trips"])
 
     def test_a_failed_step_keeps_the_trip(self):
@@ -646,13 +776,29 @@ class ConnectionTests(Base):
         return open_
 
     def conn(self, values, responses=(), codes=None, env=None):
-        return wd.Connections(self.cfg, runner=self.runner(values, codes), opener=self.opener(list(responses)), env=env or {})
+        return wd.Connections(
+            self.cfg,
+            runner=self.runner(values, codes),
+            opener=self.opener(list(responses)),
+            env=env or {},
+        )
 
     def test_secrets_come_from_fleet_secrets_by_the_named_key_and_folder(self):
         conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN})
         self.assertEqual(conn.token(), self.TOKEN)
         command = self.commands[0][0]
-        self.assertEqual(command, ["fleet-secrets", "get", "CF_USAGE_WATCHDOG_API_TOKEN", "--path", "/cf-usage-watchdog", "--project", "ai-fleet-coordinator"])
+        self.assertEqual(
+            command,
+            [
+                "fleet-secrets",
+                "get",
+                "CF_USAGE_WATCHDOG_API_TOKEN",
+                "--path",
+                "/cf-usage-watchdog",
+                "--project",
+                "ai-fleet-coordinator",
+            ],
+        )
 
     def test_absent_or_failed_credential_is_a_poll_failure(self):
         with self.assertRaises(wd.PollError):
@@ -662,13 +808,17 @@ class ConnectionTests(Base):
         self.assertIn("exit-4", str(caught.exception))
 
     def test_graphql_errors_are_a_poll_failure_even_with_data(self):
-        answer = json.dumps({"data": {"viewer": {"accounts": [{}]}}, "errors": [{"message": "rate limited"}]}).encode()
+        answer = json.dumps(
+            {"data": {"viewer": {"accounts": [{}]}}, "errors": [{"message": "rate limited"}]}
+        ).encode()
         conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [answer])
         with self.assertRaises(wd.PollError):
             conn.graphql("q", {})
 
     def test_graphql_sends_the_token_and_returns_the_account(self):
-        answer = json.dumps({"data": {"viewer": {"accounts": [{"wd": []}]}}, "errors": None}).encode()
+        answer = json.dumps(
+            {"data": {"viewer": {"accounts": [{"wd": []}]}}, "errors": None}
+        ).encode()
         conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [answer])
         self.assertEqual(conn.graphql("q", {}), {"wd": []})
         self.assertEqual(self.requests[0].get_header("Authorization"), f"Bearer {self.TOKEN}")
@@ -679,7 +829,9 @@ class ConnectionTests(Base):
         self.assertIsNone(conn.api("DELETE", "/x"))
 
     def test_api_error_carries_no_credential(self):
-        error = urllib.error.HTTPError("https://x", 403, "no", {}, io.BytesIO(b'{"errors":[{"code":10000}]}'))
+        error = urllib.error.HTTPError(
+            "https://x", 403, "no", {}, io.BytesIO(b'{"errors":[{"code":10000}]}')
+        )
         conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [error])
         with self.assertRaises(wd.ApiError) as caught:
             conn.api("PUT", "/x", {})
@@ -691,7 +843,18 @@ class ConnectionTests(Base):
         conn = self.conn({}, env={"INFISICAL_TOKEN": "t", "HOME": "/h"})
         self.assertTrue(conn.zulip("hello"))
         command, kwargs = self.commands[0]
-        self.assertEqual(command, ["simple-chat", "post", "--channel", "Work-In-Progress", "--topic", "AFC-617 cf usage watchdog", "-"])
+        self.assertEqual(
+            command,
+            [
+                "simple-chat",
+                "post",
+                "--channel",
+                "Work-In-Progress",
+                "--topic",
+                "AFC-617 cf usage watchdog",
+                "-",
+            ],
+        )
         self.assertEqual(kwargs["input"], "hello")
         self.assertEqual(kwargs["env"]["AGENT_SEAT"], "CLAUDE")
         self.assertNotIn("INFISICAL_TOKEN", kwargs["env"])
@@ -729,12 +892,21 @@ class ConnectionTests(Base):
 
     def test_no_credential_reaches_the_log_on_a_real_failure_path(self):
         answer = json.dumps({"errors": [{"message": "nope"}]}).encode()
-        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN, "PUSHOVER_APP_TOKEN": "pushover-credential", "PUSHOVER_USER_KEY": "pushover-user"}, [answer, b"{}"])
+        conn = self.conn(
+            {
+                "CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN,
+                "PUSHOVER_APP_TOKEN": "pushover-credential",
+                "PUSHOVER_USER_KEY": "pushover-user",
+            },
+            [answer, b"{}"],
+        )
         conn.zulip = lambda text: False
         state = self.store.load()
         with contextlib.redirect_stdout(io.StringIO()) as out:
             wd.Watchdog(self.cfg, conn, self.store, state, NOW, "enforce", "paid").run()
-        logged = out.getvalue() + self.store.events_path.read_text() + self.store.state_path.read_text()
+        logged = (
+            out.getvalue() + self.store.events_path.read_text() + self.store.state_path.read_text()
+        )
         for secret in (self.TOKEN, "pushover-credential", "pushover-user"):
             self.assertNotIn(secret, logged)
 
@@ -789,7 +961,9 @@ class UnitFileTests(unittest.TestCase):
         text = self.read("cf-usage-watchdog.service")
         self.assertIn("User=jay", text)
         self.assertIn("Environment=AGENT_SEAT=CLAUDE", text)
-        self.assertIn("/home/jay/.local/share/fleet-cli/repo/scripts/cf-usage-watchdog/watchdog.py run", text)
+        self.assertIn(
+            "/home/jay/.local/share/fleet-cli/repo/scripts/cf-usage-watchdog/watchdog.py run", text
+        )
         self.assertIn("EnvironmentFile=/etc/cf-usage-watchdog/infisical.env", text)
         self.assertNotIn("%h", text)
 
