@@ -11,11 +11,11 @@ import time
 from typing import Any, Protocol
 
 from . import live as L
-from . import wake_capability as WC
+from . import operator_registry as OR
 
 SUPPORTED_PLATFORM = "grok-leader"
 # The same table the registry derives from:  one source of truth for what this tree can deliver to.
-SUPPORTED_PLATFORMS = set(WC.implemented_platforms())
+SUPPORTED_PLATFORMS = set(OR.implemented_wake_platforms())
 TERMINAL_KEEP_SECONDS = 90 * 86400
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BINDING_FIELDS = ("channel", "topic", "platform", "host", "session_id", "cwd")

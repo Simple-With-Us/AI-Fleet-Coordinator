@@ -40,8 +40,51 @@ from typing import Any
 
 from . import secretscan
 from . import session_ids as SI
-from . import wake_capability as WC
 from .operator_registry_schema import DDL, SCHEMA_VERSION
+
+# Wake-transport support by adapter platform, the one canonical table the registry
+# derives a session's stored wake_capability from and the chat-nudge transport list
+# reads.  It lives in this module, not a file of its own, because the shipped set is
+# capped at 150 files (fleet-cli-release.py MAX_FILES, with the receiver's
+# fleet-cli-sync.py enforcing the same count):  a 151st file would need a budget
+# raise on both sides, and this table does not carry one.
+WAKE_SUPPORTED = "code-supported"
+WAKE_NONE = "none"
+WAKE_UNKNOWN = "unknown"
+
+# Every platform the chat catalog scans, assessed against this tree.  A
+# platform not listed derives WAKE_UNKNOWN, not WAKE_NONE.
+_WAKE_SUPPORT: dict[str, str] = {
+    "grok-leader": WAKE_SUPPORTED,
+    "cursor-cloud": WAKE_SUPPORTED,
+    "codex": WAKE_SUPPORTED,
+    "claude": WAKE_NONE,
+    "cursor-local": WAKE_NONE,
+    "muse": WAKE_NONE,
+    "minimax": WAKE_NONE,
+    "fx": WAKE_NONE,
+    "antigravity": WAKE_NONE,
+    "opencode": WAKE_NONE,
+}
+
+
+def wake_capability_for_platform(platform: object) -> str:
+    """The tree's wake-transport support for one adapter platform.
+
+    Registration derives a session's stored wake_capability from this when the
+    caller makes no claim of its own, so a new row carries the tree's honest
+    support level instead of the blanket "unknown" default.  A caller with
+    fresher runtime knowledge still wins:  only the "unknown" default derives.
+    """
+    if not isinstance(platform, str):
+        return WAKE_UNKNOWN
+    return _WAKE_SUPPORT.get(platform.strip().lower(), WAKE_UNKNOWN)
+
+
+def implemented_wake_platforms() -> frozenset[str]:
+    """The adapter platforms this tree ships a delivery adapter for."""
+    return frozenset(p for p, state in _WAKE_SUPPORT.items() if state == WAKE_SUPPORTED)
+
 
 LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
@@ -1128,7 +1171,7 @@ def register_session(
         # No caller claim:  derive the tree's own support level for the adapter
         # platform, before the letter namespace folds it ("cursor-cloud" and
         # "cursor-local" both become "cursor", and only one of them can deliver).
-        wake_capability = WC.for_platform(platform)
+        wake_capability = wake_capability_for_platform(platform)
     platform = normalize_platform(platform)
     default_space, default_pick = PLATFORM_LETTER_DEFAULTS.get(platform, ("single", "lowest"))
     space = letter_space or default_space

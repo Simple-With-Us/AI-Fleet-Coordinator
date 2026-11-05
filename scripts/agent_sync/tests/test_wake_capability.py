@@ -7,7 +7,6 @@ import unittest
 
 from agent_sync import chat_nudges as CN
 from agent_sync import operator_registry as OR
-from agent_sync import wake_capability as WC
 
 
 def _session_id(seed: str = "a") -> str:
@@ -17,7 +16,7 @@ def _session_id(seed: str = "a") -> str:
 
 class WakeCapabilityTableTest(unittest.TestCase):
     def test_nudge_transports_come_from_the_same_table(self) -> None:
-        self.assertEqual(set(WC.implemented_platforms()), CN.SUPPORTED_PLATFORMS)
+        self.assertEqual(set(OR.implemented_wake_platforms()), CN.SUPPORTED_PLATFORMS)
         self.assertIn("grok-leader", CN.SUPPORTED_PLATFORMS)
         self.assertIn("cursor-cloud", CN.SUPPORTED_PLATFORMS)
         self.assertIn("codex", CN.SUPPORTED_PLATFORMS)
@@ -32,15 +31,15 @@ class WakeCapabilityTableTest(unittest.TestCase):
             "antigravity",
             "opencode",
         ):
-            self.assertEqual(WC.for_platform(platform), WC.NONE, platform)
+            self.assertEqual(OR.wake_capability_for_platform(platform), OR.WAKE_NONE, platform)
 
     def test_unlisted_platform_is_unknown_never_none(self) -> None:
         for platform in ("zcode", "kimi", "amp", "clutch", "grok-web", ""):
-            self.assertEqual(WC.for_platform(platform), WC.UNKNOWN, platform)
-        self.assertEqual(WC.for_platform(None), WC.UNKNOWN)
+            self.assertEqual(OR.wake_capability_for_platform(platform), OR.WAKE_UNKNOWN, platform)
+        self.assertEqual(OR.wake_capability_for_platform(None), OR.WAKE_UNKNOWN)
 
     def test_lookup_trims_and_folds_case(self) -> None:
-        self.assertEqual(WC.for_platform(" Grok-Leader "), WC.SUPPORTED)
+        self.assertEqual(OR.wake_capability_for_platform(" Grok-Leader "), OR.WAKE_SUPPORTED)
 
 
 class RegisterDerivationTest(unittest.TestCase):
@@ -88,15 +87,15 @@ class RegisterDerivationTest(unittest.TestCase):
     def test_default_claim_derives_support_for_transport_platform(self) -> None:
         out = self._register("codex")
         self.assertEqual(out["outcome"], "registered")
-        self.assertEqual(self._stored("codex")["wake_capability"], WC.SUPPORTED)
+        self.assertEqual(self._stored("codex")["wake_capability"], OR.WAKE_SUPPORTED)
 
     def test_default_claim_derives_none_for_assessed_platform(self) -> None:
         self._register("claude")
-        self.assertEqual(self._stored("claude")["wake_capability"], WC.NONE)
+        self.assertEqual(self._stored("claude")["wake_capability"], OR.WAKE_NONE)
 
     def test_default_claim_stays_unknown_for_unlisted_platform(self) -> None:
         self._register("zcode")
-        self.assertEqual(self._stored("zcode")["wake_capability"], WC.UNKNOWN)
+        self.assertEqual(self._stored("zcode")["wake_capability"], OR.WAKE_UNKNOWN)
 
     def test_explicit_caller_claim_wins_over_derivation(self) -> None:
         self._register("codex", wake_capability="live-verified")
@@ -109,7 +108,7 @@ class RegisterDerivationTest(unittest.TestCase):
         self._force_stored("claude", "unknown")
         out = self._register("claude")
         self.assertEqual(out["outcome"], "resumed")
-        self.assertEqual(self._stored("claude")["wake_capability"], WC.NONE)
+        self.assertEqual(self._stored("claude")["wake_capability"], OR.WAKE_NONE)
 
     def test_resume_never_overrides_an_explicit_stored_claim(self) -> None:
         self._register("codex", wake_capability="live-verified")
@@ -127,23 +126,23 @@ class RegisterDerivationTest(unittest.TestCase):
             registry.close_db()
         out = self._register("claude")
         self.assertEqual(out["outcome"], "resumed_closed")
-        self.assertEqual(self._stored("claude")["wake_capability"], WC.UNKNOWN)
+        self.assertEqual(self._stored("claude")["wake_capability"], OR.WAKE_UNKNOWN)
 
 
     def test_derived_claim_survives_a_later_explicit_claim(self) -> None:
         # Stored claims are immutable: a later registration carrying its own
         # claim does not rewrite the row's original claim or provenance.
         self._register("claude")
-        self.assertEqual(self._stored("claude")["wake_capability"], WC.NONE)
+        self.assertEqual(self._stored("claude")["wake_capability"], OR.WAKE_NONE)
         out = self._register("claude", wake_capability="unavailable")
         self.assertEqual(out["outcome"], "resumed")
-        self.assertEqual(self._stored("claude")["wake_capability"], WC.NONE)
+        self.assertEqual(self._stored("claude")["wake_capability"], OR.WAKE_NONE)
 
     def test_derived_claim_survives_a_later_live_verified_claim(self) -> None:
         self._register("codex")
-        self.assertEqual(self._stored("codex")["wake_capability"], WC.SUPPORTED)
+        self.assertEqual(self._stored("codex")["wake_capability"], OR.WAKE_SUPPORTED)
         self._register("codex", wake_capability="live-verified")
-        self.assertEqual(self._stored("codex")["wake_capability"], WC.SUPPORTED)
+        self.assertEqual(self._stored("codex")["wake_capability"], OR.WAKE_SUPPORTED)
 
     def test_derivation_uses_adapter_platform_before_namespace_folding(self) -> None:
         # cursor-local folds to the cursor letter namespace, but a local-only chat
@@ -151,11 +150,11 @@ class RegisterDerivationTest(unittest.TestCase):
         self._register("cursor-local")
         row = self._stored("cursor-local")
         self.assertEqual(row["platform"], "cursor")
-        self.assertEqual(row["wake_capability"], WC.NONE)
+        self.assertEqual(row["wake_capability"], OR.WAKE_NONE)
         self._register("cursor-cloud")
         row = self._stored("cursor-cloud")
         self.assertEqual(row["platform"], "cursor")
-        self.assertEqual(row["wake_capability"], WC.SUPPORTED)
+        self.assertEqual(row["wake_capability"], OR.WAKE_SUPPORTED)
 
 
 if __name__ == "__main__":
