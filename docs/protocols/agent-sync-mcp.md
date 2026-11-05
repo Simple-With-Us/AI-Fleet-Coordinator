@@ -385,7 +385,7 @@ Every seat can use FleetLink through the local simple-chat MCP mode, not only th
 - **`/admin`** (behind Access) shows grants per seat, the audit tail, and the arm, pause, unpause and revoke buttons.  Every state change requires POST, a CSRF token, a matching `Origin` and `Sec-Fetch-Site: same-origin`, under the same no-script CSP.
 
 **3.10 Kill switch, fastest first:**
-1. **Pause the seat** (from `/admin`).  The Durable Object flag takes effect at once: tools return `paused` and token exchanges fail.  Git calls that present the seat's bearer can keep passing git-relay's verify for up to 60 s, its `GIT_RELAY_VERIFY_CACHE_S` window.
+1. **Pause the seat** (from `/admin`).  The Durable Object flag takes effect at once: tools return `paused` and token exchanges fail.  Git calls that present the seat's bearer check it on every call, unless `GIT_RELAY_VERIFY_CACHE_S` is set on git-relay.  Then they can keep passing its verify for that many seconds, at most 60.
 2. **Revoke the seat's grants.**  This bumps the epoch, which is instant, then revokes the KV grants.
 3. **Jay rotates the bot key in Zulip.**  The old key dies at once.  Update Infisical first, and the sync pushes the new key.
 4. **Turn off the whole server.**  Set `MCP_DISABLED=1` (`/mcp` returns 503), or roll back or remove the route.

@@ -13,9 +13,10 @@ Failure shape:  fail closed.  A malformed token, an unreachable Worker, a bad an
 an expired or paused identity - all resolve to None (the caller answers 401).  Neither
 the bearer nor its hash is ever logged or included in an error string.
 
-A live answer is reused for up to 60 s, so a revocation or pause can take that long to
-reach Git calls.  Only a refusal is remembered as one:  a Worker that is down or over its
-daily limit says nothing about the bearer, so that call fails and the next one asks again.
+A live answer is not reused unless GIT_RELAY_VERIFY_CACHE_S is set, so by default a
+revocation or pause reaches the next Git call.  Only a refusal is remembered as one:  a
+Worker that is down or over its daily limit says nothing about the bearer, so that call
+fails and the next one asks again.
 """
 
 from __future__ import annotations
@@ -43,10 +44,11 @@ TOKEN_RES = (
 
 MAX_RESPONSE_BYTES = 4096
 REQUEST_TIMEOUT_S = 10
-# Every verify is a Worker request and SeatGate RPCs against daily caps, one per Git
-# call without this.  The price is that a revoked or paused identity keeps GR access
-# for up to this long.  GIT_RELAY_VERIFY_CACHE_S=0 restores verifying every call.
-DEFAULT_POSITIVE_CACHE_S = "60"
+# Positive answers are NOT cached by default:  a revoked or paused identity must lose GR
+# access with its SeatGate row, not with a cache entry.  The cost is that every Git call
+# is a Worker request and SeatGate RPCs against daily caps.  An operator may accept up to
+# POSITIVE_CACHE_CAP_S of revocation lag to save them, by setting GIT_RELAY_VERIFY_CACHE_S.
+DEFAULT_POSITIVE_CACHE_S = "0"
 POSITIVE_CACHE_CAP_S = 60
 NEGATIVE_CACHE_S = 30  # a wrong guess must not hammer the Worker
 # The verify route answers a bearer's verdict as a 200, so the only non-200s that can be

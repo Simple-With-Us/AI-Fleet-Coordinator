@@ -177,9 +177,26 @@ class VerifierTest(unittest.TestCase):
 
         self.assertIsNone(verifier_for(boom).resolve(TOKEN))
 
-    def test_positive_answer_caches_for_sixty_seconds_by_default(self):
+    def test_positive_answer_is_not_cached_by_default(self):
         with mock.patch.dict(os.environ):
             os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+            v = verifier_for(ok_answer())
+        self.assertEqual(v._positive_ttl, 0)
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 2)
+        self.assertEqual(v._cache, {})
+
+    def test_revocation_reaches_the_next_call_by_default(self):
+        answers = [ok_answer()(b""), (200, json.dumps({"ok": False, "reason": "paused"}).encode())]
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GIT_RELAY_VERIFY_CACHE_S", None)
+            v = verifier_for(lambda body: answers.pop(0))
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertIsNone(v.resolve(TOKEN))
+
+    def test_positive_answer_caches_for_the_ttl_when_set(self):
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "60"}):
             v = verifier_for(ok_answer())
         self.assertEqual(v.resolve(TOKEN), IDENTITY)
         self.assertEqual(v.resolve(TOKEN), IDENTITY)
@@ -192,9 +209,10 @@ class VerifierTest(unittest.TestCase):
             self.assertEqual(v.resolve(TOKEN), IDENTITY)
         self.assertEqual(len(v._transport.calls), 2)
 
-    def test_revocation_lands_within_the_ttl(self):
+    def test_revocation_lands_within_the_ttl_when_set(self):
         answers = [ok_answer()(b""), (200, json.dumps({"ok": False, "reason": "paused"}).encode())]
-        v = verifier_for(lambda body: answers.pop(0))
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "60"}):
+            v = verifier_for(lambda body: answers.pop(0))
         self.assertEqual(v.resolve(TOKEN), IDENTITY)
         with mock.patch.object(time, "time", return_value=time.time() + 61):
             self.assertIsNone(v.resolve(TOKEN))
@@ -211,8 +229,11 @@ class VerifierTest(unittest.TestCase):
             self.assertEqual(verifier_for(ok_answer())._positive_ttl, 0)
 
     def test_positive_cache_never_outlives_the_bearer(self):
-        v = verifier_for(ok_answer(expires_in_s=5))
+        with mock.patch.dict(os.environ, {"GIT_RELAY_VERIFY_CACHE_S": "60"}):
+            v = verifier_for(ok_answer(expires_in_s=5))
         self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(v.resolve(TOKEN), IDENTITY)
+        self.assertEqual(len(v._transport.calls), 1)
         with mock.patch.object(time, "time", return_value=time.time() + 6):
             v.resolve(TOKEN)
         self.assertEqual(len(v._transport.calls), 2)
