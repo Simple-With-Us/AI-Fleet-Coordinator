@@ -132,6 +132,10 @@ cd muster && xcodegen generate --spec project.yml
 xcodebuild -project Muster.xcodeproj -scheme Muster -destination 'platform=macOS' test
 ```
 
+## Hog Hunter On This Mac
+
+The Operations tab shows what the Hog Hunter Mac app says about this Mac: load, CPU, memory, swap, each mounted volume, the busiest processes by name, the last cleanup, the housekeeper lock, the cleaning regimen, the age of the server snapshot Hog Hunter holds, and its version.  The source is one local file the running app writes about once a minute, `~/.local/state/fleet-tools/hoghunter-mac.json` (tool `hoghunter-mac-status`, schemaVersion 1; decoder `Muster/Model/HogHunterMacReport.swift`).  Muster only reads it and has no control of Hog Hunter: no command, no connection and no credential.  The file's authentication is the file system: Muster reads it only when it is a regular file (not a link), owned by the current user and not writable by group or others, and no larger than 256 KB.  A missing file or a report older than 5 minutes reads as unknown, and the panel says Hog Hunter is not running or has not reported.  A file that fails the ownership or link check, a wrong version or tool, or a malformed file reads as unknown too, but states its own reason instead.  Fields the app could not measure are absent and show as Not reported, never as zero.
+
 ## Delivery And Onboarding Limits
 
 Local Developer ID signing is established from the first build.  This scaffold does not implement notarization, stapling, release packaging, an updater, hosted CI signing, or a public release.  A locally verified signature is not evidence of notarization or completed product onboarding.
