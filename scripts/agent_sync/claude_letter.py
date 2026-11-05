@@ -897,7 +897,9 @@ def _agent_title_fix(chat: Chat, note: dict[str, Any]) -> str:
         return ""
     # Every letter this chat has held, because a title the model set under an earlier letter must not stack a second
     # letter in front of it, and "PR: Review" from a parent must keep its acronym.
-    held = [str(x) for x in note.get("held_labels") or [] if x != label][-(HELD_LABELS - 1) :] + [label]
+    held = [str(x) for x in note.get("held_labels") or [] if x != label][-(HELD_LABELS - 1) :] + [
+        label
+    ]
     note["held_labels"] = held
     line = one_line(named)
     prefix = "%s: " % label
