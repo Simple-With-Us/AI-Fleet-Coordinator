@@ -290,6 +290,12 @@ final class WakeSettingsTests: XCTestCase {
         }
         XCTAssertFalse(seat.hasRefusedSection)
 
+        // A section it took and turned off is still a section its partition check allowed.
+        let off = #"{"running": true, "status": {"disabled": ["MA"], "seats": {}}}"#
+        var disabled = sources(config: sample + "\n[seat.MA]\nenabled = false\n", status: off)
+        disabled.seats = ["MA"]
+        XCTAssertEqual(WakeSettingsBuilder.build(disabled).seats.first?.hasRefusedSection, false)
+
         // Once the listener names its partition,  that copy is the one Muster read,  so a seat it
         // still runs from before the partition moved is a section the next start will refuse.
         let named = #"{"running": true, "status": {"partition_file": "/p", "seats": {"MA": {"bot": "MA"}}}}"#

@@ -685,12 +685,17 @@ enum WakeSettingsBuilder {
     /// A listener from before `partition_file` does not say which partition it reads, so the copy
     /// Muster read may not be its copy.  If that listener is running a seat this copy gives away,
     /// the two differ, and calling the seat elsewhere would offer to delete a live seat's section.
+    /// A seat it skipped or that the file turns off counts too:  its partition check took those.
     private static func host(of tag: String, sources: WakeSettingsSources) -> ListenerSeatHost {
         let host = sources.partition.host(of: tag, in: sources.config)
+        let published = tag.uppercased()
         guard host.isElsewhere,
               sources.status?.running == true,
-              sources.status?.status?.partition_file == nil,
-              sources.status?.seat(tag.uppercased()) != nil else {
+              let state = sources.status?.status,
+              state.partition_file == nil,
+              state.seats?[published] != nil
+                || state.disabled?.contains(published) == true
+                || state.skipped_seats?[published] != nil else {
             return host
         }
         return .unknown("The running listener holds this seat, and the copy Muster read gives it elsewhere.")
