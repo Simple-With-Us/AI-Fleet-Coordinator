@@ -363,7 +363,7 @@ def _infisical_get_status(name: str, folder: str, token: str) -> tuple[str, str]
                     continue
                 return "", "timeout"
             return "", "unreachable"
-        except (socket.timeout, TimeoutError):
+        except TimeoutError:
             if attempt == 0:
                 time.sleep(INFISICAL_RETRY_SEC)
                 continue
@@ -410,9 +410,7 @@ def _env_webhook(url_key: str, secret_key: str) -> tuple[str, str]:
     return os.environ.get(url_key, "").strip(), os.environ.get(secret_key, "").strip()
 
 
-def _read_webhook_status(
-    folder: str, url_key: str, secret_key: str
-) -> tuple[str, str, str]:
+def _read_webhook_status(folder: str, url_key: str, secret_key: str) -> tuple[str, str, str]:
     """Environment first, then the scoped Infisical service token (folder).
 
     The environment still wins, as before:  the launchd job may inject the
