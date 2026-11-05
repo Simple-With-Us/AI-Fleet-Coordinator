@@ -461,6 +461,27 @@ class Publish(unittest.TestCase):
             self.assertEqual(G.cmd_publish(tools, a, BEARER, "CLAUDE", 0.0), 0)
         self.assertEqual(self.puts(), [])
 
+    def test_the_outcome_store_survives_concurrent_saves(self):
+        import threading
+
+        errors = []
+
+        def hammer(n):
+            try:
+                for i in range(30):
+                    G._publish_store_save({f"key{n}": {"batches": {str(i): "ok"}}})
+            except Exception as exc:  # noqa: BLE001 - any failure is a test failure
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer, args=(n,)) for n in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        # Every save is an atomic replace:  the file is always one valid JSON document.
+        self.assertIsInstance(G._publish_store_load(), dict)
+
     def test_base64_that_looks_like_a_token_is_not_refused(self):
         # This decoded content has no secret, but its base64 is one long run of letters and digits.
         data = bytes(range(32, 127)) * 40
