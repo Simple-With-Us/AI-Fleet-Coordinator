@@ -301,3 +301,14 @@ test("compiled hostname is identical with redundant PUBLIC_HOST var absent", () 
   assert.equal(withoutVar.resource, withVar.resource);
   assert.ok(!("PUBLIC_HOST" in wranglerConfig().vars));
 });
+
+test("EVENT_WAKE_RATE_LIMIT:  unset is the compiled default, in-capacity accepted, out-of-capacity and malformed fail closed", () => {
+  assert.equal(loadConfig(testEnv()).eventWakeRateLimit, 6);
+  assert.equal(loadConfig(testEnv({ EVENT_WAKE_RATE_LIMIT: "7" })).eventWakeRateLimit, 7);
+  // The accounting ceiling:  wake_seen caps at WAKE_SEEN_CAP entries, so a
+  // larger configured rate would be silently unlimited - refused at load.
+  assert.equal(loadConfig(testEnv({ EVENT_WAKE_RATE_LIMIT: "500" })).eventWakeRateLimit, 500);
+  for (const bad of ["0", "-3", "501", "1000", "2.5", "lots"]) {
+    assert.throws(() => loadConfig(testEnv({ EVENT_WAKE_RATE_LIMIT: bad })), /EVENT_WAKE_RATE_LIMIT/, bad);
+  }
+});

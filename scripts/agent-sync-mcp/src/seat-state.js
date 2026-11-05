@@ -9,7 +9,7 @@
 // Spec:  docs/protocols/agent-sync-mcp.md sections 3.4, 3.5 and 3.10.
 
 import { WA_EVENT } from "./wa/contract.js";
-import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE, WAKE_RATE_LIMIT } from "./config.js";
+import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE, WAKE_RATE_LIMIT, WAKE_SEEN_CAP } from "./config.js";
 export { WAKE_RATE_LIMIT };
 // WAKE_RATE_LIMIT (the compiled default hourly wake envelope) lives in
 // config.js:  loadConfig validates the EVENT_WAKE_RATE_LIMIT var override.
@@ -868,7 +868,8 @@ export const WAKE_CUSTODY_CAP = 1024;
 async function wakeTomb(store) {
   return (await store.get("wake_tomb")) ?? {};
 }
-const WAKE_SEEN_CAP = 500;
+// WAKE_SEEN_CAP lives in config.js beside WAKE_RATE_LIMIT:  the config
+// validator bounds EVENT_WAKE_RATE_LIMIT by this accounting capacity.
 // Every way a claim can end (eventSettleWake).  "retry" forgets the wake;  the rest settle it.
 // "uncertain" is the webhook wake's tombstone (src/webhook-wake.js):  a
 // dispatch happened and its fate is unknown, so the wake stays spent - firing
@@ -1097,10 +1098,16 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
   // BOTH wake paths draw on it atomically.  Dedupe first:  a settled or
   // in-flight id is a duplicate, never a budget charge.
   if (budget) {
+    // Sound accounting:  the budget is counted from wake_seen, which holds at
+    // most WAKE_SEEN_CAP entries trimmed oldest-first, so a max above that
+    // capacity could never be reached (the trim would evict first) and would
+    // be silently unlimited.  Config validation bounds the deploy var at
+    // load;  this clamp keeps the invariant for every caller.
+    const max = Math.max(1, Math.min(Math.floor(budget.max), WAKE_SEEN_CAP));
     const inWindow = Object.values(seen)
       .map(wakeEntry)
       .filter((entry) => entry && Number.isFinite(entry.at) && now - entry.at < budget.windowMs && entry.at <= now + MINUTE_MS);
-    if (inWindow.length >= budget.max) {
+    if (inWindow.length >= max) {
       const oldest = Math.min(...inWindow.map((entry) => entry.at));
       await audit(store, { event: "event_wake_rate_limited", wake_ref: wakeRefOf(wakeId) }, now);
       return { verdict: "rate_limited", retryAfterS: Math.max(1, Math.ceil((oldest + budget.windowMs - now) / 1000)) };

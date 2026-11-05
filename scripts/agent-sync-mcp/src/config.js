@@ -80,6 +80,12 @@ export const GATE_IDENTITY_CACHE_MS = 60 * 60 * 1000;
 // seat-state.js) because loadConfig validates the var, and seat-state.js
 // re-exports it for the paths that import it from there.
 export const WAKE_RATE_LIMIT = 6;
+
+// wake_seen (the store the hourly budget is counted from) holds at most this
+// many entries, trimmed oldest-first.  A configured rate above the accounting
+// capacity would be silently UNLIMITED (the cap evicts before the budget can
+// ever be reached), so EVENT_WAKE_RATE_LIMIT may never exceed it.
+export const WAKE_SEEN_CAP = 500;
 export const ACCESS_TOKEN_TTL_S = 60 * 60;
 export const REFRESH_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 
@@ -232,7 +238,7 @@ export function loadConfig(env) {
   let eventWakeRateLimit = WAKE_RATE_LIMIT;
   if (eventWakeRateLimitRaw !== undefined && eventWakeRateLimitRaw !== null && String(eventWakeRateLimitRaw).trim() !== "") {
     eventWakeRateLimit = Number(eventWakeRateLimitRaw);
-    if (!Number.isSafeInteger(eventWakeRateLimit) || eventWakeRateLimit < 1) throw new Error("config: EVENT_WAKE_RATE_LIMIT must be a positive integer number of wakes per hour");
+    if (!Number.isSafeInteger(eventWakeRateLimit) || eventWakeRateLimit < 1 || eventWakeRateLimit > WAKE_SEEN_CAP) throw new Error(`config: EVENT_WAKE_RATE_LIMIT must be a positive integer no larger than the wake accounting capacity (${WAKE_SEEN_CAP})`);
   }
 
   const seatsRaw = parseJsonVar(env, "SEATS");
