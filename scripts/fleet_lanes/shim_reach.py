@@ -49,7 +49,7 @@ def _ask(shell: str, flag: str, home: str, env: Mapping[str, str], run: Callable
     child = {"HOME": home, "USER": env.get("USER", ""), "PATH": BASE_PATH, "TERM": "dumb"}
     try:
         res = run([exe, flag, "command -v git"], env=child, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                  stderr=subprocess.DEVNULL, text=True, timeout=PROBE_TIMEOUT_S, check=False, cwd=home)
+                  stderr=subprocess.DEVNULL, text=True, errors="replace", timeout=PROBE_TIMEOUT_S, check=False, cwd=home)
     except subprocess.TimeoutExpired:
         return None, "timed out"
     except (OSError, subprocess.SubprocessError) as exc:

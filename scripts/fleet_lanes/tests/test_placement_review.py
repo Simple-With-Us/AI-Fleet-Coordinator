@@ -2036,6 +2036,19 @@ class OwnerMessageLimit(WatchRoundTwo):
         self.assertIn("{code}/A", message)
         self.assertIn("{home}/leak2", message)
 
+    def test_a_code_clone_with_old_branches_never_reaches_the_owner_however_late_it_appears(self) -> None:
+        run = Run()
+        first = self.clones("A")
+        first["placement_warnings"][0].update(detail="1 commit(s) on other branches, the newest 90 days old", old_branches_only=True)
+        self.run_watch(first, run)
+        much_later = TW.NOW + dt.timedelta(days=8)
+        later = {**self.clones("A", "B"), "generated_at": much_later.isoformat()}
+        for row in later["placement_warnings"]:
+            row.update(detail="1 commit(s) on other branches, the newest 90 days old", old_branches_only=True)
+        self.run_watch(later, run, now=much_later)
+        self.assertEqual(run.named("simple-chat", "dm"), [])
+        self.assertEqual(self.state_doc()["repeat_pending"], {})
+
     def test_seven_days_count_per_leak_not_per_rule_class(self) -> None:
         run = Run()
         self.run_watch(self.one(self.p("old"), branch="claude/x"), run)

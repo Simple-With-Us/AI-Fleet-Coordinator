@@ -66,6 +66,10 @@ class RealShells(Case):
         self.assertTrue(rows["zsh -lc"]["reaches"])
         self.assertFalse(rows["zsh -c"]["reaches"])
 
+    def test_a_dotfile_that_prints_bytes_that_are_not_text_does_not_crash_it(self) -> None:
+        Path(self.home, ".bash_profile").write_text("printf '\\377\\376\\n'\n" + PREPEND, encoding="utf-8")
+        self.assertTrue(self.rows()["bash -lc"]["reaches"])
+
     def test_a_shim_first_on_a_path_the_probe_does_not_get_does_not_count(self) -> None:
         env = {"PATH": f"{self.shim.parent}:{os.environ['PATH']}", "FLEET_HOST_KIND": "mac"}
         rows = {r["shape"]: r for r in S.shim_reach(self.home, env)["rows"]}

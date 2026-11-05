@@ -797,8 +797,9 @@ def _notify_owner(findings: Sequence[Finding], fresh: Mapping[str, list[Finding]
     told = set(state.get("dm_paths", ()))
     urgent = list({f.path: f for f in findings if f.unpushed_in_code and f.path not in told}.values())
     pending: dict = state.setdefault("repeat_pending", {})
+    # Only a misplaced checkout is a leak.  The other rules, a Code clone's old branches among them, stay in their issues.
     for key, items in fresh.items():
-        leaks = (state["groups"].get(key) or {}).get("leaks", {})
+        leaks = (state["groups"].get(key) or {}).get("leaks", {}) if key == "misplaced" else {}
         for f in items:
             try:
                 first = _dt.datetime.fromisoformat(leaks.get(f.leak, ""))
