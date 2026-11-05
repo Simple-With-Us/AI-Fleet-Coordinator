@@ -20,7 +20,7 @@ Hostnames other than the two public entry points below, Access policies, secret 
 
 Limits are per invocation, and Cloudflare documents some per-isolate flexibility, so `cpu_ms` is a strong guard and not an exact one.  Subrequests count `fetch()` and calls to Cloudflare services such as KV, D1 and R2.  Without a limit a Paid Worker gets 10,000 subrequests and 30 seconds of CPU per invocation.
 
-A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  All nine Workers already carry live limits, from direct API uploads at about 7:42 PM on Nov 4, 2026, and the current `alert-ingress` and `pr-conflict-watch` versions from those uploads have no `workers/tag`.  `alert-ingress` reads 30 subrequests live against 50 here, and the next deploy from git replaces the live values with the config's.
+A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  The live limits came from direct API uploads made on purpose to apply these caps, at about 7:42 PM on Nov 4, 2026, with `alert-ingress` raised to 200 ms and 50 subrequests at about 9:03 PM.  The current `alert-ingress` and `pr-conflict-watch` versions from those uploads have no `workers/tag`.  A deploy replaces the live values with its config's, and a config with no limits removes them: a `simple-tools-mcp` upload at about 8:25 PM the same evening carried no limits, which dropped its 300 ms and 200 subrequests.  So deploy only from a tree that has these limits, and read the live settings back afterwards.
 
 ## The CI Check
 

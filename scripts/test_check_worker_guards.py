@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parent
 SCRIPT = SCRIPTS / "check-worker-guards.py"
@@ -36,6 +37,10 @@ def _load():
 
 
 guards = _load()
+
+
+def git(*args):
+    subprocess.run(["git", *args], check=True, timeout=30)
 
 GOOD_TOML = """name = "w"
 preview_urls = false
@@ -69,13 +74,13 @@ class Base(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
-        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        git("init", "-q", str(self.root))
 
     def findings(self, config=GOOD_TOML, registry=REGISTRY, path="wrangler.toml", plan=None):
         target = self.root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(config, encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.root), "add", path], check=True)
+        git("-C", str(self.root), "add", path)
         registry_file = self.root / "registry.json"
         registry_file.write_text(json.dumps(registry), encoding="utf-8")
         return guards.run(self.root, registry_file, REPO, plan)
@@ -108,6 +113,20 @@ class ConfigRules(Base):
         ):
             out = self.findings(text)
             self.assertTrue(any("preview_urls must be false" in f for f in out), out)
+
+    def test_preview_urls_of_another_type_fails(self):
+        # The identity check is the point:  0, null and "false" are not false to Wrangler.
+        registry = copy.deepcopy(REGISTRY)
+        registry["workers"]["w"]["config"] = "wrangler.jsonc"
+        good = (
+            '{"name": "w", "preview_urls": false, "limits": {"cpu_ms": 100, "subrequests": 40},'
+            ' "observability": {"head_sampling_rate": 0.5}}'
+        )
+        self.assertEqual(self.findings(good, registry, "wrangler.jsonc"), [])
+        for value in ("0", "null", '"false"'):
+            text = good.replace('"preview_urls": false', f'"preview_urls": {value}')
+            out = self.findings(text, registry, "wrangler.jsonc")
+            self.assertTrue(any("preview_urls must be false" in f for f in out), (value, out))
 
     def test_implicit_sampling_fails(self):
         out = self.findings(GOOD_TOML.replace("head_sampling_rate = 0.5\n", ""))
@@ -177,7 +196,7 @@ class ConfigRules(Base):
         self.findings()
         for name in ("wrangler.toml.example", "not-wrangler.toml", "wrangler.md"):
             (self.root / name).write_text("junk", encoding="utf-8")
-            subprocess.run(["git", "-C", str(self.root), "add", name], check=True)
+            git("-C", str(self.root), "add", name)
         self.assertEqual(guards.run(self.root, self.root / "registry.json", REPO, None), [])
 
     def test_non_object_config_is_a_finding_not_a_crash(self):
@@ -332,6 +351,31 @@ class RegistryRules(Base):
             registry_file.write_text(json.dumps(REGISTRY), encoding="utf-8")
             out = guards.run(Path(plain), registry_file, REPO, None)
         self.assertTrue(any("cannot list tracked files" in f for f in out), out)
+
+
+class ListingFailures(Base):
+    """A listing failure never reads as clean, and the exit code names the cause."""
+
+    def exit_code(self, error):
+        self.findings()
+        with mock.patch.object(guards.subprocess, "run", side_effect=error):
+            registry = str(self.root / "registry.json")
+            return guards.main(["--root", str(self.root), "--registry", registry])
+
+    def test_timeout_exits_124(self):
+        self.assertEqual(self.exit_code(subprocess.TimeoutExpired("git", 60)), 124)
+
+    def test_missing_git_exits_127(self):
+        self.assertEqual(self.exit_code(FileNotFoundError("git")), 127)
+
+    def test_other_git_failure_is_an_ordinary_finding(self):
+        self.assertEqual(self.exit_code(subprocess.CalledProcessError(128, "git")), 1)
+
+    def test_a_vanished_tracked_config_is_still_a_finding(self):
+        self.findings()
+        (self.root / "wrangler.toml").unlink()
+        out = guards.run(self.root, self.root / "registry.json", REPO, None)
+        self.assertTrue(any("cannot parse" in f for f in out), out)
 
 
 class LiveTree(unittest.TestCase):

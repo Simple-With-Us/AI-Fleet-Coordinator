@@ -15,7 +15,8 @@ Downgrade switch:  the registry's account_plan says which plan the account is on
 applies, and caps limits.subrequests at the registry's free_plan_subrequests.  --plan
 overrides the file for a rehearsal.  docs/cloudflare-workers.md has the checklist.
 
-Reads files only;  it never talks to Cloudflare.  Exit 0 clean, 1 on any finding.
+Reads files only;  it never talks to Cloudflare.  Exit 0 clean, 1 on any finding,
+124 when git ls-files times out, 127 when git is missing.
 """
 
 from __future__ import annotations
@@ -228,6 +229,8 @@ def run(root: Path, registry_path: Path, repo: str, plan: str | None) -> list[st
     active_plan = plan or registry.get("account_plan")
     try:
         tracked = tracked_configs(root)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        raise  # main() gives these their own exit codes.
     except (OSError, subprocess.SubprocessError) as err:
         return findings + [f"cannot list tracked files under {root}: {err}"]
     if not tracked:
@@ -263,7 +266,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", choices=sorted(PLANS))
     args = parser.parse_args(argv)
     registry_path = args.registry or args.root / "scripts" / "worker-registry.json"
-    findings = run(args.root, registry_path, args.repo, args.plan)
+    try:
+        findings = run(args.root, registry_path, args.repo, args.plan)
+    except subprocess.TimeoutExpired:
+        print("git ls-files timed out, so no config was checked")
+        return 124
+    except FileNotFoundError:
+        print("git executable not found, so no config was checked")
+        return 127
     for finding in findings:
         print(finding)
     if findings:
