@@ -896,6 +896,81 @@ class OpenCodeCatalogTests(unittest.TestCase):
         base.mkdir(parents=True)
         (base / "ses_legacy.json").write_text(json.dumps(session), encoding="utf-8")
 
+    def _db_v2(self, with_content_tables=True) -> Path:
+        # The live store layout the plugin README records:  session_v2 plus the
+        # newer content tables.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session_v2 (id TEXT, directory TEXT, title TEXT,"
+                " time_created INTEGER, time_archived INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO session_v2 VALUES ('ses_v2', '/srv/v2', 'V2 chat', 3000, NULL)"
+            )
+            if with_content_tables:
+                conn.execute("CREATE TABLE session_message (id TEXT, session_id TEXT)")
+            conn.commit()
+        finally:
+            conn.close()
+        return db
+
+    def test_session_v2_store_yields_rows(self):
+        self._db_v2()
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["session_id"], "ses_v2")
+        self.assertEqual(row["title"], "V2 chat")
+        self.assertEqual(row["status"], "metadata-only")
+
+    def test_session_v2_without_content_tables_is_available(self):
+        self._db_v2(with_content_tables=False)
+        rows = self.catalog().discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["session_id"], "ses_v2")
+        self.assertEqual(row["status"], "available")
+
+    def test_one_unreadable_project_does_not_abort_the_scan(self):
+        base = self.home / ".local" / "share" / "opencode" / "storage" / "session"
+        (base / "good").mkdir(parents=True)
+        (base / "bad").mkdir(parents=True)
+        (base / "good" / "ses_a.json").write_text(
+            json.dumps({"id": "ses_a", "title": "A", "time": {"created": 1000}}), encoding="utf-8"
+        )
+        (base / "bad" / "ses_b.json").write_text(
+            json.dumps({"id": "ses_b", "title": "B", "time": {"created": 2000}}), encoding="utf-8"
+        )
+        real_scandir = os.scandir
+
+        def flaky(path):
+            if Path(path) == base / "bad":
+                raise OSError("permission denied")
+            return real_scandir(path)
+
+        with mock.patch("agent_sync.chat_catalog.os.scandir", side_effect=flaky):
+            rows = self.catalog().discover()
+        found = {r.get("session_id") for r in rows if r["platform"] == "opencode"}
+        self.assertIn("ses_a", found)
+
+    def test_find_opencode_by_id_in_db(self):
+        self._db()
+        catalog = self.catalog()
+        row = catalog.find("opencode", "ses_1")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["session_id"], "ses_1")
+        self.assertEqual(row["title"], "Real chat")
+        self.assertIsNone(catalog.find("opencode", "ses_missing"))
+
+    def test_find_opencode_by_id_in_legacy_tree(self):
+        self._legacy_tree({"id": "ses_legacy", "title": "Old", "time": {"created": 5000}})
+        catalog = self.catalog()
+        row = catalog.find("opencode", "ses_legacy")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["title"], "Old")
+        self.assertIsNone(catalog.find("opencode", "ses_nope"))
+
     def test_db_path_present_but_unusable_never_falls_through_to_legacy(self):
         # A db path that EXISTS but cannot be used (here: a directory) is an
         # explicit "unusable", never a silent fallthrough to the legacy tree

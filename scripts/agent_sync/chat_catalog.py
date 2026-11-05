@@ -987,7 +987,12 @@ class ChatCatalog:
                         for entry in itertools.islice(entries, OPENCODE_LEGACY_PROJECTS + 1)
                         if entry.is_dir(follow_symlinks=False)
                     ][:OPENCODE_LEGACY_PROJECTS]
-                for project in sorted(projects):
+            except OSError:
+                return [
+                    self._unavailable("opencode", "OPENCODE", "unreadable OpenCode session store")
+                ]
+            for project in sorted(projects):
+                try:
                     with os.scandir(project) as entries:
                         for entry in itertools.islice(entries, MAX_FILES_PER_SOURCE):
                             name = entry.name
@@ -998,12 +1003,13 @@ class ChatCatalog:
                                 files.append(path)
                                 if len(files) >= MAX_FILES_PER_SOURCE:
                                     break
-                    if len(files) >= MAX_FILES_PER_SOURCE:
-                        break
-            except OSError:
-                return [
-                    self._unavailable("opencode", "OPENCODE", "unreadable OpenCode session store")
-                ]
+                except OSError:
+                    # One unreadable or concurrently removed project skips only
+                    # itself;  the sessions already collected from the other
+                    # projects still publish.
+                    continue
+                if len(files) >= MAX_FILES_PER_SOURCE:
+                    break
         files.sort()
         rows = []
         for path in files:
@@ -1063,9 +1069,14 @@ class ChatCatalog:
             tables = {
                 r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
             }
-            if "session" not in tables:
+            # The pinned upstream revision names the table `session`;  the live
+            # store this repository documents (opencode_letter_plugin README)
+            # names it `session_v2`.  Resolve the permitted table once and use
+            # that identifier for the schema check and both reads.
+            session_table = next((t for t in ("session", "session_v2") if t in tables), None)
+            if session_table is None:
                 return None
-            session_cols = {r[1] for r in conn.execute("PRAGMA table_info(session)")}
+            session_cols = {r[1] for r in conn.execute("PRAGMA table_info(" + session_table + ")")}
             if not {"id", "directory", "title", "time_created"} <= session_cols:
                 return None
             newer_content = bool({"session_message", "session_input"} & tables)
@@ -1093,7 +1104,7 @@ class ChatCatalog:
             # the guard, or whose columns are not TEXT, are DROPPED from the
             # window instead (bounded-subset contract, documented and tested).
             sessions = conn.execute(
-                "SELECT id, directory, substr(title, 1, 4096), time_created FROM session"
+                "SELECT id, directory, substr(title, 1, 4096), time_created FROM " + session_table
                 + where
                 + (" AND" if where else " WHERE")
                 + " typeof(id) = 'text' AND length(id) <= 128"
@@ -1121,7 +1132,7 @@ class ChatCatalog:
                     "SELECT session_id, MAX(time_created) FROM "
                     + table
                     + " WHERE typeof(session_id) = 'text' AND length(session_id) <= 128"
-                    + " AND session_id IN (SELECT id FROM session"
+                    + " AND session_id IN (SELECT id FROM " + session_table
                     + where
                     + (" AND" if where else " WHERE")
                     + " typeof(id) = 'text' AND length(id) <= 128"
@@ -1292,6 +1303,118 @@ class ChatCatalog:
             updated_at=stamp,
             source=str(path),
         )
+
+    def _find_opencode(self, sid: str) -> dict[str, Any] | None:
+        # The by-id lookup for a tagged OpenCode chat, outside the discovery
+        # window.  Same store preference and fail-closed rules as _scan_opencode:
+        # a usable database is the store of record (no legacy fallthrough), a
+        # miss or a read failure is None, never an exception.
+        root = self.home / ".local" / "share" / "opencode"
+        db = root / "opencode.db"
+        try:
+            usable = db.is_file() and _within(db, self.home) and os.access(db, os.R_OK)
+        except OSError:
+            usable = False
+        if usable:
+            return self._find_opencode_db(db, sid)
+        base = root / "storage" / "session"
+        try:
+            if not (base.is_dir() and _within(base, self.home)):
+                return None
+            with os.scandir(base) as entries:
+                projects = [
+                    entry.path
+                    for entry in itertools.islice(entries, OPENCODE_LEGACY_PROJECTS + 1)
+                    if entry.is_dir(follow_symlinks=False)
+                ][:OPENCODE_LEGACY_PROJECTS]
+        except OSError:
+            return None
+        seen = 0
+        for project in sorted(projects):
+            try:
+                with os.scandir(project) as entries:
+                    for entry in itertools.islice(entries, MAX_FILES_PER_SOURCE):
+                        if seen >= MAX_FILES_PER_SOURCE:
+                            return None
+                        name = entry.name
+                        if not (name.startswith("ses_") and name.endswith(".json")):
+                            continue
+                        path = Path(project) / name
+                        if not (entry.is_file(follow_symlinks=False) and _within(path, base)):
+                            continue
+                        seen += 1
+                        try:
+                            row = self._opencode_row_json(path)
+                        except ValueError:
+                            continue
+                        if row is not None and row.get("session_id") == sid:
+                            return row
+            except OSError:
+                continue
+        return None
+
+    def _find_opencode_db(self, db: Path, sid: str) -> dict[str, Any] | None:
+        try:
+            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2.0)
+        except sqlite3.Error:
+            return None
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            session_table = next((t for t in ("session", "session_v2") if t in tables), None)
+            if session_table is None:
+                return None
+            session_cols = {r[1] for r in conn.execute("PRAGMA table_info(" + session_table + ")")}
+            if not {"id", "directory", "title", "time_created"} <= session_cols:
+                return None
+            newer_content = bool({"session_message", "session_input"} & tables)
+            archived_clause = " AND time_archived IS NULL" if "time_archived" in session_cols else ""
+            found = conn.execute(
+                "SELECT id, directory, substr(title, 1, 4096), time_created FROM "
+                + session_table
+                + " WHERE id = ? AND typeof(id) = 'text'"
+                + archived_clause,
+                (sid,),
+            ).fetchone()
+            if found is None:
+                return None
+            fsid, cwd, title, created = found
+            stamp = created / 1000.0 if isinstance(created, (int, float)) else 0.0
+            excerpts: list[dict[str, str]] = []
+            status = "available"
+            if newer_content:
+                status = "metadata-only"
+            elif "message" in tables and "part" in tables:
+                activity = conn.execute(
+                    "SELECT MAX(time_created) FROM message WHERE session_id = ?"
+                    " AND typeof(session_id) = 'text'",
+                    (sid,),
+                ).fetchone()
+                if activity and isinstance(activity[0], (int, float)):
+                    stamp = max(stamp, activity[0] / 1000.0)
+                work = {"left": OPENCODE_SQLITE_WORK_STEPS, "tripped": False}
+                budget = [OPENCODE_EXCERPT_TOTAL_BYTES]
+                try:
+                    excerpts = self._opencode_excerpts_db_bulk(conn, [sid], tables, budget, work).get(
+                        sid, []
+                    )
+                except _StoreOperational:
+                    status = "metadata-only"
+            return self._row(
+                "opencode",
+                "OPENCODE",
+                fsid,
+                cwd=cwd if isinstance(cwd, str) else None,
+                title=title if isinstance(title, str) and title.strip() else "OpenCode chat " + fsid[:12],
+                updated_at=stamp,
+                status=status,
+                source=str(db),
+                excerpts=excerpts,
+            )
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
 
     def _scan(
         self,
@@ -1471,6 +1594,8 @@ class ChatCatalog:
                 row = self._find_cursor(name, sid)
             elif name in {"grok", "grok-leader"}:
                 row = self._find_grok(sid)
+            elif name == "opencode":
+                row = self._find_opencode(sid)
             else:
                 # Follow-up:  platforms with no local store here (antigravity) have no
                 # by-id lookup yet, so a tagged chat on one stays unfound.
