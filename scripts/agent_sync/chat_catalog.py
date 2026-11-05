@@ -39,12 +39,16 @@ OPENCODE_EXCERPT_ROWS = 40
 # Combined per-row byte cap (UTF-8 bytes via length(CAST .. AS BLOB), not
 # characters) applied to m.data + p.data together, before any parse.
 OPENCODE_EXCERPT_ROW_BYTES = 64 * 1024
-# SQLite VM work budget for one store scan:  the progress handler aborts any
-# query (and then the whole read) once this many VM instruction groups ran,
-# so no query plan can turn a bounded row count into unbounded work.
-OPENCODE_SQLITE_WORK_STEPS = 500_000
+# SQLite VM work budget for one store scan, in ACTUAL instructions:  the
+# progress handler runs once per OPENCODE_SQLITE_PROGRESS_STEPS instructions
+# and spends that many from the budget, so no query plan can turn a bounded
+# row count into unbounded work.  A monotonic wall-clock deadline covers the
+# paths instruction counting cannot see (page cache stalls, IO);  whichever
+# trips first aborts the read as _StoreHeavy.
+OPENCODE_SQLITE_WORK_STEPS = 5_000_000
 # Granularity:  the handler runs once per this many VM instructions.
 OPENCODE_SQLITE_PROGRESS_STEPS = 1000
+OPENCODE_SQLITE_DEADLINE_SECONDS = 10.0
 OPENCODE_EXCERPT_SESSION_BYTES = 256 * 1024
 OPENCODE_EXCERPT_TOTAL_BYTES = 4 * 1024 * 1024
 # Legacy tree enumeration is bounded too:  at most this many project dirs.
@@ -1011,10 +1015,11 @@ class ChatCatalog:
         # ORDER BY still scans the whole table, so the progress handler is the
         # actual bound.  Tripping it raises _StoreHeavy, not "unrecognized".
         work = {"left": OPENCODE_SQLITE_WORK_STEPS, "tripped": False}
+        deadline = time.monotonic() + OPENCODE_SQLITE_DEADLINE_SECONDS
 
         def _progress() -> int:
-            work["left"] -= 1
-            if work["left"] <= 0:
+            work["left"] -= OPENCODE_SQLITE_PROGRESS_STEPS
+            if work["left"] <= 0 or time.monotonic() > deadline:
                 work["tripped"] = True
                 return 1
             return 0
@@ -1052,8 +1057,12 @@ class ChatCatalog:
                     if not required <= cols:
                         return None
             where = " WHERE time_archived IS NULL" if "time_archived" in session_cols else ""
+            # substr() caps bound allocation per row:  a giant title or directory
+            # TEXT must never be materialized whole (one VM operation can return
+            # unbounded text, and _row's clip happens only after that).
             sessions = conn.execute(
-                "SELECT id, directory, title, time_created FROM session"
+                "SELECT substr(id, 1, 128), substr(directory, 1, 1024),"
+                " substr(title, 1, 4096), time_created FROM session"
                 + where
                 + " ORDER BY time_created DESC LIMIT ?",
                 (MAX_FILES_PER_SOURCE,),
@@ -1074,11 +1083,12 @@ class ChatCatalog:
                 if not {"session_id", "time_created"} <= cols:
                     continue
                 for sid, stamp in conn.execute(
-                    "SELECT session_id, MAX(time_created) FROM "
+                    "SELECT substr(session_id, 1, 128), MAX(time_created) FROM "
                     + table
                     + " WHERE session_id IN (SELECT id FROM session"
                     + where
-                    + " ORDER BY time_created DESC LIMIT ?) GROUP BY session_id",
+                    + " ORDER BY time_created DESC LIMIT ?)"
+                    + " GROUP BY substr(session_id, 1, 128)",
                     (MAX_FILES_PER_SOURCE,),
                 ):
                     if isinstance(sid, str) and isinstance(stamp, (int, float)):

@@ -1169,18 +1169,77 @@ class OpenCodeCatalogTests(unittest.TestCase):
             catalog.excerpt(row["id"]), [{"role": "user", "text": "hello fleet"}]
         )
 
-    def test_work_budget_trip_reports_store_heavy(self):
-        # A tripped VM work budget is "store exceeds read budget", never
-        # "unrecognized" and never silently empty.
+    def test_real_heavy_query_trips_work_budget(self):
+        # A real query (no mocked instant trip):  a few hundred windowed sessions
+        # plus messages, a small but real instruction budget, and the read aborts
+        # as "store exceeds read budget" - never "unrecognized", never silently
+        # empty.
+        db = self.home / ".local" / "share" / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created INTEGER)"
+            )
+            conn.execute(
+                "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+                " time_created INTEGER, data TEXT)"
+            )
+            for i in range(300):
+                conn.execute(
+                    "INSERT INTO session VALUES (?, '/w', ?, ?)", ("ses_%03d" % i, "C%d" % i, i)
+                )
+                conn.execute(
+                    "INSERT INTO message VALUES (?, ?, ?, '{}')", ("m_%03d" % i, "ses_%03d" % i, i)
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        catalog = self.catalog()
+        with mock.patch("agent_sync.chat_catalog.OPENCODE_SQLITE_WORK_STEPS", 2000), mock.patch(
+            "agent_sync.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 100
+        ):
+            rows = catalog.discover()
+        row = next(r for r in rows if r["platform"] == "opencode")
+        self.assertEqual(row["status"], "unavailable")
+        self.assertIn("exceeds read budget", row["error"])
+
+    def test_deadline_trip_reports_store_heavy(self):
         self._db()
         catalog = self.catalog()
-        with mock.patch("agent_sync.chat_catalog.OPENCODE_SQLITE_WORK_STEPS", 1), mock.patch(
+        with mock.patch("agent_sync.chat_catalog.OPENCODE_SQLITE_DEADLINE_SECONDS", 0), mock.patch(
             "agent_sync.chat_catalog.OPENCODE_SQLITE_PROGRESS_STEPS", 1
         ):
             rows = catalog.discover()
         row = next(r for r in rows if r["platform"] == "opencode")
         self.assertEqual(row["status"], "unavailable")
         self.assertIn("exceeds read budget", row["error"])
+
+    def test_oversized_session_metadata_is_capped(self):
+        # A 1MB title / 500KB directory must never be materialized whole:  the
+        # scan completes, output fields stay bounded.
+        db = self._db()
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_big', 'p1', NULL, ?, ?, 500)",
+                ("D" * 500_000, "T" * 1_000_000),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.catalog(max_records=1000).discover()
+        opencode = {
+            r["session_id"]: r for r in rows if r["platform"] == "opencode" and r["status"] != "unavailable"
+        }
+        self.assertIn("ses_big", opencode)
+        self.assertIn("ses_1", opencode)
+        big = opencode["ses_big"]
+        self.assertLessEqual(len(big["title"]), 180)
+        self.assertLessEqual(len(big["cwd"] or ""), 1024)
 
     def test_legacy_enumeration_is_bounded(self):
         # More ses_*.json files than the cap in one project:  exactly the cap is
