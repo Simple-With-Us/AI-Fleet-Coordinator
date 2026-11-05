@@ -258,7 +258,7 @@ export async function resolveRecallSecrets(env) {
   const [token, accessId, accessSecret, ownerToken] = await Promise.all([
     read(RECALL_SECRETS.token), read(RECALL_SECRETS.accessId), read(RECALL_SECRETS.accessSecret), read(RECALL_SECRETS.ownerToken),
   ]);
-  return { token, accessId, accessSecret, ownerToken };
+  return ownerToken ? { token, accessId, accessSecret, ownerToken } : { token, accessId, accessSecret };
 }
 
 /** The base URL when it is exactly https://recall.jays.services (a trailing slash allowed), else null. */

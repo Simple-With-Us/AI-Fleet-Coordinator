@@ -570,9 +570,12 @@ class RecallToolTests(FakePrograms):
         shared = json.loads((Path(T.__file__).parent / "recall-tools.json").read_text())["tools"]
         self.assertEqual([served[t["name"]] for t in shared], shared)
         self.assertEqual(
-            {t["name"] for t in shared}, {"recall_search", "recall_stats", "recall_contribute"}
+            {t["name"] for t in shared},
+            {"recall_search", "recall_stats", "recall_contribute", "recall_correct", "recall_retract"},
         )
-        self.assertIn("recall_contribute", T.WRITE_TOOLS)
+        self.assertLessEqual(
+            {"recall_contribute", "recall_correct", "recall_retract"}, T.WRITE_TOOLS
+        )
         self.assertLessEqual({"recall_search", "recall_stats"}, T.READ_TOOLS)
 
     def test_search_runs_the_recall_cli_and_fences_the_hits(self):
@@ -609,6 +612,13 @@ class RecallToolTests(FakePrograms):
         self.assertEqual(
             call["argv"], ["search", "pm2 env", "--limit", "3", "--json", "--app", "fleet"]
         )
+        audit = self.session(self.env(RECALL_TEST_REPLY=reply)).call(
+            "recall_search", {"query": "pm2 env", "include_retracted": True}
+        )
+        self.assertEqual(audit["structuredContent"]["doc_ids"], ["doc-1"])
+        self.assertEqual(
+            self.calls(self.recall_out)[-1]["argv"][-1], "--include-retracted"
+        )
         self.assertFalse(
             [k for k in call["env"] if k.startswith("ZULIP")], "no Zulip variable reaches recall"
         )
@@ -633,6 +643,113 @@ class RecallToolTests(FakePrograms):
         self.assertEqual(call["argv"][:2], ["contribute", "-"])
 
     LESSON = "Always restart pm2 with --update-env after changing the ecosystem file, or the old env stays cached."
+
+    def test_correct_and_retract_run_the_cli_as_the_claimed_identity(self):
+        corrected = json.dumps(
+            {
+                "id": "point-1",
+                "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+                "status": "corrected",
+                "revision": 2,
+                "corrected_at": 1762396800000,
+                "corrected_by": "CLAUDE",
+                "previous_content_hash": "old",
+                "content_hash": "new",
+                "scrubbed": [],
+            }
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=corrected))
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "text": self.LESSON,
+            "reason": "fix the sentence gap",
+            "expected_revision": 1,
+        }
+        data = self.assert_structured("recall_correct", session.call("recall_correct", args))
+        self.assertEqual((data["revision"], data["status"], data["seat"]), (2, "corrected", "CLAUDE"))
+        call = self.calls(self.recall_out)[0]
+        self.assertEqual(call["stdin"], self.LESSON)
+        self.assertEqual(
+            call["argv"][:4],
+            ["correct", args["doc_id"], "-", "--reason"],
+        )
+        self.assertEqual(call["argv"][call["argv"].index("--seat") + 1], "CLAUDE")
+        self.assertEqual(
+            call["argv"][call["argv"].index("--expected-revision") + 1], "1"
+        )
+
+        retracted = json.dumps(
+            {
+                "id": "point-1",
+                "doc_id": args["doc_id"],
+                "status": "retracted",
+                "revision": 2,
+                "retracted": True,
+                "retracted_at": 1762396801000,
+                "retracted_by": "CLAUDE",
+                "retraction_reason": "obsolete",
+            }
+        )
+        session = self.session(self.env(RECALL_TEST_REPLY=retracted))
+        data = self.assert_structured(
+            "recall_retract",
+            session.call(
+                "recall_retract",
+                {"doc_id": args["doc_id"], "reason": "obsolete", "expected_revision": 2},
+            ),
+        )
+        self.assertEqual((data["retracted"], data["status"], data["seat"]), (True, "retracted", "CLAUDE"))
+        call = self.calls(self.recall_out)[-1]
+        self.assertEqual(call["stdin"], "")
+        self.assertEqual(
+            call["argv"],
+            [
+                "retract",
+                args["doc_id"],
+                "--reason",
+                "obsolete",
+                "--seat",
+                "CLAUDE",
+                "--json",
+                "--expected-revision",
+                "2",
+            ],
+        )
+
+    def test_a_mutation_that_times_out_is_unknown_and_the_retry_is_not_resent(self):
+        args = {
+            "doc_id": "contrib/CLAUDE/2026-11-05/472fc36e",
+            "reason": "obsolete",
+            "idempotency_key": "aaaaaaaa-8",
+        }
+
+        def hang(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 1)
+
+        env = self.env(
+            RECALL_TEST_REPLY=json.dumps(
+                {"doc_id": args["doc_id"], "status": "retracted", "retracted": True}
+            )
+        )
+        session = self.session(env)
+        with mock.patch.object(RT.subprocess, "run", hang):
+            first = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", first["message"])
+        retry = self.assert_tool_error(session.call("recall_retract", args), "outcome_unknown")
+        self.assertIn("may or may not have landed", retry["message"])
+        self.assertEqual(self.calls(self.recall_out), [], "the retry did not send the mutation again")
+
+    def test_mutation_reason_is_scanned_before_the_cli_runs(self):
+        session = self.session(self.env())
+        leak = "token ghp_" + "EXAMPLE0" * 5
+        self.assert_tool_error(
+            session.call(
+                "recall_retract",
+                {"doc_id": "contrib/CLAUDE/2026-11-05/472fc36e", "reason": leak},
+            ),
+            "refused_secret",
+        )
+        self.assertEqual(self.calls(self.recall_out), [])
 
     def test_an_idempotency_key_contributes_once_even_when_the_retry_alters_the_text(self):
         reply = json.dumps(
