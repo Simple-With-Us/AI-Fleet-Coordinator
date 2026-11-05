@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The fleet git tools CLI:  a thin client for the git tools of the hosted simple-tools MCP.
 
-Every operation is remote.  The endpoint is the fixed constant below (no environment override) and the
+Every operation is remote.  The endpoints are the fixed constants below (no environment override) and the
 bearer is the CLI user's OWN credential:  it comes from SIMPLE_TOOLS_BEARER in the environment (automation)
 or one hidden interactive prompt (no echo - never an argument, history, a file or a log line here), and
 there is no direct path, no credential minting and no other credential source.  The server, never this
@@ -22,6 +22,11 @@ a write, or the server's outcome_unknown all print the uncertainty note and stop
 text is untrusted (it can echo caller input), so only its allow-listed error code is ever shown.  A genuine
 relay refusal keeps its real code - it is never reclassified as an uncertain write.
 
+clone, fetch, pull, ls-remote, bundle and archive run the local git program against the hosted read-only route, on the
+same host as the MCP endpoint.  The server reads the repo as this bearer's own GitHub App and keeps the GitHub token, so
+this client never holds one.  That route has no push.  publish reads local files and sends them through the same write
+tool as `call`, so a caller need not pass a large file as an inline argument.
+
 This file is standard library only.  The command environment prefix is _ENV_STEM below;
 everything user-visible takes the installed name from argv[0].  Python 3.10+.
 """
@@ -29,6 +34,7 @@ everything user-visible takes the installed name from argv[0].  Python 3.10+.
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
 import hashlib
 import http.client
@@ -37,10 +43,13 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal  # SIGKILL for the isolated pattern-check child only, never this process
 import socket
 import ssl
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -58,6 +67,15 @@ REMOTE_ENV = _ENV_STEM + "_REMOTE"  # set by the seat helper;  informational onl
 USER_AGENT = _ENV_STEM.lower().replace("_", "-") + "-remote/1"
 
 REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
+GIT_ROUTE_BASE = "https://agents.simplewithus.com"
+GIT_TIMEOUT_S = 3600
+# The route refuses a chunked request, so git must send a long want list in one piece.
+GIT_POST_BUFFER_BYTES = 8 * 1024 * 1024
+REPO_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
+# The server's limits on gr_wf_files_put (git_relay/workflow_verbs.py).
+PUBLISH_MAX_FILE_BYTES = 2 * 1024 * 1024
+PUBLISH_MAX_COMMIT_BYTES = 4 * 1024 * 1024
+PUBLISH_MAX_COMMIT_FILES = 20
 REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
 REMOTE_TIMEOUT_S = 40
 # One budget for the whole verb:  the identities probe, every discovery page and the target call share
@@ -1333,6 +1351,241 @@ def cmd_whoami(out: dict, a) -> int:
     return 0
 
 
+# ----------------------------------------------------------------- git transfer and file publishing
+
+
+def _git_binary() -> str:
+    found = shutil.which("git")
+    if not found:
+        die("git is not installed on this machine", EXIT_ERROR)
+    return found
+
+
+def _transport_env(bearer: str) -> dict:
+    """git's environment for the hosted read-only route.  The bearer stays out of argv, and no GitHub credential is here.
+
+    git rewrites github.com to the route for this one process, so a clone's stored remote stays the plain GitHub URL.
+    """
+    base = GIT_ROUTE_BASE
+    config = [
+        (f"url.{base}/git/.insteadOf", "https://github.com/"),
+        (f"url.{base}/git/.insteadOf", "git@github.com:"),
+        (f"http.{base}/.extraHeader", f"Authorization: Bearer {bearer}"),
+        ("http.postBuffer", str(GIT_POST_BUFFER_BYTES)),
+        ("credential.helper", ""),
+    ]
+    env = dict(os.environ)
+    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": str(len(config))})
+    for index, (key, value) in enumerate(config):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+def _run_git(args: list[str], bearer: str, cwd: str | None = None) -> int:
+    """Run one git command through the route.  Its stderr reaches the terminal only after the bearer is taken out of it."""
+    try:
+        proc = subprocess.run(
+            [_git_binary(), *args],
+            env=_transport_env(bearer),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=GIT_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        die(f"git timed out after {GIT_TIMEOUT_S} seconds", EXIT_ERROR)
+    except OSError as exc:
+        die(f"git could not start ({type(exc).__name__})", EXIT_ERROR)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr.replace(bearer, "[bearer]"))
+    return proc.returncode
+
+
+def _repo_url(repo: str) -> str:
+    if REPO_PATTERN.fullmatch(repo) is None or ".." in repo:
+        die("the repo must be written owner/name", EXIT_USAGE)
+    return f"https://github.com/{repo}.git"
+
+
+def _plain_arg(value: str, what: str) -> str:
+    """A value that git could read as an option is refused, not passed on."""
+    if not value or value.startswith("-") or "\0" in value:
+        die(f"{what} must not be empty or start with a dash", EXIT_USAGE)
+    return value
+
+
+def cmd_clone(a, bearer: str) -> int:
+    args = ["clone"]
+    if a.depth is not None:
+        if a.depth < 1:
+            die("--depth must be at least 1", EXIT_USAGE)
+        args += ["--depth", str(a.depth)]
+    if a.branch:
+        args += ["--branch", _plain_arg(a.branch, "--branch")]
+    if a.partial:
+        args.append("--filter=blob:none")
+    args += ["--", _repo_url(a.repo)]
+    if a.dir:
+        args.append(_plain_arg(a.dir, "the folder"))
+    return _run_git(args, bearer)
+
+
+def cmd_fetch(a, bearer: str) -> int:
+    args = ["-C", a.dir, "fetch"]
+    if a.prune:
+        args.append("--prune")
+    args += ["--", _plain_arg(a.remote, "the remote"), *[_plain_arg(r, "a refspec") for r in a.refspec]]
+    return _run_git(args, bearer)
+
+
+def cmd_pull(a, bearer: str) -> int:
+    return _run_git(["-C", a.dir, "pull", "--ff-only", "--", _plain_arg(a.remote, "the remote")], bearer)
+
+
+def cmd_ls_remote(a, bearer: str) -> int:
+    args = ["ls-remote", "--", _repo_url(a.repo)]
+    if a.ref:
+        args.append(_plain_arg(a.ref, "the ref"))
+    return _run_git(args, bearer)
+
+
+def _new_output(path: str) -> str:
+    target = os.path.abspath(path)
+    if os.path.lexists(target):
+        die(f"{path!r} already exists;  this command never overwrites a file", EXIT_USAGE)
+    return target
+
+
+def cmd_bundle(a, bearer: str) -> int:
+    """A git bundle of every branch and tag, made from a throwaway mirror."""
+    target = _new_output(a.output)
+    with tempfile.TemporaryDirectory(prefix="simple-git-") as tmp:
+        mirror = os.path.join(tmp, "mirror.git")
+        code = _run_git(["clone", "--quiet", "--mirror", "--", _repo_url(a.repo), mirror], bearer)
+        if code:
+            return code
+        code = _run_git(["-C", mirror, "bundle", "create", "--quiet", target, "--all"], bearer)
+    if not code:
+        print(target)
+    return code
+
+
+def cmd_archive(a, bearer: str) -> int:
+    """A tar, tar.gz or zip of one ref, named by the output's extension, from a throwaway shallow fetch."""
+    target = _new_output(a.output)
+    if not target.endswith((".tar", ".tar.gz", ".tgz", ".zip")):
+        die("the output must end in .tar, .tar.gz, .tgz or .zip", EXIT_USAGE)
+    ref = _plain_arg(a.ref, "--ref")
+    url = _repo_url(a.repo)
+    with tempfile.TemporaryDirectory(prefix="simple-git-") as tmp:
+        code = _run_git(["init", "--quiet", "--bare", tmp], bearer)
+        if code:
+            return code
+        code = _run_git(["-C", tmp, "fetch", "--quiet", "--depth", "1", "--", url, ref], bearer)
+        if code:
+            return code
+        code = _run_git(["-C", tmp, "archive", "-o", target, "FETCH_HEAD"], bearer)
+    if not code:
+        print(target)
+    return code
+
+
+def _publish_files(specs: list[str]) -> list[tuple[str, bytes]]:
+    """Each LOCAL or LOCAL=REPO_PATH read and checked before anything is sent."""
+    files: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    for spec in specs:
+        local, separator, repo_path = spec.partition("=")
+        repo_path = repo_path if separator else local
+        if not local or not repo_path or repo_path in seen:
+            die(f"--file {spec!r} is empty or repeats a repo path", EXIT_USAGE)
+        seen.add(repo_path)
+        if os.path.islink(local) or not os.path.isfile(local):
+            die(f"{local!r} is not a regular file", EXIT_USAGE)
+        size = os.path.getsize(local)
+        if size > PUBLISH_MAX_FILE_BYTES:
+            die(f"{local!r} is {size} bytes;  one file may be {PUBLISH_MAX_FILE_BYTES} at most", EXIT_USAGE)
+        try:
+            with open(local, "rb") as handle:
+                files.append((repo_path, handle.read(PUBLISH_MAX_FILE_BYTES + 1)))
+        except OSError:
+            die(f"cannot read {local!r}", EXIT_USAGE)
+    return files
+
+
+def _publish_batches(files: list[tuple[str, bytes]]) -> list[list[tuple[str, bytes]]]:
+    """Groups that each fit one commit:  PUBLISH_MAX_COMMIT_FILES files and PUBLISH_MAX_COMMIT_BYTES at most."""
+    batches: list[list[tuple[str, bytes]]] = []
+    current: list[tuple[str, bytes]] = []
+    size = 0
+    for item in files:
+        if current and (len(current) >= PUBLISH_MAX_COMMIT_FILES or size + len(item[1]) > PUBLISH_MAX_COMMIT_BYTES):
+            batches.append(current)
+            current, size = [], 0
+        current.append(item)
+        size += len(item[1])
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _branch_head(result: dict) -> str:
+    branch = (result.get("structured") or {}).get("branch")
+    commit = branch.get("commit") if isinstance(branch, dict) else None
+    sha = commit.get("sha") if isinstance(commit, dict) else None
+    if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+        die("the server did not report the branch head", EXIT_ERROR)
+    return sha
+
+
+def _tool_call(tools: dict, name: str, args: dict, bearer: str, seat: str, deadline: float) -> dict:
+    entry = tools.get(name)
+    if entry is None:
+        die(f"the server does not offer {name} to this bearer", EXIT_ERROR)
+    validate_arguments(entry, args, deadline)
+    args = resolve_actor(entry, args, bearer, seat, deadline)
+    return remote_call(name, args, not entry["read"], bearer, deadline)
+
+
+def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
+    """Commit local files to a branch as this bot, with no base64 for the caller to pass by hand.
+
+    Files past one commit's limits go in several commits, in order, each fenced on the head the last one left.
+    Nothing retries:  an unknown outcome stops here, as every other write in this client does.
+    """
+    files = _publish_files(a.file)
+    if not files:
+        die("name at least one --file", EXIT_USAGE)
+    _repo_url(a.repo)
+    if a.base:
+        base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
+        _tool_call(tools, "gr_wf_branch_create", {"repo": a.repo, "branch": a.branch, "sha": base}, bearer, seat, deadline)
+        head = base
+    else:
+        head = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline))
+    batches = _publish_batches(files)
+    for number, batch in enumerate(batches, 1):
+        message = a.message if len(batches) == 1 else f"{a.message} (part {number} of {len(batches)})"
+        payload = {
+            "repo": a.repo,
+            "branch": a.branch,
+            "message": message,
+            "expected_head_sha": head,
+            "files": [{"path": path, "content_b64": base64.b64encode(data).decode("ascii")} for path, data in batch],
+        }
+        out = _tool_call(tools, "gr_wf_files_put", payload, bearer, seat, deadline)
+        commit = (out.get("structured") or {}).get("commit")
+        if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            die("the server did not report the new commit;  check the branch before trying again", EXIT_ERROR)
+        head = commit
+        print(f"{commit}  {len(batch)} file(s)")
+    return 0
+
+
 # ----------------------------------------------------------------- parser / main
 
 
@@ -1341,7 +1594,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog=prog(),
         allow_abbrev=False,
         description="Fleet git tools: a thin client for the hosted simple-tools MCP git tools. "
-        "Every operation runs on the hosted server as this bot's own identity; there is no direct path.",
+        "Every operation runs on the hosted server as this bot's own identity; there is no direct path. "
+        "clone, fetch, pull, ls-remote, bundle and archive use local git over the hosted read-only route, "
+        "with no GitHub token on this machine.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
     pl = sub.add_parser(
@@ -1368,6 +1623,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="arguments as a JSON object, @file, or - for stdin (default: {})",
     )
     pc.add_argument("--json", action="store_true", help="print structured content and text as JSON")
+    pk = sub.add_parser("clone", help="clone a repo as this bot:  clone OWNER/NAME [FOLDER]", allow_abbrev=False)
+    pk.add_argument("repo")
+    pk.add_argument("dir", nargs="?")
+    pk.add_argument("--depth", type=int)
+    pk.add_argument("--branch")
+    pk.add_argument("--partial", action="store_true", help="fetch file contents only when they are needed")
+    pf = sub.add_parser("fetch", help="fetch into a clone as this bot", allow_abbrev=False)
+    pf.add_argument("remote", nargs="?", default="origin")
+    pf.add_argument("refspec", nargs="*")
+    pf.add_argument("--dir", default=".", help="the clone (default: this folder)")
+    pf.add_argument("--prune", action="store_true")
+    pu = sub.add_parser("pull", help="fast-forward a clone as this bot", allow_abbrev=False)
+    pu.add_argument("remote", nargs="?", default="origin")
+    pu.add_argument("--dir", default=".", help="the clone (default: this folder)")
+    pr = sub.add_parser("ls-remote", help="list a repo's refs:  ls-remote OWNER/NAME [REF]", allow_abbrev=False)
+    pr.add_argument("repo")
+    pr.add_argument("ref", nargs="?")
+    pb = sub.add_parser("bundle", help="write a git bundle of a repo:  bundle OWNER/NAME OUTPUT", allow_abbrev=False)
+    pb.add_argument("repo")
+    pb.add_argument("output")
+    pa = sub.add_parser(
+        "archive", help="write a tar, tar.gz or zip of one ref:  archive OWNER/NAME OUTPUT", allow_abbrev=False
+    )
+    pa.add_argument("repo")
+    pa.add_argument("output")
+    pa.add_argument("--ref", default="HEAD", help="a branch or tag (default: HEAD)")
+    pp = sub.add_parser(
+        "publish", help="commit local files to a branch, with no inline base64", allow_abbrev=False
+    )
+    pp.add_argument("--repo", required=True, help="owner/name")
+    pp.add_argument("--branch", required=True)
+    pp.add_argument("--message", required=True)
+    pp.add_argument("--base", help="create the branch from this branch first")
+    pp.add_argument(
+        "--file", action="append", default=[], metavar="LOCAL[=REPO_PATH]", help="repeatable;  up to 2 MiB per file"
+    )
     return p
 
 
@@ -1392,7 +1683,20 @@ def main(argv: list[str] | None = None) -> int:
         )
     if a.cmd == "whoami":
         return cmd_whoami(whoami_out, a)
+    transfer = {
+        "clone": cmd_clone,
+        "fetch": cmd_fetch,
+        "pull": cmd_pull,
+        "ls-remote": cmd_ls_remote,
+        "bundle": cmd_bundle,
+        "archive": cmd_archive,
+    }
+    if a.cmd in transfer:
+        # The identities answer above already proved this bearer;  git needs no tool discovery.
+        return transfer[a.cmd](a, bearer)
     tools = discover_tools(bearer, overall_deadline)
+    if a.cmd == "publish":
+        return cmd_publish(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "list":
         return cmd_list(tools, a)
     if a.cmd == "show":
