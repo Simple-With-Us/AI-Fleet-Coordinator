@@ -799,10 +799,11 @@ class Connections:
 # ---------------------------------------------------------------- the actions
 
 
-def label_live_deployment(conn: Any, path: str, message: str) -> Any:
+def label_live_deployment(conn: Any, path: str, message: str, posted: dict | None = None) -> Any:
     """A new deployment of the live split as it stands, carrying `message`.  The deployers read only
     the newest deployment's message.  Cloudflare's create call takes no precondition, so a deploy that
-    lands between the read and the post is replaced by the older split;  the README says more."""
+    lands between the read and the post is replaced by the older split;  the README says more.
+    `posted`, when given, receives the split as posted, so the audit row can name it."""
     result = conn.api("GET", f"{path}/deployments")
     try:
         versions = [
@@ -811,6 +812,10 @@ def label_live_deployment(conn: Any, path: str, message: str) -> Any:
         ]
     except (KeyError, IndexError, TypeError):
         raise ApiError(0, ["no-live-deployment"]) from None
+    if posted is not None:
+        posted["label_versions"] = ",".join(
+            f"{item['version_id']}:{item['percentage']}" for item in versions
+        )
     return conn.api(
         "POST",
         f"{path}/deployments",
@@ -900,7 +905,14 @@ class Watchdog:
 
     # ---- stage 2:  the Worker's own off switch
 
-    def _step(self, worker: str, action: str, previous_version: str, call: Callable) -> Any:
+    def _step(
+        self,
+        worker: str,
+        action: str,
+        previous_version: str,
+        call: Callable,
+        detail: dict | None = None,
+    ) -> Any:
         """One logged action and exactly one row, whatever happens.  Returns the call's result, or
         False when it failed.  An unexpected error is a failed step, so the next poll retries it."""
         name = "action_failed"
@@ -919,7 +931,12 @@ class Watchdog:
             return False
         finally:
             self.store.event(
-                name, worker=worker, action=action, previous_version=previous_version, **outcome
+                name,
+                worker=worker,
+                action=action,
+                previous_version=previous_version,
+                **outcome,
+                **(detail or {}),
             )
 
     def _worker_failed(self, worker: str, stage: str, exc: Exception) -> None:
@@ -1028,11 +1045,13 @@ class Watchdog:
         previous_version = trip.get("previous_version", "unknown")
         message = f"{TRIP_MARKER} cf-usage-watchdog {trip['metric']} {trip['window']} previous {previous_version}"
         path = f"{self.base}/workers/scripts/{worker}"
+        posted: dict = {}
         done = self._step(
             worker,
             "mark_tripped",
             previous_version,
-            lambda: label_live_deployment(self.conn, path, message),
+            lambda: label_live_deployment(self.conn, path, message, posted),
+            posted,
         )
         trip["marked"] = done is not False
 
@@ -1737,7 +1756,7 @@ def rearm(
             return {"status": exc.status, "codes": exc.codes}
         return {"status": 0, "codes": [type(exc).__name__]}
 
-    def attempt(method: str, url: str, call: Callable) -> None:
+    def attempt(method: str, url: str, call: Callable, detail: dict | None = None) -> None:
         """One step and exactly one row, whatever happens."""
         nonlocal failed
         name = "rearm_failed"
@@ -1749,7 +1768,14 @@ def rearm(
             failed += 1
             outcome = failure(exc)
         finally:
-            store.event(name, worker=worker, method=method, path=url.replace(base, ""), **outcome)
+            store.event(
+                name,
+                worker=worker,
+                method=method,
+                path=url.replace(base, ""),
+                **outcome,
+                **(detail or {}),
+            )
 
     # The secret may never have landed, or an earlier partial re-arm removed it, and deleting what
     # is not there would fail forever.  Deleting it makes a new deployment, which clears the
@@ -1766,6 +1792,7 @@ def rearm(
             path=f"{path}/secrets".replace(base, ""),
             **failure(exc),
         )
+    posted: dict = {}
     if names is not None:
         if GUARD_SECRET in names:
             attempt("DELETE", plan[0][1], lambda: conn.api("DELETE", plan[0][1]))
@@ -1773,13 +1800,18 @@ def rearm(
             attempt(
                 "POST",
                 f"{path}/deployments",
-                lambda: label_live_deployment(conn, path, "cf-usage-watchdog re-armed"),
+                lambda: label_live_deployment(conn, path, "cf-usage-watchdog re-armed", posted),
+                posted,
             )
     for method, url, body in plan[1:]:
         attempt(method, url, lambda m=method, u=url, b=body: conn.api(m, u, b))
     if failed:
         print(f"{failed} step(s) failed;  the trip stays recorded.  Fix them and run this again.")
         return 1
+    if posted:
+        print(
+            f"The label repeated the live split {posted['label_versions']}.  If that is not what you expect, a deploy landed during this re-arm and has left live traffic, so deploy it again."
+        )
     moment = now or dt.datetime.fromtimestamp(time.time(), dt.UTC)
     state.setdefault("rearmed", {})[worker] = {
         "day": moment.strftime("%Y-%m-%d"),

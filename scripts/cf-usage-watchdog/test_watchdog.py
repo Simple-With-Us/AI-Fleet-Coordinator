@@ -638,6 +638,8 @@ class EscalationTests(Base):
         post = next(c for c in self.fake.writes() if c[1].endswith("/deployments"))
         self.assertEqual(post[2]["versions"], split)
         self.assertTrue(self.state["trips"][WORKER]["marked"])
+        row = next(r for r in self.events("action") if r["action"] == "mark_tripped")
+        self.assertEqual(row["label_versions"], "a:90,b:10")
 
     def test_observe_after_a_trip_does_not_escalate(self):
         self.poll(d1_rows(per_minute={minute(-3 - i): 5000 for i in range(5)}))
@@ -934,6 +936,16 @@ class RearmTests(Base):
         post = next(c for c in self.fake.writes() if c[1].endswith("/deployments"))
         self.assertFalse(post[2]["annotations"]["workers/message"].startswith("GUARD-TRIPPED"))
         self.assertNotIn(WORKER, self.state["trips"])
+
+    def test_a_rearm_label_names_the_split_it_posted(self):
+        self.tripped()
+        self.fake.secrets = []
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(wd.rearm(self.cfg, self.fake, self.store, self.state, WORKER, True), 0)
+        row = next(r for r in self.events("rearm_step") if r["path"].endswith("/deployments"))
+        self.assertEqual(row["label_versions"], "old-version:100")
+        self.assertIn("repeated the live split old-version:100", out.getvalue())
 
     def test_an_unreadable_secret_list_keeps_the_trip(self):
         self.tripped()
