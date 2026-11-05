@@ -89,23 +89,13 @@ class EveryKindIsFlaggedTests(unittest.TestCase):
         self.assertEqual(scan("AK" + "IA" + "ABCDEFGHIJ012345"), "AWS access key")
         self.assertEqual(scan("api_key=" + alnum(24)), "assigned secret")
 
-    def test_an_assigned_member_call_is_not_a_secret_but_every_literal_shape_still_is(self) -> None:
-        # git-relay's server.py line `token = auth.removeprefix("Bearer ")...` is code:  only an
-        # all-lowercase dotted-identifier chain that ends at the call's open paren is exempted.
-        self.assertIsNone(scan('token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""'))
-        self.assertIsNone(scan('token = os.getenv("T")'))
-        # Negative controls:  real credential literals must still flag, including with a paren, dots,
-        # prose around them, or no quotes.
-        self.assertEqual(scan('token = "' + alnum(24) + '"'), "assigned secret")
-        self.assertEqual(scan("api_key=" + alnum(24)), "assigned secret")
-        self.assertEqual(scan("token = " + alnum(22)), "assigned secret")
-        self.assertEqual(scan("token = " + alnum(22) + "("), "assigned secret")
-        self.assertEqual(scan("token = " + alnum(12) + "." + alnum(10)), "assigned secret")
-        self.assertEqual(scan("token = abc.def." + alnum(12)), "assigned secret")
-        self.assertEqual(scan("api_key=" + alnum(24) + " trailing prose"), "assigned secret")
-        # Unchanged boundaries:  below the length threshold is not flagged; an uppercase key still flags.
-        self.assertIsNone(scan("token=" + alnum(15)))
-        self.assertEqual(scan("TOKEN = " + alnum(18)), "assigned secret")
+    def test_member_call_shaped_values_still_flag(self) -> None:
+        # Adversarial evidence (no real secrets):  a value shaped like a member call, quoted or not,
+        # lowercase or mixed case, still flags.  This pins the original protection after a proposal to
+        # exempt member-call expressions was rejected as a security regression.
+        self.assertEqual(scan("token = " + "auth" + "." + "removeprefix" + alnum(6) + '("x")'), "assigned secret")
+        self.assertEqual(scan('token = "' + "Auth" + "." + "RemovePrefix" + alnum(6) + '("'), "assigned secret")
+        self.assertEqual(scan("password: " + "os" + "." + "getenv" + alnum(10) + "("), "assigned secret")
         self.assertEqual(scan("sk-" + "ant-" + b64(40)), "Anthropic or OpenAI key")
 
 

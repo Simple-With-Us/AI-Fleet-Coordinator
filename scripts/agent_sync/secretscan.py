@@ -60,11 +60,7 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("Coolify token", re.compile(r"(?<![A-Za-z0-9])\d{1,5}\|[A-Za-z0-9]{36,}(?![A-Za-z0-9])")),
     ("assigned credential", re.compile(r"\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['\"]?[A-Za-z0-9+/=._-]{16,}")),
     ("bearer token", re.compile(r"(?i)\bauthorization:\s*(basic|bearer)\s+[A-Za-z0-9+/=._-]{16,}")),
-    # The value must not be a member-call expression:  `token = auth.removeprefix(...)` is code, not a
-    # credential.  Only an all-lowercase dotted-identifier chain ending at the call's open paren is
-    # exempted; a literal followed by punctuation, a quote or whitespace still matches, as does any
-    # dotted value not immediately called.
-    ("assigned secret", re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\s*[=:]\s*['\"]?(?![a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)+\()[A-Za-z0-9+/=._-]{16,}")),
+    ("assigned secret", re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\s*[=:]\s*['\"]?[A-Za-z0-9+/=._-]{16,}")),
 ]
 _ZULIP_SHAPED = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{32}(?![A-Za-z0-9])")
 
