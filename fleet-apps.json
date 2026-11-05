@@ -445,14 +445,14 @@
       "notes": "The other bot of the Instinct app, shown as Wise (Instinct) since Sun, Oct 11, 2026 (the owner's name for what used to be called the Instinct version).  The seat tag is WISE (owner 2026-10-15);  INSTINCT is retired and stays as an accepted spelling so existing references keep resolving.  instinct/ remains a branch prefix alongside wise/ because its merged work is on instinct/ branches under the owner's GitHub login.  Held by the server listener (docs/protocols/agent-sync-partition.toml), reached through the hosted ST-MCP bridge, and makes no Mac lanes.  Has its own Linear app, Wise (Instinct), key variables LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
     },
     {
-      "tag": "ZCODE",
+      "tag": "ZC",
       "notesName": "ZCode",
       "worktreeSuffix": "zcode",
       "branchPrefixes": [
         "zcode/"
       ],
-      "zulipBotEmail": "zcode-bot@simplewithus.zulipchat.com",
-      "zulipFileCode": "Zcode",
+      "zulipBotEmail": "zc-bot@simplewithus.zulipchat.com",
+      "zulipFileCode": "ZC",
       "notes": "Z Code (Z.ai / Zhipu AI desktop IDE, ~/.zcode, global rules ~/.zcode/AGENTS.md)."
     }
   ],
@@ -475,7 +475,7 @@
       "ECHO": "instinct",
       "WISE": "instinct",
       "KIMI": "kimi-code",
-      "ZCODE": "zcode"
+      "ZC": "zcode"
     },
     "extraSeats": {
       "AMP": "amp",
@@ -487,12 +487,22 @@
       {
         "match": "BF-*",
         "app": "botfleet",
-        "zulipEmail": "bf-<role>-bot@simplewithus.zulipchat.com"
+        "zulipEmail": "bf-<role>-bot@simplewithus.zulipchat.com",
+        "lane": {
+          "roles": ["COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "FIXER", "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER", "TRADER"],
+          "folderTemplate": "bf-<role>",
+          "branchTemplate": "bf-<role>/"
+        }
       },
       {
         "match": "GB-*",
         "app": "grok-bot",
-        "zulipEmail": "<role>-grok-bot@simplewithus.zulipchat.com"
+        "zulipEmail": "<role>-grok-bot@simplewithus.zulipchat.com",
+        "lane": {
+          "roles": ["COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "FIXER", "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER", "TRADER"],
+          "folderTemplate": "gb-<role>",
+          "branchTemplate": "gb-<role>/"
+        }
       }
     ]
   },

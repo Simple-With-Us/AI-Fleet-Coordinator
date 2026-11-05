@@ -6,6 +6,7 @@
   python3 scripts/fleet-ops-control.py server start|stop|restart UNIT     (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server logs UNIT                   (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server update NAME                 (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py server update-status fleet-cli.ID.BASELINE --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -19,8 +20,9 @@ What it promises:
   * `--plan` prints the commands it would run and changes nothing.  `--yes` runs them.  With
     neither it refuses.
   * Every command is an argv list run without a shell.  Labels and unit names must match a
-    strict pattern before they reach an argv, and their output is thrown away: only an exit
-    status is reported.  `server logs` is the one deliberate exception: a `--yes` run returns
+    strict pattern before they reach an argv, and their output is kept private.  Update
+    stderr is bounded and classified into fixed error codes, never returned verbatim.
+    `server logs` is the deliberate exception: a `--yes` run returns
     the last 200 journal lines (at most 64 KiB, with a truncation note when cut) in the
     answer's `output`, while a `--plan` carries no log text at all.  Mac LaunchAgents have
     no log verb, because launchd has no uniform log file to tail.  `pm2` verbs act on the
@@ -44,7 +46,10 @@ What it promises:
     (0600): time, host role, verb, target and result.  No command output is recorded, and a
     redeploy is recorded by its resource name, never its uuid.
 
-Exit status: 0 planned or done, 1 a command failed, 2 refused.
+An update is submitted until a new successful service invocation is observed; API acceptance
+of a redeploy is also submitted.  Neither is called completed from submission alone.
+
+Exit status: 0 planned, submitted or done, 1 a command failed, 2 refused.
 """
 
 from __future__ import annotations
@@ -125,6 +130,29 @@ CREDENTIALS_MAX_BYTES = 8 * 1024
 COMMAND_TIMEOUT = 90
 SECRET_TIMEOUT = 30
 HTTP_TIMEOUT = 30
+SUDO = "/usr/bin/sudo"
+UPDATE_SYSTEMCTL = "/usr/bin/systemctl"
+FLEET_CLI_UPDATE_UNIT = "fleet-cli-git-update.service"
+UPDATE_PROBE_TIMEOUT = 3
+UPDATE_POLL_ATTEMPTS = 25
+UPDATE_POLL_INTERVAL = 0.5
+UPDATE_VERIFY_SECONDS = 12
+UPDATE_STATUS_RE = re.compile(r"fleet-cli\.([0-9a-f]{32})\.(0|[1-9][0-9]{0,19})")
+UINT64_MAX = (1 << 64) - 1
+AUDIT_CONTEXT_MAX_BYTES = 1024 * 1024
+UPDATE_PROPERTIES = (
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "Job",
+    "Type",
+    "InvocationID",
+    "Result",
+    "ExecMainCode",
+    "ExecMainStatus",
+    "ExecMainStartTimestampMonotonic",
+    "ExecMainExitTimestampMonotonic",
+)
 # The only variables a launchctl or systemctl child sees.  A pm2 child also needs
 # PM2_HOME, which names a directory and never a credential.
 CHILD_ENV_KEEP = (
@@ -141,9 +169,17 @@ CHILD_ENV_KEEP = (
 class Refused(Exception):
     """The request is not allowed.  The text is a fixed phrase that names no secret."""
 
+    def __init__(self, message, *, error_code=None):
+        super().__init__(message)
+        self.error_code = error_code
+
 
 class Failed(Exception):
     """An allowed command ran and did not succeed."""
+
+    def __init__(self, message, *, error_code=None):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 # MARK: - The allowlist
@@ -240,21 +276,29 @@ def _actions(row, bad):
 # MARK: - Running things
 
 
-def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False, max_bytes=None):
-    """(exit status, stdout bytes).  An argv list, never a shell; stderr is dropped.
+def run_command(
+    argv,
+    timeout=COMMAND_TIMEOUT,
+    env=None,
+    want_stdout=False,
+    max_bytes=None,
+    combine_stderr=False,
+):
+    """(exit status, captured bytes).  An argv list, never a shell.
 
     With `max_bytes` the capture itself is capped, keeping only the last bytes.  A timeout
-    is status 124 and a missing binary 127, like a shell would say."""
+    is status 124 and a missing binary 127, like a shell would say.  Stderr is discarded
+    unless explicitly merged for bounded private classification by the update path."""
     if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
         raise Refused("internal: not an argv list")
     if want_stdout and max_bytes:
-        return _run_capped(argv, timeout, env, max_bytes)
+        return _run_capped(argv, timeout, env, max_bytes, combine_stderr=combine_stderr)
     try:
         proc = subprocess.run(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE if want_stdout else subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if combine_stderr and want_stdout else subprocess.DEVNULL,
             timeout=timeout,
             env=env,
             cwd="/",
@@ -268,14 +312,14 @@ def run_command(argv, timeout=COMMAND_TIMEOUT, env=None, want_stdout=False, max_
     return proc.returncode, (proc.stdout or b"") if want_stdout else b""
 
 
-def _run_capped(argv, timeout, env, max_bytes):
+def _run_capped(argv, timeout, env, max_bytes, combine_stderr=False):
     """Capture stdout without ever holding more than its last `max_bytes` bytes."""
     try:
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if combine_stderr else subprocess.DEVNULL,
             env=env,
             cwd="/",
             shell=False,
@@ -315,7 +359,7 @@ def _run_capped(argv, timeout, env, max_bytes):
             return 124, b""
         return proc.returncode, bytes(kept)
     except BaseException:
-        # This child is only the bounded, read-only journal capture.  Keep its
+        # This is a bounded journal/status capture or update submission.  Keep its
         # lifetime inside this call even when capture or waiting is interrupted.
         try:
             if proc.poll() is None:
@@ -379,6 +423,8 @@ class Context:
         credentials_path=None,
         pm2_node=None,
         pm2_script=None,
+        sleep=None,
+        monotonic=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -400,6 +446,8 @@ class Context:
         )
         self.pm2_node = pm2_node
         self.pm2_script = pm2_script
+        self.sleep = sleep or time.sleep
+        self.monotonic = monotonic or time.monotonic
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -592,11 +640,344 @@ def server_update_commands(ctx, config, name):
     entry = config["updates"].get(name)
     if entry is None:
         raise Refused("the update is not in the allowlist")
-    # --no-block: an update can run for minutes, and the Mac is waiting over ssh.  The unit's
-    # own result shows in the services list on the next status report.
-    return [
-        _systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])
-    ], "runs in the background"
+    before = update_unit_state(ctx, entry)
+    require_update_idle(before)
+    return [update_command(ctx, name, entry)], (
+        "submits the update and checks a new service invocation for bounded completion"
+    )
+
+
+def update_command(ctx, name, entry):
+    # General OS sudo access is not general app authority.  Only this immutable mapping
+    # may use the existing grant; config cannot choose another privileged executable/unit.
+    if entry["scope"] == "system":
+        if name != "fleet-cli" or entry["unit"] != FLEET_CLI_UPDATE_UNIT:
+            raise Refused(
+                "this system update has no approved application route",
+                error_code="update_route_unavailable",
+            )
+        if not os.path.isfile(UPDATE_SYSTEMCTL) or not os.access(UPDATE_SYSTEMCTL, os.X_OK):
+            raise Refused(
+                "the approved systemctl executable is unavailable",
+                error_code="update_executable_unavailable",
+            )
+        argv = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
+    else:
+        argv = _systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])
+    if entry["scope"] == "system" and ctx.uid != 0:
+        if not os.path.isfile(SUDO) or not os.access(SUDO, os.X_OK):
+            raise Refused(
+                "the approved authorization executable is unavailable",
+                error_code="authorization_unavailable",
+            )
+        # Query this exact argv; never grant permission or elevate the broker itself.
+        status, _ = ctx.runner(
+            [SUDO, "-n", "-l", "--"] + argv,
+            timeout=UPDATE_PROBE_TIMEOUT,
+            env=ctx.child_env(),
+        )
+        if status != 0:
+            raise Refused(
+                "the update needs existing noninteractive permission for this exact system unit",
+                error_code="authorization_unavailable",
+            )
+        argv = [SUDO, "-n"] + argv
+    return argv
+
+
+def update_unit_state(ctx, entry, timeout=UPDATE_PROBE_TIMEOUT):
+    status, raw = ctx.runner(
+        _systemctl_argv(
+            entry["scope"],
+            "show",
+            entry["unit"],
+            "--property=" + ",".join(UPDATE_PROPERTIES),
+        ),
+        timeout=timeout,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=16 * 1024,
+    )
+    if status != 0:
+        raise Refused("the update unit status is unavailable", error_code="unit_status_unavailable")
+    state = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        key, sep, value = line.partition("=")
+        if not sep or key not in UPDATE_PROPERTIES or key in state:
+            raise Refused("the update unit status is invalid", error_code="unit_status_invalid")
+        state[key] = value
+    if state.get("LoadState") in ("not-found", "masked", "error", "bad-setting"):
+        raise Refused("the update unit is missing or unavailable", error_code="unit_unavailable")
+    if set(state) != set(UPDATE_PROPERTIES) or state["LoadState"] != "loaded":
+        raise Refused("the update unit status is incomplete", error_code="unit_status_invalid")
+    if state["Type"] != "oneshot":
+        raise Refused(
+            "the update unit must be a oneshot service", error_code="unit_type_unsupported"
+        )
+    if state["InvocationID"] and not re.fullmatch(r"[0-9a-f]{32}", state["InvocationID"]):
+        raise Refused("the update invocation status is invalid", error_code="unit_status_invalid")
+    for key in (
+        "ExecMainCode",
+        "ExecMainStatus",
+        "ExecMainStartTimestampMonotonic",
+        "ExecMainExitTimestampMonotonic",
+    ):
+        if not re.fullmatch(r"[0-9]{1,20}", state[key]):
+            raise Refused("the update process status is invalid", error_code="unit_status_invalid")
+        state[key] = int(state[key])
+        if state[key] > UINT64_MAX:
+            raise Refused("the update process status is invalid", error_code="unit_status_invalid")
+    return state
+
+
+def require_update_idle(state):
+    if state["ActiveState"] not in ("inactive", "failed") or state["Job"]:
+        raise Refused(
+            "the update is already running or has a pending job", error_code="update_busy"
+        )
+
+
+def update_failure_code(status, output):
+    """Classify bounded private stderr; none of its text reaches the receipt or audit."""
+    text = output.decode("utf-8", "replace").lower()
+    if status == 124:
+        return "update_submit_timeout"
+    if status == 127:
+        return "update_executable_unavailable"
+    if any(
+        word in text
+        for word in (
+            "access denied",
+            "permission denied",
+            "authentication required",
+            "authentication is required",
+            "password is required",
+            "not allowed to execute",
+            "a terminal is required",
+            "incorrect password",
+        )
+    ):
+        return "authorization_unavailable"
+    if "not found" in text or "does not exist" in text or "masked" in text:
+        return "unit_unavailable"
+    return "update_submit_failed"
+
+
+def execute_update(ctx, config, target, commands):
+    entry = config["updates"][target]
+    # Recheck immediately before submission, rather than trusting an earlier plan.
+    before = update_unit_state(ctx, entry)
+    require_update_idle(before)
+    command = update_command(ctx, target, entry)
+    if commands != [command]:
+        raise Refused("the update execution route changed", error_code="update_route_changed")
+    status, output = ctx.runner(
+        command,
+        timeout=UPDATE_PROBE_TIMEOUT,
+        env=ctx.child_env(),
+        want_stdout=True,
+        max_bytes=8192,
+        combine_stderr=True,
+    )
+    if status != 0:
+        raise Failed(
+            "the update submission was not confirmed",
+            error_code=update_failure_code(status, output),
+        )
+    answer = dict(
+        ok=True,
+        result="submitted",
+        executionState="submitted",
+        verified=False,
+        detail="the update was submitted; completion has not been observed",
+        baselineStartMonotonic=before["ExecMainStartTimestampMonotonic"],
+    )
+    invocation = None
+    deadline = ctx.monotonic() + UPDATE_VERIFY_SECONDS
+    for attempt in range(UPDATE_POLL_ATTEMPTS):
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
+        if attempt:
+            ctx.sleep(min(UPDATE_POLL_INTERVAL, remaining))
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            state = update_unit_state(ctx, entry, timeout=min(UPDATE_PROBE_TIMEOUT, remaining))
+        except Refused:
+            answer["detail"] = "the update was submitted; completion status is unavailable"
+            return answer, 0
+        current = state["InvocationID"]
+        if not current or current == before["InvocationID"]:
+            continue
+        if invocation is not None and current != invocation:
+            answer["detail"] = (
+                "the update was submitted; another invocation replaced its completion status"
+            )
+            answer.pop("invocationID", None)
+            answer.update(executionState="expired", errorCode="invocation_replaced")
+            return answer, 0
+        invocation = current
+        answer, code = update_observation(state, current, before["ExecMainStartTimestampMonotonic"])
+        if answer["verified"]:
+            return answer, code
+    return answer, 0
+
+
+def update_observation(state, invocation, previous_start):
+    answer = dict(
+        ok=True,
+        result="submitted",
+        executionState="submitted",
+        verified=False,
+        invocationID=invocation,
+        baselineStartMonotonic=previous_start,
+        detail="the update invocation has not completed with a verified result",
+    )
+    if state["InvocationID"] != invocation:
+        answer.update(
+            executionState="expired",
+            errorCode="invocation_not_current",
+            detail="the captured update invocation is no longer current; its completion cannot be verified",
+        )
+        return answer, 0
+    terminal = state["ActiveState"] in ("inactive", "failed") and not state["Job"]
+    if not terminal:
+        return answer, 0
+    if state["Result"] and state["Result"] != "success":
+        answer.update(
+            ok=False,
+            result="failed",
+            executionState="failed",
+            verified=True,
+            errorCode="update_invocation_failed",
+            detail="the captured update service invocation failed",
+        )
+        return answer, 1
+    started = state["ExecMainStartTimestampMonotonic"]
+    if (
+        state["Result"] == "success"
+        and state["ActiveState"] == "inactive"
+        and state["ExecMainCode"] == 1
+        and state["ExecMainStatus"] == 0
+        and started > previous_start
+        and state["ExecMainExitTimestampMonotonic"] >= started
+    ):
+        answer.update(
+            result="done",
+            executionState="completed",
+            verified=True,
+            detail="the captured update service invocation completed successfully",
+        )
+    return answer, 0
+
+
+def update_status(ctx, config, target, mode):
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused("update status is read only; pass --plan", error_code="read_only_required")
+    match = UPDATE_STATUS_RE.fullmatch(target or "")
+    if not match:
+        raise Refused(
+            "update status requires a captured fleet-cli invocation ID",
+            error_code="invocation_id_invalid",
+        )
+    baseline = int(match.group(2))
+    if baseline > UINT64_MAX:
+        raise Refused("the captured update baseline is invalid", error_code="invocation_id_invalid")
+    entry = config["updates"].get("fleet-cli")
+    if entry != {"unit": FLEET_CLI_UPDATE_UNIT, "scope": "system"}:
+        raise Refused(
+            "the fleet-cli status route is unavailable", error_code="update_route_unavailable"
+        )
+    if captured_update_baseline(ctx, match.group(1)) != baseline:
+        raise Refused(
+            "the update receipt does not match its recorded baseline",
+            error_code="receipt_context_mismatch",
+        )
+    # Never submit or query sudo on this path, and never substitute a newer ID.
+    state = update_unit_state(ctx, entry)
+    return update_observation(state, match.group(1), baseline)
+
+
+def captured_update_baseline(ctx, invocation):
+    """Read the bounded existing private audit; never trust client freshness alone.
+
+    This is capture provenance for the restricted route, not protection against code
+    already running as the server account that owns the audit.
+    """
+    descriptors = []
+    try:
+        path = Path(ctx.audit_path).absolute()
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = os.open("/", directory_flags)
+        descriptors.append(parent)
+        for component in path.parts[1:-1]:
+            parent = os.open(component, directory_flags, dir_fd=parent)
+            descriptors.append(parent)
+            info = os.fstat(parent)
+            sticky_root = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if info.st_uid not in (0, ctx.uid) or (info.st_mode & 0o022 and not sticky_root):
+                raise OSError("unsafe audit directory")
+        fd = os.open(
+            path.name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=parent,
+        )
+        descriptors.append(fd)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != ctx.uid
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise OSError("unsafe audit file")
+        offset = max(0, info.st_size - AUDIT_CONTEXT_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        remaining = min(info.st_size, AUDIT_CONTEXT_MAX_BYTES)
+        chunks = []
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if offset:
+            data = data.partition(b"\n")[2]
+        lines = data.decode("utf-8").splitlines()
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("invocationID") != invocation:
+                continue
+            baseline = row.get("baselineStartMonotonic")
+            if (
+                row.get("host") == "server"
+                and row.get("verb") == "server update"
+                and row.get("target") == "fleet-cli"
+                and row.get("route") in ("sudo-system-update", "root-system-update")
+                and row.get("result") in ("submitted", "done", "failed")
+                and type(baseline) is int
+                and 0 <= baseline <= UINT64_MAX
+            ):
+                return baseline
+            break
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        pass
+    finally:
+        for fd in reversed(descriptors):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    raise Refused(
+        "the captured update receipt context is unavailable",
+        error_code="receipt_context_unavailable",
+    )
 
 
 def _server_only(ctx):
@@ -884,7 +1265,18 @@ def execute_logs(ctx, commands):
     return f"{lines} journal lines", text, lines
 
 
-def audit(ctx, scope, action, target, result, lines=None):
+def audit(
+    ctx,
+    scope,
+    action,
+    target,
+    result,
+    lines=None,
+    route=None,
+    invocation_id=None,
+    verified=None,
+    baseline=None,
+):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname.
     A finished logs run adds its line count and nothing of the text."""
     row = {
@@ -896,6 +1288,14 @@ def audit(ctx, scope, action, target, result, lines=None):
     }
     if lines is not None:
         row["lines"] = lines
+    if route in ("sudo-system-update", "root-system-update"):
+        row["route"] = route
+    if isinstance(invocation_id, str) and re.fullmatch(r"[0-9a-f]{32}", invocation_id):
+        row["invocationID"] = invocation_id
+    if isinstance(verified, bool):
+        row["verified"] = verified
+    if type(baseline) is int and 0 <= baseline <= UINT64_MAX:
+        row["baselineStartMonotonic"] = baseline
     path = ctx.audit_path
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -935,6 +1335,10 @@ def handle(ctx, scope, action, target, mode):
         if mode not in ("plan", "yes"):
             raise Refused("pass --plan to see the commands or --yes to run them")
         config = load_config(ctx.config_path)
+        if scope == "server" and action == "update-status":
+            receipt, code = update_status(ctx, config, target, mode)
+            answer.update(receipt)
+            return answer, code
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
                 raise Refused("coding resource controls are not in the allowlist")
@@ -955,6 +1359,19 @@ def handle(ctx, scope, action, target, mode):
             detail, text, log_lines = execute_logs(ctx, commands)
             answer.update(ok=True, result="done", detail=detail, output=text, lines=log_lines)
             code = 0
+        elif scope == "server" and action == "update":
+            receipt, code = execute_update(ctx, config, target, commands)
+            answer.update(receipt)
+        elif scope == "server" and action == "redeploy":
+            detail = execute(ctx, scope, action, target, commands)
+            answer.update(
+                ok=True,
+                result="submitted",
+                detail=detail,
+                executionState="submitted",
+                verified=False,
+            )
+            code = 0
         else:
             answer.update(
                 ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
@@ -962,13 +1379,24 @@ def handle(ctx, scope, action, target, mode):
             code = 0
     except Refused as exc:
         answer.update(ok=False, result="refused", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
         code = 2
     except Failed as exc:
         answer.update(ok=False, result="failed", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
         code = 1
-    if mode == "yes":
+    if mode == "yes" and not (scope == "server" and action == "update-status"):
         if scope == "server" and action == "redeploy" and audit_target == target:
             audit_target = "coolify resource"  # refused before the name was known: no uuid
+        route = None
+        if scope == "server" and action == "update":
+            direct = [UPDATE_SYSTEMCTL, "start", "--no-block", FLEET_CLI_UPDATE_UNIT]
+            if answer["commands"] == [[SUDO, "-n"] + direct]:
+                route = "sudo-system-update"
+            elif ctx.uid == 0 and answer["commands"] == [direct]:
+                route = "root-system-update"
         audit(
             ctx,
             scope,
@@ -976,6 +1404,10 @@ def handle(ctx, scope, action, target, mode):
             (audit_target or "")[:120],
             answer["result"],
             lines=log_lines if answer["result"] == "done" else None,
+            route=route,
+            invocation_id=answer.get("invocationID"),
+            verified=answer.get("verified"),
+            baseline=answer.get("baselineStartMonotonic"),
         )
     return answer, code
 
@@ -1021,6 +1453,7 @@ def parse_ssh_command(text):
         raise Refused("only a server verb with one target is accepted over ssh")
     if plain[1] not in ACTIONS + (
         "update",
+        "update-status",
         "redeploy",
         "logs",
         "resource-status",

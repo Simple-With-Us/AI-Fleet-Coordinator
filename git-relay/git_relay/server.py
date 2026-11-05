@@ -130,6 +130,7 @@ def _validate_args(action: str, args: dict) -> dict:
                 "head": ("text", True),
                 "title": ("clean", True),
                 "body": ("clean", True),
+                "draft": ("boolean", False),
             }
         )
     elif action == "edit_pr":
@@ -179,6 +180,12 @@ def _validate_args(action: str, args: dict) -> dict:
                 raise ValueError("thread_id must be a pull request review thread id")
         elif kind == "number":
             value = _number(value, field)
+        elif kind == "boolean":
+            if field in args and type(value) is not bool:
+                raise ValueError(f"{field} must be a boolean")
+            # False is the existing default and must retain the same outcome key.
+            if value is False:
+                value = None
         elif kind == "method":
             if value is None:
                 value = "squash"
@@ -571,6 +578,7 @@ class Relay:
                 head=_text(args.get("head"), "head"),
                 title=_clean_text(args.get("title"), "title"),
                 body=_clean_text(args.get("body"), "body"),
+                **({"draft": args["draft"]} if "draft" in args else {}),
             )
         # Every non-open_pr write is an APP_ACTION and never reaches here.
         raise ValueError(f"unknown owner-token action {action!r}")

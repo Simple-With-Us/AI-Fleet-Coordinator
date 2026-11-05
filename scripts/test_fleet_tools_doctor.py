@@ -2118,5 +2118,38 @@ class CodeRootTests(unittest.TestCase):
             self.assertEqual(roots, [home / "Code"])
 
 
+class PlacementWatchTests(unittest.TestCase):
+    def run_check(self, content: str | None, *, age: float = 0.0) -> list[dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            if content is not None:
+                path.write_text(content, encoding="utf-8")
+            report = doctor.Report()
+            now = (path.stat().st_mtime if content is not None else time.time()) + age
+            doctor.check_placement_watch(report, status_path=path, now=now)
+            return report.rows
+
+    def test_no_row_until_it_is_installed(self) -> None:
+        self.assertEqual(self.run_check(None), [])
+
+    def test_a_healthy_run_is_ok(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True, "findings": 3, "new": 1}))
+        self.assertEqual((rows[0]["check"], rows[0]["status"]), ("placement-watch", "OK"))
+        self.assertIn("3 findings", rows[0]["detail"])
+
+    def test_a_quiet_watcher_fails(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True}), age=4 * 3600)
+        self.assertEqual(rows[0]["status"], "FAIL")
+        self.assertIn("4 hours", rows[0]["detail"])
+
+    def test_a_failing_watcher_fails_with_its_reason(self) -> None:
+        rows = self.run_check(json.dumps({"ok": False, "errors": ["simple-board file: exit 1"]}))
+        self.assertEqual(rows[0]["status"], "FAIL")
+        self.assertIn("simple-board", rows[0]["detail"])
+
+    def test_garbage_is_a_warning(self) -> None:
+        self.assertEqual(self.run_check("{nope")[0]["status"], "WARN")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,6 +55,7 @@ TOOLS = [
                 "head": {"type": "string"},
                 "title": {"type": "string"},
                 "body": {"type": "string"},
+                "draft": {"type": "boolean"},
             },
             "required": ["repo", "base", "head", "title", "body"],
         },
@@ -173,6 +174,8 @@ def _validate_args(name: str, args: dict) -> str | None:
             return f"argument {key!r} must be a string"
         if kind == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
             return f"argument {key!r} must be an integer"
+        if kind == "boolean" and type(value) is not bool:
+            return f"argument {key!r} must be a boolean"
         if kind == "object" and not isinstance(value, dict):
             return f"argument {key!r} must be an object"
     thread_id = args.get("thread_id")
@@ -246,6 +249,11 @@ class RelayMcp:
         return _error(message, -32601, f"unknown method {method!r}")
 
     def _call_tool(self, message: dict, name: str, args: dict) -> dict:
+        if name == "open_pr" and "draft" in args:
+            if type(args["draft"]) is not bool:
+                return _error(message, -32602, "argument 'draft' must be a boolean")
+            if args["draft"] is False:
+                args = {key: value for key, value in args.items() if key != "draft"}
         req = urllib.request.Request(
             f"{self._url}/v1/{name}",
             method="POST",

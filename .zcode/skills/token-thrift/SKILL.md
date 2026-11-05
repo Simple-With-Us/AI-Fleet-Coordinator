@@ -3,9 +3,9 @@ name: token-thrift
 description: Use before any automated, scheduled, webhook or sweep turn, before polling or long waits, and before posting a status update; it keeps fleet token spend down without dropping real work.
 ---
 
-# Token Thrift (ZCODE)
+# Token Thrift (ZC)
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZCODE default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
 Most waste happens before real work starts, in replayed history, no-op wakes, long waits and output no verdict needed.  Cut those first and save the model for work only a model can do.

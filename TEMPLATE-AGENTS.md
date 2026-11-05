@@ -698,14 +698,8 @@ address:
   branch and leave it without one. (Long-lived integration/release branches like
   `main` and the `agent/*` lanes, throwaway experiments, and stacked-PR bases are
   the only exceptions — none of which is normal change delivery.)
-- **Open PRs as READY for review by default — not as drafts.**  The owner is
-  effectively the sole approver, so a draft only adds a "mark ready" step before
-  merge.  This rule **overrides** any tool/harness default that says to open PRs as
-  drafts.
-- **Use a draft PR only for genuine work-in-progress** you explicitly don't want
-  merged yet (e.g. partial work parked between sessions, or wanting Copilot/CI eyes
-  before it's finished) — and say so in the PR description.  Mark it ready as soon
-  as it's complete and verified.
+- **Open merge-ready PRs as READY for review by default.**  Do not mark a PR ready while it is work-in-progress or subject to a do-not-merge hold.
+- **Keep every do-not-merge PR as a draft**, whether it is unfinished, awaiting a dependency or hold clearance, or superseded.  Put the readiness criteria at the very beginning of its description as bullets, following the rule below.  Mark it ready only when the applicable criteria are verified and existing holds are properly cleared.
 - **A required `verify` CI check gates every merge to `main`.**  A GitHub Actions
   workflow named `verify` runs `tsc --noEmit` → `npm test` → `npm run build` on each
   PR, and it **must be green before the PR can merge** — enforced by a repo **ruleset**.
@@ -722,6 +716,26 @@ address:
     tests were a recurring offender — fixed 2026-06-21 with a 20s per-test timeout.
   - Because `verify` runs `npm run build`, a PR that breaks the build cannot merge —
     always run the full tsc/test/build trio locally before pushing.
+
+### Superseded PR closure and draft conversion
+
+Owner ruling, November 3, 2026, applies fleet-wide:
+
+- An agent may close a totally superseded PR if that agent made the PR being closed.
+- If another agent made the totally superseded PR, ask that agent first.  If no reply arrives within 20 minutes, ask Jay.  An agent may ask Jay first if urgent.
+- If 3 agents from 2 platforms agree to close a totally superseded PR, closure may proceed without Jay's or the PR owner's input.
+- Any agent may convert any PR to draft without anyone's permission.  Agents are encouraged to do so whenever a PR is not ready to merge.
+
+### Do-not-merge PRs and readiness criteria
+
+- Every PR marked do-not-merge, including an equivalent title, label or description hold, must be a draft.
+- The very beginning of its description must be a bullet list of the concrete criteria for becoming ready to merge, before references, summaries or other text.
+- Derive the criteria from the actual unresolved findings, dependencies and hold conditions.  Do not invent conditions, claim unverified work is complete, or treat a checklist as approval.
+- Preserve the existing hold, its setter and its release conditions.  Completing the bullets does not itself clear a hold, authorize activation or make the PR ready.
+- For a superseded PR that must never merge, say that in the first bullets and identify its replacement.  Do not invent a path to merge it; closure follows the separate superseded-PR rule above.
+
+Source: Jay's November 4, 2026 instructions to make all do-not-merge PRs drafts, put readiness criteria first in each description, and add this to policy.
+
 
 ### Fleet MCP and the Git Relay backend
 

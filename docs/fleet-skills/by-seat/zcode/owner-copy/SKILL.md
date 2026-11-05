@@ -3,14 +3,14 @@ name: owner-copy
 description: Fleet human-facing prose — two spaces between sentences (a real U+00A0 plus a space on every surface, except the Claude Code Code tab and the MiniMax Code chat pane, which take the &nbsp; entity plus a space), system theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation.  Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read.  Also when changing theme defaults or taking screenshots.
 ---
 
-# Owner-facing copy (ZCODE)
+# Owner-facing copy (ZC)
 
-> **This install is for `ZCODE`.**  Chat tag `[ZCODE·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZCODE`, credential in Infisical Fleet-OPS `/zulip` (`ZCODE_ZULIP_EMAIL`, `ZCODE_ZULIP_KEY`, `ZCODE_ZULIP_SITE`).  Session tag `[ZCODE·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZCODE default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
-Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `~/apps/FLEET-UI-COPY.md`.  Policy: `~/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -103,6 +103,6 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-UI-COPY.md`
-- `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `~/apps/FLEET-UI-COPY.md`
+- `~/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

@@ -52,8 +52,8 @@ NOT_SWU_IDENTITY = {
 # Explicit policy exclusions, documented in the deployed policy's header.
 # Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
 # 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
-# KIMI and ZCODE are newly added seats that do not have deployed GitHub Apps yet.
-EXCLUDED = {"JET", "BF-BUILDER", "KIMI", "ZCODE"}
+# KIMI and ZC are newly added seats that do not have deployed GitHub Apps yet.
+EXCLUDED = {"JET", "BF-BUILDER", "KIMI", "ZC"}
 # Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
 # the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
 GB_SEATS = {

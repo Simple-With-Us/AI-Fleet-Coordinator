@@ -126,6 +126,10 @@ export class SeatGate extends DurableObject {
     return state.reserve(this.store, options);
   }
 
+  checkAndReserve(options) {
+    return state.checkAndReserve(this.store, options);
+  }
+
   providerQuotaReserve(options) { return state.providerQuotaReserve(this.store, options); }
   providerQuotaNoteRateLimited(options) { return state.providerQuotaNoteRateLimited(this.store, options); }
 
@@ -261,6 +265,10 @@ export class SeatGate extends DurableObject {
 
   auditCall(row) {
     return state.auditCall(this.store, row);
+  }
+
+  auditCallBatch(entries) {
+    return state.auditCallBatch(this.store, entries);
   }
 
   callTail(limit) {
