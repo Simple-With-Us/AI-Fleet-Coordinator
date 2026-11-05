@@ -118,8 +118,13 @@ class InputTooComplexError(ValueError):
     """
 
 
-def scan_args(value: object, path: str = "args", _depth: int = 0, _budget=None) -> None:
+def scan_args(
+    value: object, path: str = "args", _depth: int = 0, _budget=None, _decoded_elsewhere: bool = False
+) -> None:
     """Refuse a request when any nested string field matches a credential shape.
+
+    With `_decoded_elsewhere`, a `content_b64` field is left to its verb, which scans the decoded bytes:  base64 of
+    ordinary content can look like a token, and it hides a real one.  Its length still counts against the bound.
 
     Bounded (8 levels, 64 entries per level, 2000 nodes and 256 KiB of text
     total) so a hostile payload cannot make the scan itself unbounded;  every
@@ -146,7 +151,12 @@ def scan_args(value: object, path: str = "args", _depth: int = 0, _budget=None) 
                 f"{path}: more than {MAX_SCAN_ENTRIES_PER_LEVEL} entries at one level"
             )
         for key, item in value.items():
-            scan_args(item, f"{path}.{key}", _depth + 1, _budget)
+            if _decoded_elsewhere and key == "content_b64" and isinstance(item, str):
+                _budget[1] -= len(item)
+                if _budget[1] < 0:
+                    raise InputTooComplexError(f"{path}: request exceeds the text byte bound")
+                continue
+            scan_args(item, f"{path}.{key}", _depth + 1, _budget, _decoded_elsewhere)
         return
     if isinstance(value, (list, tuple)):
         if len(value) > MAX_SCAN_ENTRIES_PER_LEVEL:
@@ -154,4 +164,4 @@ def scan_args(value: object, path: str = "args", _depth: int = 0, _budget=None) 
                 f"{path}: more than {MAX_SCAN_ENTRIES_PER_LEVEL} entries at one level"
             )
         for index, item in enumerate(value):
-            scan_args(item, f"{path}[{index}]", _depth + 1, _budget)
+            scan_args(item, f"{path}[{index}]", _depth + 1, _budget, _decoded_elsewhere)

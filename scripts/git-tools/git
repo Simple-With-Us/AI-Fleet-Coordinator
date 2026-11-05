@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import getpass
 import hashlib
 import http.client
@@ -535,6 +536,13 @@ def _scan_arguments(arguments, bearer: str) -> str | None:
     while stack:
         path, value = stack.pop()
         if isinstance(value, str):
+            if path.endswith("content_b64"):
+                # Base64 of ordinary bytes looks like a token, and it hides a real one, so the decoded text is what is
+                # scanned.  Anything that does not decode is scanned as it came.
+                try:
+                    value = base64.b64decode(value, validate=True).decode("utf-8", "replace")
+                except (binascii.Error, ValueError):
+                    pass
             if scanner.scan(value, known=[bearer] if bearer else []) is not None:
                 return "secret_scan:" + (path or "arguments")
         elif isinstance(value, dict):
@@ -1507,6 +1515,8 @@ def _publish_files(specs: list[str]) -> list[tuple[str, bytes]]:
         if os.path.islink(local) or not os.path.isfile(local):
             die(f"{local!r} is not a regular file", EXIT_USAGE)
         size = os.path.getsize(local)
+        if size == 0:
+            die(f"{local!r} is empty;  the server takes no empty file", EXIT_USAGE)
         if size > PUBLISH_MAX_FILE_BYTES:
             die(f"{local!r} is {size} bytes;  one file may be {PUBLISH_MAX_FILE_BYTES} at most", EXIT_USAGE)
         try:
@@ -1561,28 +1571,39 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
     if not files:
         die("name at least one --file", EXIT_USAGE)
     _repo_url(a.repo)
+    batches = _publish_batches(files)
+    payloads = [
+        {
+            "repo": a.repo,
+            "branch": a.branch,
+            "message": a.message if len(batches) == 1 else f"{a.message} (part {number} of {len(batches)})",
+            "files": [{"path": path, "content_b64": base64.b64encode(data).decode("ascii")} for path, data in batch],
+        }
+        for number, batch in enumerate(batches, 1)
+    ]
+    # Every commit is checked before the first is sent, so a bad path or a flagged file in a later batch cannot leave a
+    # partial publish on the branch.
+    entry = tools.get("gr_wf_files_put")
+    if entry is None:
+        die("the server does not offer gr_wf_files_put to this bearer", EXIT_ERROR)
+    for payload in payloads:
+        validate_arguments(entry, {**payload, "expected_head_sha": "0" * 40}, deadline)
+        hit = _scan_arguments(payload, bearer)
+        if hit is not None:
+            die(f"refused before sending:  {hit}", EXIT_USAGE)
     if a.base:
         base = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.base}, bearer, seat, deadline))
         _tool_call(tools, "gr_wf_branch_create", {"repo": a.repo, "branch": a.branch, "sha": base}, bearer, seat, deadline)
         head = base
     else:
         head = _branch_head(_tool_call(tools, "gr_wf_branch_get", {"repo": a.repo, "branch": a.branch}, bearer, seat, deadline))
-    batches = _publish_batches(files)
-    for number, batch in enumerate(batches, 1):
-        message = a.message if len(batches) == 1 else f"{a.message} (part {number} of {len(batches)})"
-        payload = {
-            "repo": a.repo,
-            "branch": a.branch,
-            "message": message,
-            "expected_head_sha": head,
-            "files": [{"path": path, "content_b64": base64.b64encode(data).decode("ascii")} for path, data in batch],
-        }
-        out = _tool_call(tools, "gr_wf_files_put", payload, bearer, seat, deadline)
+    for payload in payloads:
+        out = _tool_call(tools, "gr_wf_files_put", {**payload, "expected_head_sha": head}, bearer, seat, deadline)
         commit = (out.get("structured") or {}).get("commit")
         if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
             die("the server did not report the new commit;  check the branch before trying again", EXIT_ERROR)
         head = commit
-        print(f"{commit}  {len(batch)} file(s)")
+        print(f"{commit}  {len(payload['files'])} file(s)")
     return 0
 
 

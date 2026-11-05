@@ -328,7 +328,8 @@ class Relay:
                     # content happens in the verb.
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_BINARY_REQUEST_BYTES])
                 elif action in FILE_REQUEST_ACTIONS:
-                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_FILE_REQUEST_BYTES])
+                    # wf_file_put and wf_files_put scan the decoded bytes of each file themselves.
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_FILE_REQUEST_BYTES], _decoded_elsewhere=True)
                 else:
                     scan_args(args)
                 if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
