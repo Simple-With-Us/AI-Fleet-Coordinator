@@ -5,7 +5,7 @@
 // read from Zulip (GET users/me/subscriptions), minus the optional
 // CHANNELS_DENY stream ids.  A private stream is never allowed, even when the
 // bot is subscribed to it.  Subscriptions, not GET /streams, because they are
-// the streams the bot can actually see and the ones the fleet listener wakes
+// the streams the bot can actually see and the ones the fleet eavesdropper wakes
 // on:  a mention in a public stream the bot is not in never reaches it anyway.
 //
 // Everything is enforced by stream id.  A name is only a way in:  a tool's

@@ -8,7 +8,7 @@ import Glibc
 // Reading the Seat Activity panel's four sources.
 //
 // Two of them are read from the fleet chat CLI (`simple-chat`),  and two come from the
-// listener's own published state.  The CLI is asked three things,  and this file is the
+// eavesdropper's own published state.  The CLI is asked three things,  and this file is the
 // only place that asks it anything:
 //
 //   * `users`       one call,  which resolves every seat's bot in one request
@@ -523,7 +523,7 @@ actor SeatActivityGate {
 /// `search` call per seat,  and it counts every call it makes:  the ceiling is written
 /// down in `requestCeiling(forSeats:)`  and the panel shows both numbers.
 struct SeatActivityReader {
-    /// Where the listener's state lives.
+    /// Where the eavesdropper's state lives.
     var location: ListenerStateLocation
     /// The fleet chat CLI.
     var runner: ChatRunning
@@ -531,7 +531,7 @@ struct SeatActivityReader {
     var now: () -> Date
     /// How many calls may run at once.
     var maximumConcurrentCalls: Int
-    /// The oldest listener state the panel still believes.
+    /// The oldest eavesdropper state the panel still believes.
     var maximumListenerAge: TimeInterval
     /// The seat the panel reads Zulip as,  which the panel shows.
     var readingSeat: String
@@ -552,8 +552,8 @@ struct SeatActivityReader {
         self.readingSeat = readingSeat
     }
 
-    /// The listener rewrites its state every few seconds while it runs
-    /// (`daemon.write_status`),  so a file a minute old belongs to a listener that has
+    /// The eavesdropper rewrites its state every few seconds while it runs
+    /// (`daemon.write_status`),  so a file a minute old belongs to an eavesdropper that has
     /// stopped or hung,  and what it says about seats is no longer true.
     static let defaultMaximumListenerAge: TimeInterval = 60
 
@@ -580,7 +580,7 @@ struct SeatActivityReader {
         sources.listenerPath = location.statusURL.path
         sources.requestCeiling = SeatActivityReader.requestCeiling(forSeats: roster.count)
 
-        // The listener's own state:  one local file,  no call.
+        // The eavesdropper's own state:  one local file,  no call.
         readListenerState(into: &sources)
 
         // The fleet chat CLI:  one `users` call,  then two calls per seat.
@@ -672,32 +672,32 @@ struct SeatActivityReader {
             + "so its presence and its last post are unknown."
     }
 
-    /// The listener's own published state,  read from one local file.
+    /// The eavesdropper's own published state,  read from one local file.
     private func readListenerState(into sources: inout SeatActivityBuilder.Sources) {
         let url = location.statusURL
         guard let data = try? Data(contentsOf: url) else {
-            sources.listenerProblem = "The listener's state at \(url.path) could not be read,  "
-                + "so the listener state and the open sessions of every seat are unknown."
+            sources.listenerProblem = "The eavesdropper's state at \(url.path) could not be read,  "
+                + "so the eavesdropper state and the open sessions of every seat are unknown."
             return
         }
         guard let document = try? JSONDecoder().decode(ListenerStateDocument.self, from: data) else {
-            sources.listenerProblem = "The listener's state at \(url.path) could not be read,  "
-                + "so the listener state and the open sessions of every seat are unknown."
+            sources.listenerProblem = "The eavesdropper's state at \(url.path) could not be read,  "
+                + "so the eavesdropper state and the open sessions of every seat are unknown."
             return
         }
-        // A listener that stopped leaves its last file behind,  and every lease in it
-        // still says alive.  The file is only believed while the listener is still
+        // An eavesdropper that stopped leaves its last file behind,  and every lease in it
+        // still says alive.  The file is only believed while the eavesdropper is still
         // writing it.
         guard let published = document.publishedAt else {
-            sources.listenerProblem = "The listener's state at \(url.path) does not say when it was written,  "
-                + "so the listener state and the open sessions of every seat are unknown."
+            sources.listenerProblem = "The eavesdropper's state at \(url.path) does not say when it was written,  "
+                + "so the eavesdropper state and the open sessions of every seat are unknown."
             return
         }
         let age = now().timeIntervalSince(published)
         guard abs(age) <= maximumListenerAge else {
-            sources.listenerProblem = "The listener's state at \(url.path) was last written "
-                + SeatActivityReader.ageText(age) + ",  so the listener may have stopped,  "
-                + "and the listener state and the open sessions of every seat are unknown."
+            sources.listenerProblem = "The eavesdropper's state at \(url.path) was last written "
+                + SeatActivityReader.ageText(age) + ",  so the eavesdropper may have stopped,  "
+                + "and the eavesdropper state and the open sessions of every seat are unknown."
             return
         }
         sources.listener = document

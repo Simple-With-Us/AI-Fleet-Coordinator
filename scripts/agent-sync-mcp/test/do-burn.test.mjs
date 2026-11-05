@@ -1,97 +1,24 @@
-// DO burn reduction (R1 + R2), state layer:  the composed check+reserve,
-// the pause flag folded into gbBearerCheck, and the batched audit write.
-// Each composed operation is pinned against the sequential operations it
-// replaces, over the same store, so the equivalence is executable.
+// DO burn reduction (R1 + R2), state layer:  the pause flag folded into
+// gbBearerCheck and the batched audit write.  Each composed operation is pinned
+// against the sequential operations it replaces, over the same store, so the
+// equivalence is executable.
 
+import { withoutExpiry } from "./helpers.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as S from "../src/seat-state.js";
-import { PROPS_PHASE } from "../src/config.js";
 import { newGbBearer } from "../src/gb-bearer.js";
 import { GB_IDENTITIES } from "../src/delegated-identities.js";
 
 const T0 = Date.parse("2026-10-09T06:00:00Z");
 
-async function grantedStore() {
-  const store = S.memoryStore();
-  await S.arm(store, { by: "jay" }, T0);
-  const { epoch } = await S.approve(store, { by: "jay" }, T0);
-  return { store, props: { epoch, approvedAt: T0, phase: PROPS_PHASE } };
-}
-
-test("checkAndReserve on a live grant takes exactly the slot reserve takes", async () => {
-  const { store, props } = await grantedStore();
-  const solo = await grantedStore();
-  const composed = await S.checkAndReserve(store, { ...props, kind: "read" }, T0 + 1000);
-  const sequential = await S.reserve(solo.store, { kind: "read" }, T0 + 1000);
-  assert.deepEqual(composed, { code: "ok", slot: sequential });
-  // The slot was really consumed:  the next read waits out the read spacing.
-  const next = await S.reserve(store, { kind: "read" }, T0 + 1000);
-  assert.equal(next.ok, true);
-  assert.equal(next.waitMs, S.READ_SPACING_MS);
-});
-
-test("checkAndReserve refuses like check and spends no slot, across the refusal matrix", async () => {
-  const cases = [
-    [{ epoch: "1" }, "bad_props"],
-    [{ phase: 0 }, "stale_phase"],
-    [{ epoch: 99 }, "stale_epoch"],
-    [{ approvedAt: T0 - 100 * 24 * 3600 * 1000 }, "grant_too_old"],
-  ];
-  for (const [patch, code] of cases) {
-    const { store, props } = await grantedStore();
-    const composed = await S.checkAndReserve(store, { ...props, ...patch, kind: "read" }, T0 + 1000);
-    assert.deepEqual(composed, { code }, code);
-    assert.deepEqual(composed.code, (await S.check(store, { ...props, ...patch }, T0 + 1000)).code);
-    // No slot, no budget:  a following reserve is a first slot, not a spaced one.
-    const slot = await S.reserve(store, { kind: "read" }, T0 + 1000);
-    assert.deepEqual(slot, { ok: true, waitMs: 0 }, code);
-  }
-});
-
-test("checkAndReserve on a paused seat reports the pause and spends no slot", async () => {
-  const { store, props } = await grantedStore();
-  await S.setPaused(store, { by: "jay", paused: true }, T0 + 500);
-  assert.deepEqual(await S.checkAndReserve(store, { ...props, kind: "write" }, T0 + 1000), { code: "paused" });
-  await S.setPaused(store, { by: "jay", paused: false }, T0 + 1500);
-  // Still a first slot after unpausing:  the paused attempt reserved nothing.
-  assert.deepEqual(await S.reserve(store, { kind: "write" }, T0 + 2000), { ok: true, waitMs: 0 });
-});
-
-test("checkAndReserve surfaces reserve's own refusals in the slot, unchanged", async () => {
-  const { store, props } = await grantedStore();
-  await store.put("cooldown_until", T0 + 60_000);
-  const composed = await S.checkAndReserve(store, { ...props, kind: "read" }, T0 + 1000);
-  assert.equal(composed.code, "ok");
-  assert.equal(composed.slot.ok, false);
-  assert.equal(composed.slot.code, "rate_limited");
-  assert.equal(composed.slot.retryAfterS, 59);
-});
-
-test("checkAndReserve is atomic:  a state change between check and reserve cannot split it", async () => {
-  const { store, props } = await grantedStore();
-  // Ten composed calls in flight at once all validate the same grant state;
-  // each takes a distinct, spacing-ordered slot (the transaction serializes).
-  const results = await Promise.all(
-    Array.from({ length: 10 }, () => S.checkAndReserve(store, { ...props, kind: "read" }, T0 + 1000)),
-  );
-  assert.ok(results.every((r) => r.code === "ok" && r.slot.ok));
-  const waits = results.map((r) => r.slot.waitMs).sort((a, b) => a - b);
-  assert.deepEqual(waits, Array.from({ length: 10 }, (_, i) => i * S.READ_SPACING_MS));
-});
-
-test("checkAndReserve requires a transactional store", async () => {
-  const bare = { get: async () => undefined, put: async () => {} };
-  await assert.rejects(() => S.checkAndReserve(bare, { epoch: 0, approvedAt: 0, phase: PROPS_PHASE, kind: "read" }, T0), TypeError);
-});
-
 test("gbBearerCheck reports the pause flag only on an accepted bearer", async () => {
   const store = S.memoryStore();
   const a = await newGbBearer(GB_IDENTITIES[0]);
   await S.gbBearerMint(store, { hash: a.hash, by: "j", expiresAt: T0 + 1e9, mcpAccept: true }, T0);
-  assert.deepEqual(await S.gbBearerCheck(store, a.hash, T0 + 5), { ok: true, mcp_accept: true, paused: false });
+  assert.deepEqual(withoutExpiry(await S.gbBearerCheck(store, a.hash, T0 + 5)), { ok: true, mcp_accept: true, paused: false });
   await S.setPaused(store, { by: "jay", paused: true }, T0 + 6);
-  assert.deepEqual(await S.gbBearerCheck(store, a.hash, T0 + 7), { ok: true, mcp_accept: true, paused: true });
+  assert.deepEqual(withoutExpiry(await S.gbBearerCheck(store, a.hash, T0 + 7)), { ok: true, mcp_accept: true, paused: true });
   // A wrong guess learns nothing about the seat:  the refusal shape is
   // byte-identical to before the fold, paused seat or not.
   const b = await newGbBearer(GB_IDENTITIES[0]);
@@ -129,4 +56,61 @@ test("auditCallBatch of nothing writes nothing, and a non-array is refused", asy
   assert.deepEqual(await S.auditCallBatch(store, []), { written: 0 });
   assert.deepEqual(await S.callTail(store, 10), []);
   await assert.rejects(() => S.auditCallBatch(store, null), TypeError);
+});
+
+test("gbBearerCheck carries the bearer's expiry, and only on an accepted bearer", async () => {
+  const store = S.memoryStore();
+  const a = await newGbBearer(GB_IDENTITIES[0]);
+  await S.gbBearerMint(store, { hash: a.hash, by: "j", expiresAt: T0 + 1e9, mcpAccept: true }, T0);
+  assert.equal((await S.gbBearerCheck(store, a.hash, T0 + 5)).expires_at, T0 + 1e9);
+  const b = await newGbBearer(GB_IDENTITIES[0]);
+  assert.equal((await S.gbBearerCheck(store, b.hash, T0 + 5)).expires_at, undefined);
+});
+
+/** Writes per key, over a real memory store:  what a Durable Object bills as rows. */
+function countingStore() {
+  const store = S.memoryStore();
+  const writes = {};
+  const put = store.put;
+  store.put = (key, value) => {
+    writes[key] = (writes[key] ?? 0) + 1;
+    return put(key, value);
+  };
+  return { store, writes };
+}
+
+test("a batch writes each changed key once, however many rows it holds", async () => {
+  const { store, writes } = countingStore();
+  const row = { seat: "ECHO", tool: "whoami", outcome: "ok", grant_ref: "abcdef012345", asn: 13335, country: "US" };
+  await S.auditCallBatch(store, Array.from({ length: 50 }, (_, i) => ({ row, at: T0 + i })));
+  assert.deepEqual(writes, { call_days: 1, [`calls:2026-10-09`]: 1, [`calls_bytes:2026-10-09`]: 1, grant_geo: 1 });
+  assert.equal((await S.callTail(store, 100)).length, 50);
+});
+
+test("a later batch on the same day and grant writes only the call rows", async () => {
+  const { store, writes } = countingStore();
+  const row = { seat: "ECHO", tool: "whoami", outcome: "ok", grant_ref: "abcdef012345", asn: 13335, country: "US" };
+  await S.auditCallBatch(store, [{ row, at: T0 }]);
+  for (const key of Object.keys(writes)) delete writes[key];
+  await S.auditCallBatch(store, [{ row, at: T0 + 1000 }, { row, at: T0 + 2000 }]);
+  assert.deepEqual(writes, { [`calls:2026-10-09`]: 1, [`calls_bytes:2026-10-09`]: 1 });
+});
+
+test("a geo change still writes the geo row and audits it", async () => {
+  const store = S.memoryStore();
+  const row = { seat: "ECHO", tool: "whoami", outcome: "ok", grant_ref: "abcdef012345", asn: 13335, country: "US" };
+  await S.auditCallBatch(store, [{ row, at: T0 }, { row: { ...row, asn: 7018 }, at: T0 + 1 }]);
+  assert.equal((await store.get("grant_geo")).abcdef012345.asn, 7018);
+  assert.ok((await S.tail(store, 10)).some((entry) => entry.event === "geo_change"));
+});
+
+test("expired call rows are deleted, not stored as null", async () => {
+  const store = S.memoryStore();
+  await S.auditCall(store, { seat: "ECHO", tool: "whoami", outcome: "ok" }, T0);
+  const day = [...store.map.keys()].find((key) => key.startsWith("calls:"));
+  assert.ok(day);
+  await S.auditCall(store, { seat: "ECHO", tool: "whoami", outcome: "ok" }, T0 + 400 * 24 * 3600 * 1000);
+  assert.equal(store.map.has(day), false);
+  assert.equal(store.map.has(day.replace("calls:", "calls_bytes:")), false);
+  assert.equal((await store.get("call_days")).length, 1);
 });

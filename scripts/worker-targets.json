@@ -1,33 +1,62 @@
 {
   "simple-tools-mcp": {
+    "deployer": "worker-deploy",
+    "gate_variable": "SIMPLE_TOOLS_MCP_DEPLOY_ENABLED",
+    "min_deploy_interval_seconds": 3600,
+    "config": "scripts/agent-sync-mcp/wrangler.jsonc",
     "command": [
       "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
       "deploy",
       "--config",
       "scripts/agent-sync-mcp/wrangler.jsonc"
     ],
+    "paths": [
+      "scripts/agent-sync-mcp/src/**",
+      "scripts/agent-sync-mcp/wrangler.jsonc",
+      "scripts/agent-sync-mcp/package.json",
+      "scripts/agent-sync-mcp/package-lock.json",
+      "scripts/agent_sync/mcp/*.json",
+      "fleet-apps.json"
+    ],
+    "ignore": [
+      "*.test.*"
+    ],
     "health": "https://agents.simplewithus.com/health",
     "ok": true,
-    "access": true
+    "access": true,
+    "canary": {
+      "url": "https://agents.simplewithus.com/mcp",
+      "bearer_env": "MCP_CANARY_BEARER",
+      "tool": "identities"
+    }
   },
   "alert-ingress": {
-    "command": [
-      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
-      "deploy",
-      "--config",
+    "deployer": "alert-workers-deploy",
+    "root": "workers/alert-ingress/",
+    "config": "workers/alert-ingress/wrangler.toml",
+    "paths": [
+      "workers/alert-ingress/src/**",
       "workers/alert-ingress/wrangler.toml"
     ],
+    "ignore": [
+      "*.test.*"
+    ],
     "health": "https://alert-ingress.jays-services.workers.dev/health",
-    "ok": true,
-    "access": false
+    "ok": true
   },
   "pr-conflict-watch": {
-    "command": [
-      "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
-      "deploy",
-      "--config",
-      "workers/pr-conflict-watch/wrangler.toml"
+    "deployer": "alert-workers-deploy",
+    "root": "workers/pr-conflict-watch/zulip-cutover/",
+    "config": "workers/pr-conflict-watch/zulip-cutover/wrangler.toml",
+    "paths": [
+      "workers/pr-conflict-watch/zulip-cutover/**",
+      "docs/releases/pr-conflict-zulip-verified.json"
     ],
-    "health": null
+    "ignore": [
+      "*.test.*",
+      "*.md"
+    ],
+    "health": "https://pr-conflict-watch.jays-services.workers.dev/health",
+    "text": "ok"
   }
 }
