@@ -1,0 +1,96 @@
+{
+  "account": "Usage.Jays.Services",
+  "account_plan": "paid",
+  "free_plan_subrequests": 50,
+  "workers": {
+    "simple-tools-mcp": {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "config": "scripts/agent-sync-mcp/wrangler.jsonc",
+      "status": "gated",
+      "limits": { "cpu_ms": 300, "subrequests": 100 },
+      "head_sampling_rate": 1,
+      "health": "An authenticated MCP tools/list and whoami.  GET /health is a static 200 and proves only that the Worker starts.",
+      "deploy": "By hand from DEPLOY.md today.  wrangler.jsonc forbids CI until the owner rules on it."
+    },
+    "alert-ingress": {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "config": "workers/alert-ingress/wrangler.toml",
+      "status": "auto",
+      "limits": { "cpu_ms": 200, "subrequests": 30 },
+      "head_sampling_rate": 1,
+      "health": "GET /health, plus the */5 sweep showing no exceptions and a real vendor delivery reaching Zulip.",
+      "deploy": "alert-workers-deploy.yml is the intended path.  It has been failing, so the last deploys were by hand, and a wrangler.toml change always needs a manual reconcile."
+    },
+    "pr-conflict-watch": {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "config": "workers/pr-conflict-watch/zulip-cutover/wrangler.toml",
+      "extra_configs": ["workers/pr-conflict-watch/wrangler.toml"],
+      "status": "gated",
+      "limits": { "cpu_ms": 50, "subrequests": 20 },
+      "head_sampling_rate": 0.1,
+      "health": "A real conflict alert in Zulip.  GET only answers ok with no dependency check, and every GitHub call has returned 401 since Oct 21.",
+      "deploy": "alert-workers-deploy.yml skips it until docs/releases/pr-conflict-zulip-verified.json exists.  Whether to retire it is an open owner decision.",
+      "note": "The first config is the live source.  The extra one is a never-deployed variant that worker-targets.json still names."
+    },
+    "expenses-jays-services": {
+      "repo": "Simple-With-Us/Usage-Monitor",
+      "config": "workers/expenses-site/wrangler.jsonc",
+      "status": "auto",
+      "limits": { "cpu_ms": 100, "subrequests": 200 },
+      "head_sampling_rate": 1,
+      "health": "The cron advancing sync state with rows actually fetched, and an Access-authenticated read of the expense list.",
+      "deploy": "Usage-Monitor worker-deploy.yml is the intended path.  Its gate variable is off, so deploys are by hand.",
+      "note": "This repository's CI does not read this row's config, and the 200 covers D1 calls per sync until the sync fix lands."
+    },
+    "usage-monitor-receipt-inbox": {
+      "repo": "Simple-With-Us/Usage-Monitor",
+      "config": "workers/receipt-inbox/wrangler.jsonc",
+      "status": "auto",
+      "limits": { "cpu_ms": 150, "subrequests": 30 },
+      "head_sampling_rate": 1,
+      "health": "Bearer-gated GET /health, which reads the auditor over the service binding, plus a real inbound email reaching R2.",
+      "deploy": "Usage-Monitor worker-deploy.yml is the intended path.  Its gate variable is off, so deploys are by hand.",
+      "note": "This repository's CI does not read this row's config."
+    },
+    "usage-monitor-receipt-lifecycle-auditor": {
+      "repo": "Simple-With-Us/Usage-Monitor",
+      "config": "workers/receipt-lifecycle-auditor/wrangler.jsonc",
+      "status": "auto",
+      "limits": { "cpu_ms": 30, "subrequests": 20 },
+      "head_sampling_rate": 1,
+      "health": "No route of its own.  The inbox's readiness fails closed when the audit is stale, and the 12-hour cron shows no exceptions.",
+      "deploy": "By hand with the Usage-Monitor package script.  It has no approved CI probe yet.",
+      "note": "This repository's CI does not read this row's config."
+    },
+    "start-jays-services": {
+      "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+      "config": "scripts/safari-start/wrangler.jsonc",
+      "status": "retire",
+      "limits": { "cpu_ms": 10, "subrequests": 5 },
+      "head_sampling_rate": 0.1,
+      "health": "None needed.  It has no route, no custom domain and workers.dev off, so nothing should reach it.",
+      "deploy": "Never redeploy.  The config still claims a hostname that another host now serves.",
+      "note": "Retiring needs the owner's decision."
+    },
+    "admin-jays-services": {
+      "repo": "Simple-With-Us/Fleet-OPS",
+      "config": null,
+      "no_config_reason": "No wrangler config on main in any repo.  The source left this repository on Oct 19, and its maintained successor is the Vercel admin panel in Fleet-OPS.",
+      "status": "retire",
+      "limits": { "cpu_ms": 50, "subrequests": 100 },
+      "head_sampling_rate": 1,
+      "health": "None needed.  No invocation since Oct 15.",
+      "deploy": "Cannot be redeployed from main.  Limits here are what the live settings should hold until the hostname moves and it is deleted."
+    },
+    "fleet-share-api": {
+      "repo": "Simple-With-Us/fleetlink-legacy",
+      "config": "wrangler.toml",
+      "status": "frozen",
+      "limits": { "cpu_ms": 50, "subrequests": 20 },
+      "head_sampling_rate": 0.1,
+      "health": "None needed.  No invocation since Oct 12, after its zones moved to the FleetLink account.",
+      "deploy": "Never redeploy.  FleetLink's AGENTS.md forbids deleting it, so retiring it is the owner's decision.",
+      "note": "Config path comes from fleet-apps.json and was not read: this seat has no clone of that private repository."
+    }
+  }
+}
