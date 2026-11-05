@@ -222,6 +222,7 @@ const CREDENTIAL_SHAPES = [
 ];
 
 const CREDENTIAL_SHAPES_GLOBAL = CREDENTIAL_SHAPES.map((shape) => new RegExp(shape.source, "g"));
+const CREDENTIAL_SHAPES_ANY_CASE = CREDENTIAL_SHAPES.map((shape) => new RegExp(shape.source, "i"));
 
 /** `text` with every credential shape replaced, for the raw copy of a delivery. */
 export function redactCredentials(text) {
@@ -500,9 +501,41 @@ export function normalize(source, payload) {
     const tail = event.key.includes(":")
       ? event.key.split(":").slice(1).join(":")
       : event.key;
-    return { ...event, source: hint, key: `${hint}:${tail}` };
+    return withSafeKey({ ...event, source: hint, key: `${hint}:${tail}` }, hint);
   }
-  return event;
+  return withSafeKey(event, hint);
+}
+
+/**
+ * The key names durable rows, so a credential in it would be stored even though
+ * the values are redacted.  It becomes a digest of itself, so the alert still
+ * files, one incident stays one key and two stay two, where refusing would lose a
+ * real alert and `[redacted]` would merge unrelated ones.  Parsers lower-case most
+ * keys, so the scan ignores case.  A false match costs only a less readable key.
+ */
+function withSafeKey(event, hint) {
+  if (!CREDENTIAL_SHAPES_ANY_CASE.some((shape) => shape.test(event.key))) return event;
+  return {
+    ...event,
+    key: `${hint || "generic"}:redacted-${stableDigest(event.key)}`,
+    identityRedacted: true,
+  };
+}
+
+// Not a cryptographic hash, because normalize() is synchronous and Web Crypto is
+// not.  It need not be one:  53 bits cannot give a token back, and its only job is
+// to keep the few incidents this ever applies to apart.
+function stableDigest(text) {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
 export const __testing = { oneLine, first, credentialShape };

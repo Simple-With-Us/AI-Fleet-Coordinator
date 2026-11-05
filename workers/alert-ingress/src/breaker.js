@@ -47,6 +47,13 @@ const mapIsSound = (map) =>
 const recordIsSound = (saved) =>
   [saved.total, saved.shedWrites, saved.newKeys].every((n) => n === undefined || sound(n)) &&
   [saved.sources, saved.newBySource, saved.shed].every(mapIsSound);
+// A record is written with today's day number, so a later one cannot be real.
+const dayIsSound = (saved, today) =>
+  saved !== null &&
+  typeof saved === "object" &&
+  !Array.isArray(saved) &&
+  Number.isSafeInteger(saved.day) &&
+  saved.day <= today;
 
 export class DeliveryBreaker {
   constructor(storage, now = Date.now) {
@@ -85,20 +92,24 @@ export class DeliveryBreaker {
     }
     const day = Math.floor(this.now() / DAY_MS);
     this.day = day;
-    // This worker wrote the record, so a bad one is corruption.  It starts the
-    // day over rather than refusing every delivery until someone deletes a row.
-    if (saved !== undefined && (saved === null || typeof saved !== "object")) {
-      console.error(JSON.stringify({ event: "alert.breaker_state_invalid" }));
-    } else if (saved?.day === day) {
-      if (!recordIsSound(saved)) {
-        console.error(JSON.stringify({ event: "alert.breaker_state_invalid" }));
-      }
+    // This worker wrote the record, so a bad one is corruption.  Refusing would
+    // lose alerts until someone deleted a row, so what is sound is kept, what is
+    // not reads as zero, the caps go on counting from there, and the corruption is
+    // logged.  A plain stale day is the normal roll, so it logs nothing.
+    const usable = saved === undefined || dayIsSound(saved, day);
+    const today = usable && saved?.day === day;
+    if (today) {
       this.total = count(saved.total);
       this.shedWrites = count(saved.shedWrites);
       this.newKeys = count(saved.newKeys);
       this.perSourceDay = counts(saved.sources);
       this.newBySource = counts(saved.newBySource);
       this.shed = counts(saved.shed);
+    }
+    if (!usable || (today && !recordIsSound(saved))) {
+      console.error(JSON.stringify({ event: "alert.breaker_state_invalid" }));
+      // The next delivery overwrites the bad row, so it is reported once.
+      this.unsaved = SAVE_MIN_UNSAVED;
     }
     this.loaded = true;
   }
@@ -169,9 +180,10 @@ export class DeliveryBreaker {
     return this.newKeys < NEW_KEYS_PER_DAY || today < SOURCE_NEW_KEY_RESERVE;
   }
 
-  // Reserve one new incident.  False means the day's allowance is gone.  The
-  // count is saved at once:  a new incident already writes many rows, and a burst
-  // followed by an eviction must not be able to spend the same allowance twice.
+  // Reserve one new incident, once it is going to be recorded.  False means the
+  // day's allowance is gone.  The count is saved at once:  a new incident already
+  // writes many rows, and a burst followed by an eviction must not be able to
+  // spend the same allowance twice.
   async spendNewKey(source) {
     if (!this.newKeyAllowed(source)) return false;
     const at = this.now();
@@ -230,7 +242,13 @@ export class DeliveryBreaker {
       this.savedAt = at;
       this.unsaved = 0;
     } catch {
-      // The count stays in memory and goes out with a later delivery.
+      // The count stays in memory and goes out with a later delivery.  Refusing
+      // here would turn one failed counter write into a lost alert, but a cap that
+      // has gone soft is logged, at most once a minute.
+      if (!this.logged.has("save-failed")) {
+        this.logged.add("save-failed");
+        console.error(JSON.stringify({ event: "alert.breaker_save_failed" }));
+      }
     }
   }
 }

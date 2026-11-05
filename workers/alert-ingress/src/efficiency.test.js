@@ -919,6 +919,61 @@ test("a malformed breaker record starts the day over instead of stopping deliver
   assert.deepEqual(lines, ["alert.breaker_state_invalid"]);
 });
 
+test("a corrupt breaker record is logged, admits the alert, keeps the caps counting and heals", async () => {
+  const clock = 1_800_000_000_000;
+  const day = Math.floor(clock / 86_400_000);
+  for (const bad of ["garbage", null, [1, 2], { total: 9 }, { day: "today", total: 9 }, { day: day + 1, total: 9 }]) {
+    const db = storage();
+    db.data.set("breaker:v1", bad);
+    const lines = await capturingLogs(async () => {
+      const breaker = new DeliveryBreaker(db, () => clock);
+      assert.equal((await breaker.admit("a")).shed, false);
+      assert.equal(breaker.total, 1);
+    });
+    assert.deepEqual(lines.map((line) => line.event), ["alert.breaker_state_invalid"]);
+    // The next delivery wrote a sound record, so the count survives and it is told once.
+    assert.equal(db.data.get("breaker:v1").day, day);
+    assert.equal(db.data.get("breaker:v1").total, 1);
+    const later = await capturingLogs(async () => {
+      const breaker = new DeliveryBreaker(db, () => clock);
+      await breaker.admit("a");
+      assert.equal(breaker.total, 2);
+    });
+    assert.deepEqual(later, []);
+  }
+});
+
+test("yesterday's record is the normal roll, so it logs nothing and starts the day", async () => {
+  const clock = 1_800_000_000_000;
+  const db = storage();
+  db.data.set("breaker:v1", { day: Math.floor(clock / 86_400_000) - 1, total: 9 });
+  const lines = await capturingLogs(async () => {
+    const breaker = new DeliveryBreaker(db, () => clock);
+    await breaker.admit("a");
+    assert.equal(breaker.total, 1);
+  });
+  assert.deepEqual(lines, []);
+});
+
+test("a failed save of the count is logged at most once a minute and admits the delivery", async () => {
+  let clock = 1_800_000_000_000;
+  const db = storage();
+  db.put = async () => {
+    throw new Error("storage down");
+  };
+  const lines = await capturingLogs(async () => {
+    const breaker = new DeliveryBreaker(db, () => clock);
+    await breaker.load();
+    assert.equal(await breaker.spendNewKey("a"), true);
+    assert.equal(await breaker.spendNewKey("a"), true);
+    assert.equal(breaker.newKeys, 2);
+    clock += 60_000;
+    breaker.roll(clock);
+    await breaker.spendNewKey("a");
+  });
+  assert.deepEqual(lines.map((line) => line.event), ["alert.breaker_save_failed", "alert.breaker_save_failed"]);
+});
+
 test("an out-of-range saved count is logged and cannot shut the day's caps", async () => {
   const clock = 1_800_000_000_000;
   const db = storage();
@@ -1084,6 +1139,37 @@ test("the reconcile drops stale entries past the first read of the index", async
   assert.equal([...db.data.keys()].some((key) => key.startsWith("pending:")), false);
 });
 
+test("a failed read of the pending index does not stop the reconcile from promoting", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  const old = Date.now() - 60 * 60 * 1000;
+  pendingRow(db, "aged", old);
+  db.data.set("pending:generic:stale", 1);
+  const list = db.list;
+  db.list = async (options) => {
+    if (options.prefix === "pending:") throw new Error("storage down");
+    return list(options);
+  };
+  let response;
+  const lines = await capturingLogs(() =>
+    withFetch(zulipStub().fetchStub, async () => {
+      response = await sweepOnce(writer);
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).promoted, 1);
+  assert.equal(state(db, "generic:aged").phase, "alerting");
+  assert.ok(lines.some((line) => line.event === "alert.pending_index_failed"));
+  // A failing scan is not repeated on every sweep, and an entry it could not judge stays.
+  assert.ok(db.data.get("sweep:reconciled-at") > 0);
+  assert.equal(db.data.has("pending:generic:stale"), true);
+  // With the index unreadable, a pending entry is still written, not lost.
+  db.data.set("kv:state:generic:young", JSON.stringify({ phase: "pending", severity: "SEVERE", since: Date.now(), updated: Date.now(), text: "t", link: "" }));
+  db.data.delete("sweep:reconciled-at");
+  await capturingLogs(() => withFetch(zulipStub().fetchStub, () => sweepOnce(writer)));
+  assert.equal(db.data.get("pending:generic:young"), 1);
+});
+
 // Review fixes:  failures on the Zulip side
 
 test("a raw copy whose rate-limit bookkeeping fails cannot change the delivery's answer", async () => {
@@ -1128,6 +1214,17 @@ test("a notice Zulip did not confirm is tried again soon, not a whole interval l
   assert.ok(db.data.get("notice:empty-body:betterstack") < Date.now() - 23 * 60 * 60 * 1000);
 });
 
+test("a failed notice logs how Zulip answered", async () => {
+  const db = storage();
+  const writer = capped(db);
+  const lines = await capturingLogs(() =>
+    withFetch(zulipStub((call) => (call.topic === "alert-ingress" ? { status: 403 } : null)).fetchStub, () => hook(writer, firing("brand-new"))),
+  );
+  const failed = lines.find((line) => line.event === "alert.operator_notice_failed");
+  assert.equal(failed.status, 403);
+  assert.equal(failed.outcome, "refused");
+});
+
 async function queuedLine(db, writer) {
   await withFetch(zulipStub().fetchStub, () => hook(writer, firing()));
   db.data.set("kv:state:generic:one", JSON.stringify({ ...state(db, "generic:one"), phase: "alerting", severity: "MODERATE" }));
@@ -1162,6 +1259,64 @@ test("a queued line survives a storage error, and only a refusal drops it", asyn
   }
 });
 
+test("a queued line Zulip did not confirm is kept and sent again, not deleted", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  await capturingLogs(async () => {
+    await queuedLine(db, writer);
+    // A 5xx may not have landed, so the row stays and waits for the next sweep.
+    const failing = zulipStub((call) => (call.to === "Alerts-Log" ? { status: 502 } : null));
+    const first = await withFetch(failing.fetchStub, () => sweepOnce(writer));
+    assert.equal((await first.json()).deferred, 1);
+    assert.equal(queued(db), 1);
+    // The next sweep really sends it, rather than stopping at the unknown row.
+    const good = zulipStub();
+    await withFetch(good.fetchStub, () => sweepOnce(writer));
+    assert.equal(good.calls.filter((call) => call.to === "Alerts-Log").length, 1);
+    assert.equal(queued(db), 0);
+    // Once confirmed it is not sent a third time.
+    const after = zulipStub();
+    await withFetch(after.fetchStub, () => sweepOnce(writer));
+    assert.equal(after.calls.filter((call) => call.to === "Alerts-Log").length, 0);
+  });
+});
+
+test("a queued line 2xx-answered without an id counts as unconfirmed too", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  await capturingLogs(async () => {
+    await queuedLine(db, writer);
+    const unusable = async (url, opts) =>
+      new URLSearchParams(opts.body || "").get("to") === "Alerts-Log"
+        ? { ok: true, json: async () => ({ result: "success" }) }
+        : { ok: true, json: async () => ({ result: "success", id: 7 }) };
+    await withFetch(unusable, () => sweepOnce(writer));
+    assert.equal(queued(db), 1);
+  });
+});
+
+test("a queued line that is never confirmed is abandoned loudly, and frees its place in the batch", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  const failing = zulipStub((call) => (call.to === "Alerts-Log" && call.topic !== "alert-ingress" ? { status: 502 } : null));
+  const lines = await capturingLogs(async () => {
+    await queuedLine(db, writer);
+    await withFetch(failing.fetchStub, async () => {
+      await sweepOnce(writer);
+      assert.equal(queued(db), 1);
+      await sweepOnce(writer);
+      assert.equal(queued(db), 1);
+      await sweepOnce(writer);
+      assert.equal(queued(db), 0);
+      // No more tries, and no more rows held.
+      await sweepOnce(writer);
+    });
+  });
+  assert.equal(failing.calls.filter((call) => call.to === "Alerts-Log" && call.topic !== "alert-ingress").length, 3);
+  assert.equal(lines.filter((line) => line.event === "alert.queued_event_abandoned").length, 1);
+  assert.equal(failing.calls.filter((call) => call.topic === "alert-ingress").length, 1);
+});
+
 test("a credential in alert text never reaches a state row or a queued line", async () => {
   const db = storage();
   const writer = new AlertWriter({ storage: db }, ENV);
@@ -1176,6 +1331,37 @@ test("a credential in alert text never reaches a state row or a queued line", as
   assert.equal(state(db, "generic:one").text.includes(secret), false);
   assert.equal(state(db, "generic:one").text.includes("[redacted]"), true);
   assert.equal(posted.some((body) => body.includes(secret)), false);
+});
+
+test("a credential-shaped label files the alert under a digest and never in a row name", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  // Obviously fake shapes, built at runtime for the scanner.  Never credentials.
+  const secret = `ghp_${"a".repeat(36)}`;
+  const other = `ghp_${"b".repeat(36)}`;
+  const upper = `AKIA${"Z".repeat(16)}`;
+  let responses;
+  const lines = await capturingLogs(() =>
+    withFetch(zulipStub().fetchStub, async () => {
+      responses = [
+        await hook(writer, { service: secret, status: "down", summary: "down" }),
+        await hook(writer, { service: other, status: "down", summary: "down" }),
+        await hook(writer, { service: upper, status: "down", summary: "down" }),
+        await hook(writer, { service: secret, status: "down", summary: "again" }),
+      ];
+    }),
+  );
+  assert.deepEqual(responses.map((response) => response.status), [200, 200, 200, 200]);
+  const names = [...db.data.keys()];
+  for (const token of [secret, other, upper, upper.toLowerCase()]) {
+    assert.equal(names.some((name) => name.includes(token)), false);
+  }
+  // Each label is one incident of its own, and a repeat rejoins it.
+  const states = names.filter((name) => name.startsWith("kv:state:generic:redacted-"));
+  assert.equal(states.length, 3);
+  assert.equal(writer.breaker.newKeys, 3);
+  assert.ok(lines.some((line) => line.event === "alert.identity_redacted"));
+  assert.equal(JSON.stringify(lines).includes(secret), false);
 });
 
 // Review fixes:  the new-key cap, and nothing shed in silence
@@ -1319,6 +1505,114 @@ test("an inventory refusal spends no new-key allowance, and an admitted new inci
       assert.equal((await hook(writer, firing("over"))).status, 200);
     }),
   );
+  assert.equal(writer.breaker.newKeys, 1);
+});
+
+test("a recovery of an incident never recorded spends no allowance and writes no row", async () => {
+  const db = storage();
+  const writer = new AlertWriter({ storage: db }, ENV);
+  await capturingLogs(() =>
+    withFetch(zulipStub().fetchStub, async () => {
+      const before = db.counts.put;
+      const response = await hook(writer, { id: "never-seen", service: "svc", status: "recovered" });
+      assert.equal(response.status, 200);
+      assert.equal(writer.breaker.newKeys, 0);
+      assert.equal(db.counts.put, before);
+      assert.equal(db.data.has("kv:state:generic:never-seen"), false);
+      // So repeated recoveries leave the allowance to a real new incident.
+      writer.breaker.newKeys = NEW_KEYS_PER_DAY - 1;
+      writer.breaker.newBySource.set("generic", SOURCE_NEW_KEY_RESERVE);
+      for (let i = 0; i < 5; i++) {
+        await hook(writer, { id: `gone-${i}`, service: "svc", status: "recovered" });
+      }
+      assert.equal(writer.breaker.newKeys, NEW_KEYS_PER_DAY - 1);
+      assert.equal((await hook(writer, firing("real"))).status, 200);
+      assert.equal(writer.breaker.newKeys, NEW_KEYS_PER_DAY);
+    }),
+  );
+});
+
+test("a PagerDuty recovery of an unknown incident keeps its tombstone and spends no allowance", async () => {
+  const db = storage();
+  const env = {
+    ...ENV,
+    PAGERDUTY_WEBHOOK_SECRET: "fixture",
+    ZULIP_BOT_EMAIL_PAGERDUTY: "pd@example.invalid",
+    ZULIP_BOT_API_KEY_PAGERDUTY: "pd-key",
+  };
+  const writer = new AlertWriter({ storage: db }, env);
+  const before = db.counts.put;
+  await capturingLogs(() =>
+    withFetch(zulipStub().fetchStub, async () => {
+      const response = await writer.fetch(
+        new Request("https://test/webhook/pagerduty", {
+          method: "POST",
+          headers: { "x-pagerduty-token": "fixture" },
+          body: JSON.stringify({
+            event: {
+              event_type: "incident.resolved",
+              resource_type: "incident",
+              data: { type: "incident", id: "U1", status: "resolved", title: "t", service: { summary: "svc" } },
+            },
+          }),
+        }),
+      );
+      assert.equal(response.status, 200);
+    }),
+  );
+  assert.equal(db.data.has("kv:closed:pagerduty:u1"), true);
+  assert.equal(writer.breaker.newKeys, 0);
+  assert.equal(db.counts.put - before, 1);
+});
+
+const severeCpuWriter = (db) =>
+  new AlertWriter(
+    { storage: db },
+    {
+      ...ENV,
+      DATADOG_WEBHOOK_SECRET: "fixture",
+      ZULIP_BOT_EMAIL_DATADOG: "datadog-bot@example.invalid",
+      ZULIP_BOT_API_KEY_DATADOG: "datadog-key",
+    },
+  );
+const severeCpu = (writer) =>
+  writer.fetch(
+    new Request("https://test/webhook/datadog", {
+      method: "POST",
+      headers: { "x-datadog-token": "fixture" },
+      body: JSON.stringify({ monitor_id: "22024794", alert_type: "error", alert_transition: "Triggered", host: "cpu.service" }),
+    }),
+  );
+
+test("a direct send Zulip did not confirm is logged, and the incident is still recorded", async () => {
+  const db = storage();
+  const writer = severeCpuWriter(db);
+  let response;
+  const lines = await capturingLogs(() =>
+    withFetch(zulipStub((call) => (call.to === "Alerts-Log" ? { status: 502 } : null)).fetchStub, async () => {
+      response = await severeCpu(writer);
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(state(db, "datadog:22024794").phase, "alerting");
+  assert.ok(lines.some((line) => line.event === "alert.event_unconfirmed"));
+});
+
+test("a new incident Zulip definitively refuses spends no allowance on any retry", async () => {
+  const db = storage();
+  const writer = severeCpuWriter(db);
+  const severe = () => severeCpu(writer);
+  const refusing = zulipStub((call) => (call.to === "Alerts-Log" ? { status: 403 } : null));
+  await capturingLogs(() =>
+    withFetch(refusing.fetchStub, async () => {
+      for (let i = 0; i < 3; i++) await severe().catch(() => {});
+    }),
+  );
+  assert.ok(refusing.calls.some((call) => call.to === "Alerts-Log"), "the send was attempted");
+  assert.equal(writer.breaker.newKeys, 0);
+  // Once Zulip takes it, the one incident spends one.
+  await capturingLogs(() => withFetch(zulipStub().fetchStub, () => severe()));
+  assert.equal(state(db, "datadog:22024794").phase, "alerting");
   assert.equal(writer.breaker.newKeys, 1);
 });
 

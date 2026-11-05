@@ -165,6 +165,8 @@ const DIRTY_TOPIC_PREFIX = "dirty-topic:";
 const dirtyTopicKey = (source, topic) =>
   `${DIRTY_TOPIC_PREFIX}${JSON.stringify([source, topic])}`;
 const CATCH_UP_BATCH = 10;
+// A held line Zulip did not confirm gets this many tries, one per sweep.
+const QUEUED_LINE_ATTEMPTS = 3;
 // A repeat delivery refreshes `updated` at most this often.
 const STATE_TOUCH_MS = 10 * 60 * 1000;
 const NOTICE_EVERY_MS = 60 * 60 * 1000;
@@ -953,7 +955,12 @@ async function notifyOperator(env, kind, what, source, everyMs = NOTICE_EVERY_MS
     if (!posted) throw new Error("operator notice was not confirmed");
   } catch (error) {
     console.error(
-      JSON.stringify({ event: "alert.operator_notice_failed", kind, status: error?.status ?? null }),
+      JSON.stringify({
+        event: "alert.operator_notice_failed",
+        kind,
+        status: error?.status ?? null,
+        outcome: error?.outcome ?? null,
+      }),
     );
     try {
       await storage.put(key, now - everyMs + NOTICE_RETRY_MS);
@@ -1003,16 +1010,24 @@ async function eventDigest(identity) {
     .join("");
 }
 
-async function sendEventOnce(env, identity, args) {
+// Returns the message id, or null when Zulip did not confirm the line.  The row
+// stays `unknown`, so a later call does not post again unless `replayUnknown` says
+// that a repeated line is the better risk.
+async function sendEventOnce(env, identity, args, { replayUnknown = false } = {}) {
   if (!env.WRITER_STORAGE) throw new Error("durable writer required");
   const key = "event:" + (await eventDigest(identity));
   const prior = await env.WRITER_STORAGE.get(key);
   if (prior?.outcome === "ok") return prior.id;
-  if (prior?.outcome === "unknown") return null;
+  if (prior?.outcome === "unknown" && !replayUnknown) return null;
   await env.WRITER_STORAGE.put(key, { outcome: "unknown" });
+  const unconfirmed = () => {
+    console.error(JSON.stringify({ event: "alert.event_unconfirmed" }));
+    return null;
+  };
   try {
     const id = await postEvent(args);
-    if (id) await env.WRITER_STORAGE.put(key, { outcome: "ok", id });
+    if (!id) return unconfirmed();
+    await env.WRITER_STORAGE.put(key, { outcome: "ok", id });
     return id;
   } catch (error) {
     if (error?.outcome === "rate_limited") {
@@ -1029,7 +1044,7 @@ async function sendEventOnce(env, identity, args) {
       refused.code = "event_refused";
       throw refused;
     }
-    return null;
+    return unconfirmed();
   }
 }
 
@@ -1178,6 +1193,14 @@ async function handleEvent(source, payload, env, options = {}) {
       );
       throw shedRefused(secondsToNextDay(now), "new-keys");
     }
+    // A recovery of something never recorded has nothing to record, and a closed
+    // row would cost as much as a transition and take a place in the inventory.
+    // A per-incident source keeps its tombstone, because that one row stops a late
+    // trigger from opening what the vendor already closed.
+    if (!prev && result.state.phase === "ok") {
+      if (perIncident) await env.ALERT_STATE.put(closedKey(event.key), String(now));
+      return { action: result.action, posted: false, status: null, statusDelivery: null };
+    }
     // Over the bound, an incident already recorded still moves, so a recovery
     // cannot be lost, and a new one is refused with a notice instead of
     // failing the same way forever with nobody told.
@@ -1199,8 +1222,9 @@ async function handleEvent(source, payload, env, options = {}) {
       );
       throw shedRefused(3600, "inventory");
     }
-    // Spent only now, so a vendor retrying an inventory refusal costs no allowance.
-    if (!prev) await breaker?.spendNewKey?.();
+  }
+  if (event.identityRedacted) {
+    console.error(JSON.stringify({ event: "alert.identity_redacted", source: sourceName }));
   }
   if (reopening) await env.ALERT_STATE.delete(tombstone);
   let posted = null;
@@ -1243,6 +1267,11 @@ async function handleEvent(source, payload, env, options = {}) {
       }
     }
   }
+  // Spent only now, once the delivery is sure to be recorded:  a vendor retrying
+  // an inventory or a Zulip refusal costs no allowance, and a recovery of an
+  // incident never recorded has already returned, so it cannot use up what a real
+  // new incident needs.  A shed never reaches here with no row.
+  if (!prev) await breaker?.spendNewKey?.();
 
   const wasPending = prev?.phase === "pending";
   const isPending = result.state.phase === "pending";
@@ -1516,7 +1545,18 @@ async function pendingForSweep(env, now) {
   const keep = new Set();
   // What the index already holds.  An unchanged entry costs no write:  rewriting
   // each one hourly is 24 rows a day per pending incident, to store the same 1.
-  const present = usable ? await allPending(storage) : new Set();
+  // A failed read must not cost the sweep:  this pass already holds every state
+  // row, so it promotes from those.  With the index unknown it adds each pending
+  // entry and removes none, and the next reconcile puts the rest right.
+  let present = null;
+  if (usable) {
+    try {
+      present = await allPending(storage);
+    } catch {
+      present = null;
+      console.error(JSON.stringify({ event: "alert.pending_index_failed" }));
+    }
+  }
   for (const { name } of all) {
     const key = name.slice("state:".length);
     try {
@@ -1533,7 +1573,7 @@ async function pendingForSweep(env, now) {
       if (state.phase !== "pending") continue;
       keys.push(key);
       keep.add(key);
-      if (!present.has(key)) await storage?.put(pendingKey(key), 1);
+      if (!present?.has(key)) await storage?.put(pendingKey(key), 1);
     } catch {
       // A row that cannot be read keeps any index entry it has.
       keep.add(key);
@@ -1541,7 +1581,7 @@ async function pendingForSweep(env, now) {
     }
   }
   if (usable) {
-    for (const key of present) {
+    for (const key of present ?? []) {
       if (!keep.has(key)) await storage.delete?.(pendingKey(key));
     }
     await storage.put(RECONCILED_AT, now);
@@ -1613,12 +1653,34 @@ async function flushQueuedEvents(env, calls, now) {
         continue;
       }
       calls.spend("zulipCall");
-      await sendEventOnce(env, item.identity, {
-        ...item.line,
-        email: credential.email,
-        apiKey: credential.apiKey,
-      });
+      const id = await sendEventOnce(
+        env,
+        item.identity,
+        { ...item.line, email: credential.email, apiKey: credential.apiKey },
+        { replayUnknown: true },
+      );
+      if (id) {
+        await storage.delete?.(key);
+        continue;
+      }
+      // Zulip did not confirm it, and this line may carry the only ping for an
+      // alert, so it is sent again on the next sweeps:  a repeated line beats a
+      // missing one.  It is bounded, because a row kept for good would hold a place
+      // in the batch, and giving up is logged and told to the operators.
+      const attempts = (Number(item.attempts) || 0) + 1;
+      if (attempts < QUEUED_LINE_ATTEMPTS) {
+        await storage.put(key, { ...item, attempts });
+        waiting++;
+        continue;
+      }
       await storage.delete?.(key);
+      console.error(JSON.stringify({ event: "alert.queued_event_abandoned", source: item.source }));
+      await notifyOperator(
+        env,
+        `queued-line:${item.source}`,
+        `A held ${item.source} timeline line was not confirmed by Zulip after ${QUEUED_LINE_ATTEMPTS} tries, so it may be missing from ${LOG_CHANNEL}.  The incident itself is recorded and shows in its standing block.`,
+        item.source,
+      );
     } catch (error) {
       if (error instanceof BudgetExceeded) return waiting + 1;
       if (error?.code === "zulip_rate_limited") {
