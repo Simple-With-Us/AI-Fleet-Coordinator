@@ -22,11 +22,11 @@ inbound event -> normalize() -> state machine -> decide()
                                           |
                      state CHANGED ---------+---------> post one line
                      (open/escalate/resolve)
-                     state UNCHANGED -------+---------> rewrite the standing status
-                                                            (PATCH, in place)
+                     state UNCHANGED -------+---------> nothing, unless the block's content
+                                                            changed (then PATCH, in place)
 ```
 
-A message is only warranted when **state** changes.  The channel ends up as:
+A message is only warranted when **state** changes, and the standing block is only rewritten when what it says changes.  The channel ends up as:
 
 - **one standing status block per topic**, edited in place, always showing current truth (a recovered signal is counted in its header but not drawn as a row); and
 - **a sparse timeline** of events that actually mattered.
@@ -39,7 +39,7 @@ Three channels, one topic per service in each, and every channel requires topics
 | `#Alerts-Log` | the sparse one-line timeline |
 | `#Alerts-Raw` | every authenticated delivery as the vendor sent it:  its own title and full text, then the whole payload in a collapsed spoiler |
 
-The raw copy is a record, not a decision.  It is posted for every authenticated, well-formed delivery except a PagerDuty ping, under the topic the event is filed under (its pinned service), and it runs beside the event path, so a failure to post it never changes how the event is handled.  A body the validator refuses gets no raw copy:  the 400 tells the vendor, and input that failed the size, depth and character checks is not posted into Zulip.  Vendor text cannot ping anyone (user, silent and group mention syntax is broken with a zero-width space), and every credential shape the identity check knows is replaced with `[redacted]` in each string value before the payload is encoded, so a token after an encoded newline is caught too.  It goes through the normal messages API with the vendor's status bot, because Zulip's own vendor integrations take the key only in the URL.
+The raw copy is a record, not a decision.  It is posted for every authenticated, well-formed delivery except a PagerDuty ping and a delivery that arrives during a Zulip pause or a storm shed (see [Usage guards](#usage-guards)), under the topic the event is filed under (its pinned service), and it runs beside the event path, so a failure to post it never changes how the event is handled.  A body the validator refuses gets no raw copy:  the 400 tells the vendor, and input that failed the size, depth and character checks is not posted into Zulip.  Vendor text cannot ping anyone (user, silent and group mention syntax is broken with a zero-width space), and every credential shape the identity check knows is replaced with `[redacted]` in each string value before the payload is encoded, so a token after an encoded newline is caught too.  It goes through the normal messages API with the vendor's status bot, because Zulip's own vendor integrations take the key only in the URL.
 
 A resource alert tags people (owner, Oct 30, 2026).  When one of Datadog's host monitors for memory, network, disk latency, load or the disk forecast opens or escalates, its #Alerts-Log line carries a second line tagging both Housekeepers and Jay.  CPU monitor 22024794 tags only SEVERE saturation immediately; warnings and recoveries stay quiet.  Datadog already requires a 90% busy average over five minutes, so this monitor skips the ingress's additional ten-minute hold.
 
@@ -47,8 +47,8 @@ A resource alert tags people (owner, Oct 30, 2026).  When one of Datadog's host
 
 | Route | Purpose |
 |---|---|
-| `POST /webhook/:source` | vendor event; signature verified, replies immediately |
-| `GET  /status` | **machine-readable** status for any consumer that renders it |
+| `POST /webhook/:source` | vendor event; signature verified, and it replies once the event is recorded and its Zulip calls have finished |
+| `GET  /status` | **machine-readable** status for any consumer that renders it, cached for 30 seconds |
 | `GET  /status/:source/:channel/:topic` | rebuild one source's standing status, with that source's credential |
 | `GET  /status/:channel/:topic` | rebuild every source's standing status for that topic |
 | `GET  /sweep` | run the promotion sweep by hand |
@@ -151,7 +151,37 @@ A PagerDuty incident is a row in the standing block of its PagerDuty service, in
 
 A fresh incident whose vendor names no severity opens SEVERE:  Better Stack never sends one and Datadog often does not, so a site that went down used to read INFO.  An open incident keeps its own severity when an update names none.
 
-An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (default 10 minutes; 5 for `prodDown`, matching `zulip-fleet-guide.md`).  A flap that resolves inside the window is **discarded entirely** — nobody saw it open, so nobody needs to see it close.  The `*/5` cron promotes anything that aged out.  That single rule is what turns a flapping monitor from twenty messages into one.
+An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (default 10 minutes; 5 for `prodDown`, matching `zulip-fleet-guide.md`).  A flap that resolves inside the window is **discarded entirely** — nobody saw it open, so nobody needs to see it close.  The `*/5` cron promotes anything that aged out, reading only the pending index.  That single rule is what turns a flapping monitor from twenty messages into one.
+
+## Usage guards
+
+A code bug or a vendor storm must not run up a bill or use up a cap the fleet shares.  All the caps below are constants in `src/breaker.js` and `src/index.js`.
+
+**Off switch.**  `GUARD_MODE=off` answers 503 with `Retry-After` on every route, including `/health`, in the entry point and in the writer, and the cron does nothing.  The account watchdog sets it to stop this Worker.  Vendors retry and then give up, so events sent while it is off can be lost.
+
+**Storm breaker.**  Past 60 deliveries a minute from one source, or 5,000 a day in all, a delivery makes no Zulip call and answers by what is safe, because a vendor's retry is its only redelivery:
+
+| Delivery | Answer | Writes |
+|---|---|---|
+| A known incident, unchanged | `200` with `"action": "shed"` | none |
+| A known incident that changed, such as a resolve | `200` with `"action": "shed"`, once its state is recorded | its state, up to 5,000 a day, then `503` |
+| A new incident, or a reopen | `503` with `Retry-After` | none |
+
+The count lives in memory and is saved at most once a minute, and not at all for quiet traffic.  Each trip posts one notice to `#Alerts-Log`, topic `alert-ingress`, at most once an hour.  The next sweep rewrites each shed topic's block once.  A shed transition's timeline line is not posted later, because a storm's timeline is noise.  A long storm answering 503 can count against PagerDuty's rule that disables a subscription after repeated failures.
+
+**Zulip 429.**  A 429 is not a refusal to retry at once.  It pauses that source's bot for `Retry-After` seconds, 60 if it gives none, and at most an hour.  During the pause the worker records state, makes no Zulip call and answers `200`, so the vendor does not retry into the limit.  The sweep then posts the held timeline lines, 10 per sweep, and rewrites each held block once.  Raw copies from the pause are not posted later.  A severe CPU alert that arrives during a pause waits out the ordinary hold.
+
+**Writer unreachable.**  The entry point answers `503` with `Retry-After` and logs one `alert.writer_unreachable` line.  It never answers `200` here, since nothing was recorded.  A cron sweep that fails logs `alert.sweep_failed` or `alert.writer_unreachable`.
+
+**Inventory overflow.**  Above the 2,000-key bound a new incident gets `503` and a notice, while a known incident still moves and reports `"statusDelivery": {"outcome": "overflow"}`.  An overflow of the state list stops only the daily reconcile, and promotions continue from the index.
+
+**Sweep budget.**  One sweep makes at most 40 Zulip calls, below the free plan's 50 subrequests, and the rest wait for the next sweep.
+
+**The sweep's cost.**  The sweep reads the `pending:` index, not every state, so an idle sweep costs a few rows instead of about eight per state.  The full scan that rebuilds the index and repairs legacy markers runs on the first sweep after deploy and then once a day.  The cron stays on `*/5` rather than moving to a Durable Object alarm:  it is 0.3% of the daily request cap, and a cron recovers by itself from a capped outage, where an alarm can use up its retries and lose the alert.
+
+**The Zulip timer.**  Each call has a 5-second timeout on a timer cleared when the call ends.  `AbortSignal.timeout` cannot be cleared, and its pending timer held the object active for the full timeout after every call.
+
+**`GET /status` stays unauthenticated**, because Usage Monitor's `/ops` reads it with no token.  It returns hostnames and links, so a bearer is still due, as a coordinated change with the Usage Monitor deploy landing first.
 
 ## KV layout (`ALERT_STATE`)
 
@@ -171,6 +201,8 @@ The durable delivery outcome of a standing status is keyed per source as well: `
 
 Two scopes, two keys.  The **outcome** is scoped to a content revision, `delivery:["<source>","<channel>","<topic>","<revision>"]`, because an unchanged standing block must not count as a new delivery and re-PATCH forever.  The **uncertainty barrier** is scoped to the source, channel and topic alone, `delivery-barrier:<source>:<channel>:<topic>`, because a create whose acknowledgement was lost may already have landed, and a changed standing block must not post a second standing message on top of it.  The barrier carries the message id: an id means the write edits a message this source already owns and can be retried, and no id means a create may have landed and no further POST may happen for that topic until an operator reconciles it.
 
+The writer's own storage also holds, outside this layout, `pending:<key>` (incidents in their hold), `zulip-pause:<source>`, `queued-event:<hash>`, `dirty-topic:["<source>","<topic>"]`, `notice:<kind>`, `breaker:v1` and `sweep:reconciled-at`.
+
 ## Setup (owner)
 
 1. Create a KV namespace and put its id in `wrangler.toml`.
@@ -188,7 +220,7 @@ cd workers/alert-ingress && node --test src/*.test.js
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
 
-The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 181 tests.  `resource.test.js` checks who a resource alert tags:  each resource monitor with or without a scope, CPU severity gating and immediate severe notification, other vendors or a look-alike id, the mentions on their own line under a promoted alert, and none on recovery.  `raw.test.js` covers the raw copy:  each vendor's title and text, the payload spoiler, mentions made harmless, credentials redacted, fences a payload cannot close or inflate, and the 10,000-character Zulip limit.  `writer.test.js` checks that the legacy KV is listed once and never again, and that a failed copy reads through and waits ten minutes to retry.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 220 tests.  `resource.test.js` checks who a resource alert tags:  each resource monitor with or without a scope, CPU severity gating and immediate severe notification, other vendors or a look-alike id, the mentions on their own line under a promoted alert, and none on recovery.  `raw.test.js` covers the raw copy:  each vendor's title and text, the payload spoiler, mentions made harmless, credentials redacted, fences a payload cannot close or inflate, and the 10,000-character Zulip limit.  `writer.test.js` checks that the legacy KV is listed once and never again, and that a failed copy reads through and waits ten minutes to retry.  `efficiency.test.js` covers the usage guards:  the cleared Zulip timer, unchanged deliveries, the pending index, Zulip 429s, the breaker, inventory overflow, and the entry point's off switch, empty-body refusal, writer failures and `/status` cache.  `budget-guard-run.test.js` pulls in the shared guard's `.mjs` tests, which the `*.test.js` glob would otherwise miss.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
 
 `vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
 
@@ -212,7 +244,7 @@ Rollback keeps the previous Worker version and the same KV namespace available, 
 
 Before any standing-message write the object persists an `unknown` delivery outcome, on the revision-scoped outcome key and on the topic-scoped uncertainty barrier alike.  Only a validated successful response records `ok` with a positive integer message ID.  Timeout, malformed success, crash and ambiguous network failure retain `unknown`, and subsequent refreshes do not replay it.  Explicit provider refusal records `refused` and releases the barrier, because a refusal is definitive and nothing landed, so a later attempt may try again.  A write that returns no message ID is not a success either: the acknowledgement was lost, so it is recorded as `unknown` and the topic is held until an operator reconciles it.  A barrier that carries a message ID is retryable, because the retry edits the message this source already owns; a barrier without one is not, because a create may have landed that nobody knows about.  An operator must inspect the actual Zulip message before repairing a held outcome, and `?reconcile=<message id>` is the lever that adopts it.
 
-Inventory walks drain at most 20 pages and 2,000 keys, reject missing/cyclic cursors and never publish a partial inventory as complete.  The writer returns HTTP 503 with `stale: true` when inventory fails.  Reads use bounded batches of four; independent sweep status-refresh failures emit only a fixed event name and leave other topics eligible for processing.
+Inventory walks drain at most 20 pages and 2,000 keys, reject missing/cyclic cursors and never publish a partial inventory as complete.  `GET /status` returns HTTP 503 with `stale: true` when inventory fails;  webhooks and the sweep handle an overflow as [Usage guards](#usage-guards) describes.  Reads use bounded batches of four; independent sweep status-refresh failures emit only a fixed event name and leave other topics eligible for processing.
 
 Webhook JSON must be an object with bounded scalar fields, bounded string tags and object-shaped `alert`/`data` envelopes.  Better Stack's default incident body is JSON:API shaped, so `attributes` and `relationships` are object envelopes too and envelope nesting is depth-bounded; a correctly authenticated default delivery is accepted rather than rejected as an oversized text field.  Invalid field shapes, control bytes and bodies over 64 KiB fail before normalization or side effects.  One size limit rules:  every body is measured in encoded UTF-8 bytes and refused above 64 KiB, the check runs before the signature is verified and before the body is parsed, and a body of multi-byte characters is measured the same way as one of ASCII.  These dependency-free boundary validators match the worker's existing stdlib-only packaging; no unchecked object is passed into normalization.  Zulip response fields are also validated before an ID can be accepted.
 
@@ -244,7 +276,7 @@ The cleanup removes only the one-line alert rows.  The standing status message t
 
 The CI deployment gate for this Worker is `scripts/worker-targets.json` (OPS-W01).  The entry carries the functional probe, `https://alert-ingress.jays-services.workers.dev/health`, which answers `{"ok":true}`, so a deploy that breaks liveness is refused instead of shipped.  The `worker-deploy` workflow runs only when `vars.WORKER_DEPLOY_ENABLED` is `true`, and it deploys the exact main commit and checks the exact-version receipt.
 
-As of Oct 29, 2026 that variable is not set in the repository, the organization or any environment.  Every `worker-deploy` run therefore ends `skipped`, and a merge does not redeploy this Worker.  The running version is the one this work deployed.  Arming the variable is an owner decision, because it would redeploy every mapped Worker on every push to `main`.
+As of Oct 29, 2026 that variable is not set in the repository, the organization or any environment.  Every `worker-deploy` run therefore ends `skipped`, and a merge does not redeploy this Worker.  The running version is the one this work deployed.  Arming the variable is an owner decision, because it would redeploy every mapped Worker on every push to `main`.  A second workflow, `alert-workers-deploy.yml`, also maps this Worker, gated by the credential qualification receipt in `scripts/deploy-alert-workers.py`.
 
 ### Vendor cutover
 
@@ -272,8 +304,10 @@ Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-we
 
 Timeline transitions use a separate durable outcome keyed by the exact normalized transition and previous state.  Destination inventory is completed before mutation; a definitive pre-send failure leaves the previous phase unchanged.  Timeline `unknown` is never resent, while a definitive provider refusal can retry the same transition safely.  Sweep failures are isolated per incident, so one refusal cannot abort independent promotions.
 
+**Better Stack delivers empty bodies (Nov 4, 2026).**  Webhook 88178's requests carry the right token, `content-type: application/json` and `content-length: 0`, so none of them files an incident (every delivery in the 7 days measured was refused).  They come in rapid bursts at irregular times, which looks like event deliveries with retries rather than a scheduled probe.  The worker answers `400` and reports it once a day to `#Alerts-Log`, topic `alert-ingress`.  The fix is at the vendor:  the webhook has to send a JSON body.
+
 Better Stack Uptime incident-change payloads support the default data.attributes resolved_at field as well as explicit status; optional monitor relationship IDs retain stable keys.
 
 ### Request bounds
 
-The entry point rejects unknown routes, wrong webhook methods, missing/malformed vendor authentication and oversized declared webhook bodies before Durable Object dispatch. Operator routes keep their existing methods and bearer checks. Webhook bodies are streamed up to the existing 64 KiB byte limit before verification/parsing; missing or inaccurate Content-Length cannot bypass the limit. `/health` stays storage-free.
+The entry point rejects unknown routes, wrong webhook methods, missing/malformed vendor authentication and oversized declared webhook bodies before Durable Object dispatch. Operator routes keep their existing methods and bearer checks. An empty webhook body is refused here too, apart from about one a day that reaches the writer so it can report it.  Webhook bodies are streamed up to the existing 64 KiB byte limit before verification/parsing; missing or inaccurate Content-Length cannot bypass the limit. `/health` stays storage-free.
