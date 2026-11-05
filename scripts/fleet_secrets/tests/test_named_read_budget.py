@@ -98,7 +98,27 @@ class NamedReadBudgetTests(unittest.TestCase):
         with mock.patch.object(core, "_api_json", failing):
             with self.assertRaises(core.SecretsError):
                 core.fetch_project(PROJECT, "/", {}, token=TOKEN, names=names, timeout=8.0)
-        self.assertLess(len(calls), len(names))
+        # The first failure lands after one round of reads, so at most the reads already running
+        # and one more round can start before every other read is cancelled.
+        self.assertLessEqual(len(calls), 2 * core.MAX_NAMED_READS)
+
+    def test_the_refusal_names_the_earliest_failing_read(self):
+        def two_bad(method, path, token, body, env, *, max_bytes, deadline):
+            name = name_of(path)
+            if name == "A_FIRST":
+                time.sleep(0.05)
+                return 500, {}
+            if name == "B_SECOND":
+                return 200, {"secret": dict(record(name), secretValue=3)}
+            return 200, {"secret": record(name)}
+
+        for _ in range(5):
+            with mock.patch.object(core, "_api_json", two_bad):
+                with self.assertRaises(core.SecretsError) as caught:
+                    core.fetch_project(
+                        PROJECT, "/", {}, token=TOKEN, names={"A_FIRST", "B_SECOND"}, timeout=8.0
+                    )
+            self.assertEqual(str(caught.exception), "fetch-failed")
 
 
 if __name__ == "__main__":
