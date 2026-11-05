@@ -229,6 +229,8 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 **Status.** git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**: no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged; until the owner decides the cutover, the relay is not an available route: do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
+**Closing a pull request.**  `gr_wf_pr_close` closes one without merging and `gr_wf_pr_reopen` reopens it, as the seat's own GitHub App.  `simple-git call gr_wf_pr_close` does the same.  GitHub refuses a merged PR.  Who may close whose PR is the superseded-PR rule in `AGENTS.md`.
+
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.

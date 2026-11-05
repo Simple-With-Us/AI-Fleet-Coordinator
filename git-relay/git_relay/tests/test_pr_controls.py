@@ -41,6 +41,31 @@ class PrControls(unittest.TestCase):
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(action, {**args, "query": "arbitrary"}, REPO)
 
+    def test_close_and_reopen_use_a_fixed_mutation_and_check_the_result(self):
+        for action, field, wanted in (
+            ("wf_pr_close", "closePullRequest", "CLOSED"),
+            ("wf_pr_reopen", "reopenPullRequest", "OPEN"),
+        ):
+            pull = {"id": "PR_abc", "state": wanted}
+            c = Client({"node_id": "PR_abc"}, {"data": {field: {"pullRequest": pull}}})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
+            args = {"repo": REPO, "number": 1}
+            self.assertEqual(h.run(action, args), {"pull": pull})
+            self.assertEqual(c.calls[0][1], "/repos/" + REPO + "/pulls/1")
+            self.assertEqual(c.calls[1][1], "/graphql")
+            self.assertIn(field, c.calls[1][2]["query"])
+            self.assertEqual(c.calls[1][2]["variables"], {"id": "PR_abc"})
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(action, {**args, "query": "arbitrary"}, REPO)
+
+    def test_close_is_unknown_when_the_state_did_not_change(self):
+        for pull in ({"id": "PR_abc", "state": "OPEN"}, {"id": "PR_other", "state": "CLOSED"}):
+            c = Client({"node_id": "PR_abc"}, {"data": {"closePullRequest": {"pullRequest": pull}}})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+            with self.assertRaises(RelayGitHubError) as error:
+                h.run("wf_pr_close", {"repo": REPO, "number": 1})
+            self.assertEqual(error.exception.status, 502)
+
     def test_graphql_errors_are_unknown_not_definitely_unsent(self):
         c = Client({"node_id": "PR_abc"}, {"data": {}, "errors": [{"message": "private"}]})
         h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_ready", REPO)

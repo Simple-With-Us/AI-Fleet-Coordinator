@@ -186,6 +186,8 @@ SPECS = {
     "wf_tag_delete": ({"contents": "write"}, True),
     "wf_pr_draft": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_pr_ready": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_pr_close": ({"pull_requests": "write"}, True),
+    "wf_pr_reopen": ({"pull_requests": "write"}, True),
     "wf_automerge_enable": ({"pull_requests": "write"}, True),
     "wf_automerge_disable": ({"pull_requests": "write"}, True),
     "wf_review_threads": ({"pull_requests": "read"}, False),
@@ -3394,6 +3396,23 @@ class WorkflowVerbs:
         if pull.get("id") != node or pull.get("isDraft") is not False:
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
         return {"pull": pull}
+
+    def _pr_set_state(self, repo, args, mutation, wanted):
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { %s(input:{pullRequestId:$id}) { pullRequest { id state } } }" % mutation
+        pull = _sub(self._fixed_graph(query, {"id": node}, mutation), "pullRequest")
+        if pull.get("id") != node or pull.get("state") != wanted:
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_pr_close(self, repo, args):
+        """Close without merging.  GitHub refuses a merged PR.  Who may close whose PR is fleet policy, in AGENTS.md."""
+        _only(args, ("repo", "number"))
+        return self._pr_set_state(repo, args, "closePullRequest", "CLOSED")
+
+    def wf_pr_reopen(self, repo, args):
+        _only(args, ("repo", "number"))
+        return self._pr_set_state(repo, args, "reopenPullRequest", "OPEN")
 
     def wf_automerge_disable(self, repo, args):
         _only(args, ("repo", "number"))
