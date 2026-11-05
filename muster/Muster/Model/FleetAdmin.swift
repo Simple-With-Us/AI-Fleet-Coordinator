@@ -21,6 +21,10 @@ struct ServerPortWait: Equatable, Sendable {
     /// The whole wait,  in seconds.
     var budget: TimeInterval { Double(attempts) * interval }
 
+    /// How long a server whose port answered at the end of the wait still gets to say which
+    /// process it is,  because a port opens before the server behind it can answer.
+    var lateGrace: TimeInterval { budget / 4 }
+
     /// The port closes soon after a stop.
     static let stop = ServerPortWait(attempts: 8, interval: 0.5)
     /// The server takes longer to come up than to go,  so a start or a restart gets the
@@ -354,13 +358,16 @@ final class FleetAdmin: ObservableObject {
                         notKnown = true
                     }
                 } else if action == .start || action == .restart {
-                    let deadline = Date().addingTimeInterval(startWait.budget)
+                    let portWatchBegan = Date()
                     switch await Self.watchThePort(until: .present, presence: presence, wait: startWait) {
                     case .present:
                         // A wrapper exits at once when the port is already healthy,  which
                         // replaces nothing,  so a listener does not prove a restart.  This look
-                        // shares the port's budget,  so a restart holds the row for one wait.
+                        // shares the port's budget,  so a restart holds the row for one wait,
+                        // and a port that answered late still leaves it a little time.
                         guard action == .restart else { break }
+                        let deadline = max(portWatchBegan.addingTimeInterval(startWait.budget),
+                                           Date().addingTimeInterval(startWait.lateGrace))
                         switch await Self.watchForANewProcess(after: processBefore, api: api,
                                                               interval: startWait.interval, until: deadline) {
                         case .replaced: break

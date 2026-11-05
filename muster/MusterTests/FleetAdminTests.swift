@@ -432,7 +432,7 @@ final class FleetAdminTests: XCTestCase {
         await admin.perform(.stop, serviceID: FleetServiceRegistry.server.id)
         XCTAssertTrue(admin.problemIsNotKnown)
 
-        admin.beginControllerAction(.start, serviceID: "shellular")
+        admin.beginControllerAction(.start, serviceID: "fixture-service")
 
         XCTAssertNil(admin.problem)
         XCTAssertFalse(admin.problemIsNotKnown)
@@ -444,17 +444,41 @@ final class FleetAdminTests: XCTestCase {
         commands.serverWrapperRuns = true
         let server = FleetAdminServer()
         let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
-                              startWait: ServerPortWait(attempts: 5, interval: 0.1))
+                              startWait: ServerPortWait(attempts: 8, interval: 0.1))
         await waitForTheFleet(admin)
         server.keepItsProcess()
-        // The port takes most of the budget to answer,  which leaves one or two looks.
-        server.closePort(forLooks: 4)
+        // The port takes most of the budget to answer,  which leaves a few looks.
+        server.closePort(forLooks: 7)
 
         await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
 
         XCTAssertEqual(admin.lastResult?.reason, "the same process is still on its port, so it was not replaced")
-        // A second budget of its own would make six looks,  and the read that follows adds one.
-        XCTAssertLessThan(server.looksAtTheProcessAfterAKickstart, 5)
+        // A second budget of its own would make nine looks,  and the read that follows adds one.
+        XCTAssertLessThan(server.looksAtTheProcessAfterAKickstart, 7)
+    }
+
+    /// A port opens before the server behind it can answer,  so one that answered at the very
+    /// end of the wait is not judged on a single look.
+    func testAPortThatAnswersLateStillLeavesTimeToReadTheNewProcess() async {
+        let commands = FleetAdminCommands()
+        commands.serverWrapperRuns = true
+        let server = FleetAdminServer()
+        let admin = makeAdmin(commands: commands, server: server, wrapperInstalled: true,
+                              startWait: ServerPortWait(attempts: 3, interval: 0.4))
+        await waitForTheFleet(admin)
+        // Every look in the budget finds the port closed,  and the last one finds it open.
+        server.closePort(forLooks: 3)
+        server.staySilentAfterTheKickstart(forLooks: 1)
+
+        await admin.perform(.restart, serviceID: FleetServiceRegistry.server.id)
+
+        XCTAssertEqual(admin.lastResult?.succeeded, true)
+        XCTAssertNil(admin.problem)
+    }
+
+    func testTheLateGraceIsAFractionOfTheWaitAndNothingWithoutOne() {
+        XCTAssertEqual(ServerPortWait.start.lateGrace, 5)
+        XCTAssertEqual(ServerPortWait(attempts: 8, interval: 0).lateGrace, 0)
     }
 
     /// A look can cost launchctl's whole timeout,  so the budget is time and not a number of
@@ -739,6 +763,8 @@ final class FleetAdminServer {
     private var wasKickstarted = false
     /// How many times the health check named the process since the kickstart.
     private var processLooks = 0
+    /// How many health checks after the kickstart still get no answer.
+    private var silentLooks = 0
 
     /// How many times the health check named the process since the kickstart.
     var looksAtTheProcessAfterAKickstart: Int {
@@ -872,10 +898,21 @@ final class FleetAdminServer {
         return true
     }
 
-    /// True when the health check does not answer.
-    var isSilent: Bool {
+    /// The first health checks after the kickstart get no answer.
+    func staySilentAfterTheKickstart(forLooks looks: Int) {
+        state.lock()
+        silentLooks = looks
+        state.unlock()
+    }
+
+    /// True when the health check does not answer on this look.
+    func isSilentOnThisLook() -> Bool {
         state.lock()
         defer { state.unlock() }
+        if wasKickstarted, silentLooks > 0 {
+            silentLooks -= 1
+            return true
+        }
         return stoppedNow || saysNothing
     }
 
@@ -935,7 +972,7 @@ final class FleetAdminURLProtocol: URLProtocol {
         var body = "{}"
         switch path {
         case "/api/health":
-            if server?.isSilent == true {
+            if server?.isSilentOnThisLook() == true {
                 status = 503
             } else {
                 body = #"{"app":"botfleet","pid":\#(server?.nextPID() ?? 4242),"ready":true}"#
