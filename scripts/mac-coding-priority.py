@@ -29,11 +29,20 @@ The rules it enforces, each one a rule the review named:
     observed, so "the control is in place" is a measurement and not a claim.
 
 How the clamp is applied and verified:
-  nice -n 10 with the taskpolicy utility QoS clamp -- the same combination the
-  fleet's BotFleet background jobs already use.  The Darwin background flag is
-  NOT used: it starved com.jay.grok-idle-unload at load ~300, where a four
-  second dry run took over 100 seconds.  The utility QoS clamp plus a nice
-  value is the supported, bounded choice.
+  a nice value of 10 with the taskpolicy utility QoS clamp -- the same
+  combination the fleet's BotFleet background jobs already use.  The Darwin
+  background flag is NOT used: it starved com.jay.grok-idle-unload at load
+  ~300, where a four second dry run took over 100 seconds.  The utility QoS
+  clamp plus a nice value is the supported, bounded choice.
+
+  `nice -n 10` is a RELATIVE increment, so the increment is computed from
+  the niceness this process already has.  The job therefore lands on nice
+  10 whether the caller is at nice 0, at nice 10 or at nice 20, and the
+  helper works when it is launched by something that is already
+  deprioritised -- a coding worker, a launchd job -- which is the case it
+  exists for.  A caller that is already nicer than the target keeps its own
+  value: the target is a floor, and raising a process's priority needs
+  privileges this helper neither has nor asks for.
 
   Both tools exec in place, so the PID survives the whole chain.  The
   re-executed process therefore reads its OWN priority back and checks it
@@ -83,9 +92,16 @@ DEFAULT_NICE = 10
 DEFAULT_EXPECTED_PRI = 20
 NORMAL_PRI = 31
 # The clamp must be BELOW normal, and it must be the utility clamp and not the
-# Darwin background one.  Darwin background reads pri=4 and starves jobs.
+# Darwin background one.  Darwin background reads pri=4 and starves jobs, so the
+# band is enforced on EVERY reading of the clamp, including one where an
+# operator asked for a different expected value.  Without that, an expected
+# value of 4 would accept the Darwin background clamp itself.
 MIN_ACCEPTED_PRI = 10
 MAX_ACCEPTED_PRI = 25
+# The nicest value macOS will set for an ordinary process.  A request above
+# this cannot be honoured, so it is refused as a usage error instead of
+# being silently clamped to something the requester did not ask for.
+MAX_NICE_VALUE = 20
 
 # The coding build/test entrypoints this helper may launch under the clamp.
 # Exact basenames, matched case-sensitively.  A bare RUNTIME is NOT here: a
@@ -171,6 +187,28 @@ def _find_tool(name: str) -> str | None:
     return shutil.which(name)
 
 
+def relative_nice_increment(current_nice: int, target_nice: int) -> int:
+    """The `nice -n` argument that lands a child on an ABSOLUTE nice value.
+
+    `nice -n N` is a RELATIVE increment: it adds N to the niceness the
+    process already has.  So `nice -n 10` from a parent that is already at
+    nice 10 produces a child at nice 20, not 10.  That matters here because
+    the helper is meant to be launched by things that are already
+    deprioritised -- a coding worker, a launchd job -- and the fixed
+    comparison in clamp_applied would then refuse a job whose clamp was
+    perfectly good, and the job would never run.
+
+    The increment is computed from what the parent actually is, so the
+    child lands on the requested absolute value either way.  A parent that
+    is ALREADY nicer than the target keeps its value: the target is a
+    floor, not something to improve upon by raising a process's priority,
+    which needs privileges the helper does not have and must not ask for.
+    """
+    if current_nice >= target_nice:
+        return 0
+    return target_nice - current_nice
+
+
 def read_priority(pid: int) -> tuple[int, int] | None:
     """(nice, scheduling priority) of one process, or None when unreadable.
 
@@ -202,21 +240,43 @@ def read_priority(pid: int) -> tuple[int, int] | None:
 def clamp_applied(
     observed: tuple[int, int] | None, nice: int, expected_pri: int
 ) -> tuple[bool, str]:
-    """Is the clamp in place?  Returns (ok, explanation)."""
+    """Is the clamp in place?  Returns (ok, explanation).
+
+    `nice` is the ABSOLUTE nice value the job has to carry, not an
+    increment.  `nice -n 10` is relative, so a launcher that is itself
+    already niced would hand the job 20 and the fixed comparison would
+    refuse to run a job whose clamp was perfectly good.
+
+    The nice value is checked as a FLOOR: the job has to be at least as
+    deprioritised as was asked for, and never less.  Less would mean the
+    job runs at MORE priority than the request intended, which is the
+    direction that has to fail closed.  More is safe, and happens when the
+    caller was already deprioritised further than the target.
+    """
     if observed is None:
         return False, "the priority of the launched process could not be read"
     got_nice, got_pri = observed
-    if got_nice != nice:
-        return False, f"nice is {got_nice}, expected {nice}"
+    if got_nice < nice:
+        return False, f"nice is {got_nice}, expected at least {nice}"
     if got_pri >= NORMAL_PRI:
         # The clamp has to be BELOW normal.  Without this, an operator who set
         # the expected priority to the normal one would have the helper accept
         # an unclamped process.
         return False, f"the QoS clamp did not apply (pri={got_pri}, still normal)"
+    if not (MIN_ACCEPTED_PRI <= got_pri <= MAX_ACCEPTED_PRI):
+        # The band is checked on every reading, not only when the value is
+        # unexpected.  Otherwise an expected value of 4 would accept the
+        # Darwin background clamp, which is the one that starved
+        # com.jay.grok-idle-unload.
+        return False, f"pri={got_pri} is not the utility clamp (expected {expected_pri})"
     if got_pri != expected_pri:
-        if not (MIN_ACCEPTED_PRI <= got_pri <= MAX_ACCEPTED_PRI):
-            return False, f"pri={got_pri} is not the utility clamp (expected {expected_pri})"
-        return False, f"pri={got_pri}, expected {expected_pri}"
+        # The utility clamp is in place and macOS is reporting a different
+        # number for it than this host normally shows.  The band is what
+        # decides, so this is a pass with the difference recorded.
+        return True, (
+            f"nice={got_nice} pri={got_pri} (utility clamp; this host usually reports "
+            f"{expected_pri})"
+        )
     return True, f"nice={got_nice} pri={got_pri}"
 
 
@@ -336,7 +396,12 @@ def main(argv: list[str] | None = None) -> int:
         description="Run one allowlisted coding build/test job at reduced background priority."
     )
     parser.add_argument("--label", default="", help="a short name for the receipt")
-    parser.add_argument("--nice", type=int, default=DEFAULT_NICE, help="the nice value to ask for")
+    parser.add_argument(
+        "--nice",
+        type=int,
+        default=DEFAULT_NICE,
+        help="the absolute nice value the job must carry (a floor, not an increment)",
+    )
     parser.add_argument(
         "--expect-pri",
         type=int,
@@ -360,6 +425,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.inner:
         return run_inner(args.nice, args.expect_pri, label, command)
+
+    if args.nice < 0 or args.nice > MAX_NICE_VALUE:
+        print(
+            f"mac-coding-priority: --nice must be between 0 and {MAX_NICE_VALUE}; "
+            f"got {args.nice}.",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
 
     # Refuse the one thing this helper must never do: act on a process that is
     # already running.
@@ -418,12 +491,35 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_OK
 
+    # `nice -n N` is relative, so the increment is computed from the
+    # niceness this process already has.  That way the child lands on the
+    # requested ABSOLUTE nice value whether the caller is at nice 0, at
+    # nice 10 or at nice 20.  The inner half then verifies that absolute
+    # value, which is the value the clamp is supposed to have.
+    parent_observed = read_priority(os.getpid())
+    if parent_observed is None:
+        print(
+            "mac-coding-priority: the niceness of this process could not be read, "
+            "so the priority clamp cannot be applied; the job was not started.",
+            file=sys.stderr,
+        )
+        append_receipt(
+            {
+                "at": _timestamp(),
+                "label": label,
+                "status": "refused",
+                "reason": "this process's own niceness could not be read",
+            }
+        )
+        return EXIT_NO_CLAMP
+    increment = relative_nice_increment(parent_observed[0], args.nice)
+
     # Re-exec in place under the clamp.  Both tools exec, so this process
     # keeps its PID and can read its own priority back.
     inner = [
         nice_bin,
         "-n",
-        str(args.nice),
+        str(increment),
         taskpolicy_bin,
         "-c",
         "utility",

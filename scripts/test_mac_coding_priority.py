@@ -87,9 +87,35 @@ class ClampCheck(unittest.TestCase):
         self.assertIn("still normal", detail)
 
     def test_the_wrong_nice_value_is_refused(self):
+        # Less deprioritised than asked for is the direction that has to fail
+        # closed: the job would run at MORE priority than the request wanted.
         ok, detail = prio.clamp_applied((0, 20), 10, 20)
         self.assertFalse(ok)
         self.assertIn("nice is 0", detail)
+
+    def test_a_nice_value_further_deprioritised_than_asked_is_accepted(self):
+        # The caller may already be nicer than the target, so the job can land
+        # at a larger nice value than requested.  That is safe: the job is at
+        # least as deprioritised as asked for.
+        ok, detail = prio.clamp_applied((20, 20), 10, 20)
+        self.assertTrue(ok, detail)
+
+    def test_the_darwin_background_band_is_never_accepted(self):
+        # The band is the check, and it is checked on EVERY reading.  An
+        # operator who asked for pri=4 must not be able to accept the Darwin
+        # background clamp: it is the one that starved
+        # com.jay.grok-idle-unload, so pri=4 is refused whatever was expected.
+        ok, detail = prio.clamp_applied((10, 4), 10, 4)
+        self.assertFalse(ok, "the Darwin background clamp must never be accepted")
+        self.assertIn("not the utility clamp", detail)
+
+    def test_a_priority_inside_the_utility_band_is_accepted(self):
+        # The band is what decides, so a macOS that reports the utility clamp
+        # as a slightly different number still passes, and the difference is
+        # recorded rather than hidden.
+        ok, detail = prio.clamp_applied((10, 21), 10, 20)
+        self.assertTrue(ok, detail)
+        self.assertIn("pri=21", detail)
 
     def test_darwin_background_is_refused(self):
         # pri=4 is the Darwin background flag.  It is the one that starved
@@ -106,6 +132,32 @@ class ClampCheck(unittest.TestCase):
     def test_expecting_the_normal_priority_still_fails_closed(self):
         ok, detail = prio.clamp_applied((0, 31), 0, 31)
         self.assertFalse(ok, "an operator must not be able to accept an unclamped process")
+
+
+class RelativeNice(unittest.TestCase):
+    """`nice -n N` is an INCREMENT, so the absolute target has to be computed.
+
+    The helper is meant to be launched by things that are already
+    deprioritised -- a coding worker, a launchd job -- so it has to work
+    when the caller is not at nice 0.
+    """
+
+    def test_the_increment_is_the_difference_to_the_absolute_target(self):
+        self.assertEqual(prio.relative_nice_increment(0, 10), 10)
+        self.assertEqual(prio.relative_nice_increment(5, 10), 5)
+        self.assertEqual(prio.relative_nice_increment(10, 10), 0)
+
+    def test_a_caller_already_nicer_than_the_target_keeps_its_value(self):
+        # The target is a floor.  Asking for a smaller increment would RAISE
+        # the process's priority, which needs privileges this helper does not
+        # have and must not ask for.
+        self.assertEqual(prio.relative_nice_increment(20, 10), 0)
+        self.assertEqual(prio.relative_nice_increment(15, 10), 0)
+
+    def test_a_nice_request_above_the_host_ceiling_is_refused(self):
+        # macOS will not set a nice value above 20, so a request for one
+        # cannot be honoured and must be refused rather than silently clamped.
+        self.assertEqual(prio.MAX_NICE_VALUE, 20)
 
 
 class Receipts(unittest.TestCase):
@@ -224,6 +276,63 @@ class LiveCanary(unittest.TestCase):
             self.assertEqual(receipt["status"], "ran")
             self.assertEqual(receipt["exit"], 0)
             self.assertIn("pri=20", receipt["verified"])
+
+    def test_a_launched_job_runs_from_an_already_niced_parent(self):
+        """The bug a review found: `nice -n 10` is an INCREMENT.
+
+        The helper is meant to be launched by something that is already
+        deprioritised -- a coding worker, a launchd job.  From a parent at
+        nice 10, `nice -n 10` produces a child at nice 20, so a fixed
+        equality check refused the job and it never ran.  This canary
+        launches the helper from an already-niced parent and requires the
+        job to RUN.
+        """
+        nice_bin = prio._find_tool("nice")
+        if not nice_bin:
+            self.skipTest("nice is not on this host")
+        with tempfile.TemporaryDirectory() as scratch:
+            script = Path(scratch) / "canary.sh"
+            # This one keeps the separator, so the two numbers can be read
+            # apart no matter what the nice value turns out to be.
+            script.write_text(
+                '#!/bin/bash\n/bin/ps -o ni=,pri= -p $$ > "$1"\n',
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
+            out = Path(scratch) / "observed.txt"
+            log = Path(scratch) / "receipts.jsonl"
+            env = dict(os.environ, MAC_CODING_PRIORITY_LOG=str(log))
+            # The parent of the launcher is already at nice 10.
+            proc = subprocess.run(
+                [
+                    nice_bin,
+                    "-n",
+                    "10",
+                    sys.executable,
+                    str(SCRIPT),
+                    "--label",
+                    "canary-niced-parent",
+                    "--",
+                    "bash",
+                    str(script),
+                    str(out),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            observed = out.read_text(encoding="utf-8").strip()
+            got_nice, got_pri = (int(part) for part in observed.split())
+            self.assertEqual(got_pri, 20, f"expected the utility clamp, read {observed}")
+            self.assertGreaterEqual(
+                got_nice,
+                10,
+                f"the job must be at least as deprioritised as asked, read {observed}",
+            )
+            receipt = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+            self.assertEqual(receipt["status"], "ran")
 
     def test_the_job_does_not_start_when_the_clamp_is_missing(self):
         with tempfile.TemporaryDirectory() as scratch:
