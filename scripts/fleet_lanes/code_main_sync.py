@@ -304,7 +304,11 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
             log(f"dry-run {repo.name}: main is ahead of or diverged from local origin/main")
         return
     fetch_args = ("fetch", "--quiet", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main")
-    code, _, err = git_full(repo, *fetch_args, extra_env={"GIT_TERMINAL_PROMPT": "0"})
+    # With the relay route set, the plain fetch is anonymous:  git's own helper could otherwise hand it a login on this host.
+    plain_env = {"GIT_TERMINAL_PROMPT": "0"}
+    if (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+        plain_env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": ""})
+    code, _, err = git_full(repo, *fetch_args, extra_env=plain_env)
     relay_env = None
     if code != 0:
         # A private repo with no local credential:  the relay fetches it as this job's seat, with no GitHub token here.

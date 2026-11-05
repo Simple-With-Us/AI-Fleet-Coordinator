@@ -292,8 +292,11 @@ class RelayRoute(SyncCase):
             code, out = self.sync()
         self.assertEqual(code, 0, out)
         self.assertEqual(self.head(), self.origin())
-        self.assertNotIn("GIT_CONFIG_COUNT", seen[0])
-        self.assertIn("GIT_CONFIG_COUNT", seen[1])
+        # The plain fetch is anonymous, so a login in git's own helper cannot serve it.
+        self.assertEqual(seen[0]["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual((seen[0]["GIT_CONFIG_KEY_0"], seen[0]["GIT_CONFIG_VALUE_0"]), ("credential.helper", ""))
+        self.assertNotIn("seat-bearer-value", str(seen[0]))
+        self.assertIn("seat-bearer-value", str(seen[1]))
         self.assertIn("GIT_CONFIG_COUNT", seen[2], "the merge takes the same route as the fetch")
         self.assertIn("relay route Example", out)
         self.assertNotIn("seat-bearer-value", out)
