@@ -52,8 +52,9 @@ WAKE_SUPPORTED = "code-supported"
 WAKE_NONE = "none"
 WAKE_UNKNOWN = "unknown"
 
-# Every platform the chat catalog scans, assessed against this tree.  A
-# platform not listed derives WAKE_UNKNOWN, not WAKE_NONE.
+# Every platform the chat catalog scans, assessed against this tree, plus the
+# owner-named chatgpt exception below.  A platform not listed derives
+# WAKE_UNKNOWN, not WAKE_NONE.
 _WAKE_SUPPORT: dict[str, str] = {
     "grok-leader": WAKE_SUPPORTED,
     "cursor-cloud": WAKE_SUPPORTED,
@@ -65,16 +66,26 @@ _WAKE_SUPPORT: dict[str, str] = {
     "fx": WAKE_NONE,
     "antigravity": WAKE_NONE,
     "opencode": WAKE_NONE,
+    # Owner ask 2026-11-04:  "jet needs to wake also his own way".  chatgpt is
+    # not a catalog platform - the JET/JET-CHAT seat is OpenAI-hosted with no
+    # local store to scan - and this tree ships no chatgpt wake adapter:  his
+    # wake is his own hosted route (the JET listener HTTP -> hosted MCP events
+    # callbacks, events-only per the Oct 30 grounding), outside this tree.  So
+    # he is recorded here explicitly, NONE against this tree, never UNKNOWN.
+    "chatgpt": WAKE_NONE,
 }
 
 
 def wake_capability_for_platform(platform: object) -> str:
-    """The tree's wake-transport support for one adapter platform.
+    """The tree's wake-transport support for one adapter platform, source-only.
 
-    Registration derives a session's stored wake_capability from this when the
-    caller makes no claim of its own, so a new row carries the tree's honest
-    support level instead of the blanket "unknown" default.  A caller with
-    fresher runtime knowledge still wins:  only the "unknown" default derives.
+    This table is the tree's support as written, not a runtime promise:  it
+    says nothing about a live adapter's current reachability.  Registration
+    derives a session's stored wake_capability from it only when the caller
+    makes no claim of its own, so a new row carries the tree's honest support
+    level instead of the blanket "unknown" default.  Derivation fills new or
+    "unknown" rows only:  a stored non-"unknown" value is a stored claim,
+    explicit or derived, and is never rewritten by a later derivation.
     """
     if not isinstance(platform, str):
         return WAKE_UNKNOWN
@@ -1168,9 +1179,11 @@ def register_session(
     native = SI.check(native_session_id, "the native session id")
     parent = _clean_parent(parent_session_id)
     if str(wake_capability or "unknown").strip().lower() == "unknown":
-        # No caller claim:  derive the tree's own support level for the adapter
-        # platform, before the letter namespace folds it ("cursor-cloud" and
-        # "cursor-local" both become "cursor", and only one of them can deliver).
+        # No caller claim:  derive the tree's own source-only support level for
+        # the adapter platform (new or "unknown" rows only;  a stored
+        # non-"unknown" claim, explicit or derived, is never rewritten), before
+        # the letter namespace folds it ("cursor-cloud" and "cursor-local" both
+        # become "cursor", and only one of them can deliver).
         wake_capability = wake_capability_for_platform(platform)
     platform = normalize_platform(platform)
     default_space, default_pick = PLATFORM_LETTER_DEFAULTS.get(platform, ("single", "lowest"))

@@ -30,8 +30,14 @@ class WakeCapabilityTableTest(unittest.TestCase):
             "fx",
             "antigravity",
             "opencode",
+            "chatgpt",
         ):
             self.assertEqual(OR.wake_capability_for_platform(platform), OR.WAKE_NONE, platform)
+
+    def test_chatgpt_none_means_no_adapter_here_not_no_wake(self) -> None:
+        # The owner-asked parity record:  JET wakes by his own hosted route,
+        # outside this tree, so he never enters this tree's delivery adapters.
+        self.assertNotIn("chatgpt", OR.implemented_wake_platforms())
 
     def test_unlisted_platform_is_unknown_never_none(self) -> None:
         for platform in ("zcode", "kimi", "amp", "clutch", "grok-web", ""):
