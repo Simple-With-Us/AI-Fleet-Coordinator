@@ -5,6 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { BudgetExceeded } from "../src/budget-guard.mjs";
 import { INVOCATION_CAPS, MINUTE_CAPS, countedFetch, countedStub, diagnosticRowAllowed, logLimited, runInvocation, spend, withinLimit } from "../src/invocation.js";
+import { BEARER_SEATS } from "../src/bearer-identities.js";
+import { GB_IDENTITIES } from "../src/delegated-identities.js";
 import { wranglerConfig } from "./helpers.mjs";
 
 const quietly = async (fn) => {
@@ -97,8 +99,28 @@ test("a missing or failing limiter allows the request, and the log names which g
 test("wrangler.jsonc declares both guards with documented periods and account-unique namespaces", () => {
   const limits = Object.fromEntries(wranglerConfig().ratelimits.map((r) => [r.name, r]));
   assert.deepEqual(limits.MCP_RATE_LIMITER.simple, { limit: 300, period: 60 });
-  assert.deepEqual(limits.AUTH_FAIL_RATE_LIMITER.simple, { limit: 60, period: 60 });
+  assert.deepEqual(limits.AUTH_FAIL_RATE_LIMITER.simple, { limit: 120, period: 60 });
   const ids = Object.values(limits).map((r) => r.namespace_id);
   assert.equal(new Set(ids).size, ids.length);
   for (const r of Object.values(limits)) assert.ok([10, 60].includes(r.simple.period), r.name);
+});
+
+// Every identity the code can name, each with one credential.
+const IDENTITIES = BEARER_SEATS.length + GB_IDENTITIES.length;
+
+test("the failed-auth limit leaves room for every identity failing in two isolates at once", () => {
+  // One credential counts once a minute per isolate, and the limiter is per location.
+  // A new seat that breaks this needs the limit looked at again, not this test relaxed.
+  const limit = wranglerConfig().ratelimits.find((r) => r.name === "AUTH_FAIL_RATE_LIMITER").simple.limit;
+  assert.ok(limit >= IDENTITIES * 2, `${limit} is under ${IDENTITIES} identities in two isolates`);
+});
+
+test("the gate budget holds GET /admin and fires before the platform's subrequest limit", () => {
+  const config = wranglerConfig();
+  // src/index.js, /admin:  5 reads per hosted seat, 3 global log reads, 2 per bearer row.
+  const hostedSeats = config.vars.HOSTED_SEATS.split(",").length;
+  const adminRpcs = hostedSeats * 5 + 3 + IDENTITIES * 2;
+  assert.ok(adminRpcs <= INVOCATION_CAPS.doRpc, `/admin makes ${adminRpcs} gate calls, over the ${INVOCATION_CAPS.doRpc} budget`);
+  // Whether a gate call counts as a subrequest is not verified, so assume that it does.
+  assert.ok(INVOCATION_CAPS.doRpc + INVOCATION_CAPS.fetch <= config.limits.subrequests);
 });

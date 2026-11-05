@@ -14,8 +14,11 @@ import { BudgetExceeded, createBudget } from "./budget-guard.mjs";
 export const INVOCATION_CAPS = Object.freeze({
   // The Free plan's external subrequest limit.  Over it the platform throws anyway.
   fetch: 50,
-  // /admin reads several rows per seat, and is the largest honest fan-out.
-  doRpc: 256,
+  // GET /admin is the largest honest fan-out, at 131 gate calls.  With the fetch cap
+  // this stays inside wrangler.jsonc's 200 subrequests, so a runaway meets this
+  // budget's log line and 503 before the platform's own error, whether or not a gate
+  // call counts as a subrequest.  test/invocation.test.mjs pins both sides.
+  doRpc: 150,
 });
 
 // Per isolate per minute.  A diagnostic or refusal row is a Durable Object write

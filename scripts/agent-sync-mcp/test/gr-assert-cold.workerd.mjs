@@ -127,6 +127,45 @@ try {
   await mf.dispose();
 }
 
+// The grant-listing budget through the real route:  past it a call that misses the
+// positive cache answers 503, which the relay caches against that one assertion, and
+// the jti stays unspent because the listing runs before the claim.  Two minutes' worth
+// of tries, so a rollover in the middle cannot pass this by luck.
+mf = start({ GATE_IDENTITY_CACHE_MS: "0" });
+try {
+  const kv = await mf.getKVNamespace("OAUTH_KV");
+  const grantId = "fixture-grant";
+  await kv.put(`grant:CODEX:${grantId}`, JSON.stringify({ id: grantId, userId: "CODEX", expiresAt: Math.floor(Date.now() / 1000) + 3600 }));
+  const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
+  const gate = ns.get(ns.idFromName("CODEX"));
+  await gate.arm({ by: "fixture" });
+  const approved = await gate.approve({ by: "fixture" });
+  const bodyHash = await sha256HexText("{}");
+  let tripped = null;
+  for (let i = 0; i <= 60 && !tripped; i++) {
+    const token = await mintGrAssertion({
+      key: signingKey, seat: "CODEX", action: "wf_repo_get", bodySha256: bodyHash,
+      scopes: ["zulip:read"], epoch: approved.epoch, approvedAt: Date.now(), phase: 2,
+      grantRef: (await sha256HexText(grantId)).slice(0, 12),
+    });
+    const body = JSON.stringify({ contract: "gr-assert-verify/1", token, action: "wf_repo_get", body_sha256: bodyHash, sent_at: Math.floor(Date.now() / 1000) });
+    const response = await mf.dispatchFetch(origin + "/internal/gr-assert-verify", {
+      method: "POST",
+      headers: { Host: "mcp-fixture.example", "Content-Type": "application/json", "X-Agent-Sync-Signature": await wakeSignature(channelKey, new TextEncoder().encode(body)) },
+      body,
+    });
+    if (response.status === 200) assert.equal((await response.json()).ok, true);
+    else tripped = response;
+  }
+  assert.ok(tripped, "the grant-listing budget never tripped");
+  assert.equal(tripped.status, 503);
+  assert.equal(tripped.headers.get("retry-after"), "60");
+  await tripped.text();
+  console.log("Grant-listing budget: a call past it answers 503 on the assert route.");
+} finally {
+  await mf.dispose();
+}
+
 // The Git bearer verify cache through the real route.  The default, with
 // GATE_IDENTITY_CACHE_MS at its compiled hour, verifies live;  only
 // GR_VERIFY_CACHE_MS turns the window on, even with the identity cache off.
