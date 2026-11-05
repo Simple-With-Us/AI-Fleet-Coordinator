@@ -669,17 +669,7 @@ class GuardContext:
 # layout, guard, hook (no doctor, no lane), and lane can import guard cheaply.
 
 
-def seat_owns_folder(seat: L.Seat, registry: L.Registry) -> bool:
-    """True when the folder name `seat.suffix` belongs to `seat`.
-
-    Two registry rows can share a worktreeSuffix: CURSOR and GROK-BOT both use `cursor` (GROK-BOT had
-    CURSOR's cursor/ branch prefix too, until F2 removed it).  The name belongs to the seat
-    `Registry.seat_by_suffix` picks (the first live row), and no other seat gets a lane under it,
-    because that folder and branch would be the owner's.  `lane` refuses such a seat, and the deny
-    reason shows a placeholder.
-    """
-    owner = registry.seat_by_suffix(seat.suffix)
-    return owner is not None and owner.name.lower() == seat.name.lower()
+seat_owns_folder = L.seat_owns_folder
 
 
 def lane_name_reads_back(
@@ -2969,30 +2959,14 @@ class _Evaluator:
         return s
 
     def _resolve_seat_for_reason(self) -> L.Seat | None:
-        """The seat the deny reason may name, or None.  Canonical resolution (AFC-620) comes from
-        the lane module when the copy beside this guard provides it.  lane.py is not a required
-        hook module, so a lane-less install - or a stub lane, as the installer tests ship - falls
-        back to the direct registry read, the same answer canonical resolution gives for a plain
-        live seat tag with no launcher in the environment."""
+        """The seat the deny reason may name, or None.  Canonical resolution (AFC-620) lives in
+        layout, a required hook module, so the installed shim applies the same launcher precedence,
+        conflict refusals and role-lane synthesis as the in-source module.  A refusal of any kind
+        means no seat token (a placeholder) - never a guessed ambient seat."""
         try:
-            from . import lane as _lane
+            return L.resolve_seat(self.ctx.env, self.ctx.registry)
         except Exception:
-            _lane = None
-        resolve = getattr(_lane, "resolve_seat", None) if _lane is not None else None
-        if resolve is not None:
-            try:
-                return resolve(self.ctx.env, self.ctx.registry)
-            except Exception:
-                return None
-        raw = (self.ctx.env.get("AGENT_SEAT") or "").strip()
-        if not raw:
             return None
-        seat = self.ctx.registry.seat_by_name(raw)
-        if seat is None or seat.retired:
-            return None
-        if not seat_owns_folder(seat, self.ctx.registry):
-            return None
-        return seat
 
     def _seat_token(self) -> str | None:
         # Canonical seat resolution (AFC-620) where the lane module ships beside this guard;

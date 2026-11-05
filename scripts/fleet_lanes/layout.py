@@ -2101,3 +2101,144 @@ def upgrade_with_branch(
     ):
         return NameVerdict.NAME_DRIFT
     return verdict
+
+
+# ---------------------------------------------------------------------------
+# Seat resolution (AFC-620): the one canonical resolver lane, the guard's deny
+# reason and retire all share.  It lives here - a required hook module - so an
+# installed lane-less hook copy resolves launcher precedence, conflict refusals
+# and role lanes exactly as the source tree does.
+
+ENV_SEAT = "AGENT_SEAT"
+
+class Refusal(Exception):
+    """The request cannot be honoured as asked: exit 64."""
+
+
+def seat_owns_folder(seat: "Seat", registry: "Registry") -> bool:
+    """True when the folder name `seat.suffix` belongs to `seat`.
+
+    Two registry rows can share a worktreeSuffix: CURSOR and GROK-BOT both use `cursor` (GROK-BOT had
+    CURSOR's cursor/ branch prefix too, until F2 removed it).  The name belongs to the seat
+    `Registry.seat_by_suffix` picks (the first live row), and no other seat gets a lane under it,
+    because that folder and branch would be the owner's.  `lane` refuses such a seat, and the deny
+    reason shows a placeholder.
+    """
+    owner = registry.seat_by_suffix(seat.suffix)
+    return owner is not None and owner.name.lower() == seat.name.lower()
+
+
+def _role_lane_seat(raw: str, registry: Registry) -> Seat | None:
+    """A role tag (BF-FIXER, GB-PLUMBER) becomes a lane seat from its seatApps.patterns `lane`
+    block (AFC-620);  anything else stays None so the caller's unknown-tag refusal stands.
+    GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> personas are the lane form.
+    Reads only layout's parsed Registry.role_lanes, so the installed standalone lane copy
+    resolves roles without an agent_sync dependency."""
+    tag = raw.strip().upper()
+    role = next((rl for rl in registry.role_lanes if rl.tag.upper() == tag), None)
+    if role is None:
+        families: dict[str, list[str]] = {}
+        for rl in registry.role_lanes:
+            pre = rl.tag[: len(rl.tag) - len(rl.role)]
+            families.setdefault(pre.upper(), []).append(rl.tag)
+        for pre, tags in families.items():
+            if tag.startswith(pre):
+                raise Refusal(
+                    f"{ENV_SEAT}={tag!r} names no known role for its family.  Known roles: "
+                    f"{', '.join(sorted(tags))}."
+                )
+        return None
+    if not is_valid_slug(role.folder):
+        raise Refusal(
+            f"role {role.tag}'s folder {role.folder!r} from fleet-apps.json is not a usable lane "
+            "folder name (lowercase kebab, 1..40 chars)."
+        )
+    owner = registry.seat_by_suffix(role.folder)
+    if owner is not None:
+        raise Refusal(
+            f"role {role.tag}'s folder {role.folder!r} belongs to seat {owner.name} in fleet-apps.json, "
+            f"so a lane for {role.tag} would be {owner.name}'s lane."
+        )
+    for s in registry.seats:
+        if not s.retired and role.branch_prefix in s.branch_prefixes:
+            raise Refusal(
+                f"role {role.tag}'s branch prefix {role.branch_prefix!r} collides with seat {s.name} "
+                f"in fleet-apps.json."
+            )
+    return Seat(
+        name=role.tag, suffix=role.folder, branch_prefixes=(role.branch_prefix,)
+    )
+
+
+def resolve_seat(env: Mapping[str, str], registry: Registry) -> Seat:
+    """The seat from AGENT_SEAT, and nothing else.  Unset, unknown or retired raises Refusal, and
+    so does a seat whose folder name belongs to another seat (GROK-BOT shares CURSOR's `cursor`).
+    A tag that is no seat row but names a listed family role (BF-FIXER, GB-PLUMBER) resolves to
+    that role's lane from the family's seatApps.patterns `lane` block (AFC-620)."""
+    live = ", ".join(s.name for s in registry.seats if not s.retired)
+    raw = (env.get(ENV_SEAT) or "").strip()
+    # The launcher contract is allocator-enforced (AFC-620):  a launcher's AGENT_LAUNCH_SEAT wins
+    # over AGENT_SEAT, an AGENT_SEAT naming another seat is a refusal, and a launch seat alone is
+    # enough - the same precedence identity.resolve_seat gives every caller.  Without a launcher
+    # the registry alone reads AGENT_SEAT, exactly as before.
+    try:
+        from agent_sync import identity as SI
+    except ImportError:
+        SI = None
+    if SI is not None and SI.launched(env):
+        res = SI.resolve_seat(env, use_tag=False)
+        if res.problem:
+            raise Refusal(res.problem)
+        raw = res.seat or ""
+    elif SI is None:
+        # Installed standalone shape: agent_sync does not ship next to the lane package, so the
+        # same launcher contract is applied from the environment alone (AFC-620).  With agent_sync
+        # present the canonical identity.resolve_seat above decides (it also canonicalizes aliases).
+        launcher = (env.get("AGENT_LAUNCHER") or "").strip()
+        launch_seat = (env.get("AGENT_LAUNCH_SEAT") or "").strip()
+        if launcher or launch_seat:
+            if not launch_seat:
+                raise Refusal(
+                    "AGENT_LAUNCHER is set but AGENT_LAUNCH_SEAT is not: this launched session has "
+                    "no seat, so lane does nothing (no default applies under a launcher)."
+                )
+            if raw and raw.upper() != launch_seat.upper():
+                raise Refusal(
+                    f"launcher {launcher or '(unnamed)'} assigned {launch_seat}, but {ENV_SEAT} names "
+                    f"{raw}; a launched session keeps its launcher's seat, so nothing was done."
+                )
+            raw = launch_seat
+    if not raw:
+        raise Refusal(
+            f"{ENV_SEAT} is not set.  Set it to your seat tag ({live}) and run lane again; "
+            "lane never guesses a seat from a login, a path or a branch."
+        )
+    seat = registry.seat_by_name(raw)
+    if seat is None:
+        role = _role_lane_seat(raw, registry)
+        if role is not None:
+            return role
+        shown = raw if len(raw) <= 40 else raw[:40] + "..."
+        raise Refusal(
+            f"{ENV_SEAT}={shown!r} is not a seat tag in fleet-apps.json.  Known tags: {live}.  "
+            "A BotFleet or grok-bot agent can also set its role tag (BF-<ROLE> or GB-<ROLE>)."
+        )
+    if seat.retired:
+        raise Refusal(
+            f"seat {seat.name} is retired in fleet-apps.json, and lane never creates lanes for a "
+            f"retired seat.  Set {ENV_SEAT} to your own seat tag ({live})."
+        )
+    if not is_valid_slug(seat.suffix):
+        raise Refusal(
+            f"seat {seat.name} has no usable folder name in fleet-apps.json (worktreeSuffix "
+            f"{seat.suffix!r})."
+        )
+    if not seat_owns_folder(seat, registry):
+        owner = registry.seat_by_suffix(seat.suffix)
+        owner_name = owner.name if owner is not None else "another seat"
+        raise Refusal(
+            f"seat {seat.name} shares the folder name {seat.suffix!r} with {owner_name} in fleet-apps.json, "
+            f"and that name belongs to {owner_name}, so a lane for {seat.name} would be {owner_name}'s "
+            f"lane.  A seat gets lanes only under a worktreeSuffix of its own."
+        )
+    return seat
