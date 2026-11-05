@@ -36,11 +36,7 @@ struct FleetServicesPanel: View {
     /// The whole reason for the last thing that did not work.  The menu can only hold part
     /// of it,  so its row opens this panel.
     private var lastProblem: String? {
-        if let problem = admin.problem { return problem }
-        if case .some(.failed) = router.actionState, let state = router.actionState {
-            return FleetActionWords.line(for: state)
-        }
-        return nil
+        FleetActionWords.panelProblem(actionState: router.actionState, adminProblem: admin.problem)
     }
 
     // MARK: The header
@@ -164,6 +160,11 @@ struct FleetServicesPanel: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if let why = whyActionsAreMissing(entry) {
+                    Text(why)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
             HStack(spacing: 8) {
@@ -183,6 +184,14 @@ struct FleetServicesPanel: View {
         .padding(.horizontal, 10)
         .background(Color.secondary.opacity(0.05))
         .cornerRadius(8)
+    }
+
+    /// Why a row shows fewer buttons than its state offers,  or nil when it shows them all.
+    private func whyActionsAreMissing(_ entry: FleetServiceEntry) -> String? {
+        let routes = fleetAdminActions(for: entry).map { router.action($0.action, on: entry) }
+        guard routes.contains(where: { $0 == nil }) else { return nil }
+        return MachineMenuCopy.noRouteSentence(allowlist: router.allowlist,
+                                               someRouted: routes.contains(where: { $0 != nil }))
     }
 
     // MARK: A refusal

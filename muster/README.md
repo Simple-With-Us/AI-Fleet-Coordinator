@@ -4,7 +4,7 @@ Muster is the fleet owner's native SwiftUI macOS 14+ control app.  It shows wha
 
 ## The Menu Bar
 
-The menu bar item names both places:  `Mac OK · Server OK`, `Mac 2 · Server OK` for two things needing attention, `Mac 2+` when something else could not be read as well, and `?` for a place not read inside its window.  Short Menu Bar Text in Settings shortens it to `M OK · S ?`.
+The menu bar item names both places:  `Mac OK · Server OK`, `Mac 2 · Server OK` for two things needing attention, `Mac 2+` when something else could not be read as well, and `?` for a place not read inside its window, or one with nothing wrong and some part not read.  Short Menu Bar Text in Settings shortens it to `M OK · S ?`.
 
 The menu has a The Mac section and a The Server section, and everything sits under the place it runs on.  Opening it reads memory and never contacts the server.  Ask The Server Now is the one thing that does, only on a click, and an answer never turns the bar to OK, because only a current report does that.
 

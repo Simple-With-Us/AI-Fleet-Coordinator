@@ -341,6 +341,8 @@ final class FleetAdmin: ObservableObject {
     /// controller action at a time, like the sheet itself.
     func beginControllerAction(_ action: ManagedServiceAction, serviceID: String) {
         guard controllerActionPrevious == nil else { return }
+        // A new action on either route clears the last one's problem,  as `perform` does.
+        problem = nil
         controllerActionPrevious = (serviceID, ownerStops.ids)
         ownerStops.record(action, id: serviceID)
     }

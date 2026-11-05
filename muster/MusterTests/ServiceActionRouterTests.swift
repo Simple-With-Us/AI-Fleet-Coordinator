@@ -134,7 +134,7 @@ final class OpsActionPlaceTests: XCTestCase {
 
     func testEveryRegistryServiceHasOneHostAndEveryMenuItemCarriesIt() {
         for descriptor in FleetServiceRegistry.all {
-            XCTAssertEqual(descriptor.host, descriptor.kind.host)
+            XCTAssertEqual(descriptor.host, .mac, descriptor.id)
         }
         let services = FleetServices(serverState: .running, states: [:])
         XCTAssertTrue(services.menuItems.allSatisfy { $0.host == .mac })
@@ -297,6 +297,8 @@ final class ServiceActionRouterTests: XCTestCase {
         rig.router.start(stop)
         try await waitUntil { self.isReview(rig.controller) }
         rig.controller.decline("Touch ID did not approve, so nothing ran.")
+        // Only a read publishes the record the decline had to put back.
+        await rig.admin.refresh()
         XCTAssertEqual(recordedStop(rig), false)
         XCTAssertEqual(rig.router.actionState,
                        .failed(stop.subject, reason: "Touch ID did not approve, so nothing ran."))
@@ -347,6 +349,97 @@ final class ServiceActionRouterTests: XCTestCase {
         } else {
             XCTFail("\(String(describing: rig.router.actionState))")
         }
+    }
+
+    // MARK: - A run the server accepted and did not verify
+
+    private static let redeploy = OpsAction.coolifyRedeploy(uuid: "abc123def456", name: "muster-web")
+
+    /// Runs the redeploy from another panel,  the way the Server Status panel does.
+    private func runRedeploy(on rig: Rig) async throws {
+        rig.controller.plan(Self.redeploy)
+        try await waitUntil { self.isReview(rig.controller) }
+        rig.controller.confirm()
+        try await waitUntil {
+            if case .finished = rig.controller.phase { return true }
+            return false
+        }
+    }
+
+    func testASubmittedRunIsNotAFailureAndGoesWhenTheSheetCloses() async throws {
+        let rig = await makeRig()
+        try await runRedeploy(on: rig)
+        XCTAssertEqual(rig.router.actionState, .running(ServiceActionSubject(action: Self.redeploy)))
+        rig.controller.dismiss()
+        XCTAssertNil(rig.router.actionState)
+    }
+
+    func testAVerifiedRedeployIsDone() async throws {
+        let rig = await makeRig(yes: #"{"ok":true,"result":"done","commands":[["x"]],"verified":true,"executionState":"completed"}"#)
+        try await runRedeploy(on: rig)
+        if case .done = rig.router.actionState {} else {
+            XCTFail("\(String(describing: rig.router.actionState))")
+        }
+    }
+
+    func testARunWhoseCompletionCanNoLongerBeVerifiedIsAFailure() async throws {
+        let rig = await makeRig(yes: #"{"ok":true,"result":"done","commands":[["x"]],"executionState":"expired"}"#)
+        try await runRedeploy(on: rig)
+        if case .failed = rig.router.actionState {} else {
+            XCTFail("\(String(describing: rig.router.actionState))")
+        }
+    }
+
+    // MARK: - The whole reason,  in the Services panel
+
+    private func panelProblem(_ rig: Rig) -> String? {
+        FleetActionWords.panelProblem(actionState: rig.router.actionState, adminProblem: rig.admin.problem)
+    }
+
+    /// Fails a direct action,  which writes the same sentence to both records.
+    private func failADirectRestart(on rig: Rig) async throws -> String {
+        rig.router.start(try action(.restart, "app.botfleet.companion", on: rig))
+        try await waitUntil { !rig.router.isBusy }
+        let problem = try XCTUnwrap(rig.admin.problem)
+        XCTAssertEqual(panelProblem(rig), problem, "one failure reads once")
+        return problem
+    }
+
+    func testAPlanFailureAfterADirectFailureShowsItsOwnReason() async throws {
+        let rig = await makeRig(yes: Self.failed, exit: 1)
+        _ = try await failADirectRestart(on: rig)
+        rig.router.start(try action(.stop, "shellular", on: rig))
+        XCTAssertNil(rig.admin.problem, "a new action clears the old problem")
+        try await waitUntil { self.isReview(rig.controller) }
+        rig.controller.confirm()
+        try await waitUntil {
+            if case .finished = rig.controller.phase { return true }
+            return false
+        }
+        XCTAssertEqual(panelProblem(rig), "Shellular did not stop on the Mac:  pm2 said no")
+    }
+
+    func testAPlanThatWorksAfterADirectFailureLeavesNoProblem() async throws {
+        let rig = await makeRig()
+        _ = try await failADirectRestart(on: rig)
+        rig.router.start(try action(.stop, "shellular", on: rig))
+        try await waitUntil { self.isReview(rig.controller) }
+        rig.controller.confirm()
+        try await waitUntil {
+            if case .finished = rig.controller.phase { return true }
+            return false
+        }
+        XCTAssertNil(panelProblem(rig))
+    }
+
+    func testALoginToggleProblemAfterAFailedPlanHidesNeither() {
+        let shellular = ServiceActionSubject(title: "Shellular", host: .mac, action: .stop)
+        let toggle = "The login item did not change:  no"
+        XCTAssertEqual(FleetActionWords.panelProblem(actionState: .failed(shellular, reason: "pm2 said no"),
+                                                     adminProblem: toggle),
+                       "Shellular did not stop on the Mac:  pm2 said no\n\n\(toggle)")
+        XCTAssertEqual(FleetActionWords.panelProblem(actionState: .running(shellular), adminProblem: toggle), toggle)
+        XCTAssertNil(FleetActionWords.panelProblem(actionState: .running(shellular), adminProblem: nil))
     }
 
     // MARK: - The routes

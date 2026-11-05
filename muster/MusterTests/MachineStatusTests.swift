@@ -42,6 +42,7 @@ final class MachineStatusTests: XCTestCase {
         running: Int = 17,
         exited: Int = 0,
         absent: Int = 0,
+        starting: Int = 0,
         missingFiles: Int = 0,
         metrics: String? = MachineStatusTests.healthyMetrics
     ) throws -> ServerStatusReading {
@@ -49,6 +50,7 @@ final class MachineStatusTests: XCTestCase {
         for index in 0..<running { apps.append(#"{"uuid":"r\#(index)","name":"run\#(index)","type":"application","status":"running"}"#) }
         for index in 0..<exited { apps.append(#"{"uuid":"e\#(index)","name":"exit\#(index)","type":"application","status":"exited"}"#) }
         for index in 0..<absent { apps.append(#"{"uuid":"a\#(index)","name":"gone\#(index)","type":"application","status":"absent"}"#) }
+        for index in 0..<starting { apps.append(#"{"uuid":"s\#(index)","name":"start\#(index)","type":"application","status":"starting"}"#) }
         var files: [String] = []
         for index in 0..<missingFiles { files.append(#"{"path":"/watched/\#(index)","drift":"missing"}"#) }
         var fields = [
@@ -451,6 +453,54 @@ final class MachineStatusTests: XCTestCase {
         assertLines(menu, contain: ["Timers On The Server:  not known", "Apps:  not known"])
     }
 
+    /// Reads one report that has one part missing,  and says the bar is not OK.
+    private func assertNotKnown(_ reading: ServerStatusReading, saying wanted: String,
+                                file: StaticString = #filePath, line: UInt = #line) throws {
+        let menu = MachineMenu(inputs(status: reading, tools: try toolsReading()))
+        XCTAssertEqual(menu.server.health, .notKnown, file: file, line: line)
+        XCTAssertEqual(menu.barTitle(short: false), "Mac OK \u{00B7} Server ?", file: file, line: line)
+        assertLines(menu, contain: [wanted], file: file, line: line)
+    }
+
+    func testAReportWithNoTimersIsNotOK() throws {
+        try assertNotKnown(try statusReading(units: []), saying: "Timers On The Server:  not known")
+    }
+
+    func testAReportWithNoHostNumbersIsNotOK() throws {
+        let reading = try statusReading(metrics: nil)
+        try assertNotKnown(reading, saying: "Fullest disk not known, memory not known")
+        try assertNotKnown(reading, saying: "Load not known")
+    }
+
+    func testAReportWhoseAppsAreAllAbsentIsNotOK() throws {
+        try assertNotKnown(try statusReading(running: 0, absent: 3), saying: "Apps:  not known")
+    }
+
+    func testAnAppInAStateThisAppDoesNotKnowIsNotOK() throws {
+        try assertNotKnown(try statusReading(starting: 1), saying: "Apps:  17 running, 0 failed, 1 not known")
+    }
+
+    func testADiskThatCouldNotBeMeasuredIsNotOK() throws {
+        let metrics = #"{"loadAverage":[0.5],"cpuCount":8,"memory":{"totalBytes":100,"availableBytes":56},"disks":[{"mount":"/","usedBytes":75,"freeBytes":25},{"mount":"/data"}]}"#
+        try assertNotKnown(try statusReading(metrics: metrics), saying: "Fullest disk 75%, 1 more not known, memory 44%")
+    }
+
+    func testMemoryThatCouldNotBeMeasuredIsNotOK() throws {
+        let metrics = #"{"loadAverage":[0.5],"cpuCount":8,"disks":[{"mount":"/","usedBytes":75,"freeBytes":25}]}"#
+        try assertNotKnown(try statusReading(metrics: metrics), saying: "Fullest disk 75%, memory not known")
+    }
+
+    func testLoadThatCouldNotBeMeasuredIsNotOK() throws {
+        let metrics = #"{"memory":{"totalBytes":100,"availableBytes":56},"disks":[{"mount":"/","usedBytes":75,"freeBytes":25}]}"#
+        try assertNotKnown(try statusReading(metrics: metrics), saying: "Load not known")
+    }
+
+    func testAProblemBesideSomethingUnreadCountsWithAPlus() throws {
+        let menu = MachineMenu(inputs(status: try statusReading(exited: 1, starting: 1), tools: try toolsReading()))
+        XCTAssertEqual(menu.server.health, .attention(1, someUnread: true))
+        XCTAssertEqual(menu.barTitle(short: false), "Mac OK \u{00B7} Server 1+")
+    }
+
     func testAnAnswerFromTheServerAddsALineAndNeverTurnsTheBarToOK() throws {
         let asked = ServerAskResult(answered: true, at: now)
         let menu = MachineMenu(inputs(status: missingStatus(), tools: try toolsReading(), asked: asked))
@@ -529,6 +579,23 @@ final class MachineStatusTests: XCTestCase {
         // BotFleet Server's own route does not depend on the allowlist.
         let server = try XCTUnwrap(stopped.entries.first { $0.id == "app.botfleet.server" })
         XCTAssertFalse(MachineMenuCopy.serviceRow(server, allowlist: nil, pm2Answered: true).actions.isEmpty)
+    }
+
+    func testThePanelSaysWhyAButtonIsMissingInTheMenusWords() {
+        XCTAssertEqual(MachineMenuCopy.noRouteSentence(allowlist: nil, someRouted: false),
+                       "The allowlist could not be read.")
+        XCTAssertEqual(MachineMenuCopy.noRouteSentence(allowlist: OpsAllowlist(), someRouted: false),
+                       "The allowlist does not name it.")
+        XCTAssertEqual(MachineMenuCopy.noRouteSentence(allowlist: OpsAllowlist(), someRouted: true),
+                       "The allowlist does not name its other actions.")
+    }
+
+    func testMoreCellsThanTheMenuNamesPointAtTheGridWithNoEllipsis() throws {
+        let cells = (0..<10).map { DriftRedCell(seat: "S\($0)", kind: ConfigKind.hooks.rawValue, ruleID: nil, state: .missing) }
+        let two = MachineMenu(inputs(redCells: cells, status: try statusReading(), tools: try toolsReading()))
+        assertLines(two, contain: ["    2 More Cells"])
+        let one = MachineMenu(inputs(redCells: Array(cells.prefix(9)), status: try statusReading(), tools: try toolsReading()))
+        assertLines(one, contain: ["    1 More Cell"])
     }
 
     func testOnlyAMacRowWhoseNameSaysServerIsQualified() {

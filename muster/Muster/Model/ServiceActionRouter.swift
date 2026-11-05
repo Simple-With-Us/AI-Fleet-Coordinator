@@ -193,6 +193,24 @@ enum FleetActionWords {
             }
         }
     }
+
+    /// The whole of what the Services panel shows under The Last Change Did Not Work,  so a
+    /// reason the menu cut short can always be read there.
+    ///
+    /// There are two records.  The router holds the last action,  and the admin holds its own
+    /// direct action and the two login toggles.  A direct action writes the same sentence to
+    /// both,  which reads once.  Neither says which came last,  so different ones both show,
+    /// and neither hides the other.
+    static func panelProblem(actionState: ServiceActionState?, adminProblem: String?) -> String? {
+        var parts: [String] = []
+        if case .some(.failed) = actionState, let actionState {
+            parts.append(line(for: actionState))
+        }
+        if let adminProblem, !parts.contains(adminProblem) {
+            parts.append(adminProblem)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
 }
 
 // MARK: - The router
@@ -420,9 +438,16 @@ final class ServiceActionRouter: ObservableObject {
         case .finished(let action, let outcome):
             let succeeded = outcome.isSuccess(for: .yes)
             settle(succeeded: succeeded)
-            actionState = succeeded
-                ? .done(sheetSubject(for: action), at: Date())
-                : .failed(sheetSubject(for: action), reason: outcome.detail)
+            let made = sheetSubject(for: action)
+            if succeeded {
+                actionState = .done(made, at: Date())
+            } else if outcome.kind == .submitted, outcome.executionState != "expired" {
+                // Accepted and not yet verified,  which is not a failure.  The sheet says so,
+                // and this line goes when the sheet closes.
+                actionState = .running(made)
+            } else {
+                actionState = .failed(made, reason: outcome.detail)
+            }
         case .failed(let action, let reason):
             settle(succeeded: false)
             actionState = .failed(sheetSubject(for: action), reason: reason)

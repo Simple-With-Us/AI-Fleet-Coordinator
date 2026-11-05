@@ -300,11 +300,22 @@ enum MachineMenuCopy {
         if let why = entry.whyNoActions {
             title += ", \(why)"
         } else if actions.isEmpty, !offered.isEmpty {
-            title += allowlist == nil
-                ? ", the allowlist could not be read"
-                : ", the allowlist does not name it"
+            title += ", \(noRouteWords(allowlist: allowlist))"
         }
         return MenuRow(title: title, actions: actions)
+    }
+
+    /// Why a row with actions to offer has no route for them.
+    static func noRouteWords(allowlist: OpsAllowlist?) -> String {
+        allowlist == nil ? "the allowlist could not be read" : "the allowlist does not name it"
+    }
+
+    /// The same reason as a sentence,  for the Services panel,  which also has to say so when
+    /// only some of a row's actions have a route.
+    static func noRouteSentence(allowlist: OpsAllowlist?, someRouted: Bool) -> String {
+        if allowlist != nil, someRouted { return "The allowlist does not name its other actions." }
+        let words = noRouteWords(allowlist: allowlist)
+        return "\(words.prefix(1).uppercased())\(words.dropFirst())."
     }
 
     private static func seatItem(_ inputs: MachineMenuInputs) -> MenuItem {
@@ -329,7 +340,8 @@ enum MachineMenuCopy {
         }
         let more = reds.count + drifted.count - cellRowLimit
         if more > 0 {
-            rows.append(.command(title: more == 1 ? "1 More Cell\u{2026}" : "\(more) More Cells\u{2026}",
+            // No ellipsis:  this opens the grid,  and nothing runs.
+            rows.append(.command(title: more == 1 ? "1 More Cell" : "\(more) More Cells",
                                  .openComplianceGrid))
         }
         if !inputs.transitions.isEmpty {
@@ -479,8 +491,11 @@ enum MachineMenuCopy {
         }
         items.append(.line(appsLine(status.coolify)))
         items.append(.line(fullnessLine(status.hostMetrics)))
-        if let load = status.hostMetrics?.loadFraction, load >= 2 {
-            items.append(.line(String(format: "Load %.1f per cpu", load)))
+        if let load = status.hostMetrics?.loadFraction {
+            if load >= 2 { items.append(.line(String(format: "Load %.1f per cpu", load))) }
+        } else {
+            // Nothing else says so,  and it keeps the bar from reading OK.
+            items.append(.line("Load not known"))
         }
         let rows = services.map { (service: $0, row: unitRow($0, allowlist: allowlist)) }
         items.append(contentsOf: rows.filter { countsAgainst($0.service) }.map { MenuItem.row($0.row) })
@@ -504,7 +519,9 @@ enum MachineMenuCopy {
     private static func fullnessLine(_ metrics: HostMetrics?) -> String {
         let disk = metrics?.disks.compactMap(\.usedFraction).max()
         let memory = metrics?.memory?.usedFraction
-        let diskWords = disk.map { "Fullest disk \(percent($0))" } ?? "Fullest disk not known"
+        let unreadDisks = metrics?.disks.filter { $0.usedFraction == nil }.count ?? 0
+        var diskWords = disk.map { "Fullest disk \(percent($0))" } ?? "Fullest disk not known"
+        if disk != nil, unreadDisks > 0 { diskWords += ", \(unreadDisks) more not known" }
         let memoryWords = memory.map { "memory \(percent($0))" } ?? "memory not known"
         return "\(diskWords), \(memoryWords)"
     }
@@ -526,21 +543,26 @@ enum MachineMenuCopy {
     ///
     /// It deliberately does not use the report's own overall state:  absent Coolify rows
     /// and missing files are not counted,  and the panel still shows them.
+    ///
+    /// Every part the count rests on has to have been read.  A part that was not read is not
+    /// a zero,  so it can never leave the place reading OK:  with nothing wrong the place is
+    /// not known,  and beside a real problem the count carries a plus.
     private static func currentHealth(_ status: ServerStatusReading) -> MachineHealth {
         let metrics = status.hostMetrics
         let apps = status.coolify.filter { $0.resourceStatus != .absent }
         let diskFractions = metrics?.disks.compactMap(\.usedFraction) ?? []
         let memory = metrics?.memory?.usedFraction
-        // A report with nothing the count can read proves nothing,  which is not OK.
-        if status.services.isEmpty, apps.isEmpty, diskFractions.isEmpty, memory == nil {
-            return .notKnown
-        }
+        let load = metrics?.loadFraction
         var count = status.services.filter(countsAgainst).count
         count += apps.filter { $0.resourceStatus == .exited || $0.resourceStatus == .unhealthy }.count
         count += diskFractions.filter { $0 >= 0.85 }.count
         if let memory, memory >= 0.85 { count += 1 }
-        if let load = metrics?.loadFraction, load >= 2 { count += 1 }
-        return count == 0 ? .ok : .attention(count, someUnread: false)
+        if let load, load >= 2 { count += 1 }
+        let appsUnread = apps.isEmpty || apps.contains { $0.resourceStatus == .unknown }
+        let disksUnread = diskFractions.isEmpty || diskFractions.count != metrics?.disks.count
+        let unread = status.services.isEmpty || appsUnread || disksUnread || memory == nil || load == nil
+        if count == 0 { return unread ? .notKnown : .ok }
+        return .attention(count, someUnread: unread)
     }
 
     /// One unit's row.  Its verbs come only from the allowlist,  and Stop stays out of the
