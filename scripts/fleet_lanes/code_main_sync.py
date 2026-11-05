@@ -78,7 +78,7 @@ def origin_repo(remote: str) -> str | None:
     parts = path.strip("/").split("/")
     if len(parts) != 2:
         return None
-    owner, name = parts[0], parts[1][:-4] if parts[1].endswith(".git") else parts[1]
+    owner, name = parts[0], parts[1].removesuffix(".git")
     if not all(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", part) for part in (owner, name)) or ".." in owner + name:
         return None
     return f"{owner}/{name}"
