@@ -11,7 +11,7 @@ description: Sweep the open PRs across the fleet repos and land them — invento
 
 - Run it from a fresh checkout of `origin/main`, never from `~/Code`: `d=$(~/apps/lane new AI-Fleet-Coordinator pr-sweep-run) && cd "$d"`, then `PS="$PWD/scripts/pr-sweep"`.
 - Every PR checkout, the sweep's and each worker's, is a lane made by `lane new`.  On the server that puts it in the lanes root the environment names in `FLEET_LANES_ROOT`, never a clone in `~/.local/state`, a scratchpad or `/tmp`.
-- Coordination follows `~/apps/FLEET-PROTOCOL.md`: claim the sweep in Linear (`simple-board claim`) and post in its Zulip work topic before you start, and close out there.  The workers never post; the seat that runs the sweep does.
+- Coordination follows `~/apps/FLEET-PROTOCOL.md`: claim the sweep in Linear (the MCP tool `linear_claim`) and post in its Zulip work topic before you start, and close out there.  The workers never post; the seat that runs the sweep does.
 - Your seat comes from `AGENT_SEAT` (see `session-start`).  Every worker the sweep launches inherits it.  `pr-sweep` refuses to run without it.
 - The owner rulings the rules carry: merge by default; a hold only for the owner-needed reasons in rule 10; the do-not-automerge and needs-human-merge labels and the CODEOWNERS gate stop only auto-merge; stale Kody reviews may be dismissed under rule 7 (never a human review); a real reply on every thread before it is resolved; no Codex fix requests; merged PRs get a deploy check.  Read them in full with `$PS prompt --common` and `$PS prompt <owner/repo#n> --offline`.
 
@@ -56,7 +56,7 @@ $PS lanes                                           # your lanes (lane prune); a
 
 - `unstick-pr` and `codex-triage`: the by-hand version of one worker's job (diagnose a stuck PR, triage its threads).  Use them for a single PR; a sweep worker applies the same practice under `rules.md`.
 - `land-lane`: landing your OWN branch.  A sweep lands other seats' PRs.
-- `merge-shepherd` (`com.jay.merge-shepherd`, every 30 minutes, see `MAC-LOCAL-PROCESSES.md`): runs `gh pr update-branch` so bot merges still retrigger verify.  The sweep neither replaces nor calls it.
+- `merge-shepherd` (`com.jay.merge-shepherd`, every 30 minutes, see `MAC-LOCAL-PROCESSES.md`): runs its own `gh pr update-branch` command (the Mac daemon's command, not the seat's route) so bot merges still retrigger verify.  The sweep neither replaces nor calls it.
 - `scripts/branch-landed.sh`: the squash-safe "did this branch land?" check; `lane retire` uses the same PR-state evidence.
 - `scripts/kody-deferred-sweep.mjs`: ranks deferred Kody issues, not PRs.
 - `fleet_facts.github_prs`: the read-only census behind the digest and open loops.  The sweep has its own, because it needs base, head and stack data.

@@ -22,7 +22,7 @@ Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host 
 | `COOLIFY_SERVER_STATS` | Read-only.  App server-stats panels.  Infisical metrics token. |
 | `COOLIFY_AGENTS` | Full deploy/admin.  Agent ops only.  **Never** store this in Infisical as the app's `COOLIFY_API_TOKEN`. |
 
-Load via env, not argv.  Names only: `fleet-secrets names`.  One value: `fleet-secrets get NAME`.  See `secret-handoff`.
+Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack); the shared `fleet-secrets` reader needs a working login on this host, and without one you stop and report it.  See `secret-handoff`.
 
 If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_SERVER_STATS`.
 
@@ -69,7 +69,7 @@ Do not interpolate the token into a command you will see.  Prefer Coolify MCP o
 ssh -i ~/.ssh/hetzner root@<PROD_ORIGIN_IP> 'docker ps --format "{{.Names}} {{.Status}}"'
 ```
 
-**Zombie:** a deploy stuck `in_progress` blocks the queue (`concurrent_builds` serializes).  Post the deployment id in the app's Zulip work topic (`simple-chat post --topic "<ID> <subject>" …`) if you can see it from the box.
+**Zombie:** a deploy stuck `in_progress` blocks the queue (`concurrent_builds` serializes).  Post the deployment id in the app's Zulip work topic (the MCP tool `zulip_post`, with `channel` and `topic` = "<ID> <subject>") if you can see it from the box.
 
 **Silent freeze (ST #2545 class):** webhook 200 + healthy `/api/health` on an **old** sha.  Standing watch: ST `.github/workflows/deploy-freshness.yml`.  Do not hand-trigger; inspect the queue.
 
@@ -116,7 +116,7 @@ Exit 0 means current, so the deploy is verified.  Exit 1 means not yet: `SHIPPI
 
 **When the check says behind**, look before you change anything:
 
-1. **Ship workflow run.**  `gh run list --repo Simple-With-Us/<repo> --workflow <file> --limit 5`.  A run for the merge SHA that failed: read the failing step (archive, signing, upload, ensure-tf-ready).  No run at all: a merge made by `github-actions[bot]` with `GITHUB_TOKEN` fires no `push` workflows, so only the cron backstop or a `workflow_dispatch` ships it.
+1. **Ship workflow run.**  The relay tool `gr_wf_runs_page` (`repo` = `Simple-With-Us/<repo>`, `branch` = the merge branch, `status` = `completed`) lists the recent runs, and `gr_wf_run_get` (`repo`, `run_id`) opens one.  A run for the merge SHA that failed: read the failing step (archive, signing, upload, ensure-tf-ready).  No run at all: a merge made by `github-actions[bot]` with `GITHUB_TOKEN` fires no `push` workflows, so only the cron backstop or a `workflow_dispatch` ships it.
 2. **Runner.**  A run stuck queued has no runner.  Read the job's `runs-on`: most ship jobs use hosted `macos-latest`, Clutch and BotFleet use `xcode-27`.  Do not turn on a Mac PR-check runner (banned in FLEET-PROTOCOL.md § CI Runners) and do not run a local archive or `ship-testflight.sh` from a seat to catch up.  Re-ship through the repo's workflow.
 3. **Rate gate.**  A skip for the per-app minimum interval or for an unchanged git HEAD exits 0 and looks green, so it is not a failure and not a reason to force anything.  Read the live interval from `DEFAULT_MIN_INTERVAL_SEC` in `~/apps/ios-fleet/ship-testflight.sh`, because the README table has disagreed with the script.  Never set `IOS_TF_MIN_INTERVAL_SEC` as a standing workflow value.  Never force a ship past the gate (FLEET-PROTOCOL.md); a per-run override is for when the owner says so for that run, preferably as a one-off `workflow_dispatch`.
 4. **Compile check.**  A red `ios-build.yml` on main usually means the archive fails too.  That is a code fix on main, not a ship fix.
@@ -136,7 +136,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 
 ## 6. After verify
 
-Move the Linear issue to **Deployed** (`simple-board status <id> deployed --resolution "..."`) only when you say how you verified; for an iOS app that includes the freshness verdict from section 5 (`closeout` skill).  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
+Move the Linear issue to **Deployed** (the MCP tool `linear_status`, with `id` and `status` = `deployed`, plus a `linear_comment` that says how you verified) only when you say how you verified; for an iOS app that includes the freshness verdict from section 5 (`closeout` skill).  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
 
 ## Canon
 
