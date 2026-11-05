@@ -91,18 +91,22 @@ class NamedReadBudgetTests(unittest.TestCase):
         def failing(method, path, token, body, env, *, max_bytes, deadline):
             with self.lock:
                 calls.append(path)
-            time.sleep(0.02)
-            return 500, {}
+            if name_of(path) == "KNOB_00":
+                return 500, {}
+            time.sleep(0.2)
+            return 200, {"secret": record(name_of(path))}
 
+        # KNOB_00 sorts first and fails at once while the rest of the first round is still running,
+        # so only the worker it freed can start one more read before every later read is cancelled.
         names = {f"KNOB_{i:02d}" for i in range(60)}
         with mock.patch.object(core, "_api_json", failing):
             with self.assertRaises(core.SecretsError):
                 core.fetch_project(PROJECT, "/", {}, token=TOKEN, names=names, timeout=8.0)
-        # The first failure lands after one round of reads, so at most the reads already running
-        # and one more round can start before every other read is cancelled.
-        self.assertLessEqual(len(calls), 2 * core.MAX_NAMED_READS)
+        self.assertLessEqual(len(calls), core.MAX_NAMED_READS + 1)
 
     def test_the_refusal_names_the_earliest_failing_read(self):
+        # Reads are submitted in sorted order, so A_FIRST is always the earlier endpoint.  It fails
+        # later than B_SECOND, and a failure cancels only reads after it, so A_FIRST still runs.
         def two_bad(method, path, token, body, env, *, max_bytes, deadline):
             name = name_of(path)
             if name == "A_FIRST":

@@ -550,8 +550,9 @@ def fetch_project(
     # Named reads share one deadline, and the knobs ask for every registered name at once, so they
     # run side by side:  one after another, 31 names took about 13 s against an 8 s budget.  Each
     # answer is checked as it arrives, and the first bad one cancels every read not yet started;
-    # a read already in flight may still finish, but its answer is never used.  When more than one
-    # read fails, the refusal names the failure of the earliest endpoint, so the reason is stable.
+    # a read already in flight may still finish, but its answer is never used.  A failure cancels
+    # only the reads after it in the sorted list, so every earlier read still runs, and the refusal
+    # always names the earliest failing endpoint.  An interrupt is never held back.
     answers: dict = {}
     failures: dict = {}
     with ThreadPoolExecutor(max_workers=MAX_NAMED_READS) as pool:
@@ -561,10 +562,11 @@ def fetch_project(
                 continue
             try:
                 name, pairs = future.result()
-            except BaseException as exc:  # noqa: BLE001 - re-raised below, earliest first
-                failures[futures.index(future)] = exc
-                for other in futures:
-                    other.cancel()
+            except Exception as exc:  # noqa: BLE001 - re-raised below, earliest first
+                index = futures.index(future)
+                failures[index] = exc
+                for later in futures[index + 1 :]:
+                    later.cancel()
                 continue
             answers[name] = pairs
     if failures:
