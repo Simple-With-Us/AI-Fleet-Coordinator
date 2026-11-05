@@ -16,7 +16,7 @@ from pathlib import Path
 import build_support as support
 
 SCRIPT = Path(__file__).resolve().parent
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 
 
 def seconds(*parts):

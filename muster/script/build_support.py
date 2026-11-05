@@ -308,7 +308,7 @@ def build_number_for(commit_seconds):
     under the earlier America/Chicago numbering always reads as older than the UTC number
     for the same moment, so the change never strands an installed copy.
     """
-    moment = datetime.datetime.fromtimestamp(commit_seconds, tz=datetime.timezone.utc)
+    moment = datetime.datetime.fromtimestamp(commit_seconds, tz=datetime.UTC)
     return moment.strftime("%Y%m%d%H%M"), moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -330,9 +330,7 @@ def build_identity(directory, configuration, channel=None, override=None):
     shown = run_git(directory, ["show", "-s", "--format=%ct", "HEAD"])
     seconds = shown.stdout.strip()
     if shown.returncode or not seconds.isdecimal():
-        raise BuildFailure(
-            "git did not give the commit's time, so the build number is unknown.", 2
-        )
+        raise BuildFailure("git did not give the commit's time, so the build number is unknown.", 2)
     number, commit_time = build_number_for(int(seconds))
     if override:
         if not BUILD_NUMBER_PATTERN.match(override):
