@@ -346,7 +346,9 @@ const SECRET_PATTERNS = [
   ["Coolify token", /(?<![A-Za-z0-9])\d{1,5}\|[A-Za-z0-9]{36,}(?![A-Za-z0-9])/],
   ["assigned credential", /\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['"]?[A-Za-z0-9+/=._-]{16,}/],
   ["bearer token", /\bauthorization:\s*(basic|bearer)\s+[A-Za-z0-9+/=._-]{16,}/i],
-  ["assigned secret", /\b(api[_-]?key|secret|token|password)\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{16,}/i],
+  // The value run must be maximal and not end at a call:  `token = auth.removeprefix(...)` is code, not a
+  // credential.  A real literal ends at a quote, whitespace or punctuation, which still matches.  Parity: scripts/agent_sync/secretscan.py.
+  ["assigned secret", /\b(api[_-]?key|secret|token|password)\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{16,}(?![(A-Za-z0-9+/=._-])/i],
 ];
 const ZULIP_SHAPED_RE = /(?<![A-Za-z0-9])[A-Za-z0-9]{32}(?![A-Za-z0-9])/g;
 

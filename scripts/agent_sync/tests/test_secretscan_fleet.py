@@ -88,6 +88,13 @@ class EveryKindIsFlaggedTests(unittest.TestCase):
     def test_the_older_kinds_still_answer_as_before(self) -> None:
         self.assertEqual(scan("AK" + "IA" + "ABCDEFGHIJ012345"), "AWS access key")
         self.assertEqual(scan("api_key=" + alnum(24)), "assigned secret")
+
+    def test_an_assigned_call_is_not_a_secret_but_a_literal_still_is(self) -> None:
+        # git-relay's server.py line `token = auth.removeprefix("Bearer ")...` is code:  the value run ends at
+        # the call's open paren, so it must not be flagged, while quoted or bare literals still are.
+        self.assertIsNone(scan('token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""'))
+        self.assertEqual(scan('token = "' + alnum(24) + '"'), "assigned secret")
+        self.assertEqual(scan("api_key=" + alnum(24)), "assigned secret")
         self.assertEqual(scan("sk-" + "ant-" + b64(40)), "Anthropic or OpenAI key")
 
 

@@ -60,7 +60,9 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("Coolify token", re.compile(r"(?<![A-Za-z0-9])\d{1,5}\|[A-Za-z0-9]{36,}(?![A-Za-z0-9])")),
     ("assigned credential", re.compile(r"\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_?KEY)\s*=\s*['\"]?[A-Za-z0-9+/=._-]{16,}")),
     ("bearer token", re.compile(r"(?i)\bauthorization:\s*(basic|bearer)\s+[A-Za-z0-9+/=._-]{16,}")),
-    ("assigned secret", re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\s*[=:]\s*['\"]?[A-Za-z0-9+/=._-]{16,}")),
+    # The value run must be maximal and not end at a call:  `token = auth.removeprefix(...)` is code, not a
+    # credential.  A real literal ends at a quote, whitespace or punctuation, which still matches.
+    ("assigned secret", re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\s*[=:]\s*['\"]?[A-Za-z0-9+/=._-]{16,}(?![(A-Za-z0-9+/=._-])")),
 ]
 _ZULIP_SHAPED = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{32}(?![A-Za-z0-9])")
 
