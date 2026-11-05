@@ -98,11 +98,16 @@ def _path_reason(tool: str, path: str, cwd, ctx, roots, secret_patterns) -> str 
         return "MiniMax file tool blocked a read-only review lane.  Use an owned task lane."
     # MiniMax's subprocess allowlist excludes AGENT_SEAT.  Never infer MM from the
     # engine or destination folder: a trusted launcher may have assigned another seat.
-    seat_name = (
-        ctx.env.get("AGENT_LAUNCH_SEAT")
-        if ctx.env.get("AGENT_LAUNCHER")
-        else ctx.env.get("AGENT_SEAT")
-    )
+    # A launcher's seat assignment counts on its own (identity.resolve_seat: the launcher
+    # "set AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, or both"), so AGENT_LAUNCH_SEAT without
+    # AGENT_LAUNCHER still names the seat.  AGENT_LAUNCHER alone names no seat: a launched
+    # session without an assigned seat takes no fleet identity, never the ambient one.
+    if ctx.env.get("AGENT_LAUNCH_SEAT"):
+        seat_name = ctx.env.get("AGENT_LAUNCH_SEAT")
+    elif ctx.env.get("AGENT_LAUNCHER"):
+        seat_name = None
+    else:
+        seat_name = ctx.env.get("AGENT_SEAT")
     seat = ctx.registry.seat_by_name(seat_name) if seat_name else None
     if seat is None and seat_name:
         # AFC-620 role lanes: a BF-<ROLE>/GB-<ROLE> launch or seat names the synthesized role

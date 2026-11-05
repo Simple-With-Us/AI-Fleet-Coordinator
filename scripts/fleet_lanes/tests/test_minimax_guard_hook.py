@@ -359,3 +359,40 @@ class RoleLaneHookTests(unittest.TestCase):
             "another seat",
             self.reason("Write", "apps/lanes/BotFleet/minimax-work/file", env),
         )
+
+    def test_launch_seat_without_launcher_var_still_names_the_seat(self):
+        # Canonical contract: the launcher "set AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, or both".
+        # AGENT_LAUNCH_SEAT alone must not leave the session identity-unavailable.
+        env = dict(self.env, AGENT_LAUNCH_SEAT="BF-FIXER")
+        self.assertIsNone(
+            self.reason("Write", "apps/lanes/BotFleet/bf-fixer-work/file", env)
+        )
+        self.assertIn(
+            "another seat",
+            self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env),
+        )
+
+    def test_launch_seat_without_launcher_var_ordinary_seat(self):
+        env = dict(self.env, AGENT_LAUNCH_SEAT="CODEX")
+        self.assertIsNone(
+            self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env)
+        )
+
+    def test_launch_seat_beats_ambient_seat_for_roles_by_design(self):
+        # Intentional divergence from identity.resolve_seat, which refuses a
+        # launch-seat/ambient-seat conflict: MiniMax's subprocess allowlist excludes
+        # AGENT_SEAT, so an ambient seat in this runtime is untrusted noise and the
+        # launcher's assignment wins (same precedence as ordinary seats above).
+        env = dict(
+            self.env,
+            AGENT_SEAT="BF-DEPLOYER",
+            AGENT_LAUNCHER="BotFleet",
+            AGENT_LAUNCH_SEAT="BF-FIXER",
+        )
+        self.assertIsNone(
+            self.reason("Write", "apps/lanes/BotFleet/bf-fixer-work/file", env)
+        )
+        self.assertIn(
+            "another seat",
+            self.reason("Write", "apps/lanes/BotFleet/bf-deployer-work/file", env),
+        )
