@@ -187,6 +187,34 @@ final class OpsActionPlaceTests: XCTestCase {
         XCTAssertFalse(lookupRun.runNotKnown)
     }
 
+    /// A remote command's stderr reaches the same text as ssh's,  so a phrase inside it does
+    /// not prove that nothing was sent.
+    func testARemoteCommandsOwnWordsAreNotSSHsDiagnostics() {
+        for words in ["fleet-tool: failed to connect to host db.test",
+                      "tool: permission denied",
+                      "tool: could not resolve hostname db.test",
+                      "tool: host key verification failed"] {
+            let answer = OpsProcessResult(exitCode: 255, stdout: "", stderr: words)
+            let run = OpsResultParser.parse(answer, mode: .yes, action: timerRestart, timeout: 90)
+            XCTAssertEqual(run.kind, .unknown, words)
+            XCTAssertTrue(run.runNotKnown, words)
+            XCTAssertEqual(run.detail, "The server did not answer, so the Mac cannot say whether this ran.", words)
+        }
+    }
+
+    func testEachOfSSHsOwnDiagnosticsMeansNothingWasSent() {
+        for words in ["ssh: connect to host server.test port 22: Operation timed out",
+                      "ssh: Could not resolve hostname server.test: nodename nor servname provided",
+                      "someone@server.test: Permission denied (publickey).",
+                      "Host key verification failed.",
+                      "a warning first\nssh: connect to host server.test port 22: Connection refused"] {
+            let answer = OpsProcessResult(exitCode: 255, stdout: "", stderr: words)
+            let run = OpsResultParser.parse(answer, mode: .yes, action: timerRestart, timeout: 90)
+            XCTAssertEqual(run.kind, .failed, words)
+            XCTAssertFalse(run.runNotKnown, words)
+        }
+    }
+
     func testARunThatTimedOutIsNotKnownAndAPlanThatTimedOutFailed() {
         let late = OpsProcessResult(exitCode: 15, stdout: "", stderr: "", timedOut: true)
         let run = OpsResultParser.parse(late, mode: .yes, action: timerRestart, timeout: 90)

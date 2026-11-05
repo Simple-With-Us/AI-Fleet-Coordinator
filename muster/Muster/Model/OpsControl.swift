@@ -1145,17 +1145,26 @@ enum OpsResultParser {
     /// ones that stop it before anything reaches the helper.
     private static func lostTheServer(_ result: OpsProcessResult, action: OpsAction, mode: OpsMode) -> Bool {
         guard mode == .yes, action.runsOnServer, result.exitCode == 255 else { return false }
-        let errors = result.stderr.lowercased()
-        return !errors.contains("could not resolve hostname")
-            && !errors.contains("permission denied")
-            && !errors.contains("host key verification failed")
-            && !neverConnected(errors)
+        return sshStoppedEarly(result.stderr) == nil
     }
 
-    /// True when ssh says it could not open the connection,  so no command was sent.  Its
-    /// words for that all start `ssh: connect to host`,  whatever the cause.
-    private static func neverConnected(_ errors: String) -> Bool {
-        errors.contains("connect to host")
+    /// What stopped ssh before any command was sent.
+    private enum SSHStoppedEarly {
+        case lookup, keyRefused, hostKey, noConnection
+    }
+
+    /// Reads ssh's own diagnostics,  each by the shape of its whole line,  or nil when there
+    /// is none.  A remote command's stderr reaches this same text and can say anything,  so
+    /// a phrase somewhere in it is not proof that nothing was sent.
+    private static func sshStoppedEarly(_ stderr: String) -> SSHStoppedEarly? {
+        for line in stderr.lowercased().split(whereSeparator: \.isNewline) {
+            let text = line.trimmingCharacters(in: .whitespaces)
+            if text.hasPrefix("ssh: could not resolve hostname") { return .lookup }
+            if text.hasPrefix("ssh: connect to host") { return .noConnection }
+            if text.hasPrefix("host key verification failed") { return .hostKey }
+            if text.contains(": permission denied ("), text.hasSuffix(").") { return .keyRefused }
+        }
+        return nil
     }
 
     /// The fixed sentence for an answer that did not come from the machine the button names.
@@ -1220,22 +1229,23 @@ enum OpsResultParser {
     /// server's address and that does not belong on the screen.
     private static func unreadableDetail(_ result: OpsProcessResult, action: OpsAction, mode: OpsMode) -> String {
         if action.runsOnServer && result.exitCode == 255 {
-            let errors = result.stderr.lowercased()
             let alias = OpsControlRoute.serverAlias
-            if errors.contains("could not resolve hostname") {
+            switch sshStoppedEarly(result.stderr) {
+            case .some(.lookup):
                 return "The Mac could not look up the server.\(ServerStatusCopy.sentenceGap)Check the Mac's network, then the \(alias) alias in ~/.ssh/config."
-            }
-            if errors.contains("permission denied") {
+            case .some(.keyRefused):
                 return "The server refused the \(alias) key.\(ServerStatusCopy.sentenceGap)Install it on the server."
-            }
-            if errors.contains("host key verification failed") {
+            case .some(.hostKey):
                 return "The server's host key is not known to ssh,\(ServerStatusCopy.sentenceGap)so nothing was sent."
+            case .some(.noConnection):
+                return "The server did not answer, so nothing ran."
+            case .none:
+                // A plan changes nothing either way.  A run that lost the server cannot say
+                // how far it got.
+                return mode == .plan
+                    ? "The server did not answer, so nothing ran."
+                    : "The server did not answer, so the Mac cannot say whether this ran."
             }
-            // A plan changes nothing either way,  and a connection that never opened sent
-            // nothing.  A run that lost the server cannot say how far it got.
-            return mode == .plan || neverConnected(errors)
-                ? "The server did not answer, so nothing ran."
-                : "The server did not answer, so the Mac cannot say whether this ran."
         }
         let tail = ApplyCopy.normalize(result.stderrTail)
         if tail.isEmpty {
