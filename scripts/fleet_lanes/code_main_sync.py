@@ -87,7 +87,7 @@ def relay_git_env(env: Mapping[str, str]) -> dict[str, str] | None:
             log(f"relay route: bearer file unreadable ({type(exc).__name__})")
             return None
         # A NAME=value line, or the bare value:  a bearer may itself contain `=`, so only an upper-case name counts.
-        match = re.fullmatch(r"[A-Z_][A-Z0-9_]*=(.*)", raw, re.S)
+        match = re.fullmatch(r"[A-Z_][A-Z0-9_]*=(.*)", raw, re.DOTALL)
         bearer = match.group(1).strip().strip("\"'") if match else raw
     if not bearer or any(ch.isspace() for ch in bearer):
         log("relay route: refused, the bearer file has no usable value")

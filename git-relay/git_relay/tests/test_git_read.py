@@ -6,6 +6,7 @@ import base64
 import http.client
 import json
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest import mock
@@ -114,6 +115,13 @@ class GitReadTest(unittest.TestCase):
         self.addCleanup(server.shutdown)
         return server.server_address[1]
 
+    def audited(self):
+        """The audit rows, once the handler has written them:  it does so after sending the response."""
+        deadline = time.monotonic() + 5
+        while not self.relay.audit.rows and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.relay.audit.rows
+
     def call(self, port, method, path, body=None, headers=None, bearer=BEARER):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         sent = dict(headers or {})
@@ -134,29 +142,47 @@ class GitReadTest(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(data, b"pack-data")
         self.assertEqual(resp.getheader("Content-Type"), git_read._ADVERTISE)
-        self.assertEqual(self.relay.app_minter.calls, [("swu-claude", "example-org/example-repo", {"contents": "read"})])
+        self.assertEqual(
+            self.relay.app_minter.calls,
+            [("swu-claude", "example-org/example-repo", {"contents": "read"})],
+        )
         method, path, _body, headers = self.upstream.requests[0]
-        self.assertEqual((method, path), ("GET", "/example-org/example-repo.git/info/refs?service=git-upload-pack"))
+        self.assertEqual(
+            (method, path),
+            ("GET", "/example-org/example-repo.git/info/refs?service=git-upload-pack"),
+        )
         expected = base64.b64encode(f"x-access-token:{APP_TOKEN}".encode()).decode()
         self.assertEqual(headers["Authorization"], "Basic " + expected)
         self.assertEqual(headers["Git-Protocol"], "version=2")
         self.assertNotIn(BEARER, json.dumps(headers))
         self.assertNotIn(APP_TOKEN.encode(), data)
-        self.assertEqual(self.relay.audit.rows[0][:4], ("CLAUDE", "git_read", "example-org/example-repo", "ok"))
-        self.assertNotIn(APP_TOKEN, json.dumps(self.relay.audit.rows))
+        self.assertEqual(
+            self.audited()[0][:4], ("CLAUDE", "git_read", "example-org/example-repo", "ok")
+        )
+        self.assertNotIn(APP_TOKEN, json.dumps(self.audited()))
 
     def test_a_remote_written_without_dot_git_reaches_the_same_repo(self):
         port = self.serve(Relay())
-        resp, _ = self.call(port, "GET", "/git/example-org/example-repo/info/refs?service=git-upload-pack")
+        resp, _ = self.call(
+            port, "GET", "/git/example-org/example-repo/info/refs?service=git-upload-pack"
+        )
         self.assertEqual(resp.status, 200)
-        self.assertEqual(self.upstream.requests[0][1], "/example-org/example-repo.git/info/refs?service=git-upload-pack")
+        self.assertEqual(
+            self.upstream.requests[0][1],
+            "/example-org/example-repo.git/info/refs?service=git-upload-pack",
+        )
 
     def test_upload_pack_forwards_the_body(self):
         upstream = FakeUpstream(content_type=git_read._RESULT, body=b"PACK")
         port = self.serve(Relay(), upstream)
-        resp, data = self.call(port, "POST", self.PACK, body=b"0000", headers={"Content-Type": git_read._REQUEST})
+        resp, data = self.call(
+            port, "POST", self.PACK, body=b"0000", headers={"Content-Type": git_read._REQUEST}
+        )
         self.assertEqual((resp.status, data), (200, b"PACK"))
-        self.assertEqual(upstream.requests[0][:3], ("POST", "/example-org/example-repo.git/git-upload-pack", b"0000"))
+        self.assertEqual(
+            upstream.requests[0][:3],
+            ("POST", "/example-org/example-repo.git/git-upload-pack", b"0000"),
+        )
 
     def test_push_is_refused_on_every_shape(self):
         port = self.serve(Relay())
@@ -198,7 +224,7 @@ class GitReadTest(unittest.TestCase):
         resp, _ = self.call(port, "GET", self.ADV)
         self.assertEqual(resp.status, 403)
         self.assertEqual(self.relay.app_minter.calls, [])
-        self.assertEqual(self.relay.audit.rows[0][3], "denied")
+        self.assertEqual(self.audited()[0][3], "denied")
 
     def test_ceiling_without_contents_is_refused(self):
         port = self.serve(Relay(policy=Policy(ceiling={"issues": "write"})))
@@ -211,7 +237,7 @@ class GitReadTest(unittest.TestCase):
         resp, data = self.call(port, "GET", self.ADV)
         self.assertEqual(resp.status, 503)
         self.assertNotIn(b"secret detail", data)
-        self.assertEqual(self.relay.audit.rows[0][4]["reason"], "RuntimeError")
+        self.assertEqual(self.audited()[0][4]["reason"], "RuntimeError")
 
     def test_upstream_error_text_is_not_relayed(self):
         upstream = FakeUpstream(status=404, content_type="text/plain", body=b"upstream words")
@@ -235,10 +261,16 @@ class GitReadTest(unittest.TestCase):
 
     def test_upload_needs_its_content_type_and_a_length(self):
         port = self.serve(Relay())
-        resp, _ = self.call(port, "POST", self.PACK, body=b"0000", headers={"Content-Type": "text/plain"})
+        resp, _ = self.call(
+            port, "POST", self.PACK, body=b"0000", headers={"Content-Type": "text/plain"}
+        )
         self.assertEqual(resp.status, 415)
         resp, _ = self.call(
-            port, "POST", self.PACK, body=b"", headers={"Content-Type": git_read._REQUEST, "Content-Length": "0"}
+            port,
+            "POST",
+            self.PACK,
+            body=b"",
+            headers={"Content-Type": git_read._REQUEST, "Content-Length": "0"},
         )
         self.assertEqual(resp.status, 411)
 
@@ -278,8 +310,8 @@ class GitReadTest(unittest.TestCase):
         token = "ghp_" + "a1b2c3d4" * 5
         port = self.serve(Relay(policy=Policy(denial="repo not allowed for this seat")))
         self.call(port, "GET", f"/git/example-org/{token}.git/info/refs?service=git-upload-pack")
-        self.assertEqual(self.relay.audit.rows[0][2], "")
-        self.assertNotIn(token, json.dumps(self.relay.audit.rows))
+        self.assertEqual(self.audited()[0][2], "")
+        self.assertNotIn(token, json.dumps(self.audited()))
 
 
 if __name__ == "__main__":
