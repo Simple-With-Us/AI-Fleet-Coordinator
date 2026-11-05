@@ -1471,8 +1471,7 @@ class HookCliTests(unittest.TestCase):
         )
         self.assertEqual(
             H.render("R.", "cursor", "/tmp/x"),
-            '{"permission": "deny", "user_message": "Blocked a fleet-repo checkout in a temp '
-            'directory: /tmp/x.", "agent_message": "R."}',
+            '{"permission": "deny", "user_message": "Blocked a fleet-repo checkout: /tmp/x.", "agent_message": "R."}',
         )
 
     def test_subprocess_by_path_and_module(self) -> None:

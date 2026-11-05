@@ -679,12 +679,17 @@ def _parse_role_lanes(data: Mapping[str, object]) -> tuple[RoleLane, ...]:
 
 
 def default_registry_path(env: Mapping[str, str] | None = None) -> Path:
-    """FLEET_APPS_JSON when set, else fleet-apps.json at the repo root (two levels above scripts/)."""
+    """FLEET_APPS_JSON when set, else fleet-apps.json at the repo root (two levels above scripts/), else the one beside the
+    package, which is where the installed copy in <apps>/lane-tools keeps it:  a process with no variable set, such as the git
+    shim or the placement watcher, still reads the real registry there."""
     env = os.environ if env is None else env
     override = (env.get(ENV_APPS_JSON) or "").strip()
     if override:
         return Path(override)
-    return Path(__file__).resolve().parents[2] / "fleet-apps.json"
+    here = Path(__file__).resolve()
+    at_root = here.parents[2] / "fleet-apps.json"
+    beside = here.parents[1] / "fleet-apps.json"
+    return beside if beside.is_file() and not at_root.is_file() else at_root
 
 
 def load_registry(
@@ -849,19 +854,27 @@ class HarnessLocation:
     """A place a harness creates checkouts on its own.
 
     `glob_or_prefix` is an absolute path that may contain glob wildcards in whole path components
-    (Code/*/.claude/worktrees).  A path under it, or equal to it, matches.  `sanctioned` False
-    marks a place that is reported as UNSANCTIONED instead of MANAGED.
+    (Code/*/.claude/worktrees).  A path under it, or equal to it, matches.
+
+    `sanctioned` answers "may a checkout live here", the question placement reporting asks.
+    `cleanup_eligible` answers "may the janitor treat a lane here as its own to retire", which is what the
+    location class means to the cleaners: True keeps it MANAGED, False makes it UNSANCTIONED.  The two used to be one
+    flag.  The repo-local folders under ~/Code are the reason they split (AFC-618): nothing should be there, so they are
+    not sanctioned, and whatever is there must stay retirable, so they stay cleanup-eligible.
     """
 
     name: str
     glob_or_prefix: str
     sanctioned: bool = True
+    cleanup_eligible: bool = True
 
 
-# (name, path relative to home, sanctioned)
+# (name, path relative to home, sanctioned).  An unsanctioned row is not cleanup-eligible, except for the two names in
+# _CLEANUP_ONLY_HARNESS.
+_CLEANUP_ONLY_HARNESS = frozenset({"claude-repo", "muse-repo"})
 _HARNESS_SPECS: tuple[tuple[str, str, bool], ...] = (
-    ("claude-repo", "Code/*/.claude/worktrees", True),
-    ("muse-repo", "Code/*/.muse/worktrees", True),
+    ("claude-repo", "Code/*/.claude/worktrees", False),
+    ("muse-repo", "Code/*/.muse/worktrees", False),
     ("codex", ".codex/worktrees", True),
     ("conductor", "conductor/workspaces", True),
     ("cursor", ".cursor/worktrees", True),
@@ -1015,7 +1028,8 @@ def make_roots(
         legacy_managed_root=Path(lanes_root) / LEGACY_MANAGED_DIR,
         legacy_review_root=Path(lanes_root) / LEGACY_REVIEW_DIR,
         harness_locations=tuple(
-            HarnessLocation(name, _pattern_under(real_home, rel), sanctioned)
+            HarnessLocation(name, _pattern_under(real_home, rel), sanctioned,
+                            sanctioned or name in _CLEANUP_ONLY_HARNESS)
             for name, rel, sanctioned in _HARNESS_SPECS
         ),
         tmp_roots=tmp_roots,
@@ -1092,9 +1106,24 @@ def _external_lanes_roots(
     return (Path(ext),), ()
 
 
-def make_guard_roots(
-    home: str | os.PathLike[str], env: Mapping[str, str] | None = None
-) -> Roots:
+def real_git(env: Mapping[str, str] | None = None) -> str:
+    """The absolute path of git past the fleet shim, for the tools the shim must never judge (`lane`).
+
+    Any PATH entry that holds the shim is skipped, by its folder name and by following a link to it.  Falls back to the
+    word `git`, which still works: the shim allows a destination in the lanes root.
+    """
+    env = os.environ if env is None else env
+    known = (env.get("FLEET_GIT_SHIM_REAL") or "").strip()
+    if known.startswith("/") and os.access(known, os.X_OK) and "/shims/" not in _real(known):
+        return known
+    for folder in (env.get("PATH") or "").split(os.pathsep):
+        cand = os.path.join(folder or ".", "git")
+        if os.access(cand, os.X_OK) and not os.path.isdir(cand) and "/shims/" not in _real(cand) + "/":
+            return os.path.abspath(cand)
+    return "git"
+
+
+def make_guard_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> Roots:
     """Roots for a forbidden-tmp guard: reads no file and cannot fail on a bad registry or layout.
 
     The registry is empty, so integration trees are not recognised (INTEGRATION_TREE and
@@ -1326,9 +1355,7 @@ def _classify(
 
     best = _harness_for(parts, roots)
     if best is not None:
-        return (
-            LocationClass.MANAGED if best[1].sanctioned else LocationClass.UNSANCTIONED
-        ), None
+        return (LocationClass.MANAGED if best[1].cleanup_eligible else LocationClass.UNSANCTIONED), None
 
     lanes_p = _parts(roots.lanes_root, roots)
     if _under(parts, lanes_p):
@@ -1911,10 +1938,10 @@ def explain_layout(
     harness = _harness_for(parts, roots)
     if harness is not None:
         n, loc = harness
+        if loc.name in _CLEANUP_ONLY_HARNESS:
+            return done(LayoutStatus.WRONG, f"inside-~/Code/<Repo>:{loc.name}")
         if not loc.sanctioned:
             return done(LayoutStatus.UNSANCTIONED, f"harness-scratch:{loc.name}")
-        if loc.name in ("claude-repo", "muse-repo"):
-            return done(LayoutStatus.WRONG, f"inside-~/Code/<Repo>:{loc.name}")
         if loc.name == "codex":
             tail = orig[n:]
             target = roots.codex_root.joinpath(*tail) if tail else None
