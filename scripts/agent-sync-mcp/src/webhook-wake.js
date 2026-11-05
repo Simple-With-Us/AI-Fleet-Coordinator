@@ -66,6 +66,11 @@ export const WEBHOOK_WAKE_RATE_WINDOW_MS = WAKE_RATE_WINDOW_MS;
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 const WAKE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+// The fleet secret-scan rule:  caller-controlled text is scanned before it is
+// persisted or relayed - wake_id lands in the wake_tomb ledger and in the
+// delivered event's data.id.  On a hit the wake is refused and only the seat
+// and the refusal code are logged, never the suspected value.
+const WAKE_SECRET_RE = /(?:ghp_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|xoxb-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16})/;
 const PATH_RE = /^\/internal\/webhook-wake\/([A-Z][A-Z0-9-]{0,31})$/;
 const BODY_KEYS = "contract,seat,sent_at,wake_id";
 
@@ -131,6 +136,10 @@ export async function verifyWebhookWake({ bytes, signature, key, seat, now = Dat
   const nowS = Math.floor(now / 1000);
   if (nowS - wake.sent_at > WEBHOOK_WAKE_MAX_AGE_S) return { ok: false, status: 401, reason: "stale" };
   if (wake.sent_at - nowS > WEBHOOK_WAKE_MAX_SKEW_S) return { ok: false, status: 401, reason: "future" };
+  if (WAKE_SECRET_RE.test(JSON.stringify(wake))) {
+    console.log(JSON.stringify({ event: "webhook_wake", seat, verdict: "secret_in_wake_id" }));
+    return { ok: false, status: 400, reason: "secret_in_wake_id" };
+  }
   return { ok: true, wake };
 }
 

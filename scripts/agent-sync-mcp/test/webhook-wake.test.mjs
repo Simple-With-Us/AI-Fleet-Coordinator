@@ -153,6 +153,13 @@ test("a correctly signed wake verifies; every tamper is refused", async () => {
   assert.equal((await check(badId, await sign(badId))).reason, "bad_wake_id");
   const stale = wakeBody({ sent_at: NOW_S - 301 });
   assert.equal((await check(stale, await sign(stale))).reason, "stale");
+  for (const bad of ["sk-ABCDEFGHIJKLMNOP1", "ghp_abcdefghijklmnop1", "xoxb-1234567890-abcdef", "AKIAIOSFODNN7EXAMPLE"]) {
+    const hit = wakeBody({ wake_id: bad });
+    const refused = await check(hit, await sign(hit));
+    assert.deepEqual([refused.status, refused.reason], [400, "secret_in_wake_id"], bad);
+  }
+  const clean = wakeBody({ wake_id: "wake-sk-short" });
+  assert.equal((await check(clean, await sign(clean))).ok, true);
   const future = wakeBody({ sent_at: NOW_S + 61 });
   assert.equal((await check(future, await sign(future))).reason, "future");
 
