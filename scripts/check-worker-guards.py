@@ -7,6 +7,8 @@
 A config fails when it lacks limits.cpu_ms or limits.subrequests, a value is above
 the registry, preview_urls is not false, its log sampling is implicit or above the
 registry, its name is not in the registry, or its path is not listed under that name.
+Each [env.*] block is held to the same rules with what it inherits, because a deploy
+with --env runs those values, and under the Worker name it deploys as.
 
 Downgrade switch:  the registry's account_plan says which plan the account is on.
 "free" accepts a config with no limits.cpu_ms, because the Free plan's own 10 ms
@@ -20,12 +22,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
-CONFIG_NAMES = {"wrangler.toml", "wrangler.json", "wrangler.jsonc"}
+# Includes named variants such as wrangler.prod.toml, which `wrangler deploy -c` can use.
+CONFIG_NAME = re.compile(r"wrangler(?:[.-].+)?\.(?:toml|jsonc?)")
 STATUSES = {"auto", "gated", "frozen", "retire"}
 PLANS = {"paid", "free"}
 THIS_REPO = "Simple-With-Us/AI-Fleet-Coordinator"
@@ -78,7 +82,7 @@ def tracked_configs(root: Path) -> list[str]:
         timeout=60,
         check=True,
     ).stdout
-    return sorted(p for p in listing.split("\0") if Path(p).name in CONFIG_NAMES)
+    return sorted(p for p in listing.split("\0") if CONFIG_NAME.fullmatch(Path(p).name))
 
 
 def is_number(value: object) -> bool:
@@ -128,24 +132,45 @@ def check_registry(registry: dict) -> list[str]:
                 findings.append(f"registry: {name}: a null config needs no_config_reason")
         elif not isinstance(config, str):
             findings.append(f"registry: {name}: config must be a path or null")
+        extra = row.get("extra_configs", [])
+        if not isinstance(extra, list) or not all(isinstance(p, str) for p in extra):
+            findings.append(f"registry: {name}: extra_configs must be a list of paths")
     return findings
 
 
 def config_paths(row: dict) -> list[str]:
-    paths = list(row.get("extra_configs") or [])
+    extra = row.get("extra_configs")
+    paths = [p for p in extra if isinstance(p, str)] if isinstance(extra, list) else []
     if isinstance(row.get("config"), str):
         paths.insert(0, row["config"])
     return paths
 
 
 def check_config(path: str, config: dict, registry: dict, plan: str) -> list[str]:
+    findings = check_block(path, path, config, registry, plan)
+    environments = config.get("env")
+    if environments is None:
+        return findings
+    if not isinstance(environments, dict):
+        return findings + [f"{path}: env must be a table of environments"]
+    base = {k: v for k, v in config.items() if k != "env"}
+    for env_name, block in environments.items():
+        block = block if isinstance(block, dict) else {}
+        # Wrangler deploys an environment as <name>-<env> unless the block names it.
+        merged = {**base, **block, "name": block.get("name") or f"{base.get('name')}-{env_name}"}
+        findings.extend(check_block(path, f"{path} [env.{env_name}]", merged, registry, plan))
+    return findings
+
+
+def check_block(path: str, label: str, config: dict, registry: dict, plan: str) -> list[str]:
     name = config.get("name")
-    row = (registry.get("workers") or {}).get(name)
+    workers = registry.get("workers") if isinstance(registry.get("workers"), dict) else {}
+    row = workers.get(name) if isinstance(name, str) else None
     if not isinstance(row, dict):
-        return [f"{path}: name {name!r} is not in the worker registry"]
+        return [f"{label}: name {name!r} is not in the worker registry"]
     findings: list[str] = []
     if path not in config_paths(row):
-        findings.append(f"{path}: not listed as a config of {name} in the worker registry")
+        findings.append(f"{label}: not listed as a config of {name} in the worker registry")
     ceiling = row.get("limits") if isinstance(row.get("limits"), dict) else {}
     limits = config.get("limits") if isinstance(config.get("limits"), dict) else {}
 
@@ -159,16 +184,16 @@ def check_config(path: str, config: dict, registry: dict, plan: str) -> list[str
         if value is None:
             if key == "cpu_ms" and plan == "free":
                 continue
-            findings.append(f"{path}: limits.{key} is missing")
+            findings.append(f"{label}: limits.{key} is missing")
         elif not is_positive_int(value):
-            findings.append(f"{path}: limits.{key} must be a positive integer")
+            findings.append(f"{label}: limits.{key} must be a positive integer")
         elif is_positive_int(top) and value > top:
             findings.append(
-                f"{path}: limits.{key} {value} is above the allowed {top} on the {plan} plan"
+                f"{label}: limits.{key} {value} is above the allowed {top} on the {plan} plan"
             )
 
     if config.get("preview_urls") is not False:
-        findings.append(f"{path}: preview_urls must be false")
+        findings.append(f"{label}: preview_urls must be false")
 
     observability = (
         config.get("observability") if isinstance(config.get("observability"), dict) else {}
@@ -180,13 +205,15 @@ def check_config(path: str, config: dict, registry: dict, plan: str) -> list[str
         if v is not None
     ]
     if not rates:
-        findings.append(f"{path}: observability.head_sampling_rate is implicit")
+        findings.append(f"{label}: observability.head_sampling_rate is implicit")
     top_rate = row.get("head_sampling_rate")
     for rate in rates:
         if not is_rate(rate):
-            findings.append(f"{path}: head_sampling_rate must be between 0 and 1")
+            findings.append(f"{label}: head_sampling_rate must be between 0 and 1")
         elif is_rate(top_rate) and rate > top_rate:
-            findings.append(f"{path}: head_sampling_rate {rate} is above the registry's {top_rate}")
+            findings.append(
+                f"{label}: head_sampling_rate {rate} is above the registry's {top_rate}"
+            )
     return findings
 
 
@@ -212,6 +239,9 @@ def run(root: Path, registry_path: Path, repo: str, plan: str | None) -> list[st
             config = load_config(root / path)
         except (OSError, ValueError) as err:
             findings.append(f"{path}: cannot parse: {err}")
+            continue
+        if not isinstance(config, dict):
+            findings.append(f"{path}: cannot parse: the top level must be an object")
             continue
         findings.extend(check_config(path, config, registry, active_plan))
 

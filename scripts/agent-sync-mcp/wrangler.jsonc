@@ -62,9 +62,11 @@
   "observability": { "enabled": true, "head_sampling_rate": 1, "logs": { "enabled": true, "invocation_logs": false } },
 
   // Runaway backstop per invocation, about 2.5x the measured p99.9 CPU, and it
-  // covers the SeatGate class too.  docs/cloudflare-workers.md has the design;
-  // scripts/check-worker-guards.py holds these to scripts/worker-registry.json.
-  "limits": { "cpu_ms": 300, "subrequests": 100 },
+  // covers the SeatGate class too.  200 subrequests because one GET /admin makes
+  // about 131 SeatGate calls, plus its Infisical reads.
+  // docs/cloudflare-workers.md has the design;  scripts/check-worker-guards.py
+  // holds these to scripts/worker-registry.json.
+  "limits": { "cpu_ms": 300, "subrequests": 200 },
 
   "kv_namespaces": [
     // Grants, hashed tokens and encrypted props (the OAuth library's store).

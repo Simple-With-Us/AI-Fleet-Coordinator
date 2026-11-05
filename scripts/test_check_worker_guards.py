@@ -167,6 +167,63 @@ class ConfigRules(Base):
         self.assertEqual(parsed["url"], "https://example.com//not-a-comment")
         self.assertEqual(parsed["list"], [1, 2])
 
+    def test_named_config_file_is_checked(self):
+        self.findings()
+        text = GOOD_TOML.replace("cpu_ms = 100", "cpu_ms = 101")
+        out = self.findings(text, path="wrangler.prod.toml")
+        self.assertTrue(any(f.startswith("wrangler.prod.toml: ") for f in out), out)
+
+    def test_similar_file_names_are_not_configs(self):
+        self.findings()
+        for name in ("wrangler.toml.example", "not-wrangler.toml", "wrangler.md"):
+            (self.root / name).write_text("junk", encoding="utf-8")
+            subprocess.run(["git", "-C", str(self.root), "add", name], check=True)
+        self.assertEqual(guards.run(self.root, self.root / "registry.json", REPO, None), [])
+
+    def test_non_object_config_is_a_finding_not_a_crash(self):
+        registry = copy.deepcopy(REGISTRY)
+        registry["workers"]["w"]["config"] = "wrangler.jsonc"
+        out = self.findings("[]", registry, "wrangler.jsonc")
+        self.assertTrue(any("top level must be an object" in f for f in out), out)
+
+    def test_non_string_name_is_a_finding_not_a_crash(self):
+        out = self.findings(GOOD_TOML.replace('name = "w"', 'name = ["w"]'))
+        self.assertTrue(any("is not in the worker registry" in f for f in out), out)
+
+
+class EnvironmentBlocks(Base):
+    def registry_with_env_worker(self):
+        registry = copy.deepcopy(REGISTRY)
+        registry["workers"]["w-prod"] = copy.deepcopy(registry["workers"]["w"])
+        return registry
+
+    def test_env_limit_above_registry_fails(self):
+        text = GOOD_TOML + "[env.prod.limits]\ncpu_ms = 999\nsubrequests = 40\n"
+        out = self.findings(text, self.registry_with_env_worker())
+        self.assertTrue(any("[env.prod]: limits.cpu_ms 999 is above" in f for f in out), out)
+
+    def test_env_that_drops_a_limit_fails(self):
+        text = GOOD_TOML + "[env.prod.limits]\nsubrequests = 40\n"
+        out = self.findings(text, self.registry_with_env_worker())
+        self.assertTrue(any("[env.prod]: limits.cpu_ms is missing" in f for f in out), out)
+
+    def test_env_that_turns_preview_urls_on_fails(self):
+        text = GOOD_TOML + "[env.prod]\npreview_urls = true\n"
+        out = self.findings(text, self.registry_with_env_worker())
+        self.assertTrue(any("[env.prod]: preview_urls must be false" in f for f in out), out)
+
+    def test_env_deploys_as_a_worker_that_needs_a_row(self):
+        out = self.findings(GOOD_TOML + "[env.prod]\n")
+        self.assertTrue(any("[env.prod]: name 'w-prod' is not in" in f for f in out), out)
+
+    def test_env_that_inherits_passes_under_a_registered_name(self):
+        out = self.findings(GOOD_TOML + "[env.prod]\n", self.registry_with_env_worker())
+        self.assertEqual(out, [])
+
+    def test_env_may_name_its_worker(self):
+        text = GOOD_TOML + '[env.prod]\nname = "w"\n'
+        self.assertEqual(self.findings(text), [])
+
 
 class DowngradeSwitch(Base):
     def free_registry(self):
@@ -192,6 +249,14 @@ class DowngradeSwitch(Base):
         text = GOOD_TOML.replace("subrequests = 40\n", "")
         out = self.findings(text, self.free_registry())
         self.assertTrue(any("limits.subrequests is missing" in f for f in out), out)
+
+    def test_the_downgrade_change_itself_passes(self):
+        # Checklist step 8:  the registry keeps its Paid ceiling, the config drops to Free's.
+        registry = self.free_registry()
+        registry["workers"]["w"]["limits"]["subrequests"] = 200
+        text = GOOD_TOML.replace("cpu_ms = 100\n", "")
+        text = text.replace("subrequests = 40", "subrequests = 50")
+        self.assertEqual(self.findings(text, registry), [])
 
     def test_plan_flag_overrides_the_file(self):
         text = GOOD_TOML.replace("cpu_ms = 100\n", "")
@@ -229,6 +294,10 @@ class RegistryRules(Base):
         registry["workers"]["other"] = other
         out = self.findings(registry=registry)
         self.assertTrue(any("needs no_config_reason" in f for f in out), out)
+        other["extra_configs"] = "wrangler.toml"
+        out = self.findings(registry=registry)
+        self.assertTrue(any("extra_configs must be a list" in f for f in out), out)
+        del other["extra_configs"]
         other["no_config_reason"] = "removed"
         self.assertEqual(self.findings(registry=registry), [])
 
@@ -297,9 +366,16 @@ class LiveTree(unittest.TestCase):
         self.assertTrue(row["no_config_reason"].strip())
 
     def test_free_plan_rehearsal_flags_only_the_configs_above_50(self):
+        # Worked out from the tree, so the downgrade change itself still passes this test.
+        above = []
+        for path in guards.tracked_configs(self.root):
+            value = guards.load_config(self.root / path)["limits"]["subrequests"]
+            if value > self.registry["free_plan_subrequests"]:
+                above.append(f"{path}: limits.subrequests {value} is above the allowed 50")
         out = guards.run(self.root, SCRIPTS / "worker-registry.json", REPO, "free")
-        self.assertEqual(len(out), 1, out)
-        self.assertIn("scripts/agent-sync-mcp/wrangler.jsonc: limits.subrequests 100", out[0])
+        self.assertEqual(len(out), len(above), out)
+        for line, expected in zip(sorted(out), sorted(above)):
+            self.assertIn(expected, line)
 
     def test_the_deploy_config_is_named_first_for_pr_conflict_watch(self):
         row = self.registry["workers"]["pr-conflict-watch"]

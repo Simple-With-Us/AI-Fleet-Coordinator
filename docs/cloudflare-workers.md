@@ -20,16 +20,17 @@ Hostnames other than the two public entry points below, Access policies, secret 
 
 Limits are per invocation, and Cloudflare documents some per-isolate flexibility, so `cpu_ms` is a strong guard and not an exact one.  Subrequests count `fetch()` and calls to Cloudflare services such as KV, D1 and R2.  Without a limit a Paid Worker gets 10,000 subrequests and 30 seconds of CPU per invocation.
 
-A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.
+A limit in a config takes effect only when that config is deployed.  Merging it changes nothing live.  All nine Workers already carry live limits, from direct API uploads at about 7:42 PM on Nov 4, 2026, and the current `alert-ingress` and `pr-conflict-watch` versions from those uploads have no `workers/tag`.  `alert-ingress` reads 30 subrequests live against 50 here, and the next deploy from git replaces the live values with the config's.
 
 ## The CI Check
 
-`python3 scripts/check-worker-guards.py` runs in the `test` job of `.github/workflows/ci.yml`.  It reads the files `git ls-files` lists and never talks to Cloudflare.  A tracked `wrangler.toml`, `wrangler.json` or `wrangler.jsonc` fails when:
+`python3 scripts/check-worker-guards.py` runs in the `test` job of `.github/workflows/ci.yml`.  It reads the files `git ls-files` lists and never talks to Cloudflare.  A tracked `wrangler.toml`, `wrangler.json` or `wrangler.jsonc`, or a named variant such as `wrangler.prod.toml`, fails when:
 
 - `limits.cpu_ms` or `limits.subrequests` is missing, or a value is above its registry row
 - `preview_urls` is not `false`
 - `observability` has no `head_sampling_rate` at its top level or under `logs`, or the rate is above its registry row
 - its `name` has no registry row, or its path is not listed under that name
+- an `[env.*]` block breaks any of these with what it inherits, under the Worker name it deploys as, which is `<name>-<env>` unless the block sets `name`
 
 A registry row fails when its status is not `auto`, `gated`, `frozen` or `retire`, its limits, sampling, health or deploy text is missing, a null config has no `no_config_reason`, or a config it names in this repository is not tracked.  An empty file listing fails too, so the check can never pass vacuously.
 
@@ -48,7 +49,7 @@ This check covers this repository.  Usage-Monitor's rows record its intended va
 
 `account_plan` in the registry is the switch, `paid` today.  Set to `free`, the check accepts a config with no `limits.cpu_ms`, because the Free plan's own 10 ms applies, and caps `limits.subrequests` at `free_plan_subrequests`, which is 50.  Without this switch a check that insisted on these limits could block every deploy after the downgrade, because the documented Free maximum for subrequests is 50.  What Free does with `limits.cpu_ms` present has not been tested.
 
-`python3 scripts/check-worker-guards.py --plan free` rehearses it without changing the file.  Today that flags one config: `scripts/agent-sync-mcp/wrangler.jsonc` at 100 subrequests.
+`python3 scripts/check-worker-guards.py --plan free` rehearses it without changing the file.  Today that flags one config: `scripts/agent-sync-mcp/wrangler.jsonc` at 200 subrequests.
 
 ## The Workers
 
@@ -63,7 +64,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Consumers:** hosted clients over OAuth, and server seats through the stdio adapter and CLIs.
 - **Source:** `scripts/agent-sync-mcp`.
 - **Deploy:** by hand from `DEPLOY.md`.  Status `gated`.  Merge does not deploy it, and each deploy restarts the Durable Objects.
-- **Limits:** 300 ms CPU, 100 subrequests, sampling 1.  Measured CPU p99 78.9 ms, p99.9 120 ms, about 5.5 subrequests per request.  The true per-invocation maximum is not exposed by analytics.
+- **Limits:** 300 ms CPU, 200 subrequests, sampling 1.  Measured CPU p99 78.9 ms, p99.9 120 ms, about 5.5 subrequests per request.  The true per-invocation maximum is not exposed by analytics.  The largest fan-out read from the code is `GET /admin`: about 131 SeatGate calls across 8 hosted seats and 44 bearer rows, plus its Infisical reads.  Whether each call or each stub counts as a subrequest is not verified.  Past the limit its reads show as unavailable or unknown instead of failing the page.
 
 ### alert-ingress
 
@@ -74,7 +75,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Consumers:** Datadog, PagerDuty, Better Stack and any vendor with a route in its `README.md` post to it on `alert-ingress.jays-services.workers.dev`, which stays on.  The Usage Monitor `/ops` card reads `GET /status`.
 - **Source:** `workers/alert-ingress`, design in its `README.md`.
 - **Deploy:** `alert-workers-deploy.yml` is the intended path.  Status `auto`.  It has been failing on a stale credential receipt, and any `wrangler.toml` change needs a manual reconcile by design.
-- **Limits:** 200 ms CPU, 30 subrequests, sampling 1.  Peak 36 ms CPU in the Durable Object.  A sweep spends one Zulip call per promoted incident plus one or more per touched topic, so about 10 to 15 incidents promoting in separate topics in one sweep can reach 30.  Past the limit a promotion's log line is lost, because `sendEventOnce` records `unknown` first and never resends, and that topic's standing message stays stale until its next event.  That loss falls in a mass outage, so check this value against a measured maximum before relying on it.
+- **Limits:** 200 ms CPU, 50 subrequests, sampling 1.  Peak 36 ms CPU in the Durable Object.  A sweep spends one Zulip call per promoted incident, then one or more per touched topic, so about 17 to 25 incidents promoting in separate topics in one sweep can reach 50.  Past the limit `sendEventOnce` has already recorded `unknown` and never resends, yet the sweep still stores the incident as announced, so its log line is lost for good, and that topic's standing message stays stale until its next event.  That loss falls in a mass outage.  50 is the most the Free plan allows, so the real fix is in the code: stop promoting when the sweep's budget runs low, and leave the rest pending for the next sweep.
 
 ### pr-conflict-watch
 
@@ -86,7 +87,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Source:** `workers/pr-conflict-watch/zulip-cutover` is live.  The parent directory is a never-deployed variant, and `scripts/worker-targets.json` still names it.
 - **Deploy:** status `gated`.  `alert-workers-deploy.yml` skips it until a verified-delivery receipt exists, so the last deploy was by hand.
 - **State:** every GitHub call has returned 401 since Oct 21, so it has posted no alert since then, yet it still takes about 11,600 requests a day.  Retiring it or repairing it is an open owner decision.
-- **Limits:** 50 ms CPU, 20 subrequests, sampling 0.1, and observability is newly on.  CPU p99 about 10 ms.  One pull request costs at most 6 subrequests, so a delivery naming more than 3 slow pull requests can run out.  Each failure is caught and logged per pull request, and the next delivery looks again.
+- **Limits:** 50 ms CPU, 20 subrequests, sampling 0.1, with observability on.  CPU p99 about 10 ms.  One pull request costs at most 6 subrequests, so a delivery naming more than 3 slow pull requests can run out.  Each failure is caught and logged per pull request, and the next delivery looks again.
 
 ### expenses-jays-services
 
@@ -106,7 +107,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Triggers:** email, fetch and a Durable Object alarm.
 - **Consumers:** the Usage Monitor app.
 - **Source and deploy:** Usage-Monitor `workers/receipt-inbox`, `worker-deploy.yml` with its gate off.  Status `auto`.
-- **Limits:** 150 ms CPU, 30 subrequests, sampling 1.  CPU p99 41 ms.
+- **Limits:** 200 ms CPU, 30 subrequests, sampling 1.  CPU p99 41 ms.
 
 ### usage-monitor-receipt-lifecycle-auditor
 
@@ -116,7 +117,7 @@ Measured figures are from the audit of Nov 3-4, 2026.  CPU figures are a 14-day
 - **Triggers:** a cron every 12 hours, and the service binding.
 - **Consumers:** the receipt inbox.
 - **Source and deploy:** Usage-Monitor `workers/receipt-lifecycle-auditor`, by hand with a package script.  Status `auto`, blocked on an approved CI probe.
-- **Limits:** 30 ms CPU, 20 subrequests, sampling 1.  CPU p99 about 3 ms.
+- **Limits:** 50 ms CPU, 20 subrequests, sampling 1.  CPU p99 about 3 ms.
 
 ### start-jays-services
 
@@ -181,7 +182,7 @@ The day resets at 6 PM Chicago (7 PM during daylight saving).  One buggy day on
 | KV lists | 1,000 | 921 (MCP OAuth) | MCP 400, alert-ingress 200, reserve 400 |
 | Crons | 5 | 3 | Fine |
 | CPU per invocation | 10 ms | MCP p99 79 ms, expenses 29 ms, inbox 41 ms | Rehearse.  30 days show no CPU kills, and enforcement may change |
-| Subrequests per invocation | 50 external | not measured | Rehearse |
+| Subrequests per invocation | 50 external | not measured | Rehearse, including `GET /admin` on simple-tools-mcp and an alert-ingress sweep with many promotions |
 | Env vars per Worker | 64 | 62 (MCP) | Free up slots in order.  Secrets that look unused are the outage fallback |
 
 ### R2
