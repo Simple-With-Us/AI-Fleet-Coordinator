@@ -468,7 +468,10 @@ def config_from_env() -> Config:
     cfg.s3_endpoint = os.environ.get("FLEET_WORK_BACKUP_S3_ENDPOINT", cfg.s3_endpoint)
     cfg.repository = os.environ.get("FLEET_WORK_BACKUP_REPOSITORY", cfg.repository)
     cfg.launchctl_bin = os.environ.get("FLEET_WORK_BACKUP_LAUNCHCTL", cfg.launchctl_bin)
-    cfg.agent_sync_bin = os.environ.get("FLEET_WORK_BACKUP_AGENT_SYNC", cfg.agent_sync_bin)
+    cfg.agent_sync_bin = os.environ.get(
+        "FLEET_WORK_BACKUP_SIMPLE_CHAT",
+        os.environ.get("FLEET_WORK_BACKUP_AGENT_SYNC", cfg.agent_sync_bin),
+    )
     cfg.fleet_secrets_bin = os.environ.get("FLEET_WORK_BACKUP_FLEET_SECRETS", cfg.fleet_secrets_bin)
     cfg.infisical_bin = os.environ.get("FLEET_WORK_BACKUP_INFISICAL", cfg.infisical_bin)
     cfg.alert_seat = os.environ.get("FLEET_WORK_BACKUP_ALERT_SEAT", cfg.alert_seat)
@@ -3524,7 +3527,7 @@ def bump_not_ok(state: dict) -> int:
     return n
 
 
-def agent_sync_path(cfg: Config) -> str:
+def simple_chat_path(cfg: Config) -> str:
     return cfg.agent_sync_bin or str(cfg.home / ".local" / "bin" / "simple-chat")
 
 
@@ -3554,7 +3557,7 @@ def post_alert(cfg: Config, text: str, wake: bool = True, failed: list | None = 
     The job posts as ``cfg.alert_seat``, a different seat from the ones it mentions, so the mention can wake them
     (a seat's own post that mentions itself never wakes its listener).  A peer that has used up its wake budget in the
     topic stops waking, so the owner DM is the delivery that always arrives."""
-    exe = agent_sync_path(cfg)
+    exe = simple_chat_path(cfg)
     ok_post = ok_dm = False
     if os.access(exe, os.X_OK):
         post = [
@@ -3622,7 +3625,7 @@ def alert_after_line(cfg: Config, state: dict, line: str) -> None:
         detail_log(
             cfg,
             [
-                f"alert-not-posted after {n} runs (simple-chat at {agent_sync_path(cfg)} missing or failed;  "
+                f"alert-not-posted after {n} runs (simple-chat at {simple_chat_path(cfg)} missing or failed;  "
                 f"not delivered:  {', '.join(failed)})"
             ],
         )
